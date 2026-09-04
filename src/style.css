@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --gosslan-primary: #3370ff;
+  --gosslan-primary-hover: #4c83ff;
+  --gosslan-primary-active: #2b5fd9;
+  --gosslan-primary-light: rgba(51, 112, 255, 0.12);
+  --gosslan-font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+
+  /* 亮色 */
+  --gosslan-bg: #f3f4f6;
+  --gosslan-panel: #ffffff;
+  --gosslan-border: #e5e7eb;
+  --gosslan-text: #1f2937;
+  --gosslan-text-2: #6b7280;
+  --gosslan-bubble-mine: #dbeafe;
+  --gosslan-bubble-other: #ffffff;
+  --gosslan-hover: rgba(0, 0, 0, 0.04);
+}
+
+.dark {
+  --gosslan-bg: #171717;
+  --gosslan-panel: #1f1f1f;
+  --gosslan-border: #2a2a2a;
+  --gosslan-text: #e5e7eb;
+  --gosslan-text-2: #9ca3af;
+  --gosslan-bubble-mine: #1d4ed8;
+  --gosslan-bubble-other: #262626;
+  --gosslan-hover: rgba(255, 255, 255, 0.06);
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--gosslan-font-family);
+  color: var(--gosslan-text);
+  background: var(--gosslan-bg);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* 移动端安全区 */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.3);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.5);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

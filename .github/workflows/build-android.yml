@@ -1,0 +1,86 @@
+name: Build Android APK
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK platform + build-tools + NDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264"
+
+      - name: Set NDK env
+        run: |
+          echo "NDK_HOME=${ANDROID_HOME}/ndk/26.3.11579264" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/26.3.11579264" >> "$GITHUB_ENV"
+
+      - name: Setup Rust (Android targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android,armv7-linux-androideabi,i686-linux-android
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Init Android project
+        run: npm run android:init
+
+      - name: Inject network/bluetooth permissions
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          perms = pathlib.Path('scripts/android/permissions.xml').read_text(encoding='utf-8')
+          m = pathlib.Path('src-tauri/gen/android/app/src/main/AndroidManifest.xml')
+          s = m.read_text(encoding='utf-8')
+          if 'CHANGE_WIFI_MULTICAST_STATE' not in s:
+              s = s.replace('<application', perms + '\n    <application', 1)
+              m.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Build release APK
+        run: npm run android:build:release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosslan-android-apk
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+
+      - name: Create GitHub Release (tag 触发)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          generate_release_notes: true

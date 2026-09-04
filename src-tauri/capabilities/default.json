@@ -1,0 +1,25 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口默认能力：窗口控制、通知、对话框、文件系统与打开器",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:app:default",
+    "core:event:default",
+    "notification:default",
+    "dialog:default",
+    "fs:default",
+    "fs:allow-read-file",
+    "fs:allow-write-file",
+    "opener:default"
+  ]
+}
