@@ -21,7 +21,7 @@
     "android:init": "tauri android init",
     "android:dev": "tauri android dev",
     "android:build": "tauri android build --apk",
-    "android:build:release": "tauri android build --apk --release",
+    "android:build:debug": "tauri android build --debug --apk",
     "env:check": "powershell -ExecutionPolicy Bypass -File scripts/check-env.ps1",
     "env:install": "powershell -ExecutionPolicy Bypass -File scripts/install-env.ps1",
     "multi:run": "powershell -ExecutionPolicy Bypass -File scripts/run-multi-instance.ps1"

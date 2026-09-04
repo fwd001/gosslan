@@ -22,10 +22,10 @@ if (-not $env:JAVA_HOME) {
 
 if ($Release) {
     Write-Host "==> 构建 Android Release APK" -ForegroundColor Cyan
-    npm run tauri -- android build --apk --release
+    npm run tauri -- android build --apk
 } else {
     Write-Host "==> 构建 Android Debug APK" -ForegroundColor Cyan
-    npm run tauri -- android build --apk
+    npm run tauri -- android build --debug --apk
 }
 $code = $LASTEXITCODE
 if ($code -ne 0) { Write-Error "构建失败"; exit $code }

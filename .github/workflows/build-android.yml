@@ -70,7 +70,7 @@ jobs:
           PY
 
       - name: Build release APK
-        run: npm run android:build:release
+        run: npm run android:build
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
