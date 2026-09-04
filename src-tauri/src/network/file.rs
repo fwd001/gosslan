@@ -64,7 +64,15 @@ pub async fn send_file_from_path(
         }
     }
 
-    stream_file(state, peer_id, transfer_id, path, name, size).await
+    // 传输中断（链路断开等）也要把记录标记为 failed，避免永远停在 active
+    match stream_file(state, peer_id, transfer_id, path, name, size).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let dbc = state.db.lock().unwrap();
+            db::upsert_transfer(&dbc, transfer_id, peer_id, "", size, "send", "failed", None, 0.0).ok();
+            Err(e)
+        }
+    }
 }
 
 async fn stream_file(
