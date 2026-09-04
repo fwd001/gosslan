@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "0.4.0"
+version = "0.4.1"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -24,7 +24,7 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
-socket2 = "0.5"
+socket2 = { version = "0.5", features = ["all"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4", "serde"] }

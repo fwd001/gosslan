@@ -8,6 +8,17 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
+## [0.4.1] - 2026-09-05
+### Fixed
+- **UDP 发现 socket 阻塞（关键）**：`bind_udp_reusable` 把 socket2 创建的**阻塞** socket 直接交给 tokio——debug 构建直接 panic（发现任务静默死亡），release 构建虽不 panic 但阻塞 fd 挂在 kqueue/epoll 上会卡死 worker 线程（界面卡顿帮凶）。修复：转 tokio 前显式 `set_nonblocking(true)`
+- **macOS/Linux 多开互发现失败**：UDP 同端口多绑定在 unix 上必须 `SO_REUSEPORT`（`SO_REUSEADDR` 仅 Windows 有效），socket2 需开 `all` feature；缺它第二个实例 network 启动即报 "Address already in use"
+- **跨路径消息重复隐患**：Gossip 落库的 msg_id 带 `g-` 前缀而 outbox 补发为 UUID，两者不同导致极端竞态下重复消息。统一为 Gossip 信封的确定性 SHA-256 ID（本地记录 / Gossip 投递 / outbox 补发三处共用），接收方 `message_exists` 跨路径去重
+
+### Added
+- **协议级 E2E 验证工具**：`src-tauri/examples/e2e_peer.rs`——无 GUI 直连真实运行实例，覆盖 UDP 发现、TCP 建链、直连消息 + 去重、Gossip E2EE（X25519+AEAD+Ed25519）、文件传输全链路、outbox 离线补发，并校验 SQLite 落库与文件落盘（15 项断言，全部通过）
+- `GOSSLAN_AUTOSTART=1` 环境变量：启动即自动开启局域网通道，支持 headless 多实例联调
+- `lib.rs` 开放 `crypto` / `protocol` 模块供测试对端复用
+
 ## [0.4.0] - 2026-09-04
 ### Added
 - **统一文件发送（自动路由）**：新增 `send_file_auto` 命令——有直连 TCP 链路走直连分片流，无直连自动切换切片中继，均不可达给出明确错误；前端「直接发送 / 中继发送」合并为一个按钮，无需用户选择路线

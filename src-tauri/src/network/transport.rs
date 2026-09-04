@@ -584,7 +584,9 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
         let preview = preview_content(&kind, &content);
         let rec = MessageRecord {
             id: 0,
-            msg_id: format!("g-{}", env.message_id),
+            // 不加前缀：与 outbox 补发的直连 ChatMessage 共用同一 msg_id，
+            // 接收方 message_exists 可跨路径去重（防建链竞态下的重复消息）
+            msg_id: env.message_id.clone(),
             conv_id: conv_id.clone(),
             sender_id: env.sender_id.clone(),
             receiver_id: state.device_id.clone(),

@@ -30,8 +30,8 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// 绑定一个允许地址复用的 UDP 套接字（SO_REUSEADDR + SO_BROADCAST），
-/// 使同一台 Windows 机器上的多个 gosslan 实例能同时监听同一发现端口。
+/// 绑定一个允许地址复用的 UDP 套接字（SO_REUSEADDR + SO_BROADCAST + unix 下 SO_REUSEPORT），
+/// 使同一台机器上的多个 gosslan 实例能同时监听同一发现端口（Windows/macOS/Linux 通用）。
 fn bind_udp_reusable(ip: Ipv4Addr, port: u16) -> Result<UdpSocket, String> {
     use socket2::{Domain, Protocol, Socket, Type};
     use std::net::SocketAddr;
@@ -41,7 +41,16 @@ fn bind_udp_reusable(ip: Ipv4Addr, port: u16) -> Result<UdpSocket, String> {
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|e| e.to_string())?;
     sock.set_reuse_address(true).map_err(|e| e.to_string())?;
+    // macOS/BSD：UDP 同端口多开必须 SO_REUSEPORT（SO_REUSEADDR 仅 Windows 允许重复绑定）。
+    // 缺了它，同一台机器的第二个实例 network::start 会报 "Address already in use"，
+    // 单机多实例互发现直接失效。
+    #[cfg(unix)]
+    sock.set_reuse_port(true).map_err(|e| e.to_string())?;
     sock.set_broadcast(true).map_err(|e| e.to_string())?;
+    // tokio 要求注册进 runtime 的 fd 必须非阻塞：socket2 创建的是阻塞 socket，
+    // 直接 from_std 在 debug 构建会 panic（tokio blocking check），release 构建虽不 panic
+    // 但阻塞 fd 挂在 kqueue/epoll 上会卡死 worker 线程（界面卡顿的帮凶之一）。
+    sock.set_nonblocking(true).map_err(|e| e.to_string())?;
     let sock_addr: socket2::SockAddr = addr.into();
     sock.bind(&sock_addr).map_err(|e| e.to_string())?;
 

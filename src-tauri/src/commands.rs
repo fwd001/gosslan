@@ -456,10 +456,23 @@ pub async fn send_message(
     let name = resolve_nickname(s, &friend_id);
     let preview = preview(&kind, &content);
 
+    // E2EE 加密 + Gossip 信封（先于本地落库：msg_id 三处统一用 Gossip 信封 ID）
+    let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
+    let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;
+    let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
+    let payload_b64 = STANDARD.encode(&sealed);
+    let env = {
+        let gossip = s.gossip.lock().unwrap();
+        gossip.build_envelope(&s.identity, &s.device_id, GossipKind::Chat, None, &payload_b64, ts)
+    };
+    // 统一 msg_id：本地记录 / Gossip 投递 / outbox 补发共用同一确定性 ID，
+    // 接收方 message_exists 跨路径去重（防建链竞态窗口内的重复投递）。
+    let msg_id = env.message_id.clone();
+
     // 本地落库（明文）
     let rec = MessageRecord {
         id: 0,
-        msg_id: Uuid::new_v4().to_string(),
+        msg_id: msg_id.clone(),
         conv_id: friend_id.clone(),
         sender_id: s.device_id.clone(),
         receiver_id: friend_id.clone(),
@@ -474,23 +487,14 @@ pub async fn send_message(
         db::touch_conversation(&dbc, &friend_id, "single", &name, None, &preview, 0).ok();
     }
 
-    // E2EE 加密 + Gossip 广播
-    let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
-    let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;
-    let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
-    let payload_b64 = STANDARD.encode(&sealed);
-    let env = {
-        let gossip = s.gossip.lock().unwrap();
-        gossip.build_envelope(&s.identity, &s.device_id, GossipKind::Chat, None, &payload_b64, ts)
-    };
     broadcast_gossip(s, env).await;
 
     // 对方无直连链路：消息进离线队列，对方上线建链后自动补发。
-    // （Gossip 若经其他节点中继已送达，接收方按 msg_id 去重，不会重复入库）
+    // （Gossip 若经其他节点中继已送达，接收方按相同 msg_id 去重，不会重复入库）
     let friend_linked = s.links.lock().await.contains_key(&friend_id);
     if !friend_linked {
         let queued = Message::ChatMessage {
-            msg_id: rec.msg_id.clone(),
+            msg_id: msg_id.clone(),
             from: s.device_id.clone(),
             to: friend_id.clone(),
             kind: crate::protocol::MsgKind::from_str(&kind),
@@ -499,7 +503,7 @@ pub async fn send_message(
         };
         if let Ok(payload) = serde_json::to_string(&queued) {
             let dbc = s.db.lock().unwrap();
-            db::insert_outbox(&dbc, &rec.msg_id, &friend_id, &payload).ok();
+            db::insert_outbox(&dbc, &msg_id, &friend_id, &payload).ok();
         }
     }
 

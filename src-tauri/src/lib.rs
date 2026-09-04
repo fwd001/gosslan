@@ -1,12 +1,13 @@
 //! Gosslan 应用入口（库目标，供 Tauri 加载）。
 
 mod commands;
-mod crypto;
+/// 公开给 `examples/e2e_peer.rs` 协议级 E2E 测试对端复用（线格式与密码学原语）。
+pub mod crypto;
 mod db;
 mod device;
 mod gossip_engine;
 mod network;
-mod protocol;
+pub mod protocol;
 mod relay;
 mod relay_manager;
 mod state;
@@ -25,7 +26,17 @@ pub fn run() {
         .setup(|app| {
             let state = state::AppState::init(app.handle().clone())?;
             state::AppState::spawn_peer_emitter(&state);
-            app.manage(state);
+            app.manage(state.clone());
+            // 联调便利：GOSSLAN_AUTOSTART=1 时启动即自动开启局域网通道，
+            // 便于 headless 多实例互测（examples/e2e_peer.rs 依赖此行为）。
+            if std::env::var("GOSSLAN_AUTOSTART").ok().as_deref() == Some("1") {
+                let st = state;
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = network::start(st, "0.0.0.0".to_string()).await {
+                        eprintln!("[GOSSLAN_AUTOSTART] 网络启动失败: {e}");
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
