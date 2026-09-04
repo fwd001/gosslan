@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
