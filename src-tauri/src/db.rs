@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS friends (
     device_id TEXT PRIMARY KEY,
     nickname  TEXT NOT NULL,
     avatar    TEXT,
+    x25519_pubkey  TEXT,
+    ed25519_pubkey TEXT,
     added_at  INTEGER NOT NULL
 );
 
@@ -88,6 +90,17 @@ pub fn init(path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
+    // 迁移：早期版本 friends 表缺公钥列，此处幂等补列（兼容已有旧库）
+    for col in ["x25519_pubkey", "ed25519_pubkey"] {
+        let exists: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('friends') WHERE name = ?1")
+            .and_then(|mut s| s.query_row([col], |r| r.get::<_, i64>(0)))
+            .map(|n| n > 0)
+            .unwrap_or(true);
+        if !exists {
+            let _ = conn.execute(&format!("ALTER TABLE friends ADD COLUMN {col} TEXT"), []);
+        }
+    }
     // 开启 WAL，提升并发读写
     conn.pragma_update(None, "journal_mode", "WAL").ok();
     // NORMAL：牺牲极小崩溃一致性换取更高写入吞吐（500-1000 节点高频落库场景）

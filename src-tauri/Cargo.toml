@@ -30,7 +30,6 @@ tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
 hostname = "0.3"
-machine-uid = "0.5"
 if-addrs = "0.13"
 base64 = "0.22"
 # ---- E2EE 与 P2P 安全 ----
@@ -38,6 +37,11 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 chacha20poly1305 = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
+
+# machine-uid 0.5 无 Android 分支（`machine_id` 模块仅对 linux/macos/windows 等定义），
+# 在 aarch64-linux-android 目标上会编译失败。因此仅对非 Android 目标引入。
+[target.'cfg(not(target_os = "android"))'.dependencies]
+machine-uid = "0.5"
 
 [features]
 # 默认启用自定义协议；可扩展为自定义 deep-link 唤醒
