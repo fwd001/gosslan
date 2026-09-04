@@ -13,6 +13,8 @@ export const useAppStore = defineStore("app", () => {
   const interfaces = ref<InterfaceInfo[]>([]);
   const online = ref(false);
   const boundIp = ref<string | null>(null);
+  /** 上次选择的网卡（持久化偏好；离线时作为设置页默认项）。 */
+  const preferredIp = ref<string | null>(null);
   const shareDir = ref<string | null>(null);
 
   const dark = ref<boolean>(localStorage.getItem(DARK_KEY) === "1");
@@ -54,7 +56,7 @@ export const useAppStore = defineStore("app", () => {
         themeColor: themeColor.value,
         fontFamily: fontFamily.value,
         darkMode: dark.value,
-        bindIp: boundIp.value,
+        bindIp: boundIp.value ?? preferredIp.value,
       });
     } catch {
       /* 忽略：离线或后端暂不可用时不影响本地使用 */
@@ -88,6 +90,7 @@ export const useAppStore = defineStore("app", () => {
     if (s.themeColor) themeColor.value = s.themeColor;
     if (s.fontFamily != null) fontFamily.value = s.fontFamily;
     if (s.darkMode != null) dark.value = s.darkMode;
+    preferredIp.value = s.bindIp;
     applyThemeNow();
     applyDarkNow();
     const mq = window.matchMedia("(max-width: 767px)");
@@ -108,6 +111,7 @@ export const useAppStore = defineStore("app", () => {
     themeColor.value = "#3370ff";
     fontFamily.value = "";
     dark.value = false;
+    preferredIp.value = null;
     localStorage.removeItem(THEME_KEY);
     localStorage.removeItem(FONT_KEY);
     localStorage.removeItem(DARK_KEY);
@@ -124,6 +128,7 @@ export const useAppStore = defineStore("app", () => {
     await api.startNetwork(bindIp);
     online.value = true;
     boundIp.value = bindIp;
+    preferredIp.value = bindIp;
     void persistSettings();
   }
 
@@ -148,6 +153,7 @@ export const useAppStore = defineStore("app", () => {
     interfaces,
     online,
     boundIp,
+    preferredIp,
     shareDir,
     dark,
     themeColor,

@@ -71,7 +71,7 @@ watch(
     if (v) {
       nickname.value = app.device?.nickname ?? "";
       avatar.value = app.device?.avatar ?? null;
-      selectedIp.value = app.boundIp ?? "0.0.0.0";
+      selectedIp.value = app.boundIp ?? app.preferredIp ?? "0.0.0.0";
       await app.refreshInterfaces();
       await Promise.all([loadChannels(), loadCache()]);
     }
