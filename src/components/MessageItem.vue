@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -42,6 +42,37 @@ async function copyText() {
 async function openFile() {
   if (fileMeta.value?.path) await openPath(fileMeta.value.path);
 }
+
+// ---------------- 自定义右键菜单（复制） ----------------
+const menu = ref<{ x: number; y: number } | null>(null);
+
+function onContext(e: MouseEvent) {
+  if (props.message.kind !== "text") return;
+  e.preventDefault();
+  // 位置夹紧，避免菜单溢出视口
+  const mw = 140;
+  const mh = 40;
+  const x = Math.min(e.clientX, window.innerWidth - mw - 8);
+  const y = Math.min(e.clientY, window.innerHeight - mh - 8);
+  menu.value = { x: Math.max(8, x), y: Math.max(8, y) };
+}
+
+function closeMenu() {
+  menu.value = null;
+}
+function onCopyFromMenu() {
+  void copyText();
+  closeMenu();
+}
+
+onMounted(() => {
+  document.addEventListener("click", closeMenu);
+  document.addEventListener("scroll", closeMenu, true);
+});
+onUnmounted(() => {
+  document.removeEventListener("click", closeMenu);
+  document.removeEventListener("scroll", closeMenu, true);
+});
 </script>
 
 <template>
@@ -71,6 +102,7 @@ async function openFile() {
         v-else-if="message.kind === 'text'"
         class="group relative rounded-2xl px-3 py-2 text-sm leading-relaxed shadow-sm"
         :class="mine ? 'bg-[var(--gosslan-bubble-mine)]' : 'bg-[var(--gosslan-bubble-other)]'"
+        @contextmenu="onContext"
       >
         <div class="whitespace-pre-wrap break-words">{{ message.content }}</div>
         <button
@@ -120,5 +152,24 @@ async function openFile() {
 
       <div class="mt-0.5 text-[11px] text-[var(--gosslan-text-2)]">{{ time }}</div>
     </div>
+
+    <!-- 右键复制菜单 -->
+    <Teleport to="body">
+      <div
+        v-if="menu"
+        class="fixed z-50 min-w-[120px] rounded-lg border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-1 shadow-xl"
+        :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
+        @click.stop
+      >
+        <button
+          class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition hover:bg-[var(--gosslan-hover)]"
+          @click="onCopyFromMenu"
+        >
+          <Check v-if="copied" class="h-4 w-4 text-emerald-500" />
+          <Copy v-else class="h-4 w-4" />
+          复制文本
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>

@@ -298,6 +298,63 @@ pub fn clean_cache_now(state: State<'_, Arc<AppState>>) -> CleanupReport {
     cache_cleaner::clean(&s.cache_dir, policy, &*dbc)
 }
 
+// ---------------- 应用偏好设置（本地持久化） ----------------
+
+/// 应用偏好：外观、网卡选择等。持久化到本地 SQLite，重启后恢复。
+#[derive(Serialize, Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    pub theme_color: Option<String>,
+    pub font_family: Option<String>,
+    pub dark_mode: Option<bool>,
+    pub bind_ip: Option<String>,
+}
+
+const SETTINGS_KEYS: [&str; 4] = ["theme_color", "font_family", "dark_mode", "bind_ip"];
+
+#[tauri::command]
+pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
+    let dbc = state.inner().db.lock().unwrap();
+    Settings {
+        theme_color: db::get_setting(&dbc, "theme_color"),
+        font_family: db::get_setting(&dbc, "font_family"),
+        dark_mode: db::get_setting(&dbc, "dark_mode").map(|v| v == "1"),
+        bind_ip: db::get_setting(&dbc, "bind_ip"),
+    }
+}
+
+#[tauri::command]
+pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<(), String> {
+    let dbc = state.inner().db.lock().unwrap();
+    if let Some(v) = settings.theme_color {
+        db::set_setting(&dbc, "theme_color", &v).ok();
+    }
+    if let Some(v) = settings.font_family {
+        db::set_setting(&dbc, "font_family", &v).ok();
+    }
+    if let Some(v) = settings.dark_mode {
+        db::set_setting(&dbc, "dark_mode", if v { "1" } else { "0" }).ok();
+    }
+    if let Some(v) = settings.bind_ip {
+        db::set_setting(&dbc, "bind_ip", &v).ok();
+    }
+    Ok(())
+}
+
+/// 恢复默认设置：清除外观 / 网卡 / 缓存策略等偏好键，上层回落到默认值。
+/// 不触碰用户数据（好友、聊天记录、昵称、头像、共享目录）。
+#[tauri::command]
+pub fn reset_settings(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let dbc = state.inner().db.lock().unwrap();
+    for key in SETTINGS_KEYS
+        .iter()
+        .chain([&RETENTION_KEY, &MAX_BYTES_KEY, &"bt_enabled"])
+    {
+        db::delete_setting(&dbc, key).ok();
+    }
+    Ok(())
+}
+
 // ---------------- 好友 ----------------
 
 #[tauri::command]

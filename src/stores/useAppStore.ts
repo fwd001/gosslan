@@ -47,25 +47,47 @@ export const useAppStore = defineStore("app", () => {
     document.documentElement.classList.toggle("dark", dark.value);
   }
 
+  /** 持久化全部偏好到后端 SQLite（重启后恢复，不依赖 WebView localStorage）。 */
+  async function persistSettings() {
+    try {
+      await api.saveSettings({
+        themeColor: themeColor.value,
+        fontFamily: fontFamily.value,
+        darkMode: dark.value,
+        bindIp: boundIp.value,
+      });
+    } catch {
+      /* 忽略：离线或后端暂不可用时不影响本地使用 */
+    }
+  }
+
   function toggleDark() {
     dark.value = !dark.value;
     localStorage.setItem(DARK_KEY, dark.value ? "1" : "0");
     applyDarkNow();
+    void persistSettings();
   }
 
   function setThemeColor(c: string) {
     themeColor.value = c;
     localStorage.setItem(THEME_KEY, c);
     applyThemeNow();
+    void persistSettings();
   }
 
   function setFontFamily(f: string) {
     fontFamily.value = f;
     localStorage.setItem(FONT_KEY, f);
     applyThemeNow();
+    void persistSettings();
   }
 
   async function init() {
+    // 从后端恢复持久化偏好（外观 / 网卡），优先于 localStorage
+    const s = await api.getSettings();
+    if (s.themeColor) themeColor.value = s.themeColor;
+    if (s.fontFamily != null) fontFamily.value = s.fontFamily;
+    if (s.darkMode != null) dark.value = s.darkMode;
     applyThemeNow();
     applyDarkNow();
     const mq = window.matchMedia("(max-width: 767px)");
@@ -80,6 +102,20 @@ export const useAppStore = defineStore("app", () => {
     boundIp.value = st.bound_ip;
   }
 
+  /** 恢复默认：后端清除偏好键，前端回落默认值（默认蓝色主题 / 系统字体 / 浅色 / 自动网卡）。 */
+  async function resetDefaults() {
+    await api.resetSettings();
+    themeColor.value = "#3370ff";
+    fontFamily.value = "";
+    dark.value = false;
+    localStorage.removeItem(THEME_KEY);
+    localStorage.removeItem(FONT_KEY);
+    localStorage.removeItem(DARK_KEY);
+    applyThemeNow();
+    applyDarkNow();
+    void persistSettings();
+  }
+
   async function updateProfile(nickname: string, avatar: string | null) {
     device.value = await api.updateProfile(nickname, avatar);
   }
@@ -88,12 +124,14 @@ export const useAppStore = defineStore("app", () => {
     await api.startNetwork(bindIp);
     online.value = true;
     boundIp.value = bindIp;
+    void persistSettings();
   }
 
   async function stopNetwork() {
     await api.stopNetwork();
     online.value = false;
     boundIp.value = null;
+    void persistSettings();
   }
 
   async function setShareDir(path: string) {
@@ -125,6 +163,7 @@ export const useAppStore = defineStore("app", () => {
     refreshInterfaces,
     setThemeColor,
     setFontFamily,
+    resetDefaults,
     toasts,
     toast,
   };

@@ -125,6 +125,14 @@ export interface ChannelStatus {
   peers: number;
 }
 
+/** 应用偏好设置（外观 / 网卡选择，持久化到本地 SQLite） */
+export interface AppSettings {
+  themeColor: string | null;
+  fontFamily: string | null;
+  darkMode: boolean | null;
+  bindIp: string | null;
+}
+
 /** 缓存目录占用与策略 */
 export interface CacheInfo {
   file_count: number;

@@ -1,6 +1,6 @@
-<?xml version="1.0" encoding="utf-8"?>
 <!-- 权限片段：由 CI / setup 脚本注入到 Tauri 生成的 AndroidManifest.xml 的 <application> 之前。
-     注意：本片段不含 tools 命名空间，可安全插入任何清单。 -->
+     注意：本片段是纯片段，不含 XML 声明（<?xml ...?>）与 tools 命名空间，可安全插入任何清单；
+     若包含 XML 声明，注入到清单中部会导致 "Error parsing AndroidManifest.xml"。 -->
 <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 <uses-permission android:name="android.permission.INTERNET" />
 <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

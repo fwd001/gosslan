@@ -3,8 +3,8 @@ import { computed, ref } from "vue";
 import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { Search, UserPlus, UsersRound } from "lucide-vue-next";
-import type { Conversation, Friend } from "@/types";
+import { Check, Search, UserPlus, UsersRound, X } from "lucide-vue-next";
+import type { Conversation, Friend, PendingRequest } from "@/types";
 
 defineProps<{ view: "chats" | "contacts" }>();
 const emit = defineEmits<{
@@ -48,6 +48,22 @@ function open(conv: Conversation) {
 function openFriend(f: Friend) {
   chat.openConversation(f.device_id);
   if (app.isMobile) app.mobileView = "chat";
+}
+async function accept(r: PendingRequest) {
+  try {
+    await chat.respondRequest(r.from, true);
+    app.toast(`已同意 ${r.from_nickname} 的好友申请`, "success");
+  } catch (e) {
+    app.toast(`操作失败：${e}`, "error");
+  }
+}
+async function reject(r: PendingRequest) {
+  try {
+    await chat.respondRequest(r.from, false);
+    app.toast("已拒绝该好友申请", "info");
+  } catch (e) {
+    app.toast(`操作失败：${e}`, "error");
+  }
 }
 </script>
 
@@ -127,6 +143,41 @@ function openFriend(f: Friend) {
       </template>
 
       <template v-else>
+        <!-- 好友申请 -->
+        <div v-if="chat.pendingRequests.length" class="mb-2">
+          <div class="px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-[var(--gosslan-text-2)]">
+            好友申请
+          </div>
+          <div
+            v-for="r in chat.pendingRequests"
+            :key="r.from"
+            class="flex items-center gap-3 rounded-xl px-2 py-2"
+          >
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary text-white">
+              <img v-if="r.from_avatar" :src="r.from_avatar" class="h-full w-full object-cover" />
+              <span v-else class="text-sm font-semibold">{{ initials(r.from_nickname) }}</span>
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="truncate text-sm font-medium">{{ r.from_nickname }}</div>
+              <div class="text-xs text-[var(--gosslan-text-2)]">请求添加你为好友</div>
+            </div>
+            <button
+              class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-white transition hover:bg-primary-hover"
+              title="同意"
+              @click="accept(r)"
+            >
+              <Check class="h-4 w-4" />
+            </button>
+            <button
+              class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--gosslan-border)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              title="拒绝"
+              @click="reject(r)"
+            >
+              <X class="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+
         <div
           v-for="f in filteredFriends"
           :key="f.device_id"

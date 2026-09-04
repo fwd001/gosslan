@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AppSettings,
   CacheInfo,
   ChannelStatus,
   CleanupReport,
@@ -72,6 +73,10 @@ export const api = {
   setCachePolicy: (retentionDays: number | null, maxBytes: number | null) =>
     invoke<void>("set_cache_policy", { retentionDays, maxBytes }),
   cleanCacheNow: () => invoke<CleanupReport>("clean_cache_now"),
+
+  getSettings: () => invoke<AppSettings>("get_settings"),
+  saveSettings: (s: AppSettings) => invoke<void>("save_settings", { settings: s }),
+  resetSettings: () => invoke<void>("reset_settings"),
 };
 
 // ---------------- 事件监听 ----------------

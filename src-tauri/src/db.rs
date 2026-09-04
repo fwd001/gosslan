@@ -131,6 +131,12 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// 删除一条设置（「恢复默认」时清除偏好键，让上层回落到默认值）。
+pub fn delete_setting(conn: &Connection, key: &str) -> Result<()> {
+    conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+    Ok(())
+}
+
 // ---------------- 好友 ----------------
 
 pub fn add_friend(conn: &Connection, device_id: &str, nickname: &str, avatar: Option<&str>) -> Result<()> {
