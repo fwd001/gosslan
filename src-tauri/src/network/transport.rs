@@ -148,13 +148,21 @@ async fn reader_loop(state: Arc<AppState>, mut r: OwnedReadHalf, peer_id: String
     }
     // 只移除「本条连接」的 link：若对端已重拨建立了新连接，旧的 reader 退出时
     // 不能把新连接的发送端删掉（否则会出现「消息发不出去」的间歇性故障）。
-    {
+    let was_live_link = {
         let mut links = state.links.lock().await;
-        if links.get(&peer_id).map(|tx| tx.same_channel(&link_tx)).unwrap_or(false) {
+        let is_live = links
+            .get(&peer_id)
+            .map(|tx| tx.same_channel(&link_tx))
+            .unwrap_or(false);
+        if is_live {
             links.remove(&peer_id);
         }
+        is_live
+    };
+    // 仅当退出的就是当前活跃链路时才标记离线（新链路已接管则不影响在线状态）
+    if was_live_link {
+        mark_peer_offline(&state, &peer_id).await;
     }
-    mark_peer_offline(&state, &peer_id).await;
 }
 
 // ---------------- 主动建链（小 ID 拨号） ----------------
