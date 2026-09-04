@@ -164,6 +164,7 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
 }
 
 /// 从后台唤起并聚焦主窗口（点击系统通知后调用）。
+#[cfg(desktop)]
 #[tauri::command]
 pub fn focus_window(app: tauri::AppHandle) -> Result<(), String> {
     let Some(win) = app.get_webview_window("main") else {
@@ -172,6 +173,13 @@ pub fn focus_window(app: tauri::AppHandle) -> Result<(), String> {
     let _ = win.unminimize();
     let _ = win.show();
     let _ = win.set_focus();
+    Ok(())
+}
+
+/// 移动端无独立窗口概念，系统通知自带唤起行为，无需额外处理。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn focus_window(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 

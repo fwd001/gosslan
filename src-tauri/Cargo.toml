@@ -38,9 +38,10 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 chacha20poly1305 = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
 
-# machine-uid 0.5 无 Android 分支（`machine_id` 模块仅对 linux/macos/windows 等定义），
-# 在 aarch64-linux-android 目标上会编译失败。因此仅对非 Android 目标引入。
-[target.'cfg(not(target_os = "android"))'.dependencies]
+# machine-uid 0.5 上游不支持 Android/iOS（`machine_id` 模块仅对 linux/macos/windows 等定义），
+# 在 aarch64-linux-android 目标上会编译失败。因此仅对非移动目标引入；
+# 移动端由上层回退为持久化 UUID / 主机名指纹（见 state.rs / device.rs）。
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 machine-uid = "0.5"
 
 [features]
