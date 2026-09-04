@@ -135,15 +135,22 @@ export const useChatStore = defineStore("chat", () => {
       list.push(m);
       byConv.set(m.conv_id, list);
     }
+    // 会话列表中不存在的会话（新好友 / 后端新创建）：本地合并不了，直接从后端拉取
+    const knownIds = new Set(conversations.value.map((c) => c.id));
+    const missing = [...byConv.keys()].filter((id) => !knownIds.has(id));
     for (const [convId, incoming] of byConv) {
       const existing = messages.value[convId] ?? [];
       messages.value[convId] = await mergeInWorker(existing, incoming);
     }
-    conversations.value = applyIncomingToConversations(
-      conversations.value,
-      activeConv.value,
-      byConv,
-    );
+    if (missing.length > 0) {
+      await refreshConversations();
+    } else {
+      conversations.value = applyIncomingToConversations(
+        conversations.value,
+        activeConv.value,
+        byConv,
+      );
+    }
   }
 
   function enqueueMessage(rec: MessageRecord) {
@@ -183,14 +190,47 @@ export const useChatStore = defineStore("chat", () => {
 
   async function openConversation(id: string) {
     activeConv.value = id;
+    // 会话行不存在（如新加好友还没发过消息）→ 后端补建，保证左侧列表有对应可高亮的项
+    if (!conversations.value.some((c) => c.id === id) && !id.startsWith("group:")) {
+      try {
+        const conv = await api.ensureConversation(id);
+        conversations.value = [conv, ...conversations.value];
+      } catch {
+        /* 忽略：不影响打开聊天 */
+      }
+    }
     await loadMessages(id);
     await api.markRead(id);
     const conv = conversations.value.find((c) => c.id === id);
     if (conv) conv.unread = 0;
   }
 
+  // 会话内消息分页：每会话最多缓存页数（防内存无限增长）
+  const PAGE_SIZE = 300;
+  const MAX_PAGES = 10;
+  const pagesLoaded = new Map<string, number>();
+  // 加载竞态守卫：快速切换会话时丢弃过期响应
+  let loadSeq = 0;
+
   async function loadMessages(convId: string) {
-    messages.value[convId] = await api.getMessages(convId, 300, 0);
+    const seq = ++loadSeq;
+    const list = await api.getMessages(convId, PAGE_SIZE, 0);
+    if (seq !== loadSeq || activeConv.value !== convId) return;
+    messages.value[convId] = list;
+    pagesLoaded.set(convId, 1);
+  }
+
+  /** 向上翻页加载更早的历史消息（VirtualList 触顶时调用）。 */
+  async function loadMoreMessages(convId: string) {
+    const pages = pagesLoaded.get(convId) ?? 1;
+    if (pages >= MAX_PAGES) return;
+    const seq = loadSeq;
+    const offset = pages * PAGE_SIZE;
+    const older = await api.getMessages(convId, PAGE_SIZE, offset);
+    if (seq !== loadSeq || older.length === 0) return;
+    const existing = messages.value[convId] ?? [];
+    messages.value[convId] = await mergeInWorker(existing, older);
+    pagesLoaded.set(convId, pages + 1);
   }
 
   /** 统一发送（单聊/群聊）。 */
@@ -221,9 +261,18 @@ export const useChatStore = defineStore("chat", () => {
     return g;
   }
 
+  /** 统一文件发送：后端自动路由（有直连走直连，无直连自动中继）。 */
   async function sendFileTo(convId: string, path: string) {
     if (convId.startsWith("group:")) return null;
-    return api.sendFile(convId, path);
+    try {
+      const id = await api.sendFileAuto(convId, path);
+      void refreshTransfers();
+      return id;
+    } catch (e) {
+      const app2 = useAppStore();
+      app2.toast(`文件发送失败：${e}`, "error");
+      return null;
+    }
   }
   async function sendFileRelayTo(convId: string, path: string) {
     if (convId.startsWith("group:")) return null;
@@ -275,8 +324,8 @@ export const useChatStore = defineStore("chat", () => {
       },
       onMessageAcked: () => {},
       onFileProgress: (p) => {
+        // 进度由事件载荷直接更新，不再全量刷新传输列表（避免大文件 IPC 风暴卡死界面）
         updateTransferProgress(p);
-        void refreshTransfers();
       },
       onFileDone: (d) => {
         onFileDone(d);
@@ -319,6 +368,7 @@ export const useChatStore = defineStore("chat", () => {
     refreshTopology,
     openConversation,
     loadMessages,
+    loadMoreMessages,
     send,
     sendFriendRequest,
     respondRequest,

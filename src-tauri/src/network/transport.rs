@@ -15,6 +15,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
+use tokio::time::Duration;
 
 use crate::crypto;
 use crate::db;
@@ -77,6 +78,8 @@ pub async fn spawn(
     let listener = TcpListener::bind(&bind)
         .await
         .map_err(|e| format!("TCP 绑定 {bind} 失败: {e}"))?;
+    let state_for_heartbeat = state.clone();
+    let shutdown_for_heartbeat = shutdown.clone();
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -85,6 +88,25 @@ pub async fn spawn(
                     let Ok((stream, _addr)) = accept else { continue };
                     let st = state.clone();
                     tokio::spawn(handle_incoming(st, stream));
+                }
+            }
+        }
+    });
+    // 心跳：周期性向所有已建链节点发送 Heartbeat，
+    // 及时发现静默断连（写失败 → writer 退出 → link 移除 → 在线状态修正）。
+    tokio::spawn(async move {
+        let state = state_for_heartbeat;
+        let mut shutdown = shutdown_for_heartbeat;
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = tick.tick() => {
+                    let links = state.links.lock().await;
+                    for tx in links.values() {
+                        let _ = tx.send(Message::Heartbeat { device_id: state.device_id.clone() }).await;
+                    }
                 }
             }
         }
@@ -103,10 +125,10 @@ async fn handle_incoming(state: Arc<AppState>, stream: TcpStream) {
         _ => return, // 首帧必须是 Hello
     };
     let (tx, rx) = mpsc::channel(1024);
-    state.links.lock().await.insert(peer_id.clone(), tx);
+    state.links.lock().await.insert(peer_id.clone(), tx.clone());
     tokio::spawn(writer_loop(w, rx));
     handle_message(&state, &peer_id, first).await;
-    reader_loop(state, r, peer_id).await;
+    reader_loop(state, r, peer_id, tx).await;
 }
 
 async fn writer_loop(mut w: OwnedWriteHalf, mut rx: mpsc::Receiver<Message>) {
@@ -117,14 +139,21 @@ async fn writer_loop(mut w: OwnedWriteHalf, mut rx: mpsc::Receiver<Message>) {
     }
 }
 
-async fn reader_loop(state: Arc<AppState>, mut r: OwnedReadHalf, peer_id: String) {
+async fn reader_loop(state: Arc<AppState>, mut r: OwnedReadHalf, peer_id: String, link_tx: mpsc::Sender<Message>) {
     loop {
         match read_frame(&mut r).await {
             Ok(msg) => handle_message(&state, &peer_id, msg).await,
             Err(_) => break,
         }
     }
-    state.links.lock().await.remove(&peer_id);
+    // 只移除「本条连接」的 link：若对端已重拨建立了新连接，旧的 reader 退出时
+    // 不能把新连接的发送端删掉（否则会出现「消息发不出去」的间歇性故障）。
+    {
+        let mut links = state.links.lock().await;
+        if links.get(&peer_id).map(|tx| tx.same_channel(&link_tx)).unwrap_or(false) {
+            links.remove(&peer_id);
+        }
+    }
     mark_peer_offline(&state, &peer_id).await;
 }
 
@@ -141,22 +170,17 @@ pub async fn ensure_link(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
 }
 
 async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_port: u16) {
-    let (tx, _rx) = mpsc::channel(1024);
     {
-        let mut links = state.links.lock().await;
+        let links = state.links.lock().await;
         if links.contains_key(peer_id) {
             return;
         }
-        links.insert(peer_id.to_string(), tx.clone());
     }
 
     let addr = format!("{ip}:{tcp_port}");
     let stream = match TcpStream::connect(&addr).await {
         Ok(s) => s,
-        Err(_) => {
-            state.links.lock().await.remove(peer_id);
-            return;
-        }
+        Err(_) => return,
     };
 
     let (r, w) = stream.into_split();
@@ -172,7 +196,7 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
     };
     let _ = tx.send(hello).await;
 
-    tokio::spawn(reader_loop(state.clone(), r, peer_id.to_string()));
+    tokio::spawn(reader_loop(state.clone(), r, peer_id.to_string(), tx));
     flush_outbox(state, peer_id).await;
 }
 
@@ -229,6 +253,17 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             {
                 let dbc = state.db.lock().unwrap();
                 db::add_friend(&dbc, &from, &name, None).ok();
+                // 同步公钥（否则首次加密发送会失败）
+                let (x, e) = {
+                    let peers = state.peers.lock().unwrap();
+                    peers
+                        .get(&from)
+                        .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
+                        .unwrap_or((None, None))
+                };
+                if x.is_some() || e.is_some() {
+                    db::update_friend_pubkeys(&dbc, &from, x.as_deref(), e.as_deref()).ok();
+                }
             }
             let _ = state.app.emit("friend-accepted", &from);
             notify(&state.app, "好友申请已通过", &format!("{name} 已成为你的好友"));
@@ -367,14 +402,24 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         Message::FileChunk { transfer_id, data, .. } => {
             if let Ok(bytes) = STANDARD.decode(&data) {
                 if let Ok(received) = file::write_chunk(state, &transfer_id, &bytes) {
-                    let total = state
-                        .file_receivers
-                        .lock()
-                        .unwrap()
-                        .get(&transfer_id)
-                        .map(|r| r.size)
-                        .unwrap_or(0);
-                    let _ = state.app.emit("file-progress", &FileProgress { transfer_id: transfer_id.clone(), received, total });
+                    // 节流：每 250ms 至多上报一次进度，避免大文件 IPC 事件风暴
+                    let (total, should_emit) = {
+                        let mut recv = state.file_receivers.lock().unwrap();
+                        match recv.get_mut(&transfer_id) {
+                            Some(r) => {
+                                let now = db::now_ms();
+                                let emit = now - r.last_report_ms >= 250;
+                                if emit {
+                                    r.last_report_ms = now;
+                                }
+                                (r.size, emit)
+                            }
+                            None => (0, false),
+                        }
+                    };
+                    if should_emit {
+                        let _ = state.app.emit("file-progress", &FileProgress { transfer_id: transfer_id.clone(), received, total });
+                    }
                 }
             }
         }
@@ -832,9 +877,21 @@ async fn mark_peer_offline(state: &Arc<AppState>, device_id: &str) {
 }
 
 fn maybe_update_friend(state: &AppState, device_id: &str, nickname: &str, avatar: Option<String>) {
+    let (x, e) = {
+        let peers = state.peers.lock().unwrap();
+        peers
+            .get(device_id)
+            .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
+            .unwrap_or((None, None))
+    };
     let dbc = state.db.lock().unwrap();
     if db::get_friend(&dbc, device_id).is_some() {
         db::add_friend(&dbc, device_id, nickname, avatar.as_deref()).ok();
+        // 好友行常在公钥落库之后才创建（好友申请通过才 add_friend），
+        // 此处每次同步公钥，保证 E2EE 加密始终能取到对方公钥。
+        if x.is_some() || e.is_some() {
+            db::update_friend_pubkeys(&dbc, device_id, x.as_deref(), e.as_deref()).ok();
+        }
     }
 }
 

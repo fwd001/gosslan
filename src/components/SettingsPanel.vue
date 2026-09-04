@@ -17,6 +17,7 @@ import {
   Trash2,
 } from "lucide-vue-next";
 import type { CacheInfo, ChannelStatus } from "@/types";
+import { version } from "../../package.json";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -35,7 +36,6 @@ const cacheInfo = ref<CacheInfo | null>(null);
 const retentionDays = ref<number>(0); // 0 = 永久
 const maxQuotaMb = ref<number>(0); // 0 = 无限制
 const cleaning = ref(false);
-const savingPolicy = ref(false);
 
 const presets = ["#3370ff", "#00b578", "#ff6b35", "#8b5cf6", "#e53e3e", "#0ea5e9"];
 const fonts = [
@@ -51,6 +51,14 @@ const quotas = [
   { value: 1024, label: "1 GB" },
   { value: 2048, label: "2 GB" },
 ];
+// 旧版本可能存了预设之外的数值，补一个回显选项避免下拉框空白
+const quotaOptions = computed(() => {
+  const existing = quotas.map((q) => q.value);
+  if (maxQuotaMb.value > 0 && !existing.includes(maxQuotaMb.value)) {
+    return [...quotas, { value: maxQuotaMb.value, label: `${maxQuotaMb.value} MB` }];
+  }
+  return quotas;
+});
 
 const interfaceOptions = computed(() => [
   { value: "0.0.0.0", label: "自动（所有网卡）" },
@@ -78,13 +86,39 @@ watch(
   },
 );
 
+// ---- 即点即保存：所有设置改动立即持久化，无「保存」按钮 ----
+
+/** 昵称：失焦或回车即保存。 */
+async function saveProfileNow() {
+  const name = nickname.value.trim();
+  if (!name) {
+    app.toast("昵称不能为空", "error");
+    nickname.value = app.device?.nickname ?? "";
+    return;
+  }
+  if (name === app.device?.nickname && avatar.value === app.device?.avatar) return;
+  await app.updateProfile(name, avatar.value);
+  await chat.refreshFriends();
+  app.toast("资料已保存并同步", "success");
+}
+
+function onNicknameKeydown(e: KeyboardEvent) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    (e.target as HTMLInputElement).blur();
+  }
+}
+
 async function loadChannels() {
   channels.value = await api.getChannelStatus();
 }
 async function loadCache() {
   cacheInfo.value = await api.getCacheInfo();
+  suppressAutoSave = true;
   retentionDays.value = cacheInfo.value?.retention_days ?? 0;
   maxQuotaMb.value = Math.round((cacheInfo.value?.max_bytes ?? 0) / 1048576);
+  // 等 watch 同步跳过这一轮由「回显赋值」触发的回调
+  setTimeout(() => (suppressAutoSave = false), 0);
 }
 
 function formatBytes(n: number) {
@@ -94,22 +128,15 @@ function formatBytes(n: number) {
   return `${(n / 1073741824).toFixed(2)} GB`;
 }
 
-async function saveProfile() {
-  if (!nickname.value.trim()) {
-    app.toast("昵称不能为空", "error");
-    return;
-  }
-  await app.updateProfile(nickname.value.trim(), avatar.value);
-  await chat.refreshFriends();
-  app.toast("资料已保存并同步", "success");
-}
-
 function onAvatarChange(e: Event) {
   const input = e.target as HTMLInputElement;
   const f = input.files?.[0];
   if (!f) return;
   const r = new FileReader();
-  r.onload = () => (avatar.value = r.result as string);
+  r.onload = async () => {
+    avatar.value = r.result as string;
+    await saveProfileNow();
+  };
   r.readAsDataURL(f);
 }
 
@@ -162,18 +189,20 @@ async function toggleBluetooth() {
   await loadChannels();
 }
 
+// 缓存策略：改动即保存（回显赋值时跳过）
+let suppressAutoSave = false;
+watch([retentionDays, maxQuotaMb], () => {
+  if (suppressAutoSave) return;
+  void applyCachePolicy(true);
+});
+
 async function applyCachePolicy(silent = false) {
-  savingPolicy.value = true;
-  try {
-    await api.setCachePolicy(
-      retentionDays.value === 0 ? null : retentionDays.value,
-      maxQuotaMb.value === 0 ? null : maxQuotaMb.value * 1048576,
-    );
-    if (!silent) app.toast("缓存策略已保存", "success");
-    await loadCache();
-  } finally {
-    savingPolicy.value = false;
-  }
+  await api.setCachePolicy(
+    retentionDays.value === 0 ? null : retentionDays.value,
+    maxQuotaMb.value === 0 ? null : maxQuotaMb.value * 1048576,
+  );
+  if (!silent) app.toast("缓存策略已保存", "success");
+  await loadCache();
 }
 
 async function cleanNow() {
@@ -207,7 +236,6 @@ async function restoreDefaults() {
   selectedIp.value = "0.0.0.0";
   retentionDays.value = 0;
   maxQuotaMb.value = 0;
-  await applyCachePolicy(true);
   app.toast("已恢复默认设置", "success");
   await loadChannels();
 }
@@ -228,7 +256,9 @@ async function restoreDefaults() {
             <input
               v-model="nickname"
               class="mb-2 w-full rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
-              placeholder="昵称"
+              placeholder="昵称（修改后自动保存）"
+              @blur="saveProfileNow"
+              @keydown="onNicknameKeydown"
             />
             <button
               class="rounded-lg border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
@@ -239,12 +269,6 @@ async function restoreDefaults() {
             <input ref="avatarInput" type="file" accept="image/*" class="hidden" @change="onAvatarChange" />
           </div>
         </div>
-        <button
-          class="mt-3 w-full rounded-xl bg-primary py-2 text-sm font-medium text-white transition hover:bg-primary-hover"
-          @click="saveProfile"
-        >
-          保存资料
-        </button>
       </section>
 
       <!-- 外观 -->
@@ -422,29 +446,20 @@ async function restoreDefaults() {
             v-model.number="maxQuotaMb"
             class="flex-1 rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
           >
-            <option v-for="q in quotas" :key="q.value" :value="q.value">{{ q.label }}</option>
+            <option v-for="q in quotaOptions" :key="q.value" :value="q.value">{{ q.label }}</option>
           </select>
         </div>
         <p class="mb-3 mt-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
-          磁盘上限为「无限制」时缓存不会被自动清理；设置上限后，缓存超过该值会自动删除最旧的图片 / 文件。
+          磁盘上限为「无限制」时缓存不会被自动清理；设置上限后，缓存超过该值会自动删除最旧的图片 / 文件。改动即时生效并自动保存。
         </p>
-        <div class="flex items-center gap-2">
-          <button
-            class="flex-1 rounded-xl bg-primary py-2 text-sm font-medium text-white transition hover:bg-primary-hover disabled:opacity-50"
-            :disabled="savingPolicy"
-            @click="applyCachePolicy()"
-          >
-            保存策略
-          </button>
-          <button
-            class="flex items-center gap-1.5 rounded-xl border border-[var(--gosslan-border)] px-3 py-2 text-sm transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
-            :disabled="cleaning"
-            @click="cleanNow"
-          >
-            <Trash2 class="h-4 w-4" />
-            立即清理
-          </button>
-        </div>
+        <button
+          class="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[var(--gosslan-border)] py-2 text-sm transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+          :disabled="cleaning"
+          @click="cleanNow"
+        >
+          <Trash2 class="h-4 w-4" />
+          立即清理
+        </button>
       </section>
 
       <!-- 关于 -->
@@ -452,7 +467,7 @@ async function restoreDefaults() {
         <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">关于</h3>
         <div class="text-xs text-[var(--gosslan-text-2)]">设备指纹：{{ shortId }}</div>
         <div class="mt-1 text-xs text-[var(--gosslan-text-2)]">
-          Gosslan v0.3.1 · 无服务器 P2P · 端到端加密 · 数据仅存本机
+          Gosslan v{{ version }} · 无服务器 P2P · 端到端加密 · 数据仅存本机
         </div>
       </section>
 

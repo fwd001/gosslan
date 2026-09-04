@@ -47,6 +47,8 @@ export const api = {
   getMessages: (convId: string, limit?: number, offset?: number) =>
     invoke<MessageRecord[]>("get_messages", { convId, limit, offset }),
   getConversations: () => invoke<Conversation[]>("get_conversations"),
+  ensureConversation: (friendId: string) =>
+    invoke<Conversation>("ensure_conversation", { friendId }),
   markRead: (convId: string) => invoke<void>("mark_read", { convId }),
 
   createGroup: (name: string, members: string[]) => invoke<Group>("create_group", { name, members }),
@@ -56,6 +58,8 @@ export const api = {
     invoke<MessageRecord>("send_group_message", { groupId, content, kind }),
 
   sendFile: (friendId: string, path: string) => invoke<string>("send_file", { friendId, path }),
+  sendFileAuto: (friendId: string, path: string) =>
+    invoke<string>("send_file_auto", { friendId, path }),
   sendFileRelay: (friendId: string, path: string) =>
     invoke<string>("send_file_relay", { friendId, path }),
   getTransfers: () => invoke<TransferInfo[]>("get_transfers"),

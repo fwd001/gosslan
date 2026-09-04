@@ -436,11 +436,18 @@ pub async fn send_message(
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
 
-    // 获取对方 X25519 公钥
+    // 获取对方 X25519 公钥（好友表优先，回退到在线节点表）
     let pubkey = {
         let dbc = s.db.lock().unwrap();
         db::get_friend_x25519(&dbc, &friend_id)
-    };
+    }
+    .or_else(|| {
+        s.peers
+            .lock()
+            .unwrap()
+            .get(&friend_id)
+            .and_then(|p| p.x25519_pubkey.clone())
+    });
     let Some(pubkey) = pubkey else {
         return Err("尚未获取对方公钥，请确认对方在线后重试".to_string());
     };
@@ -478,6 +485,23 @@ pub async fn send_message(
     };
     broadcast_gossip(s, env).await;
 
+    // 全网无任何已建链连接（对方不在线）：消息进入离线队列，对方上线自动补发
+    let no_links = s.links.lock().await.is_empty();
+    if no_links {
+        let queued = Message::ChatMessage {
+            msg_id: rec.msg_id.clone(),
+            from: s.device_id.clone(),
+            to: friend_id.clone(),
+            kind: crate::protocol::MsgKind::from_str(&kind),
+            content: content.clone(),
+            ts,
+        };
+        if let Ok(payload) = serde_json::to_string(&queued) {
+            let dbc = s.db.lock().unwrap();
+            db::insert_outbox(&dbc, &rec.msg_id, &friend_id, &payload).ok();
+        }
+    }
+
     Ok(rec)
 }
 
@@ -496,6 +520,31 @@ pub fn get_messages(
 pub fn get_conversations(state: State<'_, Arc<AppState>>) -> Vec<Conversation> {
     let dbc = state.inner().db.lock().unwrap();
     db::list_conversations(&dbc).unwrap_or_default()
+}
+
+/// 打开与好友的会话时确保会话行存在（新加好友尚未发过消息时，
+/// 会话列表无对应项 → 左侧无法高亮选中态）。
+#[tauri::command]
+pub fn ensure_conversation(state: State<'_, Arc<AppState>>, friend_id: String) -> Result<Conversation, String> {
+    let s = state.inner();
+    let name = resolve_nickname(s, &friend_id);
+    let avatar = {
+        let peers = s.peers.lock().unwrap();
+        peers.get(&friend_id).and_then(|p| p.avatar.clone())
+    };
+    {
+        let dbc = s.db.lock().unwrap();
+        db::ensure_conversation(&dbc, &friend_id, "single", &name, avatar.as_deref()).map_err(|e| e.to_string())?;
+    }
+    Ok(Conversation {
+        id: friend_id.clone(),
+        kind: "single".to_string(),
+        name,
+        avatar,
+        last_msg: None,
+        last_ts: None,
+        unread: 0,
+    })
 }
 
 #[tauri::command]
@@ -685,6 +734,30 @@ pub async fn send_file(
     Ok(transfer_id)
 }
 
+/// 统一文件发送入口：自动路由。
+/// - 与对方有直连 TCP 链路 → 直连分片流（可靠有序）。
+/// - 无直连但周围有在线节点 → 切片中继（经其他节点转发）。
+/// - 都不可达 → 返回明确错误。
+#[tauri::command]
+pub async fn send_file_auto(
+    state: State<'_, Arc<AppState>>,
+    friend_id: String,
+    path: String,
+) -> Result<String, String> {
+    let s = state.inner();
+    let direct = s.links.lock().await.contains_key(&friend_id);
+    if direct {
+        return send_file(state.clone(), friend_id, path).await;
+    }
+
+    // 无直连：若周围完全没有任何已建链节点，中继也走不通
+    let relay_available = { !s.links.lock().await.is_empty() };
+    if !relay_available {
+        return Err("对方与周围节点均不在线，无法发送文件".to_string());
+    }
+    send_file_relay(state, friend_id, path).await
+}
+
 /// 中继切片发送：把文件切片并行分发给接收方 + 空闲中继节点。
 #[tauri::command]
 pub async fn send_file_relay(
@@ -695,10 +768,16 @@ pub async fn send_file_relay(
     let s = state.inner();
     let transfer_id = Uuid::new_v4().to_string();
 
-    let (name, size, chunks) = {
-        let relay = s.relay.lock().unwrap();
-        relay.slice_file(std::path::Path::new(&path)).map_err(|e| e.to_string())?
-    };
+    // 文件读取 + base64 切片是同步重活：放阻塞线程池，避免卡住 async runtime（界面卡死根因）
+    let chunk_size = { s.relay.lock().unwrap().chunk_size };
+    let p = std::path::PathBuf::from(&path);
+    let (name, size, chunks) = tokio::task::spawn_blocking(move || {
+        crate::relay_manager::RelayManager::slice_file_with(&p, chunk_size)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
     let total_chunks = chunks.len() as u32;
     s.relay.lock().unwrap().register_send(&transfer_id, chunks);
 

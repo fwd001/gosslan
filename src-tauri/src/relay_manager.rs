@@ -74,13 +74,18 @@ impl RelayManager {
 
     /// 读取文件并切片，返回 (name, size, chunks)。
     pub fn slice_file(&self, path: &Path) -> std::io::Result<(String, u64, Vec<ChunkData>)> {
+        Self::slice_file_with(path, self.chunk_size)
+    }
+
+    /// 独立于实例的切片入口：供阻塞线程池调用（避免长时间持有 relay 锁）。
+    pub fn slice_file_with(path: &Path, chunk_size: usize) -> std::io::Result<(String, u64, Vec<ChunkData>)> {
         let meta = std::fs::metadata(path)?;
         let name = path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
         let bytes = std::fs::read(path)?;
-        let chunks = Self::split_bytes(&bytes, self.chunk_size)
+        let chunks = Self::split_bytes(&bytes, chunk_size)
             .into_iter()
             .enumerate()
             .map(|(i, b)| ChunkData {
@@ -196,7 +201,8 @@ mod tests {
     fn reassemble_out_of_order() {
         let mut m = RelayManager::new();
         let data = b"abcdefghijklmnopqrstuvwxyz";
-        let chunks = RelayManager::split_bytes(data, 8);
+        // 直接手工切片（split_bytes 会把尺寸钳到 MIN_CHUNK_SIZE，不适合小数据测试）
+        let chunks: Vec<Vec<u8>> = data.chunks(7).map(|c| c.to_vec()).collect();
         m.begin_reassemble("t1", "f.bin", chunks.len() as u32);
         // 乱序写入
         assert!(m.add_chunk("t1", 2, chunks[2].clone()).is_none());

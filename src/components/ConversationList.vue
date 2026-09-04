@@ -105,10 +105,16 @@ async function reject(r: PendingRequest) {
         <div
           v-for="c in filteredConversations"
           :key="c.id"
-          class="flex cursor-pointer items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
+          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id]"
+          class="relative flex cursor-pointer items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
           :class="chat.activeConv === c.id ? 'bg-primary-light' : ''"
           @click="open(c)"
         >
+          <!-- 飞书式选中态：左侧主色指示条 -->
+          <span
+            v-if="chat.activeConv === c.id"
+            class="absolute left-0 top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-full bg-primary"
+          ></span>
           <div class="relative">
             <div
               class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-primary text-white"
@@ -123,7 +129,10 @@ async function reject(r: PendingRequest) {
           </div>
           <div class="min-w-0 flex-1">
             <div class="flex items-center justify-between">
-              <span class="truncate text-sm font-medium">{{ c.name }}</span>
+              <span
+                class="truncate text-sm font-medium"
+                :class="chat.activeConv === c.id ? 'text-primary' : ''"
+              >{{ c.name }}</span>
               <span class="text-[11px] text-[var(--gosslan-text-2)]">{{ fmtTime(c.last_ts) }}</span>
             </div>
             <div class="flex items-center justify-between">
@@ -181,9 +190,16 @@ async function reject(r: PendingRequest) {
         <div
           v-for="f in filteredFriends"
           :key="f.device_id"
-          class="flex cursor-pointer items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
+          v-memo="[f.nickname, f.avatar, f.online, chat.activeConv === f.device_id]"
+          class="relative flex cursor-pointer items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
+          :class="chat.activeConv === f.device_id ? 'bg-primary-light' : ''"
           @click="openFriend(f)"
         >
+          <!-- 选中态指示条：与右侧聊天窗联动 -->
+          <span
+            v-if="chat.activeConv === f.device_id"
+            class="absolute left-0 top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-full bg-primary"
+          ></span>
           <div class="relative">
             <div
               class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-primary text-white"
@@ -197,7 +213,10 @@ async function reject(r: PendingRequest) {
             ></span>
           </div>
           <div class="min-w-0 flex-1">
-            <div class="truncate text-sm">{{ f.nickname }}</div>
+            <div
+              class="truncate text-sm font-medium"
+              :class="chat.activeConv === f.device_id ? 'text-primary' : ''"
+            >{{ f.nickname }}</div>
             <div class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? "在线" : "离线" }}</div>
           </div>
         </div>

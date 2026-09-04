@@ -159,6 +159,8 @@ pub struct FileReceiver {
     pub tmp_path: PathBuf,
     pub final_path: PathBuf,
     pub peer_id: String,
+    /// 上次进度上报时间（毫秒），用于节流 IPC 事件
+    pub last_report_ms: i64,
 }
 
 /// 网络运行时句柄

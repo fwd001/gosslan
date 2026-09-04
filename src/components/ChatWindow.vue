@@ -2,7 +2,6 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { Menu, MenuButton, MenuItems, MenuItem } from "@headlessui/vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import MessageItem from "@/components/MessageItem.vue";
 import VirtualList from "@/components/VirtualList.vue";
@@ -11,7 +10,6 @@ import {
   Code2,
   FilePlus,
   FolderOpen,
-  Network,
   Send,
 } from "lucide-vue-next";
 import type { MessageRecord } from "@/types";
@@ -53,9 +51,16 @@ function estimateHeight(m: MessageRecord): number {
 
 watch(
   () => messages.value.length,
-  async () => {
-    await nextTick();
-    listRef.value?.scrollToBottom();
+  async (_, oldLen) => {
+    // 只有「追加新消息」时贴底；向上加载历史时保持当前滚动位置
+    if (oldLen === undefined || messages.value.length > oldLen) {
+      const last = messages.value[messages.value.length - 1];
+      const prev = messages.value[messages.value.length - 2];
+      if (!prev || last.ts >= prev.ts) {
+        await nextTick();
+        listRef.value?.scrollToBottom();
+      }
+    }
   },
 );
 
@@ -76,14 +81,20 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-async function attachFile(relay: boolean) {
+/** 统一发送文件：自动路由（直连优先，弱网/无直连自动中继），无需用户选择。 */
+async function attachFile() {
   const convId = chat.activeConv;
   if (!convId) return;
   const picked = await openDialog({ multiple: false });
   if (typeof picked === "string") {
-    if (relay) await chat.sendFileRelayTo(convId, picked);
-    else await chat.sendFileTo(convId, picked);
+    await chat.sendFileTo(convId, picked);
   }
+}
+
+/** 触顶加载更早的历史消息。 */
+function onLoadMore() {
+  const convId = chat.activeConv;
+  if (convId) void chat.loadMoreMessages(convId);
 }
 
 async function onPaste(e: ClipboardEvent) {
@@ -151,6 +162,7 @@ function fileToDataUrl(f: File): Promise<string> {
         ref="listRef"
         :items="messages"
         :estimate-height="estimateHeight"
+        @load-more="onLoadMore"
       >
         <template #default="{ item }">
           <MessageItem :message="item" />
@@ -169,36 +181,13 @@ function fileToDataUrl(f: File): Promise<string> {
           <Code2 class="h-3.5 w-3.5" />
           代码
         </button>
-        <Menu as="div" class="relative">
-          <MenuButton
-            class="flex items-center justify-center rounded-md px-2 py-1 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-            title="发送文件"
-          >
-            <FilePlus class="h-4 w-4" />
-          </MenuButton>
-          <MenuItems
-            class="absolute bottom-9 left-0 z-20 w-40 rounded-lg border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-1 shadow-lg"
-          >
-            <MenuItem v-slot="{ active }">
-              <button
-                class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm"
-                :class="active ? 'bg-[var(--gosslan-hover)]' : ''"
-                @click="attachFile(false)"
-              >
-                <FilePlus class="h-4 w-4" /> 直接发送
-              </button>
-            </MenuItem>
-            <MenuItem v-slot="{ active }">
-              <button
-                class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm"
-                :class="active ? 'bg-[var(--gosslan-hover)]' : ''"
-                @click="attachFile(true)"
-              >
-                <Network class="h-4 w-4" /> 中继发送
-              </button>
-            </MenuItem>
-          </MenuItems>
-        </Menu>
+        <button
+          class="flex items-center justify-center rounded-md px-2 py-1 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          title="发送文件（自动选择最优路线）"
+          @click="attachFile"
+        >
+          <FilePlus class="h-4 w-4" />
+        </button>
         <span class="ml-auto text-[11px] text-[var(--gosslan-text-2)]">Enter 发送 · 支持粘贴图片</span>
       </div>
       <div class="flex items-end gap-2">

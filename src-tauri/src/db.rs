@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS group_members (
 -- 离线补发队列：发给离线/未连接好友的消息
 CREATE TABLE IF NOT EXISTS outbox (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    msg_id     TEXT NOT NULL,
+    msg_id     TEXT NOT NULL UNIQUE,
     peer_id    TEXT NOT NULL,
     payload    TEXT NOT NULL,          -- 序列化后的 Message JSON
     created_at INTEGER NOT NULL
@@ -101,6 +101,16 @@ pub fn init(path: &Path) -> Result<Connection> {
             let _ = conn.execute(&format!("ALTER TABLE friends ADD COLUMN {col} TEXT"), []);
         }
     }
+    // 迁移：outbox.msg_id 唯一索引（INSERT OR IGNORE 去重依赖它；旧库幂等补建）
+    // 先清掉历史重复行（按 msg_id 保留最早一条），保证建索引必定成功
+    conn.execute(
+        "DELETE FROM outbox WHERE id NOT IN (SELECT MIN(id) FROM outbox GROUP BY msg_id)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_msg_id ON outbox(msg_id)",
+        [],
+    )?;
     // 开启 WAL，提升并发读写
     conn.pragma_update(None, "journal_mode", "WAL").ok();
     // NORMAL：牺牲极小崩溃一致性换取更高写入吞吐（500-1000 节点高频落库场景）

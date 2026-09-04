@@ -75,12 +75,14 @@ async fn stream_file(
     name: String,
     size: u64,
 ) -> Result<(), String> {
-    use std::io::Read;
+    use tokio::io::AsyncReadExt;
 
-    let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let mut f = tokio::fs::File::open(&path).await.map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; FILE_CHUNK];
     let mut seq = 0u32;
     let mut sent = 0u64;
+    // 进度节流：避免每片一次 SQLite 写 + IPC 事件（大文件会形成事件风暴卡死界面）
+    let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
 
     {
         let dbc = state.db.lock().unwrap();
@@ -88,7 +90,7 @@ async fn stream_file(
     }
 
     loop {
-        let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+        let n = f.read(&mut buf).await.map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
@@ -101,19 +103,23 @@ async fn stream_file(
         try_send(state, peer_id, &chunk).await?;
         seq += 1;
         sent += n as u64;
-        let progress = if size == 0 { 1.0 } else { sent as f64 / size as f64 };
-        {
-            let dbc = state.db.lock().unwrap();
-            db::upsert_transfer(&dbc, transfer_id, peer_id, &name, size, "send", "active", None, progress).ok();
+
+        if last_report.elapsed() >= Duration::from_millis(250) {
+            last_report = std::time::Instant::now();
+            let progress = if size == 0 { 1.0 } else { sent as f64 / size as f64 };
+            {
+                let dbc = state.db.lock().unwrap();
+                db::upsert_transfer(&dbc, transfer_id, peer_id, &name, size, "send", "active", None, progress).ok();
+            }
+            let _ = state.app.emit(
+                "file-progress",
+                &crate::state::FileProgress {
+                    transfer_id: transfer_id.to_string(),
+                    received: sent,
+                    total: size,
+                },
+            );
         }
-        let _ = state.app.emit(
-            "file-progress",
-            &crate::state::FileProgress {
-                transfer_id: transfer_id.to_string(),
-                received: sent,
-                total: size,
-            },
-        );
     }
 
     try_send(state, peer_id, &Message::FileDone { transfer_id: transfer_id.to_string() }).await.ok();
@@ -121,6 +127,14 @@ async fn stream_file(
         let dbc = state.db.lock().unwrap();
         db::upsert_transfer(&dbc, transfer_id, peer_id, &name, size, "send", "done", None, 1.0).ok();
     }
+    let _ = state.app.emit(
+        "file-progress",
+        &crate::state::FileProgress {
+            transfer_id: transfer_id.to_string(),
+            received: size,
+            total: size,
+        },
+    );
     Ok(())
 }
 
@@ -147,6 +161,7 @@ pub fn begin_receive(
             tmp_path: tmp_path.clone(),
             final_path: final_path.clone(),
             peer_id: peer_id.to_string(),
+            last_report_ms: 0,
         },
     );
 
