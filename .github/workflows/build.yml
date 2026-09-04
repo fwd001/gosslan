@@ -2,8 +2,8 @@ name: Build Windows x64
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:

@@ -51,7 +51,20 @@ let conf = readFileSync(confPath, "utf8");
 conf = conf.replace(/"version"\s*:\s*"[^"]*"/, `"version": "${next}"`);
 writeFileSync(confPath, conf);
 
-// 4) CHANGELOG.md（可选）
+// 4) package-lock.json（保持与 package.json 的 name/version 一致，否则 npm ci 会报 out of sync）
+const lockPath = "package-lock.json";
+if (existsSync(lockPath)) {
+  let lock = JSON.parse(readFileSync(lockPath, "utf8"));
+  lock.name = pkg.name;
+  lock.version = next;
+  if (lock.packages && lock.packages[""]) {
+    lock.packages[""].name = pkg.name;
+    lock.packages[""].version = next;
+  }
+  writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
+}
+
+// 5) CHANGELOG.md（可选）
 const changelogPath = "CHANGELOG.md";
 if (existsSync(changelogPath)) {
   let ch = readFileSync(changelogPath, "utf8");

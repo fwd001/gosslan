@@ -1,7 +1,7 @@
 {
   "name": "gosslan",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Gosslan — 无服务器 P2P 局域网即时通讯（Tauri v2 + Vue 3 + TypeScript）",
   "scripts": {

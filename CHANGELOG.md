@@ -8,7 +8,7 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
-## [Unreleased]
+## [0.3.0] - 2026-09-04
 ### Added
 - 好友搜索流程：按需 `who_has` 群发探测（仅在打开「添加好友」时触发，启动不持续扫描）；昵称 / IP / 设备 ID 实时过滤；已是好友显示「已加好友」禁用态；500–1000 节点下列表截断渲染 + 搜索
 - 全平台系统通知：应用处于后台或非当前会话时触发原生通知（含昵称 + 摘要）；点击通知唤起并聚焦窗口，自动跳转到发送者会话并清零未读
