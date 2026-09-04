@@ -5,7 +5,7 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension, Result};
 
-use crate::state::{Conversation, Friend, Group, MessageRecord};
+use crate::state::{Conversation, Friend, Group, MessageRecord, TransferInfo};
 
 /// 建表脚本（与 `schema.sql` 保持一致）
 pub const SCHEMA: &str = r#"
@@ -168,7 +168,6 @@ pub fn get_friend_x25519(conn: &Connection, device_id: &str) -> Option<String> {
         params![device_id],
         |r| r.get::<_, Option<String>>(0),
     )
-    .optional()
     .ok()
     .flatten()
 }

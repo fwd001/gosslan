@@ -22,14 +22,14 @@ use crate::state::{
 };
 
 #[derive(Serialize)]
-struct NetworkStatus {
+pub struct NetworkStatus {
     online: bool,
     bound_ip: Option<String>,
 }
 
 /// 缓存目录占用与策略（存储管理页展示）。
 #[derive(Serialize)]
-struct CacheInfo {
+pub struct CacheInfo {
     file_count: usize,
     total_bytes: u64,
     retention_days: Option<u32>,
@@ -144,7 +144,7 @@ pub fn get_peers(state: State<'_, Arc<AppState>>) -> Vec<Peer> {
 /// 按需探测周围在线节点：群发一次 `who_has`，等待约 1.5s 收集单播回复后返回当前节点表。
 /// 仅在用户打开「添加好友」时调用，避免启动时持续全网扫描。
 #[tauri::command]
-pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Vec<Peer> {
+pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<Peer>, String> {
     let s = state.inner();
     // 触发一次探测（若网络已启动）
     let triggered = if let Some(tx) = s.probe.lock().unwrap().as_ref() {
@@ -160,7 +160,7 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Vec<Peer> {
     }
     let mut peers: Vec<Peer> = s.peers.lock().unwrap().values().cloned().collect();
     peers.sort_by(|a, b| a.device_id.cmp(&b.device_id));
-    peers
+    Ok(peers)
 }
 
 /// 从后台唤起并聚焦主窗口（点击系统通知后调用）。

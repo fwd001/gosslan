@@ -247,13 +247,17 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let kind_str = kind.as_str().to_string();
             let name = resolve_nickname(state, &from);
             let preview = preview_content(&kind_str, &content);
+            // 去重：已收到过则只回 Ack（锁作用域独立，避免非 Send 的 MutexGuard 跨 await）
+            let exists = {
+                let dbc = state.db.lock().unwrap();
+                db::message_exists(&dbc, &msg_id)
+            };
+            if exists {
+                let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
+                return;
+            }
             {
                 let dbc = state.db.lock().unwrap();
-                if db::message_exists(&dbc, &msg_id) {
-                    drop(dbc);
-                    let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
-                    return;
-                }
                 let rec = MessageRecord {
                     id: 0,
                     msg_id: msg_id.clone(),
@@ -291,13 +295,17 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 group_name
             };
             let preview = preview_content(&kind_str, &content);
+            // 去重：已收到过则只回 Ack（锁作用域独立，避免非 Send 的 MutexGuard 跨 await）
+            let exists = {
+                let dbc = state.db.lock().unwrap();
+                db::message_exists(&dbc, &msg_id)
+            };
+            if exists {
+                let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
+                return;
+            }
             {
                 let dbc = state.db.lock().unwrap();
-                if db::message_exists(&dbc, &msg_id) {
-                    drop(dbc);
-                    let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
-                    return;
-                }
                 let rec = MessageRecord {
                     id: 0,
                     msg_id: msg_id.clone(),
@@ -403,7 +411,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 });
             }
         }
-        Message::ShareTreeRequest { request_id, from, to } => {
+        Message::ShareTreeRequest { request_id, from: _, to } => {
             if to != state.device_id {
                 return;
             }

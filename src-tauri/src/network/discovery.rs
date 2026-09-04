@@ -36,7 +36,9 @@ fn bind_udp_reusable(ip: Ipv4Addr, port: u16) -> Result<UdpSocket, String> {
     use socket2::{Domain, Protocol, Socket, Type};
     use std::net::SocketAddr;
 
-    let addr: SocketAddr = format!("{ip}:{port}").parse().map_err(|e| e.to_string())?;
+    let addr: SocketAddr = format!("{ip}:{port}")
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|e| e.to_string())?;
     sock.set_reuse_address(true).map_err(|e| e.to_string())?;
     sock.set_broadcast(true).map_err(|e| e.to_string())?;
@@ -104,7 +106,7 @@ pub async fn spawn(
                             "announce" => {
                                 // 粗略 RTT：基于双方 NTP 同步时钟的时间差（局域网内近似）
                                 let delta = now_ms().saturating_sub(pkt.ts);
-                                let rtt = if delta > 0 && delta < 5000 { Some(delta) } else { None };
+                                let rtt = if delta > 0 && delta < 5000 { Some(delta as u64) } else { None };
                                 upsert_peer(
                                     &state,
                                     &pkt.device_id,

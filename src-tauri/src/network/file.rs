@@ -204,7 +204,7 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) {
         let rel_path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
         let is_dir = path.is_dir();
         let size = if is_dir { 0 } else { std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) };
-        out.push(ShareEntry { name, path: rel_path, is_dir, size });
+        out.push(ShareEntry { name, path: rel_path.clone(), is_dir, size });
         if is_dir {
             walk(&path, &rel_path, out, depth + 1);
         }
