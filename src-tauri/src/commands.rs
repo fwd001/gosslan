@@ -485,9 +485,10 @@ pub async fn send_message(
     };
     broadcast_gossip(s, env).await;
 
-    // 全网无任何已建链连接（对方不在线）：消息进入离线队列，对方上线自动补发
-    let no_links = s.links.lock().await.is_empty();
-    if no_links {
+    // 对方无直连链路：消息进离线队列，对方上线建链后自动补发。
+    // （Gossip 若经其他节点中继已送达，接收方按 msg_id 去重，不会重复入库）
+    let friend_linked = s.links.lock().await.contains_key(&friend_id);
+    if !friend_linked {
         let queued = Message::ChatMessage {
             msg_id: rec.msg_id.clone(),
             from: s.device_id.clone(),
