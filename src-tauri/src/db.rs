@@ -352,6 +352,25 @@ pub fn mark_read(conn: &Connection, conv_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// 会话内最后一条消息的 ts（无消息返回 0）。用于已读回执与接收时间戳钳制。
+pub fn last_message_ts(conn: &Connection, conv_id: &str) -> i64 {
+    conn.query_row(
+        "SELECT COALESCE(MAX(ts), 0) FROM messages WHERE conv_id = ?1",
+        params![conv_id],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
+/// 接收消息时间戳钳制（防设备间时钟偏差导致排序错乱）：
+/// - 上限：不晚于本地当前时间（对方时钟快 → 消息不能出现在「未来」）；
+/// - 下限：不早于会话内最后一条消息（对方时钟慢 → 消息不能插到历史之前，
+///   否则同一发送者的消息会因时钟偏差在列表中堆叠错位）。
+/// 同毫秒冲突由自增 id 稳定排序兜底（到达顺序）。
+pub fn clamp_incoming_ts(sender_ts: i64, now: i64, prev_ts: i64) -> i64 {
+    sender_ts.min(now).max(prev_ts)
+}
+
 /// 删除一个会话及其所有消息（本地清理；不影响对方聊天记录）。
 /// 事务包裹，确保消息与会话行同步删除；不存在则视为成功（幂等）。
 pub fn delete_conversation(conn: &Connection, conv_id: &str) -> Result<()> {
@@ -557,6 +576,36 @@ mod tests {
         let conn = mem();
         // 不存在也不报错（前端 UI 二次确认后用户可能在另一边删了/网络抖动）
         delete_conversation(&conn, "nonexistent").unwrap();
+    }
+
+    #[test]
+    fn clamp_incoming_ts_guards_clock_skew() {
+        let now = 1_000_000;
+        // 正常时间（略有偏差但在合理范围）→ 不动
+        assert_eq!(clamp_incoming_ts(now - 500, now, 0), now - 500);
+        // 对方时钟快 10 分钟（消息出现在「未来」）→ 钳到本地 now
+        assert_eq!(clamp_incoming_ts(now + 600_000, now, 0), now);
+        // 对方时钟慢 10 分钟（消息早于会话历史）→ 钳到最后一条消息时间
+        assert_eq!(clamp_incoming_ts(now - 600_000, now, now - 3_000), now - 3_000);
+        // 钳制后与 prev 同毫秒：保持相等（由自增 id 稳定排序兜底），不越过 now
+        assert_eq!(clamp_incoming_ts(now - 600_000, now, now), now);
+        // 空会话（prev=0）：仅做「未来」钳制
+        assert_eq!(clamp_incoming_ts(now - 1, now, 0), now - 1);
+    }
+
+    #[test]
+    fn last_message_ts_returns_max_or_zero() {
+        let conn = mem();
+        ensure_conversation(&conn, "c1", "single", "张三", None).unwrap();
+        assert_eq!(last_message_ts(&conn, "c1"), 0);
+        let mut m1 = rec("m1", "c1");
+        m1.ts = 100;
+        let mut m2 = rec("m2", "c1");
+        m2.ts = 300;
+        insert_message(&conn, &m1).unwrap();
+        insert_message(&conn, &m2).unwrap();
+        assert_eq!(last_message_ts(&conn, "c1"), 300);
+        assert_eq!(last_message_ts(&conn, "missing"), 0);
     }
 
     #[test]

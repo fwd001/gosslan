@@ -645,12 +645,7 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
         // 通知对方：我已读到该会话最新一条消息为止
         let last_ts: Option<i64> = {
             let dbc = s.db.lock().unwrap();
-            dbc.query_row(
-                "SELECT COALESCE(MAX(ts), 0) FROM messages WHERE conv_id = ?1",
-                rusqlite::params![conv_id],
-                |r| r.get(0),
-            )
-            .ok()
+            Some(db::last_message_ts(&dbc, &conv_id)).filter(|t| *t > 0)
         };
         if let Some(ts) = last_ts.filter(|t| *t > 0) {
             let msg = Message::ReadReceipt {

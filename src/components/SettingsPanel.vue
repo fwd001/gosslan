@@ -242,7 +242,7 @@ async function restoreDefaults() {
 
 <template>
   <BaseModal :open="open" title="设置" width="max-w-xl" @close="emit('close')">
-    <div class="max-h-[75vh] space-y-6 overflow-y-auto py-1 pr-3">
+    <div class="max-h-[75vh] space-y-6 overflow-y-auto py-1 pl-1 pr-4">
       <!-- 个人资料 -->
       <section>
         <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">个人资料</h3>

@@ -372,8 +372,12 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
                 return;
             }
-            {
+            // 持锁块只做落库，返回带钳制 ts 的记录；await 全部在锁外（MutexGuard 非 Send）
+            let out_rec = {
                 let dbc = state.db.lock().unwrap();
+                // 时钟偏差防护：发送方时钟与我方不一致会导致消息排序错乱
+                // （同一发送者的消息在列表中堆叠）→ 双向钳制到 [会话最后一条, 本地 now]
+                let ts = db::clamp_incoming_ts(ts, db::now_ms(), db::last_message_ts(&dbc, &from));
                 let rec = MessageRecord {
                     id: 0,
                     msg_id: msg_id.clone(),
@@ -387,19 +391,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 };
                 db::insert_message(&dbc, &rec).ok();
                 db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1).ok();
-            }
-            let rec = MessageRecord {
-                id: 0,
-                msg_id: msg_id.clone(),
-                conv_id: from.clone(),
-                sender_id: from.clone(),
-                receiver_id: state.device_id.clone(),
-                kind: kind_str,
-                content,
-                ts,
-                status: "delivered".to_string(),
+                rec
             };
-            let _ = state.app.emit("message-received", &rec);
+            let _ = state.app.emit("message-received", &out_rec);
             let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
         }
         Message::GroupMessage { msg_id, from, group_id, group_name, kind, content, ts } => {
@@ -420,8 +414,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
                 return;
             }
-            {
+            // 持锁块只做落库，返回带钳制 ts 的记录；await 全部在锁外（MutexGuard 非 Send）
+            let out_rec = {
                 let dbc = state.db.lock().unwrap();
+                // 时钟偏差防护（同 ChatMessage 分支）
+                let ts = db::clamp_incoming_ts(ts, db::now_ms(), db::last_message_ts(&dbc, &conv_id));
                 let rec = MessageRecord {
                     id: 0,
                     msg_id: msg_id.clone(),
@@ -435,19 +432,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 };
                 db::insert_message(&dbc, &rec).ok();
                 db::touch_conversation(&dbc, &conv_id, "group", &name, None, &preview, 1).ok();
-            }
-            let rec = MessageRecord {
-                id: 0,
-                msg_id: msg_id.clone(),
-                conv_id,
-                sender_id: from,
-                receiver_id: group_id,
-                kind: kind_str,
-                content,
-                ts,
-                status: "delivered".to_string(),
+                rec
             };
-            let _ = state.app.emit("message-received", &rec);
+            let _ = state.app.emit("message-received", &out_rec);
             let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
         }
         Message::Ack { msg_id } => {
@@ -680,25 +667,29 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
             GossipKind::Group => resolve_group_name(state, env.group_id.as_deref().unwrap_or("")),
         };
         let preview = preview_content(&kind, &content);
-        let rec = MessageRecord {
-            id: 0,
-            // 不加前缀：与 outbox 补发的直连 ChatMessage 共用同一 msg_id，
-            // 接收方 message_exists 可跨路径去重（防建链竞态下的重复消息）
-            msg_id: env.message_id.clone(),
-            conv_id: conv_id.clone(),
-            sender_id: env.sender_id.clone(),
-            receiver_id: state.device_id.clone(),
-            kind: kind.clone(),
-            content: content.clone(),
-            ts: env.ts,
-            status: "delivered".to_string(),
-        };
-        {
+        // 持锁块只做落库；await（fanout 转发已在前面）之后无持锁操作
+        let out_rec = {
             let dbc = state.db.lock().unwrap();
+            // 时钟偏差防护（同 ChatMessage 分支）
+            let ts = db::clamp_incoming_ts(env.ts, db::now_ms(), db::last_message_ts(&dbc, &conv_id));
+            let rec = MessageRecord {
+                id: 0,
+                // 不加前缀：与 outbox 补发的直连 ChatMessage 共用同一 msg_id，
+                // 接收方 message_exists 可跨路径去重（防建链竞态下的重复消息）
+                msg_id: env.message_id.clone(),
+                conv_id: conv_id.clone(),
+                sender_id: env.sender_id.clone(),
+                receiver_id: state.device_id.clone(),
+                kind: kind.clone(),
+                content: content.clone(),
+                ts,
+                status: "delivered".to_string(),
+            };
             db::insert_message(&dbc, &rec).ok();
             db::touch_conversation(&dbc, &conv_id, conv_kind, &name, None, &preview, 1).ok();
-        }
-        let _ = state.app.emit("message-received", &rec);
+            rec
+        };
+        let _ = state.app.emit("message-received", &out_rec);
     }
 }
 
