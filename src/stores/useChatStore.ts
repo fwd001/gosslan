@@ -1,7 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { api, bindEvents } from "@/api";
-import { applyIncomingToConversations, previewText } from "@/utils/messages";
+import { applyIncomingToConversations, mergeMessages, previewText } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
 import {
   isPermissionGranted,
@@ -9,7 +9,6 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
-import MessageWorker from "@/workers/message.worker?worker";
 import type {
   Conversation,
   FileDoneInfo,
@@ -90,28 +89,12 @@ export const useChatStore = defineStore("chat", () => {
     if (app.isMobile) app.mobileView = "chat";
   }
 
-  // ---------------- Web Worker 合并 ----------------
-  let worker: Worker | null = null;
-  function getWorker(): Worker {
-    if (!worker) worker = new MessageWorker();
-    return worker;
-  }
-  function mergeInWorker(
-    existing: MessageRecord[],
-    incoming: MessageRecord[],
-  ): Promise<MessageRecord[]> {
-    return new Promise((resolve) => {
-      const w = getWorker();
-      const handler = (e: MessageEvent) => {
-        if (e.data?.action === "merged") {
-          w.removeEventListener("message", handler);
-          resolve(e.data.payload as MessageRecord[]);
-        }
-      };
-      w.addEventListener("message", handler);
-      w.postMessage({ action: "merge", payload: { existing, incoming } });
-    });
-  }
+  // ---------------- 消息合并（同步） ----------------
+  // 说明：曾用 Web Worker 后台合并，但 Tauri 生产构建（WKWebView 自定义协议）下
+  // Worker 可能加载失败——mergeInWorker 的 Promise 永不 resolve，导致发送/接收的
+  // 消息全部卡在合并步骤不刷新（需重开会话走查库路径才能恢复）。
+  // 合并本身是 O(n) Set 去重 + 排序（单会话缓存 ≤300 条，微秒级），不值得为它
+  // 冒 Worker 失效风险，改为主线程同步合并；rAF 批量节流保留。
 
   // ---------------- 密集广播批量队列 ----------------
   let pending: MessageRecord[] = [];
@@ -140,7 +123,7 @@ export const useChatStore = defineStore("chat", () => {
     const missing = [...byConv.keys()].filter((id) => !knownIds.has(id));
     for (const [convId, incoming] of byConv) {
       const existing = messages.value[convId] ?? [];
-      messages.value[convId] = await mergeInWorker(existing, incoming);
+      messages.value[convId] = mergeMessages(existing, incoming);
     }
     if (missing.length > 0) {
       await refreshConversations();
@@ -242,7 +225,7 @@ export const useChatStore = defineStore("chat", () => {
     const older = await api.getMessages(convId, PAGE_SIZE, offset);
     if (seq !== loadSeq || older.length === 0) return;
     const existing = messages.value[convId] ?? [];
-    messages.value[convId] = await mergeInWorker(existing, older);
+    messages.value[convId] = mergeMessages(existing, older);
     pagesLoaded.set(convId, pages + 1);
     // prepend 历史后，「第一条未读」的索引整体后移
     if (unreadJump.value?.convId === convId) {

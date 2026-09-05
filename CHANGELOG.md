@@ -8,6 +8,11 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
+## [0.5.1] - 2026-09-05
+### Fixed
+- **Mac 上发送/接收消息不刷新（关键）**：消息合并走 Web Worker，在 Tauri 生产构建（WKWebView 自定义协议）下 Worker 可能加载失败——`mergeInWorker` 的 Promise 永不 resolve，发送与接收的消息全部卡在合并步骤不显示（须重开会话走查库路径才恢复）。修复：移除消息路径上的 Worker（合并为 O(n) Set 去重，微秒级），改主线程同步合并，保留 rAF 批量节流
+- **发送失败静默无反馈**（表现为「点发送没反应」）：`sendMsg` 增加错误捕获与 toast 提示，失败时保留草稿
+
 ## [0.5.0] - 2026-09-05
 ### Added
 - **聊天滚动与定位**：消息区仅纵向滚动（禁横向溢出）；滚动事件 rAF 节流 + passive 监听；`scrollToIndex` 支持跳到任意消息（任意方向无布局抖动）；打开有未读的会话自动定位到**第一条未读**（显示「以下是未读消息」分割线，向上加载历史时分割线索引随偏移）；离开底部显示「回到最新」悬浮按钮

@@ -113,8 +113,13 @@ async function sendMsg(content?: string, kind?: string) {
   const text = content ?? draft.value;
   const k = kind ?? (codeMode.value ? "code" : "text");
   if (k === "text" && !text.trim()) return;
-  await chat.send(convId, text, k);
-  if (!kind) draft.value = "";
+  try {
+    await chat.send(convId, text, k);
+    if (!kind) draft.value = "";
+  } catch (e) {
+    // 发送失败必须显式反馈（此前静默失败表现为「点了没反应」）
+    app.toast(`发送失败：${e}`, "error");
+  }
 }
 
 function onKeydown(e: KeyboardEvent) {
