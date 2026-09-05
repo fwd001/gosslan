@@ -2,11 +2,24 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { api } from "@/api";
 import { applyTheme } from "@/utils/color";
+import { DEFAULT_CHAT_STYLE, fontPx, parsePeerStyle, type ChatStyleConfig } from "@/utils/chatStyle";
 import type { DeviceInfo, InterfaceInfo } from "@/types";
 
 const THEME_KEY = "gosslan.themeColor";
 const FONT_KEY = "gosslan.fontFamily";
 const DARK_KEY = "gosslan.dark";
+const CHAT_STYLE_KEY = "gosslan.chatStyle";
+
+/** 从 localStorage 读取聊天样式（启动先本地，后端返回后覆盖）。 */
+function loadLocalChatStyle(): ChatStyleConfig {
+  try {
+    const raw = localStorage.getItem(CHAT_STYLE_KEY);
+    if (raw) return parsePeerStyle(raw);
+  } catch {
+    /* ignore */
+  }
+  return { ...DEFAULT_CHAT_STYLE };
+}
 
 export const useAppStore = defineStore("app", () => {
   const device = ref<DeviceInfo | null>(null);
@@ -20,6 +33,11 @@ export const useAppStore = defineStore("app", () => {
   const dark = ref<boolean>(localStorage.getItem(DARK_KEY) === "1");
   const themeColor = ref<string>(localStorage.getItem(THEME_KEY) || "#3370ff");
   const fontFamily = ref<string>(localStorage.getItem(FONT_KEY) || "");
+
+  /** 本机聊天显示样式（气泡配色 / 字号 / 紧凑模式），即点即存并广播同步。 */
+  const chatStyle = ref<ChatStyleConfig>(loadLocalChatStyle());
+  /** 对端样式表（device_id -> 样式 JSON）：按「发送者自己的偏好」渲染其消息气泡。 */
+  const peerStyles = ref<Record<string, string>>({});
 
   // 轻量 toast
   interface Toast {
@@ -49,6 +67,11 @@ export const useAppStore = defineStore("app", () => {
     document.documentElement.classList.toggle("dark", dark.value);
   }
 
+  /** 聊天字号落到全局 CSS 变量（消息气泡 / 输入框引用）。 */
+  function applyChatStyleNow() {
+    document.documentElement.style.setProperty("--gosslan-msg-size", `${fontPx(chatStyle.value.fontSize)}px`);
+  }
+
   /** 持久化全部偏好到后端 SQLite（重启后恢复，不依赖 WebView localStorage）。 */
   async function persistSettings() {
     try {
@@ -57,6 +80,8 @@ export const useAppStore = defineStore("app", () => {
         fontFamily: fontFamily.value,
         darkMode: dark.value,
         bindIp: boundIp.value ?? preferredIp.value,
+        chatStyle: JSON.stringify(chatStyle.value),
+        peerStyles: null, // 对端样式表由后端维护，前端只读
       });
     } catch {
       /* 忽略：离线或后端暂不可用时不影响本地使用 */
@@ -84,15 +109,40 @@ export const useAppStore = defineStore("app", () => {
     void persistSettings();
   }
 
+  /** 聊天样式即点即改：立即生效 → 本地 + 后端持久化 → 广播给已连接节点。 */
+  function setChatStyle(patch: Partial<ChatStyleConfig>) {
+    chatStyle.value = { ...chatStyle.value, ...patch };
+    localStorage.setItem(CHAT_STYLE_KEY, JSON.stringify(chatStyle.value));
+    applyChatStyleNow();
+    void persistSettings();
+    void api.broadcastChatStyle(JSON.stringify(chatStyle.value)).catch(() => {
+      /* 无连接节点时静默：下次变更或对端上线后不重复（样式以本地为准，对端旧值不影响） */
+    });
+  }
+
+  /** 对端广播样式到达：更新表（后端已持久化，前端仅刷新内存）。 */
+  function applyPeerStyle(deviceId: string, styleJson: string) {
+    peerStyles.value = { ...peerStyles.value, [deviceId]: styleJson };
+  }
+
   async function init() {
-    // 从后端恢复持久化偏好（外观 / 网卡），优先于 localStorage
+    // 从后端恢复持久化偏好（外观 / 网卡 / 聊天样式），优先于 localStorage
     const s = await api.getSettings();
     if (s.themeColor) themeColor.value = s.themeColor;
     if (s.fontFamily != null) fontFamily.value = s.fontFamily;
     if (s.darkMode != null) dark.value = s.darkMode;
     preferredIp.value = s.bindIp;
+    if (s.chatStyle) chatStyle.value = parsePeerStyle(s.chatStyle);
+    if (s.peerStyles) {
+      try {
+        peerStyles.value = JSON.parse(s.peerStyles) as Record<string, string>;
+      } catch {
+        peerStyles.value = {};
+      }
+    }
     applyThemeNow();
     applyDarkNow();
+    applyChatStyleNow();
     const mq = window.matchMedia("(max-width: 767px)");
     isMobile.value = mq.matches;
     mq.addEventListener("change", (e) => (isMobile.value = e.matches));
@@ -112,11 +162,15 @@ export const useAppStore = defineStore("app", () => {
     fontFamily.value = "";
     dark.value = false;
     preferredIp.value = null;
+    chatStyle.value = { ...DEFAULT_CHAT_STYLE };
+    peerStyles.value = {};
     localStorage.removeItem(THEME_KEY);
     localStorage.removeItem(FONT_KEY);
     localStorage.removeItem(DARK_KEY);
+    localStorage.removeItem(CHAT_STYLE_KEY);
     applyThemeNow();
     applyDarkNow();
+    applyChatStyleNow();
     void persistSettings();
   }
 
@@ -158,6 +212,8 @@ export const useAppStore = defineStore("app", () => {
     dark,
     themeColor,
     fontFamily,
+    chatStyle,
+    peerStyles,
     isMobile,
     mobileView,
     init,
@@ -169,6 +225,8 @@ export const useAppStore = defineStore("app", () => {
     refreshInterfaces,
     setThemeColor,
     setFontFamily,
+    setChatStyle,
+    applyPeerStyle,
     resetDefaults,
     toasts,
     toast,

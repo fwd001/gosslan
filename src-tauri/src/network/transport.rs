@@ -239,6 +239,31 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             upsert_peer(state, &device_id, &nickname, avatar.clone(), &ip, 0, None, None, None).await;
             maybe_update_friend(state, &device_id, &nickname, avatar);
         }
+        Message::ChatStyle { from, to, style } => {
+            if from == state.device_id {
+                return;
+            }
+            if let Some(t) = &to {
+                if t != &state.device_id {
+                    return; // 定向给别人，忽略
+                }
+            }
+            // 持久化对端样式表（device_id -> style JSON），前端按发送者渲染其消息气泡
+            {
+                let dbc = state.db.lock().unwrap();
+                let mut map: serde_json::Map<String, serde_json::Value> = db::get_setting(&dbc, "chat_peer_styles")
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default();
+                map.insert(from.clone(), serde_json::Value::String(style.clone()));
+                if let Ok(json) = serde_json::to_string(&map) {
+                    db::set_setting(&dbc, "chat_peer_styles", &json).ok();
+                }
+            }
+            let _ = state.app.emit(
+                "peer-style-updated",
+                &serde_json::json!({ "device_id": from, "style": style }),
+            );
+        }
         Message::FriendRequest { from, from_nickname, from_avatar, to, ts } => {
             if to != state.device_id {
                 return;

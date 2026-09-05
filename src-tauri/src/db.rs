@@ -471,6 +471,31 @@ mod tests {
     }
 
     #[test]
+    fn friend_remove_then_readd_flow() {
+        // 删除好友后可重新添加（扫描 → 加好友流程）且历史会话/消息不受影响
+        let conn = mem();
+        add_friend(&conn, "f1", "张三", None).unwrap();
+        update_friend_pubkeys(&conn, "f1", Some("xk"), Some("ek")).unwrap();
+        ensure_conversation(&conn, "f1", "single", "张三", None).unwrap();
+        insert_message(&conn, &rec("m1", "f1")).unwrap();
+
+        remove_friend(&conn, "f1").unwrap();
+        assert!(list_friends(&conn).unwrap().is_empty());
+        assert!(get_friend(&conn, "f1").is_none());
+        // 公钥随好友行一并移除（重新添加后重新学习）
+        assert!(get_friend_x25519(&conn, "f1").is_none());
+        // 聊天记录与会话行保留
+        assert!(message_exists(&conn, "m1"));
+        assert_eq!(list_conversations(&conn).unwrap().len(), 1);
+
+        // 重新添加（扫描列表再次出现 → 加好友）
+        add_friend(&conn, "f1", "张三回来了", None).unwrap();
+        let friends = list_friends(&conn).unwrap();
+        assert_eq!(friends.len(), 1);
+        assert_eq!(friends[0].nickname, "张三回来了");
+    }
+
+    #[test]
     fn message_dedup_by_unique_msg_id() {
         let conn = mem();
         insert_message(&conn, &rec("m1", "c1")).unwrap();

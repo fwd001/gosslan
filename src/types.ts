@@ -125,12 +125,16 @@ export interface ChannelStatus {
   peers: number;
 }
 
-/** 应用偏好设置（外观 / 网卡选择，持久化到本地 SQLite） */
+/** 应用偏好设置（外观 / 网卡选择 / 聊天样式，持久化到本地 SQLite） */
 export interface AppSettings {
   themeColor: string | null;
   fontFamily: string | null;
   darkMode: boolean | null;
   bindIp: string | null;
+  /** 聊天显示样式 JSON：{"preset":"classic","fontSize":"md","compact":true} */
+  chatStyle: string | null;
+  /** 对端样式表 JSON（device_id -> style JSON，后端收 ChatStyle 消息时写入） */
+  peerStyles: string | null;
 }
 
 /** 缓存目录占用与策略 */

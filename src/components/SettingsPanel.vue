@@ -17,6 +17,7 @@ import {
   Trash2,
 } from "lucide-vue-next";
 import type { CacheInfo, ChannelStatus } from "@/types";
+import { CHAT_FONT_SIZES, CHAT_PRESETS } from "@/utils/chatStyle";
 import { version } from "../../package.json";
 
 const props = defineProps<{ open: boolean }>();
@@ -321,6 +322,72 @@ async function restoreDefaults() {
             >
               <option v-for="f in fonts" :key="f.value" :value="f.value">{{ f.label }}</option>
             </select>
+          </div>
+        </div>
+      </section>
+
+      <!-- 聊天显示（即点即存 + 广播同步） -->
+      <section>
+        <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">聊天显示</h3>
+        <div class="space-y-3">
+          <!-- 字体大小 -->
+          <div>
+            <div class="mb-1.5 text-sm">字体大小</div>
+            <div class="flex gap-1 rounded-lg border border-[var(--gosslan-border)] p-0.5">
+              <button
+                v-for="f in CHAT_FONT_SIZES"
+                :key="f.key"
+                class="flex-1 rounded-md py-1.5 text-sm transition"
+                :class="app.chatStyle.fontSize === f.key ? 'bg-primary text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+                @click="app.setChatStyle({ fontSize: f.key })"
+              >
+                {{ f.label }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 气泡配色（6 套可读性预设，双气泡预览） -->
+          <div>
+            <div class="mb-1.5 text-sm">气泡配色</div>
+            <div class="grid grid-cols-3 gap-2">
+              <button
+                v-for="p in CHAT_PRESETS"
+                :key="p.key"
+                class="rounded-lg border p-2 transition hover:bg-[var(--gosslan-hover)]"
+                :class="app.chatStyle.preset === p.key ? 'border-primary ring-1 ring-primary' : 'border-[var(--gosslan-border)]'"
+                :title="p.label"
+                @click="app.setChatStyle({ preset: p.key })"
+              >
+                <div class="mb-1 text-center text-[11px] text-[var(--gosslan-text-2)]">{{ p.label }}</div>
+                <div class="flex items-center gap-1">
+                  <span class="h-4 flex-1 rounded" :style="{ background: p[app.dark ? 'dark' : 'light'].mineBubble }"></span>
+                  <span class="h-4 flex-1 rounded border border-[var(--gosslan-border)]" :style="{ background: p[app.dark ? 'dark' : 'light'].otherBubble }"></span>
+                </div>
+              </button>
+            </div>
+            <p class="mt-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
+              我的消息用所选配色；对方也会按我的配色看到我发的消息（自动同步到已连接设备）。
+            </p>
+          </div>
+
+          <!-- 紧凑模式 -->
+          <div class="flex items-center justify-between rounded-lg border border-[var(--gosslan-border)] px-3 py-2">
+            <div class="min-w-0">
+              <div class="text-sm">消息合并显示</div>
+              <div class="text-[11px] text-[var(--gosslan-text-2)]">连续消息省略头像与昵称（群聊推荐）</div>
+            </div>
+            <button
+              class="relative h-5 w-9 shrink-0 rounded-full transition"
+              :class="app.chatStyle.compact ? 'bg-primary' : 'bg-[var(--gosslan-border)]'"
+              role="switch"
+              :aria-checked="app.chatStyle.compact"
+              @click="app.setChatStyle({ compact: !app.chatStyle.compact })"
+            >
+              <span
+                class="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all"
+                :class="app.chatStyle.compact ? 'left-[18px]' : 'left-0.5'"
+              ></span>
+            </button>
           </div>
         </div>
       </section>

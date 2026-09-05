@@ -57,6 +57,8 @@ const SHARE_FILE: &str = "hello.txt";
 /// 与 scripts/e2e-dev.sh 写入共享目录的文件内容保持一致（下载方向内容比对基准）
 const SHARE_FILE_CONTENT: &str = "gosslan-dev-share-v1\n";
 const DL_TRANSFER_ID: &str = "e2e-dl-001";
+/// 广播的聊天样式（对端应持久化到 chat_peer_styles）
+const STYLE_JSON: &str = r#"{"preset":"mint","fontSize":"md","compact":true}"#;
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -578,6 +580,30 @@ async fn main() {
                     if match_ok { format!("{SHARE_FILE} 内容逐字节一致（{}B）", bytes.len()) } else { format!("内容不一致（{}B）", bytes.len()) });
             }
             Err(e) => report.add("下载方向文件传输（app→peer 发送路径全链路）", false, e),
+        }
+
+        // j. 聊天样式同步（ChatStyle 广播 → 对端持久化）
+        let _ = send_frame(&mut w, &Message::ChatStyle {
+            from: PEER_ID.into(),
+            to: None,
+            style: STYLE_JSON.into(),
+        }).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        if let Some(db) = &db_path {
+            let stored: Option<String> = open_db(db)
+                .ok()
+                .and_then(|conn| {
+                    conn.query_row(
+                        "SELECT value FROM settings WHERE key = 'chat_peer_styles'",
+                        [],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .ok()
+                });
+            let ok = stored.as_deref().map(|s| s.contains(PEER_ID) && s.contains("mint")).unwrap_or(false);
+            report.add("聊天样式同步（ChatStyle 广播 → 对端持久化）", ok, format!("{stored:?}"));
+        } else {
+            report.add_skip("聊天样式同步（ChatStyle 广播 → 对端持久化）", "未传 DB 路径，跳过落库校验".into());
         }
     }
 

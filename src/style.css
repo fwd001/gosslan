@@ -8,6 +8,8 @@
   --gosslan-primary-active: #2b5fd9;
   --gosslan-primary-light: rgba(51, 112, 255, 0.12);
   --gosslan-font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 聊天消息字号（设置页可改，由 app store 动态覆盖） */
+  --gosslan-msg-size: 14px;
 
   /* 亮色 */
   --gosslan-bg: #f3f4f6;

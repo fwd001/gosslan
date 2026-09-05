@@ -308,9 +308,14 @@ pub struct Settings {
     pub font_family: Option<String>,
     pub dark_mode: Option<bool>,
     pub bind_ip: Option<String>,
+    /// 聊天显示样式 JSON：{"preset":"classic","fontSize":"md","compact":true}
+    pub chat_style: Option<String>,
+    /// 对端样式表 JSON（device_id -> style JSON）。仅由后端在收到 ChatStyle 消息时写入，
+    /// 前端只读；save_settings 忽略该字段。
+    pub peer_styles: Option<String>,
 }
 
-const SETTINGS_KEYS: [&str; 4] = ["theme_color", "font_family", "dark_mode", "bind_ip"];
+const SETTINGS_KEYS: [&str; 5] = ["theme_color", "font_family", "dark_mode", "bind_ip", "chat_style"];
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
@@ -320,6 +325,8 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
         font_family: db::get_setting(&dbc, "font_family"),
         dark_mode: db::get_setting(&dbc, "dark_mode").map(|v| v == "1"),
         bind_ip: db::get_setting(&dbc, "bind_ip"),
+        chat_style: db::get_setting(&dbc, "chat_style"),
+        peer_styles: db::get_setting(&dbc, "chat_peer_styles"),
     }
 }
 
@@ -338,19 +345,38 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     if let Some(v) = settings.bind_ip {
         db::set_setting(&dbc, "bind_ip", &v).ok();
     }
+    if let Some(v) = settings.chat_style {
+        db::set_setting(&dbc, "chat_style", &v).ok();
+    }
     Ok(())
 }
 
-/// 恢复默认设置：清除外观 / 网卡 / 缓存策略等偏好键，上层回落到默认值。
+/// 恢复默认设置：清除外观 / 网卡 / 缓存策略 / 聊天样式等偏好键，上层回落到默认值。
 /// 不触碰用户数据（好友、聊天记录、昵称、头像、共享目录）。
 #[tauri::command]
 pub fn reset_settings(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let dbc = state.inner().db.lock().unwrap();
     for key in SETTINGS_KEYS
         .iter()
-        .chain([&RETENTION_KEY, &MAX_BYTES_KEY, &"bt_enabled"])
+        .chain([&RETENTION_KEY, &MAX_BYTES_KEY, &"bt_enabled", &"chat_peer_styles"])
     {
         db::delete_setting(&dbc, key).ok();
+    }
+    Ok(())
+}
+
+/// 广播本机聊天样式到所有已连接节点（样式变更即调用，对方设备与好友同步收到）。
+#[tauri::command]
+pub async fn broadcast_chat_style(state: State<'_, Arc<AppState>>, style: String) -> Result<(), String> {
+    let s = state.inner();
+    let msg = Message::ChatStyle {
+        from: s.device_id.clone(),
+        to: None,
+        style,
+    };
+    let links = s.links.lock().await;
+    for tx in links.values() {
+        let _ = tx.send(msg.clone()).await;
     }
     Ok(())
 }
@@ -367,6 +393,18 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
         f.online = peers.contains_key(&f.device_id);
     }
     friends
+}
+
+/// 删除好友（保留聊天记录；对方仍会出现在扫描列表，可重新添加）。
+#[tauri::command]
+pub fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> Result<(), String> {
+    let s = state.inner();
+    {
+        let dbc = s.db.lock().unwrap();
+        db::remove_friend(&dbc, &peer_id).map_err(|e| e.to_string())?;
+    }
+    let _ = s.app.emit("friend-removed", &peer_id);
+    Ok(())
 }
 
 #[tauri::command]

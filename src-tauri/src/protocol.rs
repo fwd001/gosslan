@@ -124,6 +124,14 @@ pub enum Message {
         nickname: String,
         avatar: Option<String>,
     },
+    /// 聊天样式同步：发送方广播自己的气泡/字体偏好，接收方持久化并按其偏好渲染该发送者的消息
+    ChatStyle {
+        from: String,
+        /// 目标节点（None = 广播给所有已连接节点）
+        to: Option<String>,
+        /// 样式 JSON，如 {"preset":"classic","fontSize":"md","compact":true}
+        style: String,
+    },
     /// 加好友申请
     FriendRequest {
         from: String,

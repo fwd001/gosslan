@@ -188,8 +188,12 @@ export const useChatStore = defineStore("chat", () => {
     topology.value = await api.getTopology();
   }
 
+  /** 打开会话时的未读定位：记录第一条未读消息索引（-1 = 无未读，贴底显示）。 */
+  const unreadJump = ref<{ convId: string; index: number } | null>(null);
+
   async function openConversation(id: string) {
     activeConv.value = id;
+    unreadJump.value = null;
     // 会话行不存在（如新加好友还没发过消息）→ 后端补建，保证左侧列表有对应可高亮的项
     if (!conversations.value.some((c) => c.id === id) && !id.startsWith("group:")) {
       try {
@@ -199,7 +203,16 @@ export const useChatStore = defineStore("chat", () => {
         /* 忽略：不影响打开聊天 */
       }
     }
+    // 打开前先记录未读数（markRead 会清零），用于「跳到第一条未读」定位
+    const unreadBefore = conversations.value.find((c) => c.id === id)?.unread ?? 0;
     await loadMessages(id);
+    if (unreadBefore > 0) {
+      const list = messages.value[id] ?? [];
+      const idx = list.length - Math.min(unreadBefore, list.length);
+      if (idx >= 0 && idx < list.length) {
+        unreadJump.value = { convId: id, index: idx };
+      }
+    }
     await api.markRead(id);
     const conv = conversations.value.find((c) => c.id === id);
     if (conv) conv.unread = 0;
@@ -231,6 +244,10 @@ export const useChatStore = defineStore("chat", () => {
     const existing = messages.value[convId] ?? [];
     messages.value[convId] = await mergeInWorker(existing, older);
     pagesLoaded.set(convId, pages + 1);
+    // prepend 历史后，「第一条未读」的索引整体后移
+    if (unreadJump.value?.convId === convId) {
+      unreadJump.value = { ...unreadJump.value, index: unreadJump.value.index + older.length };
+    }
   }
 
   /** 统一发送（单聊/群聊）。 */
@@ -317,6 +334,9 @@ export const useChatStore = defineStore("chat", () => {
         await refreshConversations();
       },
       onFriendRejected: () => {},
+      onFriendRemoved: async () => {
+        await refreshFriends();
+      },
       onMessage: (rec) => {
         enqueueMessage(rec);
         maybeNotify(rec);
@@ -330,6 +350,9 @@ export const useChatStore = defineStore("chat", () => {
       onFileDone: (d) => {
         onFileDone(d);
         void refreshTransfers();
+      },
+      onPeerStyle: (p) => {
+        app.applyPeerStyle(p.device_id, p.style);
       },
     });
     // 注册系统通知点击回调：点击通知 → 唤起窗口 + 定位到发送者会话
@@ -357,6 +380,8 @@ export const useChatStore = defineStore("chat", () => {
     topology,
     activeConversation,
     totalUnread,
+    unreadJump,
+    nicknameOf,
     init,
     refreshPeers,
     searchNearbyPeers,

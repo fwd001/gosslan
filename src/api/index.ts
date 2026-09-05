@@ -37,6 +37,7 @@ export const api = {
   searchNearbyPeers: () => invoke<Peer[]>("search_nearby_peers"),
   focusWindow: () => invoke<void>("focus_window"),
   getFriends: () => invoke<Friend[]>("get_friends"),
+  removeFriend: (peerId: string) => invoke<void>("remove_friend", { peerId }),
   getPendingRequests: () => invoke<PendingRequest[]>("get_pending_requests"),
   sendFriendRequest: (peerId: string) => invoke<void>("send_friend_request", { peerId }),
   respondFriendRequest: (peerId: string, accept: boolean) =>
@@ -81,19 +82,27 @@ export const api = {
   getSettings: () => invoke<AppSettings>("get_settings"),
   saveSettings: (s: AppSettings) => invoke<void>("save_settings", { settings: s }),
   resetSettings: () => invoke<void>("reset_settings"),
+  broadcastChatStyle: (style: string) => invoke<void>("broadcast_chat_style", { style }),
 };
 
 // ---------------- 事件监听 ----------------
+
+export interface PeerStyleUpdate {
+  device_id: string;
+  style: string;
+}
 
 export type EventHandlers = {
   onPeers: (peers: Peer[]) => void;
   onFriendRequest: (req: PendingRequest) => void;
   onFriendAccepted: (id: string) => void;
   onFriendRejected: (id: string) => void;
+  onFriendRemoved: (id: string) => void;
   onMessage: (rec: MessageRecord) => void;
   onMessageAcked: (msgId: string) => void;
   onFileProgress: (p: FileProgress) => void;
   onFileDone: (d: FileDoneInfo) => void;
+  onPeerStyle: (p: PeerStyleUpdate) => void;
 };
 
 /** 注册所有后端事件监听，返回取消函数集合。 */
@@ -103,10 +112,12 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<PendingRequest>("friend-request", (e) => h.onFriendRequest(e.payload)),
     listen<string>("friend-accepted", (e) => h.onFriendAccepted(e.payload)),
     listen<string>("friend-rejected", (e) => h.onFriendRejected(e.payload)),
+    listen<string>("friend-removed", (e) => h.onFriendRemoved(e.payload)),
     listen<MessageRecord>("message-received", (e) => h.onMessage(e.payload)),
     listen<string>("message-acked", (e) => h.onMessageAcked(e.payload)),
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
+    listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
   ]);
   return unlisteners;
 }

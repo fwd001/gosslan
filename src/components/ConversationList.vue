@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import dayjs from "dayjs";
+import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { Check, Search, UserPlus, UsersRound, X } from "lucide-vue-next";
+import { Check, Search, UserMinus, UserPlus, UsersRound, X } from "lucide-vue-next";
 import type { Conversation, Friend, PendingRequest } from "@/types";
 
 defineProps<{ view: "chats" | "contacts" }>();
@@ -65,6 +66,44 @@ async function reject(r: PendingRequest) {
     app.toast(`操作失败：${e}`, "error");
   }
 }
+
+// ---------------- 右键菜单：删除好友 ----------------
+const friendMenu = ref<{ x: number; y: number; friend: Friend } | null>(null);
+
+function onFriendContext(e: MouseEvent, f: Friend) {
+  e.preventDefault();
+  e.stopPropagation();
+  const mw = 150;
+  const mh = 90;
+  const x = Math.min(e.clientX, window.innerWidth - mw - 8);
+  const y = Math.min(e.clientY, window.innerHeight - mh - 8);
+  friendMenu.value = { x: Math.max(8, x), y: Math.max(8, y), friend: f };
+}
+
+function closeFriendMenu() {
+  friendMenu.value = null;
+}
+
+/** 删除好友：保留聊天记录；对方仍出现在扫描列表，可重新添加。 */
+async function confirmDeleteFriend() {
+  const f = friendMenu.value?.friend;
+  closeFriendMenu();
+  if (!f) return;
+  try {
+    await api.removeFriend(f.device_id);
+    await chat.refreshFriends();
+    app.toast(`已删除好友 ${f.nickname}（可在添加好友中重新添加）`, "info");
+  } catch (e) {
+    app.toast(`删除失败：${e}`, "error");
+  }
+}
+
+onMounted(() => {
+  document.addEventListener("click", closeFriendMenu);
+});
+onUnmounted(() => {
+  document.removeEventListener("click", closeFriendMenu);
+});
 </script>
 
 <template>
@@ -194,6 +233,7 @@ async function reject(r: PendingRequest) {
           class="relative flex cursor-pointer items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
           :class="chat.activeConv === f.device_id ? 'bg-primary-light' : ''"
           @click="openFriend(f)"
+          @contextmenu="onFriendContext($event, f)"
         >
           <!-- 选中态指示条：与右侧聊天窗联动 -->
           <span
@@ -225,5 +265,26 @@ async function reject(r: PendingRequest) {
         </div>
       </template>
     </div>
+
+    <!-- 右键菜单：删除好友 -->
+    <Teleport to="body">
+      <div
+        v-if="friendMenu"
+        class="fixed z-50 min-w-[150px] rounded-lg border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-1 shadow-xl"
+        :style="{ left: friendMenu.x + 'px', top: friendMenu.y + 'px' }"
+        @click.stop
+      >
+        <button
+          class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-red-600 transition hover:bg-[var(--gosslan-hover)]"
+          @click="confirmDeleteFriend"
+        >
+          <UserMinus class="h-4 w-4" />
+          删除好友
+        </button>
+        <div class="px-3 pb-1.5 pt-1 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
+          保留聊天记录，可通过「添加好友」重新添加
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>

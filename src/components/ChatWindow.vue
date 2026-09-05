@@ -6,6 +6,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import MessageItem from "@/components/MessageItem.vue";
 import VirtualList from "@/components/VirtualList.vue";
 import {
+  ArrowDown,
   ArrowLeft,
   Code2,
   FilePlus,
@@ -32,6 +33,25 @@ const online = computed(() => {
   return chat.friends.some((f) => f.device_id === conv.value!.id && f.online);
 });
 
+/** 当前会话的第一条未读索引（后端 markRead 前已记录，随历史 prepend 偏移）。 */
+const unreadIndex = computed(() => {
+  const uj = chat.unreadJump;
+  if (!uj || uj.convId !== chat.activeConv) return -1;
+  return uj.index;
+});
+
+// 滚动贴底状态（离开底部时显示「回到最新」按钮）
+const nearBottom = ref(true);
+function onNearBottom(v: boolean) {
+  nearBottom.value = v;
+}
+
+function jumpToLatest() {
+  listRef.value?.scrollToBottom();
+}
+
+const LONG_TEXT_CHARS = 280;
+
 function estimateHeight(m: MessageRecord): number {
   switch (m.kind) {
     case "code":
@@ -43,17 +63,40 @@ function estimateHeight(m: MessageRecord): number {
     case "system":
       return 28;
     default: {
-      const lines = Math.max(1, Math.ceil(m.content.length / 40));
-      return 24 + lines * 22 + 22;
+      // 长文本默认折叠为 5 行 + 底部操作条
+      const lines = m.content.length > LONG_TEXT_CHARS ? 5 : Math.max(1, Math.ceil(m.content.length / 40));
+      return 24 + lines * 22 + (m.content.length > LONG_TEXT_CHARS ? 34 : 0) + 22;
     }
   }
 }
 
+// 打开会话/未读定位：优先跳到第一条未读（该消息贴视口顶部，分割线置上），
+// 无未读则贴底。方向（上跳/下跳）由虚拟列表绝对定位直接定位，无布局抖动。
+watch(
+  () => chat.unreadJump,
+  async (uj) => {
+    if (!uj || uj.convId !== chat.activeConv) return;
+    await nextTick();
+    await nextTick();
+    listRef.value?.scrollToIndex(uj.index, "top");
+  },
+  { immediate: true },
+);
+
 watch(
   () => messages.value.length,
   async (_, oldLen) => {
-    // 只有「追加新消息」时贴底；向上加载历史时保持当前滚动位置
-    if (oldLen === undefined || messages.value.length > oldLen) {
+    if (oldLen === undefined) return;
+    if (oldLen === 0) {
+      // 初始加载：无未读定位才贴底（有未读时由 unreadJump watcher 跳到第一条未读）
+      if (!(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)) {
+        await nextTick();
+        listRef.value?.scrollToBottom();
+      }
+      return;
+    }
+    // 追加新消息：仅在本来贴近底部时贴底；向上加载历史由 VirtualList 锚定保持位置
+    if (messages.value.length > oldLen && nearBottom.value) {
       const last = messages.value[messages.value.length - 1];
       const prev = messages.value[messages.value.length - 2];
       if (!prev || last.ts >= prev.ts) {
@@ -152,8 +195,8 @@ function fileToDataUrl(f: File): Promise<string> {
       </button>
     </div>
 
-    <!-- 消息区（虚拟滚动） -->
-    <div class="min-h-0 flex-1 bg-[var(--gosslan-bg)]">
+    <!-- 消息区（虚拟滚动，仅纵向） -->
+    <div class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-bg)]">
       <div v-if="messages.length === 0" class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]">
         暂无消息，打个招呼吧
       </div>
@@ -163,11 +206,28 @@ function fileToDataUrl(f: File): Promise<string> {
         :items="messages"
         :estimate-height="estimateHeight"
         @load-more="onLoadMore"
+        @near-bottom="onNearBottom"
       >
-        <template #default="{ item }">
-          <MessageItem :message="item" />
+        <template #default="{ item, index }">
+          <MessageItem
+            :message="item"
+            :prev="index > 0 ? messages[index - 1] : null"
+            :is-group="isGroup"
+            :sender-name="isGroup ? chat.nicknameOf(item.sender_id) : ''"
+            :show-unread-divider="index === unreadIndex"
+          />
         </template>
       </VirtualList>
+
+      <!-- 回到最新（离开底部时出现） -->
+      <button
+        v-if="!nearBottom"
+        class="absolute bottom-4 right-5 z-10 flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
+        @click="jumpToLatest"
+      >
+        <ArrowDown class="h-3.5 w-3.5" />
+        回到最新
+      </button>
     </div>
 
     <!-- 输入区 -->
