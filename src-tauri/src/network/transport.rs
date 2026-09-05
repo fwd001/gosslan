@@ -396,8 +396,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
                 return;
             }
-            // 持锁块只做落库，返回带钳制 ts 的记录；await 全部在锁外（MutexGuard 非 Send）
-            let out_rec = {
+            // 持锁块只做落库，返回带钳制 ts 的记录 + SQLite 三态裁决；await 全部在锁外
+            // （MutexGuard 非 Send）。与 ChatMessage / Gossip 三分支同一裁决：
+            // 只有本次真的插入新行才计未读、才投递事件。
+            let (out_rec, inserted) = {
                 let dbc = state.db.lock().unwrap();
                 // 时钟偏差防护（同 ChatMessage 分支）
                 let ts = db::clamp_incoming_ts(ts, db::now_ms(), db::last_message_ts(&dbc, &conv_id));
@@ -412,11 +414,19 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     ts,
                     status: "delivered".to_string(),
                 };
-                db::insert_message(&dbc, &rec).ok();
-                db::touch_conversation(&dbc, &conv_id, "group", &name, None, &preview, 1).ok();
-                rec
+                let inserted = db::insert_message_if_new(&dbc, &rec);
+                if announced_on(&inserted) {
+                    db::touch_conversation(&dbc, &conv_id, "group", &name, None, &preview, 1).ok();
+                }
+                (rec, inserted)
             };
-            let _ = state.app.emit("message-received", &out_rec);
+            // 数据库真故障 ⇒ 消息未持久化 ⇒ 不投递也不 Ack（Ack 会让发送方删掉 outbox 行）
+            if !may_ack(&inserted) {
+                return;
+            }
+            if announced_on(&inserted) {
+                let _ = state.app.emit("message-received", &out_rec);
+            }
             let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
         }
         Message::Ack { msg_id } => {
