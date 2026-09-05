@@ -42,6 +42,12 @@ function initials(name: string) {
   return name.slice(0, 1).toUpperCase();
 }
 
+/** 对端在线状态：群聊返回 null（无在线概念）；单聊查好友表。 */
+function isOnline(id: string): boolean | null {
+  if (id.startsWith("group:")) return null;
+  return chat.friends.find((f) => f.device_id === id)?.online ?? false;
+}
+
 function open(conv: Conversation) {
   chat.openConversation(conv.id);
   if (app.isMobile) app.mobileView = "chat";
@@ -144,7 +150,7 @@ onUnmounted(() => {
         <div
           v-for="c in filteredConversations"
           :key="c.id"
-          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id]"
+          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id)]"
           class="relative flex cursor-pointer items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
           :class="chat.activeConv === c.id ? 'bg-primary-light' : ''"
           @click="open(c)"
@@ -157,10 +163,17 @@ onUnmounted(() => {
           <div class="relative">
             <div
               class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-primary text-white"
+              :class="isOnline(c.id) === false ? 'grayscale opacity-70' : ''"
             >
               <img v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
               <span v-else class="text-sm font-semibold">{{ initials(c.name) }}</span>
             </div>
+            <!-- 在线标识：绿点=在线可连接，灰点=离线（群聊不显示） -->
+            <span
+              v-if="isOnline(c.id) !== null"
+              class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
+              :class="isOnline(c.id) ? 'bg-emerald-500' : 'bg-neutral-400'"
+            ></span>
             <span
               v-if="c.unread > 0"
               class="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-red-500"
@@ -243,6 +256,7 @@ onUnmounted(() => {
           <div class="relative">
             <div
               class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-primary text-white"
+              :class="!f.online ? 'grayscale opacity-70' : ''"
             >
               <img v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
               <span v-else class="text-sm font-semibold">{{ initials(f.nickname) }}</span>

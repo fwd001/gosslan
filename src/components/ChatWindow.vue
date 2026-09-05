@@ -208,6 +208,20 @@ function fileToDataUrl(f: File): Promise<string> {
         >
           <ArrowLeft class="h-5 w-5" />
         </button>
+        <!-- 对方头像 + 在线角标（绿点=在线可连接；离线头像置灰 + 灰点） -->
+        <div v-if="!isGroup" class="relative shrink-0">
+          <div
+            class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-primary text-white"
+            :class="!online ? 'grayscale opacity-70' : ''"
+          >
+            <img v-if="conv?.avatar" :src="conv.avatar" class="h-full w-full object-cover" />
+            <span v-else class="text-sm font-semibold">{{ (conv?.name || "?").slice(0, 1).toUpperCase() }}</span>
+          </div>
+          <span
+            class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
+            :class="online ? 'bg-emerald-500' : 'bg-neutral-400'"
+          ></span>
+        </div>
         <span class="truncate text-base font-semibold">{{ conv?.name || "会话" }}</span>
         <span v-if="!isGroup" class="flex items-center gap-1 text-xs" :class="online ? 'text-emerald-600' : 'text-[var(--gosslan-text-2)]'">
           <span class="h-1.5 w-1.5 rounded-full" :class="online ? 'bg-emerald-500' : 'bg-neutral-400'"></span>
