@@ -14,9 +14,12 @@
 - 仓库 public：fwd001/gosslan，SSH 已认证；本机 macOS arm64，SDK/NDK27.1 齐全
 - CI 三端全绿基线：v0.5.1 起；v0.8.0 起 Release 均带 apk/dmg/exe 三件套
 - 匿名 GitHub API 有 60/h 限流，超限时用 WebFetch 读网页版 releases 页
-- E2EE：v0.8.0 起可开关（默认关，设置 `e2ee_enabled`）；**两端必须同时开启才能互通**；
-  直发内容加密带 `enc1:` 前缀；GossipEnvelope.encrypted 缺省 true（兼容旧版）
-- **E2EE send 边界（v0.10.0 修）**：e2ee 关时不要求对端公钥；e2ee 开且缺公钥时主动探测 1.2s 再重试；enc1: 解密失败写系统消息而非 return
+- **E2EE（v0.11.0 起恒开且不可关闭）**：单聊/群聊始终 X25519 + ChaCha20-Poly1305 加密；
+  `e2ee_enabled` 设置已废弃（Settings 结构无此字段，旧库残留键由 reset 清理）；
+  直发内容加密带 `enc1:` 前缀；GossipEnvelope.encrypted 缺省 true（兼容旧版）；
+  接收方解密只需发送方公钥（信封携带），无「两端同时开启」限制
+- **E2EE send（v0.11.0）**：发送必须有对端公钥——好友表 → peers 表 → 探测 who_has 等 1.2s 重试 → 仍缺报错指引；
+  enc1: 解密失败写系统消息而非 return（v0.10.0）
 - 设备指纹前缀 `gosslan-`（v0.8.0 破坏性变更，旧 dev- 好友关系需重建）
 - 机器码依赖 machine-uid 仅桌面目标（Cargo.toml target 门控）；`enc1:` 解密查公钥顺序：friends 表 → peers 表
 - version.mjs 只认 `[Unreleased]`→落日志；npm 命令在沙箱需 `env -u NODE_OPTIONS -u CODEBUDDY_BROKERED_FS_HOOK_ENABLED` 前缀
