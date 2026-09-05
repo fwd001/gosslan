@@ -336,6 +336,7 @@ async fn main() {
                         group_id: None,
                         payload: STANDARD.encode(&sealed),
                         ts: now_ms(),
+                        encrypted: true,
                     };
                     env.compute_message_id();
                     env.sender_sig = identity.sign_b64(env.message_id.as_bytes());

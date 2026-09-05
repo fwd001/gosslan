@@ -161,6 +161,7 @@ impl GossipEngine {
             group_id,
             payload: payload_b64.to_string(),
             ts,
+            encrypted: true, // 默认加密；调用方可按 E2EE 开关改写
         };
         env.compute_message_id();
         env.sender_sig = identity.sign_b64(env.message_id.as_bytes());

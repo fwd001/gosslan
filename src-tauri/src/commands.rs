@@ -310,12 +310,21 @@ pub struct Settings {
     pub bind_ip: Option<String>,
     /// 聊天显示样式 JSON：{"preset":"classic","fontSize":"md","compact":true}
     pub chat_style: Option<String>,
+    /// 端到端加密开关（默认关闭；开启后单聊/群聊载荷 ChaCha20-Poly1305 加密）
+    pub e2ee_enabled: Option<bool>,
     /// 对端样式表 JSON（device_id -> style JSON）。仅由后端在收到 ChatStyle 消息时写入，
     /// 前端只读；save_settings 忽略该字段。
     pub peer_styles: Option<String>,
 }
 
-const SETTINGS_KEYS: [&str; 5] = ["theme_color", "font_family", "dark_mode", "bind_ip", "chat_style"];
+const SETTINGS_KEYS: [&str; 6] = [
+    "theme_color",
+    "font_family",
+    "dark_mode",
+    "bind_ip",
+    "chat_style",
+    "e2ee_enabled",
+];
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
@@ -326,6 +335,7 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
         dark_mode: db::get_setting(&dbc, "dark_mode").map(|v| v == "1"),
         bind_ip: db::get_setting(&dbc, "bind_ip"),
         chat_style: db::get_setting(&dbc, "chat_style"),
+        e2ee_enabled: Some(db::get_setting(&dbc, "e2ee_enabled").map(|v| v == "1").unwrap_or(false)),
         peer_styles: db::get_setting(&dbc, "chat_peer_styles"),
     }
 }
@@ -347,6 +357,9 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     }
     if let Some(v) = settings.chat_style {
         db::set_setting(&dbc, "chat_style", &v).ok();
+    }
+    if let Some(v) = settings.e2ee_enabled {
+        db::set_setting(&dbc, "e2ee_enabled", if v { "1" } else { "0" }).ok();
     }
     Ok(())
 }
@@ -497,12 +510,27 @@ pub async fn send_message(
     // E2EE 加密 + Gossip 信封（先于本地落库：msg_id 三处统一用 Gossip 信封 ID）
     let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
     let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;
-    let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
-    let payload_b64 = STANDARD.encode(&sealed);
-    let env = {
+    let e2ee = {
+        let dbc = s.db.lock().unwrap();
+        db::get_setting(&dbc, "e2ee_enabled").map(|v| v == "1").unwrap_or(false)
+    };
+    // E2EE 开：Gossip 载荷与直发内容都走 ChaCha20-Poly1305（直发内容加 "enc1:" 前缀标识）；
+    // E2EE 关：载荷明文（信封 encrypted=false），性能优先。
+    let (payload_b64, wire_content) = if e2ee {
+        let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
+        let sealed_content = crypto::seal(&shared, content.as_bytes()).ok_or("加密失败")?;
+        (
+            STANDARD.encode(&sealed),
+            format!("enc1:{}", STANDARD.encode(&sealed_content)),
+        )
+    } else {
+        (STANDARD.encode(plaintext.as_bytes()), content.clone())
+    };
+    let mut env = {
         let gossip = s.gossip.lock().unwrap();
         gossip.build_envelope(&s.identity, &s.device_id, GossipKind::Chat, None, &payload_b64, ts)
     };
+    env.encrypted = e2ee;
     // 统一 msg_id：本地记录 / Gossip 投递 / outbox 补发共用同一确定性 ID，
     // 接收方 message_exists 跨路径去重（防建链竞态窗口内的重复投递）。
     let msg_id = env.message_id.clone();
@@ -536,7 +564,7 @@ pub async fn send_message(
         from: s.device_id.clone(),
         to: friend_id.clone(),
         kind: crate::protocol::MsgKind::from_str(&kind),
-        content: content.clone(),
+        content: wire_content,
         ts,
     };
     if let Ok(payload) = serde_json::to_string(&queued) {
@@ -740,15 +768,24 @@ pub async fn send_group_message(
         db::touch_conversation(&dbc, &conv_id, "group", &group_name, None, &preview, 0).ok();
     }
 
-    // 群密钥加密 + Gossip 广播
+    // 群密钥加密 + Gossip 广播（受 E2EE 开关控制；关闭时载荷明文 + encrypted=false）
     let key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
+    let e2ee = {
+        let dbc = s.db.lock().unwrap();
+        db::get_setting(&dbc, "e2ee_enabled").map(|v| v == "1").unwrap_or(false)
+    };
     let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
-    let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
-    let payload_b64 = STANDARD.encode(&sealed);
-    let env = {
+    let payload_b64 = if e2ee {
+        let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
+        STANDARD.encode(&sealed)
+    } else {
+        STANDARD.encode(plaintext.as_bytes())
+    };
+    let mut env = {
         let gossip = s.gossip.lock().unwrap();
         gossip.build_envelope(&s.identity, &s.device_id, GossipKind::Group, Some(group_id), &payload_b64, ts)
     };
+    env.encrypted = e2ee;
     broadcast_gossip(s, env).await;
 
     Ok(rec)

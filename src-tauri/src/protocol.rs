@@ -76,7 +76,8 @@ pub enum GossipKind {
 /// - `sender_pubkey` / `sender_ed25519`：发送方 X25519 / Ed25519 公钥
 /// - `sender_sig`：对 `message_id` 的 Ed25519 签名（身份校验）
 /// - `ttl`：生存时间，每转发一次减一，归零丢弃
-/// - `payload`：base64 密文（`nonce || ChaCha20-Poly1305 密文`）
+/// - `payload`：base64（`encrypted=true` 时为 `nonce || ChaCha20-Poly1305 密文`，否则为明文 JSON）
+/// - `encrypted`：载荷是否加密（E2EE 开关；缺省按 true 兼容旧版本）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GossipEnvelope {
     pub message_id: String,
@@ -89,6 +90,13 @@ pub struct GossipEnvelope {
     pub group_id: Option<String>,
     pub payload: String,
     pub ts: i64,
+    #[serde(default = "default_encrypted")]
+    pub encrypted: bool,
+}
+
+/// 旧版本信封无 `encrypted` 字段时按「已加密」处理（历史行为）。
+fn default_encrypted() -> bool {
+    true
 }
 
 impl GossipEnvelope {
@@ -278,6 +286,29 @@ mod tests {
             group_id: None,
             payload: "ciphertext".into(),
             ts: 123456,
+            encrypted: true,
+        }
+    }
+
+    #[test]
+    fn envelope_encrypted_flag_roundtrip_and_default() {
+        // 显式 false 往返保持 false
+        let mut e = env();
+        e.encrypted = false;
+        e.compute_message_id();
+        let json = serde_json::to_string(&Message::Gossip { envelope: e.clone() }).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        match back {
+            Message::Gossip { envelope } => assert!(!envelope.encrypted),
+            _ => panic!("expect gossip"),
+        }
+
+        // 旧版本 JSON 缺失 encrypted 字段 → 默认按「已加密」兼容处理
+        let legacy = r#"{"type":"gossip","envelope":{"message_id":"m","sender_id":"a","sender_pubkey":"x","sender_ed25519":"e","sender_sig":"s","ttl":6,"kind":"chat","group_id":null,"payload":"p","ts":1}}"#;
+        let back: Message = serde_json::from_str(legacy).unwrap();
+        match back {
+            Message::Gossip { envelope } => assert!(envelope.encrypted),
+            _ => panic!("expect gossip"),
         }
     }
 

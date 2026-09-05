@@ -66,10 +66,7 @@ const interfaceOptions = computed(() => [
   ...app.interfaces.map((i) => ({ value: i.ip, label: `${i.name}（${i.ip}）` })),
 ]);
 
-const shortId = computed(() => {
-  const id = app.device?.device_id ?? "";
-  return id.length > 18 ? `${id.slice(0, 12)}…` : id;
-});
+const fullId = computed(() => app.device?.device_id ?? "");
 
 const btStatus = computed(() => channels.value.find((c) => c.channel === "bluetooth"));
 const lanStatus = computed(() => channels.value.find((c) => c.channel === "lan"));
@@ -244,7 +241,7 @@ async function restoreDefaults() {
 
 <template>
   <BaseModal :open="open" title="设置" width="max-w-xl" @close="emit('close')">
-    <div class="max-h-[75vh] space-y-6 overflow-y-auto pr-1">
+    <div class="max-h-[75vh] space-y-6 overflow-y-auto py-1 pr-3">
       <!-- 个人资料 -->
       <section>
         <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">个人资料</h3>
@@ -539,10 +536,43 @@ async function restoreDefaults() {
         </button>
       </section>
 
+      <!-- 安全 -->
+      <section>
+        <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">安全</h3>
+        <div class="flex items-center justify-between">
+          <span class="text-sm">端到端加密（E2EE）</span>
+          <button
+            class="relative h-6 w-11 rounded-full transition"
+            :class="app.e2ee ? 'bg-primary' : 'bg-[var(--gosslan-border)]'"
+            role="switch"
+            :aria-checked="app.e2ee"
+            @click="app.setE2ee(!app.e2ee)"
+          >
+            <span
+              class="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all"
+              :class="app.e2ee ? 'left-[22px]' : 'left-0.5'"
+            ></span>
+          </button>
+        </div>
+        <div class="mt-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
+          <template v-if="app.e2ee">
+            已开启：消息发送前经 X25519 + ChaCha20-Poly1305 加密，中继节点只透传密文、无法查看内容。
+            影响：每条消息多一次加解密（常规规模可忽略）；<b>对端需同样开启才能互通</b>。
+          </template>
+          <template v-else>
+            已关闭（默认）：消息明文直传，性能开销最小；同网段抓包可见消息内容。开启后中继节点不可见内容，
+            适合公共 Wi-Fi 等不可信网络。<b>对端需同样开启才能互通</b>。
+          </template>
+          聊天窗口顶部的锁形标识实时显示当前状态。
+        </div>
+      </section>
+
       <!-- 关于 -->
       <section>
         <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">关于</h3>
-        <div class="text-xs text-[var(--gosslan-text-2)]">设备指纹：{{ shortId }}</div>
+        <div class="text-xs leading-relaxed text-[var(--gosslan-text-2)]">
+          设备指纹：<span class="break-all font-mono select-text">{{ fullId }}</span>
+        </div>
         <div class="mt-1 text-xs text-[var(--gosslan-text-2)]">
           Gosslan v{{ version }} · 无服务器 P2P · 端到端加密 · 数据仅存本机
         </div>

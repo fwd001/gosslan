@@ -312,6 +312,35 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if to != state.device_id {
                 return;
             }
+            // E2EE："enc1:" 前缀 = 发送方→我的 ChaCha20-Poly1305 加密内容，用对方 X25519 公钥解密
+            let content = match content.strip_prefix("enc1:") {
+                Some(b64) => {
+                    let spk = {
+                        let dbc = state.db.lock().unwrap();
+                        db::get_friend_x25519(&dbc, &from)
+                    }
+                    .or_else(|| {
+                        state
+                            .peers
+                            .lock()
+                            .unwrap()
+                            .get(&from)
+                            .and_then(|p| p.x25519_pubkey.clone())
+                    });
+                    let Some(spk) = spk else { return };
+                    let Some(shared) = crypto::shared_secret(&state.identity.x25519_secret, &spk)
+                    else {
+                        return;
+                    };
+                    let Some(bytes) =
+                        STANDARD.decode(b64).ok().and_then(|d| crypto::open(&shared, &d))
+                    else {
+                        return;
+                    };
+                    String::from_utf8(bytes).unwrap_or_default()
+                }
+                None => content,
+            };
             let kind_str = kind.as_str().to_string();
             let name = resolve_nickname(state, &from);
             let preview = preview_content(&kind_str, &content);
@@ -584,16 +613,20 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
             return;
         }
     }
-    // 3. 解密（只有接收方/群成员能成功）
-    let plaintext = match &env.kind {
-        GossipKind::Chat => {
-            let shared = crypto::shared_secret(&state.identity.x25519_secret, &env.sender_pubkey);
-            shared.and_then(|s| STANDARD.decode(&env.payload).ok().and_then(|d| crypto::open(&s, &d)))
-        }
-        GossipKind::Group => {
-            let gid = env.group_id.clone().unwrap_or_default();
-            let key = get_group_key(state, &gid).await;
-            key.and_then(|k| STANDARD.decode(&env.payload).ok().and_then(|d| crypto::open_symmetric(&k, &d)))
+    // 3. 解包：E2EE 关闭时载荷为明文 JSON；开启时按单聊 ECDH / 群密钥解密
+    let plaintext = if !env.encrypted {
+        STANDARD.decode(&env.payload).ok()
+    } else {
+        match &env.kind {
+            GossipKind::Chat => {
+                let shared = crypto::shared_secret(&state.identity.x25519_secret, &env.sender_pubkey);
+                shared.and_then(|s| STANDARD.decode(&env.payload).ok().and_then(|d| crypto::open(&s, &d)))
+            }
+            GossipKind::Group => {
+                let gid = env.group_id.clone().unwrap_or_default();
+                let key = get_group_key(state, &gid).await;
+                key.and_then(|k| STANDARD.decode(&env.payload).ok().and_then(|d| crypto::open_symmetric(&k, &d)))
+            }
         }
     };
 

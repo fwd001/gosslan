@@ -36,6 +36,8 @@ export const useAppStore = defineStore("app", () => {
 
   /** 本机聊天显示样式（气泡配色 / 字号 / 紧凑模式），即点即存并广播同步。 */
   const chatStyle = ref<ChatStyleConfig>(loadLocalChatStyle());
+  /** 端到端加密开关（默认关闭，持久化到后端设置）。 */
+  const e2ee = ref(false);
   /** 对端样式表（device_id -> 样式 JSON）：按「发送者自己的偏好」渲染其消息气泡。 */
   const peerStyles = ref<Record<string, string>>({});
 
@@ -81,11 +83,18 @@ export const useAppStore = defineStore("app", () => {
         darkMode: dark.value,
         bindIp: boundIp.value ?? preferredIp.value,
         chatStyle: JSON.stringify(chatStyle.value),
+        e2eeEnabled: e2ee.value,
         peerStyles: null, // 对端样式表由后端维护，前端只读
       });
     } catch {
       /* 忽略：离线或后端暂不可用时不影响本地使用 */
     }
+  }
+
+  /** 端到端加密开关（默认关闭；开启后单聊/群聊载荷加密，中继只透传密文）。 */
+  function setE2ee(on: boolean) {
+    e2ee.value = on;
+    void persistSettings();
   }
 
   function toggleDark() {
@@ -133,6 +142,7 @@ export const useAppStore = defineStore("app", () => {
     if (s.darkMode != null) dark.value = s.darkMode;
     preferredIp.value = s.bindIp;
     if (s.chatStyle) chatStyle.value = parsePeerStyle(s.chatStyle);
+    e2ee.value = s.e2eeEnabled ?? false;
     if (s.peerStyles) {
       try {
         peerStyles.value = JSON.parse(s.peerStyles) as Record<string, string>;
@@ -164,6 +174,7 @@ export const useAppStore = defineStore("app", () => {
     preferredIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
     peerStyles.value = {};
+    e2ee.value = false;
     localStorage.removeItem(THEME_KEY);
     localStorage.removeItem(FONT_KEY);
     localStorage.removeItem(DARK_KEY);
@@ -214,6 +225,8 @@ export const useAppStore = defineStore("app", () => {
     fontFamily,
     chatStyle,
     peerStyles,
+    e2ee,
+    setE2ee,
     isMobile,
     mobileView,
     init,

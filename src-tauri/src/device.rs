@@ -38,7 +38,7 @@ pub fn hardware_fingerprint() -> Option<String> {
         let mut h = Sha256::new();
         h.update(b"gosslan-machine:");
         h.update(uid.as_bytes());
-        Some(format!("dev-{}", &hex(&h.finalize())[..16]))
+        Some(format!("gosslan-{}", &hex(&h.finalize())[..16]))
     }
 }
 
@@ -50,7 +50,7 @@ pub fn hostname_fingerprint() -> String {
     let mut h = Sha256::new();
     h.update(b"gosslan-host:");
     h.update(host.as_bytes());
-    format!("dev-{}", &hex(&h.finalize())[..16])
+    format!("gosslan-{}", &hex(&h.finalize())[..16])
 }
 
 #[cfg(test)]
@@ -60,8 +60,8 @@ mod tests {
     #[test]
     fn fingerprint_has_prefix() {
         if let Some(id) = hardware_fingerprint() {
-            assert!(id.starts_with("dev-"));
-            assert_eq!(id.len(), 20); // "dev-" + 16 hex
+            assert!(id.starts_with("gosslan-"));
+            assert_eq!(id.len(), 24); // "gosslan-" + 16 hex
         }
     }
 }
