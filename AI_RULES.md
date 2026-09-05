@@ -1,334 +1,397 @@
 # Gosslan AI 工程宪法
 
-> **定位**：本文件是所有 AI 编程助手在 Gosslan 项目上的**强制约束**。
-> 任何代码修改前必须先阅读本文件，修改后必须按本文件验证。
-> 本文件优先级高于用户需求中的隐含假设——如果需求与不变量冲突，AI 必须先指出冲突。
+> Version: 2.0
+>
+> 本文件是 Gosslan 所有 AI 编程助手的强制工程规则。
+> 任何 AI 在修改代码前必须阅读本文件、`AI_PROJECT_HANDOFF.md` 以及与任务相关的 ADR。
+>
+> 核心目标不是“尽快完成需求”，而是：
+>
+> **在不破坏系统不变量的前提下，以最小改动实现需求，并让已经修复的问题不再回来。**
 
 ---
 
-## 一、项目本质
+## 0. 适用范围
 
-Gosslan 不是 CRUD 应用。它是一个**带 P2P 网络、Gossip 传播、离线队列、E2EE、群聊、大文件中继、SQLite 持久化、Tauri 三端（Windows/macOS/Android）、Mesh/Transport 抽象**的复杂分布式系统。
+Gosslan 是 Tauri v2 + Rust + Vue 3 + TypeScript + Pinia + SQLite 的 P2P LAN 即时通讯系统，包含：
 
-一个看似简单的需求（如"给消息加一个状态"）实际影响链路：
+- UDP discovery
+- TCP transport
+- Gossip
+- Outbox / ACK
+- E2EE
+- 群聊 / GroupKey
+- 文件传输 / Relay / Mesh
+- SQLite
+- Windows / macOS / Android
+- Transport abstraction
 
+因此，本项目属于**分布式系统 + 跨平台客户端**。
+
+任何看似局部的修改，都必须考虑：
+
+```text
+UI
+ ↓
+Pinia
+ ↓
+Tauri invoke / event
+ ↓
+Rust command
+ ↓
+domain / service
+ ↓
+protocol
+ ↓
+transport / network
+ ↓
+peer
+ ↓
+storage
+ ↓
+event
+ ↓
+UI
 ```
-Vue UI → Pinia Store → Tauri invoke → Rust Command → Protocol → Transport → Peer → Storage → Event → Vue
-```
-
-因此：**稳定性、协议一致性、数据可靠性和回归测试优先于开发速度。**
 
 ---
 
-## 二、核心不变量（Invariants）
+# 1. AI 启动协议
 
-以下规则是系统的"宪法"，**任何代码修改都不得破坏**。
+每次开始非 trivial 任务，必须按以下顺序工作：
 
-### INV-001 消息 ID 稳定性
-
-所有消息必须拥有稳定、确定性的 `msg_id`（Gossip 信封的 SHA-256 message_id）。
-同一条消息经过直发、Gossip、Relay、Outbox 四条路径时，`msg_id` 必须保持一致。
-
-### INV-002 幂等去重
-
-任何节点收到重复 `msg_id`：
-- 不得重复插入数据库
-- 不得重复显示 UI
-- 必须能够安全回 Ack
-
-### INV-003 Outbox 保障
-
-任何需要可靠投递的消息必须遵循：
-
-```
-发送 → 先写入 outbox → 尝试传输 → 等待 Ack → 收到 Ack → 才从 outbox 删除
+```text
+1. 读取 AI_RULES.md
+2. 读取 AI_PROJECT_HANDOFF.md
+3. 定位相关代码
+4. 阅读相关测试
+5. 阅读相关 ADR
+6. 检查 CHANGELOG 中的历史教训
+7. 输出影响分析
+8. 设计测试
+9. 最小实现
+10. 验证
+11. 自检不变量
+12. 更新必要文档
 ```
 
-**禁止**：`send()` 返回 Ok 就删除 outbox。TCP send 成功 ≠ 对方已收到（半开连接教训，v0.7.0）。
+禁止“先改再理解”。
 
-### INV-004 Ack 语义
+---
 
-Ack 表示：**对端已确认收到消息并持久化**。
+# 2. Source of Truth
 
-不得把以下情况当作"送达"：
-- TCP 写成功
+当文档与实现冲突时，优先级：
+
+```text
+运行时代码
+> 测试
+> protocol.rs / db.rs
+> schema.sql
+> ADR
+> AI_PROJECT_HANDOFF.md
+> README.md
+> CHANGELOG.md
+```
+
+但如果发现冲突：
+
+**不能默默选择一方。**
+
+必须报告：
+
+```text
+发现冲突：
+代码：
+文档：
+测试：
+判断：
+建议同步：
+```
+
+---
+
+# 3. 系统不变量
+
+完整定义见：
+
+`docs/protocol-invariants.md`
+
+以下规则不可被普通需求覆盖。
+
+## INV-001 Message Identity
+
+可靠消息必须拥有稳定 `msg_id`。
+
+同一消息经过：
+
+```text
+Direct
+Gossip
+Relay
+Outbox
+Retry
+```
+
+不得重新生成业务意义上的新 `msg_id`。
+
+---
+
+## INV-002 Idempotency
+
+收到重复消息：
+
+```text
+同 msg_id
+→ 不重复入库
+→ 不重复通知
+→ 不重复显示
+→ 必须安全处理 ACK
+```
+
+---
+
+## INV-003 Outbox
+
+可靠消息必须：
+
+```text
+Create
+→ Persist outbox
+→ Attempt transport
+→ Wait ACK
+→ ACK confirmed
+→ Delete outbox
+```
+
+禁止：
+
+```text
+send() == Ok
+→ delete outbox
+```
+
+TCP 写成功不代表对端已经收到并持久化。
+
+---
+
+## INV-004 ACK Semantics
+
+ACK 的语义必须保持稳定：
+
+> 接收方已经完成消息接收，并满足项目定义的持久化确认条件。
+
+以下都不能直接等价于 ACK：
+
 - socket connected
-- `send()` 返回 Ok
-- try_send 成功
-
-### INV-005 加密消息不可静默丢弃
-
-- 解密失败的消息**不得静默丢弃**
-- 必须写入系统消息提示（用户可见）
-- 不得为了兼容 UI 而绕过加密
-- 不得在多个地方实现不同的加密/解密逻辑
-
-### INV-006 UI 乐观状态可回滚
-
-UI 可以乐观更新，但：
-- 成功 → 保持
-- 失败 → 必须明确回滚或进入 `failed` 状态 + toast 提示
-
-**禁止**：`catch(error) {}` 吞掉错误。
-
-### INV-007 网络失败 ≠ 消息失败
-
-网络暂时不可达时，消息应留在 outbox 等待补发，而非标记为永久失败。
-只有明确不可恢复的错误（如对方公钥永远无法获取）才标记 failed。
-
-### INV-008 设备指纹持久性
-
-设备重启后 `device_id` 不得变化（私钥持久化本地 SQLite）。
-指纹变化 = 身份丢失 = 所有好友关系断裂。
+- TCP write succeeded
+- `send()` returned `Ok`
+- `try_send()` succeeded
 
 ---
 
-## 三、禁止事项
+## INV-005 Encryption
 
-### 开发行为禁止
+加密消息：
 
-| # | 禁止 | 原因 |
-|---|---|---|
-| P-01 | 未阅读相关模块就修改代码 | 数据流跨 12 层，盲改必出 bug |
-| P-02 | 为修 bug 复制一套逻辑 | 双份逻辑 = 未来不一致 |
-| P-03 | 绕过 `protocol.rs` 自定义消息格式 | 协议是公共契约 |
-| P-04 | 绕过 outbox 直接发送 | 违反 INV-003 |
-| P-05 | 绕过 msg_id 生成逻辑 | 违反 INV-001/002 |
-| P-06 | 绕过 Ack 确认机制 | 违反 INV-004 |
-| P-07 | UI 自己模拟网络状态 | 前端不得臆造在线/送达 |
-| P-08 | Rust 和 TS 定义不一致的数据结构 | `types.ts` 必须与 serde 对齐 |
-| P-09 | 修改 DB schema 却不写 migration | 用户已有数据不可丢 |
-| P-10 | 修改协议却不考虑版本兼容 | 旧客户端不能 parse fail |
-| P-11 | 修改核心逻辑却不增加回归测试 | 过去每个 bug 都该变成测试 |
-| P-12 | 为了让测试通过而修改测试预期 | 除非需求确实变了 |
-| P-13 | 删除失败处理逻辑来"解决"失败 | 掩盖问题 |
-| P-14 | catch error 后静默忽略 | 违反 INV-006 |
-| P-15 | 引入新的全局状态而不评估影响 | AppState 已经够复杂 |
-| P-16 | 新增第三方库前不评估 | 必须说明必要性、体积、跨平台 |
-| P-17 | 大规模重构和功能开发同时进行 | 一次只做一件事 |
-| P-18 | 引入 Web Worker 处理消息管线 | WKWebView 生产构建下 Worker 可能加载失败（v0.5.1 教训） |
-| P-19 | 在业务代码中 if/else 分发传输类型 | 必须走 TransportManager 抽象 |
-| P-20 | 顺手重命名/格式化/升级依赖/改 UI 风格 | 只修改必要文件 |
-
-### 密码学禁止
-
-| # | 禁止 | 原因 |
-|---|---|---|
-| C-01 | 自行实现加密算法 | 必须用 `crypto.rs` 封装的原语 |
-| C-02 | 修改密钥派生逻辑而不升级协议版本 | 会导致旧消息不可解密 |
-| C-03 | 在非加密路径处理密文 | `enc1:` 前缀是唯一判断标准 |
-| C-04 | 将私钥暴露到前端 | 私钥只存 Rust 侧 SQLite |
+- 不得静默丢失
+- 解密失败必须可观测
+- 私钥不得进入前端
+- 加密逻辑只能集中在 crypto 层
+- 不允许为了 UI 正常显示而绕过加密
 
 ---
 
-## 四、开发工作流（强制）
+## INV-006 Network Failure
 
-每次开发任务必须按以下阶段执行，**不得跳过**：
+网络暂时不可用：
 
-### Phase 1：理解
-
-阅读：
-- 相关 Rust / Vue / TypeScript 代码
-- 相关测试
-- `protocol.rs` 中涉及的消息类型
-- `db.rs` / `schema.sql` 中涉及的表
-- CHANGELOG 中相关历史
-- `docs/adr/` 中相关架构决策
-
-**不要立即修改。**
-
-### Phase 2：影响分析
-
-输出（可以是内部思考，但必须覆盖）：
-
-```
-Affected modules:       [列出涉及的 src-tauri/src/ 和 src/ 文件]
-Affected protocol:      [是否新增/修改 Message 枚举]
-Affected database:      [是否修改 schema]
-Affected UI:            [涉及哪些组件]
-Affected platforms:     [Windows / macOS / Android 是否都受影响]
-Affected state machines:[消息/连接/文件/好友/E2EE 哪个状态机]
-Regression risks:       [至少 3 个最可能的回归问题]
+```text
+Network failure != Message failure
 ```
 
-### Phase 3：方案
+可恢复网络错误应该进入：
 
-给出**最小修改方案**。如果有多个方案，说明为什么选择当前方案。
-
-### Phase 4：测试设计
-
-先设计测试，再编码。至少覆盖：
-- 正常场景
-- 失败场景（网络断开、对方离线）
-- 边界场景（重复消息、空内容）
-- 跨平台影响
-
-### Phase 5：编码
-
-只修改必要文件。禁止顺手做无关变更。
-
-### Phase 6：验证
-
-至少执行：
-
-```bash
-npm test                          # 前端纯函数测试
-npm run build                     # TypeScript 类型检查 + Vite 构建
-cd src-tauri && cargo test --lib  # Rust 单测
-cd src-tauri && cargo check       # Rust 编译检查
+```text
+outbox / retry / reconnect
 ```
 
-如果修改协议/网络，尽可能运行：
-
-```bash
-cd src-tauri && cargo build --example e2e_peer  # 协议级 E2E
-bash scripts/e2e-dev.sh                          # 单机双实例全功能验证
-```
-
-如果修改涉及 Android：
-
-```bash
-cargo check --target aarch64-linux-android
-```
-
-### Phase 7：自检清单
-
-完成后逐条检查：
-
-- [ ] 是否破坏 msg_id 一致性？（INV-001）
-- [ ] 是否破坏幂等去重？（INV-002）
-- [ ] 是否破坏 outbox 保障？（INV-003）
-- [ ] 是否破坏 Ack 语义？（INV-004）
-- [ ] 是否可能静默丢弃加密消息？（INV-005）
-- [ ] 是否吞掉了错误？（INV-006）
-- [ ] 是否破坏旧数据兼容？
-- [ ] 是否影响 Android 编译？
-- [ ] 是否产生新的 Rust warning？
-- [ ] 是否需要更新 `CHANGELOG.md`？
-- [ ] 是否需要新增/更新 ADR？
-- [ ] Rust serde 与 `src/types.ts` 是否对齐？
+而不是直接永久 failed。
 
 ---
 
-## 五、协议变更规则
+## INV-007 Device Identity
 
-任何对 `protocol.rs` Message 枚举的修改（新增/修改/删除变体）必须回答以下 7 个问题：
+`device_id` 和身份密钥必须持久化。
 
-```
-1. 谁发送？（sender）
-2. 谁接收？（receiver）
-3. 是否允许重复？（idempotency）
-4. 是否需要 Ack？（ack）
-5. 是否进入 outbox？（persistence）
-6. 是否允许 Gossip 传播？（gossip）
-7. 是否需要加密？（encryption）
+重启：
+
+```text
+device_id 不变
+identity 不变
 ```
 
-示例（ChatMessage）：
-
-```
-sender:      Sender → Receiver
-idempotency: 允许重复到达，msg_id 去重
-ack:         必须
-outbox:      必须（Ack 才删）
-gossip:      允许
-encryption:  必须（E2EE 恒开）
-```
-
-协议变更还必须检查：
-- Rust enum/struct 定义
-- serde 序列化/反序列化
-- TypeScript `src/types.ts` 对应类型
-- 发送方和接收方处理逻辑
-- 旧版本兼容性（未知消息类型应 ignore 而非 panic）
+身份发生变化必须视为显式迁移/重置，而不是普通启动行为。
 
 ---
 
-## 六、状态机规范
+## INV-008 UI State
 
-### 消息状态
+前端可以乐观更新，但最终状态必须来自真实结果。
 
-```
-sending → delivered → read
-   ↘ failed
-```
-
-### 连接状态
-
-```
-unknown → discovered → connecting → connected → heartbeat → offline
+```text
+optimistic
+  ├── success → committed
+  └── failure → failed / rollback
 ```
 
-### 文件传输状态
+禁止 UI 自己猜测：
 
+```text
+online
+delivered
+read
+encrypted
 ```
-created → offered → accepted → transferring → completed
-                                      ↘ failed
-```
-
-### 好友关系状态
-
-```
-unknown → request_sent → accepted → friend
-```
-
-### E2EE 状态
-
-```
-unknown_key → discovering → key_available → encrypted → decrypted
-                                            ↘ decrypt_failed (写系统消息)
-```
-
-**要求**：不要用多个独立 boolean 表达状态。优先使用明确的枚举/联合类型。
-**禁止**：跨状态直接操作（如 peer_exists 就 send_message，必须经过完整状态检查链）。
 
 ---
 
-## 七、Bug 修复规范
+# 4. 协议修改规则
 
-所有 bug 修复必须记录（commit message 或 CHANGELOG）：
+任何 `protocol.rs` 的消息、字段、序列化规则变更，必须回答：
 
-```
-Bug:          [现象描述]
-复现步骤:      [如何触发]
-Root Cause:   [根因，不是表象]
-影响范围:      [涉及哪些模块/平台]
-Fix:          [修改内容]
-Regression:   [新增了什么测试来防止回归]
-```
-
-**禁止只修表象**。例如：
-
-- 错误：消息不显示 → 强制 refresh UI
-- 正确：消息不显示 → 检查事件 → 检查 store → 检查 merge → 检查 DB → 找到真实断点
-
-每个 bug 修复后必须增加至少一个回归测试。优先级：
-
-```
-Rust unit test > protocol test > E2E > 真实双设备
+```text
+1. Sender
+2. Receiver
+3. Message identity
+4. Idempotency
+5. ACK
+6. Outbox
+7. Gossip
+8. Encryption
+9. Persistence
+10. Version compatibility
+11. Unknown-message behavior
+12. Failure behavior
 ```
 
-如果无法自动测试，必须在 commit message 中说明原因。
+必须检查：
+
+```text
+src-tauri/src/protocol.rs
+src/types.ts
+sender
+receiver
+gossip_engine.rs
+network/transport.rs
+db.rs
+tests
+e2e_peer.rs
+```
+
+如果协议发生语义变化：
+
+**必须新增或更新 ADR。**
 
 ---
 
-## 八、架构边界
+# 5. 状态机规则
 
-### Source of Truth（事实来源优先级）
+禁止用大量互相独立的 boolean 表达复杂生命周期。
 
-```
-代码 > 测试 > protocol.rs > db.rs/schema.sql > ADR > AI_PROJECT_HANDOFF > README > CHANGELOG
-```
+优先：
 
-如果文档与代码冲突：**先读代码和测试，再判断文档是否过期**。
-
-### Transport 与业务解耦
-
-```
-Application → MessageService → TransportManager → LAN / Bluetooth / QUIC / Relay
+```text
+enum / union / explicit state
 ```
 
-**禁止**在业务代码中出现：
+## Message
+
+```text
+local_created
+→ queued
+→ sending
+→ delivered
+→ read
+
+queued / sending
+→ failed_recoverable
+
+sending
+→ failed_permanent
+```
+
+## Peer
+
+```text
+unknown
+→ discovered
+→ connecting
+→ connected
+→ healthy
+→ offline
+```
+
+## File
+
+```text
+created
+→ offered
+→ accepted
+→ transferring
+→ completed
+
+offered / accepted / transferring
+→ failed
+```
+
+## E2EE
+
+```text
+unknown_key
+→ discovering
+→ key_available
+→ encrypting
+→ encrypted
+→ decrypted
+
+decrypting
+→ decrypt_failed
+```
+
+如果实际代码状态与此不同：
+
+**以实际代码为准，并先说明差异。**
+
+---
+
+# 6. Transport 边界
+
+业务层不得直接依赖：
+
+```text
+TCP
+UDP
+Bluetooth
+QUIC
+Relay
+```
+
+应通过 Transport 抽象。
+
+目标结构：
+
+```text
+Application
+  ↓
+Message / File Service
+  ↓
+TransportManager
+  ↓
+LAN / Bluetooth / QUIC / Relay
+```
+
+禁止：
 
 ```rust
 if bluetooth { ... }
@@ -336,128 +399,489 @@ else if lan { ... }
 else if relay { ... }
 ```
 
-### 前端 Store 边界
-
-当前 `useChatStore.ts` 承担了过多职责。后续新功能应优先进入对应领域 Store：
-
-```
-stores/
-├── useAppStore.ts          # 设备/主题/响应式
-├── useChatStore.ts         # 核心聊天（不再膨胀）
-├── [未来] useConversationStore.ts
-├── [未来] useMessageStore.ts
-├── [未来] useFriendStore.ts
-├── [未来] useTransferStore.ts
-└── [未来] useNotificationStore.ts
-```
-
-**不要现在一次性重构**，但新功能不要继续无脑塞进 useChatStore。
-
-### Rust/TypeScript 数据对齐
-
-Rust serde model 与 `src/types.ts` 必须保持一致。修改任一侧时，必须同步检查另一侧。
+除非代码处于 transport adapter 本身。
 
 ---
 
-## 九、数据库规则
+# 7. 前端边界
 
-SQLite 是事实来源之一。任何 schema 修改必须考虑：
+当前 `useChatStore.ts` 已承担较多职责。
 
-1. 旧数据库升级路径（ALTER TABLE / 新列默认值）
-2. 已有用户数据不丢失
-3. 重复执行安全（IF NOT EXISTS）
-4. 事务完整性
-5. `schema.sql` 与 `db.rs` SCHEMA 常量同步更新
+新功能：
 
----
+**不要继续无条件塞进 `useChatStore.ts`。**
 
-## 十、平台兼容
+优先按领域演进：
 
-Gosslan 支持 Windows / macOS / Android。任何修改必须考虑三端。
-
-- 平台相关代码使用 `#[cfg(desktop)]` / `#[cfg(mobile)]`
-- 禁止让 Android 引入仅桌面依赖（如 machine-uid、tray-icon）
-- 前端代码不得使用桌面专属 API 而不做条件判断
-
----
-
-## 十一、第三方依赖
-
-新增依赖前必须说明：
-
-```
-为什么需要:
-是否可以用已有能力替代:
-包大小影响:
-跨平台支持（Windows/macOS/Android）:
-Tauri v2 兼容性:
-维护状态（最近更新时间）:
-是否增加构建复杂度:
+```text
+useAppStore
+useChatStore
+useConversationStore
+useMessageStore
+useFriendStore
+useTransferStore
+useNotificationStore
 ```
 
-**能不用就不用。**
+但禁止为了“架构漂亮”一次性大重构。
+
+原则：
+
+```text
+新增功能 → 正确边界
+旧代码 → 保持稳定
+重构 → 独立任务
+```
 
 ---
 
-## 十二、文档同步
+# 8. Rust / TypeScript Contract
 
-每次代码变更后检查是否需要更新：
+Rust serde 类型与：
 
-| 变更类型 | 需更新文档 |
-|---|---|
-| 新增功能 | CHANGELOG `[Unreleased]` + README 功能表 |
-| 协议变更 | CHANGELOG + `docs/protocol-design.md` + 新 ADR |
-| Schema 变更 | CHANGELOG + `schema.sql` |
-| 架构决策 | 新 `docs/adr/XXXX-title.md` |
-| Bug 修复 | CHANGELOG `[Unreleased]` |
-| 破坏性变更 | CHANGELOG（标注 ⚠️）+ README + HANDOFF |
+```text
+src/types.ts
+```
+
+必须保持一致。
+
+修改任意一侧，都必须检查另一侧。
+
+特别注意：
+
+```text
+camelCase ↔ snake_case
+Option / nullable
+enum variant
+timestamp
+byte encoding
+```
+
+如果可能，优先考虑生成类型或增加 contract test，避免长期手工漂移。
 
 ---
 
-## 十三、最终原则
+# 9. Database Rules
+
+任何数据库修改必须考虑：
+
+```text
+旧数据库
+→ migration
+→ 新数据库
+```
+
+必须检查：
+
+- 已有数据
+- 默认值
+- NULL
+- index
+- unique constraint
+- transaction
+- rollback
+- 重复执行
+- `db.rs`
+- `schema.sql`
+
+禁止：
+
+```text
+修改 schema
+→ 假设用户都是新安装
+```
+
+---
+
+# 10. Bug Fix Protocol
+
+任何 Bug 修复必须遵循：
+
+```text
+复现
+→ 定位
+→ Root Cause
+→ Regression Test
+→ Fix
+→ 全量验证
+```
+
+禁止：
+
+```text
+现象
+→ 猜一个地方
+→ 加 if
+→ 测试绿
+→ 结束
+```
+
+每个 Bug 必须使用：
+
+`docs/templates/BUG_FIX.md`
+
+---
+
+# 11. 测试优先级
+
+修改越靠近下面位置，测试要求越高：
+
+```text
+UI
+↓
+Store
+↓
+Tauri command
+↓
+Service
+↓
+Protocol
+↓
+Transport
+↓
+Storage
+↓
+Crypto
+```
+
+尤其是：
+
+```text
+protocol
+network
+crypto
+outbox
+db
+identity
+```
+
+不得只做 UI 手工验证。
+
+---
+
+# 12. P2P 故障场景
+
+涉及网络/消息的任务，必须考虑：
+
+```text
+正常发送
+对方离线
+发送中断网
+ACK 丢失
+TCP 半开
+连接重建
+重复消息
+乱序
+Gossip 重复
+节点重启
+应用重启
+outbox 恢复
+公钥暂时不存在
+公钥变化
+中继节点消失
+```
+
+---
+
+# 13. 禁止事项
+
+## P-01
+
+未阅读相关模块就修改。
+
+## P-02
+
+复制已有业务逻辑解决 Bug。
+
+## P-03
+
+绕过 protocol。
+
+## P-04
+
+绕过 outbox。
+
+## P-05
+
+绕过 msg_id。
+
+## P-06
+
+绕过 ACK。
+
+## P-07
+
+前端伪造网络状态。
+
+## P-08
+
+Rust / TS 类型不一致。
+
+## P-09
+
+数据库无 migration 修改。
+
+## P-10
+
+协议修改不考虑兼容。
+
+## P-11
+
+核心 Bug 不增加回归测试。
+
+## P-12
+
+为了通过测试修改测试预期。
+
+## P-13
+
+catch 后静默吞错。
+
+## P-14
+
+新增全局状态而不分析生命周期。
+
+## P-15
+
+大重构与功能开发混在一个任务。
+
+## P-16
+
+无必要新增第三方依赖。
+
+## P-17
+
+无关格式化、重命名、升级依赖。
+
+## P-18
+
+重新引入已被 ADR 明确否决的实现。
+
+## P-19
+
+修改密码学原语/密钥派生但不更新协议版本和 ADR。
+
+## P-20
+
+为了消除 warning 删除错误处理。
+
+---
+
+# 14. 密码学规则
+
+禁止：
+
+- 自己实现密码算法
+- 修改 key derivation 而不做协议兼容分析
+- 将私钥暴露给前端
+- 在 UI 层进行加密
+- 在多个模块实现不同加密逻辑
+- 把“加密失败”转成普通明文发送
+
+密码学变更至少需要：
+
+```text
+Threat model
+Compatibility
+Key lifecycle
+Old message behavior
+New message behavior
+Migration
+Test vectors
+```
+
+---
+
+# 15. 第三方依赖
+
+新增依赖必须说明：
+
+```text
+为什么需要
+已有依赖为什么不能完成
+体积
+维护状态
+Windows
+macOS
+Android
+Tauri v2
+构建影响
+安全影响
+```
+
+---
+
+# 16. 最小变更原则
+
+一次任务：
+
+```text
+只改完成需求所需的代码
+```
+
+禁止顺手：
+
+- 重命名
+- 大规模格式化
+- 升级依赖
+- 重构无关模块
+- 改 UI 风格
+- 改协议命名
+
+如果发现架构问题：
+
+```text
+当前需求的最小修复
++
+单独的长期重构建议
+```
+
+不要偷偷混在一起。
+
+---
+
+# 17. 强制开发流程
+
+## Phase 1 — Understand
+
+先读代码、测试、ADR。
+
+## Phase 2 — Impact
+
+输出：
+
+```text
+Affected files:
+Affected protocol:
+Affected DB:
+Affected state machine:
+Affected platforms:
+Affected transport:
+Affected crypto:
+Regression risks:
+```
+
+## Phase 3 — Design
+
+给出：
+
+```text
+最小方案
+备选方案
+选择原因
+```
+
+## Phase 4 — Test
+
+先定义测试：
+
+```text
+normal
+failure
+boundary
+duplicate
+reconnect
+restart
+cross-platform
+```
+
+## Phase 5 — Implement
+
+只改必要文件。
+
+## Phase 6 — Verify
+
+至少：
+
+```bash
+npm test
+npm run build
+cd src-tauri && cargo test --lib
+cd src-tauri && cargo check
+```
+
+协议/网络任务尽可能：
+
+```bash
+cd src-tauri && cargo build --example e2e_peer
+bash scripts/e2e-dev.sh
+```
+
+Android 相关：
+
+```bash
+cargo check --target aarch64-linux-android
+```
+
+## Phase 7 — Review
+
+检查：
+
+```text
+INV-001 ~ INV-008
+Protocol compatibility
+DB compatibility
+Rust/TS contract
+Cross-platform
+Warnings
+Tests
+CHANGELOG
+ADR
+```
+
+---
+
+# 18. AI 输出要求
+
+完成任务后必须报告：
+
+```text
+## Summary
+[做了什么]
+
+## Root Cause
+[如果是 Bug]
+
+## Changed Files
+[文件列表]
+
+## Architecture Impact
+[协议/DB/Transport/State/Platform]
+
+## Tests
+[执行了什么]
+
+## Verification
+[结果]
+
+## Remaining Risks
+[仍存在什么]
+
+## Documentation
+[更新了什么]
+
+## Follow-up
+[后续建议]
+```
+
+---
+
+# 19. 最终原则
 
 > 不确定时，不猜。
 
-> 不理解现有状态机时，不改代码。
+> 不理解数据流时，不改代码。
 
-> 不知道数据从哪里来时，不新增状态。
+> 不知道状态来源时，不新增状态。
 
-> 不知道为什么这么设计时，先找 ADR / CHANGELOG / 测试。
+> 修 Bug 修根因，不修表象。
 
-> 修 Bug 时修根因，不修表象。
+> 网络系统先保证可靠性，再追求性能。
 
-> 新功能不能破坏已有协议和不变量。
+> 稳定性优先于开发速度。
 
-> 网络系统优先保证可靠性，再追求性能。
+> 每一个历史 Bug，都应该转化成一个未来的回归测试。
 
-> 稳定性优先于代码数量。
+> 每一个架构决定，都应该留下为什么。
 
-> 宁可少做一个功能，也不要制造新的隐性状态。
-
-> 每一个过去修过的 Bug，都应该变成未来不会再次发生的测试。
-
----
-
-## AI 的最终工作目标
-
-不是：
-
-> "把用户这一次需求做出来。"
-
-而是：
-
-> "在不破坏现有系统不变量的前提下，以最小改动实现需求，并让这个 bug / 问题以后不再回来。"
-
----
-
-## 附录：相关文件索引
-
-| 文件 | 用途 |
-|---|---|
-| `AI_RULES.md`（本文件） | AI 开发宪法：什么能做、什么不能做 |
-| `AI_PROJECT_HANDOFF.md` | 项目全貌：是什么、现在有什么、代码导读 |
-| `CHANGELOG.md` | 版本历史：过去为什么改 |
-| `docs/adr/` | 架构决策记录：为什么这么设计 |
-| `docs/protocol-design.md` | 协议对标与演进路线 |
-| `docs/performance.md` | 大规模节点性能设计 |
-| `docs/setup-windows.md` | Windows/Android 环境配置 |
+> AI 的目标不是“完成这次任务”，而是“完成任务后让系统更难出错”。
