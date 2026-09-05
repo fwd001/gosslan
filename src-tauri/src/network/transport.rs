@@ -1347,4 +1347,35 @@ mod tests {
         assert_eq!(targets.len(), 3, "fanout=4 时三个邻居都应被转发到");
         assert!(!targets.contains(&"a".to_string()), "不回发给信封的发送方");
     }
+
+    /// P1-3 / Test 4 的前提条件：Direct 已把某 msg_id 落库之后，同一信封再到达时
+    /// 必须「业务层判为已存在（于是抑制未读与事件）」且「传播层仍判为首次见到（于是
+    /// 继续 verify 并在 ttl > 1 时 fan-out）」同时成立。
+    /// 若把 `message_exists` 前移到 handle_gossip 开头直接 return，第二项就会被破坏，
+    /// epidemic 传播在本节点断链 —— 这条测试就是防止那种"顺手简化"。
+    #[test]
+    fn business_duplicate_still_enters_the_propagation_layer() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        let rec = MessageRecord {
+            id: 0,
+            msg_id: "m1".into(),
+            conv_id: "dev-a".into(),
+            sender_id: "dev-a".into(),
+            receiver_id: "me".into(),
+            kind: "text".into(),
+            content: "hello".into(),
+            ts: 1,
+            status: "delivered".into(),
+        };
+        // Direct 先到并落库 → 它是唯一产生本地副作用的一方
+        assert!(db::insert_message_if_new(&conn, &rec).unwrap());
+        // 之后 Gossip 副本到达：业务层判为已存在 ⇒ 不再 touch / 不再 emit
+        assert!(!db::insert_message_if_new(&conn, &rec).unwrap());
+        // 但传播层（独立的内存 Bloom/LRU）从未被 Direct 登记 ⇒ 仍会走到 fan-out
+        let mut engine = GossipEngine::new(100, 10, 4, 6);
+        assert!(engine.is_new("m1"), "业务层已存在不得让传播层跳过转发");
+        // 且一次业务插入只留一行，两路径共用同一 msg_id 成立
+        assert_eq!(db::get_messages(&conn, "dev-a", 10, 0).unwrap().len(), 1);
+    }
 }
