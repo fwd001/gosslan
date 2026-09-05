@@ -462,14 +462,18 @@ mod tests {
     }
 
     fn rec(msg_id: &str, conv_id: &str) -> MessageRecord {
+        rec_as(msg_id, conv_id, "text", "hi")
+    }
+
+    fn rec_as(msg_id: &str, conv_id: &str, kind: &str, content: &str) -> MessageRecord {
         MessageRecord {
             id: 0,
             msg_id: msg_id.into(),
             conv_id: conv_id.into(),
             sender_id: "a".into(),
             receiver_id: "b".into(),
-            kind: "text".into(),
-            content: "hi".into(),
+            kind: kind.into(),
+            content: content.into(),
             ts: 1,
             status: "sent".into(),
         }
@@ -532,6 +536,75 @@ mod tests {
         assert!(message_exists(&conn, "m1"));
         assert!(!message_exists(&conn, "m2"));
         assert_eq!(get_messages(&conn, "c1", 100, 0).unwrap().len(), 1);
+    }
+
+    /// P0-2 根因（反面用例，锁定必须避免的写法）：真实 msg_id 一旦被「解密失败的占位
+    /// 系统消息」占用，之后同一 msg_id 的正确副本会被 INSERT OR IGNORE 静默吞掉，
+    /// 明文永久不可恢复。所以接收端解不开时绝不能写任何占用真实 msg_id 的行。
+    #[test]
+    fn placeholder_on_real_msg_id_swallows_the_good_copy() {
+        let conn = mem();
+        insert_message(&conn, &rec_as("m1", "f1", "system", "[加密消息] 解密失败")).unwrap();
+        assert!(message_exists(&conn, "m1")); // 已被占用 → 处理分支会直接 Ack 并返回
+        insert_message(&conn, &rec_as("m1", "f1", "text", "real plaintext")).unwrap();
+        let rows = get_messages(&conn, "f1", 10, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].content, "[加密消息] 解密失败");
+        assert_eq!(rows[0].kind, "system");
+    }
+
+    /// P0-2 修复形态：解不开 ⇒ 不落库 ⇒ `message_exists` 保持 false（因而不会误发 Ack），
+    /// 真实 msg_id 保持空闲，等公钥收敛后补发的正确副本正常入库；重复投递只留一行。
+    #[test]
+    fn failed_decrypt_leaves_msg_id_free_for_the_later_good_copy() {
+        let conn = mem();
+        assert!(!message_exists(&conn, "m1"));
+        insert_message(&conn, &rec_as("m1", "f1", "text", "real plaintext")).unwrap();
+        insert_message(&conn, &rec_as("m1", "f1", "text", "real plaintext")).unwrap(); // 心跳重复补发
+        let rows = get_messages(&conn, "f1", 10, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].content, "real plaintext");
+        assert_eq!(rows[0].kind, "text");
+    }
+
+    /// Direct 与 Gossip 两条路径共用同一业务 msg_id：无论谁先到，会话内只落一行。
+    #[test]
+    fn direct_and_gossip_same_msg_id_persist_single_row() {
+        let conn = mem();
+        insert_message(&conn, &rec_as("m1", "f1", "text", "via gossip")).unwrap();
+        insert_message(&conn, &rec_as("m1", "f1", "text", "via direct")).unwrap();
+        let rows = get_messages(&conn, "f1", 10, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].content, "via gossip"); // 先到者胜出，后到者被幂等忽略
+    }
+
+    /// 补发前重封依赖的事实前提：发送方本地行存的是**明文**，且能按 (msg_id, sender_id)
+    /// 精确取回，不会被同一 msg_id 下别的 sender_id 记录串味。
+    /// 若将来本地改为存密文，此测试会立即失败（重封恢复路径随之失效）。
+    #[test]
+    fn own_sent_row_keeps_plaintext_selectable_by_sender() {
+        let conn = mem();
+        let mut sent = rec_as("m1", "f1", "text", "hello plain");
+        sent.sender_id = "me".into();
+        insert_message(&conn, &sent).unwrap();
+        let mine: Option<String> = conn
+            .query_row(
+                "SELECT content FROM messages WHERE msg_id = ?1 AND sender_id = ?2",
+                params!["m1", "me"],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(mine.as_deref(), Some("hello plain"));
+        let other: Option<String> = conn
+            .query_row(
+                "SELECT content FROM messages WHERE msg_id = ?1 AND sender_id = ?2",
+                params!["m1", "peer"],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(other, None);
     }
 
     #[test]
@@ -616,6 +689,22 @@ mod tests {
         let pending = list_outbox(&conn, "f1").unwrap();
         assert_eq!(pending.len(), 1);
         delete_outbox(&conn, pending[0].0).unwrap();
+        assert!(list_outbox(&conn, "f1").unwrap().is_empty());
+    }
+
+    /// outbox 的身份是 msg_id 而非密文：补发前重新加密只会换 payload，
+    /// 同一 msg_id 再入队仍被唯一约束忽略（不产生第二行、不覆盖首行），
+    /// Ack 仍按 msg_id 精确删除 ⇒ 重封不破坏消息身份 / 幂等 / outbox 语义。
+    #[test]
+    fn outbox_identity_is_msg_id_not_payload() {
+        let conn = mem();
+        insert_outbox(&conn, "m1", "f1", r#"{"msg_id":"m1","content":"enc1:old"}"#).unwrap();
+        insert_outbox(&conn, "m1", "f1", r#"{"msg_id":"m1","content":"enc1:resealed"}"#).unwrap();
+        let pending = list_outbox(&conn, "f1").unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].1.contains("enc1:old")); // 首行原样保留，由 flush 时重封
+        // Ack 分支的删除路径（transport.rs 同构 SQL）
+        conn.execute("DELETE FROM outbox WHERE msg_id = ?1", params!["m1"]).unwrap();
         assert!(list_outbox(&conn, "f1").unwrap().is_empty());
     }
 

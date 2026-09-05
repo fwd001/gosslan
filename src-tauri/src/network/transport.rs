@@ -16,11 +16,12 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
+use x25519_dalek::StaticSecret;
 
 use crate::crypto;
 use crate::db;
 use crate::network::file;
-use crate::protocol::{GossipEnvelope, GossipKind, Message, MAX_FRAME};
+use crate::protocol::{GossipEnvelope, GossipKind, Message, MsgKind, MAX_FRAME};
 use crate::state::{AppState, FileDoneInfo, FileProgress, MessageRecord, Peer, PendingRequest};
 
 // ---------------- 分帧 ----------------
@@ -312,58 +313,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if to != state.device_id {
                 return;
             }
-            // E2EE："enc1:" 前缀 = 发送方→我的 ChaCha20-Poly1305 加密内容，用对方 X25519 公钥解密
-            // 解密失败（缺公钥 / 公钥已更新）：写入系统消息「需开启 E2EE 或更新对端公钥才能查看」，
-            // 而非静默丢弃，避免开启 E2EE 的一方发来的消息在另一端凭空消失。
-            let (content, kind_str) = match content.strip_prefix("enc1:") {
-                Some(b64) => {
-                    let spk_opt = {
-                        let dbc = state.db.lock().unwrap();
-                        db::get_friend_x25519(&dbc, &from)
-                    }
-                    .or_else(|| {
-                        state
-                            .peers
-                            .lock()
-                            .unwrap()
-                            .get(&from)
-                            .and_then(|p| p.x25519_pubkey.clone())
-                    });
-                    match spk_opt {
-                        None => (
-                            format!("[加密消息] 尚未获取 {from} 的公钥，请让对方重新上线后重发"),
-                            "system".to_string(),
-                        ),
-                        Some(spk) => match crypto::shared_secret(&state.identity.x25519_secret, &spk) {
-                            Some(shared) => match STANDARD
-                                .decode(b64)
-                                .ok()
-                                .and_then(|d| crypto::open(&shared, &d))
-                            {
-                                Some(bytes) => match String::from_utf8(bytes) {
-                                    Ok(s) => (s, kind.as_str().to_string()),
-                                    Err(_) => (
-                                        "[加密消息] 内容解码失败，对方可能更换了密钥".to_string(),
-                                        "system".to_string(),
-                                    ),
-                                },
-                                None => (
-                                    format!("[加密消息] 解密失败（{from} 的公钥可能已更新）"),
-                                    "system".to_string(),
-                                ),
-                            },
-                            None => (
-                                "[加密消息] 密钥交换失败".to_string(),
-                                "system".to_string(),
-                            ),
-                        },
-                    }
-                }
-                None => (content, kind.as_str().to_string()),
-            };
-            let name = resolve_nickname(state, &from);
-            let preview = preview_content(&kind_str, &content);
-            // 去重：已收到过则只回 Ack（锁作用域独立，避免非 Send 的 MutexGuard 跨 await）
+            // 去重前置：真实 msg_id 已落库 == 这条消息我此前已成功接收并持久化，
+            // 于是只回 Ack。必须早于解密——否则对方轮换密钥后重投的那份「已收好的」
+            // 消息会因当前密钥打不开旧密文而被误判为失败。
             let exists = {
                 let dbc = state.db.lock().unwrap();
                 db::message_exists(&dbc, &msg_id)
@@ -372,6 +324,24 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
                 return;
             }
+            // E2EE："enc1:" = 发送方→我的 ChaCha20-Poly1305 密文，用发送方 X25519 公钥打开。
+            // 打不开（缺公钥 / 公钥已轮换 / 密文损坏）时**既不落库也不 Ack**，原因：
+            //  - Ack 的语义是「已成功接收并持久化」，发送方一收到就会删掉 outbox 行；
+            //  - 若用真实 msg_id 写一条占位系统消息，同一 msg_id 的后续正确副本会被
+            //    INSERT OR IGNORE 静默吞掉，明文永久不可恢复（P0-2 的原始故障形态）。
+            // 不 Ack ⇒ outbox 行保留 ⇒ Hello/心跳继续补发；期间 announce·who_has 会把
+            // 双方公钥刷进 peers 与 friends 表，补发前还会用最新公钥重新密封
+            // （见 flush_outbox / reseal_for_send），消息随自动恢复且不改变 msg_id。
+            let Some((content, kind_str)) = open_direct_content(
+                &state.identity.x25519_secret,
+                sender_x25519_pubkey(state, &from).as_deref(),
+                &content,
+                kind,
+            ) else {
+                return;
+            };
+            let name = resolve_nickname(state, &from);
+            let preview = preview_content(&kind_str, &content);
             // 持锁块只做落库，返回带钳制 ts 的记录；await 全部在锁外（MutexGuard 非 Send）
             let out_rec = {
                 let dbc = state.db.lock().unwrap();
@@ -602,6 +572,105 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         Message::GroupKey { group_id, from, to, key } => {
             handle_group_key(state, group_id, from, to, key).await;
         }
+    }
+}
+
+// ---------------- 直连 E2EE 载荷 ----------------
+
+/// 取发送方当前的 X25519 公钥：好友表优先，回退在线节点表。
+/// 好友表由 `upsert_peer` 在 announce / who_has 检测到公钥变化时刷新，
+/// 因此「对方换了身份」最长一个广播周期后就会收敛到这里。
+fn sender_x25519_pubkey(state: &AppState, from: &str) -> Option<String> {
+    let from_db = {
+        let dbc = state.db.lock().unwrap();
+        db::get_friend_x25519(&dbc, from)
+    };
+    from_db.or_else(|| {
+        state
+            .peers
+            .lock()
+            .unwrap()
+            .get(from)
+            .and_then(|p| p.x25519_pubkey.clone())
+    })
+}
+
+/// 打开直连单聊载荷：`enc1:base64(nonce ‖ ChaCha20-Poly1305 密文)`。
+/// 返回 `None` = 当前无法解密（缺对端公钥 / 密钥交换失败 / AEAD 校验失败 / UTF-8 非法）。
+/// 调用方据此不落库、不 Ack——绝不返回占位文本，占位文本一旦占用真实 msg_id，
+/// 同一 msg_id 的正确副本就永远进不来（`insert_message` 是 INSERT OR IGNORE）。
+/// 非 `enc1:` 前缀（旧版明文帧）按原样透传，保持既有行为。
+fn open_direct_content(
+    my_x25519_secret: &StaticSecret,
+    sender_pubkey: Option<&str>,
+    wire: &str,
+    kind: MsgKind,
+) -> Option<(String, String)> {
+    let Some(b64) = wire.strip_prefix("enc1:") else {
+        return Some((wire.to_string(), kind.as_str().to_string()));
+    };
+    let pubkey = sender_pubkey?;
+    let shared = crypto::shared_secret(my_x25519_secret, pubkey)?;
+    let bytes = STANDARD.decode(b64).ok()?;
+    let plain = crypto::open(&shared, &bytes)?;
+    Some((String::from_utf8(plain).ok()?, kind.as_str().to_string()))
+}
+
+/// 用接收方当前公钥重新密封待发内容（`msg_id` 由调用方保持不变）。
+/// 返回 `None` = 无法重封（本地无明文 / 拿不到当前公钥 / 加密失败），调用方按原样补发。
+fn reseal_chat_content(
+    my_x25519_secret: &StaticSecret,
+    plaintext: Option<&str>,
+    receiver_pubkey: Option<&str>,
+) -> Option<String> {
+    let shared = crypto::shared_secret(my_x25519_secret, receiver_pubkey?)?;
+    let sealed = crypto::seal(&shared, plaintext?.as_bytes())?;
+    Some(format!("enc1:{}", STANDARD.encode(sealed)))
+}
+
+/// 补发前重封一条 `ChatMessage`：密文是「加密时刻」的产物，若双方任一身份在那之后
+/// 变化（重装 / 重新加好友），旧密文在接收方永远解不开，重发同一份密文没有意义。
+/// 发送方 `messages` 表存的就是明文（见 `commands::send_message`），据此恢复明文并用
+/// 最新公钥重封即可；`msg_id` 取自 Gossip 信封 ID、与密文无关，故重封不改变消息身份。
+fn reseal_for_send(state: &AppState, msg: Message) -> Message {
+    let Message::ChatMessage { msg_id, from, to, kind, content, ts } = msg else {
+        return msg;
+    };
+    if !content.starts_with("enc1:") {
+        return Message::ChatMessage { msg_id, from, to, kind, content, ts };
+    }
+    let (plaintext, from_db) = {
+        let dbc = state.db.lock().unwrap();
+        // 只认「我自己发出的那条记录」：接收方行的 content 是对方会话的明文，语义不同
+        let plaintext = dbc
+            .query_row(
+                "SELECT content FROM messages WHERE msg_id = ?1 AND sender_id = ?2",
+                params![msg_id, state.device_id],
+                |r| r.get::<_, String>(0),
+            )
+            .ok();
+        (plaintext, db::get_friend_x25519(&dbc, &to))
+    };
+    let pubkey = from_db.or_else(|| {
+        state
+            .peers
+            .lock()
+            .unwrap()
+            .get(&to)
+            .and_then(|p| p.x25519_pubkey.clone())
+    });
+    let resealed = reseal_chat_content(
+        &state.identity.x25519_secret,
+        plaintext.as_deref(),
+        pubkey.as_deref(),
+    );
+    Message::ChatMessage {
+        content: resealed.unwrap_or(content),
+        msg_id,
+        from,
+        to,
+        kind,
+        ts,
     }
 }
 
@@ -1040,6 +1109,9 @@ fn preview_content(kind: &str, content: &str) -> String {
 /// 注意：这里**只补发、不删除**——outbox 行仅在收到对方 `Ack`（真正确认送达）时删除。
 /// 旧实现 `try_send` 返回 Ok（仅表示已入发送队列）就删行，半开 TCP 链路上会静默丢消息，
 /// outbox 兜底因此失效。接收方按 msg_id 去重，重复补发不会重复入库/通知。
+///
+/// 每条补发前用**当前**公钥重新密封（见 `reseal_for_send`）：outbox 存的是加密时刻的
+/// 密文，若之后接收方换了身份，旧密文重发多少次都解不开；`msg_id` 不变，幂等性不受影响。
 pub async fn flush_outbox(state: &AppState, peer_id: &str) {
     let pending = {
         let dbc = state.db.lock().unwrap();
@@ -1049,6 +1121,7 @@ pub async fn flush_outbox(state: &AppState, peer_id: &str) {
         let Ok(msg) = serde_json::from_str::<Message>(&payload) else {
             continue;
         };
+        let msg = reseal_for_send(state, msg);
         let _ = try_send(state, peer_id, &msg).await;
     }
 }
@@ -1125,5 +1198,123 @@ mod tests {
         let decrypted = STANDARD.decode(&env.payload).unwrap();
         let opened = crate::crypto::open(&shared_b, &decrypted).unwrap();
         assert_eq!(opened, plaintext);
+    }
+
+    // ---------------- P0-2：直连 E2EE 解密失败不得消费真实 msg_id ----------------
+
+    fn seal_direct(from: &crate::crypto::Identity, to_pubkey: &str, text: &str) -> String {
+        let shared = crate::crypto::shared_secret(&from.x25519_secret, to_pubkey).unwrap();
+        format!("enc1:{}", STANDARD.encode(crate::crypto::seal(&shared, text.as_bytes()).unwrap()))
+    }
+
+    /// Test 1 正常 E2EE：正确公钥 → 明文与原始 kind 一并还原（kind 不被改写成 system）。
+    #[test]
+    fn direct_open_succeeds_with_current_keys() {
+        let a = crate::crypto::Identity::generate();
+        let b = crate::crypto::Identity::generate();
+        let wire = seal_direct(&a, &b.x25519_public_b64(), "你好 e2ee");
+        assert_eq!(
+            open_direct_content(&b.x25519_secret, Some(&a.x25519_public_b64()), &wire, MsgKind::Code),
+            Some(("你好 e2ee".to_string(), "code".to_string()))
+        );
+    }
+
+    /// Test 2 场景 A（暂时缺公钥）：缺发送方公钥必须判为「解不开」（→ 不落库、不 Ack），
+    /// 且公钥经 announce/who_has 学到之后，**同一份密文**即可解开 —— 补发重试就能恢复。
+    #[test]
+    fn direct_open_fails_without_sender_key_and_recovers_when_key_arrives() {
+        let a = crate::crypto::Identity::generate();
+        let b = crate::crypto::Identity::generate();
+        let wire = seal_direct(&a, &b.x25519_public_b64(), "pending key");
+        assert_eq!(open_direct_content(&b.x25519_secret, None, &wire, MsgKind::Text), None);
+        assert_eq!(
+            open_direct_content(&b.x25519_secret, Some(&a.x25519_public_b64()), &wire, MsgKind::Text),
+            Some(("pending key".to_string(), "text".to_string()))
+        );
+    }
+
+    /// Test 3a 场景 B（发送方换身份）：本地缓存为旧公钥时解不开；
+    /// `upsert_peer` 把对方新公钥刷进缓存后，同一份密文可解开（无需重新加密）。
+    #[test]
+    fn direct_open_recovers_once_sender_pubkey_cache_refreshed() {
+        let a_old = crate::crypto::Identity::generate();
+        let a_new = crate::crypto::Identity::generate();
+        let b = crate::crypto::Identity::generate();
+        let wire = seal_direct(&a_new, &b.x25519_public_b64(), "rotated sender");
+        assert_eq!(
+            open_direct_content(&b.x25519_secret, Some(&a_old.x25519_public_b64()), &wire, MsgKind::Text),
+            None
+        );
+        assert_eq!(
+            open_direct_content(&b.x25519_secret, Some(&a_new.x25519_public_b64()), &wire, MsgKind::Text),
+            Some(("rotated sender".to_string(), "text".to_string()))
+        );
+    }
+
+    /// Test 3b 场景 B（接收方换身份）：outbox 里的密文对着旧公钥封存，重发多少次都解不开，
+    /// 必须由持有明文的发送方用**当前**公钥重封；重封可失败（无明文 / 无公钥）时一律返回
+    /// None 让调用方按原样补发，绝不伪造内容。
+    #[test]
+    fn reseal_with_current_receiver_key_recovers_where_retry_cannot() {
+        let a = crate::crypto::Identity::generate();
+        let b_old = crate::crypto::Identity::generate();
+        let b_new = crate::crypto::Identity::generate();
+        let stale = seal_direct(&a, &b_old.x25519_public_b64(), "stale seal");
+
+        // 旧密文对新的接收方身份永久无效（重发不解决问题）
+        assert_eq!(
+            open_direct_content(&b_new.x25519_secret, Some(&a.x25519_public_b64()), &stale, MsgKind::Text),
+            None
+        );
+        // 重封：同一明文 + 当前公钥 → 可解，且仍是 enc1: 形态
+        let resealed =
+            reseal_chat_content(&a.x25519_secret, Some("stale seal"), Some(&b_new.x25519_public_b64()))
+                .unwrap();
+        assert_ne!(resealed, stale);
+        assert_eq!(
+            open_direct_content(
+                &b_new.x25519_secret,
+                Some(&a.x25519_public_b64()),
+                &resealed,
+                MsgKind::Text
+            ),
+            Some(("stale seal".to_string(), "text".to_string()))
+        );
+        // 前置条件缺失 → 不重封（调用方保留原 payload）
+        let no_plaintext = reseal_chat_content(&a.x25519_secret, None, Some(&b_new.x25519_public_b64()));
+        assert_eq!(no_plaintext, None);
+        let no_pubkey = reseal_chat_content(&a.x25519_secret, Some("stale seal"), None);
+        assert_eq!(no_pubkey, None);
+    }
+
+    /// Test 3c 场景 C（真损坏）：base64 非法 / 密文被篡改一律判为解不开，
+    /// 但**不污染**同一条完好密文的可解性 —— 失败只影响这一次投递。
+    #[test]
+    fn direct_open_rejects_corrupt_and_tampered_payloads() {
+        let a = crate::crypto::Identity::generate();
+        let b = crate::crypto::Identity::generate();
+        let spk = a.x25519_public_b64();
+        assert_eq!(
+            open_direct_content(&b.x25519_secret, Some(&spk), "enc1:!!not base64!!", MsgKind::Text),
+            None
+        );
+        assert_eq!(open_direct_content(&b.x25519_secret, Some(&spk), "enc1:", MsgKind::Text), None);
+        let wire = seal_direct(&a, &b.x25519_public_b64(), "intact");
+        let mut raw = STANDARD.decode(wire.strip_prefix("enc1:").unwrap()).unwrap();
+        let last = raw.len() - 1;
+        raw[last] ^= 0xFF; // 破坏 AEAD tag
+        let tampered = format!("enc1:{}", STANDARD.encode(&raw));
+        assert_eq!(open_direct_content(&b.x25519_secret, Some(&spk), &tampered, MsgKind::Text), None);
+        assert!(open_direct_content(&b.x25519_secret, Some(&spk), &wire, MsgKind::Text).is_some());
+    }
+
+    /// 非 enc1 帧（旧版明文）按原样透传的既有行为不变 —— 本次修复不改动该分支语义。
+    #[test]
+    fn legacy_plaintext_payload_passes_through_unchanged() {
+        let me = crate::crypto::Identity::generate();
+        assert_eq!(
+            open_direct_content(&me.x25519_secret, None, "plain old text", MsgKind::Text),
+            Some(("plain old text".to_string(), "text".to_string()))
+        );
     }
 }
