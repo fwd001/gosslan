@@ -16,8 +16,13 @@
 - 匿名 GitHub API 有 60/h 限流，超限时用 WebFetch 读网页版 releases 页
 - E2EE：v0.8.0 起可开关（默认关，设置 `e2ee_enabled`）；**两端必须同时开启才能互通**；
   直发内容加密带 `enc1:` 前缀；GossipEnvelope.encrypted 缺省 true（兼容旧版）
+- **E2EE send 边界（v0.10.0 修）**：e2ee 关时不要求对端公钥；e2ee 开且缺公钥时主动探测 1.2s 再重试；enc1: 解密失败写系统消息而非 return
 - 设备指纹前缀 `gosslan-`（v0.8.0 破坏性变更，旧 dev- 好友关系需重建）
 - 机器码依赖 machine-uid 仅桌面目标（Cargo.toml target 门控）；`enc1:` 解密查公钥顺序：friends 表 → peers 表
 - version.mjs 只认 `[Unreleased]`→落日志；npm 命令在沙箱需 `env -u NODE_OPTIONS -u CODEBUDDY_BROKERED_FS_HOOK_ENABLED` 前缀
 - Bash 的 grep 常返回空，一律用 Grep 工具
 - 并发会话常见：push 前先 fetch；git commit/push 链式命令偶发「nothing to commit」假输出，以 git log/ls-remote 实际状态为准
+- **删除聊天记录**：db::delete_conversation 事务删 messages+conversations 行（幂等）；前端 ConversationList 右下角 X 按钮 + 二次确认 Modal
+- **消息回执位置**：v0.10.0 起 mine 时固定在气泡左侧（行容器第一子元素）
+- **消息时间**：默认 MM-DD HH:mm，hover 切秒级；同分钟合并消息仅 hover 时显示完整时间
+- **文本右键菜单**：v0.10.0 起禁用自定义复制菜单（hover 按钮已够）

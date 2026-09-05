@@ -310,13 +310,13 @@ pub struct Settings {
     pub bind_ip: Option<String>,
     /// 聊天显示样式 JSON：{"preset":"classic","fontSize":"md","compact":true}
     pub chat_style: Option<String>,
-    /// 端到端加密开关（默认关闭；开启后单聊/群聊载荷 ChaCha20-Poly1305 加密）
-    pub e2ee_enabled: Option<bool>,
     /// 对端样式表 JSON（device_id -> style JSON）。仅由后端在收到 ChatStyle 消息时写入，
     /// 前端只读；save_settings 忽略该字段。
     pub peer_styles: Option<String>,
 }
 
+/// e2ee_enabled 键保留在 reset 链中仅为清理 v0.10.0 及更早版本的残留值；
+/// v0.11.0 起 E2EE 恒开、不可关闭，该键不再被读写。
 const SETTINGS_KEYS: [&str; 6] = [
     "theme_color",
     "font_family",
@@ -335,7 +335,6 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
         dark_mode: db::get_setting(&dbc, "dark_mode").map(|v| v == "1"),
         bind_ip: db::get_setting(&dbc, "bind_ip"),
         chat_style: db::get_setting(&dbc, "chat_style"),
-        e2ee_enabled: Some(db::get_setting(&dbc, "e2ee_enabled").map(|v| v == "1").unwrap_or(false)),
         peer_styles: db::get_setting(&dbc, "chat_peer_styles"),
     }
 }
@@ -357,9 +356,6 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     }
     if let Some(v) = settings.chat_style {
         db::set_setting(&dbc, "chat_style", &v).ok();
-    }
-    if let Some(v) = settings.e2ee_enabled {
-        db::set_setting(&dbc, "e2ee_enabled", if v { "1" } else { "0" }).ok();
     }
     Ok(())
 }
@@ -487,15 +483,10 @@ pub async fn send_message(
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
 
-    // E2EE 开关（关闭则不加密 → 不需要对端公钥；最常见场景：双方都关闭或一方关闭）
-    let e2ee = {
-        let dbc = s.db.lock().unwrap();
-        db::get_setting(&dbc, "e2ee_enabled").map(|v| v == "1").unwrap_or(false)
-    };
-
-    // 仅在 E2EE 开启时才需要对方 X25519 公钥；找不到时尝试主动探测一次在线节点，
-    // 给对方发 announce 的窗口（Windows / 不同子网首次上线时常需要这一刷新）。
-    let pubkey = if e2ee {
+    // E2EE 恒开（v0.11.0 起默认且不可关闭）：发送必须拿到对端 X25519 公钥。
+    // 好友表优先，回退在线节点表；都缺失时主动探测一次（who_has）等对方/中继
+    // announce 落库（约 1.2s）后再查，仍缺失则报错指引。
+    let pubkey = {
         let from_db = {
             let dbc = s.db.lock().unwrap();
             db::get_friend_x25519(&dbc, &friend_id)
@@ -509,7 +500,6 @@ pub async fn send_message(
         match from_db.or(from_peers) {
             Some(k) => Some(k),
             None => {
-                // 主动触发一次 who_has → 等对方/中继 announce → 再查一次
                 let triggered = if let Some(tx) = s.probe.lock().unwrap().as_ref() {
                     let next = tx.borrow().saturating_add(1);
                     let _ = tx.send(next);
@@ -533,14 +523,12 @@ pub async fn send_message(
                 again_db.or(again_peers)
             }
         }
-    } else {
-        None
     };
-    if e2ee && pubkey.is_none() {
+    let Some(pubkey) = pubkey else {
         return Err(format!(
-            "尚未获取 {friend_id} 的公钥：对方可能离线或处于不同子网。请让对方上线后重试，或临时关闭 E2EE 后明文发送"
+            "尚未获取 {friend_id} 的公钥：对方可能离线或处于不同子网，请让对方上线后重试"
         ));
-    }
+    };
 
     let ts = db::now_ms();
     let name = resolve_nickname(s, &friend_id);
@@ -548,31 +536,17 @@ pub async fn send_message(
 
     // E2EE 加密 + Gossip 信封（先于本地落库：msg_id 三处统一用 Gossip 信封 ID）
     let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
-    // e2ee 关：明文 + pubkey 为 None → 不调用密钥派生；e2ee 开：必须拿到对方公钥
-    let shared = if e2ee {
-        let pk = pubkey.as_deref().expect("e2ee=true 时 pubkey 已守卫");
-        Some(crypto::shared_secret(&s.identity.x25519_secret, pk).ok_or("密钥交换失败")?)
-    } else {
-        None
-    };
-    // E2EE 开：Gossip 载荷与直发内容都走 ChaCha20-Poly1305（直发内容加 "enc1:" 前缀标识）；
-    // E2EE 关：载荷明文（信封 encrypted=false），性能优先。
-    let (payload_b64, wire_content) = if e2ee {
-        let s_secret = shared.as_ref().expect("e2ee=true 时 shared 已派生");
-        let sealed = crypto::seal(s_secret, plaintext.as_bytes()).ok_or("加密失败")?;
-        let sealed_content = crypto::seal(s_secret, content.as_bytes()).ok_or("加密失败")?;
-        (
-            STANDARD.encode(&sealed),
-            format!("enc1:{}", STANDARD.encode(&sealed_content)),
-        )
-    } else {
-        (STANDARD.encode(plaintext.as_bytes()), content.clone())
-    };
-    let mut env = {
+    let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;
+    // Gossip 载荷与直发内容都走 ChaCha20-Poly1305（直发内容加 "enc1:" 前缀标识）
+    let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
+    let sealed_content = crypto::seal(&shared, content.as_bytes()).ok_or("加密失败")?;
+    let payload_b64 = STANDARD.encode(&sealed);
+    let wire_content = format!("enc1:{}", STANDARD.encode(&sealed_content));
+    let env = {
         let gossip = s.gossip.lock().unwrap();
         gossip.build_envelope(&s.identity, &s.device_id, GossipKind::Chat, None, &payload_b64, ts)
     };
-    env.encrypted = e2ee;
+    // 信封 encrypted 默认 true（build_envelope 内置），无需改写
     // 统一 msg_id：本地记录 / Gossip 投递 / outbox 补发共用同一确定性 ID，
     // 接收方 message_exists 跨路径去重（防建链竞态窗口内的重复投递）。
     let msg_id = env.message_id.clone();
@@ -820,24 +794,16 @@ pub async fn send_group_message(
         db::touch_conversation(&dbc, &conv_id, "group", &group_name, None, &preview, 0).ok();
     }
 
-    // 群密钥加密 + Gossip 广播（受 E2EE 开关控制；关闭时载荷明文 + encrypted=false）
+    // 群密钥加密 + Gossip 广播（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
     let key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
-    let e2ee = {
-        let dbc = s.db.lock().unwrap();
-        db::get_setting(&dbc, "e2ee_enabled").map(|v| v == "1").unwrap_or(false)
-    };
     let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
-    let payload_b64 = if e2ee {
-        let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
-        STANDARD.encode(&sealed)
-    } else {
-        STANDARD.encode(plaintext.as_bytes())
-    };
-    let mut env = {
+    let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
+    let payload_b64 = STANDARD.encode(&sealed);
+    let env = {
         let gossip = s.gossip.lock().unwrap();
         gossip.build_envelope(&s.identity, &s.device_id, GossipKind::Group, Some(group_id), &payload_b64, ts)
     };
-    env.encrypted = e2ee;
+    // 信封 encrypted 默认 true（build_envelope 内置），无需改写
     broadcast_gossip(s, env).await;
 
     Ok(rec)

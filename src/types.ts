@@ -131,7 +131,8 @@ export interface ChannelStatus {
   peers: number;
 }
 
-/** 应用偏好设置（外观 / 网卡选择 / 聊天样式 / E2EE，持久化到本地 SQLite） */
+/** 应用偏好设置（外观 / 网卡选择 / 聊天样式，持久化到本地 SQLite）。
+ *  E2EE 自 v0.11.0 起恒开且不可关闭，不再作为设置项。 */
 export interface AppSettings {
   themeColor: string | null;
   fontFamily: string | null;
@@ -139,8 +140,6 @@ export interface AppSettings {
   bindIp: string | null;
   /** 聊天显示样式 JSON：{"preset":"classic","fontSize":"md","compact":true} */
   chatStyle: string | null;
-  /** 端到端加密开关（默认关闭；开启后单聊/群聊载荷加密） */
-  e2eeEnabled: boolean | null;
   /** 对端样式表 JSON（device_id -> style JSON，后端收 ChatStyle 消息时写入） */
   peerStyles: string | null;
 }

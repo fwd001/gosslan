@@ -12,7 +12,6 @@ import {
   FilePlus,
   FolderOpen,
   Lock,
-  LockOpen,
   Send,
 } from "lucide-vue-next";
 import type { MessageRecord } from "@/types";
@@ -225,15 +224,13 @@ function fileToDataUrl(f: File): Promise<string> {
           ></span>
         </div>
         <span class="truncate text-base font-semibold">{{ conv?.name || "会话" }}</span>
-        <!-- E2EE 状态徽标：锁形 + 文字，实时反映设置开关 -->
+        <!-- E2EE 徽标：v0.11.0 起恒开且不可关闭，始终显示绿锁 -->
         <span
-          class="flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px]"
-          :class="app.e2ee ? 'bg-emerald-500/10 text-emerald-600' : 'bg-neutral-500/10 text-[var(--gosslan-text-2)]'"
-          :title="app.e2ee ? '端到端加密已开启：消息经 ChaCha20-Poly1305 加密，中继无法查看' : '端到端加密未开启：消息明文传输，可在设置中开启'"
+          class="flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-600"
+          title="端到端加密：消息经 X25519 + ChaCha20-Poly1305 加密，中继与旁观者无法查看"
         >
-          <Lock v-if="app.e2ee" class="h-3 w-3" />
-          <LockOpen v-else class="h-3 w-3" />
-          {{ app.e2ee ? "端到端加密" : "未加密" }}
+          <Lock class="h-3 w-3" />
+          端到端加密
         </span>
         <span v-if="!isGroup" class="flex items-center gap-1 text-xs" :class="online ? 'text-emerald-600' : 'text-[var(--gosslan-text-2)]'">
           <span class="h-1.5 w-1.5 rounded-full" :class="online ? 'bg-emerald-500' : 'bg-neutral-400'"></span>
