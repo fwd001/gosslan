@@ -342,8 +342,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             };
             let name = resolve_nickname(state, &from);
             let preview = preview_content(&kind_str, &content);
-            // 持锁块只做落库，返回带钳制 ts 的记录；await 全部在锁外（MutexGuard 非 Send）
-            let out_rec = {
+            // 持锁块只做落库，返回带钳制 ts 的记录 + 「本次是否首次插入」；await 全部在锁外
+            // （MutexGuard 非 Send）。首次与否由 INSERT 的受影响行数裁决，而不是先查后写：
+            // 与 Gossip 并发时只有一方拿到 fresh=true，未读 +1 / message-received 因此各只一次。
+            let (out_rec, fresh) = {
                 let dbc = state.db.lock().unwrap();
                 // 时钟偏差防护：发送方时钟与我方不一致会导致消息排序错乱
                 // （同一发送者的消息在列表中堆叠）→ 双向钳制到 [会话最后一条, 本地 now]
@@ -359,11 +361,16 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     ts,
                     status: "delivered".to_string(),
                 };
-                db::insert_message(&dbc, &rec).ok();
-                db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1).ok();
-                rec
+                let fresh = db::insert_message_if_new(&dbc, &rec).unwrap_or(false);
+                if fresh {
+                    db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1).ok();
+                }
+                (rec, fresh)
             };
-            let _ = state.app.emit("message-received", &out_rec);
+            if fresh {
+                let _ = state.app.emit("message-received", &out_rec);
+            }
+            // Ack 与 fresh 无关：消息已在库中（无论是哪条路径先写的）即代表已成功接收
             let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
         }
         Message::GroupMessage { msg_id, from, group_id, group_name, kind, content, ts } => {
@@ -737,14 +744,17 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
         };
         let preview = preview_content(&kind, &content);
         // 持锁块只做落库；await（fanout 转发已在前面）之后无持锁操作
-        let out_rec = {
+        // 业务幂等裁决：Direct（含 outbox 补发）可能已经把同一 msg_id 落库，此时
+        // 不得再计未读、再发 message-received，否则未读数与系统通知都会重复。
+        // 与 Direct 分支同一个 insert_message_if_new 裁决，两路径并发时只有一方 fresh=true。
+        let (out_rec, fresh) = {
             let dbc = state.db.lock().unwrap();
             // 时钟偏差防护（同 ChatMessage 分支）
             let ts = db::clamp_incoming_ts(env.ts, db::now_ms(), db::last_message_ts(&dbc, &conv_id));
             let rec = MessageRecord {
                 id: 0,
-                // 不加前缀：与 outbox 补发的直连 ChatMessage 共用同一 msg_id，
-                // 接收方 message_exists 可跨路径去重（防建链竞态下的重复消息）
+                // 不加前缀：与 outbox 补发的直连 ChatMessage 共用同一业务 msg_id，
+                // 由这条插入本身完成跨路径去重（防建链竞态下的重复投递效果）
                 msg_id: env.message_id.clone(),
                 conv_id: conv_id.clone(),
                 sender_id: env.sender_id.clone(),
@@ -754,11 +764,15 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
                 ts,
                 status: "delivered".to_string(),
             };
-            db::insert_message(&dbc, &rec).ok();
-            db::touch_conversation(&dbc, &conv_id, conv_kind, &name, None, &preview, 1).ok();
-            rec
+            let fresh = db::insert_message_if_new(&dbc, &rec).unwrap_or(false);
+            if fresh {
+                db::touch_conversation(&dbc, &conv_id, conv_kind, &name, None, &preview, 1).ok();
+            }
+            (rec, fresh)
         };
-        let _ = state.app.emit("message-received", &out_rec);
+        if fresh {
+            let _ = state.app.emit("message-received", &out_rec);
+        }
     }
 }
 
@@ -1316,5 +1330,21 @@ mod tests {
             open_direct_content(&me.x25519_secret, None, "plain old text", MsgKind::Text),
             Some(("plain old text".to_string(), "text".to_string()))
         );
+    }
+
+    /// P1-3：两层去重必须互相独立——Gossip 的 Bloom/LRU 属网络传播层（只认 `message_id`），
+    /// SQLite 的 `msg_id` 属业务持久化层。业务层的「本机已落库」只能抑制未读/事件，
+    /// 绝不能前移到转发之前，否则已经 Direct 收到过该消息的节点会拒绝继续 fan-out，
+    /// epidemic 传播在此断链。转发目标只由邻居集合 / fanout / exclude 决定。
+    #[test]
+    fn gossip_propagation_layer_stays_independent_of_local_persistence() {
+        let mut engine = GossipEngine::new(100, 10, 4, 6);
+        assert!(engine.is_new("m1"), "首次见到的信封必须进入处理与转发");
+        assert!(!engine.is_new("m1"), "同一信封第二次到达在传播层判为重复");
+        assert!(engine.is_new("m2"), "另一条消息不受前者影响");
+        let peers = vec!["b".to_string(), "c".to_string(), "d".to_string()];
+        let targets = engine.choose_fanout(&peers, "a");
+        assert_eq!(targets.len(), 3, "fanout=4 时三个邻居都应被转发到");
+        assert!(!targets.contains(&"a".to_string()), "不回发给信封的发送方");
     }
 }

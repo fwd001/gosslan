@@ -250,13 +250,23 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<Group>> {
 
 // ---------------- 消息 ----------------
 
-pub fn insert_message(conn: &Connection, m: &MessageRecord) -> Result<()> {
-    conn.execute(
+/// 插入一条消息，并返回「本次是否真的新建了记录」。
+///
+/// `true` = 本次插入；`false` = `msg_id` 已存在（INSERT OR IGNORE 命中唯一约束被忽略）
+/// 或写入失败。判定与插入在同一条 SQL 语句内完成，不依赖先查后写的时序 —— 因此
+/// Direct 与 Gossip 并发投递同一业务 msg_id 时，只可能有一方拿到 `true`，
+/// 未读 +1 与 `message-received` 事件随之只发生一次。
+pub fn insert_message_if_new(conn: &Connection, m: &MessageRecord) -> Result<bool> {
+    let changed = conn.execute(
         "INSERT OR IGNORE INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, status)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![m.msg_id, m.conv_id, m.sender_id, m.receiver_id, m.kind, m.content, m.ts, m.status],
     )?;
-    Ok(())
+    Ok(changed > 0)
+}
+
+pub fn insert_message(conn: &Connection, m: &MessageRecord) -> Result<()> {
+    insert_message_if_new(conn, m).map(|_| ())
 }
 
 pub fn message_exists(conn: &Connection, msg_id: &str) -> bool {
@@ -605,6 +615,87 @@ mod tests {
             .optional()
             .unwrap();
         assert_eq!(other, None);
+    }
+
+    /// Direct 分支与 Gossip 分支的投递效果只允许发生一次。
+    /// 这里用与两个 handler 完全同构的模型（insert_message_if_new → 仅 fresh 才
+    /// touch_conversation + 计一次事件），覆盖两种先后顺序。
+    fn deliver(conn: &Connection, who: &str, content: &str) -> bool {
+        let fresh = insert_message_if_new(conn, &rec_as("m1", "f1", "text", content)).unwrap();
+        if fresh {
+            touch_conversation(conn, "f1", "single", "张三", None, who, 1).unwrap();
+        }
+        fresh
+    }
+
+    /// Test 1 + Test 2：Direct→Gossip 与 Gossip→Direct 两种顺序，
+    /// 都必须收敛为「1 条消息 / unread +1 / 1 次投递事件」，且 last_msg 属于先到者。
+    #[test]
+    fn unread_and_event_fire_only_for_the_winning_insert() {
+        for gossip_first in [false, true] {
+            let conn = mem();
+            ensure_conversation(&conn, "f1", "single", "张三", None).unwrap();
+            let order = if gossip_first { ["gossip", "direct"] } else { ["direct", "gossip"] };
+            let mut events = 0;
+            for who in order {
+                if deliver(&conn, who, "hello") {
+                    events += 1;
+                }
+            }
+            let case = if gossip_first { "Gossip→Direct" } else { "Direct→Gossip" };
+            assert_eq!(get_messages(&conn, "f1", 10, 0).unwrap().len(), 1, "{case}");
+            assert_eq!(events, 1, "{case} 只能产生一次 message-received");
+            let conv = &list_conversations(&conn).unwrap()[0];
+            assert_eq!(conv.unread, 1, "{case} 未读只能 +1");
+            assert_eq!(conv.last_msg.as_deref(), Some(order[0]), "{case} 后到者不得改写 last_msg");
+        }
+    }
+
+    /// Test 3：同一 msg_id 被重复投递（心跳反复补发 / 同一信封多次到达）
+    /// ⇒ 始终只有 1 行、1 次未读、1 次事件。
+    #[test]
+    fn repeated_delivery_of_same_msg_id_yields_single_side_effect() {
+        let conn = mem();
+        ensure_conversation(&conn, "f1", "single", "张三", None).unwrap();
+        let mut events = 0;
+        for i in 0..5 {
+            if deliver(&conn, "dup", "hello") {
+                events += 1;
+            }
+            assert_eq!(events, 1, "第 {i} 次投递后累计投递事件数应恒为 1");
+        }
+        assert_eq!(get_messages(&conn, "f1", 10, 0).unwrap().len(), 1);
+        assert_eq!(list_conversations(&conn).unwrap()[0].unread, 1);
+    }
+
+    /// Test 5：竞态。多线程同时投递同一 msg_id（Direct 与 Gossip 交错的最坏情况），
+    /// 连接模型与 AppState.db 一致（Mutex\<Connection\>）。只可能有一个 fresh=true。
+    #[test]
+    fn concurrent_same_msg_id_has_exactly_one_winner() {
+        use std::sync::{Arc, Barrier, Mutex};
+        use std::thread;
+        let conn = Arc::new(Mutex::new(mem()));
+        let gate = Arc::new(Barrier::new(8));
+        let winners = Arc::new(Mutex::new(0u32));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let (c, g, w) = (conn.clone(), gate.clone(), winners.clone());
+            handles.push(thread::spawn(move || {
+                g.wait();
+                let dbc = c.lock().unwrap();
+                if insert_message_if_new(&dbc, &rec_as("m1", "f1", "text", "hello")).unwrap() {
+                    touch_conversation(&dbc, "f1", "single", "张三", None, "hello", 1).ok();
+                    *w.lock().unwrap() += 1;
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(*winners.lock().unwrap(), 1, "同一 msg_id 只能有一个首次插入者");
+        let dbc = conn.lock().unwrap();
+        assert_eq!(get_messages(&dbc, "f1", 10, 0).unwrap().len(), 1);
+        assert_eq!(list_conversations(&dbc).unwrap()[0].unread, 1);
     }
 
     #[test]
