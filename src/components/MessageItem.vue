@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, ref } from "vue";
 import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { openPath } from "@tauri-apps/plugin-opener";
 import CodeBlock from "@/components/CodeBlock.vue";
-import { Check, Circle, Download, FileText, Loader2, X } from "lucide-vue-next";
+import { Check, Circle, Copy, Download, FileText, Loader2, X } from "lucide-vue-next";
 import { humanSize } from "@/utils/color";
 import { findPreset, parsePeerStyle } from "@/utils/chatStyle";
 import type { MessageRecord } from "@/types";
@@ -66,9 +66,9 @@ const showTimeDivider = computed(() => {
 /** 群聊非本人消息首条：显示昵称。 */
 const showNickname = computed(() => props.isGroup && !mine.value && !sameSenderRun.value);
 
-const time = computed(() => dayjs(props.message.ts).format("HH:mm"));
+const time = computed(() => dayjs(props.message.ts).format("MM-DD HH:mm"));
 const fullTime = computed(() => dayjs(props.message.ts).format("YYYY-MM-DD HH:mm:ss"));
-const timeDividerText = computed(() => dayjs(props.message.ts).format("M月D日 HH:mm"));
+const timeDividerText = computed(() => dayjs(props.message.ts).format("YYYY-MM-DD HH:mm"));
 
 // ---------------- 发送状态（sending / delivered / read / failed） ----------------
 /** sending/sent=转圈（发出中或未确认送达）；delivered=空圆框（对方收到未读）；read=绿勾（已读）。 */
@@ -154,37 +154,6 @@ async function copyText() {
 async function openFile() {
   if (fileMeta.value?.path) await openPath(fileMeta.value.path);
 }
-
-// ---------------- 自定义右键菜单（复制） ----------------
-const menu = ref<{ x: number; y: number } | null>(null);
-
-function onContext(e: MouseEvent) {
-  if (props.message.kind !== "text") return;
-  e.preventDefault();
-  // 位置夹紧，避免菜单溢出视口
-  const mw = 140;
-  const mh = 40;
-  const x = Math.min(e.clientX, window.innerWidth - mw - 8);
-  const y = Math.min(e.clientY, window.innerHeight - mh - 8);
-  menu.value = { x: Math.max(8, x), y: Math.max(8, y) };
-}
-
-function closeMenu() {
-  menu.value = null;
-}
-function onCopyFromMenu() {
-  void copyText();
-  closeMenu();
-}
-
-onMounted(() => {
-  document.addEventListener("click", closeMenu);
-  document.addEventListener("scroll", closeMenu, true);
-});
-onUnmounted(() => {
-  document.removeEventListener("click", closeMenu);
-  document.removeEventListener("scroll", closeMenu, true);
-});
 </script>
 
 <template>
@@ -229,12 +198,20 @@ onUnmounted(() => {
           {{ message.content }}
         </div>
 
-        <!-- 消息行：气泡 + 侧挂回执（我发送的消息显示在气泡另一侧） -->
+        <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧） -->
         <div
           v-else
-          class="group/row flex w-full items-end gap-1"
+          class="group/row flex w-full items-end gap-1.5"
           :class="mine ? 'justify-end' : 'justify-start'"
         >
+        <!-- mine 时回执固定在气泡左侧（视觉上贴近对话人头像方向） -->
+        <span v-if="mine" class="shrink-0 pb-1.5" :title="receiptTitle">
+          <Loader2 v-if="sendState === 'sending' || sendState === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
+          <X v-else-if="sendState === 'failed'" class="h-3.5 w-3.5 text-red-500" />
+          <Circle v-else-if="sendState === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+          <Check v-else-if="sendState === 'read'" class="h-4 w-4 text-emerald-500" />
+        </span>
+
         <!-- 文本 -->
         <div
           v-if="message.kind === 'text'"
@@ -244,7 +221,6 @@ onUnmounted(() => {
             color: mine ? colors.mineText : colors.otherText,
             fontSize: 'var(--gosslan-msg-size, 14px)',
           }"
-          @contextmenu="onContext"
         >
           <div
             class="whitespace-pre-wrap break-words"
@@ -329,48 +305,26 @@ onUnmounted(() => {
         <div v-else class="rounded-2xl px-3 py-2 text-sm shadow-sm" :style="{ background: colors.otherBubble, color: colors.otherText }">
           {{ message.content }}
         </div>
-
-        <!-- 回执（挂在气泡侧面：转圈=发送中，空心圆=已送达未读，绿勾=已读，红叉=失败） -->
-        <span v-if="mine" class="shrink-0 pb-1.5" :title="receiptTitle">
-          <Loader2 v-if="sendState === 'sending' || sendState === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
-          <X v-else-if="sendState === 'failed'" class="h-3.5 w-3.5 text-red-500" />
-          <Circle v-else-if="sendState === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-          <Check v-else-if="sendState === 'read'" class="h-4 w-4 text-emerald-500" />
-        </span>
         </div>
 
-        <!-- 时间行：默认到分钟；悬浮该消息切换为完整时间戳 -->
-        <div v-if="!tight" class="mt-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]" :class="mine ? 'text-right' : ''">
+        <!-- 时间行：默认 MM-DD HH:mm（始终可见，更易识别），悬浮切到完整秒级时间 -->
+        <div
+          v-if="!tight"
+          class="mt-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]"
+          :class="mine ? 'text-right' : ''"
+        >
           <span class="group-hover/row:hidden">{{ time }}</span>
           <span class="hidden group-hover/row:inline">{{ fullTime }}</span>
         </div>
+        <!-- tight：同分钟内的连续消息不重复显示时间（信息冗余），仅 hover 时显示秒级 -->
         <div
           v-else
-          class="hidden px-1 text-[10px] text-[var(--gosslan-text-2)] group-hover/row:block"
+          class="mt-0.5 hidden px-1 text-[10px] text-[var(--gosslan-text-2)] group-hover/row:block"
           :class="mine ? 'text-right' : ''"
         >
           {{ fullTime }}
         </div>
       </div>
     </div>
-
-    <!-- 右键复制菜单 -->
-    <Teleport to="body">
-      <div
-        v-if="menu"
-        class="fixed z-50 min-w-[120px] rounded-lg border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-1 shadow-xl"
-        :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
-        @click.stop
-      >
-        <button
-          class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition hover:bg-[var(--gosslan-hover)]"
-          @click="onCopyFromMenu"
-        >
-          <Check v-if="copied" class="h-4 w-4 text-emerald-500" />
-          <Copy v-else class="h-4 w-4" />
-          复制文本
-        </button>
-      </div>
-    </Teleport>
   </div>
 </template>

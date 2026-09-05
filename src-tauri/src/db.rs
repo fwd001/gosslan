@@ -352,6 +352,16 @@ pub fn mark_read(conn: &Connection, conv_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// 删除一个会话及其所有消息（本地清理；不影响对方聊天记录）。
+/// 事务包裹，确保消息与会话行同步删除；不存在则视为成功（幂等）。
+pub fn delete_conversation(conn: &Connection, conv_id: &str) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM messages WHERE conv_id = ?1", params![conv_id])?;
+    tx.execute("DELETE FROM conversations WHERE id = ?1", params![conv_id])?;
+    tx.commit()?;
+    Ok(())
+}
+
 // ---------------- 离线补发队列 ----------------
 
 pub fn insert_outbox(conn: &Connection, msg_id: &str, peer_id: &str, payload: &str) -> Result<()> {
@@ -516,6 +526,37 @@ mod tests {
         assert_eq!(conv.last_msg.as_deref(), Some("world"));
         mark_read(&conn, "c1").unwrap();
         assert_eq!(list_conversations(&conn).unwrap()[0].unread, 0);
+    }
+
+    #[test]
+    fn delete_conversation_removes_messages_and_row() {
+        let conn = mem();
+        // 两个会话互不干扰
+        ensure_conversation(&conn, "c1", "single", "张三", None).unwrap();
+        ensure_conversation(&conn, "c2", "single", "李四", None).unwrap();
+        insert_message(&conn, &rec("m1", "c1")).unwrap();
+        insert_message(&conn, &rec("m2", "c1")).unwrap();
+        insert_message(&conn, &rec("m3", "c2")).unwrap();
+        assert_eq!(list_conversations(&conn).unwrap().len(), 2);
+
+        delete_conversation(&conn, "c1").unwrap();
+
+        // c1 会话行与消息全部清除；c2 不受影响
+        let remaining = list_conversations(&conn).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "c2");
+        assert!(!message_exists(&conn, "m1"));
+        assert!(!message_exists(&conn, "m2"));
+        assert!(message_exists(&conn, "m3"));
+        assert_eq!(get_messages(&conn, "c1", 100, 0).unwrap().len(), 0);
+        assert_eq!(get_messages(&conn, "c2", 100, 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn delete_conversation_idempotent_on_missing() {
+        let conn = mem();
+        // 不存在也不报错（前端 UI 二次确认后用户可能在另一边删了/网络抖动）
+        delete_conversation(&conn, "nonexistent").unwrap();
     }
 
     #[test]

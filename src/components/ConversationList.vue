@@ -4,6 +4,7 @@ import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { Check, Search, UserMinus, UserPlus, UsersRound, X } from "lucide-vue-next";
+import BaseModal from "@/components/BaseModal.vue";
 import type { Conversation, Friend, PendingRequest } from "@/types";
 
 defineProps<{ view: "chats" | "contacts" }>();
@@ -102,6 +103,30 @@ async function confirmDeleteFriend() {
   }
 }
 
+// ---------------- 删除聊天记录（仅本地，二次确认） ----------------
+const pendingDelete = ref<Conversation | null>(null);
+
+function onAskDeleteConv(c: Conversation, e: MouseEvent) {
+  e.stopPropagation();
+  pendingDelete.value = c;
+}
+
+function cancelDeleteConv() {
+  pendingDelete.value = null;
+}
+
+async function confirmDeleteConv() {
+  const c = pendingDelete.value;
+  pendingDelete.value = null;
+  if (!c) return;
+  try {
+    await chat.deleteConversation(c.id);
+    app.toast(`已删除与「${c.name}」的聊天记录`, "success");
+  } catch (e) {
+    app.toast(`删除失败：${e}`, "error");
+  }
+}
+
 onMounted(() => {
   document.addEventListener("click", closeFriendMenu);
 });
@@ -149,7 +174,7 @@ onUnmounted(() => {
           v-for="c in filteredConversations"
           :key="c.id"
           v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id)]"
-          class="relative flex cursor-pointer items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
+          class="group/conv relative flex cursor-pointer items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
           :class="chat.activeConv === c.id ? 'bg-primary-light' : ''"
           @click="open(c)"
         >
@@ -195,6 +220,14 @@ onUnmounted(() => {
               </span>
             </div>
           </div>
+          <!-- 删除聊天记录入口：右下角，hover 行时浮现，避免列表常驻视觉噪音 -->
+          <button
+            class="absolute bottom-1 right-1 z-10 hidden h-6 w-6 items-center justify-center rounded-md text-[var(--gosslan-text-2)] transition hover:bg-red-500/10 hover:text-red-500 group-hover/conv:flex"
+            title="删除聊天记录"
+            @click="onAskDeleteConv(c, $event)"
+          >
+            <X class="h-3.5 w-3.5" />
+          </button>
         </div>
         <div v-if="filteredConversations.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
           暂无会话
@@ -298,5 +331,29 @@ onUnmounted(() => {
         </div>
       </div>
     </Teleport>
+
+    <!-- 二次确认：删除聊天记录（仅本地清理，不影响对方） -->
+    <BaseModal :open="pendingDelete !== null" title="删除聊天记录" @close="cancelDeleteConv">
+      <div class="space-y-3">
+        <p class="text-sm text-[var(--gosslan-text)]">
+          将删除与「<span class="font-medium text-red-500">{{ pendingDelete?.name }}</span>」的全部本地聊天记录。
+        </p>
+        <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+          <li>· 对方聊天记录不受影响</li>
+          <li>· 好友关系将保留（删除好友请在「联系人」中操作）</li>
+          <li>· 此操作不可撤销</li>
+        </ul>
+        <div class="flex justify-end gap-2 pt-2">
+          <button
+            class="rounded-lg px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+            @click="cancelDeleteConv"
+          >取消</button>
+          <button
+            class="rounded-lg bg-red-500 px-4 py-1.5 text-sm text-white transition hover:bg-red-600"
+            @click="confirmDeleteConv"
+          >删除</button>
+        </div>
+      </div>
+    </BaseModal>
   </div>
 </template>

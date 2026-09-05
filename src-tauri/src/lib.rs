@@ -74,6 +74,7 @@ pub fn run() {
             commands::get_conversations,
             commands::ensure_conversation,
             commands::mark_read,
+            commands::delete_conversation,
             commands::create_group,
             commands::distribute_group_key,
             commands::get_groups,

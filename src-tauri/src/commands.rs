@@ -487,21 +487,60 @@ pub async fn send_message(
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
 
-    // 获取对方 X25519 公钥（好友表优先，回退到在线节点表）
-    let pubkey = {
+    // E2EE 开关（关闭则不加密 → 不需要对端公钥；最常见场景：双方都关闭或一方关闭）
+    let e2ee = {
         let dbc = s.db.lock().unwrap();
-        db::get_friend_x25519(&dbc, &friend_id)
-    }
-    .or_else(|| {
-        s.peers
+        db::get_setting(&dbc, "e2ee_enabled").map(|v| v == "1").unwrap_or(false)
+    };
+
+    // 仅在 E2EE 开启时才需要对方 X25519 公钥；找不到时尝试主动探测一次在线节点，
+    // 给对方发 announce 的窗口（Windows / 不同子网首次上线时常需要这一刷新）。
+    let pubkey = if e2ee {
+        let from_db = {
+            let dbc = s.db.lock().unwrap();
+            db::get_friend_x25519(&dbc, &friend_id)
+        };
+        let from_peers = s
+            .peers
             .lock()
             .unwrap()
             .get(&friend_id)
-            .and_then(|p| p.x25519_pubkey.clone())
-    });
-    let Some(pubkey) = pubkey else {
-        return Err("尚未获取对方公钥，请确认对方在线后重试".to_string());
+            .and_then(|p| p.x25519_pubkey.clone());
+        match from_db.or(from_peers) {
+            Some(k) => Some(k),
+            None => {
+                // 主动触发一次 who_has → 等对方/中继 announce → 再查一次
+                let triggered = if let Some(tx) = s.probe.lock().unwrap().as_ref() {
+                    let next = tx.borrow().saturating_add(1);
+                    let _ = tx.send(next);
+                    true
+                } else {
+                    false
+                };
+                if triggered {
+                    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+                }
+                let again_db = {
+                    let dbc = s.db.lock().unwrap();
+                    db::get_friend_x25519(&dbc, &friend_id)
+                };
+                let again_peers = s
+                    .peers
+                    .lock()
+                    .unwrap()
+                    .get(&friend_id)
+                    .and_then(|p| p.x25519_pubkey.clone());
+                again_db.or(again_peers)
+            }
+        }
+    } else {
+        None
     };
+    if e2ee && pubkey.is_none() {
+        return Err(format!(
+            "尚未获取 {friend_id} 的公钥：对方可能离线或处于不同子网。请让对方上线后重试，或临时关闭 E2EE 后明文发送"
+        ));
+    }
 
     let ts = db::now_ms();
     let name = resolve_nickname(s, &friend_id);
@@ -509,16 +548,19 @@ pub async fn send_message(
 
     // E2EE 加密 + Gossip 信封（先于本地落库：msg_id 三处统一用 Gossip 信封 ID）
     let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
-    let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;
-    let e2ee = {
-        let dbc = s.db.lock().unwrap();
-        db::get_setting(&dbc, "e2ee_enabled").map(|v| v == "1").unwrap_or(false)
+    // e2ee 关：明文 + pubkey 为 None → 不调用密钥派生；e2ee 开：必须拿到对方公钥
+    let shared = if e2ee {
+        let pk = pubkey.as_deref().expect("e2ee=true 时 pubkey 已守卫");
+        Some(crypto::shared_secret(&s.identity.x25519_secret, pk).ok_or("密钥交换失败")?)
+    } else {
+        None
     };
     // E2EE 开：Gossip 载荷与直发内容都走 ChaCha20-Poly1305（直发内容加 "enc1:" 前缀标识）；
     // E2EE 关：载荷明文（信封 encrypted=false），性能优先。
     let (payload_b64, wire_content) = if e2ee {
-        let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
-        let sealed_content = crypto::seal(&shared, content.as_bytes()).ok_or("加密失败")?;
+        let s_secret = shared.as_ref().expect("e2ee=true 时 shared 已派生");
+        let sealed = crypto::seal(s_secret, plaintext.as_bytes()).ok_or("加密失败")?;
+        let sealed_content = crypto::seal(s_secret, content.as_bytes()).ok_or("加密失败")?;
         (
             STANDARD.encode(&sealed),
             format!("enc1:{}", STANDARD.encode(&sealed_content)),
@@ -646,6 +688,16 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
         }
     }
     Ok(())
+}
+
+/// 删除本地会话与全部消息（聊天记录清理）。
+/// 仅删本地：不影响对方、不广播；前端负责二次确认弹窗。
+/// 群聊同样支持（删除 group:xxx 会话及全部消息）。
+#[tauri::command]
+pub fn delete_conversation(state: State<'_, Arc<AppState>>, conv_id: String) -> Result<(), String> {
+    let s = state.inner();
+    let dbc = s.db.lock().unwrap();
+    db::delete_conversation(&dbc, &conv_id).map_err(|e| e.to_string())
 }
 
 // ---------------- 群聊（群密钥 + Gossip） ----------------

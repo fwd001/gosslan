@@ -313,9 +313,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             // E2EE："enc1:" 前缀 = 发送方→我的 ChaCha20-Poly1305 加密内容，用对方 X25519 公钥解密
-            let content = match content.strip_prefix("enc1:") {
+            // 解密失败（缺公钥 / 公钥已更新）：写入系统消息「需开启 E2EE 或更新对端公钥才能查看」，
+            // 而非静默丢弃，避免开启 E2EE 的一方发来的消息在另一端凭空消失。
+            let (content, kind_str) = match content.strip_prefix("enc1:") {
                 Some(b64) => {
-                    let spk = {
+                    let spk_opt = {
                         let dbc = state.db.lock().unwrap();
                         db::get_friend_x25519(&dbc, &from)
                     }
@@ -327,21 +329,38 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                             .get(&from)
                             .and_then(|p| p.x25519_pubkey.clone())
                     });
-                    let Some(spk) = spk else { return };
-                    let Some(shared) = crypto::shared_secret(&state.identity.x25519_secret, &spk)
-                    else {
-                        return;
-                    };
-                    let Some(bytes) =
-                        STANDARD.decode(b64).ok().and_then(|d| crypto::open(&shared, &d))
-                    else {
-                        return;
-                    };
-                    String::from_utf8(bytes).unwrap_or_default()
+                    match spk_opt {
+                        None => (
+                            format!("[加密消息] 尚未获取 {from} 的公钥，请让对方重新上线后重发"),
+                            "system".to_string(),
+                        ),
+                        Some(spk) => match crypto::shared_secret(&state.identity.x25519_secret, &spk) {
+                            Some(shared) => match STANDARD
+                                .decode(b64)
+                                .ok()
+                                .and_then(|d| crypto::open(&shared, &d))
+                            {
+                                Some(bytes) => match String::from_utf8(bytes) {
+                                    Ok(s) => (s, kind.as_str().to_string()),
+                                    Err(_) => (
+                                        "[加密消息] 内容解码失败，对方可能更换了密钥".to_string(),
+                                        "system".to_string(),
+                                    ),
+                                },
+                                None => (
+                                    format!("[加密消息] 解密失败（{from} 的公钥可能已更新）"),
+                                    "system".to_string(),
+                                ),
+                            },
+                            None => (
+                                "[加密消息] 密钥交换失败".to_string(),
+                                "system".to_string(),
+                            ),
+                        },
+                    }
                 }
-                None => content,
+                None => (content, kind.as_str().to_string()),
             };
-            let kind_str = kind.as_str().to_string();
             let name = resolve_nickname(state, &from);
             let preview = preview_content(&kind_str, &content);
             // 去重：已收到过则只回 Ack（锁作用域独立，避免非 Send 的 MutexGuard 跨 await）

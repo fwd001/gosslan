@@ -52,6 +52,8 @@ export const api = {
   ensureConversation: (friendId: string) =>
     invoke<Conversation>("ensure_conversation", { friendId }),
   markRead: (convId: string) => invoke<void>("mark_read", { convId }),
+  deleteConversation: (convId: string) =>
+    invoke<void>("delete_conversation", { convId }),
 
   createGroup: (name: string, members: string[]) => invoke<Group>("create_group", { name, members }),
   distributeGroupKey: (groupId: string) => invoke<void>("distribute_group_key", { groupId }),

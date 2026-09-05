@@ -316,6 +316,39 @@ export const useChatStore = defineStore("chat", () => {
       throw e;
     }
   }
+
+  /**
+   * 删除一个会话及其全部本地消息。
+   * - 乐观移除：先从会话列表与内存缓存中抹除，后端失败回滚；
+   * - 若被删的会话正是当前打开的会话，需让父组件（ConversationList/ChatWindow）
+   *   检测 activeConv 是否仍存在并切到 null，避免打开空窗口。
+   * - 仅本地清理，不影响对方聊天记录（前端弹窗二次确认）。
+   */
+  async function deleteConversation(convId: string) {
+    const prevConvs = conversations.value;
+    const prevMessages = messages.value[convId];
+    conversations.value = conversations.value.filter((c) => c.id !== convId);
+    // 清空该会话的内存消息缓存，避免下次打开时短暂闪烁旧数据
+    const nextMessages = { ...messages.value };
+    delete nextMessages[convId];
+    messages.value = nextMessages;
+    pagesLoaded.delete(convId);
+    try {
+      await api.deleteConversation(convId);
+    } catch (e) {
+      // 回滚：恢复会话行与消息缓存
+      conversations.value = prevConvs;
+      if (prevMessages !== undefined) {
+        messages.value = { ...messages.value, [convId]: prevMessages };
+      }
+      throw e;
+    }
+    // 若被删会话就是当前打开的会话，置空（调用方负责切换 UI）
+    if (activeConv.value === convId) {
+      activeConv.value = null;
+      unreadJump.value = null;
+    }
+  }
   async function createGroup(name: string, members: string[]) {
     const g = await api.createGroup(name, members);
     await api.distributeGroupKey(g.id);
@@ -514,6 +547,7 @@ export const useChatStore = defineStore("chat", () => {
     sendFriendRequest,
     respondRequest,
     removeFriend,
+    deleteConversation,
     createGroup,
     sendFileTo,
     sendFileRelayTo,
