@@ -67,14 +67,18 @@ if (existsSync(lockPath)) {
 // `cd src-tauri && cargo check` 保证 lock 与 Cargo.toml 版本一致后一并提交。
 
 // 5) CHANGELOG.md（可选）
+//    若不存在 [Unreleased] 小节则自动补一个占位小节，保证每次发版都有更新日志。
 const changelogPath = "CHANGELOG.md";
 if (existsSync(changelogPath)) {
   let ch = readFileSync(changelogPath, "utf8");
-  if (ch.includes("## [Unreleased]")) {
-    const date = new Date().toISOString().slice(0, 10);
-    ch = ch.replace("## [Unreleased]", `## [${next}] - ${date}`);
-    writeFileSync(changelogPath, ch);
+  if (!ch.includes("## [Unreleased]")) {
+    const placeholder = `## [Unreleased]\n### Changed\n- 版本发布 v${next}（本次未预先填写更新说明，明细见 tag v${cur}...v${next} 的提交记录）\n`;
+    const firstSection = ch.indexOf("\n## [");
+    const insertAt = firstSection === -1 ? ch.length : firstSection;
+    ch = ch.slice(0, insertAt) + "\n" + placeholder + ch.slice(insertAt);
   }
+  ch = ch.replace("## [Unreleased]", `## [${next}] - ${new Date().toISOString().slice(0, 10)}`);
+  writeFileSync(changelogPath, ch);
 }
 
 console.log(`版本已更新：${cur} -> ${next}`);
