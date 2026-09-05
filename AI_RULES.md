@@ -1,887 +1,1540 @@
-# Gosslan AI 工程宪法
+# Gosslan AI Development Rules
 
-> Version: 2.0
+> Version: 0.12
+> Status: Pre-release / Stable LAN Chat
+> Project type: Tauri v2 + Vue 3 + TypeScript + Rust + SQLite
+> Primary goal: Stable LAN Chat
 >
-> 本文件是 Gosslan 所有 AI 编程助手的强制工程规则。
-> 任何 AI 在修改代码前必须阅读本文件、`AI_PROJECT_HANDOFF.md` 以及与任务相关的 ADR。
+> This document is the primary engineering rule for AI-assisted development.
+> When a task conflicts with this document, stop and resolve the conflict before coding.
+
+---
+
+# 1. Project Positioning
+
+Gosslan is currently a **pre-release project**.
+
+The immediate goal is not to build a complete distributed communication platform.
+
+The immediate goal is:
+
+> **Make the existing LAN chat stable, reliable, understandable, and easy to extend.**
+
+The current priority is:
+
+```text
+Stable LAN Chat
+    ↓
+Correct message delivery
+    ↓
+Correct persistence
+    ↓
+Correct E2EE
+    ↓
+Correct offline recovery
+    ↓
+Good user experience
+    ↓
+Simple extensibility
+```
+
+Do not sacrifice current chat stability for future architecture.
+
+---
+
+# 2. v0.12 Scope
+
+## 2.1 v0.12 Core Goals
+
+The following are P0:
+
+* LAN device discovery
+* Friend request / accept
+* Online / offline state
+* Single chat
+* Text messages
+* Image messages
+* File messages
+* Chat history
+* Unread messages
+* Delivery state
+* Read receipt
+* Failed state
+* Offline message persistence
+* Automatic resend
+* Message deduplication
+* E2EE
+* SQLite persistence
+* Restart recovery
+* Notification
+* Basic Windows / macOS / Android stability
+* Two-device real LAN communication
+
+The following are P1:
+
+* Shared directory
+* Friend delete / re-add
+* Tray behavior
+* Basic stress testing
+* UI stability improvements
+
+---
+
+# 3. Explicitly Frozen for v0.12
+
+Do NOT proactively implement, redesign, optimize, or expand:
+
+* Bluetooth transport
+* QUIC
+* mDNS
+* Cross-subnet communication
+* Server relay
+* Account system
+* Noise XX
+* Advanced Mesh routing
+* Large-scale relay optimization
+* 500–1000 node optimization
+* New transport implementations
+* Large-scale architecture refactoring
+* New distributed-system mechanisms
+* Future roadmap features not required by the current task
+
+Existing code related to these features may remain.
+
+Preserve useful interfaces and extension points when practical.
+
+But:
+
+> **Do not implement future features merely because the architecture could support them.**
+
+---
+
+# 4. Engineering Philosophy
+
+Priority order:
+
+```text
+Correctness
 >
-> 核心目标不是“尽快完成需求”，而是：
+Reliability
 >
-> **在不破坏系统不变量的前提下，以最小改动实现需求，并让已经修复的问题不再回来。**
+Simplicity
+>
+Maintainability
+>
+Extensibility
+>
+Performance optimization
+>
+Future-proofing
+```
+
+Prefer:
+
+```text
+reuse existing code
+>
+small local fix
+>
+small abstraction
+>
+large refactor
+```
+
+Do not introduce complexity unless the current requirement actually needs it.
+
+A theoretically elegant architecture is not automatically better.
+
+For this project:
+
+> A simple solution that is correct is better than a sophisticated solution that creates more failure paths.
 
 ---
 
-## 0. 适用范围
+# 5. AI Task Complexity
 
-Gosslan 是 Tauri v2 + Rust + Vue 3 + TypeScript + Pinia + SQLite 的 P2P LAN 即时通讯系统，包含：
+Not every task requires full architectural analysis.
 
-- UDP discovery
-- TCP transport
-- Gossip
-- Outbox / ACK
-- E2EE
-- 群聊 / GroupKey
-- 文件传输 / Relay / Mesh
-- SQLite
-- Windows / macOS / Android
-- Transport abstraction
+## L1 — Trivial
 
-因此，本项目属于**分布式系统 + 跨平台客户端**。
+Examples:
 
-任何看似局部的修改，都必须考虑：
+* UI text
+* CSS
+* layout
+* icon
+* simple component change
+* small pure function
+* obvious bug
+* simple validation
+
+Process:
 
 ```text
-UI
- ↓
-Pinia
- ↓
-Tauri invoke / event
- ↓
-Rust command
- ↓
-domain / service
- ↓
-protocol
- ↓
-transport / network
- ↓
-peer
- ↓
-storage
- ↓
-event
- ↓
-UI
+Locate → Modify → Test
 ```
+
+Do not perform unnecessary architecture analysis.
 
 ---
 
-# 1. AI 启动协议
+## L2 — Normal Feature
 
-每次开始非 trivial 任务，必须按以下顺序工作：
+Examples:
+
+* normal chat feature
+* notification behavior
+* unread behavior
+* UI interaction
+* existing API integration
+* small database query change
+
+Process:
 
 ```text
-1. 读取 AI_RULES.md
-2. 读取 AI_PROJECT_HANDOFF.md
-3. 定位相关代码
-4. 阅读相关测试
-5. 阅读相关 ADR
-6. 检查 CHANGELOG 中的历史教训
-7. 输出影响分析
-8. 设计测试
-9. 最小实现
-10. 验证
-11. 自检不变量
-12. 更新必要文档
+Locate existing logic
+→ Reuse existing implementation
+→ Identify affected files
+→ Make minimal change
+→ Test
 ```
 
-禁止“先改再理解”。
+Do not redesign the system unless required.
 
 ---
 
-# 2. Source of Truth
+## L3 — Core Reliability
 
-当文档与实现冲突时，优先级：
+Examples:
 
-```text
-运行时代码
-> 测试
-> protocol.rs / db.rs
-> schema.sql
-> ADR
-> AI_PROJECT_HANDOFF.md
-> README.md
-> CHANGELOG.md
-```
+* protocol
+* message lifecycle
+* network transport
+* discovery
+* E2EE
+* SQLite schema
+* outbox
+* ACK
+* retry
+* deduplication
+* connection lifecycle
 
-但如果发现冲突：
-
-**不能默默选择一方。**
-
-必须报告：
+Process:
 
 ```text
-发现冲突：
-代码：
-文档：
-测试：
-判断：
-建议同步：
+Understand data flow
+→ Identify invariants
+→ Identify failure paths
+→ Plan minimal change
+→ Implement
+→ Add regression test
+→ Run relevant E2E tests
 ```
+
+L3 tasks require strict engineering discipline.
 
 ---
 
-# 3. 系统不变量
+## Important Rule
 
-完整定义见：
+> Do not upgrade an L1/L2 task into an L3 architecture project.
 
-`docs/protocol-invariants.md`
-
-以下规则不可被普通需求覆盖。
-
-## INV-001 Message Identity
-
-可靠消息必须拥有稳定 `msg_id`。
-
-同一消息经过：
+Do not turn:
 
 ```text
-Direct
-Gossip
-Relay
-Outbox
-Retry
+"fix this button"
 ```
 
-不得重新生成业务意义上的新 `msg_id`。
-
----
-
-## INV-002 Idempotency
-
-收到重复消息：
+into:
 
 ```text
-同 msg_id
-→ 不重复入库
-→ 不重复通知
-→ 不重复显示
-→ 必须安全处理 ACK
+"let's redesign the state architecture".
 ```
 
----
-
-## INV-003 Outbox
-
-可靠消息必须：
+Do not turn:
 
 ```text
-Create
-→ Persist outbox
-→ Attempt transport
-→ Wait ACK
-→ ACK confirmed
-→ Delete outbox
+"fix this message bug"
 ```
 
-禁止：
+into:
 
 ```text
-send() == Ok
-→ delete outbox
-```
-
-TCP 写成功不代表对端已经收到并持久化。
-
----
-
-## INV-004 ACK Semantics
-
-ACK 的语义必须保持稳定：
-
-> 接收方已经完成消息接收，并满足项目定义的持久化确认条件。
-
-以下都不能直接等价于 ACK：
-
-- socket connected
-- TCP write succeeded
-- `send()` returned `Ok`
-- `try_send()` succeeded
-
----
-
-## INV-005 Encryption
-
-加密消息：
-
-- 不得静默丢失
-- 解密失败必须可观测
-- 私钥不得进入前端
-- 加密逻辑只能集中在 crypto 层
-- 不允许为了 UI 正常显示而绕过加密
-
----
-
-## INV-006 Network Failure
-
-网络暂时不可用：
-
-```text
-Network failure != Message failure
-```
-
-可恢复网络错误应该进入：
-
-```text
-outbox / retry / reconnect
-```
-
-而不是直接永久 failed。
-
----
-
-## INV-007 Device Identity
-
-`device_id` 和身份密钥必须持久化。
-
-重启：
-
-```text
-device_id 不变
-identity 不变
-```
-
-身份发生变化必须视为显式迁移/重置，而不是普通启动行为。
-
----
-
-## INV-008 UI State
-
-前端可以乐观更新，但最终状态必须来自真实结果。
-
-```text
-optimistic
-  ├── success → committed
-  └── failure → failed / rollback
-```
-
-禁止 UI 自己猜测：
-
-```text
-online
-delivered
-read
-encrypted
+"let's rewrite the entire messaging subsystem".
 ```
 
 ---
 
-# 4. 协议修改规则
+# 6. Existing Code First
 
-任何 `protocol.rs` 的消息、字段、序列化规则变更，必须回答：
+Before creating new logic:
 
-```text
-1. Sender
-2. Receiver
-3. Message identity
-4. Idempotency
-5. ACK
-6. Outbox
-7. Gossip
-8. Encryption
-9. Persistence
-10. Version compatibility
-11. Unknown-message behavior
-12. Failure behavior
-```
+1. Search the repository.
+2. Find existing implementation.
+3. Understand how it currently works.
+4. Reuse it when possible.
+5. Modify the existing path when appropriate.
 
-必须检查：
+Do not create a second implementation of an existing responsibility.
+
+Examples:
+
+Bad:
 
 ```text
-src-tauri/src/protocol.rs
-src/types.ts
-sender
-receiver
-gossip_engine.rs
-network/transport.rs
-db.rs
-tests
-e2e_peer.rs
+Existing message send logic
++
+new message send helper
++
+new message service
 ```
 
-如果协议发生语义变化：
+Preferred:
 
-**必须新增或更新 ADR。**
+```text
+Existing message send logic
++
+minimal modification
+```
+
+Only introduce a new abstraction when the existing structure genuinely prevents a correct implementation.
 
 ---
 
-# 5. 状态机规则
+# 7. Source of Truth
 
-禁止用大量互相独立的 boolean 表达复杂生命周期。
-
-优先：
+Prefer the following order:
 
 ```text
-enum / union / explicit state
+Actual implementation
+>
+Existing tests
+>
+Protocol definitions
+>
+AI_RULES.md
+>
+ADR
+>
+Handoff documentation
+>
+README
+>
+Future roadmap
 ```
 
-## Message
+Documentation describes the system.
+
+The actual code and tests determine current behavior.
+
+If documentation and implementation disagree:
+
+1. Do not blindly assume either one is correct.
+2. Inspect the current data flow.
+3. Determine intended behavior.
+4. Fix documentation or implementation as appropriate.
+5. Do not silently create a third behavior.
+
+---
+
+# 8. Core Message Invariants
+
+These invariants are mandatory.
+
+## INV-001 — Stable Message ID
+
+Every logical message must have a stable `msg_id`.
+
+Retries must reuse the same `msg_id`.
+
+Do not create a new message ID merely because transmission failed.
+
+---
+
+## INV-002 — Idempotency
+
+Receiving the same `msg_id` multiple times must not create duplicate logical messages.
+
+This applies to:
+
+* direct delivery
+* retry
+* reconnect
+* outbox resend
+* gossip
+* duplicate packets
+
+---
+
+## INV-003 — Outbox Before Delivery
+
+Reliable outgoing messages must follow:
 
 ```text
-local_created
-→ queued
-→ sending
-→ delivered
-→ read
+Create message
+    ↓
+Persist message
+    ↓
+Persist outbox
+    ↓
+Attempt network delivery
+```
 
-queued / sending
-→ failed_recoverable
+Do not rely solely on memory.
 
+---
+
+## INV-004 — ACK Means Persisted
+
+A successful TCP write does NOT mean the message was delivered.
+
+The sender may consider a message delivered only after the receiver confirms the appropriate persistence/processing point through the protocol ACK.
+
+Conceptually:
+
+```text
+TCP send
+≠
+Delivered
+```
+
+---
+
+## INV-005 — No Silent Message Loss
+
+Encrypted or network messages must not disappear silently.
+
+If processing fails:
+
+```text
+success
+or
+explicit failure / retry / diagnostic path
+```
+
+Never:
+
+```text
+catch error
+→ ignore
+→ pretend nothing happened
+```
+
+---
+
+## INV-006 — UI State Must Reflect Reality
+
+Do not leave a message permanently in:
+
+```text
 sending
-→ failed_permanent
 ```
 
-## Peer
+when the system already knows that the operation failed.
+
+Likewise:
 
 ```text
-unknown
-→ discovered
+network temporarily unavailable
+```
+
+must not automatically mean:
+
+```text
+message permanently failed
+```
+
+---
+
+## INV-007 — Device Identity Persists
+
+The device identity must remain stable across application restarts.
+
+Do not regenerate identity keys or device fingerprints on every launch.
+
+---
+
+## INV-008 — Persistence Is Part of Reliability
+
+Important state must survive restart.
+
+At minimum:
+
+* device identity
+* cryptographic identity
+* friends
+* messages
+* message status
+* outbox state where applicable
+
+---
+
+# 9. Message Lifecycle
+
+The intended reliable flow is:
+
+```text
+User sends message
+        ↓
+Create msg_id
+        ↓
+Persist message
+        ↓
+Persist outbox
+        ↓
+Encrypt
+        ↓
+Send
+        ↓
+Receiver decrypts
+        ↓
+Receiver persists / deduplicates
+        ↓
+Receiver ACK
+        ↓
+Sender marks delivered
+        ↓
+Remove outbox
+```
+
+Do not bypass this flow for convenience.
+
+---
+
+# 10. Temporary Network Failure
+
+Network failure is not automatically permanent message failure.
+
+Example:
+
+```text
+A sends message
+        ↓
+B offline
+        ↓
+message remains in outbox
+        ↓
+B comes online
+        ↓
+connection restored
+        ↓
+message resent
+        ↓
+ACK received
+        ↓
+outbox removed
+```
+
+This behavior is a core requirement.
+
+---
+
+# 11. Protocol Rules
+
+All protocol messages must use the existing protocol layer.
+
+Do not create random protocol formats in unrelated modules.
+
+Before modifying a protocol message, check:
+
+1. Who sends it?
+2. Who receives it?
+3. Is it persisted?
+4. Is it encrypted?
+5. Is it idempotent?
+6. Does it require ACK?
+7. Does it interact with outbox?
+8. Does reconnect/retry change its behavior?
+9. Does it affect gossip or forwarding?
+10. Does the TypeScript side depend on it?
+
+---
+
+# 12. Pre-Release Protocol Compatibility
+
+## IMPORTANT
+
+Gosslan has **not been released**.
+
+There are currently no production users or historical clients that must remain compatible.
+
+Therefore:
+
+> **Do not add compatibility layers for hypothetical old versions.**
+
+Do not preserve obsolete protocol behavior merely because an older development build might have used it.
+
+Do not add:
+
+* legacy protocol branches
+* unnecessary version adapters
+* compatibility wrappers
+* duplicate old/new message formats
+* migration code for versions that never shipped
+
+unless there is a real requirement.
+
+---
+
+## 12.1 Breaking Protocol Changes Are Allowed
+
+Before release, a protocol change may intentionally break the current development version.
+
+Examples:
+
+```text
+old message format
+→ new message format
+```
+
+or:
+
+```text
+old protocol field
+→ removed
+```
+
+or:
+
+```text
+old state machine
+→ corrected state machine
+```
+
+This is acceptable when it produces a cleaner and more correct current implementation.
+
+However:
+
+> Breaking does not mean careless.
+
+For a protocol-breaking change:
+
+1. Update sender.
+2. Update receiver.
+3. Update related tests.
+4. Update E2E tests.
+5. Update protocol documentation if necessary.
+6. Remove obsolete compatibility code.
+7. Verify the complete message flow.
+
+---
+
+# 13. Pre-Release Database Rules
+
+The same principle applies to SQLite.
+
+Because Gosslan has not been released:
+
+> **Database schema cleanup and breaking changes are allowed when they simplify the current system or fix incorrect design.**
+
+Do not build complicated migration systems solely for hypothetical unreleased versions.
+
+---
+
+## Allowed
+
+Examples:
+
+```text
+bad column
+→ replace column
+
+incorrect schema
+→ redesign schema
+
+duplicate state
+→ consolidate state
+
+temporary development table
+→ remove table
+```
+
+when the change is justified.
+
+---
+
+## Still Required
+
+A database change must:
+
+* keep the current application consistent
+* correctly initialize a fresh database
+* correctly handle the current development database
+* update related queries
+* update tests
+* avoid silent data corruption
+
+If an existing development database can simply be recreated, say so explicitly.
+
+Do not create ten layers of migration code to protect a database that has never shipped.
+
+---
+
+# 14. Compatibility Rule
+
+Use this decision:
+
+```text
+Has this behavior been released to real users?
+        │
+        ├── YES → preserve compatibility
+        │
+        └── NO
+             ↓
+       Is breaking change useful?
+             │
+             ├── YES → allow breaking change
+             │
+             └── NO → keep existing behavior
+```
+
+The purpose of compatibility is to protect real users.
+
+Do not create compatibility complexity without a real compatibility requirement.
+
+---
+
+# 15. State Machines
+
+When modifying core state, understand the existing state machine.
+
+Important states include:
+
+### Message
+
+```text
+sending
+  ↓
+delivered
+  ↓
+read
+```
+
+Failure paths may include:
+
+```text
+sending
+  ↓
+retry
+  ↓
+delivered
+```
+
+or:
+
+```text
+sending
+  ↓
+failed
+```
+
+depending on the actual error.
+
+---
+
+### Connection
+
+Conceptually:
+
+```text
+disconnected
 → connecting
 → connected
-→ healthy
-→ offline
+→ disconnected
 ```
 
-## File
-
-```text
-created
-→ offered
-→ accepted
-→ transferring
-→ completed
-
-offered / accepted / transferring
-→ failed
-```
-
-## E2EE
-
-```text
-unknown_key
-→ discovering
-→ key_available
-→ encrypting
-→ encrypted
-→ decrypted
-
-decrypting
-→ decrypt_failed
-```
-
-如果实际代码状态与此不同：
-
-**以实际代码为准，并先说明差异。**
+Do not invent UI-only connection states that disagree with the Rust/network layer.
 
 ---
 
-# 6. Transport 边界
+### File Transfer
 
-业务层不得直接依赖：
-
-```text
-TCP
-UDP
-Bluetooth
-QUIC
-Relay
-```
-
-应通过 Transport 抽象。
-
-目标结构：
+Respect the existing:
 
 ```text
-Application
-  ↓
-Message / File Service
-  ↓
-TransportManager
-  ↓
-LAN / Bluetooth / QUIC / Relay
+offer
+→ accept
+→ transfer
+→ complete / failed
 ```
 
-禁止：
+flow.
+
+Do not create an independent file-transfer lifecycle in the frontend.
+
+---
+
+# 16. Rust / TypeScript Boundary
+
+Rust is responsible for:
+
+* network
+* discovery
+* encryption
+* database
+* protocol
+* reliable delivery
+* file transfer
+* platform integration
+
+TypeScript/Vue is responsible for:
+
+* UI
+* interaction
+* presentation state
+* user-facing error display
+* frontend orchestration
+
+Do not move core network/protocol logic into the frontend simply because it is easier to implement.
+
+Do not create a second business implementation in TypeScript.
+
+---
+
+# 17. Frontend State Rules
+
+Frontend stores should reflect backend reality.
+
+Do not let the UI invent:
+
+* delivery state
+* connection state
+* encryption state
+* online state
+* persistence state
+
+Example:
+
+Bad:
+
+```text
+send() succeeded
+→ immediately show delivered
+```
+
+Preferred:
+
+```text
+send()
+→ backend processes message
+→ ACK
+→ update delivered
+```
+
+Optimistic UI is allowed only when failure/rollback behavior is clearly defined.
+
+---
+
+# 18. Database Rules
+
+Before modifying the database:
+
+1. Find existing schema.
+2. Find existing query functions.
+3. Find all callers.
+4. Check tests.
+5. Determine whether the change is actually necessary.
+
+Do not create duplicate storage for the same concept.
+
+Bad:
+
+```text
+existing unread state
++
+new unread state
+```
+
+Preferred:
+
+```text
+existing source of truth
++
+correct it
+```
+
+---
+
+# 19. Crypto Rules
+
+E2EE is mandatory.
+
+Never introduce:
+
+```text
+plaintext fallback
+```
+
+when encryption fails.
+
+Never silently:
+
+* disable encryption
+* bypass encryption
+* accept unverifiable keys
+* ignore authentication failures
+
+If cryptographic processing fails:
+
+```text
+explicit error
+or
+explicit retry path
+```
+
+not silent fallback.
+
+Do not replace existing cryptographic primitives without a strong reason.
+
+---
+
+# 20. Error Handling
+
+Never hide core errors.
+
+Avoid:
 
 ```rust
-if bluetooth { ... }
-else if lan { ... }
-else if relay { ... }
+let _ = something();
 ```
 
-除非代码处于 transport adapter 本身。
+when the result matters.
+
+Avoid:
+
+```text
+catch
+→ ignore
+```
+
+especially for:
+
+* network
+* database
+* encryption
+* protocol
+* file transfer
+* persistence
+
+Errors should either:
+
+1. be handled correctly,
+2. be returned,
+3. be logged with useful context,
+4. or be transformed into a meaningful user-visible state.
 
 ---
 
-# 7. 前端边界
+# 21. Bug Fix Workflow
 
-当前 `useChatStore.ts` 已承担较多职责。
-
-新功能：
-
-**不要继续无条件塞进 `useChatStore.ts`。**
-
-优先按领域演进：
+For a bug:
 
 ```text
-useAppStore
-useChatStore
-useConversationStore
-useMessageStore
-useFriendStore
-useTransferStore
-useNotificationStore
-```
-
-但禁止为了“架构漂亮”一次性大重构。
-
-原则：
-
-```text
-新增功能 → 正确边界
-旧代码 → 保持稳定
-重构 → 独立任务
-```
-
----
-
-# 8. Rust / TypeScript Contract
-
-Rust serde 类型与：
-
-```text
-src/types.ts
-```
-
-必须保持一致。
-
-修改任意一侧，都必须检查另一侧。
-
-特别注意：
-
-```text
-camelCase ↔ snake_case
-Option / nullable
-enum variant
-timestamp
-byte encoding
-```
-
-如果可能，优先考虑生成类型或增加 contract test，避免长期手工漂移。
-
----
-
-# 9. Database Rules
-
-任何数据库修改必须考虑：
-
-```text
-旧数据库
-→ migration
-→ 新数据库
-```
-
-必须检查：
-
-- 已有数据
-- 默认值
-- NULL
-- index
-- unique constraint
-- transaction
-- rollback
-- 重复执行
-- `db.rs`
-- `schema.sql`
-
-禁止：
-
-```text
-修改 schema
-→ 假设用户都是新安装
-```
-
----
-
-# 10. Bug Fix Protocol
-
-任何 Bug 修复必须遵循：
-
-```text
-复现
-→ 定位
-→ Root Cause
-→ Regression Test
-→ Fix
-→ 全量验证
-```
-
-禁止：
-
-```text
-现象
-→ 猜一个地方
-→ 加 if
-→ 测试绿
-→ 结束
-```
-
-每个 Bug 必须使用：
-
-`docs/templates/BUG_FIX.md`
-
----
-
-# 11. 测试优先级
-
-修改越靠近下面位置，测试要求越高：
-
-```text
-UI
+Symptom
 ↓
-Store
+Reproduce
 ↓
-Tauri command
+Trace actual data flow
 ↓
-Service
+Locate break point
 ↓
-Protocol
+Find root cause
 ↓
-Transport
+Minimal fix
 ↓
-Storage
+Regression test
 ↓
-Crypto
+Run relevant verification
 ```
 
-尤其是：
+Do not start with:
 
 ```text
-protocol
-network
-crypto
-outbox
-db
-identity
+"Let's refactor the architecture."
 ```
 
-不得只做 UI 手工验证。
+unless the architecture is actually the root cause.
 
 ---
 
-# 12. P2P 故障场景
+# 22. Bug Fix Report
 
-涉及网络/消息的任务，必须考虑：
+After fixing a bug, report only:
 
 ```text
-正常发送
-对方离线
-发送中断网
-ACK 丢失
-TCP 半开
-连接重建
-重复消息
-乱序
-Gossip 重复
-节点重启
-应用重启
-outbox 恢复
-公钥暂时不存在
-公钥变化
-中继节点消失
+Root Cause:
+...
+
+Fix:
+...
+
+Verification:
+...
 ```
+
+Do not produce a long theoretical explanation unless requested.
 
 ---
 
-# 13. 禁止事项
+# 23. Regression Test Rule
 
-## P-01
+If a bug is caused by a reproducible logic problem:
 
-未阅读相关模块就修改。
+> Add a regression test when practical.
 
-## P-02
+Do not modify an existing test only to make it pass.
 
-复制已有业务逻辑解决 Bug。
+Never weaken an assertion just because the implementation currently fails it.
 
-## P-03
+If a test is genuinely incorrect:
 
-绕过 protocol。
-
-## P-04
-
-绕过 outbox。
-
-## P-05
-
-绕过 msg_id。
-
-## P-06
-
-绕过 ACK。
-
-## P-07
-
-前端伪造网络状态。
-
-## P-08
-
-Rust / TS 类型不一致。
-
-## P-09
-
-数据库无 migration 修改。
-
-## P-10
-
-协议修改不考虑兼容。
-
-## P-11
-
-核心 Bug 不增加回归测试。
-
-## P-12
-
-为了通过测试修改测试预期。
-
-## P-13
-
-catch 后静默吞错。
-
-## P-14
-
-新增全局状态而不分析生命周期。
-
-## P-15
-
-大重构与功能开发混在一个任务。
-
-## P-16
-
-无必要新增第三方依赖。
-
-## P-17
-
-无关格式化、重命名、升级依赖。
-
-## P-18
-
-重新引入已被 ADR 明确否决的实现。
-
-## P-19
-
-修改密码学原语/密钥派生但不更新协议版本和 ADR。
-
-## P-20
-
-为了消除 warning 删除错误处理。
+1. Explain why.
+2. Fix the test.
+3. Fix the implementation if necessary.
+4. Run the complete relevant test set.
 
 ---
 
-# 14. 密码学规则
+# 24. Refactoring Rules
 
-禁止：
-
-- 自己实现密码算法
-- 修改 key derivation 而不做协议兼容分析
-- 将私钥暴露给前端
-- 在 UI 层进行加密
-- 在多个模块实现不同加密逻辑
-- 把“加密失败”转成普通明文发送
-
-密码学变更至少需要：
+Do not combine:
 
 ```text
-Threat model
-Compatibility
-Key lifecycle
-Old message behavior
-New message behavior
-Migration
-Test vectors
-```
-
----
-
-# 15. 第三方依赖
-
-新增依赖必须说明：
-
-```text
-为什么需要
-已有依赖为什么不能完成
-体积
-维护状态
-Windows
-macOS
-Android
-Tauri v2
-构建影响
-安全影响
-```
-
----
-
-# 16. 最小变更原则
-
-一次任务：
-
-```text
-只改完成需求所需的代码
-```
-
-禁止顺手：
-
-- 重命名
-- 大规模格式化
-- 升级依赖
-- 重构无关模块
-- 改 UI 风格
-- 改协议命名
-
-如果发现架构问题：
-
-```text
-当前需求的最小修复
+feature
 +
-单独的长期重构建议
+large refactor
++
+dependency upgrade
++
+architecture redesign
 ```
 
-不要偷偷混在一起。
+in one task unless explicitly requested.
+
+Prefer:
+
+```text
+small change
+→ test
+→ stable
+→ next change
+```
+
+A refactor is justified only when it directly improves the current task or removes a demonstrated source of bugs.
+
+Do not refactor merely because another architecture looks cleaner.
 
 ---
 
-# 17. 强制开发流程
+# 25. Dependency Rules
 
-## Phase 1 — Understand
+Do not introduce a new dependency unless it provides a meaningful benefit.
 
-先读代码、测试、ADR。
+Before adding one:
 
-## Phase 2 — Impact
+* check whether an existing dependency already solves the problem
+* check whether the standard library is sufficient
+* consider build size
+* consider platform compatibility
+* consider Tauri/WebView compatibility
+* consider maintenance cost
 
-输出：
+Do not add a dependency for a trivial helper function.
+
+---
+
+# 26. Platform Rules
+
+Gosslan targets:
+
+* Windows
+* macOS
+* Android
+
+When modifying platform-sensitive code:
+
+* do not assume desktop-only behavior
+* do not assume Windows-only APIs
+* do not assume macOS-only APIs
+* do not introduce browser-only behavior into Tauri core logic
+* consider Android limitations when modifying shared Rust code
+
+However:
+
+> Do not over-engineer cross-platform abstractions before a real platform problem exists.
+
+---
+
+# 27. Performance Rules
+
+Do not optimize based on theory alone.
+
+First establish:
 
 ```text
-Affected files:
-Affected protocol:
-Affected DB:
-Affected state machine:
-Affected platforms:
-Affected transport:
-Affected crypto:
-Regression risks:
+Is there an actual performance problem?
 ```
 
-## Phase 3 — Design
-
-给出：
+Then:
 
 ```text
-最小方案
-备选方案
-选择原因
+Measure
+→ identify bottleneck
+→ make focused optimization
+→ measure again
 ```
 
-## Phase 4 — Test
+Do not introduce:
 
-先定义测试：
+* caches
+* worker systems
+* queues
+* complex schedulers
+* advanced routing
+* custom concurrency
+
+just because they might be faster.
+
+Correctness comes first.
+
+---
+
+# 28. Testing Levels
+
+## L1
+
+Simple change:
 
 ```text
-normal
-failure
-boundary
-duplicate
-reconnect
-restart
-cross-platform
+targeted test
 ```
 
-## Phase 5 — Implement
+## L2
 
-只改必要文件。
+Feature:
 
-## Phase 6 — Verify
+```text
+targeted tests
++
+npm test / cargo test where relevant
+```
 
-至少：
+## L3
+
+Core system:
+
+```text
+unit tests
++
+integration tests
++
+E2E
++
+build
+```
+
+For message/network changes, prefer real protocol-path testing over mocks.
+
+---
+
+# 29. v0.12 Minimum Verification
+
+At minimum:
 
 ```bash
 npm test
 npm run build
-cd src-tauri && cargo test --lib
-cd src-tauri && cargo check
+
+cd src-tauri
+cargo test --lib
+cargo check
 ```
 
-协议/网络任务尽可能：
+For network/protocol/message changes:
 
 ```bash
-cd src-tauri && cargo build --example e2e_peer
+cd src-tauri
+cargo build --example e2e_peer
+```
+
+and:
+
+```bash
 bash scripts/e2e-dev.sh
 ```
 
-Android 相关：
+When possible, verify with two actual devices on the same LAN.
 
-```bash
-cargo check --target aarch64-linux-android
-```
+---
 
-## Phase 7 — Review
+# 30. Real Device Acceptance
 
-检查：
+Automated tests are not enough for Stable LAN Chat.
+
+At least two real devices should verify:
 
 ```text
-INV-001 ~ INV-008
-Protocol compatibility
-DB compatibility
-Rust/TS contract
-Cross-platform
-Warnings
-Tests
-CHANGELOG
-ADR
+Discovery
+↓
+Friend
+↓
+A → B message
+↓
+B → A message
+↓
+100 messages
+↓
+Offline
+↓
+Outbox
+↓
+Reconnect
+↓
+Automatic resend
+↓
+ACK
+↓
+Read receipt
+↓
+Restart
+↓
+Continue chatting
+↓
+Image
+↓
+File
+```
+
+The final goal is:
+
+> The chat works reliably in the real LAN environment.
+
+---
+
+# 31. Frozen Feature Rule
+
+If a task is not required for current LAN Chat stability:
+
+Do not proactively implement it.
+
+If you notice a possible future improvement:
+
+```text
+Do not implement automatically.
+```
+
+Instead:
+
+```text
+Record it as a possible future improvement.
+```
+
+Do not let future requirements contaminate current implementation.
+
+---
+
+# 32. No Duplicate Logic
+
+Before adding a function, ask:
+
+```text
+Does this responsibility already exist?
+```
+
+If yes:
+
+```text
+Reuse or modify it.
+```
+
+Do not create:
+
+```text
+sendMessage()
+sendChatMessage()
+sendReliableMessage()
+sendP2PMessage()
+sendNetworkMessage()
+```
+
+when they represent the same responsibility.
+
+One clear path is preferred.
+
+---
+
+# 33. No Unnecessary Abstraction
+
+Do not create:
+
+```text
+IMessageService
+MessageServiceFactory
+MessageTransportProvider
+MessageRepositoryFactory
+MessagePipelineCoordinator
+```
+
+unless there is a real current requirement for them.
+
+The goal is understandable code.
+
+Not maximum abstraction.
+
+---
+
+# 34. Change Scope
+
+Every task should answer:
+
+```text
+What needs to change?
+```
+
+Prefer the smallest set of files that can correctly solve the problem.
+
+Avoid unrelated:
+
+* renaming
+* formatting
+* dependency upgrades
+* directory restructuring
+* code style rewrites
+
+unless requested.
+
+---
+
+# 35. When AI Must Stop and Ask
+
+Normally, continue implementing without unnecessary questions.
+
+Stop and ask only when:
+
+1. Requirement is genuinely ambiguous.
+2. Two interpretations produce materially different behavior.
+3. A security decision is required.
+4. A destructive data operation is required.
+5. A major architectural decision is unavoidable.
+6. A new dependency is required but has meaningful trade-offs.
+7. A breaking change affects a real released client.
+
+Do not stop merely because:
+
+```text
+"there are several ways to implement this."
+```
+
+Choose the simplest correct implementation.
+
+---
+
+# 36. When AI Should NOT Ask
+
+Do not ask for confirmation for:
+
+* obvious UI fixes
+* obvious bug fixes
+* existing patterns
+* straightforward refactors within the same module
+* adding a regression test
+* updating documentation to match implemented behavior
+* small internal API changes
+* pre-release protocol cleanup
+* pre-release DB cleanup
+
+Use engineering judgment.
+
+---
+
+# 37. Definition of Done
+
+A task is complete when:
+
+```text
+Feature works
++
+Relevant tests pass
++
+No obvious regression
++
+Existing invariants remain valid
++
+No unnecessary architecture was introduced
+```
+
+For core networking tasks:
+
+```text
+Feature works
++
+Unit tests pass
++
+E2E passes
++
+Message invariants remain valid
++
+No silent failure path
+```
+
+Do not claim completion merely because:
+
+```text
+code compiles
 ```
 
 ---
 
-# 18. AI 输出要求
+# 38. Final Self-Check
 
-完成任务后必须报告：
+Before reporting completion, ask:
+
+### Scope
+
+* Did I solve the requested problem?
+* Did I implement anything that was not requested?
+
+### Reuse
+
+* Did I reuse existing logic?
+* Did I accidentally create duplicate logic?
+
+### Reliability
+
+* Can the message be lost?
+* Can it be duplicated?
+* Can it remain stuck?
+* Does retry behave correctly?
+* Does reconnect behave correctly?
+
+### Persistence
+
+* Does restart preserve required state?
+
+### Security
+
+* Did I accidentally bypass E2EE?
+* Did I introduce plaintext fallback?
+
+### Testing
+
+* Did I run the relevant tests?
+* Did I add a regression test where appropriate?
+
+### Complexity
+
+* Did I make the solution more complicated than necessary?
+
+If the answer to the last question is:
 
 ```text
-## Summary
-[做了什么]
+Yes
+```
 
-## Root Cause
-[如果是 Bug]
+simplify it before finishing.
 
-## Changed Files
-[文件列表]
+---
 
-## Architecture Impact
-[协议/DB/Transport/State/Platform]
+# 39. Most Important Rule
 
-## Tests
-[执行了什么]
+When uncertain, follow this priority:
 
-## Verification
-[结果]
+```text
+Current user requirement
+>
+Current LAN Chat stability
+>
+Existing correct implementation
+>
+Core invariants
+>
+Simple maintainable solution
+>
+Future extensibility
+>
+Future roadmap
+```
 
-## Remaining Risks
-[仍存在什么]
+Never sacrifice a working current chat system to prepare for a feature that does not exist yet.
 
-## Documentation
-[更新了什么]
+---
 
-## Follow-up
-[后续建议]
+# 40. v0.12 Development Principle
+
+The current phase is:
+
+> **Stabilize first. Expand later.**
+
+The AI should behave like an engineer maintaining a small, reliable LAN chat application.
+
+Not like an architect trying to build the final distributed system in advance.
+
+The desired behavior is:
+
+```text
+Understand enough
+→
+Reuse existing code
+→
+Make the smallest correct change
+→
+Test it
+→
+Move on
+```
+
+Not:
+
+```text
+Analyze everything
+→
+Redesign everything
+→
+Abstract everything
+→
+Implement future features
+→
+Create more complexity
 ```
 
 ---
 
-# 19. 最终原则
+# 41. v0.12 Success Criteria
 
-> 不确定时，不猜。
+v0.12 is successful when two real LAN devices can reliably:
 
-> 不理解数据流时，不改代码。
+```text
+Discover each other
+        ↓
+Become friends
+        ↓
+Chat both directions
+        ↓
+Send text
+        ↓
+Send image
+        ↓
+Send file
+        ↓
+Receive ACK
+        ↓
+Read messages
+        ↓
+Go offline
+        ↓
+Queue messages
+        ↓
+Reconnect
+        ↓
+Automatically resend
+        ↓
+Avoid duplicates
+        ↓
+Restart application
+        ↓
+Continue chatting
+```
 
-> 不知道状态来源时，不新增状态。
+without major crashes, message loss, duplicate messages, or state corruption.
 
-> 修 Bug 修根因，不修表象。
-
-> 网络系统先保证可靠性，再追求性能。
-
-> 稳定性优先于开发速度。
-
-> 每一个历史 Bug，都应该转化成一个未来的回归测试。
-
-> 每一个架构决定，都应该留下为什么。
-
-> AI 的目标不是“完成这次任务”，而是“完成任务后让系统更难出错”。
+That is the current definition of **Stable LAN Chat**.
