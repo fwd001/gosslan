@@ -8,6 +8,15 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
+## [0.4.2] - 2026-09-05
+### Added
+- **单机 dev 全功能验证流程**：`scripts/e2e-dev.sh` 一键脚本——无需第二台设备、不依赖 UDP 广播（who_has 单播 + TCP loopback），启动 headless 实例后运行协议级对端，覆盖除网络发现外的全部聊天功能（29 项断言全通过）
+- `e2e_peer --full` 扩展模式：代码 / 图片 / 1MB 大文本消息、乱序消息、群消息、心跳保活、UserInfo 资料同步、好友申请（等待 UI 人工同意，SKIP 语义）、共享目录树、**下载方向文件传输**（app 主动发送路径，即「发送文件卡死」修复的回归验证），并补齐对应 SQLite 落库校验（ts 保真、长度完整、群会话行）
+- 测试报告支持 PASS / FAIL / SKIP 三态（人工交互项不计失败）
+
+### Fixed
+- e2e-dev.sh 在 pkill 后旧进程未退完时 sqlite3 预置 share_dir 偶发失败——加重试
+
 ## [0.4.1] - 2026-09-05
 ### Fixed
 - **UDP 发现 socket 阻塞（关键）**：`bind_udp_reusable` 把 socket2 创建的**阻塞** socket 直接交给 tokio——debug 构建直接 panic（发现任务静默死亡），release 构建虽不 panic 但阻塞 fd 挂在 kqueue/epoll 上会卡死 worker 线程（界面卡顿帮凶）。修复：转 tokio 前显式 `set_nonblocking(true)`

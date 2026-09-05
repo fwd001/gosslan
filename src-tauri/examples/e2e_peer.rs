@@ -2,16 +2,22 @@
 //!
 //! 前置：目标实例以 `GOSSLAN_AUTOSTART=1` 启动（网络通道自动开启）。
 //! 用法：
-//!   cargo run --example e2e_peer -- ["<gosslan.db 路径>"]
+//!   cargo run --example e2e_peer -- [--i1] [--full] ["<gosslan.db 路径>"]
+//!   --i1   锁定多开实例 1（device_id 带 -i1 后缀；否则锁定主实例）
+//!   --full 全功能模式：除基础连通性外，覆盖多类型消息、群聊、心跳、
+//!          资料同步、好友申请、共享目录、下载方向文件传输
 //! 传入 DB 路径时额外做落库 / 去重 / 文件落盘校验。
 //!
 //! 验证项：
-//! 1. 收到实例 0 的 UDP announce（发现协议在线广播）
+//! 1. UDP who_has 单播探测（不依赖广播路由，VPN/TUN 环境可用）
 //! 2. TCP 建链 + Hello 握手
 //! 3. 直连 ChatMessage 送达（收到 Ack）+ 同 msg_id 重复投递被去重
 //! 4. Gossip E2EE（X25519 ECDH + ChaCha20-Poly1305 + Ed25519 验签）投递落库
 //! 5. 文件传输（FileOffer → FileAccept → FileChunk 流 → FileDone → 落盘）
 //! 6. outbox 离线补发（注入待补发行 → Heartbeat 触发 flush → 收到补发消息）
+//! 7. --full：代码/图片/1MB 大文本消息、乱序消息、群消息落库、
+//!    心跳保活、UserInfo 同步、好友申请（等待 UI 同意）、
+//!    共享目录树、下载方向文件传输（app→peer 发送路径）
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -34,6 +40,24 @@ const FILE_NAME: &str = "e2e-peer-file.txt";
 const OUTBOX_MSG_ID: &str = "e2e-outbox-001";
 const OUTBOX_TEXT: &str = "e2e-outbox-flush-ok";
 
+// ---- --full 扩展项常量 ----
+const CODE_MSG_ID: &str = "e2e-code-001";
+const CODE_CONTENT: &str = "fn main() { println!(\"e2e-code-ok\"); }";
+const IMAGE_MSG_ID: &str = "e2e-image-001";
+const IMAGE_CONTENT: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+const BIG_MSG_ID: &str = "e2e-big-001";
+const BIG_SIZE: usize = 1_000_000;
+const OOO_A_ID: &str = "e2e-ooo-a";
+const OOO_B_ID: &str = "e2e-ooo-b";
+const GROUP_ID: &str = "g-e2e-dev";
+const GROUP_MSG_ID: &str = "e2e-group-001";
+const GROUP_TEXT: &str = "e2e-group-ok";
+const SHARE_REQ_ID: &str = "e2e-share-req-001";
+const SHARE_FILE: &str = "hello.txt";
+/// 与 scripts/e2e-dev.sh 写入共享目录的文件内容保持一致（下载方向内容比对基准）
+const SHARE_FILE_CONTENT: &str = "gosslan-dev-share-v1\n";
+const DL_TRANSFER_ID: &str = "e2e-dl-001";
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -42,7 +66,7 @@ fn now_ms() -> i64 {
 }
 
 struct Report {
-    items: Vec<(&'static str, bool, String)>,
+    items: Vec<(&'static str, u8, String)>, // 0=FAIL 1=PASS 2=SKIP
 }
 
 impl Report {
@@ -50,16 +74,27 @@ impl Report {
         Self { items: Vec::new() }
     }
     fn add(&mut self, name: &'static str, ok: bool, detail: String) {
-        self.items.push((name, ok, detail));
+        self.items.push((name, if ok { 1 } else { 0 }, detail));
+    }
+    /// 需要人工交互（如 UI 点击同意）或前置条件不满足时跳过，不计失败。
+    fn add_skip(&mut self, name: &'static str, detail: String) {
+        self.items.push((name, 2, detail));
     }
     fn print(&self) -> bool {
         println!("\n================ E2E 验证结果 ================");
-        for (name, ok, detail) in &self.items {
-            println!("{} | {} | {}", if *ok { "PASS" } else { "FAIL" }, name, detail);
+        for (name, st, detail) in &self.items {
+            let tag = match st {
+                1 => "PASS",
+                2 => "SKIP",
+                _ => "FAIL",
+            };
+            println!("{tag} | {name} | {detail}");
         }
-        let failed = self.items.iter().filter(|(_, ok, _)| !ok).count();
+        let failed = self.items.iter().filter(|(_, s, _)| *s == 0).count();
+        let skipped = self.items.iter().filter(|(_, s, _)| *s == 2).count();
+        let total = self.items.len();
         println!("----------------------------------------------");
-        println!("共 {} 项，通过 {}，失败 {}", self.items.len(), self.items.len() - failed, failed);
+        println!("共 {total} 项，通过 {}，失败 {failed}，跳过 {skipped}", total - failed - skipped);
         failed == 0
     }
 }
@@ -186,6 +221,7 @@ fn open_db(path: &str) -> Result<rusqlite::Connection, String> {
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let target_i1 = args.iter().any(|a| a == "--i1");
+    let full = args.iter().any(|a| a == "--full");
     let db_path = args.iter().find(|a| !a.starts_with("--") && a.ends_with(".db")).cloned();
     let mut report = Report::new();
 
@@ -382,6 +418,169 @@ async fn main() {
         tokio::time::sleep(Duration::from_millis(800)).await;
     }
 
+    // ---- 6.5 --full：全功能扩展（除网络发现外的所有聊天功能）----
+    if full {
+        // a. 心跳保活：发心跳后连接仍可收发
+        let _ = send_frame(&mut w, &Message::Heartbeat { device_id: PEER_ID.into() }).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // b. UserInfo 资料同步（昵称变更广播）
+        let _ = send_frame(&mut w, &Message::UserInfo {
+            device_id: PEER_ID.into(),
+            nickname: "E2E-Peer-Renamed".into(),
+            avatar: None,
+        }).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // c. 多类型消息：代码 / 图片 / 1MB 大文本
+        for (label, msg_id, kind, content) in [
+            ("代码消息（kind=code）", CODE_MSG_ID, MsgKind::Code, CODE_CONTENT),
+            ("图片消息（kind=image，dataUrl）", IMAGE_MSG_ID, MsgKind::Image, IMAGE_CONTENT),
+            ("1MB 大文本消息（大帧分片）", BIG_MSG_ID, MsgKind::Text, &"x".repeat(BIG_SIZE)),
+        ] {
+            let _ = send_frame(&mut w, &Message::ChatMessage {
+                msg_id: msg_id.into(),
+                from: PEER_ID.into(),
+                to: app_id.clone(),
+                kind: kind.clone(),
+                content: content.to_string(),
+                ts: now_ms(),
+            }).await;
+            match waiter.expect(4000, "Ack", &|m| matches!(m, Message::Ack { msg_id: id } if *id == msg_id)).await {
+                Ok(_) => report.add(label, true, format!("msg_id={msg_id}, {} bytes", content.len())),
+                Err(e) => report.add(label, false, e),
+            }
+        }
+
+        // d. 乱序消息：ts 较大的先发，校验连接与 Ack 不受影响（前端按 ts 排序）
+        let ts_base = now_ms();
+        for (msg_id, ts) in [(OOO_A_ID, ts_base + 2000), (OOO_B_ID, ts_base + 1000)] {
+            let _ = send_frame(&mut w, &Message::ChatMessage {
+                msg_id: msg_id.into(),
+                from: PEER_ID.into(),
+                to: app_id.clone(),
+                kind: MsgKind::Text,
+                content: format!("out-of-order-{msg_id}"),
+                ts,
+            }).await;
+        }
+        let mut acked = 0;
+        for _ in 0..2 {
+            if waiter.expect(4000, "Ack", &|m| {
+                matches!(m, Message::Ack { msg_id } if *msg_id == OOO_A_ID || *msg_id == OOO_B_ID)
+            }).await.is_ok() {
+                acked += 1;
+            }
+        }
+        report.add("乱序消息处理（ts 乱序发送均收到 Ack）", acked == 2, format!("acked={acked}/2"));
+
+        // e. 群消息（Gossip 群路径之外的非加密直连群消息入库）
+        let _ = send_frame(&mut w, &Message::GroupMessage {
+            msg_id: GROUP_MSG_ID.into(),
+            from: PEER_ID.into(),
+            group_id: GROUP_ID.into(),
+            group_name: "E2E Dev 群".into(),
+            kind: MsgKind::Text,
+            content: GROUP_TEXT.into(),
+            ts: now_ms(),
+        }).await;
+        match waiter.expect(4000, "Ack（群消息回执）", &|m| matches!(m, Message::Ack { msg_id } if msg_id == GROUP_MSG_ID)).await {
+            Ok(_) => report.add("群消息送达（GroupMessage → Ack）", true, format!("group={GROUP_ID}")),
+            Err(e) => report.add("群消息送达（GroupMessage → Ack）", false, e),
+        }
+
+        // f. 心跳后连接活性复验（心跳不破坏链路）
+        let _ = send_frame(&mut w, &Message::ChatMessage {
+            msg_id: "e2e-alive-001".into(),
+            from: PEER_ID.into(),
+            to: app_id.clone(),
+            kind: MsgKind::Text,
+            content: "alive".into(),
+            ts: now_ms(),
+        }).await;
+        match waiter.expect(4000, "Ack（心跳后活性复验）", &|m| matches!(m, Message::Ack { msg_id } if msg_id == "e2e-alive-001")).await {
+            Ok(_) => report.add("心跳保活（Heartbeat 后链路仍可收发）", true, "连接活性正常".into()),
+            Err(e) => report.add("心跳保活（Heartbeat 后链路仍可收发）", false, e),
+        }
+
+        // g. 好友申请：开头已发过 FriendRequest，等待 UI 同意/拒绝（人工交互）
+        println!("[提示] 如需验证好友申请通过流程，请在实例窗口「联系人」页点击同意/拒绝（等待 10 秒）…");
+        match waiter.expect(10_000, "FriendAccept/FriendReject", &|m| {
+            matches!(m, Message::FriendAccept { from, .. } | Message::FriendReject { from, .. } if *from == app_id)
+        }).await {
+            Ok(Message::FriendAccept { .. }) => report.add("好友申请通过（UI 同意 → FriendAccept）", true, "对方已同意，好友关系建立".into()),
+            Ok(Message::FriendReject { .. }) => report.add("好友申请通过（UI 同意 → FriendAccept）", false, "对方点击了拒绝".into()),
+            Ok(_) => unreachable!(),
+            Err(_) => report.add_skip("好友申请通过（UI 同意 → FriendAccept）", "10s 内未在实例 UI 点击同意（人工交互项）".into()),
+        }
+
+        // h. 共享目录树（需 scripts/e2e-dev.sh 预置 share_dir）
+        let _ = send_frame(&mut w, &Message::ShareTreeRequest {
+            request_id: SHARE_REQ_ID.into(),
+            from: PEER_ID.into(),
+            to: app_id.clone(),
+        }).await;
+        match waiter.expect(6000, "ShareTreeResponse", &|m| {
+            matches!(m, Message::ShareTreeResponse { request_id, .. } if request_id == SHARE_REQ_ID)
+        }).await {
+            Ok(Message::ShareTreeResponse { entries, .. }) => {
+                let found = entries.iter().find(|e| e.name == SHARE_FILE);
+                match found {
+                    Some(e) => report.add("共享目录浏览（ShareTreeRequest → 目录树）", true, format!("{} 个条目，含 {SHARE_FILE}（{}B）", entries.len(), e.size)),
+                    None => report.add("共享目录浏览（ShareTreeRequest → 目录树）", false, format!("{} 个条目，但不含 {SHARE_FILE}（share_dir 未预置？）", entries.len())),
+                }
+            }
+            Ok(_) => unreachable!(),
+            Err(e) => report.add("共享目录浏览（ShareTreeRequest → 目录树）", false, format!("{e}（可能未预置 share_dir，用 scripts/e2e-dev.sh 跑）")),
+        }
+
+        // i. 下载方向文件传输：app 主动发起（覆盖 app 侧发送路径，即「发送文件」卡死修复验证）
+        let _ = send_frame(&mut w, &Message::ShareFileRequest {
+            transfer_id: DL_TRANSFER_ID.into(),
+            from: PEER_ID.into(),
+            path: SHARE_FILE.into(),
+        }).await;
+        let dl_result: Result<Vec<u8>, String> = async {
+            let offer = waiter.expect(8000, "FileOffer（app 发起下载方向传输）", &|m| {
+                matches!(m, Message::FileOffer { transfer_id, .. } if transfer_id == DL_TRANSFER_ID)
+            }).await?;
+            let (name, size) = match offer {
+                Message::FileOffer { name, size, .. } => (name, size),
+                _ => unreachable!(),
+            };
+            let _ = send_frame(&mut w, &Message::FileAccept { transfer_id: DL_TRANSFER_ID.into() }).await;
+            // 收集分片直到 FileDone
+            let mut parts: Vec<(u32, Vec<u8>)> = Vec::new();
+            loop {
+                let m = waiter.expect(15_000, "FileChunk/FileDone", &|m| {
+                    matches!(m, Message::FileChunk { transfer_id, .. } | Message::FileDone { transfer_id } if transfer_id == DL_TRANSFER_ID)
+                }).await?;
+                match m {
+                    Message::FileChunk { seq, data, .. } => {
+                        let bytes = STANDARD.decode(&data).map_err(|e| e.to_string())?;
+                        parts.push((seq, bytes));
+                    }
+                    Message::FileDone { .. } => break,
+                    _ => unreachable!(),
+                }
+            }
+            parts.sort_by_key(|(seq, _)| *seq);
+            let mut full = Vec::with_capacity(size as usize);
+            for (_, b) in parts {
+                full.extend_from_slice(&b);
+            }
+            Ok::<Vec<u8>, String>(if name != SHARE_FILE { Err(format!("文件名不符: {name}"))? } else { full })
+        }.await;
+        match dl_result {
+            Ok(bytes) => {
+                let match_ok = bytes == SHARE_FILE_CONTENT.as_bytes();
+                report.add("下载方向文件传输（app→peer 发送路径全链路）", match_ok,
+                    if match_ok { format!("{SHARE_FILE} 内容逐字节一致（{}B）", bytes.len()) } else { format!("内容不一致（{}B）", bytes.len()) });
+            }
+            Err(e) => report.add("下载方向文件传输（app→peer 发送路径全链路）", false, e),
+        }
+    }
+
     // ---- 7. DB / 落盘校验 ----
     if let Some(db) = &db_path {
         let Ok(conn) = open_db(db) else {
@@ -430,6 +629,46 @@ async fn main() {
         let downloads = Path::new(db).parent().unwrap_or(Path::new(".")).join("downloads").join(FILE_NAME);
         let file_ok = std::fs::read(&downloads).map(|bytes| bytes == content).unwrap_or(false);
         report.add("接收文件完整落盘（内容逐字节一致）", file_ok, downloads.display().to_string());
+
+        // ---- --full 落库校验 ----
+        if full {
+            // 代码 / 图片 / 大文本消息落库
+            for (label, msg_id, expect) in [
+                ("代码消息落库（kind=code）", CODE_MSG_ID, CODE_CONTENT),
+                ("图片消息落库（kind=image）", IMAGE_MSG_ID, IMAGE_CONTENT),
+            ] {
+                let c: Option<String> = conn
+                    .query_row("SELECT content FROM messages WHERE msg_id = ?1", rusqlite::params![msg_id], |r| r.get(0))
+                    .ok();
+                let ok = c.as_deref() == Some(expect);
+                report.add(label, ok, format!("len={}", c.map(|v| v.len()).unwrap_or(0)));
+            }
+            let big_len: Option<i64> = conn
+                .query_row("SELECT LENGTH(content) FROM messages WHERE msg_id = ?1", rusqlite::params![BIG_MSG_ID], |r| r.get(0))
+                .ok();
+            report.add("1MB 大文本落库（长度完整）", big_len == Some(BIG_SIZE as i64), format!("len={big_len:?}"));
+
+            // 群消息落库 + 群会话行
+            let group_content: Option<String> = conn
+                .query_row("SELECT content FROM messages WHERE msg_id = ?1", rusqlite::params![GROUP_MSG_ID], |r| r.get(0))
+                .ok();
+            let group_ok = group_content.as_deref() == Some(GROUP_TEXT);
+            report.add("群消息落库（group 会话）", group_ok, format!("content={group_content:?}"));
+            let group_conv: i64 = conn
+                .query_row("SELECT COUNT(*) FROM conversations WHERE id = ?1", rusqlite::params![format!("group:{GROUP_ID}")], |r| r.get(0))
+                .unwrap_or(-1);
+            report.add("群会话行创建（群聊列表可显示）", group_conv == 1, format!("count={group_conv}"));
+
+            // 乱序消息 ts 保真（DB 保留发送方时间戳）
+            let ts_a: Option<i64> = conn
+                .query_row("SELECT ts FROM messages WHERE msg_id = ?1", rusqlite::params![OOO_A_ID], |r| r.get(0))
+                .ok();
+            let ts_b: Option<i64> = conn
+                .query_row("SELECT ts FROM messages WHERE msg_id = ?1", rusqlite::params![OOO_B_ID], |r| r.get(0))
+                .ok();
+            let ordered = matches!((ts_a, ts_b), (Some(a), Some(b)) if a > b);
+            report.add("乱序消息 ts 保真（DB 按发送 ts 存储）", ordered, format!("a={ts_a:?} b={ts_b:?}"));
+        }
     }
 
     let ok = report.print();
