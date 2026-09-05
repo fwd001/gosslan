@@ -63,6 +63,8 @@ if (existsSync(lockPath)) {
   }
   writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
 }
+// 注：src-tauri/Cargo.lock（TOML）由 cargo 构建时自动同步，发版前跑一次
+// `cd src-tauri && cargo check` 保证 lock 与 Cargo.toml 版本一致后一并提交。
 
 // 5) CHANGELOG.md（可选）
 const changelogPath = "CHANGELOG.md";
