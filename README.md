@@ -6,9 +6,25 @@
 支持 **Windows / macOS / Android** 三端。
 
 > 技术栈：Tauri v2 · Rust · Vue 3 (Composition API) · TypeScript · Vite · **Tailwind CSS · Headless UI · Lucide 图标** · SQLite
->
-> 📖 想用 AI 继续开发、通读源码或 fork 二次开发？请先看
-> **[AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md)**（完整功能清单 / 代码导读 / 工程约定 / 演进设想）。
+
+---
+
+## 🤖 AI 开发必读（约束文档索引）
+
+> **任何 AI 编程助手在修改本项目代码前，必须先阅读以下文档。**
+> 这些文档定义了项目的工程宪法、不变量、禁止事项和开发流程。
+
+| 优先级 | 文档 | 内容 |
+|---|---|---|
+| **★★★ 必读** | [AI_RULES.md](AI_RULES.md) | **AI 工程宪法**：核心不变量（INV-001~008）、禁止事项（P-01~P-20）、强制开发流程（7 阶段）、协议变更规则、状态机规范、Bug 修复规范 |
+| **★★★ 必读** | [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) | **项目全景**：完整功能清单、架构与代码导读、E2EE 状态机、工程约定、测试口径、演进设想 |
+| **★★ 参考** | [docs/adr/](docs/adr/) | **架构决策记录**：为什么这么设计（消息幂等、Outbox+Ack、E2EE 选型、Transport 抽象、禁用 Web Worker、设备指纹） |
+| **★★ 参考** | [CHANGELOG.md](CHANGELOG.md) | **版本历史**：过去每个版本改了什么、为什么改（含所有已修 bug 的根因） |
+| **★ 按需** | [docs/protocol-design.md](docs/protocol-design.md) | 协议对标分析（BeeBEEP/bitchat）与演进路线 |
+| **★ 按需** | [docs/performance.md](docs/performance.md) | 500–1000 节点性能设计 |
+| **★ 按需** | [docs/setup-windows.md](docs/setup-windows.md) | Windows/Android 环境配置与打包 |
+
+**阅读顺序建议**：`AI_RULES.md`（了解约束）→ `AI_PROJECT_HANDOFF.md`（了解项目）→ 相关 ADR（了解设计原因）→ 代码。
 
 ---
 
@@ -44,6 +60,14 @@ gosslan/
 ├── package.json
 ├── vite.config.ts
 ├── tailwind.config.js        # darkMode: class + 主题色变量
+├── AI_RULES.md               # ★ AI 工程宪法（不变量/禁止事项/开发流程）
+├── AI_PROJECT_HANDOFF.md     # ★ 项目全景与代码导读
+├── CHANGELOG.md              # 版本历史
+├── docs/
+│   ├── adr/                  # 架构决策记录（为什么这么设计）
+│   ├── protocol-design.md    # 协议对标与演进路线
+│   ├── performance.md        # 大规模节点性能设计
+│   └── setup-windows.md      # Windows/Android 环境配置
 ├── src/                      # Vue 3 前端
 │   ├── main.ts
 │   ├── App.vue

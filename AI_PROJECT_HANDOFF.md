@@ -6,7 +6,10 @@
 > ③ fork 后想二次开发的人。
 >
 > 内容包括：全部功能、架构与代码导读、协议与加密状态机、工程约定、测试口径、
-> 历史演进与未来设想。最后更新：**2026-09-05（v0.11.0）**。
+> 历史演进与未来设想。最后更新：**2026-09-05（v0.11.2）**。
+>
+> ⚠️ **AI 编程助手请先阅读 [AI_RULES.md](AI_RULES.md)**（工程宪法：不变量 / 禁止事项 / 强制流程），
+> 再读本文件了解项目全貌。架构设计原因见 [docs/adr/](docs/adr/)。
 
 ---
 
@@ -87,6 +90,9 @@
 
 ```
 gosslan/
+├── AI_RULES.md              # ★ AI 工程宪法（不变量/禁止事项/开发流程）
+├── AI_PROJECT_HANDOFF.md    # ★ 本文件（项目全景与代码导读）
+├── CHANGELOG.md             # 版本历史
 ├── .github/workflows/
 │   ├── build.yml            # Windows x64（NSIS exe）
 │   ├── build-macos.yml      # macOS 通用包（universal dmg）
@@ -96,10 +102,16 @@ gosslan/
 │   ├── version.mjs          # 版本号统一维护（同步 4 处 + CHANGELOG [Unreleased] 落日志）
 │   └── android/…            # Android 权限模板（CI 注入）
 ├── docs/
-│   ├── protocol-design.md   # ★ 协议对标 BeeBEEP/bitchat + 演进路线（设想文档）
+│   ├── adr/                 # ★ 架构决策记录（为什么这么设计）
+│   │   ├── 0001-message-idempotency.md
+│   │   ├── 0002-outbox-ack-reliability.md
+│   │   ├── 0003-e2ee-static-x25519.md
+│   │   ├── 0004-transport-abstraction.md
+│   │   ├── 0005-no-web-worker.md
+│   │   └── 0006-device-fingerprint-identity.md
+│   ├── protocol-design.md   # 协议对标 BeeBEEP/bitchat + 演进路线
 │   ├── performance.md       # 500–1000 节点性能优化记录
-│   ├── setup-windows.md     # Windows/Android 环境配置与打包
-│   └── overview.md          # 2026-09-04 重命名/性能优化改动概览（历史）
+│   └── setup-windows.md     # Windows/Android 环境配置与打包
 ├── src/                     # Vue 3 前端
 │   ├── types.ts             # 与 Rust serde 结构一一对应的类型
 │   ├── api/index.ts         # Tauri invoke封装 + 全部事件监听（bindEvents）
@@ -379,9 +391,11 @@ CI：push `main` / push `v*` tag / 手动触发。tag 额外发布 Release。
 
 | 文档 | 内容 |
 |---|---|
-| `README.md` | 项目门面：功能特性、快速开始、架构简介 |
+| `AI_RULES.md` | **★ AI 工程宪法**：核心不变量、禁止事项、强制开发流程、协议变更规则、状态机规范 |
 | `AI_PROJECT_HANDOFF.md` | **本文件**：给 AI 编程/源码阅读/fork 者的完整上下文 |
+| `README.md` | 项目门面：功能特性、快速开始、架构简介、**AI 约束文档索引** |
 | `CHANGELOG.md` | 全部版本历史（每版 Added/Fixed/Changed 明细） |
+| `docs/adr/` | **架构决策记录**：为什么这么设计（幂等/Outbox/E2EE/Transport/禁 Worker/指纹） |
 | `docs/protocol-design.md` | 协议对标（BeeBEEP/bitchat）+ 差距分析 + 演进优先级 |
 | `docs/performance.md` | 500–1000 节点性能优化设计 |
 | `docs/setup-windows.md` | Windows/Android 环境配置、权限清单、打包命令 |

@@ -41,7 +41,8 @@
 - `handle_gossip` 将「去重 + 验签」合并为一次锁，减少高负载下锁竞争。
 
 ### 2.6 前端渲染
-- 消息列表虚拟滚动（`VirtualList.vue`）+ Web Worker 合并排序/去重（`message.worker.ts`）+ rAF 批处理入队（`useChatStore.ts`）。
+- 消息列表虚拟滚动（`VirtualList.vue`）+ 主线程同步合并（O(n) Set 去重 + 排序，微秒级）+ rAF 批处理入队（`useChatStore.ts`，窗口不可见时退回 setTimeout）。
+- **刻意不用 Web Worker**：WKWebView 生产构建下 Worker 可能加载失败导致消息管线 Promise 永不 resolve（v0.5.1 教训，详见 `docs/adr/0005-no-web-worker.md`）。
 - 添加好友弹窗：搜索过滤 + 最多渲染 200 行 + 数量提示，避免一次性挂载上千行。
 
 ## 3. 规模预期
