@@ -273,26 +273,8 @@ function fileToDataUrl(f: File): Promise<string> {
       </button>
     </div>
 
-    <!-- 输入区 -->
-    <div class="border-t border-[var(--gosslan-border)] px-3 pb-3 pt-2">
-      <div class="mb-1.5 flex items-center gap-1">
-        <button
-          class="flex items-center gap-1 rounded-md px-2 py-1 text-xs transition"
-          :class="codeMode ? 'bg-primary-light text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-          @click="codeMode = !codeMode"
-        >
-          <Code2 class="h-3.5 w-3.5" />
-          代码
-        </button>
-        <button
-          class="flex items-center justify-center rounded-md px-2 py-1 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          title="发送文件（自动选择最优路线）"
-          @click="attachFile"
-        >
-          <FilePlus class="h-4 w-4" />
-        </button>
-        <span class="ml-auto text-[11px] text-[var(--gosslan-text-2)]">Enter 发送 · 支持粘贴图片</span>
-      </div>
+    <!-- 输入区：输入框在上，操作行（代码/文件/提示/发送）移到底部 -->
+    <div class="border-t border-[var(--gosslan-border)] px-4 pb-4 pt-2.5">
       <div class="flex items-end gap-2">
         <textarea
           ref="inputRef"
@@ -304,12 +286,33 @@ function fileToDataUrl(f: File): Promise<string> {
           @keydown="onKeydown"
           @paste="onPaste"
         ></textarea>
+      </div>
+      <div class="mt-2 flex items-center justify-between gap-2">
+        <div class="flex min-w-0 items-center gap-1">
+          <button
+            class="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs transition"
+            :class="codeMode ? 'bg-primary-light text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+            @click="codeMode = !codeMode"
+          >
+            <Code2 class="h-3.5 w-3.5" />
+            代码
+          </button>
+          <button
+            class="flex shrink-0 items-center justify-center rounded-md px-2 py-1 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+            title="发送文件（自动选择最优路线）"
+            @click="attachFile"
+          >
+            <FilePlus class="h-4 w-4" />
+          </button>
+          <span class="ml-1 truncate text-[11px] text-[var(--gosslan-text-2)]">Enter 发送 · Shift+Enter 换行 · 支持粘贴图片</span>
+        </div>
         <button
-          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-white transition hover:bg-primary-hover disabled:opacity-40"
+          class="flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-xs font-medium text-white transition hover:bg-primary-hover disabled:opacity-40"
           :disabled="!draft.trim()"
           @click="sendMsg()"
         >
-          <Send class="h-4 w-4" />
+          <Send class="h-3.5 w-3.5" />
+          发送
         </button>
       </div>
     </div>

@@ -993,19 +993,20 @@ fn preview_content(kind: &str, content: &str) -> String {
 }
 
 /// 补发离线队列中的所有消息。
+///
+/// 注意：这里**只补发、不删除**——outbox 行仅在收到对方 `Ack`（真正确认送达）时删除。
+/// 旧实现 `try_send` 返回 Ok（仅表示已入发送队列）就删行，半开 TCP 链路上会静默丢消息，
+/// outbox 兜底因此失效。接收方按 msg_id 去重，重复补发不会重复入库/通知。
 pub async fn flush_outbox(state: &AppState, peer_id: &str) {
     let pending = {
         let dbc = state.db.lock().unwrap();
         db::list_outbox(&dbc, peer_id).unwrap_or_default()
     };
-    for (id, payload) in pending {
+    for (_id, payload) in pending {
         let Ok(msg) = serde_json::from_str::<Message>(&payload) else {
             continue;
         };
-        if try_send(state, peer_id, &msg).await.is_ok() {
-            let dbc = state.db.lock().unwrap();
-            db::delete_outbox(&dbc, id).ok();
-        }
+        let _ = try_send(state, peer_id, &msg).await;
     }
 }
 

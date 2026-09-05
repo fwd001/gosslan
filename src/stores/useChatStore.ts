@@ -104,12 +104,19 @@ export const useChatStore = defineStore("chat", () => {
   function scheduleFlush() {
     if (flushScheduled) return;
     flushScheduled = true;
-    requestAnimationFrame(() => {
+    const flush = () => {
       flushScheduled = false;
       const batch = pending;
       pending = [];
       void applyIncoming(batch);
-    });
+    };
+    // 后台/遮挡窗口的 requestAnimationFrame 会被浏览器暂停，导致消息滞留不渲染；
+    // 窗口不可见时退回 setTimeout，保证任何状态下都能入列渲染。
+    if (!document.hidden && typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(flush);
+    } else {
+      setTimeout(flush, 0);
+    }
   }
 
   async function applyIncoming(batch: MessageRecord[]) {
@@ -203,8 +210,8 @@ export const useChatStore = defineStore("chat", () => {
     if (conv) conv.unread = 0;
   }
 
-  // 会话内消息分页：每会话最多缓存页数（防内存无限增长）
-  const PAGE_SIZE = 300;
+  // ---------------- 会话内消息分页：每会话最多缓存页数（防内存无限增长） ----------------
+  const PAGE_SIZE = 100;
   const MAX_PAGES = 10;
   const pagesLoaded = new Map<string, number>();
   // 加载竞态守卫：快速切换会话时丢弃过期响应
@@ -238,6 +245,9 @@ export const useChatStore = defineStore("chat", () => {
   /** 统一发送（单聊/群聊）。乐观上屏：先显示 sending，invoke 成功后替换为真实记录。 */
   async function send(convId: string, content: string, kind: string): Promise<MessageRecord> {
     const myId = app.device?.device_id ?? "";
+    // 时间戳取「发送时刻」；并用会话内最新消息时间做下限钳制，
+    // 避免设备间时钟偏差导致乐观消息排序到已收到消息之上。
+    const lastTs = messages.value[convId]?.at(-1)?.ts ?? 0;
     const optimistic: MessageRecord = {
       id: -1,
       msg_id: `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -246,7 +256,7 @@ export const useChatStore = defineStore("chat", () => {
       receiver_id: convId,
       kind: kind as MessageRecord["kind"],
       content,
-      ts: Date.now(),
+      ts: Math.max(Date.now(), lastTs),
       status: "sending",
     };
     enqueueMessage(optimistic);
@@ -279,10 +289,32 @@ export const useChatStore = defineStore("chat", () => {
   async function sendFriendRequest(peerId: string) {
     await api.sendFriendRequest(peerId);
   }
+  /** 乐观交互：立即移出申请列表，失败回滚（调用方负责 toast）。 */
   async function respondRequest(peerId: string, accept: boolean) {
-    await api.respondFriendRequest(peerId, accept);
-    pendingRequests.value = pendingRequests.value.filter((r) => r.from !== peerId);
-    if (accept) await refreshFriends();
+    const prev = pendingRequests.value;
+    pendingRequests.value = prev.filter((r) => r.from !== peerId);
+    try {
+      await api.respondFriendRequest(peerId, accept);
+    } catch (e) {
+      pendingRequests.value = prev; // 回滚
+      throw e;
+    }
+    if (accept) {
+      await refreshFriends();
+      await refreshConversations();
+    }
+  }
+
+  /** 乐观交互：立即从联系人移除，失败回滚。保留聊天记录（后端行为）。 */
+  async function removeFriend(peerId: string) {
+    const prev = friends.value;
+    friends.value = prev.filter((f) => f.device_id !== peerId);
+    try {
+      await api.removeFriend(peerId);
+    } catch (e) {
+      friends.value = prev; // 回滚
+      throw e;
+    }
   }
   async function createGroup(name: string, members: string[]) {
     const g = await api.createGroup(name, members);
@@ -298,6 +330,20 @@ export const useChatStore = defineStore("chat", () => {
     try {
       const id = await api.sendFileAuto(convId, path);
       void refreshTransfers();
+      // 乐观上屏：拿到 transfer_id 即插入文件气泡（后端同 msg_id 的事件会被去重合并）；
+      // 进度条随 file-progress 事件实时更新
+      const name = path.split(/[\\/]/).pop() ?? "文件";
+      enqueueMessage({
+        id: -1,
+        msg_id: `file-${id}`,
+        conv_id: convId,
+        sender_id: app.device?.device_id ?? "",
+        receiver_id: convId,
+        kind: "file",
+        content: JSON.stringify({ name }),
+        ts: Math.max(Date.now(), messages.value[convId]?.at(-1)?.ts ?? 0),
+        status: "sending",
+      });
       return id;
     } catch (e) {
       const app2 = useAppStore();
@@ -425,6 +471,17 @@ export const useChatStore = defineStore("chat", () => {
     });
     // 定时刷新拓扑
     setInterval(() => void refreshTopology(), 5000);
+    // 窗口重新可见：补发当前会话已读回执 + 冲刷后台期间滞留的消息批次
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      if (pending.length) scheduleFlush();
+      if (activeConv.value) {
+        void api.markRead(activeConv.value).then(() => {
+          const conv = conversations.value.find((c) => c.id === activeConv.value);
+          if (conv) conv.unread = 0;
+        });
+      }
+    });
   }
 
   return {
@@ -456,6 +513,7 @@ export const useChatStore = defineStore("chat", () => {
     send,
     sendFriendRequest,
     respondRequest,
+    removeFriend,
     createGroup,
     sendFileTo,
     sendFileRelayTo,

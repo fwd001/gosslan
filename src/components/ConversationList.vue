@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import dayjs from "dayjs";
-import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { Check, Search, UserMinus, UserPlus, UsersRound, X } from "lucide-vue-next";
@@ -90,14 +89,13 @@ function closeFriendMenu() {
   friendMenu.value = null;
 }
 
-/** 删除好友：保留聊天记录；对方仍出现在扫描列表，可重新添加。 */
+/** 删除好友：保留聊天记录；对方仍出现在扫描列表，可重新添加。乐观移除，失败回滚。 */
 async function confirmDeleteFriend() {
   const f = friendMenu.value?.friend;
   closeFriendMenu();
   if (!f) return;
   try {
-    await api.removeFriend(f.device_id);
-    await chat.refreshFriends();
+    await chat.removeFriend(f.device_id);
     app.toast(`已删除好友 ${f.nickname}（可在添加好友中重新添加）`, "info");
   } catch (e) {
     app.toast(`删除失败：${e}`, "error");

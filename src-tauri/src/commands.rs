@@ -527,22 +527,21 @@ pub async fn send_message(
 
     broadcast_gossip(s, env).await;
 
-    // 对方无直连链路：消息进离线队列，对方上线建链后自动补发。
-    // （Gossip 若经其他节点中继已送达，接收方按相同 msg_id 去重，不会重复入库）
-    let friend_linked = s.links.lock().await.contains_key(&friend_id);
-    if !friend_linked {
-        let queued = Message::ChatMessage {
-            msg_id: msg_id.clone(),
-            from: s.device_id.clone(),
-            to: friend_id.clone(),
-            kind: crate::protocol::MsgKind::from_str(&kind),
-            content: content.clone(),
-            ts,
-        };
-        if let Ok(payload) = serde_json::to_string(&queued) {
-            let dbc = s.db.lock().unwrap();
-            db::insert_outbox(&dbc, &msg_id, &friend_id, &payload).ok();
-        }
+    // 一律写离线队列兜底（INSERT OR IGNORE 按 msg_id 幂等）：直连链路存在但已失效
+    // （半开 TCP）时 broadcast 会静默丢包，此前只在「无链路」时入队导致消息永久丢失。
+    // Ack 到达后由 transport.rs 删除该行；若链路中断，对方上线建链（Hello）或心跳
+    // 会触发 flush_outbox 自动补发，接收方按 msg_id 去重不会重复入库。
+    let queued = Message::ChatMessage {
+        msg_id: msg_id.clone(),
+        from: s.device_id.clone(),
+        to: friend_id.clone(),
+        kind: crate::protocol::MsgKind::from_str(&kind),
+        content: content.clone(),
+        ts,
+    };
+    if let Ok(payload) = serde_json::to_string(&queued) {
+        let dbc = s.db.lock().unwrap();
+        db::insert_outbox(&dbc, &msg_id, &friend_id, &payload).ok();
     }
 
     Ok(rec)

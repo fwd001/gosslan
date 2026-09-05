@@ -50,6 +50,14 @@ const sameSenderRun = computed(() => {
   if (!p || p.kind === "system" || p.sender_id !== props.message.sender_id) return false;
   return props.message.ts - p.ts < 5 * 60 * 1000;
 });
+/** 同一分钟内同一发送者的连续消息：合并显示（省略时间行、气泡更紧凑），不依赖紧凑开关。 */
+const sameMinuteRun = computed(() => {
+  const p = props.prev;
+  if (!p || p.kind === "system" || p.sender_id !== props.message.sender_id) return false;
+  return dayjs(p.ts).isSame(props.message.ts, "minute");
+});
+/** 紧凑布局：连续 run 或同分钟消息。 */
+const tight = computed(() => sameSenderRun.value || sameMinuteRun.value);
 /** 时间分割线：与上一条间隔 ≥ 5 分钟。 */
 const showTimeDivider = computed(() => {
   const p = props.prev;
@@ -59,11 +67,27 @@ const showTimeDivider = computed(() => {
 const showNickname = computed(() => props.isGroup && !mine.value && !sameSenderRun.value);
 
 const time = computed(() => dayjs(props.message.ts).format("HH:mm"));
+const fullTime = computed(() => dayjs(props.message.ts).format("YYYY-MM-DD HH:mm:ss"));
 const timeDividerText = computed(() => dayjs(props.message.ts).format("M月D日 HH:mm"));
 
 // ---------------- 发送状态（sending / delivered / read / failed） ----------------
 /** sending/sent=转圈（发出中或未确认送达）；delivered=空圆框（对方收到未读）；read=绿勾（已读）。 */
 const sendState = computed(() => props.message.status as "sending" | "sent" | "delivered" | "read" | "failed");
+const receiptTitle = computed(() => {
+  switch (sendState.value) {
+    case "sending":
+    case "sent":
+      return "发送中…";
+    case "delivered":
+      return "对方已收到，未读";
+    case "read":
+      return "对方已读";
+    case "failed":
+      return "发送失败";
+    default:
+      return "";
+  }
+});
 
 // ---------------- 文件传输进度 ----------------
 /** 文件消息的 msg_id 即 "file-{transfer_id}"，据此查传输记录。 */
@@ -73,6 +97,29 @@ const transferId = computed(() =>
 const transfer = computed(() =>
   transferId.value ? chat.transfers.find((t) => t.id === transferId.value) : null,
 );
+
+// ---------------- 文件 ----------------
+interface FileMeta {
+  name: string;
+  path: string;
+  size: number;
+}
+/** 乐观上屏的文件气泡可能缺 size/path，用传输记录补齐。 */
+const fileMeta = computed<FileMeta | null>(() => {
+  if (props.message.kind !== "file") return null;
+  try {
+    const meta = JSON.parse(props.message.content) as Partial<FileMeta>;
+    const t = transfer.value;
+    return {
+      name: meta.name ?? t?.name ?? "文件",
+      path: meta.path ?? t?.path ?? "",
+      size: meta.size ?? t?.size ?? 0,
+    };
+  } catch {
+    return null;
+  }
+});
+
 /** 进度 0~1；无记录（历史消息）返回 null 表示不显示进度条。 */
 const fileProgress = computed(() => {
   if (!transfer.value) return null;
@@ -94,21 +141,6 @@ const isLongText = computed(
   () => props.message.kind === "text" && props.message.content.length > LONG_TEXT_CHARS,
 );
 const collapsed = ref(true);
-
-// ---------------- 文件 ----------------
-interface FileMeta {
-  name: string;
-  path: string;
-  size: number;
-}
-const fileMeta = computed<FileMeta | null>(() => {
-  if (props.message.kind !== "file") return null;
-  try {
-    return JSON.parse(props.message.content) as FileMeta;
-  } catch {
-    return null;
-  }
-});
 
 async function copyText() {
   try {
@@ -156,7 +188,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div :class="sameSenderRun ? 'py-0.5' : 'pb-2 pt-1'">
+  <div :class="tight ? 'py-0.5' : 'pb-2 pt-1'">
     <!-- 时间分割线（间隔 ≥ 5 分钟） -->
     <div v-if="showTimeDivider" class="my-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
       {{ timeDividerText }}
@@ -197,9 +229,15 @@ onUnmounted(() => {
           {{ message.content }}
         </div>
 
+        <!-- 消息行：气泡 + 侧挂回执（我发送的消息显示在气泡另一侧） -->
+        <div
+          v-else
+          class="group/row flex w-full items-end gap-1"
+          :class="mine ? 'justify-end' : 'justify-start'"
+        >
         <!-- 文本 -->
         <div
-          v-else-if="message.kind === 'text'"
+          v-if="message.kind === 'text'"
           class="group relative rounded-2xl px-3 py-2 leading-relaxed shadow-sm"
           :style="{
             background: mine ? colors.mineBubble : colors.otherBubble,
@@ -221,7 +259,7 @@ onUnmounted(() => {
               {{ collapsed ? "展开全文" : "收起" }}
             </button>
             <button
-              class="flex items-center gap-1 text-xs opacity-70 transition hover:opacity-100"
+              class="flex items-center gap-1 whitespace-nowrap text-xs opacity-70 transition hover:opacity-100"
               @click="copyText"
             >
               <Check v-if="copied" class="h-3 w-3" />
@@ -232,7 +270,7 @@ onUnmounted(() => {
           <!-- 普通文本悬停复制按钮 -->
           <button
             v-else
-            class="absolute -top-3 right-1 hidden items-center gap-1 rounded-md border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-1.5 py-0.5 text-xs text-[var(--gosslan-text-2)] shadow group-hover:flex"
+            class="absolute -top-3 right-1 z-10 hidden items-center gap-1 whitespace-nowrap rounded-md border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-1.5 py-0.5 text-xs text-[var(--gosslan-text-2)] shadow group-hover:flex"
             @click="copyText"
           >
             <Check v-if="copied" class="h-3 w-3 text-emerald-500" />
@@ -242,7 +280,7 @@ onUnmounted(() => {
         </div>
 
         <!-- 代码 -->
-        <div v-else-if="message.kind === 'code'" class="w-full min-w-0">
+        <div v-else-if="message.kind === 'code'" class="min-w-0 flex-1">
           <CodeBlock :code="message.content" />
         </div>
 
@@ -254,7 +292,7 @@ onUnmounted(() => {
         <!-- 文件 -->
         <div
           v-else-if="message.kind === 'file' && fileMeta"
-          class="flex min-w-[240px] flex-col gap-2 rounded-xl px-3 py-2.5 shadow-sm"
+          class="flex min-w-0 flex-1 flex-col gap-2 rounded-xl px-3 py-2.5 shadow-sm"
           :style="{
             background: mine ? colors.mineBubble : colors.otherBubble,
             color: mine ? colors.mineText : colors.otherText,
@@ -269,7 +307,7 @@ onUnmounted(() => {
               <div class="text-xs opacity-70">{{ humanSize(fileMeta.size) }}</div>
             </div>
             <button
-              class="flex h-8 w-8 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
+              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
               title="打开"
               @click="openFile"
             >
@@ -292,16 +330,26 @@ onUnmounted(() => {
           {{ message.content }}
         </div>
 
-        <!-- 连续消息合并时省略时间戳（悬浮可见的最后一条） -->
-        <div v-if="!sameSenderRun" class="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--gosslan-text-2)]" :class="mine ? 'flex-row-reverse' : ''">
-          {{ time }}
-          <!-- 我发送的消息：状态回执（sending 转圈 → delivered 空圆框 → read 绿勾） -->
-          <template v-if="mine && message.kind !== 'system'">
-            <Loader2 v-if="sendState === 'sending' || sendState === 'sent'" class="h-3 w-3 animate-spin" title="发送中" />
-            <X v-else-if="sendState === 'failed'" class="h-3 w-3 text-red-500" title="发送失败" />
-            <Circle v-else-if="sendState === 'delivered'" class="h-3 w-3" title="对方已收到，未读" />
-            <Check v-else-if="sendState === 'read'" class="h-3.5 w-3.5 text-emerald-500" title="对方已读" />
-          </template>
+        <!-- 回执（挂在气泡侧面：转圈=发送中，空心圆=已送达未读，绿勾=已读，红叉=失败） -->
+        <span v-if="mine" class="shrink-0 pb-1.5" :title="receiptTitle">
+          <Loader2 v-if="sendState === 'sending' || sendState === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
+          <X v-else-if="sendState === 'failed'" class="h-3.5 w-3.5 text-red-500" />
+          <Circle v-else-if="sendState === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+          <Check v-else-if="sendState === 'read'" class="h-4 w-4 text-emerald-500" />
+        </span>
+        </div>
+
+        <!-- 时间行：默认到分钟；悬浮该消息切换为完整时间戳 -->
+        <div v-if="!tight" class="mt-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]" :class="mine ? 'text-right' : ''">
+          <span class="group-hover/row:hidden">{{ time }}</span>
+          <span class="hidden group-hover/row:inline">{{ fullTime }}</span>
+        </div>
+        <div
+          v-else
+          class="hidden px-1 text-[10px] text-[var(--gosslan-text-2)] group-hover/row:block"
+          :class="mine ? 'text-right' : ''"
+        >
+          {{ fullTime }}
         </div>
       </div>
     </div>
