@@ -64,6 +64,8 @@ export const useChatStore = defineStore("chat", () => {
     return id;
   }
 
+  const myDeviceId = computed(() => app.device?.device_id ?? "");
+
   function maybeNotify(rec: MessageRecord) {
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
@@ -233,16 +235,45 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  /** 统一发送（单聊/群聊）。 */
+  /** 统一发送（单聊/群聊）。乐观上屏：先显示 sending，invoke 成功后替换为真实记录。 */
   async function send(convId: string, content: string, kind: string): Promise<MessageRecord> {
-    let rec: MessageRecord;
-    if (convId.startsWith("group:")) {
-      rec = await api.sendGroupMessage(convId.slice(6), content, kind);
-    } else {
-      rec = await api.sendMessage(convId, content, kind);
+    const myId = app.device?.device_id ?? "";
+    const optimistic: MessageRecord = {
+      id: -1,
+      msg_id: `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      conv_id: convId,
+      sender_id: myId,
+      receiver_id: convId,
+      kind: kind as MessageRecord["kind"],
+      content,
+      ts: Date.now(),
+      status: "sending",
+    };
+    enqueueMessage(optimistic);
+    try {
+      let rec: MessageRecord;
+      if (convId.startsWith("group:")) {
+        rec = await api.sendGroupMessage(convId.slice(6), content, kind);
+      } else {
+        rec = await api.sendMessage(convId, content, kind);
+      }
+      replaceMessage(convId, optimistic.msg_id, rec);
+      return rec;
+    } catch (e) {
+      // 发送失败：乐观消息标记为失败态（保留内容，用户可重发）
+      replaceMessage(convId, optimistic.msg_id, { ...optimistic, status: "failed" });
+      throw e;
     }
-    enqueueMessage(rec);
-    return rec;
+  }
+
+  /** 替换会话内指定 msg_id 的消息（乐观记录 → 真实记录 / 状态变更）。 */
+  function replaceMessage(convId: string, msgId: string, next: MessageRecord) {
+    const list = messages.value[convId];
+    if (!list) return;
+    const i = list.findIndex((m) => m.msg_id === msgId);
+    if (i >= 0) {
+      messages.value[convId] = [...list.slice(0, i), next, ...list.slice(i + 1)];
+    }
   }
 
   async function sendFriendRequest(peerId: string) {
@@ -302,6 +333,19 @@ export const useChatStore = defineStore("chat", () => {
       refreshPeers(),
       refreshTopology(),
     ]);
+    // 会话打开期间收到新消息：去抖标记已读（同时把已读回执发给对方 → 对方绿勾）
+    let markReadTimer: ReturnType<typeof setTimeout> | null = null;
+    const debounceMarkRead = (convId: string) => {
+      if (markReadTimer) clearTimeout(markReadTimer);
+      markReadTimer = setTimeout(() => {
+        markReadTimer = null;
+        if (activeConv.value !== convId || document.hidden) return;
+        void api.markRead(convId).then(() => {
+          const conv = conversations.value.find((c) => c.id === convId);
+          if (conv) conv.unread = 0;
+        });
+      }, 600);
+    };
     bindEvents({
       onPeers: (p) => {
         peers.value = p;
@@ -324,8 +368,40 @@ export const useChatStore = defineStore("chat", () => {
         enqueueMessage(rec);
         maybeNotify(rec);
         if (rec.kind === "file") void refreshTransfers();
+        // 正在看这个会话且窗口可见 → 自动已读并回执
+        if (rec.sender_id !== myDeviceId.value && rec.conv_id === activeConv.value) {
+          debounceMarkRead(rec.conv_id);
+        }
       },
-      onMessageAcked: () => {},
+      onMessageAcked: (msgId) => {
+        // 对方收到（Ack）：sending → delivered（空圆框）
+        for (const [convId, list] of Object.entries(messages.value)) {
+          const i = list.findIndex((m) => m.msg_id === msgId);
+          if (i >= 0) {
+            messages.value[convId] = [
+              ...list.slice(0, i),
+              { ...list[i], status: "delivered" },
+              ...list.slice(i + 1),
+            ];
+            break;
+          }
+        }
+      },
+      onPeerRead: (p) => {
+        // 对方已读到 last_read_ts：我发出的、ts ≤ 该值的消息 → read（绿勾）
+        for (const [convId, list] of Object.entries(messages.value)) {
+          if (convId !== p.peer_id) continue;
+          let changed = false;
+          const next = list.map((m) => {
+            if (m.sender_id === myDeviceId.value && m.status !== "read" && m.ts <= p.last_read_ts) {
+              changed = true;
+              return { ...m, status: "read" as const };
+            }
+            return m;
+          });
+          if (changed) messages.value[convId] = next;
+        }
+      },
       onFileProgress: (p) => {
         // 进度由事件载荷直接更新，不再全量刷新传输列表（避免大文件 IPC 风暴卡死界面）
         updateTransferProgress(p);

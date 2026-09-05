@@ -5,7 +5,6 @@ import { useChatStore } from "@/stores/useChatStore";
 import NavRail from "@/components/NavRail.vue";
 import ConversationList from "@/components/ConversationList.vue";
 import ChatWindow from "@/components/ChatWindow.vue";
-import TopologyBar from "@/components/TopologyBar.vue";
 import SettingsPanel from "@/components/SettingsPanel.vue";
 import AddFriendModal from "@/components/AddFriendModal.vue";
 import GroupCreateModal from "@/components/GroupCreateModal.vue";
@@ -52,7 +51,6 @@ function openSettings() {
       class="flex h-full min-w-0 flex-1 flex-col"
       :class="app.isMobile && app.mobileView === 'list' ? 'hidden' : ''"
     >
-      <TopologyBar v-if="chat.activeConv" />
       <div class="min-h-0 flex-1 pb-16 md:pb-0">
         <ChatWindow v-if="chat.activeConv" @open-share="shareOpen = true" />
         <div

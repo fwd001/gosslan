@@ -409,6 +409,27 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             drop(dbc);
             let _ = state.app.emit("message-acked", &msg_id);
         }
+        Message::ReadReceipt { from, to, last_read_ts } => {
+            if to != state.device_id || from == state.device_id {
+                return;
+            }
+            // 对方已读：把「我发给对方、ts ≤ last_read_ts」的消息标记为 read（幂等）
+            let updated = {
+                let dbc = state.db.lock().unwrap();
+                dbc.execute(
+                    "UPDATE messages SET status = 'read'
+                     WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
+                    params![from, state.device_id, last_read_ts],
+                )
+                .unwrap_or(0)
+            };
+            if updated > 0 {
+                let _ = state.app.emit(
+                    "peer-read",
+                    &serde_json::json!({ "peer_id": from, "last_read_ts": last_read_ts }),
+                );
+            }
+        }
         Message::FileOffer { transfer_id, from, name, size } => {
             if from == state.device_id {
                 return;

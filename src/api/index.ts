@@ -17,6 +17,7 @@ import type {
   MessageRecord,
   NetworkStatus,
   Peer,
+  PeerReadInfo,
   PendingRequest,
   ShareEntry,
   TopologyInfo,
@@ -100,6 +101,7 @@ export type EventHandlers = {
   onFriendRemoved: (id: string) => void;
   onMessage: (rec: MessageRecord) => void;
   onMessageAcked: (msgId: string) => void;
+  onPeerRead: (p: PeerReadInfo) => void;
   onFileProgress: (p: FileProgress) => void;
   onFileDone: (d: FileDoneInfo) => void;
   onPeerStyle: (p: PeerStyleUpdate) => void;
@@ -115,6 +117,7 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<string>("friend-removed", (e) => h.onFriendRemoved(e.payload)),
     listen<MessageRecord>("message-received", (e) => h.onMessage(e.payload)),
     listen<string>("message-acked", (e) => h.onMessageAcked(e.payload)),
+    listen<PeerReadInfo>("peer-read", (e) => h.onPeerRead(e.payload)),
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),

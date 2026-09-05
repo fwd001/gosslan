@@ -268,6 +268,16 @@ async function restoreDefaults() {
               更换头像
             </button>
             <input ref="avatarInput" type="file" accept="image/*" class="hidden" @change="onAvatarChange" />
+            <!-- 本人在线状态（从原右上角拓扑栏移入，明确标识是「我」的状态） -->
+            <div class="mt-2.5 flex items-center gap-1.5 text-xs">
+              <span
+                class="h-2 w-2 rounded-full"
+                :class="app.online ? 'bg-emerald-500' : 'bg-neutral-400'"
+              ></span>
+              <span :class="app.online ? 'text-emerald-600' : 'text-[var(--gosslan-text-2)]'">
+                {{ app.online ? "我在线 · 局域网已连接" : "我离线 · 局域网未连接" }}
+              </span>
+            </div>
           </div>
         </div>
       </section>

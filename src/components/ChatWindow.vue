@@ -23,6 +23,29 @@ const chat = useChatStore();
 const draft = ref("");
 const codeMode = ref(false);
 const listRef = ref<InstanceType<typeof VirtualList> | null>(null);
+const inputRef = ref<HTMLTextAreaElement | null>(null);
+
+/** 输入框自适应高度：内容换行时自动长高，超过 5 行（max-h-32 ≈ 8rem）出现滚动。 */
+function autoResize() {
+  const el = inputRef.value;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
+}
+
+watch(draft, () => autoResize());
+watch(codeMode, () => nextTick(() => autoResize()));
+
+// 打开会话即聚焦输入框（移动端不自动弹软键盘）
+watch(
+  () => chat.activeConv,
+  async () => {
+    await nextTick();
+    if (!app.isMobile) inputRef.value?.focus();
+    autoResize();
+  },
+  { immediate: true },
+);
 
 const conv = computed(() => chat.activeConversation);
 const isGroup = computed(() => chat.activeConv?.startsWith("group:") ?? false);
@@ -186,8 +209,9 @@ function fileToDataUrl(f: File): Promise<string> {
           <ArrowLeft class="h-5 w-5" />
         </button>
         <span class="truncate text-base font-semibold">{{ conv?.name || "会话" }}</span>
-        <span v-if="!isGroup" class="text-xs text-[var(--gosslan-text-2)]">
-          {{ online ? "在线" : "离线" }}
+        <span v-if="!isGroup" class="flex items-center gap-1 text-xs" :class="online ? 'text-emerald-600' : 'text-[var(--gosslan-text-2)]'">
+          <span class="h-1.5 w-1.5 rounded-full" :class="online ? 'bg-emerald-500' : 'bg-neutral-400'"></span>
+          {{ online ? "对方在线" : "对方离线" }}
         </span>
       </div>
       <button
@@ -236,7 +260,7 @@ function fileToDataUrl(f: File): Promise<string> {
     </div>
 
     <!-- 输入区 -->
-    <div class="border-t border-[var(--gosslan-border)] px-3 py-2">
+    <div class="border-t border-[var(--gosslan-border)] px-3 pb-3 pt-2">
       <div class="mb-1.5 flex items-center gap-1">
         <button
           class="flex items-center gap-1 rounded-md px-2 py-1 text-xs transition"
@@ -257,16 +281,17 @@ function fileToDataUrl(f: File): Promise<string> {
       </div>
       <div class="flex items-end gap-2">
         <textarea
+          ref="inputRef"
           v-model="draft"
           rows="1"
-          class="max-h-32 min-h-9 flex-1 resize-none rounded-xl bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none placeholder:text-[var(--gosslan-text-2)]"
+          class="max-h-32 min-h-10 flex-1 resize-none overflow-y-auto rounded-xl bg-[var(--gosslan-bg)] px-3.5 py-2.5 text-sm leading-relaxed outline-none placeholder:text-[var(--gosslan-text-2)]"
           :class="codeMode ? 'font-mono' : ''"
           :placeholder="codeMode ? '粘贴或输入代码…' : '输入消息…'"
           @keydown="onKeydown"
           @paste="onPaste"
         ></textarea>
         <button
-          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary text-white transition hover:bg-primary-hover disabled:opacity-40"
+          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-white transition hover:bg-primary-hover disabled:opacity-40"
           :disabled="!draft.trim()"
           @click="sendMsg()"
         >

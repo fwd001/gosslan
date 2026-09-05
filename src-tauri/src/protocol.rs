@@ -171,6 +171,12 @@ pub enum Message {
     Ack {
         msg_id: String,
     },
+    /// 已读回执：接收方打开会话时告知发送方「读到 last_read_ts 为止的消息都看了」
+    ReadReceipt {
+        from: String,
+        to: String,
+        last_read_ts: i64,
+    },
     // ---- 文件传输 ----
     FileOffer {
         transfer_id: String,

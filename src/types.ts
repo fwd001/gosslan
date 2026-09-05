@@ -109,6 +109,12 @@ export interface NetworkStatus {
   bound_ip: string | null;
 }
 
+/** 对方已读回执（peer-read 事件载荷） */
+export interface PeerReadInfo {
+  peer_id: string;
+  last_read_ts: number;
+}
+
 export interface TopologyInfo {
   node_count: number;
   relay_count: number;

@@ -20,12 +20,19 @@ const initials = computed(() => (app.device?.nickname ?? "?").slice(0, 1).toUppe
     class="hidden md:flex w-16 shrink-0 flex-col items-center border-r border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] py-3"
   >
     <button
-      class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-primary text-white transition hover:opacity-90"
-      title="个人资料"
+      class="relative flex h-10 w-10 items-center justify-center overflow-visible rounded-full bg-primary text-white transition hover:opacity-90"
+      :title="app.online ? '我在线（局域网已连接）' : '离线（局域网未连接）'"
       @click="emit('open-settings')"
     >
-      <img v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
-      <span v-else class="text-base font-semibold">{{ initials }}</span>
+      <span class="flex h-full w-full overflow-hidden rounded-full">
+        <img v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
+        <span v-else class="flex h-full w-full items-center justify-center text-base font-semibold">{{ initials }}</span>
+      </span>
+      <!-- 本人在线状态点：绿=局域网已连接 -->
+      <span
+        class="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-[var(--gosslan-panel)]"
+        :class="app.online ? 'bg-emerald-500' : 'bg-neutral-400'"
+      ></span>
     </button>
 
     <div class="mt-5 flex flex-col items-center gap-3">

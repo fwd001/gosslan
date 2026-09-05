@@ -590,10 +590,35 @@ pub fn ensure_conversation(state: State<'_, Arc<AppState>>, friend_id: String) -
     })
 }
 
+/// 标记会话已读；单聊时向对方发送已读回执（触发对方界面的「已读绿勾」）。
 #[tauri::command]
-pub fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Result<(), String> {
-    let dbc = state.inner().db.lock().unwrap();
-    db::mark_read(&dbc, &conv_id).map_err(|e| e.to_string())
+pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Result<(), String> {
+    let s = state.inner();
+    {
+        let dbc = s.db.lock().unwrap();
+        db::mark_read(&dbc, &conv_id).map_err(|e| e.to_string())?;
+    }
+    if !conv_id.starts_with("group:") {
+        // 通知对方：我已读到该会话最新一条消息为止
+        let last_ts: Option<i64> = {
+            let dbc = s.db.lock().unwrap();
+            dbc.query_row(
+                "SELECT COALESCE(MAX(ts), 0) FROM messages WHERE conv_id = ?1",
+                rusqlite::params![conv_id],
+                |r| r.get(0),
+            )
+            .ok()
+        };
+        if let Some(ts) = last_ts.filter(|t| *t > 0) {
+            let msg = Message::ReadReceipt {
+                from: s.device_id.clone(),
+                to: conv_id.clone(),
+                last_read_ts: ts,
+            };
+            let _ = crate::network::transport::try_send(s, &conv_id, &msg).await;
+        }
+    }
+    Ok(())
 }
 
 // ---------------- 群聊（群密钥 + Gossip） ----------------

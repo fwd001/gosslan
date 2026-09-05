@@ -2,9 +2,10 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
+import { useChatStore } from "@/stores/useChatStore";
 import { openPath } from "@tauri-apps/plugin-opener";
 import CodeBlock from "@/components/CodeBlock.vue";
-import { Check, Copy, Download, FileText } from "lucide-vue-next";
+import { Check, Circle, Download, FileText, Loader2, X } from "lucide-vue-next";
 import { humanSize } from "@/utils/color";
 import { findPreset, parsePeerStyle } from "@/utils/chatStyle";
 import type { MessageRecord } from "@/types";
@@ -25,6 +26,7 @@ const props = withDefaults(
 );
 
 const app = useAppStore();
+const chat = useChatStore();
 const mine = computed(() => props.message.sender_id === app.device?.device_id);
 const copied = ref(false);
 
@@ -58,6 +60,33 @@ const showNickname = computed(() => props.isGroup && !mine.value && !sameSenderR
 
 const time = computed(() => dayjs(props.message.ts).format("HH:mm"));
 const timeDividerText = computed(() => dayjs(props.message.ts).format("M月D日 HH:mm"));
+
+// ---------------- 发送状态（sending / delivered / read / failed） ----------------
+/** sending/sent=转圈（发出中或未确认送达）；delivered=空圆框（对方收到未读）；read=绿勾（已读）。 */
+const sendState = computed(() => props.message.status as "sending" | "sent" | "delivered" | "read" | "failed");
+
+// ---------------- 文件传输进度 ----------------
+/** 文件消息的 msg_id 即 "file-{transfer_id}"，据此查传输记录。 */
+const transferId = computed(() =>
+  props.message.msg_id.startsWith("file-") ? props.message.msg_id.slice(5) : null,
+);
+const transfer = computed(() =>
+  transferId.value ? chat.transfers.find((t) => t.id === transferId.value) : null,
+);
+/** 进度 0~1；无记录（历史消息）返回 null 表示不显示进度条。 */
+const fileProgress = computed(() => {
+  if (!transfer.value) return null;
+  const t = transfer.value;
+  if (t.status === "done") return null; // 完成：不再显示条
+  return t.progress;
+});
+const fileStatusText = computed(() => {
+  const t = transfer.value;
+  if (!t) return null;
+  if (t.status === "done") return null;
+  const pct = Math.round((t.progress ?? 0) * 100);
+  return t.direction === "send" ? `发送中 ${pct}%` : `接收中 ${pct}%`;
+});
 
 // ---------------- 长文本折叠 ----------------
 const LONG_TEXT_CHARS = 280;
@@ -225,26 +254,38 @@ onUnmounted(() => {
         <!-- 文件 -->
         <div
           v-else-if="message.kind === 'file' && fileMeta"
-          class="flex min-w-[220px] items-center gap-3 rounded-xl px-3 py-2.5 shadow-sm"
+          class="flex min-w-[240px] flex-col gap-2 rounded-xl px-3 py-2.5 shadow-sm"
           :style="{
             background: mine ? colors.mineBubble : colors.otherBubble,
             color: mine ? colors.mineText : colors.otherText,
           }"
         >
-          <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-light text-primary">
-            <FileText class="h-5 w-5" />
+          <div class="flex items-center gap-3">
+            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-light text-primary">
+              <FileText class="h-5 w-5" />
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="truncate text-sm font-medium">{{ fileMeta.name }}</div>
+              <div class="text-xs opacity-70">{{ humanSize(fileMeta.size) }}</div>
+            </div>
+            <button
+              class="flex h-8 w-8 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
+              title="打开"
+              @click="openFile"
+            >
+              <Download class="h-4 w-4" />
+            </button>
           </div>
-          <div class="min-w-0 flex-1">
-            <div class="truncate text-sm font-medium">{{ fileMeta.name }}</div>
-            <div class="text-xs opacity-70">{{ humanSize(fileMeta.size) }}</div>
-          </div>
-          <button
-            class="flex h-8 w-8 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
-            title="打开"
-            @click="openFile"
-          >
-            <Download class="h-4 w-4" />
-          </button>
+          <!-- 传输进度条（发送/接收中实时显示，完成后消失） -->
+          <template v-if="fileProgress !== null">
+            <div class="h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+              <div
+                class="h-full rounded-full bg-primary transition-all duration-200"
+                :style="{ width: `${Math.round(fileProgress * 100)}%` }"
+              ></div>
+            </div>
+            <div class="text-[11px] opacity-70">{{ fileStatusText }}</div>
+          </template>
         </div>
 
         <div v-else class="rounded-2xl px-3 py-2 text-sm shadow-sm" :style="{ background: colors.otherBubble, color: colors.otherText }">
@@ -252,7 +293,16 @@ onUnmounted(() => {
         </div>
 
         <!-- 连续消息合并时省略时间戳（悬浮可见的最后一条） -->
-        <div v-if="!sameSenderRun" class="mt-0.5 text-[11px] text-[var(--gosslan-text-2)]">{{ time }}</div>
+        <div v-if="!sameSenderRun" class="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--gosslan-text-2)]" :class="mine ? 'flex-row-reverse' : ''">
+          {{ time }}
+          <!-- 我发送的消息：状态回执（sending 转圈 → delivered 空圆框 → read 绿勾） -->
+          <template v-if="mine && message.kind !== 'system'">
+            <Loader2 v-if="sendState === 'sending' || sendState === 'sent'" class="h-3 w-3 animate-spin" title="发送中" />
+            <X v-else-if="sendState === 'failed'" class="h-3 w-3 text-red-500" title="发送失败" />
+            <Circle v-else-if="sendState === 'delivered'" class="h-3 w-3" title="对方已收到，未读" />
+            <Check v-else-if="sendState === 'read'" class="h-3.5 w-3.5 text-emerald-500" title="对方已读" />
+          </template>
+        </div>
       </div>
     </div>
 
