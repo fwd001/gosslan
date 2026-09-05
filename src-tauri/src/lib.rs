@@ -13,12 +13,14 @@ mod relay_manager;
 mod state;
 mod storage;
 mod transport;
+#[cfg(desktop)]
+mod tray;
 
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -27,6 +29,9 @@ pub fn run() {
             let state = state::AppState::init(app.handle().clone())?;
             state::AppState::spawn_peer_emitter(&state);
             app.manage(state.clone());
+            // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
+            #[cfg(desktop)]
+            tray::setup(app.handle())?;
             // 联调便利：GOSSLAN_AUTOSTART=1 时启动即自动开启局域网通道，
             // 便于 headless 多实例互测（examples/e2e_peer.rs 依赖此行为）。
             if std::env::var("GOSSLAN_AUTOSTART").ok().as_deref() == Some("1") {
@@ -82,6 +87,20 @@ pub fn run() {
             commands::request_share_tree,
             commands::download_shared_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    app.run(|app_handle, event| {
+        // macOS：点击 Dock 图标且无可见窗口时恢复主窗口（避免「程序没反应」的错觉）
+        #[cfg(all(desktop, target_os = "macos"))]
+        if let tauri::RunEvent::Reopen {
+            has_visible_windows, ..
+        } = event
+        {
+            if !has_visible_windows {
+                tray::show_main_window(app_handle);
+            }
+        }
+        #[cfg(not(all(desktop, target_os = "macos")))]
+        let _ = (app_handle, event);
+    });
 }
