@@ -342,10 +342,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             };
             let name = resolve_nickname(state, &from);
             let preview = preview_content(&kind_str, &content);
-            // 持锁块只做落库，返回带钳制 ts 的记录 + 「本次是否首次插入」；await 全部在锁外
+            // 持锁块只做落库，返回带钳制 ts 的记录 + SQLite 的三态裁决；await 全部在锁外
             // （MutexGuard 非 Send）。首次与否由 INSERT 的受影响行数裁决，而不是先查后写：
-            // 与 Gossip 并发时只有一方拿到 fresh=true，未读 +1 / message-received 因此各只一次。
-            let (out_rec, fresh) = {
+            // 与 Gossip 并发时只有一方拿到 Ok(true)，未读 +1 / message-received 因此各只一次。
+            let (out_rec, inserted) = {
                 let dbc = state.db.lock().unwrap();
                 // 时钟偏差防护：发送方时钟与我方不一致会导致消息排序错乱
                 // （同一发送者的消息在列表中堆叠）→ 双向钳制到 [会话最后一条, 本地 now]
@@ -361,16 +361,21 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     ts,
                     status: "delivered".to_string(),
                 };
-                let fresh = db::insert_message_if_new(&dbc, &rec).unwrap_or(false);
-                if fresh {
+                let inserted = db::insert_message_if_new(&dbc, &rec);
+                if announced_on(&inserted) {
                     db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1).ok();
                 }
-                (rec, fresh)
+                (rec, inserted)
             };
-            if fresh {
+            // 真数据库错误 ⇒ 消息没有持久化 ⇒ 既不投递也绝不 Ack：Ack 会让发送方删除
+            // outbox 行，把一次临时故障变成永久丢消息（与 P0-2 同源的红线）。
+            if !may_ack(&inserted) {
+                return;
+            }
+            if announced_on(&inserted) {
                 let _ = state.app.emit("message-received", &out_rec);
             }
-            // Ack 与 fresh 无关：消息已在库中（无论是哪条路径先写的）即代表已成功接收
+            // Ack 与「是否本次新建」无关：消息已在库中（无论是哪条路径先写的）即代表已成功接收
             let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
         }
         Message::GroupMessage { msg_id, from, group_id, group_name, kind, content, ts } => {
@@ -681,6 +686,26 @@ fn reseal_for_send(state: &AppState, msg: Message) -> Message {
     }
 }
 
+// ---------------- 落库裁决 → 副作用策略 ----------------
+//
+// `db::insert_message_if_new` 返回三态，绝不可折叠成 bool：
+//   Ok(true)  = 本次真的插入了新行 ⇒ 唯一允许产生本地投递副作用的一方
+//   Ok(false) = msg_id 已存在（INSERT OR IGNORE 命中唯一约束）⇒ 不得再有副作用
+//   Err(e)    = 真正的数据库故障（不是重复！）⇒ 消息没有持久化
+// 因此「是否投递」与「是否 Ack」是两个独立判定：后者只在 Err 时必须禁止，
+// 因为 Ack 会让发送方删除 outbox 行，把一次临时故障变成永久丢消息。
+
+/// 本次落库是否应产生本地投递副作用（`touch_conversation(+1)` 与 `message-received`）。
+fn announced_on(inserted: &Result<bool, rusqlite::Error>) -> bool {
+    matches!(inserted, Ok(true))
+}
+
+/// 是否允许向发送方回 Ack。重复（`Ok(false)`）允许——消息确已在库；
+/// 真数据库错误（`Err`）不允许——否则 outbox 被删，消息永久丢失。
+fn may_ack(inserted: &Result<bool, rusqlite::Error>) -> bool {
+    !matches!(inserted, Err(_))
+}
+
 // ---------------- Gossip 处理 ----------------
 
 async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelope) {
@@ -746,8 +771,9 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
         // 持锁块只做落库；await（fanout 转发已在前面）之后无持锁操作
         // 业务幂等裁决：Direct（含 outbox 补发）可能已经把同一 msg_id 落库，此时
         // 不得再计未读、再发 message-received，否则未读数与系统通知都会重复。
-        // 与 Direct 分支同一个 insert_message_if_new 裁决，两路径并发时只有一方 fresh=true。
-        let (out_rec, fresh) = {
+        // 与 Direct 分支共用 announced_on 裁决，两路径并发时只有一方拿到 Ok(true)。
+        // 单聊与群聊走同一块 ⇒ 两种 GossipKind 都被覆盖。
+        let (out_rec, inserted) = {
             let dbc = state.db.lock().unwrap();
             // 时钟偏差防护（同 ChatMessage 分支）
             let ts = db::clamp_incoming_ts(env.ts, db::now_ms(), db::last_message_ts(&dbc, &conv_id));
@@ -764,13 +790,14 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
                 ts,
                 status: "delivered".to_string(),
             };
-            let fresh = db::insert_message_if_new(&dbc, &rec).unwrap_or(false);
-            if fresh {
+            let inserted = db::insert_message_if_new(&dbc, &rec);
+            if announced_on(&inserted) {
                 db::touch_conversation(&dbc, &conv_id, conv_kind, &name, None, &preview, 1).ok();
             }
-            (rec, fresh)
+            (rec, inserted)
         };
-        if fresh {
+        // 重复投递与数据库失败都不产生本地副作用；Gossip 本就不回 Ack，转发已在上面完成
+        if announced_on(&inserted) {
             let _ = state.app.emit("message-received", &out_rec);
         }
     }
@@ -1375,7 +1402,26 @@ mod tests {
         // 但传播层（独立的内存 Bloom/LRU）从未被 Direct 登记 ⇒ 仍会走到 fan-out
         let mut engine = GossipEngine::new(100, 10, 4, 6);
         assert!(engine.is_new("m1"), "业务层已存在不得让传播层跳过转发");
-        // 且一次业务插入只留一行，两路径共用同一 msg_id 成立
+        // 且两路径共用同一 msg_id，库里始终只有一行
         assert_eq!(db::get_messages(&conn, "dev-a", 10, 0).unwrap().len(), 1);
+    }
+
+    /// P1-3 / Test C：三态落库裁决 → 副作用与 Ack 策略的映射必须是显式且可测的。
+    /// - 未读 +1 与 message-received：只有 `Ok(true)`（本次真的新建）才允许；
+    /// - Ack：`Ok(true)` / `Ok(false)` 都允许（消息确已在库），`Err` 必须禁止
+    ///   （Ack 会让发送方删掉 outbox 行 ⇒ 临时 DB 故障变成永久丢消息）。
+    #[test]
+    fn insert_outcome_maps_to_side_effect_and_ack_policy() {
+        let fresh: Result<bool, rusqlite::Error> = Ok(true);
+        let duplicate: Result<bool, rusqlite::Error> = Ok(false);
+        let db_error: Result<bool, rusqlite::Error> = Err(rusqlite::Error::QueryReturnedNoRows);
+
+        assert!(announced_on(&fresh), "本次新建 ⇒ 计未读 + 投递事件");
+        assert!(!announced_on(&duplicate), "重复 ⇒ 不得再有副作用");
+        assert!(!announced_on(&db_error), "DB 故障 ⇒ 不得有副作用（更不得当成重复）");
+
+        assert!(may_ack(&fresh), "本次新建 ⇒ Ack");
+        assert!(may_ack(&duplicate), "已在库中 ⇒ 仍 Ack（Ack 语义 = 已成功接收并持久化）");
+        assert!(!may_ack(&db_error), "DB 故障 ⇒ 绝不 Ack，outbox 行必须保留以便重发");
     }
 }

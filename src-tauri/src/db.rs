@@ -250,12 +250,17 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<Group>> {
 
 // ---------------- 消息 ----------------
 
-/// 插入一条消息，并返回「本次是否真的新建了记录」。
+/// 插入一条消息，并返回「本次是否真的新建了记录」的三态裁决。
 ///
-/// `true` = 本次插入；`false` = `msg_id` 已存在（INSERT OR IGNORE 命中唯一约束被忽略）
-/// 或写入失败。判定与插入在同一条 SQL 语句内完成，不依赖先查后写的时序 —— 因此
-/// Direct 与 Gossip 并发投递同一业务 msg_id 时，只可能有一方拿到 `true`，
-/// 未读 +1 与 `message-received` 事件随之只发生一次。
+/// - `Ok(true)` ：本次真的插入一条新行 —— 唯一应产生投递副作用（未读 +1、`message-received`）的情形。
+/// - `Ok(false)`：`msg_id` 已存在，被 `INSERT OR IGNORE` 命中唯一约束而忽略 —— 消息在库中，但本次无新行。
+/// - `Err(e)`   ：真正的数据库故障（表不可用、SQL/IO 错误等）—— 消息**没有**持久化。
+///
+/// 判定与插入在同一条 SQL 语句内完成（不先 `SELECT` 再 `INSERT`），因此 Direct 与 Gossip
+/// 并发投递同一业务 `msg_id` 时，只可能有一方拿到 `Ok(true)`。
+///
+/// ⚠️ 调用方不得把 `Err` 折叠成 `false`（如 `unwrap_or(false)`）：那会把一次临时故障误判成
+/// 「重复」并照常回 Ack，而 Ack 会让发送方删除 outbox 行，导致消息永久丢失。
 pub fn insert_message_if_new(conn: &Connection, m: &MessageRecord) -> Result<bool> {
     let changed = conn.execute(
         "INSERT OR IGNORE INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, status)
@@ -617,38 +622,83 @@ mod tests {
         assert_eq!(other, None);
     }
 
-    /// Direct 分支与 Gossip 分支的投递效果只允许发生一次。
-    /// 这里用与两个 handler 完全同构的模型（insert_message_if_new → 仅 fresh 才
-    /// touch_conversation + 计一次事件），覆盖两种先后顺序。
-    fn deliver(conn: &Connection, who: &str, content: &str) -> bool {
-        let fresh = insert_message_if_new(conn, &rec_as("m1", "f1", "text", content)).unwrap();
-        if fresh {
-            touch_conversation(conn, "f1", "single", "张三", None, who, 1).unwrap();
+    /// 与两个 handler 同构的一次投递：只有本次真的插入新行才计未读、才算一次投递事件。
+    fn deliver(conn: &Connection, msg_id: &str, conv_id: &str, conv_kind: &str, who: &str) -> bool {
+        let inserted = insert_message_if_new(conn, &rec_as(msg_id, conv_id, "text", "hello")).unwrap();
+        if inserted {
+            touch_conversation(conn, conv_id, conv_kind, "张三", None, who, 1).unwrap();
         }
-        fresh
+        inserted
     }
 
-    /// Test 1 + Test 2：Direct→Gossip 与 Gossip→Direct 两种顺序，
-    /// 都必须收敛为「1 条消息 / unread +1 / 1 次投递事件」，且 last_msg 属于先到者。
+    /// 同一 msg_id 按给定先后顺序被两条路径各投一次 ⇒ 最终只有 1 行 / 未读 +1 / 事件 1 次，
+    /// 且 last_msg 属于先到者（后到者不得改写）。单聊与群聊共用同一套断言。
+    fn assert_one_side_effect(conv_id: &str, conv_kind: &str, first: &str, second: &str) {
+        let conn = mem();
+        ensure_conversation(&conn, conv_id, conv_kind, "张三", None).unwrap();
+        let mut events = 0;
+        for who in [first, second] {
+            if deliver(&conn, "m1", conv_id, conv_kind, who) {
+                events += 1;
+            }
+        }
+        let case = format!("{first}→{second} @ {conv_id}");
+        assert_eq!(get_messages(&conn, conv_id, 10, 0).unwrap().len(), 1, "{case}");
+        assert_eq!(events, 1, "{case} 只能产生一次 message-received");
+        let conv = list_conversations(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .unwrap();
+        assert_eq!(conv.unread, 1, "{case} 未读只能 +1");
+        assert_eq!(conv.last_msg.as_deref(), Some(first), "{case} 后到者不得改写 last_msg");
+    }
+
+    /// Test A + Test B：三态裁决本身 —— 首次 Ok(true)、重复 Ok(false)、库中只留一条。
+    /// 第三条断言同时钉住「msg_id 是全局消息身份」：换一个会话投同一 msg_id 仍算重复。
+    #[test]
+    fn insert_message_if_new_distinguishes_first_from_duplicate() {
+        let conn = mem();
+        assert!(
+            insert_message_if_new(&conn, &rec_as("m1", "f1", "text", "hello")).unwrap(),
+            "首次必须 Ok(true)"
+        );
+        assert!(
+            !insert_message_if_new(&conn, &rec_as("m1", "f1", "text", "hello")).unwrap(),
+            "同一 msg_id 重复必须 Ok(false)"
+        );
+        assert!(
+            !insert_message_if_new(&conn, &rec_as("m1", "f2", "text", "hello")).unwrap(),
+            "换会话的同一 msg_id 仍是重复：msg_id 是全局身份"
+        );
+        assert!(message_exists(&conn, "m1"));
+        assert_eq!(get_messages(&conn, "f1", 10, 0).unwrap().len(), 1);
+        assert_eq!(get_messages(&conn, "f2", 10, 0).unwrap().len(), 0);
+    }
+
+    /// Err 不得被折叠成 false：数据库真故障必须原样冒泡，
+    /// 让调用方抑制副作用并**禁止 Ack**（否则 outbox 被删 → 临时故障变永久丢失）。
+    #[test]
+    fn insert_message_if_new_surfaces_db_errors_as_err_not_false() {
+        let conn = mem();
+        conn.execute("DROP TABLE messages", []).unwrap();
+        let out = insert_message_if_new(&conn, &rec_as("m1", "f1", "text", "hello"));
+        assert!(matches!(out, Err(_)), "真实 DB 故障必须是 Err，不能是 Ok(false)");
+        assert!(insert_message(&conn, &rec_as("m2", "f1", "text", "hi")).is_err(), "包装函数同样冒泡");
+    }
+
+    /// Test 1 + Test 2（单聊）：Direct→Gossip 与 Gossip→Direct 两种顺序都只生效一次。
     #[test]
     fn unread_and_event_fire_only_for_the_winning_insert() {
-        for gossip_first in [false, true] {
-            let conn = mem();
-            ensure_conversation(&conn, "f1", "single", "张三", None).unwrap();
-            let order = if gossip_first { ["gossip", "direct"] } else { ["direct", "gossip"] };
-            let mut events = 0;
-            for who in order {
-                if deliver(&conn, who, "hello") {
-                    events += 1;
-                }
-            }
-            let case = if gossip_first { "Gossip→Direct" } else { "Direct→Gossip" };
-            assert_eq!(get_messages(&conn, "f1", 10, 0).unwrap().len(), 1, "{case}");
-            assert_eq!(events, 1, "{case} 只能产生一次 message-received");
-            let conv = &list_conversations(&conn).unwrap()[0];
-            assert_eq!(conv.unread, 1, "{case} 未读只能 +1");
-            assert_eq!(conv.last_msg.as_deref(), Some(order[0]), "{case} 后到者不得改写 last_msg");
-        }
+        assert_one_side_effect("f1", "single", "direct", "gossip");
+        assert_one_side_effect("f1", "single", "gossip", "direct");
+    }
+
+    /// Test 1 + Test 2（群聊）：Gossip 的单聊与群聊共用同一落库块，两个 kind 都必须覆盖。
+    #[test]
+    fn group_msg_id_duplicate_counts_unread_and_event_once() {
+        assert_one_side_effect("group:g1", "group", "direct", "gossip");
+        assert_one_side_effect("group:g1", "group", "gossip", "direct");
     }
 
     /// Test 3：同一 msg_id 被重复投递（心跳反复补发 / 同一信封多次到达）
@@ -659,7 +709,7 @@ mod tests {
         ensure_conversation(&conn, "f1", "single", "张三", None).unwrap();
         let mut events = 0;
         for i in 0..5 {
-            if deliver(&conn, "dup", "hello") {
+            if deliver(&conn, "m1", "f1", "single", "dup") {
                 events += 1;
             }
             assert_eq!(events, 1, "第 {i} 次投递后累计投递事件数应恒为 1");
