@@ -102,16 +102,15 @@ gosslan/
 │   ├── version.mjs          # 版本号统一维护（同步 4 处 + CHANGELOG [Unreleased] 落日志）
 │   └── android/…            # Android 权限模板（CI 注入）
 ├── docs/
-│   ├── adr/                 # ★ 架构决策记录（为什么这么设计）
-│   │   ├── 0001-message-idempotency.md
-│   │   ├── 0002-outbox-ack-reliability.md
-│   │   ├── 0003-e2ee-static-x25519.md
-│   │   ├── 0004-transport-abstraction.md
-│   │   ├── 0005-no-web-worker.md
-│   │   └── 0006-device-fingerprint-identity.md
-│   ├── protocol-design.md   # 协议对标 BeeBEEP/bitchat + 演进路线
-│   ├── performance.md       # 500–1000 节点性能优化记录
-│   └── setup-windows.md     # Windows/Android 环境配置与打包
+│   ├── AI_ENGINEERING_INDEX.md  # ★ 约束文档导航 + 文档/代码冲突处理规则
+│   ├── protocol-invariants.md   # ★ 协议不变量明细 INV-P01~P18 + 测试矩阵
+│   ├── acceptance/              # 版本验收标准（当前：0.12-stable-lan-chat.md）
+│   ├── adr/                     # 架构决策记录
+│   │   ├── 0007-protocol-versioning.md
+│   │   ├── 0008-state-machine-boundaries.md
+│   │   ├── 0009-rust-typescript-contract.md
+│   │   └── 0010-failure-injection-testing.md
+│   └── templates/               # ADR.md / BUG_FIX.md
 ├── src/                     # Vue 3 前端
 │   ├── types.ts             # 与 Rust serde 结构一一对应的类型
 │   ├── api/index.ts         # Tauri invoke封装 + 全部事件监听（bindEvents）
@@ -303,8 +302,9 @@ cargo check --target aarch64-linux-android
 
 ## 8. 演进设想（未来方向）
 
-详细的协议对标分析（BeeBEEP / bitchat）与优先级见 **[docs/protocol-design.md](docs/protocol-design.md)**，
-这里是摘要与产品层面的补充：
+> ⚠️ **以下均为 v0.12 冻结方向，不要在当前阶段主动实现。**
+> 冻结范围见 [AI_RULES.md](AI_RULES.md) 与 [docs/acceptance/0.12-stable-lan-chat.md](docs/acceptance/0.12-stable-lan-chat.md)；
+> 这里仅保留摘要与产品层面的记录。
 
 ### 8.1 协议安全（P0–P1）
 
@@ -391,12 +391,13 @@ CI：push `main` / push `v*` tag / 手动触发。tag 额外发布 Release。
 
 | 文档 | 内容 |
 |---|---|
-| `AI_RULES.md` | **★ AI 工程宪法**：核心不变量、禁止事项、强制开发流程、协议变更规则、状态机规范 |
+| `AI_RULES.md` | **★ AI 工程宪法**（41 章）：不变量 INV-001~008、任务分级 L1/L2/L3、协议/DB/加密规则、Bug 修复流程、冻结功能清单、Definition of Done |
+| `docs/acceptance/0.12-stable-lan-chat.md` | **★ 当前版本验收标准**：P0/P1 清单、开发策略、必跑验证命令 |
 | `AI_PROJECT_HANDOFF.md` | **本文件**：给 AI 编程/源码阅读/fork 者的完整上下文 |
+| `docs/protocol-invariants.md` | **协议不变量明细** INV-P01~P18 + 必覆盖测试矩阵 |
+| `docs/AI_ENGINEERING_INDEX.md` | 约束文档导航 + 文档与代码冲突时的处理规则 |
 | `README.md` | 项目门面：功能特性、快速开始、架构简介、**AI 约束文档索引** |
 | `CHANGELOG.md` | 全部版本历史（每版 Added/Fixed/Changed 明细） |
-| `docs/adr/` | **架构决策记录**：为什么这么设计（幂等/Outbox/E2EE/Transport/禁 Worker/指纹） |
-| `docs/protocol-design.md` | 协议对标（BeeBEEP/bitchat）+ 差距分析 + 演进优先级 |
-| `docs/performance.md` | 500–1000 节点性能优化设计 |
-| `docs/setup-windows.md` | Windows/Android 环境配置、权限清单、打包命令 |
+| `docs/adr/` | **架构决策记录**：协议版本化 / 状态机边界 / Rust-TS 契约 / 故障注入测试 |
+| `docs/templates/` | `BUG_FIX.md`（修复报告模板）、`ADR.md`（决策记录模板） |
 | `src-tauri/src/schema.sql` | 数据库 Schema（与 db.rs SCHEMA 一致） |

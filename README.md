@@ -12,19 +12,21 @@
 ## 🤖 AI 开发必读（约束文档索引）
 
 > **任何 AI 编程助手在修改本项目代码前，必须先阅读以下文档。**
-> 这些文档定义了项目的工程宪法、不变量、禁止事项和开发流程。
+> **当前目标：把 Gosslan 做成稳定、简单、可继续扩展的 LAN Chat（v0.12）。**
 
 | 优先级 | 文档 | 内容 |
 |---|---|---|
-| **★★★ 必读** | [AI_RULES.md](AI_RULES.md) | **AI 工程宪法**：核心不变量（INV-001~008）、禁止事项（P-01~P-20）、强制开发流程（7 阶段）、协议变更规则、状态机规范、Bug 修复规范 |
-| **★★★ 必读** | [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) | **项目全景**：完整功能清单、架构与代码导读、E2EE 状态机、工程约定、测试口径、演进设想 |
-| **★★ 参考** | [docs/adr/](docs/adr/) | **架构决策记录**：为什么这么设计（消息幂等、Outbox+Ack、E2EE 选型、Transport 抽象、禁用 Web Worker、设备指纹） |
-| **★★ 参考** | [CHANGELOG.md](CHANGELOG.md) | **版本历史**：过去每个版本改了什么、为什么改（含所有已修 bug 的根因） |
-| **★ 按需** | [docs/protocol-design.md](docs/protocol-design.md) | 协议对标分析（BeeBEEP/bitchat）与演进路线 |
-| **★ 按需** | [docs/performance.md](docs/performance.md) | 500–1000 节点性能设计 |
-| **★ 按需** | [docs/setup-windows.md](docs/setup-windows.md) | Windows/Android 环境配置与打包 |
+| **★★★ 必读** | [AI_RULES.md](AI_RULES.md) | **AI 工程宪法**（41 章）：核心不变量 INV-001~008、任务复杂度分级 L1/L2/L3、既有代码优先、协议/DB 规则、状态机、Bug 修复流程、冻结功能清单、Definition of Done |
+| **★★★ 必读** | [docs/acceptance/0.12-stable-lan-chat.md](docs/acceptance/0.12-stable-lan-chat.md) | **v0.12 验收标准**：P0/P1 验收清单、开发策略、必须运行的验证命令 |
+| **★★★ 必读** | [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) | **项目全景**：完整功能清单、架构与代码导读、E2EE 状态机、工程约定、测试口径 |
+| **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01~P18）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
+| **★★ 参考** | [docs/AI_ENGINEERING_INDEX.md](docs/AI_ENGINEERING_INDEX.md) | 约束文档导航索引 + 文档与代码冲突时的处理规则 |
+| **★★ 参考** | [docs/adr/](docs/adr/) | **架构决策记录**：协议版本化、状态机边界、Rust/TS 契约、故障注入测试 |
+| **★★ 参考** | [CHANGELOG.md](CHANGELOG.md) | **版本历史**：每个版本改了什么、为什么改（含所有已修 bug 的根因） |
+| **★ 按需** | [docs/templates/BUG_FIX.md](docs/templates/BUG_FIX.md) | Bug 修复报告模板（复现 / 根因 / 影响 / 修复 / 回归） |
+| **★ 按需** | [docs/templates/ADR.md](docs/templates/ADR.md) | 新增架构决策记录模板 |
 
-**阅读顺序建议**：`AI_RULES.md`（了解约束）→ `AI_PROJECT_HANDOFF.md`（了解项目）→ 相关 ADR（了解设计原因）→ 代码。
+**阅读顺序**：`AI_RULES.md`（约束）→ `docs/acceptance/0.12-stable-lan-chat.md`（目标与验收）→ `AI_PROJECT_HANDOFF.md`（项目全貌）→ 涉及网络/协议时读 `docs/protocol-invariants.md` 与相关 ADR → 代码。
 
 ---
 
@@ -64,10 +66,11 @@ gosslan/
 ├── AI_PROJECT_HANDOFF.md     # ★ 项目全景与代码导读
 ├── CHANGELOG.md              # 版本历史
 ├── docs/
-│   ├── adr/                  # 架构决策记录（为什么这么设计）
-│   ├── protocol-design.md    # 协议对标与演进路线
-│   ├── performance.md        # 大规模节点性能设计
-│   └── setup-windows.md      # Windows/Android 环境配置
+│   ├── AI_ENGINEERING_INDEX.md   # 约束文档导航
+│   ├── protocol-invariants.md    # 协议不变量明细 INV-P01~P18
+│   ├── acceptance/               # 版本验收标准（当前：0.12 stable LAN chat）
+│   ├── adr/                      # 架构决策记录
+│   └── templates/                # Bug 修复 / ADR 模板
 ├── src/                      # Vue 3 前端
 │   ├── main.ts
 │   ├── App.vue
@@ -149,7 +152,7 @@ npm run tauri dev
 
 ### 跨平台（Windows + Android）环境配置与多开
 
-完整的环境安装步骤、Android 权限清单与打包命令见 **[docs/setup-windows.md](docs/setup-windows.md)**，常用命令：
+常用环境检查与打包命令：
 
 ```bash
 npm run env:check          # 一键检查编译环境（Rust/MSVC/JDK/SDK/NDK/target，Windows）
@@ -232,7 +235,7 @@ cd src-tauri && cargo test
 - 周期向局域网**广播**（255.255.255.255）与**组播**（239.255.42.99）一次 `announce`，
   携带设备 ID、昵称、TCP 端口、X25519/Ed25519 公钥。
 - 广播周期**自适应**：<100 节点 5s、≥100 节点 10s、≥500 节点 20s，并叠加 0–2s 抖动，
-  避免 500–1000 节点时的 UDP 风暴与同步惊群（详见 `docs/performance.md`）。
+  避免 500–1000 节点时的 UDP 风暴与同步惊群。
 - **按需探测**：打开「添加好友」时，前端调用 `search_nearby_peers` → Rust 群发一次 `who_has`，
   其它节点单播回复各自 `announce`，约 1.5s 内收集在线节点；启动/日常不持续全网扫描。
 
@@ -282,16 +285,18 @@ cd src-tauri && cargo test
 
 ---
 
-## 🧭 后续路线图（已预留扩展点）
+## 🧭 后续路线图（v0.12 明确冻结，勿主动实现）
 
-完整对标分析与优先级见 **[docs/protocol-design.md](docs/protocol-design.md)**，要点：
+> 以下方向**在 v0.12 稳定版完成前一律不做**（见 [AI_RULES.md](AI_RULES.md) 冻结功能清单与
+> [docs/acceptance/0.12-stable-lan-chat.md](docs/acceptance/0.12-stable-lan-chat.md)）。
+> 仅作为已评估过的扩展点记录，**不要因为看到这一节就去实现**。
 
-- **前向保密（P0）**：静态 X25519 派生长期密钥 → 升级 Noise XX 会话（`snow`），建链握手派生会话密钥
-- **好友指纹安全码 / QR 校验（P1）**：添加好友完成页当面核对指纹，防中间人
-- **mDNS 第三发现通道（P1）**：覆盖跨子网 / 隔离广播域
-- **蓝牙无配对通道（P2）**：`transport/bluetooth.rs` 接口契约已就位（btleplug），需通用分片协议
+- **前向保密**：静态 X25519 派生长期密钥 → 升级 Noise XX 会话（`snow`），建链握手派生会话密钥
+- **好友指纹安全码 / QR 校验**：添加好友完成页当面核对指纹，防中间人
+- **mDNS 第三发现通道**：覆盖跨子网 / 隔离广播域
+- **蓝牙无配对通道**：`transport/bluetooth.rs` 接口契约已就位（btleplug），需通用分片协议
 - **QUIC 切换**：`transport.rs` 的"分帧读写 + 建链"两原语可替换为 `quinn`，消息分发逻辑无需改动
-- **服务端中转（可选）**：JSON 帧协议天然可跑在 WebSocket 上，起一个轻量中继服务即可打通跨网段
+- **服务端中转**：JSON 帧协议天然可跑在 WebSocket 上，起一个轻量中继服务即可打通跨网段
 - **登录 / 账号体系（远期）**：当前用设备指纹识别用户，未来可在 `device_id` 之上叠加账号绑定，多设备同步
 
 ---
