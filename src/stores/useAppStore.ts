@@ -166,6 +166,12 @@ export const useAppStore = defineStore("app", () => {
 
   /** 恢复默认：后端清除偏好键，前端回落默认值（默认蓝色主题 / 系统字体 / 浅色 / 自动网卡）。 */
   async function resetDefaults() {
+    // 先停止 LAN：避免 reset 后数据库认为默认（开启），但实际仍在运行的状态不一致
+    if (online.value) {
+      await stopNetwork();
+      online.value = false;
+      boundIp.value = null;
+    }
     await api.resetSettings();
     themeColor.value = "#3370ff";
     fontFamily.value = "";
@@ -173,10 +179,11 @@ export const useAppStore = defineStore("app", () => {
     preferredIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
     peerStyles.value = {};
-    // 重置昵称和头像为默认值
+    // 重置昵称和头像为默认值，并广播给在线好友
     if (device.value) {
       device.value.nickname = "Gosslan 用户";
       device.value.avatar = null;
+      void api.updateProfile("Gosslan 用户", null);
     }
     localStorage.removeItem(THEME_KEY);
     localStorage.removeItem(FONT_KEY);
