@@ -376,14 +376,14 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     Ok(())
 }
 
-/// 恢复默认设置：清除外观 / 网卡 / 缓存策略 / 聊天样式等偏好键，上层回落到默认值。
-/// 不触碰用户数据（好友、聊天记录、昵称、头像、共享目录）。
+/// 恢复默认设置：清除所有用户可配置设置（外观、昵称、头像、网卡、缓存策略等）。
+/// 保留 device_id、x25519_secret、ed25519_secret、好友列表、聊天记录。
 #[tauri::command]
 pub fn reset_settings(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let dbc = state.inner().db.lock().unwrap();
     for key in SETTINGS_KEYS
         .iter()
-        .chain([&RETENTION_KEY, &MAX_BYTES_KEY, &"bt_enabled", &"chat_peer_styles"])
+        .chain([&RETENTION_KEY, &MAX_BYTES_KEY, &"bt_enabled", &"chat_peer_styles", &"nickname", &"avatar"])
     {
         db::delete_setting(&dbc, key).ok();
     }

@@ -173,6 +173,11 @@ export const useAppStore = defineStore("app", () => {
     preferredIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
     peerStyles.value = {};
+    // 重置昵称和头像为默认值
+    if (device.value) {
+      device.value.nickname = "Gosslan 用户";
+      device.value.avatar = null;
+    }
     localStorage.removeItem(THEME_KEY);
     localStorage.removeItem(FONT_KEY);
     localStorage.removeItem(DARK_KEY);
