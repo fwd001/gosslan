@@ -111,7 +111,7 @@ export const useChatStore = defineStore("chat", () => {
   // 乐观记录还在队列里未落地时到达的「真实记录」：tmp msg_id → 后端记录
   const pendingReplace = new Map<string, MessageRecord>();
   // Ack 先于乐观→真实替换到达：msg_id 已知但 store 里还没有该条目。
-  // send() 拿到真实记录后检查并消费。
+  // send() 拿到真实记录后检查并消费。值 = store 中实际持有的 msg_id（乐观占位）。
   const pendingAcks = new Map<string, string>();
 
   function scheduleFlush() {
@@ -283,6 +283,9 @@ export const useChatStore = defineStore("chat", () => {
     };
     enqueueMessage(optimistic);
     try {
+      // 预注册乐观 ID：onMessageAcked 在 await 期间到达时可立即匹配。
+      // 这是唯一可靠的挂接点——事件只携带 real msg_id，store 此时只有 optimistic。
+      pendingAcks.set(optimistic.msg_id, optimistic.msg_id);
       let rec: MessageRecord;
       if (convId.startsWith("group:")) {
         rec = await api.sendGroupMessage(convId.slice(6), content, kind);
@@ -290,11 +293,12 @@ export const useChatStore = defineStore("chat", () => {
         rec = await api.sendMessage(convId, content, kind);
       }
       replaceMessage(convId, optimistic.msg_id, rec);
-      // Ack 先于乐观→真实替换到达：replaceMessage 里找不到 msg_id，onMessageAcked
-      // 把它记入 pendingAcks；此处消费——如果 Ack 已到，直接把 sent 提升为 delivered。
-      if (pendingAcks.has(rec.msg_id)) {
-        pendingAcks.delete(rec.msg_id);
-        replaceMessage(convId, rec.msg_id, rec);
+      // Ack 先于乐观→真实替换到达（pendingAcks 用 optimistic ID 存储）：
+      // replaceMessage 可能走了 pendingReplace（batch 未 flush），也可能直接命中 store；
+      // 无论哪种，用 optimistic.msg_id 查找 pendingAcks 即可消费。
+      if (pendingAcks.has(optimistic.msg_id)) {
+        pendingAcks.delete(optimistic.msg_id);
+        replaceMessage(convId, optimistic.msg_id, rec);
       }
       return rec;
     } catch (e) {
@@ -504,9 +508,17 @@ export const useChatStore = defineStore("chat", () => {
             break;
           }
         }
-        // Ack 先于乐观→真实替换到达（store 里只有 tmp-xxx，找不到 real msg_id）：
-        // 记入 pendingAcks，send() 拿到真实记录后立即消费。
-        if (!found) pendingAcks.set(msgId, msgId);
+        // Ack 先于乐观→真实替换到达（store 里找不到 real msg_id）：
+        // 扫描 pendingAcks 找到仍在批次中的乐观 ID（store 里没有的那条），
+        // 标记该 optimistic ID，send() 返回后立即消费。
+        if (!found) {
+          for (const [optId] of pendingAcks) {
+            if (!Object.values(messages.value).some((list) => list.some((m) => m.msg_id === optId))) {
+              pendingAcks.set(optId, optId);
+              break;
+            }
+          }
+        }
       },
       onPeerRead: (p) => {
         // 对方已读到 last_read_ts：我发出的、ts ≤ 该值的消息 → read（绿勾）
@@ -594,6 +606,5 @@ export const useChatStore = defineStore("chat", () => {
     sendFileTo,
     sendFileRelayTo,
     enqueueMessage,
-    pendingAcks,
   };
 });
