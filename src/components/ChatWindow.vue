@@ -143,32 +143,38 @@ watch(
   { immediate: true },
 );
 
+let lastMsgId: string | number | null = null;
+
 watch(
   () => messages.value.length,
   async (_, oldLen) => {
     if (oldLen === undefined) return;
     if (oldLen === 0) {
-      // 初始加载：无未读定位才贴底（有未读时由 unreadJump watcher 跳到第一条未读）
       if (!(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)) {
         await nextTick();
         listRef.value?.scrollToBottom();
       }
+      lastMsgId = messages.value.at(-1)?.msg_id ?? null;
       return;
     }
-    // 追加新消息（非 prepend 历史）
-    if (messages.value.length > oldLen) {
-      const last = messages.value[messages.value.length - 1];
-      const prev = messages.value[messages.value.length - 2];
-      if (!prev || last.ts >= prev.ts) {
-        // 自己发的消息：无论 nearBottom 如何都滚到底部
-        // 对方的消息：仅当用户原本就在底部附近时才滚到底部
-        const isMine = last.sender_id === app.device?.device_id;
-        if (isMine || nearBottom.value) {
-          await nextTick();
-          listRef.value?.scrollToBottom();
-        }
+
+    const newLast = messages.value.at(-1);
+    const newLastId = newLast?.msg_id ?? null;
+
+    // 用 lastMsgId 精确区分 append（末尾新增）和 prepend（开头插入历史）
+    const isAppend = newLastId !== null && newLastId !== lastMsgId;
+    lastMsgId = newLastId;
+
+    if (isAppend) {
+      // 自己发的消息：无论 nearBottom 如何都滚到底部
+      // 对方的消息：仅当用户原本就在底部附近时才滚到底部
+      const isMine = newLast?.sender_id === app.device?.device_id;
+      if (isMine || nearBottom.value) {
+        await nextTick();
+        listRef.value?.scrollToBottom();
       }
     }
+    // prepend：不滚动，由 VirtualList 的 prepend 锚定保持位置
   },
 );
 
@@ -180,9 +186,12 @@ async function sendMsg(content?: string, kind?: string) {
   if (k === "text" && !text.trim()) return;
   try {
     await chat.send(convId, text, k);
-    if (!kind) draft.value = "";
+    draft.value = "";
+    // Code Mode 一次性：发送成功后关闭，下一条恢复普通 text
+    if (!kind) codeMode.value = false;
+    await nextTick();
+    autoResize();
   } catch (e) {
-    // 发送失败必须显式反馈（此前静默失败表现为「点了没反应」）
     app.toast(`发送失败：${e}`, "error");
   }
 }
