@@ -1112,7 +1112,7 @@ pub fn copy_file(source: String, destination: String) -> Result<(), String> {
 
 /// 清除所有聊天数据（保留好友、身份、设置）。
 /// SQLite 删除使用 transaction，任一失败则 rollback。
-/// 文件系统清理在 DB commit 成功后执行。
+/// 文件系统清理在 DB commit 成功后执行；文件删除失败不影响 DB 结果。
 #[tauri::command]
 pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let s = state.inner();
@@ -1137,32 +1137,50 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     s.group_keys.lock().unwrap().clear();
 
     // 3. 文件系统清理（DB commit 成功后执行）
+    //    收集错误而非立即返回，避免文件清理失败伪装成"整个操作失败"
+    let mut fs_errors: Vec<String> = Vec::new();
+
     // 清空 cache_dir 内容（保留目录本身）
     if s.cache_dir.exists() {
-        for entry in std::fs::read_dir(&s.cache_dir).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
+        for entry in std::fs::read_dir(&s.cache_dir).map_err(|e| e.to_string())?.filter_map(|e| e.ok()) {
             let p = entry.path();
-            if p.is_file() {
-                std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+            let result = if p.is_file() {
+                std::fs::remove_file(&p)
             } else if p.is_dir() {
-                std::fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
+                std::fs::remove_dir_all(&p)
+            } else {
+                Ok(())
+            };
+            if let Err(e) = result {
+                fs_errors.push(format!("cache_dir: {} ({})", p.display(), e));
             }
         }
     }
     // 清空 downloads_dir 内容（保留目录本身）
     if s.downloads_dir.exists() {
-        for entry in std::fs::read_dir(&s.downloads_dir).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
+        for entry in std::fs::read_dir(&s.downloads_dir).map_err(|e| e.to_string())?.filter_map(|e| e.ok()) {
             let p = entry.path();
-            if p.is_file() {
-                std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+            let result = if p.is_file() {
+                std::fs::remove_file(&p)
             } else if p.is_dir() {
-                std::fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
+                std::fs::remove_dir_all(&p)
+            } else {
+                Ok(())
+            };
+            if let Err(e) = result {
+                fs_errors.push(format!("downloads_dir: {} ({})", p.display(), e));
             }
         }
     }
 
-    Ok(())
+    if fs_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "数据记录已清除，但部分缓存文件未能删除：{}",
+            fs_errors.join("；")
+        ))
+    }
 }
 
 /// 搜索消息：返回匹配关键词的会话列表及其最新匹配消息。
