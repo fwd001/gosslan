@@ -44,7 +44,8 @@
 | E2EE | **恒开且不可关闭**（v0.11.0 起）：X25519 ECDH 派生密钥 + ChaCha20-Poly1305 AEAD；详见 §5 | 0.2.0→0.11.0 |
 | 群聊 | 随机群密钥对称加密；群密钥用各成员公钥 ECDH 单独加密分发（`GroupKey`） | 0.2.0 |
 | 离线补发 | 消息一律写 outbox（INSERT OR IGNORE 幂等），**Ack 到达才删行**；对方上线建链/心跳触发 `flush_outbox`；接收方按 msg_id 去重 | 0.4.0 / 0.7.0 |
-| 已读回执 | `ReadReceipt`（合并式 last_read_ts）；对方打开会话 → 我方消息绿勾；窗口聚焦时自动补发回执 | 0.6.0 |
+| 已读回执 | `ReadReceipt`（合并式 last_read_ts）；对方打开会话 / 会话内来消息防抖 600ms → 我方消息绿勾；窗口重新可见时补标已读。链路不可用时回执暂存于内存，由建链/Hello/心跳冲刷补发 | 0.6.0 / 0.12.0 |
+| 局域网默认开启 | 桌面端启动即自动联网（`start_from_prefs`，沿用 `bind_ip`，网卡失效时回落 0.0.0.0）；用户在设置页关闭后写 `settings.lan_enabled="0"`，重启保持关闭。移动端仍为手动开启 | 0.12.0 |
 | 心跳探活 | 每 5s 向已建链节点发 Heartbeat，静默断连及时清理 | 0.4.0 |
 | 大文件 | **BitTorrent 式切片中继**：64KB–512KB 分片，并行分发到空闲中继二次转发，乱序重组；直连/中继**自动路由**（`send_file_auto`） | 0.2.0 / 0.4.0 |
 | 共享目录 | 设置本地共享文件夹，好友点对点浏览目录树并下载（防目录穿越） | 0.1.0 |
@@ -205,16 +206,25 @@ gosslan/
 
 ### 4.4 已读回执链路
 
-1. 对方打开会话 / 窗口重新可见 → 前端防抖 600ms 调 `mark_read(conv_id)`
+1. 触发标记已读（三处）：打开会话 / 会话内收到新消息（防抖 600ms）/ 窗口重新可见
 2. Rust 查该会话 `MAX(ts)` → 发 `ReadReceipt{last_read_ts}` 给对方
-3. 对方收到 → 我发的、ts ≤ last_read_ts 的消息全部置 `read` → **绿勾**
-4. 状态流转：`sending`（转圈）→ `delivered`（Ack 到达，空心圆）→ `read`（绿勾）；失败 = 红叉
+3. 链路不可用（未建链 / 半开）⇒ 回执暂存 `state.pending_reads`（只留最大值），
+   由建链 / Hello / 心跳的 `flush_pending_reads` 补发 —— 与 outbox 补发同一批触发点
+4. 对方收到 → 我发的、ts ≤ last_read_ts 的消息全部置 `read` → **绿勾**
+5. 状态流转：`sending`（转圈）→ `delivered`（Ack 到达，空心圆）→ `read`（绿勾）；失败 = 红叉
+6. **送达状态只前进不回退**：outbox 补发会带回迟到的重复 Ack，`set_message_status`
+   与前端 `onMessageAcked` 都必须跳过已置 `read` 的记录
 
 ### 4.5 前端消息管线
 
 - 收到消息 → `enqueueMessage` 批量队列 → rAF（窗口可见）/ setTimeout（不可见）冲刷 →
   主线程同步合并（O(n) Set 去重 + 排序；**刻意不用 Web Worker**——WKWebView 生产构建下 Worker 可能加载失败导致消息全部卡住，v0.5.1 教训）。
-- 乐观发送：先上屏 `sending` 态 → invoke 成功替换真实记录 → 失败置 `failed` + toast。
+- 乐观发送：先上屏 `sending` 态（`tmp-*` msg_id）→ invoke 成功替换真实记录 → 失败置 `failed` + toast。
+- **两条替换规则**（否则气泡永久停在「发送中」，而库里已是 delivered/read）：
+  - 乐观记录还压在批量队列里时 `replaceMessage` 找不到目标 ⇒ 挂进 `pendingReplace`，
+    由 `applyIncoming` 落地时经 `applyReplacements` 换成真实记录；
+  - 会话重查（`loadMessages`）的快照可能早于 Ack / peer-read 落库 ⇒ 用
+    `preserveDeliveryStatus` 与查询期间已推进的内存状态合并，不做无条件覆盖。
 - 交互约定：**一切操作先假定成功、失败可感知**（删除会话/好友/发送均乐观 + 失败回滚）。
 
 ### 4.6 桌面托盘（tray.rs）

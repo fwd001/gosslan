@@ -147,6 +147,20 @@ pub fn delete_setting(conn: &Connection, key: &str) -> Result<()> {
     Ok(())
 }
 
+/// 局域网通道开关偏好：只有显式写入 "0"（用户在设置页关闭）才为关。
+/// 键不存在 ⇒ 开启 ⇒ 首次安装与「尚无该键」的旧版本升级都会自动联网。
+/// 读取方仅存在于桌面端启动路径（`lib.rs` 的 `#[cfg(desktop)]` 块），
+/// 移动端仍由设置页手动开启，故在该目标下为死代码。
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub fn get_lan_enabled(conn: &Connection) -> bool {
+    get_setting(conn, "lan_enabled").map(|v| v != "0").unwrap_or(true)
+}
+
+/// 写入局域网通道开关偏好（沿用 settings 表，不引入新的配置存储）。
+pub fn set_lan_enabled(conn: &Connection, enabled: bool) -> Result<()> {
+    set_setting(conn, "lan_enabled", if enabled { "1" } else { "0" })
+}
+
 // ---------------- 好友 ----------------
 
 pub fn add_friend(conn: &Connection, device_id: &str, nickname: &str, avatar: Option<&str>) -> Result<()> {
@@ -303,8 +317,13 @@ pub fn get_messages(conn: &Connection, conv_id: &str, limit: i64, offset: i64) -
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// 更新单条消息状态。**只前进不回退**：`read` 由对方已读回执写入，而同一 msg_id 的
+/// Ack 可能因 outbox 补发晚一步到达，无条件覆盖会把已读退回「对方未读」。
 pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Result<()> {
-    conn.execute("UPDATE messages SET status = ?2 WHERE msg_id = ?1", params![msg_id, status])?;
+    conn.execute(
+        "UPDATE messages SET status = ?2 WHERE msg_id = ?1 AND status != 'read'",
+        params![msg_id, status],
+    )?;
     Ok(())
 }
 
@@ -868,5 +887,50 @@ mod tests {
         assert_eq!(transfers.len(), 1);
         assert_eq!(transfers[0].status, "done");
         assert_eq!(transfers[0].progress, 1.0);
+    }
+
+    fn status_of(conn: &Connection, msg_id: &str) -> String {
+        conn.query_row(
+            "SELECT status FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// 已读不可逆：outbox 补发会让同一 msg_id 再送达一次并带回迟到的 Ack，
+    /// 无条件覆盖会把已读退回「对方未读」，界面上刚亮的绿勾跳回空圆框。
+    #[test]
+    fn late_ack_never_regresses_a_read_message() {
+        let conn = mem();
+        insert_message(&conn, &rec("m1", "f1")).unwrap();
+        set_message_status(&conn, "m1", "delivered").unwrap();
+        assert_eq!(status_of(&conn, "m1"), "delivered", "正常前进：sent → delivered");
+        // 对端已读回执（与 transport.rs ReadReceipt 分支同构的 SQL）
+        let updated = conn
+            .execute(
+                "UPDATE messages SET status = 'read'
+                 WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
+                params!["f1", "a", 5],
+            )
+            .unwrap();
+        assert_eq!(updated, 1);
+        assert_eq!(status_of(&conn, "m1"), "read");
+        set_message_status(&conn, "m1", "delivered").unwrap();
+        assert_eq!(status_of(&conn, "m1"), "read", "迟到的 Ack 不得回退已读");
+    }
+
+    /// 局域网默认开启：无键（首次安装、以及从未写过该键的旧版本升级）即为开；
+    /// 只有用户显式关闭才持久化为关，「恢复默认」清键后回到默认开。
+    #[test]
+    fn lan_enabled_defaults_on_and_keeps_explicit_off() {
+        let conn = mem();
+        assert!(get_lan_enabled(&conn), "缺省必须开启");
+        set_lan_enabled(&conn, false).unwrap();
+        assert!(!get_lan_enabled(&conn), "用户关闭后重启仍为关");
+        set_lan_enabled(&conn, true).unwrap();
+        assert!(get_lan_enabled(&conn));
+        delete_setting(&conn, "lan_enabled").unwrap();
+        assert!(get_lan_enabled(&conn), "恢复默认后回到开");
     }
 }

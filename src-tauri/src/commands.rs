@@ -115,12 +115,17 @@ pub fn list_interfaces() -> Vec<InterfaceInfo> {
 #[tauri::command]
 pub async fn start_network(state: State<'_, Arc<AppState>>, bind_ip: String) -> Result<(), String> {
     let arc = state.inner().clone();
-    network::start(arc, bind_ip).await
+    network::start(arc, bind_ip).await?;
+    let dbc = state.db.lock().unwrap();
+    db::set_lan_enabled(&dbc, true).ok();
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn stop_network(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     network::stop(state.inner()).await;
+    let dbc = state.db.lock().unwrap();
+    db::set_lan_enabled(&dbc, false).ok();
     Ok(())
 }
 
@@ -224,11 +229,13 @@ pub async fn set_channel_enabled(
     match channel.as_str() {
         "lan" => {
             if enabled {
-                let arc = s.clone();
-                network::start(arc, "0.0.0.0".to_string()).await?;
+                // 绑定地址沿用用户已选网卡（settings.bind_ip），不再硬编码 0.0.0.0
+                network::start_from_prefs(s.clone()).await?;
             } else {
                 network::stop(s).await;
             }
+            let dbc = s.db.lock().unwrap();
+            db::set_lan_enabled(&dbc, enabled).ok();
             Ok(())
         }
         "bluetooth" => {
@@ -317,13 +324,14 @@ pub struct Settings {
 
 /// e2ee_enabled 键保留在 reset 链中仅为清理 v0.10.0 及更早版本的残留值；
 /// v0.11.0 起 E2EE 恒开、不可关闭，该键不再被读写。
-const SETTINGS_KEYS: [&str; 6] = [
+const SETTINGS_KEYS: [&str; 7] = [
     "theme_color",
     "font_family",
     "dark_mode",
     "bind_ip",
     "chat_style",
     "e2ee_enabled",
+    "lan_enabled",
 ];
 
 #[tauri::command]
@@ -569,8 +577,6 @@ pub async fn send_message(
         db::touch_conversation(&dbc, &friend_id, "single", &name, None, &preview, 0).ok();
     }
 
-    broadcast_gossip(s, env).await;
-
     // 一律写离线队列兜底（INSERT OR IGNORE 按 msg_id 幂等）：直连链路存在但已失效
     // （半开 TCP）时 broadcast 会静默丢包，此前只在「无链路」时入队导致消息永久丢失。
     // Ack 到达后由 transport.rs 删除该行；若链路中断，对方上线建链（Hello）或心跳
@@ -587,6 +593,10 @@ pub async fn send_message(
         let dbc = s.db.lock().unwrap();
         db::insert_outbox(&dbc, &msg_id, &friend_id, &payload).ok();
     }
+
+    // 先入队再投递（INV-003）：此前 broadcast 在插队之前，若心跳的 flush_outbox 正好
+    // 落在这个窗口，它看不到 outbox 行 ⇒ 这一轮直发缺席 ⇒ Ack 要等下一个心跳（+5s）。
+    broadcast_gossip(s, env).await;
 
     Ok(rec)
 }
@@ -653,7 +663,13 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
                 to: conv_id.clone(),
                 last_read_ts: ts,
             };
-            let _ = crate::network::transport::try_send(s, &conv_id, &msg).await;
+            // 未建链 / 半开链路时 try_send 会失败，回执不能只试一次就丢：
+            // 丢了就只剩「用户再点一次会话」才会让对方变绿。暂存后由心跳冲刷。
+            if crate::network::transport::try_send(s, &conv_id, &msg).await.is_err() {
+                let mut pending = s.pending_reads.lock().unwrap();
+                let cur = pending.entry(conv_id.clone()).or_insert(ts);
+                *cur = (*cur).max(ts);
+            }
         }
     }
     Ok(())

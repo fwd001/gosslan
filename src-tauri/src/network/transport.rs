@@ -207,6 +207,7 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
 
     tokio::spawn(reader_loop(state.clone(), r, peer_id.to_string(), tx));
     flush_outbox(state, peer_id).await;
+    flush_pending_reads(state, peer_id).await;
 }
 
 // ---------------- 消息分发 ----------------
@@ -224,10 +225,12 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             upsert_peer(state, &device_id, &nickname, avatar.clone(), &ip, tcp_port, None, None, None).await;
             maybe_update_friend(state, &device_id, &nickname, avatar);
             flush_outbox(state, &device_id).await;
+            flush_pending_reads(state, &device_id).await;
         }
         Message::Heartbeat { device_id } => {
             touch_peer(state, &device_id).await;
             flush_outbox(state, &device_id).await;
+            flush_pending_reads(state, &device_id).await;
         }
         Message::UserInfo { device_id, nickname, avatar } => {
             let ip = state
@@ -1174,6 +1177,28 @@ pub async fn flush_outbox(state: &AppState, peer_id: &str) {
         };
         let msg = reseal_for_send(state, msg);
         let _ = try_send(state, peer_id, &msg).await;
+    }
+}
+
+/// 冲刷待发的单聊已读回执（触发点与 `flush_outbox` 一致：建链 / Hello / 心跳）。
+///
+/// `mark_read` 是一次性即时发送：链路不存在或已半开时 `try_send` 直接失败，此前这条
+/// 回执就永久丢失 ⇒ 对方界面上的绿勾只能等他下次手动标记会话才更新。回执只带一个
+/// 单调递增的时间戳（`last_read_ts` 越大覆盖越多），因此内存里存一条即可，
+/// 不需要像 outbox 那样落库。
+pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
+    let Some(last_read_ts) = state.pending_reads.lock().unwrap().remove(peer_id) else {
+        return;
+    };
+    let msg = Message::ReadReceipt {
+        from: state.device_id.clone(),
+        to: peer_id.to_string(),
+        last_read_ts,
+    };
+    if try_send(state, peer_id, &msg).await.is_err() {
+        let mut pending = state.pending_reads.lock().unwrap();
+        let cur = pending.entry(peer_id.to_string()).or_insert(last_read_ts);
+        *cur = (*cur).max(last_read_ts);
     }
 }
 

@@ -196,6 +196,9 @@ pub struct AppState {
     pub pending_requests: Mutex<HashMap<String, PendingRequest>>,
     /// 网络运行时（None 表示未启动）
     pub network: Mutex<Option<NetworkHandle>>,
+    /// 待发已读回执：peer_id -> last_read_ts。链路不可用时暂存，
+    /// 由建链 / Hello / 心跳（与 outbox 补发同一批触发点）冲刷，只保留最大值。
+    pub pending_reads: Mutex<HashMap<String, i64>>,
 
     /// 共享目录（本机）
     pub share_dir: Mutex<Option<String>>,
@@ -304,6 +307,7 @@ impl AppState {
             links: tokio::sync::Mutex::new(HashMap::new()),
             pending_requests: Mutex::new(HashMap::new()),
             network: Mutex::new(None),
+            pending_reads: Mutex::new(HashMap::new()),
             share_dir: Mutex::new(share_dir),
             nickname: Mutex::new(nickname),
             avatar: Mutex::new(avatar),

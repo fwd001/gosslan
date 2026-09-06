@@ -1,7 +1,14 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { api, bindEvents } from "@/api";
-import { applyIncomingToConversations, mergeMessages, previewText } from "@/utils/messages";
+import {
+  applyIncomingToConversations,
+  applyReplacements,
+  furthestStatus,
+  mergeMessages,
+  preserveDeliveryStatus,
+  previewText,
+} from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
 import {
   isPermissionGranted,
@@ -101,6 +108,9 @@ export const useChatStore = defineStore("chat", () => {
   // ---------------- 密集广播批量队列 ----------------
   let pending: MessageRecord[] = [];
   let flushScheduled = false;
+  // 乐观记录还在队列里未落地时到达的「真实记录」：tmp msg_id → 后端记录
+  const pendingReplace = new Map<string, MessageRecord>();
+
   function scheduleFlush() {
     if (flushScheduled) return;
     flushScheduled = true;
@@ -119,8 +129,9 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  async function applyIncoming(batch: MessageRecord[]) {
-    if (batch.length === 0) return;
+  async function applyIncoming(raw: MessageRecord[]) {
+    if (raw.length === 0) return;
+    const batch = applyReplacements(raw, pendingReplace);
     const byConv = new Map<string, MessageRecord[]>();
     for (const m of batch) {
       const list = byConv.get(m.conv_id) ?? [];
@@ -221,7 +232,10 @@ export const useChatStore = defineStore("chat", () => {
     const seq = ++loadSeq;
     const list = await api.getMessages(convId, PAGE_SIZE, 0);
     if (seq !== loadSeq || activeConv.value !== convId) return;
-    messages.value[convId] = list;
+    // 快照可能取自 Ack / peer-read 落库之前：与查询期间已推进的内存状态合并，
+    // 否则刚亮的绿勾会被这份旧快照退回「发送中」。
+    const prev = messages.value[convId];
+    messages.value[convId] = prev ? preserveDeliveryStatus(list, prev) : list;
     pagesLoaded.set(convId, 1);
   }
 
@@ -279,11 +293,16 @@ export const useChatStore = defineStore("chat", () => {
   /** 替换会话内指定 msg_id 的消息（乐观记录 → 真实记录 / 状态变更）。 */
   function replaceMessage(convId: string, msgId: string, next: MessageRecord) {
     const list = messages.value[convId];
-    if (!list) return;
-    const i = list.findIndex((m) => m.msg_id === msgId);
-    if (i >= 0) {
-      messages.value[convId] = [...list.slice(0, i), next, ...list.slice(i + 1)];
+    if (list) {
+      const i = list.findIndex((m) => m.msg_id === msgId);
+      if (i >= 0) {
+        messages.value[convId] = [...list.slice(0, i), next, ...list.slice(i + 1)];
+        return;
+      }
     }
+    // 乐观记录还压在批量队列里（invoke 先于 rAF 落地返回）：挂起等批次落地时替换。
+    // 直接丢弃真实记录 = 气泡永远停在「发送中」，而后端库里早已是 delivered/read。
+    if (pending.some((m) => m.msg_id === msgId)) pendingReplace.set(msgId, next);
   }
 
   async function sendFriendRequest(peerId: string) {
@@ -453,13 +472,14 @@ export const useChatStore = defineStore("chat", () => {
         }
       },
       onMessageAcked: (msgId) => {
-        // 对方收到（Ack）：sending → delivered（空圆框）
+        // 对方收到（Ack）：sending → delivered（空圆框）。经 outbox 补发的重试 Ack
+        // 可能晚于 peer-read 到达，只允许前进不允许把绿勾退回空圆框。
         for (const [convId, list] of Object.entries(messages.value)) {
           const i = list.findIndex((m) => m.msg_id === msgId);
           if (i >= 0) {
             messages.value[convId] = [
               ...list.slice(0, i),
-              { ...list[i], status: "delivered" },
+              { ...list[i], status: furthestStatus(list[i].status, "delivered") },
               ...list.slice(i + 1),
             ];
             break;

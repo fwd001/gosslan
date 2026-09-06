@@ -52,3 +52,26 @@ pub async fn stop(state: &AppState) {
     state.peers.lock().unwrap().clear();
     state.emit_peers();
 }
+
+/// 默认绑定地址：自动（监听所有网卡）。
+const AUTO_BIND_IP: &str = "0.0.0.0";
+
+/// 按本地偏好开启局域网通道（开机自动开启与设置页开关共用同一条路径）。
+///
+/// 绑定地址沿用用户已选网卡（`settings.bind_ip`）——自动开启不得改写用户的选择；
+/// 只有该网卡已不存在（换了网络）时才回落到自动选择，
+/// 否则「默认开启」会比手动开启更脆弱：绑定失败后通道静默不在线。
+pub async fn start_from_prefs(state: Arc<AppState>) -> Result<(), String> {
+    let bind_ip = {
+        let dbc = state.db.lock().unwrap();
+        crate::db::get_setting(&dbc, "bind_ip").unwrap_or_else(|| AUTO_BIND_IP.to_string())
+    };
+    match start(state.clone(), bind_ip.clone()).await {
+        Ok(()) => Ok(()),
+        Err(e) if bind_ip != AUTO_BIND_IP => {
+            eprintln!("[lan] 绑定 {bind_ip} 失败（{e}），回落到自动选择网卡");
+            start(state, AUTO_BIND_IP.to_string()).await
+        }
+        Err(e) => Err(e),
+    }
+}

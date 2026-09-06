@@ -32,13 +32,29 @@ pub fn run() {
             // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
             #[cfg(desktop)]
             tray::setup(app.handle())?;
-            // 联调便利：GOSSLAN_AUTOSTART=1 时启动即自动开启局域网通道，
-            // 便于 headless 多实例互测（examples/e2e_peer.rs 依赖此行为）。
-            if std::env::var("GOSSLAN_AUTOSTART").ok().as_deref() == Some("1") {
-                let st = state;
+            // 局域网默认开启：首次安装（以及尚未写入该键的旧版本升级）启动即自动联网；
+            // 用户在设置页关闭后持久化为关闭，重启不再联网。「恢复默认」清除该键 ⇒ 回到默认开启。
+            // GOSSLAN_AUTOSTART=1 强制以 0.0.0.0 开启（headless 多实例互测，
+            // examples/e2e_peer.rs 依赖此行为），且不改动已持久化的偏好。
+            #[cfg(desktop)]
+            {
+                let st = state.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = network::start(st, "0.0.0.0".to_string()).await {
-                        eprintln!("[GOSSLAN_AUTOSTART] 网络启动失败: {e}");
+                    let forced = std::env::var("GOSSLAN_AUTOSTART").ok().as_deref() == Some("1");
+                    let enabled = {
+                        let dbc = st.db.lock().unwrap();
+                        forced || db::get_lan_enabled(&dbc)
+                    };
+                    if !enabled {
+                        return;
+                    }
+                    let started = if forced {
+                        network::start(st, "0.0.0.0".to_string()).await
+                    } else {
+                        network::start_from_prefs(st).await
+                    };
+                    if let Err(e) = started {
+                        eprintln!("[lan] 自动开启局域网通道失败: {e}");
                     }
                 });
             }

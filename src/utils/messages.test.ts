@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyIncomingToConversations, mergeMessages, previewText } from "./messages.ts";
+import {
+  applyIncomingToConversations,
+  applyReplacements,
+  furthestStatus,
+  mergeMessages,
+  preserveDeliveryStatus,
+  previewText,
+} from "./messages.ts";
 import type { Conversation, MessageRecord } from "../types";
 
 function msg(partial: Partial<MessageRecord> & { msg_id: string }): MessageRecord {
@@ -121,4 +128,53 @@ test("不修改原 conversations 数组（无副作用）", () => {
   const snapshot = JSON.stringify(cs);
   applyIncomingToConversations(cs, null, new Map([["f1", [msg({ msg_id: "m1", conv_id: "f1", ts: 1 })]]]));
   assert.equal(JSON.stringify(cs), snapshot);
+});
+
+// ---------------- 发送状态链（P0-1 / P0-2） ----------------
+
+test("乐观记录仍在批次里：真实记录在批次落地时替换它", () => {
+  const optimistic = msg({ msg_id: "tmp-1", status: "sending", ts: 100 });
+  const real = msg({ msg_id: "m1", status: "sent", ts: 100 });
+  const replacements = new Map([["tmp-1", real]]);
+  const out = applyReplacements([optimistic], replacements);
+  assert.deepEqual(out.map((m) => [m.msg_id, m.status]), [["m1", "sent"]]);
+  assert.equal(replacements.size, 0); // 挂起项已消费，不会重复替换
+});
+
+test("批次落地后无挂起项：原样返回且不误改其它消息", () => {
+  const a = msg({ msg_id: "m1", status: "delivered" });
+  const b = msg({ msg_id: "m2", status: "read" });
+  const replacements = new Map([["tmp-x", msg({ msg_id: "m9" })]]);
+  const out = applyReplacements([a, b], replacements);
+  assert.equal(out[0], a);
+  assert.equal(out[1], b);
+  assert.equal(replacements.size, 1); // 无关挂起项保留
+});
+
+test("会话重查快照不得退回已推进的送达状态", () => {
+  const fresh = [
+    msg({ msg_id: "m1", status: "sent" }),
+    msg({ msg_id: "m2", status: "delivered" }),
+    msg({ msg_id: "m3", status: "sent" }),
+  ];
+  const local = [
+    msg({ msg_id: "m1", status: "read" }), // peer-read 在查询期间到达
+    msg({ msg_id: "m2", status: "delivered" }),
+    msg({ msg_id: "m3", status: "sending" }), // 非送达链上的状态不参与推进
+  ];
+  const out = preserveDeliveryStatus(fresh, local);
+  assert.deepEqual(out.map((m) => m.status), ["read", "delivered", "sent"]);
+  assert.equal(fresh[0].status, "sent"); // 无副作用
+});
+
+test("空本地缓存时原样返回重查结果", () => {
+  const fresh = [msg({ msg_id: "m1", status: "sent" })];
+  assert.equal(preserveDeliveryStatus(fresh, []), fresh);
+});
+
+test("送达状态只前进：sent→delivered→read，逆序不变", () => {
+  assert.equal(furthestStatus("sent", "delivered"), "delivered");
+  assert.equal(furthestStatus("delivered", "read"), "read");
+  assert.equal(furthestStatus("read", "delivered"), "read");
+  assert.equal(furthestStatus("delivered", "sent"), "delivered");
 });
