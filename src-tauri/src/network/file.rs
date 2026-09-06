@@ -249,6 +249,27 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) {
     }
 }
 
+/// 按文件扩展名（大小写不敏感）保守分类附件类型：`image` / `code` / `file`。
+///
+/// 这是纯函数，**仅依赖 basename**：FileOffer 已把 `name` 带到接收端，两端各自调用
+/// 同一实现 → 分类结果天然一致，无需给文件传输协议增加字段。
+///
+/// 未用 MIME 魔数嗅探的原因：那要么需要给 FileOffer/RelayFileOffer 加 kind 字段
+/// （违反「不修改文件传输协议」），要么两端各自读字节嗅探（引入 sender/receiver 分歧）。
+/// 任务给出的图片/代码清单本身即扩展名，扩展名判定已足够保守且确定。
+pub fn classify_file_subtype(name: &str) -> &'static str {
+    let ext = Path::new(name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "c" | "cpp"
+        | "h" | "hpp" | "json" | "yaml" | "yml" | "md" | "html" | "css" | "sql" | "sh" => "code",
+        _ => "file",
+    }
+}
+
 /// 避免重名：`a.txt` -> `a (1).txt`
 fn unique_path(dir: &Path, name: &str) -> PathBuf {
     let base = dir.join(name);
@@ -280,4 +301,46 @@ pub fn human_size(bytes: u64) -> String {
         i += 1;
     }
     format!("{v:.1} {}", UNITS[i])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_file_subtype;
+
+    #[test]
+    fn image_extensions() {
+        for n in ["a.png", "a.jpg", "a.jpeg", "a.gif", "a.webp"] {
+            assert_eq!(classify_file_subtype(n), "image", "{n}");
+        }
+    }
+
+    #[test]
+    fn code_extensions() {
+        for n in [
+            "a.rs", "a.ts", "a.tsx", "a.js", "a.jsx", "a.vue", "a.py", "a.go", "a.java",
+            "a.c", "a.cpp", "a.h", "a.hpp", "a.json", "a.yaml", "a.yml", "a.md",
+            "a.html", "a.css", "a.sql", "a.sh",
+        ] {
+            assert_eq!(classify_file_subtype(n), "code", "{n}");
+        }
+    }
+
+    #[test]
+    fn other_files() {
+        for n in ["a.exe", "a.zip", "a.pdf", "a.docx", "a.txt", "Makefile", "LICENSE"] {
+            assert_eq!(classify_file_subtype(n), "file", "{n}");
+        }
+    }
+
+    #[test]
+    fn case_insensitive_and_multidot_and_chinese() {
+        assert_eq!(classify_file_subtype("PHOTO.PNG"), "image");
+        assert_eq!(classify_file_subtype("App.Vue"), "code");
+        assert_eq!(classify_file_subtype("archive.tar.gz"), "file"); // 末段 gz 不在清单
+        assert_eq!(classify_file_subtype("min.bundle.js"), "code"); // 末段 js
+        assert_eq!(classify_file_subtype("报告 截图.JPG"), "image"); // 中文名 + 空格
+        assert_eq!(classify_file_subtype("代码.rs"), "code");
+        assert_eq!(classify_file_subtype(".gitignore"), "file"); // 隐藏文件无有效扩展
+        assert_eq!(classify_file_subtype(""), "file");
+    }
 }

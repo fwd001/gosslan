@@ -588,6 +588,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     "name": name,
                     "path": path.to_string_lossy().to_string(),
                     "size": size,
+                    "subtype": file::classify_file_subtype(&name),
                 })
                 .to_string();
                 let rec = MessageRecord {
@@ -997,6 +998,7 @@ async fn handle_relay_chunk(
                     "name": name.clone(),
                     "path": path_str.clone(),
                     "size": full.len(),
+                    "subtype": file::classify_file_subtype(&name),
                 })
                 .to_string();
                 let rec = MessageRecord {

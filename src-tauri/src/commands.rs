@@ -897,7 +897,7 @@ pub async fn send_file(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let content = serde_json::json!({ "name": name.clone(), "path": path, "size": size }).to_string();
+    let content = serde_json::json!({ "name": name.clone(), "path": path, "size": size, "subtype": file::classify_file_subtype(&name) }).to_string();
     let rec = MessageRecord {
         id: 0,
         msg_id: format!("file-{transfer_id}"),
@@ -1021,7 +1021,7 @@ pub async fn send_file_relay(
     s.relay.lock().unwrap().finish_send(&transfer_id);
 
     // 本机消息记录
-    let content = serde_json::json!({ "name": name.clone(), "path": path, "size": size }).to_string();
+    let content = serde_json::json!({ "name": name.clone(), "path": path, "size": size, "subtype": file::classify_file_subtype(&name) }).to_string();
     let rec = MessageRecord {
         id: 0,
         msg_id: format!("file-{transfer_id}"),
