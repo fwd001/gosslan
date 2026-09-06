@@ -673,6 +673,12 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
                 let cur = pending.entry(conv_id.clone()).or_insert(ts);
                 *cur = (*cur).max(ts);
             }
+            // 持久化到 DB：进程重启后 pending_reads 内存丢失时可从 DB 恢复。
+            // 使用 max 语义（upsert_pending_read）保证较旧 timestamp 不覆盖较新。
+            {
+                let dbc = s.db.lock().unwrap();
+                db::upsert_pending_read(&dbc, &conv_id, ts).ok();
+            }
         }
     }
     Ok(())
@@ -972,10 +978,14 @@ pub async fn send_file_relay(
     {
         let dbc = s.db.lock().unwrap();
         db::insert_message(&dbc, &rec).ok();
+        // 与 Direct stream_file 一致：发送方消息状态推进到 delivered，
+        // 否则 Relay sender 气泡永远停在「发送中」spinner。
+        db::set_message_status(&dbc, &rec.msg_id, "delivered").ok();
         let nm = resolve_nickname(s, &friend_id);
         db::touch_conversation(&dbc, &friend_id, "single", &nm, None, &format!("[文件] {name}"), 0).ok();
     }
     let _ = s.app.emit("message-received", &rec);
+    let _ = s.app.emit("message-acked", &rec.msg_id);
 
     Ok(transfer_id)
 }

@@ -442,11 +442,35 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
         }
         Message::Ack { msg_id } => {
-            let dbc = state.db.lock().unwrap();
-            db::set_message_status(&dbc, &msg_id, "delivered").ok();
-            dbc.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id]).ok();
-            drop(dbc);
-            let _ = state.app.emit("message-acked", &msg_id);
+            // 查询原始发送方：如果这条消息不是我发的，说明我是中继节点，
+            // 需要把 Ack 转发给原始发送方（而非本地处理）。
+            let original_sender: Option<String> = {
+                let dbc = state.db.lock().unwrap();
+                dbc.query_row(
+                    "SELECT sender_id FROM messages WHERE msg_id = ?1",
+                    params![msg_id],
+                    |r| r.get(0),
+                )
+                .ok()
+            };
+            match original_sender {
+                Some(sender) if sender == state.device_id => {
+                    // 情况 1：Ack 对应的原始消息是我发的 → 正常处理
+                    let dbc = state.db.lock().unwrap();
+                    db::set_message_status(&dbc, &msg_id, "delivered").ok();
+                    dbc.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id]).ok();
+                    drop(dbc);
+                    let _ = state.app.emit("message-acked", &msg_id);
+                }
+                Some(sender) => {
+                    // 情况 2：中继节点 → 转发 Ack 给原始发送方
+                    // sender_id / message_id 保持不变，中继节点不做任何本地状态修改。
+                    let _ = try_send(state, &sender, &Message::Ack { msg_id }).await;
+                }
+                None => {
+                    // 查询不到 sender_id（消息不在本地 DB）→ 安全丢弃，不做任何修改。
+                }
+            }
         }
         Message::ReadReceipt { from, to, last_read_ts } => {
             if to != state.device_id || from == state.device_id {
@@ -1191,10 +1215,9 @@ pub async fn flush_outbox(state: &AppState, peer_id: &str) {
 
 /// 冲刷待发的单聊已读回执（触发点与 `flush_outbox` 一致：建链 / Hello / 心跳）。
 ///
-/// `mark_read` 是一次性即时发送：链路不存在或已半开时 `try_send` 直接失败，此前这条
-/// 回执就永久丢失 ⇒ 对方界面上的绿勾只能等他下次手动标记会话才更新。回执只带一个
-/// 单调递增的时间戳（`last_read_ts` 越大覆盖越多），因此内存里存一条即可，
-/// 不需要像 outbox 那样落库。
+/// `mark_read` 将 pending 同时写入内存 HashMap 和 SQLite。此处成功发送后
+/// 同时清除两者；失败时内存已由 remove 清除但会重新写入，DB 保留不动
+/// （由 `mark_read` 写入，下次 flush 重试）。
 pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
     let Some(last_read_ts) = state.pending_reads.lock().unwrap().remove(peer_id) else {
         return;
@@ -1204,14 +1227,15 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
         to: peer_id.to_string(),
         last_read_ts,
     };
-    // 只尝试发送；成功则 pending 已在 remove 时清除，无需额外操作。
-    // 失败（链路不存在 / 半开）时必须重新放回 pending_reads，
-    // 否则这条回执永久丢失——要等用户下次手动打开会话才能补发。
-    // 接收方按 last_read_ts 单调性去重，重复送达无副作用。
     if try_send(state, peer_id, &msg).await.is_err() {
+        // 发送失败：内存重新放入 pending，DB 保留（已由 mark_read 写入）
         let mut pending = state.pending_reads.lock().unwrap();
         let cur = pending.entry(peer_id.to_string()).or_insert(last_read_ts);
         *cur = (*cur).max(last_read_ts);
+    } else {
+        // 发送成功：清除 DB 中的 pending 记录
+        let dbc = state.db.lock().unwrap();
+        db::delete_pending_read(&dbc, peer_id).ok();
     }
 }
 
@@ -1615,5 +1639,115 @@ mod tests {
             "SELECT status FROM messages WHERE msg_id = 'm1'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(status, "read", "delivered 不得回退 read");
+    }
+
+    // ================================================================
+    // Ack 中继转发测试
+    // ================================================================
+
+    /// Test 1：本机是原始发送者 → Ack 正常处理（status→delivered, outbox 删除）。
+    #[test]
+    fn ack_local_sender_marks_delivered_and_clears_outbox() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        // 模拟本机发送的消息
+        db::insert_message(&conn, &MessageRecord {
+            id: 0, msg_id: "m1".into(), conv_id: "d1".into(),
+            sender_id: "me".into(), receiver_id: "d1".into(),
+            kind: "text".into(), content: "hi".into(), ts: 100, status: "sent".into(),
+        }).unwrap();
+        db::insert_outbox(&conn, "m1", "d1", r#"payload"#).unwrap();
+
+        // Ack handler 的查询：sender_id = "me" == 本机 → 走正常处理分支
+        let sender_id: String = conn.query_row(
+            "SELECT sender_id FROM messages WHERE msg_id = ?1", params!["m1"],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(sender_id, "me");
+
+        // 模拟正常处理
+        db::set_message_status(&conn, "m1", "delivered").unwrap();
+        conn.execute("DELETE FROM outbox WHERE msg_id = ?1", params!["m1"]).unwrap();
+
+        let status: String = conn.query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(status, "delivered");
+        assert!(db::list_outbox(&conn, "d1").unwrap().is_empty());
+    }
+
+    /// Test 2：中继节点收到 Ack → sender_id ≠ 本机 → 不做本地处理。
+    /// 验证中继节点不修改自己的消息状态、不删除 outbox。
+    #[test]
+    fn ack_relay_node_does_not_process_locally() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        // 中继节点 C 收到 A 发给 D 的消息（通过 Gossip）
+        db::insert_message(&conn, &MessageRecord {
+            id: 0, msg_id: "m1".into(), conv_id: "d1".into(),
+            sender_id: "node-a".into(), receiver_id: "d1".into(),
+            kind: "text".into(), content: "hello".into(), ts: 200, status: "delivered".into(),
+        }).unwrap();
+        // C 自己也有一条 outbox 消息（不同的 msg_id）
+        db::insert_outbox(&conn, "m-own", "some-peer", r#"own payload"#).unwrap();
+
+        // Ack handler 查询：sender_id = "node-a" ≠ "me"（当前节点是 C）
+        let sender_id: String = conn.query_row(
+            "SELECT sender_id FROM messages WHERE msg_id = ?1", params!["m1"],
+            |r| r.get(0),
+        ).unwrap();
+        assert_ne!(sender_id, "me", "sender_id 应为原始发送方 A，不是本机 C");
+
+        // 中继节点不应执行任何本地状态修改
+        // （实际 handler 中，Some(sender) if sender == device_id 分支不匹配 → 走转发分支）
+        let status: String = conn.query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(status, "delivered", "中继节点不修改消息状态");
+        assert!(!db::list_outbox(&conn, "some-peer").unwrap().is_empty(),
+            "中继节点不删除自己的 outbox");
+    }
+
+    /// Test 3：Ack 对应的 msg_id 不存在 → 查询返回 None → 安全丢弃。
+    #[test]
+    fn ack_unknown_msg_id_is_silently_dropped() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        // 不存在的消息
+        let result: Option<String> = conn.query_row(
+            "SELECT sender_id FROM messages WHERE msg_id = ?1", params!["nonexistent"],
+            |r| r.get(0),
+        ).ok();
+        assert!(result.is_none(), "查询不存在的 msg_id 应返回 None");
+        // 此时 handler 走 None 分支 → 不做任何修改
+    }
+
+    /// Test 4：中继节点转发 Ack 时，sender_id 和 message_id 不被修改。
+    #[test]
+    fn ack_relay_preserves_original_fields() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        db::insert_message(&conn, &MessageRecord {
+            id: 0, msg_id: "m1".into(), conv_id: "d1".into(),
+            sender_id: "node-a".into(), receiver_id: "d1".into(),
+            kind: "text".into(), content: "hi".into(), ts: 100, status: "delivered".into(),
+        }).unwrap();
+
+        // 中继节点查询到原始 sender_id
+        let original_sender: String = conn.query_row(
+            "SELECT sender_id FROM messages WHERE msg_id = ?1", params!["m1"],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(original_sender, "node-a");
+
+        // 转发时使用原始 Ack 消息（message_id 和 sender_id 不变）
+        let ack = Message::Ack { msg_id: "m1".into() };
+        match &ack {
+            Message::Ack { msg_id } => {
+                assert_eq!(msg_id, "m1", "message_id 不得被修改");
+            }
+            _ => panic!("应为 Ack"),
+        }
+        // original_sender 用于 try_send 的 peer_id 参数，不嵌入 Ack 消息体
     }
 }

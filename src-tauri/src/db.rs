@@ -81,6 +81,12 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     progress   REAL NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
+
+-- 待发已读回执：进程重启后从 DB 恢复，避免 ReadReceipt 丢失
+CREATE TABLE IF NOT EXISTS pending_reads (
+    peer_id       TEXT PRIMARY KEY,
+    last_read_ts  INTEGER NOT NULL
+);
 "#;
 
 /// 打开（或创建）数据库并执行迁移。
@@ -482,6 +488,31 @@ pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+// ---------------- 待发已读回执 ----------------
+
+/// 写入/更新待发已读回执。使用 max 语义：较旧 timestamp 不覆盖较新 timestamp。
+pub fn upsert_pending_read(conn: &Connection, peer_id: &str, ts: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pending_reads(peer_id, last_read_ts) VALUES(?1, ?2)
+         ON CONFLICT(peer_id) DO UPDATE SET last_read_ts = MAX(pending_reads.last_read_ts, excluded.last_read_ts)",
+        params![peer_id, ts],
+    )?;
+    Ok(())
+}
+
+/// 加载所有待发已读回执（应用启动时恢复内存状态）。
+pub fn load_pending_reads(conn: &Connection) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare("SELECT peer_id, last_read_ts FROM pending_reads")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 删除指定 peer 的待发已读回执（flush 成功后调用）。
+pub fn delete_pending_read(conn: &Connection, peer_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM pending_reads WHERE peer_id = ?1", params![peer_id])?;
+    Ok(())
 }
 
 /// 当前毫秒时间戳
@@ -949,5 +980,83 @@ mod tests {
         // 恢复默认（清键）→ 回到开
         delete_setting(&conn, "lan_enabled").unwrap();
         assert!(get_lan_enabled(&conn), "恢复默认后回到开");
+    }
+
+    // ================================================================
+    // pending_reads 持久化测试
+    // ================================================================
+
+    /// Test 1：upsert 使用 max 语义——较旧 timestamp 不覆盖较新。
+    #[test]
+    fn pending_read_upsert_keeps_max() {
+        let conn = mem();
+        upsert_pending_read(&conn, "B", 200).unwrap();
+        upsert_pending_read(&conn, "B", 100).unwrap(); // 较旧，不覆盖
+        let rows = load_pending_reads(&conn).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], ("B".to_string(), 200));
+
+        upsert_pending_read(&conn, "B", 300).unwrap(); // 较新，更新
+        let rows = load_pending_reads(&conn).unwrap();
+        assert_eq!(rows[0], ("B".to_string(), 300));
+    }
+
+    /// Test 2：load_pending_reads 正确读取多个 peer。
+    #[test]
+    fn pending_read_load_multiple_peers() {
+        let conn = mem();
+        upsert_pending_read(&conn, "B", 200).unwrap();
+        upsert_pending_read(&conn, "C", 500).unwrap();
+        let mut rows = load_pending_reads(&conn).unwrap();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], ("B".to_string(), 200));
+        assert_eq!(rows[1], ("C".to_string(), 500));
+    }
+
+    /// Test 3：delete_pending_read 只删除指定 peer。
+    #[test]
+    fn pending_read_delete_only_target() {
+        let conn = mem();
+        upsert_pending_read(&conn, "B", 200).unwrap();
+        upsert_pending_read(&conn, "C", 500).unwrap();
+        delete_pending_read(&conn, "B").unwrap();
+        let rows = load_pending_reads(&conn).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], ("C".to_string(), 500));
+    }
+
+    /// Test 4：重启恢复——DB 写入后，新连接 load 能正确恢复。
+    #[test]
+    fn pending_read_survives_restart() {
+        let conn = mem();
+        upsert_pending_read(&conn, "B", 200).unwrap();
+        upsert_pending_read(&conn, "C", 500).unwrap();
+        // 模拟进程重启：新建 HashMap，从 DB 加载
+        let mut restored = std::collections::HashMap::new();
+        for (peer_id, ts) in load_pending_reads(&conn).unwrap() {
+            let cur = restored.entry(peer_id).or_insert(ts);
+            *cur = (*cur).max(ts);
+        }
+        assert_eq!(restored.get("B"), Some(&200));
+        assert_eq!(restored.get("C"), Some(&500));
+        // DB 中的记录仍然存在（flush 时才会删除）
+        assert_eq!(load_pending_reads(&conn).unwrap().len(), 2);
+    }
+
+    /// Test 5：delete 后 load 为空。
+    #[test]
+    fn pending_read_delete_all() {
+        let conn = mem();
+        upsert_pending_read(&conn, "B", 200).unwrap();
+        delete_pending_read(&conn, "B").unwrap();
+        assert!(load_pending_reads(&conn).unwrap().is_empty());
+    }
+
+    /// Test 6：空 DB load 返回空 vec。
+    #[test]
+    fn pending_read_load_empty_db() {
+        let conn = mem();
+        assert!(load_pending_reads(&conn).unwrap().is_empty());
     }
 }

@@ -278,6 +278,15 @@ impl AppState {
         let avatar = db::get_setting(&conn, "avatar");
         let share_dir = db::get_setting(&conn, "share_dir");
 
+        // 启动时从 DB 恢复待发已读回执（进程重启后 pending_reads 内存丢失的恢复路径）
+        let mut pending_reads_map = HashMap::new();
+        if let Ok(rows) = db::load_pending_reads(&conn) {
+            for (peer_id, ts) in rows {
+                let cur = pending_reads_map.entry(peer_id).or_insert(ts);
+                *cur = (*cur).max(ts);
+            }
+        }
+
         // 加载或生成身份密钥（X25519 + Ed25519）
         let identity = match (
             db::get_setting(&conn, "x25519_secret"),
@@ -307,7 +316,7 @@ impl AppState {
             links: tokio::sync::Mutex::new(HashMap::new()),
             pending_requests: Mutex::new(HashMap::new()),
             network: Mutex::new(None),
-            pending_reads: Mutex::new(HashMap::new()),
+            pending_reads: Mutex::new(pending_reads_map),
             share_dir: Mutex::new(share_dir),
             nickname: Mutex::new(nickname),
             avatar: Mutex::new(avatar),
