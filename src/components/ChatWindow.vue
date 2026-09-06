@@ -142,7 +142,7 @@ function estimateHeight(m: MessageRecord, index?: number): number {
   // --- 气泡垂直 padding ---
   const py = tight ? 4 /* py-0.5 */ : 12; /* pt-1 pb-2 */
   // --- 气泡下方时间行 ---
-  const timeH = tight ? (isLastInMinute ? 16 : 0) : 16; // 紧凑模式末条仍显示时间
+  const timeH = isLastInMinute ? 16 : 0;
   // --- 昵称行 ---
   const nickH = showNickname ? 20 : 0;
   // --- 分割线 ---
