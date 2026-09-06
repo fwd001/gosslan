@@ -110,6 +110,9 @@ export const useChatStore = defineStore("chat", () => {
   let flushScheduled = false;
   // 乐观记录还在队列里未落地时到达的「真实记录」：tmp msg_id → 后端记录
   const pendingReplace = new Map<string, MessageRecord>();
+  // Ack 先于乐观→真实替换到达：msg_id 已知但 store 里还没有该条目。
+  // send() 拿到真实记录后检查并消费。
+  const pendingAcks = new Map<string, string>();
 
   function scheduleFlush() {
     if (flushScheduled) return;
@@ -282,6 +285,12 @@ export const useChatStore = defineStore("chat", () => {
         rec = await api.sendMessage(convId, content, kind);
       }
       replaceMessage(convId, optimistic.msg_id, rec);
+      // Ack 先于乐观→真实替换到达：replaceMessage 里找不到 msg_id，onMessageAcked
+      // 把它记入 pendingAcks；此处消费——如果 Ack 已到，直接把 sent 提升为 delivered。
+      if (pendingAcks.has(rec.msg_id)) {
+        pendingAcks.delete(rec.msg_id);
+        replaceMessage(convId, rec.msg_id, { ...rec, status: furthestStatus(rec.status, "delivered") });
+      }
       return rec;
     } catch (e) {
       // 发送失败：乐观消息标记为失败态（保留内容，用户可重发）
@@ -474,6 +483,7 @@ export const useChatStore = defineStore("chat", () => {
       onMessageAcked: (msgId) => {
         // 对方收到（Ack）：sending → delivered（空圆框）。经 outbox 补发的重试 Ack
         // 可能晚于 peer-read 到达，只允许前进不允许把绿勾退回空圆框。
+        let found = false;
         for (const [convId, list] of Object.entries(messages.value)) {
           const i = list.findIndex((m) => m.msg_id === msgId);
           if (i >= 0) {
@@ -482,9 +492,13 @@ export const useChatStore = defineStore("chat", () => {
               { ...list[i], status: furthestStatus(list[i].status, "delivered") },
               ...list.slice(i + 1),
             ];
+            found = true;
             break;
           }
         }
+        // Ack 先于乐观→真实替换到达（store 里只有 tmp-xxx，找不到 real msg_id）：
+        // 记入 pendingAcks，send() 拿到真实记录后立即消费。
+        if (!found) pendingAcks.set(msgId, msgId);
       },
       onPeerRead: (p) => {
         // 对方已读到 last_read_ts：我发出的、ts ≤ 该值的消息 → read（绿勾）
@@ -572,5 +586,6 @@ export const useChatStore = defineStore("chat", () => {
     sendFileTo,
     sendFileRelayTo,
     enqueueMessage,
+    pendingAcks,
   };
 });

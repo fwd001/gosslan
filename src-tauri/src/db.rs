@@ -148,12 +148,19 @@ pub fn delete_setting(conn: &Connection, key: &str) -> Result<()> {
 }
 
 /// 局域网通道开关偏好：只有显式写入 "0"（用户在设置页关闭）才为关。
-/// 键不存在 ⇒ 开启 ⇒ 首次安装与「尚无该键」的旧版本升级都会自动联网。
+/// 键不存在 ⇒ 开启 ⇒ 首次安装与「尚无该键」的旧版本升级都会自动联网，
+/// 并立即将此默认值持久化，之后每次启动读到明确的 "1" 而非依赖隐式默认。
 /// 读取方仅存在于桌面端启动路径（`lib.rs` 的 `#[cfg(desktop)]` 块），
 /// 移动端仍由设置页手动开启，故在该目标下为死代码。
 #[cfg_attr(not(desktop), allow(dead_code))]
 pub fn get_lan_enabled(conn: &Connection) -> bool {
-    get_setting(conn, "lan_enabled").map(|v| v != "0").unwrap_or(true)
+    match get_setting(conn, "lan_enabled") {
+        Some(v) => v != "0",
+        None => {
+            set_lan_enabled(conn, true).ok();
+            true
+        }
+    }
 }
 
 /// 写入局域网通道开关偏好（沿用 settings 表，不引入新的配置存储）。
@@ -920,16 +927,26 @@ mod tests {
         assert_eq!(status_of(&conn, "m1"), "read", "迟到的 Ack 不得回退已读");
     }
 
-    /// 局域网默认开启：无键（首次安装、以及从未写过该键的旧版本升级）即为开；
+    /// 局域网默认开启：无键（首次安装、以及从未写过该键的旧版本升级）即为开，
+    /// 并立即将 "1" 持久化（之后每次启动读到明确值，不再依赖隐式默认）；
     /// 只有用户显式关闭才持久化为关，「恢复默认」清键后回到默认开。
     #[test]
     fn lan_enabled_defaults_on_and_keeps_explicit_off() {
         let conn = mem();
+        // 缺省必须开启，且把 "1" 写入 settings
         assert!(get_lan_enabled(&conn), "缺省必须开启");
+        assert_eq!(
+            get_setting(&conn, "lan_enabled").as_deref(),
+            Some("1"),
+            "get_lan_enabled(None) 应立即持久化 true"
+        );
+        // 用户关闭 → 重启后仍为关
         set_lan_enabled(&conn, false).unwrap();
         assert!(!get_lan_enabled(&conn), "用户关闭后重启仍为关");
+        // 用户开启 → 重启后仍为开
         set_lan_enabled(&conn, true).unwrap();
         assert!(get_lan_enabled(&conn));
+        // 恢复默认（清键）→ 回到开
         delete_setting(&conn, "lan_enabled").unwrap();
         assert!(get_lan_enabled(&conn), "恢复默认后回到开");
     }

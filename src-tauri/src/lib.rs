@@ -40,21 +40,23 @@ pub fn run() {
             {
                 let st = state.clone();
                 tauri::async_runtime::spawn(async move {
-                    let forced = std::env::var("GOSSLAN_AUTOSTART").ok().as_deref() == Some("1");
+                    let forced =
+                        std::env::var("GOSSLAN_AUTOSTART").ok().as_deref() == Some("1");
+                    // 键缺失（首次安装 / 旧版本升级）→ 持久化为 true，之后每次启动
+                    // 读到明确的 "1" 而非依赖 unwrap_or(true) 的隐式默认。
                     let enabled = {
                         let dbc = st.db.lock().unwrap();
-                        forced || db::get_lan_enabled(&dbc)
+                        crate::db::get_lan_enabled(&dbc)
                     };
-                    if !enabled {
-                        return;
-                    }
-                    let started = if forced {
-                        network::start(st, "0.0.0.0".to_string()).await
-                    } else {
-                        network::start_from_prefs(st).await
-                    };
-                    if let Err(e) = started {
-                        eprintln!("[lan] 自动开启局域网通道失败: {e}");
+                    if forced || enabled {
+                        let started = if forced {
+                            network::start(st, "0.0.0.0".to_string()).await
+                        } else {
+                            network::start_from_prefs(st).await
+                        };
+                        if let Err(e) = started {
+                            eprintln!("[lan] 自动开启局域网通道失败: {e}");
+                        }
                     }
                 });
             }
