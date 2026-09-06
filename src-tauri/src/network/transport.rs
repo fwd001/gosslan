@@ -331,16 +331,16 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             drop(dbc);
             let _ = state.app.emit("friend-removed", &from);
         }
-        Message::FriendMessageBlocked { from, to, original_sender } => {
-            if to == state.device_id {
+        Message::FriendMessageBlocked { ref from, ref to, ref original_sender } => {
+            if to == &state.device_id {
                 // 目标是本机：通知前端
-                let _ = state.app.emit("friend-message-blocked", &from);
-            } else if original_sender != state.device_id {
+                let _ = state.app.emit("friend-message-blocked", from);
+            } else if original_sender != &state.device_id {
                 // 中继节点：转发给原始发送方（与 Ack relay 同逻辑）
-                let _ = try_send(state, &original_sender, &Message::FriendMessageBlocked {
-                    from,
-                    to,
-                    original_sender,
+                let _ = try_send(state, original_sender, &Message::FriendMessageBlocked {
+                    from: from.clone(),
+                    to: to.clone(),
+                    original_sender: original_sender.clone(),
                 }).await;
             }
         }
@@ -803,6 +803,7 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
     }
     // 3. 解包：E2EE 关闭时载荷为明文 JSON；开启时按单聊 ECDH / 群密钥解密
     let plaintext = if !env.encrypted {
+        // FriendMessageBlocked 等明文 Gossip：payload 是 base64 编码的 JSON
         STANDARD.decode(&env.payload).ok()
     } else {
         match &env.kind {
@@ -815,10 +816,14 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
                 let key = get_group_key(state, &gid).await;
                 key.and_then(|k| STANDARD.decode(&env.payload).ok().and_then(|d| crypto::open_symmetric(&k, &d)))
             }
+            GossipKind::FriendMessageBlocked => {
+                // 已在 encrypted=false 分支处理，这里不应进入
+                return;
+            }
         }
     };
 
-    // 4. 转发（fan-out，TTL 衰减）
+    // 4. 转发（fan-out，TTL 衰减）— 所有 GossipKind 统一转发
     if env.ttl > 1 {
         let peers: Vec<String> = state.peers.lock().unwrap().keys().cloned().collect();
         let targets = {
@@ -833,65 +838,93 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
         }
     }
 
-    // 5. 解密成功则落库 + 通知
-    if let Some(pt) = plaintext {
-        let (kind, content) = parse_gossip_payload(&pt);
-        // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）
-        if env.kind == GossipKind::Chat {
-            let dbc = state.db.lock().unwrap();
-            if db::get_friend(&dbc, &env.sender_id).is_none() {
-                let _ = try_send(state, &env.sender_id, &Message::FriendMessageBlocked {
-                    from: state.device_id.clone(),
-                    to: env.sender_id.clone(),
-                    original_sender: env.sender_id.clone(),
-                }).await;
-                return;
+    // 5. 按 GossipKind 处理
+    match env.kind {
+        GossipKind::FriendMessageBlocked => {
+            // 控制消息：检查本机是否为原始发送方
+            if let Some(pt) = plaintext {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                    if let Some(original) = v.get("original_sender").and_then(|s| s.as_str()) {
+                        if original == state.device_id {
+                            // 本机就是原始发送方 → 通知前端
+                            let _ = state.app.emit("friend-message-blocked", &env.sender_id);
+                        }
+                        // 非本机 → 已在上面 fan-out 转发，不做任何 UI/DB 操作
+                    }
+                }
             }
         }
-        let conv_id = match &env.kind {
-            GossipKind::Chat => env.sender_id.clone(),
-            GossipKind::Group => format!("group:{}", env.group_id.clone().unwrap_or_default()),
-        };
-        let conv_kind = match &env.kind {
-            GossipKind::Chat => "single",
-            GossipKind::Group => "group",
-        };
-        let name = match &env.kind {
-            GossipKind::Chat => resolve_nickname(state, &env.sender_id),
-            GossipKind::Group => resolve_group_name(state, env.group_id.as_deref().unwrap_or("")),
-        };
-        let preview = preview_content(&kind, &content);
-        // 持锁块只做落库；await（fanout 转发已在前面）之后无持锁操作
-        // 业务幂等裁决：Direct（含 outbox 补发）可能已经把同一 msg_id 落库，此时
-        // 不得再计未读、再发 message-received，否则未读数与系统通知都会重复。
-        // 与 Direct 分支共用 announced_on 裁决，两路径并发时只有一方拿到 Ok(true)。
-        // 单聊与群聊走同一块 ⇒ 两种 GossipKind 都被覆盖。
-        let (out_rec, inserted) = {
-            let dbc = state.db.lock().unwrap();
-            // 时钟偏差防护（同 ChatMessage 分支）
-            let ts = db::clamp_incoming_ts(env.ts, db::now_ms(), db::last_message_ts(&dbc, &conv_id));
-            let rec = MessageRecord {
-                id: 0,
-                // 不加前缀：与 outbox 补发的直连 ChatMessage 共用同一业务 msg_id，
-                // 由这条插入本身完成跨路径去重（防建链竞态下的重复投递效果）
-                msg_id: env.message_id.clone(),
-                conv_id: conv_id.clone(),
-                sender_id: env.sender_id.clone(),
-                receiver_id: state.device_id.clone(),
-                kind: kind.clone(),
-                content: content.clone(),
-                ts,
-                status: "delivered".to_string(),
-            };
-            let inserted = db::insert_message_if_new(&dbc, &rec);
-            if announced_on(&inserted) {
-                db::touch_conversation(&dbc, &conv_id, conv_kind, &name, None, &preview, 1).ok();
+        GossipKind::Chat | GossipKind::Group => {
+            if let Some(pt) = plaintext {
+                let (kind, content) = parse_gossip_payload(&pt);
+                // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）
+                if env.kind == GossipKind::Chat {
+                    let dbc = state.db.lock().unwrap();
+                    if db::get_friend(&dbc, &env.sender_id).is_none() {
+                        // 通过 Gossip 广播拒绝通知（多跳场景下也能回到原始发送方）
+                        let gossip = state.gossip.lock().unwrap();
+                        let payload = serde_json::json!({ "original_sender": env.sender_id }).to_string();
+                        let payload_b64 = STANDARD.encode(payload.as_bytes());
+                        let blocked_env = gossip.build_envelope(
+                            &state.identity,
+                            &state.device_id,
+                            GossipKind::FriendMessageBlocked,
+                            None,
+                            &payload_b64,
+                            db::now_ms(),
+                        );
+                        drop(gossip);
+                        broadcast_gossip(state, blocked_env).await;
+                        return;
+                    }
+                }
+                let conv_id = match &env.kind {
+                    GossipKind::Chat => env.sender_id.clone(),
+                    GossipKind::Group => format!("group:{}", env.group_id.clone().unwrap_or_default()),
+                    _ => return,
+                };
+                let conv_kind = match &env.kind {
+                    GossipKind::Chat => "single",
+                    GossipKind::Group => "group",
+                    _ => return,
+                };
+                let name = match &env.kind {
+                    GossipKind::Chat => resolve_nickname(state, &env.sender_id),
+                    GossipKind::Group => resolve_group_name(state, env.group_id.as_deref().unwrap_or("")),
+                    _ => return,
+                };
+                let preview = preview_content(&kind, &content);
+                // 持锁块只做落库；await（fanout 转发已在前面）之后无持锁操作
+                // 业务幂等裁决：Direct（含 outbox 补发）可能已经把同一 msg_id 落库，此时
+                // 不得再计未读、再发 message-received，否则未读数与系统通知都会重复。
+                // 与 Direct 分支共用 announced_on 裁决，两路径并发时只有一方拿到 Ok(true)。
+                // 单聊与群聊走同一块 ⇒ 两种 GossipKind 都被覆盖。
+                let (out_rec, inserted) = {
+                    let dbc = state.db.lock().unwrap();
+                    // 时钟偏差防护（同 ChatMessage 分支）
+                    let ts = db::clamp_incoming_ts(env.ts, db::now_ms(), db::last_message_ts(&dbc, &conv_id));
+                    let rec = MessageRecord {
+                        id: 0,
+                        msg_id: env.message_id.clone(),
+                        conv_id: conv_id.clone(),
+                        sender_id: env.sender_id.clone(),
+                        receiver_id: state.device_id.clone(),
+                        kind: kind.clone(),
+                        content: content.clone(),
+                        ts,
+                        status: "delivered".to_string(),
+                    };
+                    let inserted = db::insert_message_if_new(&dbc, &rec);
+                    if announced_on(&inserted) {
+                        db::touch_conversation(&dbc, &conv_id, conv_kind, &name, None, &preview, 1).ok();
+                    }
+                    (rec, inserted)
+                };
+                // 重复投递与数据库失败都不产生本地副作用；Gossip 本就不回 Ack，转发已在上面完成
+                if announced_on(&inserted) {
+                    let _ = state.app.emit("message-received", &out_rec);
+                }
             }
-            (rec, inserted)
-        };
-        // 重复投递与数据库失败都不产生本地副作用；Gossip 本就不回 Ack，转发已在上面完成
-        if announced_on(&inserted) {
-            let _ = state.app.emit("message-received", &out_rec);
         }
     }
 }

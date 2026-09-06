@@ -69,6 +69,8 @@ pub enum GossipKind {
     Chat,
     /// 群聊（群密钥对称加密）
     Group,
+    /// 好友关系拦截通知（明文 JSON payload，携带 original_sender）
+    FriendMessageBlocked,
 }
 
 /// Gossip 广播信封（Epidemic 协议消息体）。
