@@ -21,8 +21,9 @@ const keyword = ref("");
 const searchResults = ref<SearchResult[]>([]);
 const isSearching = ref(false);
 
-// 防抖搜索
+// 防抖搜索 + 异步竞态保护
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let searchSeq = 0;
 watch(keyword, (kw) => {
   if (searchTimer) clearTimeout(searchTimer);
   const trimmed = kw.trim();
@@ -32,13 +33,18 @@ watch(keyword, (kw) => {
     return;
   }
   isSearching.value = true;
+  const seq = ++searchSeq;
   searchTimer = setTimeout(async () => {
     try {
-      searchResults.value = await api.searchMessages(trimmed);
+      const results = await api.searchMessages(trimmed);
+      // 只接受最新请求的结果，丢弃过期响应
+      if (seq === searchSeq) {
+        searchResults.value = results;
+      }
     } catch {
-      searchResults.value = [];
+      if (seq === searchSeq) searchResults.value = [];
     }
-    isSearching.value = false;
+    if (seq === searchSeq) isSearching.value = false;
   }, 300);
 });
 
@@ -236,7 +242,7 @@ onUnmounted(() => {
         <div
           v-for="c in filteredConversations"
           :key="c.id"
-          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id)]"
+          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), keyword, searchResults.length]"
           class="group/conv relative flex cursor-pointer items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
           :class="chat.activeConv === c.id ? 'bg-primary-light' : ''"
           @click="open(c)"

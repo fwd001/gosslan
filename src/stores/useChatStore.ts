@@ -216,6 +216,11 @@ export const useChatStore = defineStore("chat", () => {
     }
     // 打开前先记录未读数（markRead 会清零），用于「跳到第一条未读」定位
     const unreadBefore = conversations.value.find((c) => c.id === id)?.unread ?? 0;
+    // 先发 ReadReceipt（不等 loadMessages），让对方尽早看到绿勾
+    void api.markRead(id).then(() => {
+      const conv = conversations.value.find((c) => c.id === id);
+      if (conv) conv.unread = 0;
+    });
     await loadMessages(id);
     if (unreadBefore > 0) {
       const list = messages.value[id] ?? [];

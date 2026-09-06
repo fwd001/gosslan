@@ -341,10 +341,11 @@ pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Resu
 }
 
 /// 搜索消息内容，返回匹配的会话 ID 列表（去重，按最新匹配排序）。
+/// LIKE 通配符（% _）被转义为普通字符，只做字面包含搜索。
 pub fn search_messages(conn: &Connection, keyword: &str, limit: i64) -> Result<Vec<String>> {
-    let pattern = format!("%{keyword}%");
+    let pattern = format!("%{}%", escape_like(keyword));
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT conv_id FROM messages WHERE content LIKE ?1 ORDER BY ts DESC LIMIT ?2",
+        "SELECT DISTINCT conv_id FROM messages WHERE content LIKE ?1 ESCAPE '\\' ORDER BY ts DESC LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![pattern, limit], |r| r.get::<_, String>(0))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -357,10 +358,10 @@ pub fn search_messages_in_conv(
     keyword: &str,
     limit: i64,
 ) -> Result<Vec<MessageRecord>> {
-    let pattern = format!("%{keyword}%");
+    let pattern = format!("%{}%", escape_like(keyword));
     let mut stmt = conn.prepare(
         "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, status
-         FROM messages WHERE conv_id = ?1 AND content LIKE ?2
+         FROM messages WHERE conv_id = ?1 AND content LIKE ?2 ESCAPE '\\'
          ORDER BY ts DESC LIMIT ?3",
     )?;
     let rows = stmt.query_map(params![conv_id, pattern, limit], |r| {
@@ -377,6 +378,11 @@ pub fn search_messages_in_conv(
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 转义 LIKE 通配符：将 % 和 _ 替换为字面值。
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
 // ---------------- 会话 ----------------
@@ -1097,5 +1103,66 @@ mod tests {
     fn pending_read_load_empty_db() {
         let conn = mem();
         assert!(load_pending_reads(&conn).unwrap().is_empty());
+    }
+
+    // ================================================================
+    // 搜索测试
+    // ================================================================
+
+    fn insert_text_msg(conn: &Connection, msg_id: &str, conv_id: &str, content: &str) {
+        insert_message(conn, &MessageRecord {
+            id: 0, msg_id: msg_id.into(), conv_id: conv_id.into(),
+            sender_id: "a".into(), receiver_id: "b".into(),
+            kind: "text".into(), content: content.into(), ts: 1, status: "delivered".into(),
+        }).unwrap();
+    }
+
+    /// 普通文本搜索：中文 + 英文。
+    #[test]
+    fn search_messages_plain_text() {
+        let conn = mem();
+        insert_text_msg(&conn, "m1", "conv1", "hello world");
+        insert_text_msg(&conn, "m2", "conv2", "今天测试 hello");
+        insert_text_msg(&conn, "m3", "conv3", "没有匹配");
+
+        let r = search_messages(&conn, "hello", 10).unwrap();
+        assert_eq!(r.len(), 2);
+        assert!(r.contains(&"conv1".to_string()));
+        assert!(r.contains(&"conv2".to_string()));
+
+        let r = search_messages(&conn, "没有", 10).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0], "conv3");
+    }
+
+    /// LIKE 通配符 % 和 _ 按字面字符搜索，不作为 wildcard。
+    #[test]
+    fn search_messages_escapes_like_wildcards() {
+        let conn = mem();
+        insert_text_msg(&conn, "m1", "conv1", "100% 完成");
+        insert_text_msg(&conn, "m2", "conv2", "a_b 测试");
+
+        // % 应按字面搜索，不是 wildcard
+        let r = search_messages(&conn, "100%", 10).unwrap();
+        assert_eq!(r.len(), 1, "% 应按字面匹配");
+        assert_eq!(r[0], "conv1");
+
+        // _ 应按字面搜索，不是 wildcard
+        let r = search_messages(&conn, "a_b", 10).unwrap();
+        assert_eq!(r.len(), 1, "_ 应按字面匹配");
+        assert_eq!(r[0], "conv2");
+
+        // 不应匹配 "100% 完成" 中的 "100" 作为独立搜索（% 是字面字符）
+        let r = search_messages(&conn, "100", 10).unwrap();
+        assert_eq!(r.len(), 1, "'100' 应匹配 '100% 完成'");
+    }
+
+    /// 空结果。
+    #[test]
+    fn search_messages_no_results() {
+        let conn = mem();
+        insert_text_msg(&conn, "m1", "conv1", "hello");
+        let r = search_messages(&conn, "不存在", 10).unwrap();
+        assert!(r.is_empty());
     }
 }
