@@ -239,7 +239,7 @@ async function saveAs() {
         <!-- 文本 -->
         <div
           v-if="message.kind === 'text'"
-          class="group relative rounded-2xl px-3 py-2 leading-relaxed shadow-sm"
+          class="group relative min-w-0 overflow-hidden rounded-2xl px-3 py-2 leading-relaxed shadow-sm"
           :style="{
             background: mine ? colors.mineBubble : colors.otherBubble,
             color: mine ? colors.mineText : colors.otherText,
@@ -249,6 +249,7 @@ async function saveAs() {
           <div
             class="whitespace-pre-wrap break-words"
             :class="isLongText && collapsed ? 'line-clamp-5' : ''"
+            :style="{ wordBreak: 'break-word' }"
           >{{ message.content }}</div>
           <!-- 长文本折叠条：展开/收起 + 复制 -->
           <div v-if="isLongText" class="mt-1.5 flex items-center gap-2 border-t pt-1.5" :style="{ borderColor: 'rgba(128,128,128,0.2)' }">
