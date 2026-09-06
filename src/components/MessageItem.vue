@@ -377,9 +377,9 @@ async function retrySend() {
         </div>
         </div>
 
-        <!-- 时间行：默认 MM-DD HH:mm（始终可见，更易识别），悬浮切到完整秒级时间 -->
+        <!-- 时间行：分钟组末条或非紧凑模式显示，悬浮切到完整秒级时间 -->
         <div
-          v-if="!tight"
+          v-if="!tight || isLastInMinute"
           class="mt-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]"
           :class="mine ? 'text-right' : ''"
         >
