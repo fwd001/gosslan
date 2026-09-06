@@ -1082,6 +1082,15 @@ pub async fn upsert_peer(
             let dbc = state.db.lock().unwrap();
             db::update_friend_pubkeys(&dbc, device_id, x.as_deref(), e.as_deref()).ok();
         }
+        // 公钥变化时同步到 friends 表：Hello 可能在 announce 之前到达，
+        // 此时 peers[peer].x25519_pubkey 为 None → friends 表写入 None；
+        // announce 到达后更新了 peers，但 friends 表不会自动刷新。
+        // 此处补一次 maybe_update_friend 确保 friends 表与 peers 同步。
+        let (nick, av) = {
+            let peers = state.peers.lock().unwrap();
+            peers.get(device_id).map(|p| (p.nickname.clone(), p.avatar.clone())).unwrap_or_default()
+        };
+        maybe_update_friend(state, device_id, &nick, av);
     }
 
     // 仅新节点或公钥变化时补发群密钥（处理对方离线时建群的情况）
