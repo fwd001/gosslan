@@ -9,6 +9,8 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+
+## [0.12.0] - 2026-09-07
 ### Fixed
 - **同一消息经 Direct + Gossip 双路径到达时重复计未读、重复弹通知**：`handle_gossip` 只做网络层内存去重（`gossip.is_new`），从不查业务库；而 `touch_conversation` 的 `unread = unread + ?` 是无条件累加。于是「Direct 先落库 → Gossip 后到」这一顺序下，数据库靠 `INSERT OR IGNORE` 只留一行，但**未读又 +1、`message-received` 又发一次**（前端 `mergeMessages` 会丢掉重复气泡，却仍会重复计未读并重复发系统通知）。现两条路径统一由新增的 `db::insert_message_if_new` 裁决——判定与插入合并在同一条 `INSERT OR IGNORE` 的受影响行数里完成（不是先查后写），只有 `fresh=true` 的一方执行 `touch_conversation(+1)` 与 `emit("message-received")`；Direct 的 Ack 与 fresh 无关（消息已在库中即代表成功接收），Gossip 的 TTL fan-out 在落库判定之前、完全不受本地是否已有影响，两层去重保持独立。新增 5 条回归测试覆盖 Direct→Gossip、Gossip→Direct、同一 msg_id 重复投递、8 线程并发同一 msg_id 只有一个首次插入者，以及「业务层判为重复」与「传播层仍判为首次见到、可继续 fan-out」两条件同时成立
 - **落库裁决三态化：数据库真故障不再被误当成「重复」而照常 Ack**（与上一条同批修复的加固）：`insert_message_if_new` 明确区分 `Ok(true)` 新插入 / `Ok(false)` 唯一约束命中 / `Err` 数据库故障，调用方不得再用 `unwrap_or(false)` 把 `Err` 折叠成 `false`。Direct 分支据此在 `Err` 时**既不投递也绝不 Ack**——Ack 会让发送方删除 outbox 行，一次临时 SQLite 故障就此变成永久丢消息（与 P0-2 同源的红线）。Gossip 的单聊与群聊共用同一落库块，`GossipKind::Chat` 与 `GossipKind::Group` 均已分别覆盖测试。累计 9 条回归测试。另把 `Message::GroupMessage` 的 TCP 落库分支也套上同一裁决，至此三条落库路径（单聊直发 / Gossip / 群聊直发）副作用判定完全一致，不再存在无条件计未读并投递的群聊形态代码
