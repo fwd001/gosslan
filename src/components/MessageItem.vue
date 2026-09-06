@@ -17,6 +17,8 @@ const props = withDefaults(
     message: MessageRecord;
     /** 上一条消息（同会话），用于连续消息合并与时间分割线 */
     prev?: MessageRecord | null;
+    /** 下一条消息（同会话），用于判断是否为分钟组末条 */
+    next?: MessageRecord | null;
     /** 群聊：显示发送者昵称 */
     isGroup?: boolean;
     /** 在本条消息上方显示未读分割线 */
@@ -24,7 +26,7 @@ const props = withDefaults(
     /** 群聊发送者昵称（由父组件解析） */
     senderName?: string;
   }>(),
-  { prev: null, isGroup: false, showUnreadDivider: false, senderName: "" },
+  { prev: null, next: null, isGroup: false, showUnreadDivider: false, senderName: "" },
 );
 
 const app = useAppStore();
@@ -59,12 +61,11 @@ const sameMinuteRun = computed(() => {
   if (!p || p.kind === "system") return false;
   return dayjs(p.ts).isSame(props.message.ts, "minute");
 });
-/** 分钟组首条：上一条不在同一分钟（或无上一条），本条是新的一分钟的开始。
- *  用于在紧凑布局中显示该分钟的时间戳。 */
-const isFirstInMinute = computed(() => {
-  const p = props.prev;
-  if (!p || p.kind === "system") return true;
-  return !dayjs(p.ts).isSame(props.message.ts, "minute");
+/** 分钟组末条：下一条不在同一分钟，或是列表最后一条。 */
+const isLastInMinute = computed(() => {
+  const n = props.next;
+  if (!n) return true; // 最后一条消息
+  return !dayjs(n.ts).isSame(props.message.ts, "minute");
 });
 /** 紧凑布局：连续 run 或同分钟消息。 */
 const tight = computed(() => sameSenderRun.value || sameMinuteRun.value);
@@ -76,7 +77,7 @@ const showTimeDivider = computed(() => {
 /** 群聊非本人消息首条：显示昵称。 */
 const showNickname = computed(() => props.isGroup && !mine.value && !sameSenderRun.value);
 
-const time = computed(() => dayjs(props.message.ts).format("MM-DD HH:mm"));
+const time = computed(() => dayjs(props.message.ts).format("YYYY年MM月DD日 HH:mm"));
 const fullTime = computed(() => dayjs(props.message.ts).format("YYYY-MM-DD HH:mm:ss"));
 const timeDividerText = computed(() => dayjs(props.message.ts).format("YYYY-MM-DD HH:mm"));
 
@@ -385,9 +386,9 @@ async function retrySend() {
           <span class="group-hover/row:hidden">{{ time }}</span>
           <span class="hidden group-hover/row:inline">{{ fullTime }}</span>
         </div>
-        <!-- 紧凑模式：分钟组首条显示时间，后续消息不显示 -->
+        <!-- 紧凑模式：分钟组末条显示时间，前面的消息不显示 -->
         <div
-          v-else-if="isFirstInMinute"
+          v-else-if="isLastInMinute"
           class="mt-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]"
           :class="mine ? 'text-right' : ''"
         >

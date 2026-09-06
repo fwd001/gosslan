@@ -151,7 +151,7 @@ defineExpose({ scrollToBottom, scrollToIndex });
 </script>
 
 <template>
-  <div ref="container" class="h-full overflow-y-auto overflow-x-hidden" @scroll.passive="onScroll">
+  <div ref="container" class="h-full overflow-y-auto overflow-x-hidden pb-6" @scroll.passive="onScroll">
     <div :style="{ height: `${totalHeight}px`, position: 'relative' }">
       <div
         v-for="v in visible"
