@@ -267,6 +267,15 @@ const streamCode = computed<string | null>(() => {
 /** 截断态用固定高度容器裁掉 CodeBlock 的其余部分：不出现内部滚动条，也不会向下撑开。 */
 const streamCodeClamped = computed(() => (streamCode.value ? codeNeedsClamp(streamCode.value) : false));
 
+/**
+ * 操作条取 CodeBlock 代码区的同款底色与描边色（对应 CodeBlock.vue 的 codeBg / borderStyle），
+ * 这样「代码块 + 操作条」是一整张卡片，中间不再露出聊天背景。
+ */
+const codeActionsStyle = computed(() => ({
+  background: app.dark ? "#0d1117" : "#f6f8fa",
+  borderColor: app.dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)",
+}));
+
 async function openFile() {
   const path = fileMeta.value?.path;
   if (!path) {
@@ -411,11 +420,16 @@ async function retrySend() {
 
         <!-- 代码：inline code 消息与代码附件同一套预览；超过 5 行裁断，全文进 Modal -->
         <div v-else-if="streamCode !== null" class="min-w-0 flex-1">
-          <div v-if="streamCodeClamped" class="overflow-hidden rounded-lg" :style="{ height: `${CODE_CLAMP_HEIGHT}px` }">
+          <div v-if="streamCodeClamped" class="overflow-hidden rounded-t-lg" :style="{ height: `${CODE_CLAMP_HEIGHT}px` }">
             <CodeBlock :code="streamCode" />
           </div>
           <CodeBlock v-else :code="streamCode" />
-          <div class="mt-1 flex items-center gap-1 px-1">
+          <!-- 操作条＝代码卡片的底栏：总高恒为 previewMetrics.CODE_ACTION_BAR(28px)，改样式不要动高度 -->
+          <div
+            class="code-actions"
+            :class="streamCodeClamped ? 'code-actions-divided' : ''"
+            :style="codeActionsStyle"
+          >
             <button
               v-if="streamCodeClamped"
               class="preview-action"
@@ -554,7 +568,25 @@ async function retrySend() {
 </template>
 
 <style scoped>
-/* 预览操作条按钮：py-1 + leading-4 = 24px，加容器 mt-1 = 28px，与 previewMetrics.CODE_ACTION_BAR 一致 */
+/* 代码卡片底栏：与上面的 CodeBlock 共用同款底色和描边，衔接成一张完整卡片。
+   高度锁死 28px（border-box，含边框）= previewMetrics.CODE_ACTION_BAR，
+   与代码块之间不留 margin，否则中间会露出聊天背景。 */
+.code-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 4px;
+  border-style: solid;
+  border-width: 0 1px 1px;
+  border-radius: 0 0 8px 8px;
+}
+/* 截断态代码块被裁掉、自身没有下边框，分隔线由底栏画；未截断态用 CodeBlock 的下边框，不重复叠加。 */
+.code-actions-divided {
+  border-top-width: 1px;
+}
+/* 按钮：padding 4px + line-height 16px = 24px，放进 28px 底栏上下各余 2px（含边框） */
 .preview-action {
   display: inline-flex;
   align-items: center;
