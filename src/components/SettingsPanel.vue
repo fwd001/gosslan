@@ -238,6 +238,38 @@ async function restoreDefaults() {
   app.toast("已恢复默认设置", "success");
   await loadChannels();
 }
+
+async function clearAllDataConfirm() {
+  const ok = window.confirm(
+    "确定要清除所有数据吗？\n\n" +
+    "将删除：\n" +
+    "· 所有聊天消息和会话\n" +
+    "· 文件传输记录\n" +
+    "· 已接收但尚未保存的文件\n" +
+    "· 群组数据和群密钥\n" +
+    "· 应用缓存\n\n" +
+    "将保留：\n" +
+    "· 好友列表\n" +
+    "· 设备身份和加密密钥\n" +
+    "· 昵称和头像\n" +
+    "· 所有设置\n" +
+    "· 已保存到其他位置的文件"
+  );
+  if (!ok) return;
+  try {
+    await api.clearAllData();
+    await Promise.all([
+      chat.refreshConversations(),
+      chat.refreshFriends(),
+      chat.refreshPending(),
+      chat.refreshGroups(),
+      chat.refreshTransfers(),
+    ]);
+    app.toast("所有数据已清除", "success");
+  } catch (e) {
+    app.toast(`清除失败：${e}`, "error");
+  }
+}
 </script>
 
 <template>
@@ -571,6 +603,15 @@ async function restoreDefaults() {
       >
         <RotateCcw class="h-4 w-4" />
         恢复默认设置
+      </button>
+
+      <!-- 清除所有数据 -->
+      <button
+        class="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-red-300 py-2 text-sm text-red-500 transition hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/20"
+        @click="clearAllDataConfirm"
+      >
+        <Trash2 class="h-4 w-4" />
+        清除所有数据
       </button>
       <p class="text-center text-[11px] text-[var(--gosslan-text-2)]">
         将外观、网卡与缓存策略恢复为默认值，不影响好友与聊天记录。

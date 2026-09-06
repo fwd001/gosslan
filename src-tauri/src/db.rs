@@ -1245,4 +1245,47 @@ mod tests {
         let conn = mem();
         update_conversation_profile(&conn, "nonexistent", "name", None).unwrap();
     }
+
+    /// clear_all_data 通过 SQL 验证：删除所有业务数据，保留 friends 和非 gk: settings。
+    #[test]
+    fn clear_all_data_sql_deletes_and_preserves() {
+        let conn = mem();
+        // 插入测试数据
+        insert_message(&conn, &rec("m1", "c1")).unwrap();
+        ensure_conversation(&conn, "c1", "single", "测试", None).unwrap();
+        insert_outbox(&conn, "m1", "f1", "payload").unwrap();
+        upsert_transfer(&conn, "t1", "f1", "a.txt", 100, "send", "active", None, 0.0).unwrap();
+        upsert_pending_read(&conn, "f1", 200).unwrap();
+        create_group(&conn, "g1", "群", "owner", &["a".into()]).unwrap();
+        add_friend(&conn, "f1", "好友", None).unwrap();
+        set_setting(&conn, "device_id", "dev-1").unwrap();
+        set_setting(&conn, "nickname", "昵称").unwrap();
+        set_setting(&conn, "gk:g1", "secret").unwrap();
+
+        // 模拟 clear_all_data SQL 部分
+        let tx = conn.unchecked_transaction().unwrap();
+        tx.execute("DELETE FROM group_members", []).unwrap();
+        tx.execute("DELETE FROM groups", []).unwrap();
+        tx.execute("DELETE FROM messages", []).unwrap();
+        tx.execute("DELETE FROM conversations", []).unwrap();
+        tx.execute("DELETE FROM outbox", []).unwrap();
+        tx.execute("DELETE FROM file_transfers", []).unwrap();
+        tx.execute("DELETE FROM pending_reads", []).unwrap();
+        tx.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", []).unwrap();
+        tx.commit().unwrap();
+
+        // 验证：业务数据已删除
+        assert!(get_messages(&conn, "c1", 10, 0).unwrap().is_empty());
+        assert!(list_conversations(&conn).unwrap().is_empty());
+        assert!(list_outbox(&conn, "f1").unwrap().is_empty());
+        assert!(list_transfers(&conn).unwrap().is_empty());
+        assert!(load_pending_reads(&conn).unwrap().is_empty());
+        assert!(list_groups(&conn).unwrap().is_empty());
+        assert!(get_setting(&conn, "gk:g1").is_none());
+
+        // 验证：friends 和非 gk: settings 保留
+        assert!(get_friend(&conn, "f1").is_some());
+        assert_eq!(get_setting(&conn, "device_id").as_deref(), Some("dev-1"));
+        assert_eq!(get_setting(&conn, "nickname").as_deref(), Some("昵称"));
+    }
 }

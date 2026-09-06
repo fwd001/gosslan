@@ -1110,6 +1110,61 @@ pub fn copy_file(source: String, destination: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 清除所有聊天数据（保留好友、身份、设置）。
+/// SQLite 删除使用 transaction，任一失败则 rollback。
+/// 文件系统清理在 DB commit 成功后执行。
+#[tauri::command]
+pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let s = state.inner();
+
+    // 1. SQLite 删除（transaction 保护）
+    {
+        let dbc = s.db.lock().unwrap();
+        let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM group_members", []).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM groups", []).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM messages", []).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM conversations", []).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM outbox", []).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM file_transfers", []).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM pending_reads", []).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    // 2. Runtime state 清理
+    s.pending_requests.lock().unwrap().clear();
+    s.group_keys.lock().unwrap().clear();
+
+    // 3. 文件系统清理（DB commit 成功后执行）
+    // 清空 cache_dir 内容（保留目录本身）
+    if s.cache_dir.exists() {
+        for entry in std::fs::read_dir(&s.cache_dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let p = entry.path();
+            if p.is_file() {
+                std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+            } else if p.is_dir() {
+                std::fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    // 清空 downloads_dir 内容（保留目录本身）
+    if s.downloads_dir.exists() {
+        for entry in std::fs::read_dir(&s.downloads_dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let p = entry.path();
+            if p.is_file() {
+                std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+            } else if p.is_dir() {
+                std::fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// 搜索消息：返回匹配关键词的会话列表及其最新匹配消息。
 #[tauri::command]
 pub fn search_messages(

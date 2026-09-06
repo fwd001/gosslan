@@ -88,6 +88,7 @@ export const api = {
   resetSettings: () => invoke<void>("reset_settings"),
   broadcastChatStyle: (style: string) => invoke<void>("broadcast_chat_style", { style }),
   searchMessages: (keyword: string) => invoke<SearchResult[]>("search_messages", { keyword }),
+  clearAllData: () => invoke<void>("clear_all_data"),
 };
 
 // ---------------- 事件监听 ----------------
