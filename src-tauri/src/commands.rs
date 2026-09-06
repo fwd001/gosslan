@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
+/// 业务输入长度限制（按字符数，非字节数）
+const MAX_NICKNAME_LEN: usize = 30;
+const MAX_GROUP_NAME_LEN: usize = 30;
+const MAX_SEARCH_LEN: usize = 100;
+const MAX_MESSAGE_LEN: usize = 50_000;
+
 use crate::crypto;
 use crate::db;
 use crate::network::{self, file};
@@ -497,6 +503,17 @@ pub async fn send_message(
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
 
+    // 好友关系检查：必须优先于公钥查找
+    {
+        let dbc = s.db.lock().unwrap();
+        if db::get_friend(&dbc, &friend_id).is_none() {
+            return Err("对方不是好友，请先扫描添加好友之后再继续聊天。".to_string());
+        }
+    }
+
+    // 消息长度保护：按字符截断（UTF-8 安全）
+    let content: String = content.chars().take(MAX_MESSAGE_LEN).collect();
+
     // E2EE 恒开（v0.11.0 起默认且不可关闭）：发送必须拿到对端 X25519 公钥。
     // 好友表优先，回退在线节点表；都缺失时主动探测一次（who_has）等对方/中继
     // announce 落库（约 1.2s）后再查，仍缺失则报错指引。
@@ -844,6 +861,13 @@ pub async fn send_file(
     path: String,
 ) -> Result<String, String> {
     let s = state.inner();
+    // 好友关系检查
+    {
+        let dbc = s.db.lock().unwrap();
+        if db::get_friend(&dbc, &friend_id).is_none() {
+            return Err("对方不是好友，请先扫描添加好友之后再继续聊天。".to_string());
+        }
+    }
     let transfer_id = Uuid::new_v4().to_string();
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     let size = meta.len();
@@ -914,6 +938,13 @@ pub async fn send_file_relay(
     path: String,
 ) -> Result<String, String> {
     let s = state.inner();
+    // 好友关系检查
+    {
+        let dbc = s.db.lock().unwrap();
+        if db::get_friend(&dbc, &friend_id).is_none() {
+            return Err("对方不是好友，请先扫描添加好友之后再继续聊天。".to_string());
+        }
+    }
     let transfer_id = Uuid::new_v4().to_string();
 
     // 文件读取 + base64 切片是同步重活：放阻塞线程池，避免卡住 async runtime（界面卡死根因）

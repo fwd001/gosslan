@@ -331,6 +331,12 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             drop(dbc);
             let _ = state.app.emit("friend-removed", &from);
         }
+        Message::FriendMessageBlocked { from, to } => {
+            if to != state.device_id {
+                return;
+            }
+            let _ = state.app.emit("friend-message-blocked", &from);
+        }
         Message::ChatMessage { msg_id, from, to, kind, content, ts } => {
             if to != state.device_id {
                 return;
@@ -345,6 +351,17 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if exists {
                 let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
                 return;
+            }
+            // 好友关系检查：非好友消息不落库、不 Ack、通知发送方
+            {
+                let dbc = state.db.lock().unwrap();
+                if db::get_friend(&dbc, &from).is_none() {
+                    let _ = try_send(state, peer_id, &Message::FriendMessageBlocked {
+                        from: state.device_id.clone(),
+                        to: from.clone(),
+                    }).await;
+                    return;
+                }
             }
             // E2EE："enc1:" = 发送方→我的 ChaCha20-Poly1305 密文，用发送方 X25519 公钥打开。
             // 打不开（缺公钥 / 公钥已轮换 / 密文损坏）时**既不落库也不 Ack**，原因：

@@ -103,6 +103,7 @@ export type EventHandlers = {
   onFriendAccepted: (id: string) => void;
   onFriendRejected: (id: string) => void;
   onFriendRemoved: (id: string) => void;
+  onFriendMessageBlocked: (id: string) => void;
   onMessage: (rec: MessageRecord) => void;
   onMessageAcked: (msgId: string) => void;
   onPeerRead: (p: PeerReadInfo) => void;
@@ -119,6 +120,7 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<string>("friend-accepted", (e) => h.onFriendAccepted(e.payload)),
     listen<string>("friend-rejected", (e) => h.onFriendRejected(e.payload)),
     listen<string>("friend-removed", (e) => h.onFriendRemoved(e.payload)),
+    listen<string>("friend-message-blocked", (e) => h.onFriendMessageBlocked(e.payload)),
     listen<MessageRecord>("message-received", (e) => h.onMessage(e.payload)),
     listen<string>("message-acked", (e) => h.onMessageAcked(e.payload)),
     listen<PeerReadInfo>("peer-read", (e) => h.onPeerRead(e.payload)),

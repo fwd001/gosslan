@@ -254,6 +254,7 @@ async function restoreDefaults() {
           <div class="min-w-0 flex-1">
             <input
               v-model="nickname"
+              maxlength="30"
               class="mb-2 w-full rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
               placeholder="昵称（修改后自动保存）"
               @blur="saveProfileNow"

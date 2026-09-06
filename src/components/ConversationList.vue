@@ -231,13 +231,14 @@ onUnmounted(() => {
         <Search class="h-4 w-4 text-[var(--gosslan-text-2)]" />
         <input
           v-model="keyword"
+          maxlength="100"
           class="w-full bg-transparent text-sm outline-none placeholder:text-[var(--gosslan-text-2)]"
           :placeholder="view === 'chats' ? '搜索' : '搜索联系人'"
         />
       </div>
     </div>
 
-    <div class="flex-1 overflow-y-auto px-2 pb-2">
+    <div class="flex-1 select-none overflow-y-auto px-2 pb-2">
       <template v-if="view === 'chats'">
         <div
           v-for="c in filteredConversations"
@@ -389,7 +390,7 @@ onUnmounted(() => {
     <Teleport to="body">
       <div
         v-if="friendMenu"
-        class="fixed z-50 min-w-[150px] rounded-lg border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-1 shadow-xl"
+        class="fixed z-50 min-w-[150px] select-none rounded-lg border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-1 shadow-xl"
         :style="{ left: friendMenu.x + 'px', top: friendMenu.y + 'px' }"
         @click.stop
       >

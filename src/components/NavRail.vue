@@ -17,7 +17,7 @@ const initials = computed(() => (app.device?.nickname ?? "?").slice(0, 1).toUppe
 
 <template>
   <aside
-    class="hidden md:flex w-16 shrink-0 flex-col items-center border-r border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] py-3"
+    class="hidden md:flex w-16 shrink-0 flex-col items-center select-none border-r border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] py-3"
   >
     <button
       class="relative flex h-10 w-10 items-center justify-center overflow-visible rounded-full bg-primary text-white transition hover:opacity-90"

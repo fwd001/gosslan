@@ -497,6 +497,9 @@ export const useChatStore = defineStore("chat", () => {
       onFriendRemoved: async () => {
         await refreshFriends();
       },
+      onFriendMessageBlocked: () => {
+        app.toast(`对方不是好友，请先扫描添加好友之后再继续聊天。`, "error");
+      },
       onMessage: (rec) => {
         enqueueMessage(rec);
         maybeNotify(rec);

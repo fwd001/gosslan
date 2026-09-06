@@ -160,6 +160,10 @@ pub enum Message {
         from: String,
         to: String,
     },
+    FriendMessageBlocked {
+        from: String,
+        to: String,
+    },
     /// 单聊消息
     ChatMessage {
         msg_id: String,
