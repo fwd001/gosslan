@@ -271,7 +271,7 @@ async function retrySend() {
         <!-- 文本 -->
         <div
           v-if="message.kind === 'text'"
-          class="group relative min-w-0 overflow-hidden rounded-2xl px-3 py-2 leading-relaxed shadow-sm"
+          class="group relative min-w-0 rounded-2xl px-3 py-2 leading-relaxed shadow-sm"
           :style="{
             background: mine ? colors.mineBubble : colors.otherBubble,
             color: mine ? colors.mineText : colors.otherText,
@@ -279,7 +279,7 @@ async function retrySend() {
           }"
         >
           <div
-            class="whitespace-pre-wrap break-words"
+            class="overflow-hidden whitespace-pre-wrap break-words"
             :class="isLongText && collapsed ? 'line-clamp-5' : ''"
             :style="{ wordBreak: 'break-word' }"
           >{{ message.content }}</div>
