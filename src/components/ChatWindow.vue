@@ -140,7 +140,7 @@ function estimateHeight(m: MessageRecord, index?: number): number {
   const showNickname = isGroup && m.sender_id !== app.device?.device_id && !sameSender;
 
   // --- 气泡垂直 padding ---
-  const py = tight ? 4 /* py-0.5 */ : 12; /* pt-1 pb-2 */
+  const py = tight ? 4 /* py-0.5 */ : 16; /* pt-2 pb-2 */
   // --- 气泡下方时间行 ---
   const timeH = isLastInMinute ? 16 : 0;
   // --- 昵称行 ---

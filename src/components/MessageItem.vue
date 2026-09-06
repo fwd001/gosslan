@@ -211,7 +211,7 @@ async function retrySend() {
 </script>
 
 <template>
-  <div :class="tight ? 'py-0.5' : 'pb-2 pt-1'">
+  <div :class="tight ? 'py-0.5' : 'pt-2 pb-2'">
     <!-- 时间分割线（间隔 ≥ 5 分钟） -->
     <div v-if="showTimeDivider" class="my-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
       {{ timeDividerText }}
