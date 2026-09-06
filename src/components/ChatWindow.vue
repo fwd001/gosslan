@@ -361,7 +361,7 @@ function fileToDataUrl(f: File): Promise<string> {
           rows="1"
           class="max-h-32 min-h-10 min-w-0 flex-1 resize-none overflow-y-auto rounded-xl bg-[var(--gosslan-bg)] px-3.5 py-2.5 text-sm leading-relaxed outline-none placeholder:text-[var(--gosslan-text-2)]"
           :class="codeMode ? 'font-mono' : ''"
-          :style="{ overflowWrap: 'anywhere' }"
+          :style="{ overflowWrap: 'anywhere', wordBreak: 'break-word' }"
           :placeholder="codeMode ? '粘贴或输入代码…' : '输入消息…'"
           @keydown="onKeydown"
           @paste="onPaste"

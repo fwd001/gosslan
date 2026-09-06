@@ -202,7 +202,7 @@ onUnmounted(() => {
               class="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-red-500"
             ></span>
           </div>
-          <div class="min-w-0 flex-1">
+          <div class="min-w-0 flex-1 overflow-hidden pr-8">
             <div class="flex items-center justify-between">
               <span
                 class="truncate text-sm font-medium"
