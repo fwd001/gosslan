@@ -153,6 +153,15 @@ export const useAppStore = defineStore("app", () => {
     const st = await api.getNetworkStatus();
     online.value = st.online;
     boundIp.value = st.bound_ip;
+    // 自动启动在后台异步执行：init 读取时可能尚未完成，导致 online=false
+    // 而实际网络已经在运行。延迟刷新一次以修正 UI 状态。
+    setTimeout(async () => {
+      const st2 = await api.getNetworkStatus();
+      if (st2.online !== online.value) {
+        online.value = st2.online;
+        boundIp.value = st2.bound_ip;
+      }
+    }, 500);
   }
 
   /** 恢复默认：后端清除偏好键，前端回落默认值（默认蓝色主题 / 系统字体 / 浅色 / 自动网卡）。 */
