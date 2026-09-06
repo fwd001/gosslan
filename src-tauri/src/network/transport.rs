@@ -808,6 +808,22 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
             return;
         }
     }
+    // 2. 同步发送方公钥：GossipEnvelope 已携带 x25519_pubkey 用于解密，
+    //    但此前未写入 peers/friends，导致后续 outbox 重发的直发 ChatMessage
+    //    在 open_direct_content() 中因缺 pubkey 被丢弃。此处仅更新已有 peer
+    //    条目（不做 insert，避免为未通过 Discovery 的节点创建残缺记录），
+    //    同时用 COALESCE 安全地补充 friends 表的 NULL pubkey。
+    if env.encrypted && matches!(env.kind, GossipKind::Chat) {
+        let mut peers = state.peers.lock().unwrap();
+        if let Some(p) = peers.get_mut(&env.sender_id) {
+            if p.x25519_pubkey.is_none() {
+                p.x25519_pubkey = Some(env.sender_pubkey.clone());
+                p.last_seen = db::now_ms();
+                let dbc = state.db.lock().unwrap();
+                db::update_friend_pubkeys(&dbc, &env.sender_id, Some(&env.sender_pubkey), None).ok();
+            }
+        }
+    }
     // 3. 解包：E2EE 关闭时载荷为明文 JSON；开启时按单聊 ECDH / 群密钥解密
     let plaintext = if !env.encrypted {
         // FriendMessageBlocked 等明文 Gossip：payload 是 base64 编码的 JSON

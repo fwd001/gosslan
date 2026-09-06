@@ -644,6 +644,28 @@ mod tests {
         assert_eq!(list_friends(&conn).unwrap().len(), 1);
     }
 
+    /// Gossip 路径携带的 sender_pubkey 必须能补充到 friends 表（COALESCE 行为），
+    /// 使后续 open_direct_content(sender_x25519_pubkey) 的 DB 查询能找到该公钥。
+    #[test]
+    fn gossip_pubkey_syncs_to_friend_via_coalesce() {
+        let conn = mem();
+        // 好友存在但 pubkey 为 NULL（模拟 announce 未到达的场景）
+        add_friend(&conn, "mac", "Mac", None).unwrap();
+        assert!(get_friend_x25519(&conn, "mac").is_none());
+
+        // Gossip handler 同步 pubkey（transport.rs handle_gossip 做同样的事）
+        let gossip_key = "gossip_x25519_from_envelope";
+        update_friend_pubkeys(&conn, "mac", Some(gossip_key), None).unwrap();
+        assert_eq!(get_friend_x25519(&conn, "mac").unwrap(), gossip_key);
+
+        // COALESCE：已有值不会被后续的 NULL 覆盖
+        update_friend_pubkeys(&conn, "mac", None, None).unwrap();
+        assert_eq!(get_friend_x25519(&conn, "mac").unwrap(), gossip_key);
+
+        // get_friend_x25519 是 sender_x25519_pubkey → open_direct_content 的
+        // DB 查询路径，证明 gossip 同步后 outbox 重发的直发 ChatMessage 可以解密
+    }
+
     #[test]
     fn friend_remove_then_readd_flow() {
         // 删除好友后可重新添加（扫描 → 加好友流程）且历史会话/消息不受影响
