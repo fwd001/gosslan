@@ -169,6 +169,23 @@ const attachmentUrl = ref<string | null>(null);
 const attachmentCode = ref<string | null>(null);
 const previewNote = ref<string | null>(null);
 
+/** 代码附件：前5行用于聊天内显示（>5行时截断） */
+const attachmentDisplayCode = computed(() => {
+  if (!attachmentCode.value) return "";
+  const lines = attachmentCode.value.split("\n");
+  return lines.length <= 5 ? attachmentCode.value : lines.slice(0, 5).join("\n");
+});
+/** 代码附件：复制完整内容 */
+const attachmentCopied = ref(false);
+function copyAttachmentCode() {
+  const text = attachmentCode.value;
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => {
+    attachmentCopied.value = true;
+    setTimeout(() => (attachmentCopied.value = false), 1500);
+  });
+}
+
 /** 仅当 file 消息本地路径就绪（= 已完成接收 / 本机自选文件）、未失败、且为 image/code 时可预览。 */
 const previewSubtype = computed<"image" | "code" | null>(() => {
   const meta = fileMeta.value;
@@ -448,9 +465,20 @@ async function retrySend() {
           <img :src="attachmentUrl" class="block max-h-72 max-w-full rounded-xl object-contain" />
         </div>
 
-        <!-- 附件代码预览（file + subtype:code，完成后读取本地文本交给 CodeBlock，最多5行+弹窗预览） -->
+        <!-- 附件代码预览（file + subtype:code，完成后读取本地文本交给 CodeBlock） -->
         <div v-else-if="message.kind === 'file' && attachmentCode !== null" class="min-w-0 flex-1">
-          <CodeBlock :code="attachmentCode" :preview="true" :preview-lines="5" :preview-action="openCodeModal" />
+          <CodeBlock :code="attachmentDisplayCode" />
+          <div class="mt-1 flex items-center gap-2 px-1">
+            <button
+              v-if="attachmentCode.split('\n').length > 5"
+              class="rounded-md px-2.5 py-1 text-[11px] transition hover:bg-black/5 dark:hover:bg-white/10"
+              @click="openCodeModal"
+            >弹窗预览</button>
+            <button
+              class="rounded-md px-2.5 py-1 text-[11px] transition hover:bg-black/5 dark:hover:bg-white/10"
+              @click="copyAttachmentCode"
+            >{{ attachmentCopied ? "已复制" : "复制" }}</button>
+          </div>
         </div>
 
         <!-- 文件 -->

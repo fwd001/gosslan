@@ -59,7 +59,7 @@ export function loadFilePreview(
       return r;
     } catch (e) {
       const msg = String(e);
-      console.error(`[filePreview] ${subtype} preview failed (msgId=${msgId}): ${msg}`);
+      console.error(`[filePreview] ${subtype} preview failed (msgId=${msgId}, name=${name}): ${msg}`);
       const r: PreviewResult = msg.includes("TOO_LARGE") ? { note: "文件过大，无法预览" } : {};
       cache.set(msgId, r);
       return r;
