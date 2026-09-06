@@ -116,8 +116,10 @@ function estimateHeight(m: MessageRecord, index?: number): number {
       bubble = 28;
       break;
     default: {
+      // 气泡结构（MessageItem line 274）：py-2 = 16px，leading-relaxed = 14px × 1.625 ≈ 23px / 行
       const lines = m.content.length > LONG_TEXT_CHARS ? 5 : Math.max(1, Math.ceil(m.content.length / 40));
-      bubble = 24 + lines * 22 + (m.content.length > LONG_TEXT_CHARS ? 34 : 0) + 22;
+      // 长文本折叠条（line 287）：mt-1.5(6) + pt-1.5(6) + border(1) + text-xs(16) = 29px
+      bubble = 16 + lines * 23 + (m.content.length > LONG_TEXT_CHARS ? 29 : 0);
     }
   }
 
@@ -142,7 +144,7 @@ function estimateHeight(m: MessageRecord, index?: number): number {
   // --- 气泡垂直 padding ---
   const py = tight ? 4 /* py-0.5 */ : 16; /* pt-2 pb-2 */
   // --- 气泡下方时间行 ---
-  const timeH = isLastInMinute ? 16 : 0;
+  const timeH = isLastInMinute ? 18 /* mt-0.5(2) + text-[11px](16) */ : 0;
   // --- 昵称行 ---
   const nickH = showNickname ? 20 : 0;
   // --- 分割线 ---
