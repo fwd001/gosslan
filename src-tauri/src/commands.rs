@@ -1062,6 +1062,13 @@ pub async fn download_shared_file(
 
 // ---------------- 辅助 ----------------
 
+/// 将文件从 source 复制到 destination（用于"另存为"下载功能）。
+#[tauri::command]
+pub fn copy_file(source: String, destination: String) -> Result<(), String> {
+    std::fs::copy(&source, &destination).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn preview(kind: &str, content: &str) -> String {
     match kind {
         "file" => "[文件]".to_string(),

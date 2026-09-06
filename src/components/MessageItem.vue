@@ -3,7 +3,8 @@ import { computed, ref } from "vue";
 import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { save } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import CodeBlock from "@/components/CodeBlock.vue";
 import { Check, Circle, Copy, Download, FileText, Loader2, X } from "lucide-vue-next";
 import { humanSize } from "@/utils/color";
@@ -161,16 +162,20 @@ async function copyText() {
     /* ignore */
   }
 }
-async function openFile() {
-  const path = fileMeta.value?.path;
-  if (!path) {
+async function saveAs() {
+  const source = fileMeta.value?.path;
+  const filename = fileMeta.value?.name;
+  if (!source || !filename) {
     app.toast("文件路径不可用", "error");
     return;
   }
   try {
-    await openPath(path);
+    const destination = await save({ defaultPath: filename });
+    if (!destination) return; // 用户取消
+    await invoke("copy_file", { source, destination });
+    app.toast("文件已保存", "success");
   } catch (e) {
-    app.toast(`打开文件失败：${e}`, "error");
+    app.toast(`保存文件失败：${e}`, "error");
   }
 }
 </script>
@@ -308,8 +313,8 @@ async function openFile() {
             <button
               v-if="sendState !== 'failed'"
               class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
-              title="打开"
-              @click="openFile"
+              title="下载文件"
+              @click="saveAs"
             >
               <Download class="h-4 w-4" />
             </button>
