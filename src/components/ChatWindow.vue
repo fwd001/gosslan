@@ -129,6 +129,8 @@ function estimateHeight(m: MessageRecord, index?: number): number {
     && app.chatStyle.compact;
   const sameMinute = prev && prev.kind !== "system" && dayjs(prev.ts).isSame(m.ts, "minute");
   const tight = sameSender || sameMinute;
+  // 分钟组首条：紧凑模式下仍需显示时间行
+  const isFirstInMinute = !prev || prev.kind === "system" || !dayjs(prev.ts).isSame(m.ts, "minute");
 
   // --- 时间分割线（≥5 分钟）：32px ---
   const showDivider = !prev || m.ts - prev.ts >= 5 * 60 * 1000;
@@ -139,7 +141,7 @@ function estimateHeight(m: MessageRecord, index?: number): number {
   // --- 气泡垂直 padding ---
   const py = tight ? 4 /* py-0.5 */ : 12; /* pt-1 pb-2 */
   // --- 气泡下方时间行 ---
-  const timeH = tight ? 0 : 16; // mt-0.5 text-[11px]
+  const timeH = tight ? (isFirstInMinute ? 16 : 0) : 16; // 紧凑首条仍显示时间
   // --- 昵称行 ---
   const nickH = showNickname ? 20 : 0;
   // --- 分割线 ---

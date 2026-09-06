@@ -58,6 +58,13 @@ const sameMinuteRun = computed(() => {
   if (!p || p.kind === "system") return false;
   return dayjs(p.ts).isSame(props.message.ts, "minute");
 });
+/** 分钟组首条：上一条不在同一分钟（或无上一条），本条是新的一分钟的开始。
+ *  用于在紧凑布局中显示该分钟的时间戳。 */
+const isFirstInMinute = computed(() => {
+  const p = props.prev;
+  if (!p || p.kind === "system") return true;
+  return !dayjs(p.ts).isSame(props.message.ts, "minute");
+});
 /** 紧凑布局：连续 run 或同分钟消息。 */
 const tight = computed(() => sameSenderRun.value || sameMinuteRun.value);
 /** 时间分割线：与上一条间隔 ≥ 5 分钟。 */
@@ -346,7 +353,16 @@ async function saveAs() {
           <span class="group-hover/row:hidden">{{ time }}</span>
           <span class="hidden group-hover/row:inline">{{ fullTime }}</span>
         </div>
-        <!-- tight：同分钟内的连续消息不重复显示时间（信息冗余），仅 hover 时显示秒级 -->
+        <!-- 紧凑模式：分钟组首条显示时间，后续消息不显示 -->
+        <div
+          v-else-if="isFirstInMinute"
+          class="mt-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]"
+          :class="mine ? 'text-right' : ''"
+        >
+          <span class="group-hover/row:hidden">{{ time }}</span>
+          <span class="hidden group-hover/row:inline">{{ fullTime }}</span>
+        </div>
+        <!-- tight 非首条：仅 hover 显示秒级 -->
         <div
           v-else
           class="mt-0.5 hidden px-1 text-[10px] text-[var(--gosslan-text-2)] group-hover/row:block"
