@@ -197,9 +197,17 @@ async function ensureAttachmentPreview() {
   previewNote.value = r.note ?? null;
 }
 
-// 传输完成或乐观→真实替换后，path/subtype 变化会自动触发，无需仅在 mounted 读一次。
+// 传输完成或乐观→真实替换后，path/subtype/name 变化会自动触发，无需仅在 mounted 读一次。
+// 必须显式读 path/name：Vue 对 watcher 返回的数组做浅比对，若源里不包含这些字段
+// 的读取，optimistic({path:""})→real({path:"/…",name:"x"}) 替换时 msg_id+subtype 不变
+// → 数组值相等 → callback 不触发。
 watch(
-  () => [previewSubtype.value, props.message.msg_id] as const,
+  () => [
+    previewSubtype.value,
+    props.message.msg_id,
+    fileMeta.value?.path,
+    fileMeta.value?.name,
+  ] as const,
   () => void ensureAttachmentPreview(),
   { immediate: true },
 );
