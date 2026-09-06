@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import NavRail from "@/components/NavRail.vue";
@@ -24,6 +24,14 @@ function openSettings() {
   settingsOpen.value = true;
   if (app.isMobile) app.mobileView = "list";
 }
+
+// 通知点击跳转：好友申请通知 → 切换到联系人视图
+function onNavigateToContacts() {
+  view.value = "contacts";
+  if (app.isMobile) app.mobileView = "list";
+}
+onMounted(() => window.addEventListener("navigate-to-contacts", onNavigateToContacts));
+onUnmounted(() => window.removeEventListener("navigate-to-contacts", onNavigateToContacts));
 </script>
 
 <template>

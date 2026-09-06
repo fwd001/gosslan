@@ -88,7 +88,7 @@ export const useChatStore = defineStore("chat", () => {
         title: nicknameOf(rec.sender_id),
         body: previewText(rec),
         autoCancel: true,
-        extra: { conv_id: rec.conv_id },
+        extra: { type: "chat", conv_id: rec.conv_id },
       });
     });
   }
@@ -560,6 +560,18 @@ export const useChatStore = defineStore("chat", () => {
     void onAction((n) => {
       const raw = n as { id?: unknown; extra?: Record<string, unknown> };
       const id = typeof raw.id === "number" ? raw.id : undefined;
+      const extraType = raw.extra?.type as string | undefined;
+
+      if (extraType === "friend_request") {
+        // 好友申请通知：唤起窗口 + 切换到联系人视图
+        if (id != null) notifMap.delete(id);
+        void api.focusWindow().then(() => {
+          window.dispatchEvent(new CustomEvent("navigate-to-contacts"));
+        });
+        return;
+      }
+
+      // 默认：聊天消息通知
       let convId = id != null ? notifMap.get(id) : undefined;
       if (!convId && raw.extra?.conv_id) convId = String(raw.extra.conv_id);
       if (id != null) notifMap.delete(id);

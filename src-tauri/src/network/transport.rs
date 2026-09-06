@@ -289,7 +289,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             };
             state.pending_requests.lock().unwrap().insert(from.clone(), req.clone());
             let _ = state.app.emit("friend-request", &req);
-            notify(&state.app, "好友申请", &format!("{from_nickname} 请求添加你为好友"));
+            let mut extra = std::collections::HashMap::new();
+            extra.insert("type".to_string(), "friend_request".to_string());
+            notify_with_extra(&state.app, "好友申请", &format!("{from_nickname} 请求添加你为好友"), extra);
         }
         Message::FriendAccept { from, to } => {
             if to != state.device_id {
@@ -1334,8 +1336,16 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
 }
 
 pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
+    notify_with_extra(app, title, body, std::collections::HashMap::new());
+}
+
+pub fn notify_with_extra(app: &tauri::AppHandle, title: &str, body: &str, extra: std::collections::HashMap<String, String>) {
     use tauri_plugin_notification::NotificationExt;
-    let _ = app.notification().builder().title(title).body(body).show();
+    let mut builder = app.notification().builder().title(title).body(body);
+    for (k, v) in &extra {
+        builder = builder.extra(k, v);
+    }
+    let _ = builder.show();
 }
 
 #[cfg(test)]
