@@ -208,7 +208,7 @@ onUnmounted(() => {
                 class="truncate text-sm font-medium"
                 :class="chat.activeConv === c.id ? 'text-primary' : ''"
               >{{ c.name }}</span>
-              <span class="shrink-0 whitespace-nowrap text-[11px] text-[var(--gosslan-text-2)]">{{ fmtTime(c.last_ts) }}</span>
+              <span class="ml-2 shrink-0 whitespace-nowrap text-[11px] text-[var(--gosslan-text-2)]">{{ fmtTime(c.last_ts) }}</span>
             </div>
             <div class="flex items-center justify-between">
               <span class="truncate text-xs text-[var(--gosslan-text-2)]">{{ c.last_msg || "暂无消息" }}</span>
