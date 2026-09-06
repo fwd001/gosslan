@@ -331,11 +331,18 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             drop(dbc);
             let _ = state.app.emit("friend-removed", &from);
         }
-        Message::FriendMessageBlocked { from, to } => {
-            if to != state.device_id {
-                return;
+        Message::FriendMessageBlocked { from, to, original_sender } => {
+            if to == state.device_id {
+                // 目标是本机：通知前端
+                let _ = state.app.emit("friend-message-blocked", &from);
+            } else if original_sender != state.device_id {
+                // 中继节点：转发给原始发送方（与 Ack relay 同逻辑）
+                let _ = try_send(state, &original_sender, &Message::FriendMessageBlocked {
+                    from,
+                    to,
+                    original_sender,
+                }).await;
             }
-            let _ = state.app.emit("friend-message-blocked", &from);
         }
         Message::ChatMessage { msg_id, from, to, kind, content, ts } => {
             if to != state.device_id {
@@ -359,6 +366,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     let _ = try_send(state, peer_id, &Message::FriendMessageBlocked {
                         from: state.device_id.clone(),
                         to: from.clone(),
+                        original_sender: from.clone(),
                     }).await;
                     return;
                 }
@@ -835,6 +843,7 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
                 let _ = try_send(state, &env.sender_id, &Message::FriendMessageBlocked {
                     from: state.device_id.clone(),
                     to: env.sender_id.clone(),
+                    original_sender: env.sender_id.clone(),
                 }).await;
                 return;
             }
@@ -1796,5 +1805,57 @@ mod tests {
             _ => panic!("应为 Ack"),
         }
         // original_sender 用于 try_send 的 peer_id 参数，不嵌入 Ack 消息体
+    }
+
+    // ================================================================
+    // 好友权限测试
+    // ================================================================
+
+    /// 好友状态下 Direct Chat 可以正常接收（insert_message_if_new 成功）。
+    #[test]
+    fn friend_chat_message_accepted() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        db::add_friend(&conn, "a", "Alice", None).unwrap();
+        assert!(db::get_friend(&conn, "a").is_some(), "好友存在时应能处理消息");
+    }
+
+    /// 删除好友后 Direct Chat 不落库。
+    #[test]
+    fn non_friend_chat_message_rejected() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        db::add_friend(&conn, "a", "Alice", None).unwrap();
+        db::remove_friend(&conn, "a").unwrap();
+        assert!(db::get_friend(&conn, "a").is_none(), "删除好友后应检测不到");
+    }
+
+    /// Gossip Group 不受好友检查影响。
+    #[test]
+    fn gossip_group不受好友检查影响() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        // 群聊不需要好友关系
+        db::create_group(&conn, "g1", "测试群", "owner", &["a".into(), "b".into()]).unwrap();
+        let groups = db::list_groups(&conn).unwrap();
+        assert_eq!(groups.len(), 1);
+    }
+
+    /// FriendMessageBlocked 包含 original_sender 字段。
+    #[test]
+    fn friend_message_blocked_has_original_sender() {
+        let msg = Message::FriendMessageBlocked {
+            from: "c".into(),
+            to: "a".into(),
+            original_sender: "a".into(),
+        };
+        match &msg {
+            Message::FriendMessageBlocked { from, to, original_sender } => {
+                assert_eq!(from, "c");
+                assert_eq!(to, "a");
+                assert_eq!(original_sender, "a");
+            }
+            _ => panic!("应为 FriendMessageBlocked"),
+        }
     }
 }

@@ -1165,4 +1165,35 @@ mod tests {
         let r = search_messages(&conn, "不存在", 10).unwrap();
         assert!(r.is_empty());
     }
+
+    /// 中文搜索正常。
+    #[test]
+    fn search_messages_chinese() {
+        let conn = mem();
+        insert_text_msg(&conn, "m1", "conv1", "你好世界");
+        insert_text_msg(&conn, "m2", "conv2", "hello world");
+        let r = search_messages(&conn, "你好", 10).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0], "conv1");
+    }
+
+    /// emoji 搜索正常（按字符匹配，非 UTF-8 字节）。
+    #[test]
+    fn search_messages_emoji() {
+        let conn = mem();
+        insert_text_msg(&conn, "m1", "conv1", "🎉庆祝🎉");
+        let r = search_messages(&conn, "🎉", 10).unwrap();
+        assert_eq!(r.len(), 1);
+    }
+
+    /// 大小写不敏感搜索。
+    #[test]
+    fn search_messages_case_insensitive() {
+        let conn = mem();
+        insert_text_msg(&conn, "m1", "conv1", "Hello World");
+        let r = search_messages(&conn, "hello", 10).unwrap();
+        assert_eq!(r.len(), 1);
+        let r = search_messages(&conn, "HELLO", 10).unwrap();
+        assert_eq!(r.len(), 1);
+    }
 }
