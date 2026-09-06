@@ -828,6 +828,17 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
     // 5. 解密成功则落库 + 通知
     if let Some(pt) = plaintext {
         let (kind, content) = parse_gossip_payload(&pt);
+        // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）
+        if env.kind == GossipKind::Chat {
+            let dbc = state.db.lock().unwrap();
+            if db::get_friend(&dbc, &env.sender_id).is_none() {
+                let _ = try_send(state, &env.sender_id, &Message::FriendMessageBlocked {
+                    from: state.device_id.clone(),
+                    to: env.sender_id.clone(),
+                }).await;
+                return;
+            }
+        }
         let conv_id = match &env.kind {
             GossipKind::Chat => env.sender_id.clone(),
             GossipKind::Group => format!("group:{}", env.group_id.clone().unwrap_or_default()),

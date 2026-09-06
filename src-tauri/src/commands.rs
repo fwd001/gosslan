@@ -65,6 +65,8 @@ pub async fn update_profile(
     avatar: Option<String>,
 ) -> Result<DeviceInfo, String> {
     let s = state.inner();
+    // 昵称长度保护：按字符截断（UTF-8 安全）
+    let nickname: String = nickname.chars().take(MAX_NICKNAME_LEN).collect();
     {
         let dbc = s.db.lock().unwrap();
         db::set_setting(&dbc, "nickname", &nickname).ok();
@@ -726,6 +728,8 @@ pub fn create_group(
     members: Vec<String>,
 ) -> Result<Group, String> {
     let s = state.inner();
+    // 群名称长度保护：按字符截断（UTF-8 安全）
+    let name: String = name.chars().take(MAX_GROUP_NAME_LEN).collect();
     let id = format!("g-{}", Uuid::new_v4());
     let mut all = members;
     if !all.contains(&s.device_id) {
@@ -1113,6 +1117,8 @@ pub fn search_messages(
     keyword: String,
 ) -> Result<Vec<SearchResult>, String> {
     let s = state.inner();
+    // 搜索关键词长度保护：按字符截断（UTF-8 安全）
+    let keyword: String = keyword.chars().take(MAX_SEARCH_LEN).collect();
     let dbc = s.db.lock().unwrap();
     let conv_ids = db::search_messages(&dbc, &keyword, 20).map_err(|e| e.to_string())?;
     let mut results = Vec::new();
