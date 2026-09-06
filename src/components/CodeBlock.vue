@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import hljs from "highlight.js";
-import "highlight.js/styles/github-dark.css";
+import { useAppStore } from "@/stores/useAppStore";
+import darkCss from "highlight.js/styles/github-dark.css?raw";
+import lightCss from "highlight.js/styles/github.css?raw";
 import { Check, ChevronDown, ChevronUp, Copy, Maximize2, Minimize2 } from "lucide-vue-next";
+
+const app = useAppStore();
 
 const props = defineProps<{ code: string; language?: string }>();
 
@@ -36,6 +40,16 @@ const detectedLang = computed(() => {
 
 const langLabel = computed(() => (detectedLang.value === "plaintext" ? "text" : detectedLang.value));
 
+// 主题相关颜色：dark = 深色代码块，light = 浅色代码块
+const codeBg = computed(() => (app.dark ? "#0d1117" : "#f6f8fa"));
+const codeFg = computed(() => (app.dark ? "#e6edf3" : "#24292e"));
+const toolbarBg = computed(() => (app.dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)"));
+const toolbarFg = computed(() => (app.dark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.4)"));
+const borderStyle = computed(() => app.dark ? "border-white/10" : "border-black/10");
+const toolBtnFg = computed(() => (app.dark ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.45)"));
+const toolBtnHoverBg = computed(() => (app.dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.06)"));
+const toolBtnHoverFg = computed(() => (app.dark ? "#fff" : "#24292e"));
+
 const html = computed(() => {
   try {
     const lang = detectedLang.value;
@@ -61,37 +75,41 @@ async function copy() {
 </script>
 
 <template>
-  <div class="overflow-hidden rounded-lg border border-white/10 text-left">
-    <div class="flex items-center justify-between bg-white/5 px-3" style="height: 32px">
-      <span class="text-xs text-white/50">{{ langLabel }} · {{ lineCount }} 行</span>
+  <!-- highlight.js 主题样式：dark 用 github-dark，light 用 github -->
+  <component :is="'style'">{{ app.dark ? darkCss : lightCss }}</component>
+  <div class="overflow-hidden rounded-lg text-left" :class="borderStyle" :style="{ borderWidth: '1px' }">
+    <div class="flex items-center justify-between px-3" style="height: 32px" :style="{ background: toolbarBg }">
+      <span class="text-xs" :style="{ color: toolbarFg }">{{ langLabel }} · {{ lineCount }} 行</span>
       <div class="flex items-center gap-1">
-        <button class="code-tool" title="复制" @click="copy">
-          <Check v-if="copied" class="h-3.5 w-3.5 text-green-400" />
+        <button class="code-tool" title="复制" @click="copy" :style="{ color: toolBtnFg }">
+          <Check v-if="copied" class="h-3.5 w-3.5 text-green-500" />
           <Copy v-else class="h-3.5 w-3.5" />
         </button>
-        <button v-if="lineCount > COLLAPSE_LINES" class="code-tool" :title="collapsed ? '展开' : '折叠'" @click="collapsed = !collapsed">
+        <button v-if="lineCount > COLLAPSE_LINES" class="code-tool" :title="collapsed ? '展开' : '折叠'" @click="collapsed = !collapsed" :style="{ color: toolBtnFg }">
           <ChevronUp v-if="collapsed" class="h-3.5 w-3.5" />
           <ChevronDown v-else class="h-3.5 w-3.5" />
         </button>
-        <button class="code-tool" :title="expanded ? '退出全屏' : '全屏'" @click="expanded = !expanded">
+        <button class="code-tool" :title="expanded ? '退出全屏' : '全屏'" @click="expanded = !expanded" :style="{ color: toolBtnFg }">
           <Minimize2 v-if="expanded" class="h-3.5 w-3.5" />
           <Maximize2 v-else class="h-3.5 w-3.5" />
         </button>
       </div>
     </div>
-    <!-- 自动换行，无横向滚动条；超过 7 行默认折叠，底部渐隐 + 展开按钮 -->
     <div class="relative">
       <pre
         class="code-pre"
         :class="expanded ? '' : collapsed ? 'code-collapsed' : 'max-h-80 overflow-y-auto'"
+        :style="{ background: codeBg, color: codeFg }"
       ><code v-html="html"></code></pre>
       <div
         v-if="!expanded && collapsed"
-        class="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-[#0d1117] to-transparent"
+        class="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t to-transparent"
+        :style="{ background: `linear-gradient(to top, ${codeBg}, transparent)` }"
       ></div>
       <button
         v-if="!expanded && collapsed"
-        class="absolute bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-white/10 px-3 py-1 text-[11px] text-white/80 backdrop-blur transition hover:bg-white/20"
+        class="absolute bottom-1.5 left-1/2 -translate-x-1/2 rounded-full px-3 py-1 text-[11px] backdrop-blur transition"
+        :style="{ background: toolBtnHoverBg, color: toolBtnHoverFg }"
         @click="collapsed = false"
       >
         展开全部 {{ lineCount }} 行
@@ -104,16 +122,14 @@ async function copy() {
 .code-pre {
   margin: 0;
   padding: 12px 14px;
-  background: #0d1117;
   font-size: 12.5px;
   line-height: 1.6;
-  /* 自动换行：不出现横向滚动条 */
   white-space: pre-wrap;
   word-break: break-word;
   overflow-x: hidden;
 }
 .code-collapsed {
-  max-height: 9.5rem; /* ≈7 行 */
+  max-height: 9.5rem;
   overflow: hidden;
 }
 .code-pre code {
@@ -124,13 +140,11 @@ async function copy() {
   align-items: center;
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.55);
   cursor: pointer;
   padding: 2px 4px;
   border-radius: 4px;
 }
 .code-tool:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+  background: rgba(128, 128, 128, 0.1);
 }
 </style>

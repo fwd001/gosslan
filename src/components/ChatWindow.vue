@@ -83,11 +83,17 @@ function estimateHeight(m: MessageRecord, index?: number): number {
   // --- 基础高度：气泡区域 ---
   let bubble: number;
   switch (m.kind) {
-    case "code":
-      bubble = 340;
+    case "code": {
+      // CodeBlock: toolbar 32px + code-pre 上下 padding 24px + 每行 ≈20px (12.5px × 1.6)
+      const lines = m.content.split("\n").length;
+      const COLLAPSE = 7;
+      const codeH = Math.min(lines, COLLAPSE) * 20 + 24;
+      bubble = 32 + codeH;
       break;
+    }
     case "image":
-      bubble = 300;
+      // MessageItem: max-h-72 (288px), object-contain 保持比例，≤320px 宽
+      bubble = 288;
       break;
     case "file":
       bubble = 92;

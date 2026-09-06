@@ -143,6 +143,15 @@ const isLongText = computed(
 );
 const collapsed = ref(true);
 
+// 图片预览
+const previewImage = ref<string | null>(null);
+function openPreview() {
+  previewImage.value = props.message.content;
+}
+function closePreview() {
+  previewImage.value = null;
+}
+
 async function copyText() {
   try {
     await navigator.clipboard.writeText(props.message.content);
@@ -271,7 +280,7 @@ async function openFile() {
         </div>
 
         <!-- 图片 -->
-        <div v-else-if="message.kind === 'image'" class="overflow-hidden rounded-xl" @click="openFile">
+        <div v-else-if="message.kind === 'image'" class="overflow-hidden rounded-xl cursor-pointer" @click="openPreview">
           <img :src="message.content" class="block max-h-72 max-w-full rounded-xl object-contain" />
         </div>
 
@@ -337,4 +346,20 @@ async function openFile() {
       </div>
     </div>
   </div>
+
+  <!-- 图片预览浮层 -->
+  <Teleport to="body">
+    <div
+      v-if="previewImage"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
+      @click="closePreview"
+      @keydown.escape.window="closePreview"
+    >
+      <img
+        :src="previewImage"
+        class="max-h-[90vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
+        @click.stop
+      />
+    </div>
+  </Teleport>
 </template>
