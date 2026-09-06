@@ -155,13 +155,18 @@ watch(
       }
       return;
     }
-    // 追加新消息：仅在本来贴近底部时贴底；向上加载历史由 VirtualList 锚定保持位置
-    if (messages.value.length > oldLen && nearBottom.value) {
+    // 追加新消息（非 prepend 历史）
+    if (messages.value.length > oldLen) {
       const last = messages.value[messages.value.length - 1];
       const prev = messages.value[messages.value.length - 2];
       if (!prev || last.ts >= prev.ts) {
-        await nextTick();
-        listRef.value?.scrollToBottom();
+        // 自己发的消息：无论 nearBottom 如何都滚到底部
+        // 对方的消息：仅当用户原本就在底部附近时才滚到底部
+        const isMine = last.sender_id === app.device?.device_id;
+        if (isMine || nearBottom.value) {
+          await nextTick();
+          listRef.value?.scrollToBottom();
+        }
       }
     }
   },

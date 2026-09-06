@@ -153,7 +153,16 @@ async function copyText() {
   }
 }
 async function openFile() {
-  if (fileMeta.value?.path) await openPath(fileMeta.value.path);
+  const path = fileMeta.value?.path;
+  if (!path) {
+    app.toast("文件路径不可用", "error");
+    return;
+  }
+  try {
+    await openPath(path);
+  } catch (e) {
+    app.toast(`打开文件失败：${e}`, "error");
+  }
 }
 </script>
 
