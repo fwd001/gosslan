@@ -377,27 +377,18 @@ async function retrySend() {
         </div>
         </div>
 
-        <!-- 时间行：分钟组末条或非紧凑模式显示，悬浮切到完整秒级时间 -->
+        <!-- 时间行：仅分钟组末条显示时间，hover 可见秒级 -->
         <div
-          v-if="!tight || isLastInMinute"
+          v-if="isLastInMinute"
           class="mt-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]"
           :class="mine ? 'text-right' : ''"
         >
           <span class="group-hover/row:hidden">{{ time }}</span>
           <span class="hidden group-hover/row:inline">{{ fullTime }}</span>
         </div>
-        <!-- 紧凑模式：分钟组末条显示时间，前面的消息不显示 -->
+        <!-- tight 非末条：仅 hover 显示秒级 -->
         <div
-          v-else-if="isLastInMinute"
-          class="mt-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]"
-          :class="mine ? 'text-right' : ''"
-        >
-          <span class="group-hover/row:hidden">{{ time }}</span>
-          <span class="hidden group-hover/row:inline">{{ fullTime }}</span>
-        </div>
-        <!-- tight 非首条：仅 hover 显示秒级 -->
-        <div
-          v-else
+          v-else-if="tight"
           class="mt-0.5 hidden px-1 text-[10px] text-[var(--gosslan-text-2)] group-hover/row:block"
           :class="mine ? 'text-right' : ''"
         >
