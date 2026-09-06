@@ -330,6 +330,19 @@ pub fn get_messages(conn: &Connection, conv_id: &str, limit: i64, offset: i64) -
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// 预览取源：按 msg_id 返回 (sender_id, content)，供 read_file_preview 定位本地路径
+/// 并判定归属（本机的自选文件 / 接收方 downloads 路径），避免命令层直连 rusqlite。
+pub fn get_message_preview_source(conn: &Connection, msg_id: &str) -> Option<(String, String)> {
+    conn.query_row(
+        "SELECT sender_id, content FROM messages WHERE msg_id = ?1",
+        params![msg_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// 更新单条消息状态。**只前进不回退**：`read` 由对方已读回执写入，而同一 msg_id 的
 /// Ack 可能因 outbox 补发晚一步到达，无条件覆盖会把已读退回「对方未读」。
 pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Result<()> {

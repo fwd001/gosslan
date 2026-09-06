@@ -109,9 +109,22 @@ function estimateHeight(m: MessageRecord, index?: number): number {
       // MessageItem: max-h-72 (288px), object-contain 保持比例，≤320px 宽
       bubble = 288;
       break;
-    case "file":
-      bubble = 92;
+    case "file": {
+      // 普通文件卡片 92；附件图片/代码预览按目标高度估（图片 ≤288，代码折叠 ≈184）。
+      let sub = "file";
+      let hasPath = false;
+      try {
+        const o = JSON.parse(m.content) as { subtype?: string; path?: string };
+        sub = o?.subtype ?? "file";
+        hasPath = !!o?.path;
+      } catch {
+        /* 历史 / 异常内容按普通 file 卡片估 */
+      }
+      if (hasPath && sub === "image") bubble = 288;
+      else if (hasPath && sub === "code") bubble = 184;
+      else bubble = 92;
       break;
+    }
     case "system":
       bubble = 28;
       break;

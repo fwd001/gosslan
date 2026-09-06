@@ -69,6 +69,10 @@ export const api = {
     invoke<string>("send_file_relay", { friendId, path }),
   getTransfers: () => invoke<TransferInfo[]>("get_transfers"),
 
+  /** 读取附件预览原始字节（图片→Blob/objectURL，代码→TextDecoder）。超限后端 reject "TOO_LARGE"。 */
+  readFilePreview: (msgId: string, maxBytes: number) =>
+    invoke<ArrayBuffer>("read_file_preview", { msgId, maxBytes }),
+
   setShareDir: (path: string) => invoke<void>("set_share_dir", { path }),
   getShareDir: () => invoke<string | null>("get_share_dir"),
   requestShareTree: (friendId: string) => invoke<ShareEntry[]>("request_share_tree", { friendId }),

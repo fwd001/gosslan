@@ -1127,6 +1127,44 @@ pub fn copy_file(source: String, destination: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 读取附件预览内容（原始字节，不走 base64 IPC）。
+///
+/// 按 `msg_id` 反查记录里的本地 `path` 再读，前端据此渲染图片（→Blob/objectURL）
+/// 或代码（→TextDecoder）。安全边界：路径必须落在 downloads 目录内（接收方文件），
+/// 或该消息由本机发出（发送方自选的文件）——两者都不允许对端通过消息内容
+/// 诱导读取任意本地路径。超过 `max_bytes` 返回 "TOO_LARGE"，由前端回退文件卡片。
+#[tauri::command]
+pub fn read_file_preview(
+    state: State<'_, Arc<AppState>>,
+    msg_id: String,
+    max_bytes: u64,
+) -> Result<tauri::ipc::Response, String> {
+    let s = state.inner();
+    let (sender_id, content) = db::get_message_preview_source(&s.db.lock().unwrap(), &msg_id)
+        .ok_or("消息不存在")?;
+    let path = serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(|p| p.to_string()))
+        .ok_or("元数据缺少路径")?;
+
+    let file = std::fs::canonicalize(&path).map_err(|_| "文件不存在".to_string())?;
+    let under_downloads = std::fs::canonicalize(&s.downloads_dir)
+        .map(|dir| file.starts_with(dir))
+        .unwrap_or(false);
+    if !under_downloads && sender_id != s.device_id {
+        return Err("路径越权".to_string());
+    }
+    let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("非普通文件".to_string());
+    }
+    if meta.len() > max_bytes {
+        return Err("TOO_LARGE".to_string());
+    }
+    let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 /// 清除所有聊天数据（保留好友、身份、设置）。
 /// SQLite 删除使用 transaction，任一失败则 rollback。
 /// 文件系统清理在 DB commit 成功后执行；文件删除失败不影响 DB 结果。

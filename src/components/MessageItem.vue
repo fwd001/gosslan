@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import dayjs from "dayjs";
+import { loadFilePreview } from "@/utils/filePreview";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -114,6 +115,8 @@ interface FileMeta {
   name: string;
   path: string;
   size: number;
+  /** 后端按扩展名分类的附件子类型；历史消息缺省按 file 处理。 */
+  subtype: string;
 }
 /** 乐观上屏的文件气泡可能缺 size/path，用传输记录补齐。 */
 const fileMeta = computed<FileMeta | null>(() => {
@@ -125,6 +128,7 @@ const fileMeta = computed<FileMeta | null>(() => {
       name: meta.name ?? t?.name ?? "文件",
       path: meta.path ?? t?.path ?? "",
       size: meta.size ?? t?.size ?? 0,
+      subtype: meta.subtype ?? "file",
     };
   } catch {
     return null;
@@ -161,6 +165,44 @@ function openPreview() {
 function closePreview() {
   previewImage.value = null;
 }
+
+// ---------------- 附件预览（file + subtype = image | code） ----------------
+/** 附件图片 objectURL / 附件代码文本 / 超限提示。全空 = 尚未就绪或失败 → 回退文件卡片。 */
+const attachmentUrl = ref<string | null>(null);
+const attachmentCode = ref<string | null>(null);
+const previewNote = ref<string | null>(null);
+
+/** 仅当 file 消息本地路径就绪（= 已完成接收 / 本机自选文件）、未失败、且为 image/code 时可预览。 */
+const previewSubtype = computed<"image" | "code" | null>(() => {
+  const meta = fileMeta.value;
+  if (props.message.kind !== "file" || !meta || !meta.path) return null;
+  if (sendState.value === "failed") return null;
+  return meta.subtype === "image" || meta.subtype === "code" ? meta.subtype : null;
+});
+
+async function ensureAttachmentPreview() {
+  const sub = previewSubtype.value;
+  const meta = fileMeta.value;
+  if (!sub || !meta) {
+    attachmentUrl.value = null;
+    attachmentCode.value = null;
+    previewNote.value = null;
+    return;
+  }
+  const r = await loadFilePreview(props.message.msg_id, sub, meta.name);
+  // await 期间该气泡可能已不满足预览条件（切换/失败）→ 丢弃，避免贴到错误气泡。
+  if (previewSubtype.value !== sub) return;
+  attachmentUrl.value = r.url ?? null;
+  attachmentCode.value = r.text ?? null;
+  previewNote.value = r.note ?? null;
+}
+
+// 传输完成或乐观→真实替换后，path/subtype 变化会自动触发，无需仅在 mounted 读一次。
+watch(
+  () => [previewSubtype.value, props.message.msg_id] as const,
+  () => void ensureAttachmentPreview(),
+  { immediate: true },
+);
 
 async function copyText() {
   try {
@@ -326,6 +368,16 @@ async function retrySend() {
           <img :src="message.content" class="block max-h-72 max-w-full rounded-xl object-contain" />
         </div>
 
+        <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片，点击→大图） -->
+        <div v-else-if="message.kind === 'file' && attachmentUrl" class="overflow-hidden rounded-xl cursor-pointer" @click="previewImage = attachmentUrl">
+          <img :src="attachmentUrl" class="block max-h-72 max-w-full rounded-xl object-contain" />
+        </div>
+
+        <!-- 附件代码预览（file + subtype:code，完成后读取本地文本交给 CodeBlock） -->
+        <div v-else-if="message.kind === 'file' && attachmentCode !== null" class="min-w-0 flex-1">
+          <CodeBlock :code="attachmentCode" />
+        </div>
+
         <!-- 文件 -->
         <div
           v-else-if="message.kind === 'file' && fileMeta"
@@ -346,6 +398,7 @@ async function retrySend() {
               <div class="truncate text-sm font-medium">{{ fileMeta.name }}</div>
               <div v-if="sendState === 'failed'" class="text-xs text-red-500">发送失败</div>
               <div v-else class="text-xs opacity-70">{{ humanSize(fileMeta.size) }}</div>
+              <div v-if="previewNote" class="text-[11px] opacity-70">{{ previewNote }}</div>
             </div>
             <button
               v-if="sendState !== 'failed'"
