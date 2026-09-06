@@ -396,12 +396,12 @@ export const useChatStore = defineStore("chat", () => {
   /** 统一文件发送：后端自动路由（有直连走直连，无直连自动中继）。 */
   async function sendFileTo(convId: string, path: string) {
     if (convId.startsWith("group:")) return null;
+    const name = path.split(/[\\/]/).pop() ?? "文件";
     try {
       const id = await api.sendFileAuto(convId, path);
       void refreshTransfers();
       // 乐观上屏：拿到 transfer_id 即插入文件气泡（后端同 msg_id 的事件会被去重合并）；
       // 进度条随 file-progress 事件实时更新
-      const name = path.split(/[\\/]/).pop() ?? "文件";
       enqueueMessage({
         id: -1,
         msg_id: `file-${id}`,
@@ -415,8 +415,19 @@ export const useChatStore = defineStore("chat", () => {
       });
       return id;
     } catch (e) {
-      const app2 = useAppStore();
-      app2.toast(`文件发送失败：${e}`, "error");
+      // API 失败：插入明确 failed 状态的文件消息，不让消息永久停在 sending
+      enqueueMessage({
+        id: -1,
+        msg_id: `file-failed-${Date.now()}`,
+        conv_id: convId,
+        sender_id: app.device?.device_id ?? "",
+        receiver_id: convId,
+        kind: "file",
+        content: JSON.stringify({ name }),
+        ts: Math.max(Date.now(), messages.value[convId]?.at(-1)?.ts ?? 0),
+        status: "failed",
+      });
+      app.toast(`文件发送失败：${e}`, "error");
       return null;
     }
   }

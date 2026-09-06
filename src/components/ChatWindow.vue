@@ -84,10 +84,22 @@ function estimateHeight(m: MessageRecord, index?: number): number {
   let bubble: number;
   switch (m.kind) {
     case "code": {
-      // CodeBlock: toolbar 32px + code-pre 上下 padding 24px + 每行 ≈20px (12.5px × 1.6)
-      const lines = m.content.split("\n").length;
+      // CodeBlock 结构：toolbar 32px + code-pre padding 24px + 每行 ≈20px (12.5px × 1.6)
+      // white-space: pre-wrap + word-break: break-word 会导致超长行视觉换行，
+      // 根据内容长度估算视觉行数：每行约 40 字符宽（聊天泡最大宽 ≈320px / 12.5px ≈ 40 字符）
+      const logicalLines = m.content.split("\n");
+      const CHARS_PER_VISUAL_LINE = 40;
+      let visualLines = 0;
+      for (const line of logicalLines) {
+        visualLines += Math.max(1, Math.ceil(line.length / CHARS_PER_VISUAL_LINE));
+      }
       const COLLAPSE = 7;
-      const codeH = Math.min(lines, COLLAPSE) * 20 + 24;
+      const isCollapsed = visualLines > COLLAPSE;
+      // 折叠高度：CodeBlock max-height 9.5rem (152px) + toolbar 32px
+      // 展开高度：toolbar 32px + padding 24px + 每行 20px
+      const codeH = isCollapsed
+        ? 152  // collapsed: code-pre max-height 9.5rem
+        : visualLines * 20 + 24;  // expanded: padding + lines × line-height
       bubble = 32 + codeH;
       break;
     }
@@ -363,11 +375,12 @@ function fileToDataUrl(f: File): Promise<string> {
             代码
           </button>
           <button
-            class="flex shrink-0 items-center justify-center rounded-md px-2 py-1 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+            class="flex shrink-0 items-center gap-1 rounded-md border border-[var(--gosslan-border)] px-2 py-1 text-xs transition hover:bg-[var(--gosslan-hover)]"
             title="发送文件（自动选择最优路线）"
             @click="attachFile"
           >
             <FilePlus class="h-4 w-4" />
+            发送文件
           </button>
           <span class="ml-1 truncate text-[11px] text-[var(--gosslan-text-2)]">Enter 发送 · Shift+Enter 换行 · 支持粘贴图片</span>
         </div>
