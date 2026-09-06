@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import dayjs from "dayjs";
 import { loadFilePreview } from "@/utils/filePreview";
 import { useAppStore } from "@/stores/useAppStore";
@@ -8,6 +8,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import CodeBlock from "@/components/CodeBlock.vue";
+import BaseModal from "@/components/BaseModal.vue";
 import { Check, Circle, Copy, Download, FileText, Loader2, RefreshCw, X } from "lucide-vue-next";
 import { humanSize } from "@/utils/color";
 import { findPreset, parsePeerStyle } from "@/utils/chatStyle";
@@ -212,6 +213,47 @@ watch(
   { immediate: true },
 );
 
+// ---------------- 代码附件弹窗（点击「展开」后以 Modal 展示完整代码，不在消息流内撑开） ----------------
+const codeModalOpen = ref(false);
+const codeModalCode = ref("");
+
+function openCodeModal() {
+  codeModalCode.value = attachmentCode.value ?? "";
+  codeModalOpen.value = true;
+}
+function closeCodeModal() {
+  codeModalOpen.value = false;
+}
+
+/** CodeBlock preview 模式的「展开」按钮不阻止冒泡 → 冒泡到 window → 由这里捕获并打开 Modal */
+function onWindowClickForCodeExpand(e: MouseEvent) {
+  const t = e.target as HTMLElement;
+  if (t.closest && t.closest("button")?.textContent?.includes("展开全部")) {
+    openCodeModal();
+  }
+}
+function onCodeModalKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape") closeCodeModal();
+}
+
+watch(codeModalOpen, (v) => {
+  if (v) {
+    window.addEventListener("click", onWindowClickForCodeExpand);
+    window.addEventListener("keydown", onCodeModalKeydown);
+    document.body.classList.add("overflow-hidden");
+  } else {
+    window.removeEventListener("click", onWindowClickForCodeExpand);
+    window.removeEventListener("keydown", onCodeModalKeydown);
+    document.body.classList.remove("overflow-hidden");
+  }
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("click", onWindowClickForCodeExpand);
+  window.removeEventListener("keydown", onCodeModalKeydown);
+  document.body.classList.remove("overflow-hidden");
+});
+
 async function copyText() {
   try {
     await navigator.clipboard.writeText(props.message.content);
@@ -381,9 +423,9 @@ async function retrySend() {
           <img :src="attachmentUrl" class="block max-h-72 max-w-full rounded-xl object-contain" />
         </div>
 
-        <!-- 附件代码预览（file + subtype:code，完成后读取本地文本交给 CodeBlock） -->
+        <!-- 附件代码预览（file + subtype:code，完成后读取本地文本交给 CodeBlock，最多5行+展开弹窗） -->
         <div v-else-if="message.kind === 'file' && attachmentCode !== null" class="min-w-0 flex-1">
-          <CodeBlock :code="attachmentCode" />
+          <CodeBlock :code="attachmentCode" :preview="true" :preview-lines="5" />
         </div>
 
         <!-- 文件 -->
@@ -478,4 +520,11 @@ async function retrySend() {
       />
     </div>
   </Teleport>
+
+  <!-- 代码附件展开弹窗：完整代码 + 语法高亮/复制/全屏，关闭后聊天布局不变 -->
+  <BaseModal :open="codeModalOpen" title="代码预览" width="max-w-4xl" @close="closeCodeModal">
+    <div class="max-h-[70vh] overflow-y-auto">
+      <CodeBlock v-if="codeModalCode" :code="codeModalCode" />
+    </div>
+  </BaseModal>
 </template>

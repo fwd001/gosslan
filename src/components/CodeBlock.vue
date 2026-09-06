@@ -8,7 +8,10 @@ import { Check, ChevronDown, ChevronUp, Copy, Maximize2, Minimize2 } from "lucid
 
 const app = useAppStore();
 
-const props = defineProps<{ code: string; language?: string }>();
+const props = withDefaults(defineProps<{ code: string; language?: string; preview?: boolean; previewLines?: number }>(), {
+  preview: false,
+  previewLines: 5,
+});
 
 const copied = ref(false);
 /** 超过 7 行的代码块默认折叠（可手动展开/收起）。 */
@@ -16,6 +19,13 @@ const COLLAPSE_LINES = 7;
 const lineCount = computed(() => props.code.split("\n").length);
 const collapsed = ref(lineCount.value > COLLAPSE_LINES);
 const expanded = ref(false);
+
+/** preview 模式：代码行数超过 previewLines 时只显示截断预览，由父组件处理展开（Modal） */
+const previewActive = computed(() => props.preview && lineCount.value > props.previewLines);
+const clampedCode = computed(() => {
+  if (!previewActive.value) return props.code;
+  return props.code.split("\n").slice(0, props.previewLines).join("\n");
+});
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -54,13 +64,13 @@ const html = computed(() => {
   try {
     const lang = detectedLang.value;
     if (lang !== "plaintext" && hljs.getLanguage(lang)) {
-      return hljs.highlight(props.code, { language: lang }).value;
+      return hljs.highlight(clampedCode.value, { language: lang }).value;
     }
   } catch {
     /* 忽略 */
   }
   // 纯文本兜底（仅转义，无高亮）
-  return escapeHtml(props.code);
+  return escapeHtml(clampedCode.value);
 });
 
 async function copy() {
@@ -85,11 +95,11 @@ async function copy() {
           <Check v-if="copied" class="h-3.5 w-3.5 text-green-500" />
           <Copy v-else class="h-3.5 w-3.5" />
         </button>
-        <button v-if="lineCount > COLLAPSE_LINES" class="code-tool" :title="collapsed ? '展开' : '折叠'" @click="collapsed = !collapsed" :style="{ color: toolBtnFg }">
+        <button v-if="lineCount > COLLAPSE_LINES && !previewActive" class="code-tool" :title="collapsed ? '展开' : '折叠'" @click.stop="collapsed = !collapsed" :style="{ color: toolBtnFg }">
           <ChevronUp v-if="collapsed" class="h-3.5 w-3.5" />
           <ChevronDown v-else class="h-3.5 w-3.5" />
         </button>
-        <button class="code-tool" :title="expanded ? '退出全屏' : '全屏'" @click="expanded = !expanded" :style="{ color: toolBtnFg }">
+        <button v-if="!previewActive" class="code-tool" :title="expanded ? '退出全屏' : '全屏'" @click="expanded = !expanded" :style="{ color: toolBtnFg }">
           <Minimize2 v-if="expanded" class="h-3.5 w-3.5" />
           <Maximize2 v-else class="h-3.5 w-3.5" />
         </button>
@@ -110,7 +120,20 @@ async function copy() {
         v-if="!expanded && collapsed"
         class="absolute bottom-1.5 left-1/2 -translate-x-1/2 rounded-full px-3 py-1 text-[11px] backdrop-blur transition"
         :style="{ background: toolBtnHoverBg, color: toolBtnHoverFg }"
-        @click="collapsed = false"
+        @click.stop="collapsed = false"
+      >
+        展开全部 {{ lineCount }} 行
+      </button>
+      <!-- preview 模式：渐变遮罩 + 「展开」按钮（点击事件不阻止冒泡，由父组件监听并打开 Modal） -->
+      <div
+        v-if="previewActive"
+        class="pointer-events-none absolute inset-x-0 bottom-0 h-12"
+        :style="{ background: `linear-gradient(to top, ${codeBg}, transparent)` }"
+      ></div>
+      <button
+        v-if="previewActive"
+        class="absolute bottom-1.5 left-1/2 -translate-x-1/2 rounded-full px-3 py-1 text-[11px] backdrop-blur transition"
+        :style="{ background: toolBtnHoverBg, color: toolBtnHoverFg }"
       >
         展开全部 {{ lineCount }} 行
       </button>
