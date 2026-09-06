@@ -321,6 +321,16 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             state.pending_requests.lock().unwrap().remove(&from);
             let _ = state.app.emit("friend-rejected", &from);
         }
+        Message::FriendRemove { from, to } => {
+            if to != state.device_id {
+                return;
+            }
+            // 对方删除了好友关系：移除本地好友行（不删除聊天记录）
+            let dbc = state.db.lock().unwrap();
+            db::remove_friend(&dbc, &from).ok();
+            drop(dbc);
+            let _ = state.app.emit("friend-removed", &from);
+        }
         Message::ChatMessage { msg_id, from, to, kind, content, ts } => {
             if to != state.device_id {
                 return;

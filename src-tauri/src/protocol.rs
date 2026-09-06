@@ -156,6 +156,10 @@ pub enum Message {
         from: String,
         to: String,
     },
+    FriendRemove {
+        from: String,
+        to: String,
+    },
     /// 单聊消息
     ChatMessage {
         msg_id: String,

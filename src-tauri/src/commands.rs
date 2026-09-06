@@ -414,12 +414,18 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
 
 /// 删除好友（保留聊天记录；对方仍会出现在扫描列表，可重新添加）。
 #[tauri::command]
-pub fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> Result<(), String> {
+pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> Result<(), String> {
     let s = state.inner();
     {
         let dbc = s.db.lock().unwrap();
         db::remove_friend(&dbc, &peer_id).map_err(|e| e.to_string())?;
     }
+    // 通知对方解除好友关系（对方收到后也会删除本机好友行）
+    let msg = Message::FriendRemove {
+        from: s.device_id.clone(),
+        to: peer_id.clone(),
+    };
+    let _ = try_send(s, &peer_id, &msg).await;
     let _ = s.app.emit("friend-removed", &peer_id);
     Ok(())
 }
