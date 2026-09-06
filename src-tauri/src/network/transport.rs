@@ -360,16 +360,17 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             // 好友关系检查：非好友消息不落库、不 Ack、通知发送方
-            {
+            let is_friend = {
                 let dbc = state.db.lock().unwrap();
-                if db::get_friend(&dbc, &from).is_none() {
-                    let _ = try_send(state, peer_id, &Message::FriendMessageBlocked {
-                        from: state.device_id.clone(),
-                        to: from.clone(),
-                        original_sender: from.clone(),
-                    }).await;
-                    return;
-                }
+                db::get_friend(&dbc, &from).is_some()
+            };
+            if !is_friend {
+                let _ = try_send(state, peer_id, &Message::FriendMessageBlocked {
+                    from: state.device_id.clone(),
+                    to: from.clone(),
+                    original_sender: from.clone(),
+                }).await;
+                return;
             }
             // E2EE："enc1:" = 发送方→我的 ChaCha20-Poly1305 密文，用发送方 X25519 公钥打开。
             // 打不开（缺公钥 / 公钥已轮换 / 密文损坏）时**既不落库也不 Ack**，原因：
@@ -859,21 +860,25 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
                 let (kind, content) = parse_gossip_payload(&pt);
                 // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）
                 if env.kind == GossipKind::Chat {
-                    let dbc = state.db.lock().unwrap();
-                    if db::get_friend(&dbc, &env.sender_id).is_none() {
+                    let is_friend = {
+                        let dbc = state.db.lock().unwrap();
+                        db::get_friend(&dbc, &env.sender_id).is_some()
+                    };
+                    if !is_friend {
                         // 通过 Gossip 广播拒绝通知（多跳场景下也能回到原始发送方）
-                        let gossip = state.gossip.lock().unwrap();
-                        let payload = serde_json::json!({ "original_sender": env.sender_id }).to_string();
-                        let payload_b64 = STANDARD.encode(payload.as_bytes());
-                        let blocked_env = gossip.build_envelope(
-                            &state.identity,
-                            &state.device_id,
-                            GossipKind::FriendMessageBlocked,
-                            None,
-                            &payload_b64,
-                            db::now_ms(),
-                        );
-                        drop(gossip);
+                        let blocked_env = {
+                            let gossip = state.gossip.lock().unwrap();
+                            let payload = serde_json::json!({ "original_sender": env.sender_id }).to_string();
+                            let payload_b64 = STANDARD.encode(payload.as_bytes());
+                            gossip.build_envelope(
+                                &state.identity,
+                                &state.device_id,
+                                GossipKind::FriendMessageBlocked,
+                                None,
+                                &payload_b64,
+                                db::now_ms(),
+                            )
+                        };
                         broadcast_gossip(state, blocked_env).await;
                         return;
                     }
