@@ -15,7 +15,7 @@ use tokio::time::Duration;
 use crate::db;
 use crate::network::transport::try_send;
 use crate::protocol::{Message, ShareEntry, FILE_CHUNK};
-use crate::state::{AppState, FileReceiver};
+use crate::state::{AppState, FileDoneInfo, FileReceiver};
 
 /// 主动向 `peer_id` 发送本地文件。
 pub async fn send_file_from_path(
@@ -134,7 +134,22 @@ async fn stream_file(
     {
         let dbc = state.db.lock().unwrap();
         db::upsert_transfer(&dbc, transfer_id, peer_id, &name, size, "send", "done", None, 1.0).ok();
+        // 发送方消息状态也要推进到 delivered：否则气泡永远停在「发送中」spinner，
+        // 因为后端不会给自己的消息回 Ack/FileDone 事件。
+        db::set_message_status(&dbc, &format!("file-{transfer_id}"), "delivered").ok();
     }
+    // 通知前端发送方文件消息已完成（前端 onMessageAcked 会把 spinner 切为空圆框）
+    let _ = state.app.emit("message-acked", &format!("file-{transfer_id}"));
+    // 发送方也需要 file-done 事件来更新 transfer 状态（进度条消失 + transfer.status → done）
+    let _ = state.app.emit(
+        "file-done",
+        &FileDoneInfo {
+            transfer_id: transfer_id.to_string(),
+            name: name.clone(),
+            size,
+            path: path.to_string_lossy().to_string(),
+        },
+    );
     let _ = state.app.emit(
         "file-progress",
         &crate::state::FileProgress {

@@ -1204,10 +1204,15 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
         to: peer_id.to_string(),
         last_read_ts,
     };
-    // 只尝试发送，不在此处 re-pend：writer_loop 在 write_frame 失败时负责
-    // 将 ReadReceipt 的 timestamp 重新放回 pending_reads，形成明确的失败回收路径。
-    // 正常发送路径：pending 已在 remove 时清除，写入成功后自然不保留。
-    let _ = try_send(state, peer_id, &msg).await;
+    // 只尝试发送；成功则 pending 已在 remove 时清除，无需额外操作。
+    // 失败（链路不存在 / 半开）时必须重新放回 pending_reads，
+    // 否则这条回执永久丢失——要等用户下次手动打开会话才能补发。
+    // 接收方按 last_read_ts 单调性去重，重复送达无副作用。
+    if try_send(state, peer_id, &msg).await.is_err() {
+        let mut pending = state.pending_reads.lock().unwrap();
+        let cur = pending.entry(peer_id.to_string()).or_insert(last_read_ts);
+        *cur = (*cur).max(last_read_ts);
+    }
 }
 
 pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
@@ -1558,6 +1563,41 @@ mod tests {
         // write_frame 成功 → 不执行 writer_loop 的回收逻辑
         let _ = last_read_ts;
         assert!(pending.is_empty(), "写入成功后 pending 应保持清空");
+    }
+
+    /// flush_pending_reads try_send 失败时（链路不存在），pending 必须恢复——
+    //  否则 ReadReceipt 永久丢失，要等用户下次手动打开会话才能补发。
+    #[test]
+    fn flush_failure_reinserts_pending_read() {
+        let mut pending: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        pending.insert("peer-a".into(), 300);
+        // 模拟 flush_pending_reads: remove → try_send Err → 必须 re-insert
+        let last_read_ts = pending.remove("peer-a").unwrap();
+        assert!(pending.is_empty(), "remove 后 pending 应为空");
+        // try_send 失败 → 重新放入 pending（与 writer_loop 的失败回收同逻辑）
+        {
+            let cur = pending.entry("peer-a".into()).or_insert(last_read_ts);
+            *cur = (*cur).max(last_read_ts);
+        }
+        assert_eq!(pending.get("peer-a"), Some(&300), "try_send 失败后 pending 应恢复");
+    }
+
+    /// 多次 flush 失败只保留最大 timestamp（幂等性）。
+    #[test]
+    fn repeated_flush_failure_keeps_max_timestamp() {
+        let mut pending: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        // 第一次 mark_read(ts=300) → flush 失败
+        pending.insert("peer-a".into(), 300);
+        let ts1 = pending.remove("peer-a").unwrap();
+        { let cur = pending.entry("peer-a".into()).or_insert(ts1); *cur = (*cur).max(ts1); }
+        // 第二次 mark_read(ts=200) → 较小，不覆盖
+        let cur = pending.entry("peer-a".into()).or_insert(200);
+        *cur = (*cur).max(200);
+        assert_eq!(pending["peer-a"], 300);
+        // 第三次 mark_read(ts=500) → 较大，更新
+        let cur = pending.entry("peer-a".into()).or_insert(500);
+        *cur = (*cur).max(500);
+        assert_eq!(pending["peer-a"], 500);
     }
 
     /// read 不会被 delivered 回退（set_message_status 守卫）。
