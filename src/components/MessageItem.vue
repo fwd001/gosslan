@@ -294,14 +294,19 @@ async function openFile() {
           }"
         >
           <div class="flex items-center gap-3">
-            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-light text-primary">
-              <FileText class="h-5 w-5" />
+            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
+              :class="sendState === 'failed' ? 'bg-red-100 text-red-500 dark:bg-red-900/30' : 'bg-primary-light text-primary'"
+            >
+              <FileText v-if="sendState !== 'failed'" class="h-5 w-5" />
+              <X v-else class="h-5 w-5" />
             </div>
             <div class="min-w-0 flex-1">
               <div class="truncate text-sm font-medium">{{ fileMeta.name }}</div>
-              <div class="text-xs opacity-70">{{ humanSize(fileMeta.size) }}</div>
+              <div v-if="sendState === 'failed'" class="text-xs text-red-500">发送失败</div>
+              <div v-else class="text-xs opacity-70">{{ humanSize(fileMeta.size) }}</div>
             </div>
             <button
+              v-if="sendState !== 'failed'"
               class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
               title="打开"
               @click="openFile"

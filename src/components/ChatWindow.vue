@@ -88,18 +88,20 @@ function estimateHeight(m: MessageRecord, index?: number): number {
       // white-space: pre-wrap + word-break: break-word 会导致超长行视觉换行，
       // 根据内容长度估算视觉行数：每行约 40 字符宽（聊天泡最大宽 ≈320px / 12.5px ≈ 40 字符）
       const logicalLines = m.content.split("\n");
+      // 折叠条件必须与 CodeBlock.vue 完全一致：lineCount > 7（逻辑行数）
+      const COLLAPSE = 7;
+      const isCollapsed = logicalLines.length > COLLAPSE;
+      // 未折叠时：根据视觉换行估算实际行数（pre-wrap + break-word 导致超长行换行）
       const CHARS_PER_VISUAL_LINE = 40;
       let visualLines = 0;
       for (const line of logicalLines) {
         visualLines += Math.max(1, Math.ceil(line.length / CHARS_PER_VISUAL_LINE));
       }
-      const COLLAPSE = 7;
-      const isCollapsed = visualLines > COLLAPSE;
       // 折叠高度：CodeBlock max-height 9.5rem (152px) + toolbar 32px
-      // 展开高度：toolbar 32px + padding 24px + 每行 20px
+      // 展开高度：toolbar 32px + padding 24px + 视觉行数 × 20px
       const codeH = isCollapsed
         ? 152  // collapsed: code-pre max-height 9.5rem
-        : visualLines * 20 + 24;  // expanded: padding + lines × line-height
+        : visualLines * 20 + 24;  // expanded: padding + 视觉行数 × line-height
       bubble = 32 + codeH;
       break;
     }
