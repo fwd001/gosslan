@@ -134,7 +134,12 @@ export const useChatStore = defineStore("chat", () => {
 
   async function applyIncoming(raw: MessageRecord[]) {
     if (raw.length === 0) return;
-    const batch = applyReplacements(raw, pendingReplace);
+    // 快照当前各条目的送达状态，供 applyReplacements 做 furthestStatus 比较
+    const curStatus = new Map<string, string>();
+    for (const list of Object.values(messages.value)) {
+      for (const m of list) curStatus.set(m.msg_id, m.status);
+    }
+    const batch = applyReplacements(raw, pendingReplace, curStatus);
     const byConv = new Map<string, MessageRecord[]>();
     for (const m of batch) {
       const list = byConv.get(m.conv_id) ?? [];
@@ -289,7 +294,7 @@ export const useChatStore = defineStore("chat", () => {
       // 把它记入 pendingAcks；此处消费——如果 Ack 已到，直接把 sent 提升为 delivered。
       if (pendingAcks.has(rec.msg_id)) {
         pendingAcks.delete(rec.msg_id);
-        replaceMessage(convId, rec.msg_id, { ...rec, status: furthestStatus(rec.status, "delivered") });
+        replaceMessage(convId, rec.msg_id, rec);
       }
       return rec;
     } catch (e) {
@@ -305,7 +310,10 @@ export const useChatStore = defineStore("chat", () => {
     if (list) {
       const i = list.findIndex((m) => m.msg_id === msgId);
       if (i >= 0) {
-        messages.value[convId] = [...list.slice(0, i), next, ...list.slice(i + 1)];
+        // 取两者中更靠后的状态：pendingAcks 消费或 pendingReplace 批量替换
+        // 不应把已达 read 的记录退回 delivered（Ack 晚到 / peer-read 竞态）。
+        const merged = { ...next, status: furthestStatus(list[i].status, next.status) };
+        messages.value[convId] = [...list.slice(0, i), merged, ...list.slice(i + 1)];
         return;
       }
     }

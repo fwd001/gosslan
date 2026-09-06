@@ -50,16 +50,24 @@ export function preserveDeliveryStatus(
  * 乐观记录（`tmp-*` msg_id）经 rAF 批量队列落地，而 invoke 可能先返回真实记录；
  * 此时按 msg_id 就地替换会落空，真实记录一旦被丢弃气泡就永久停在「发送中」。
  * 挂起的替换在批次落地这一唯一入口处完成。
+ *
+ * `currentStatuses` 是批次落地前各 msg_id 的状态快照；替换时用 furthestStatus
+ * 与之比较，防止已推进到 read 的记录被一个 stale 的 pendingReplace 退回 delivered。
  */
 export function applyReplacements(
   batch: MessageRecord[],
   replacements: Map<string, MessageRecord>,
+  currentStatuses?: Map<string, string>,
 ): MessageRecord[] {
   if (replacements.size === 0) return batch;
   return batch.map((m) => {
     const next = replacements.get(m.msg_id);
     if (!next) return m;
     replacements.delete(m.msg_id);
+    if (currentStatuses) {
+      const cur = currentStatuses.get(m.msg_id);
+      if (cur) return { ...next, status: furthestStatus(cur, next.status) };
+    }
     return next;
   });
 }

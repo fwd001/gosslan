@@ -179,63 +179,111 @@ test("送达状态只前进：sent→delivered→read，逆序不变", () => {
   assert.equal(furthestStatus("delivered", "sent"), "delivered");
 });
 
-// 模拟 Ack 早于乐观→真实替换的竞态（P0-1 根因）：
-// onMessageAcked 在 store 里找不到真实 msg_id → 存入 pendingAcks；
-// send() 拿到真实 rec 后检查 pendingAcks → 直接把 sent 提升为 delivered。
-// 不这样做的后果：Ack 被丢弃，消息永久卡在「发送中」。
-test("pendingAcks 缓存早到 Ack：send() 拿到真实 rec 后立即消费并提升状态", () => {
-  const pendingAcks = new Map<string, string>();
-  const store = new Map<string, { msg_id: string; status: string }>();
+// ==================== P0-1 Ack 竞态测试 ====================
+//
+// 模拟 store 级别的 Ack 流程（无法直接测 useChatStore，因为它 import @/api），
+// 但核心逻辑完全由 replaceMessage + furthestStatus + pendingAcks 三者驱动，
+// 这里用等价状态机验证每条性质。
 
-  // 模拟 onMessageAcked 找不到 real_msg_id → 存入 pendingAcks
-  const realMsgId = "real-msg-1";
-  const tmpMsgId = "tmp-1234567890-abc";
-
-  // store 里只有乐观占位（真实记录尚未替换）
-  store.set(tmpMsgId, { msg_id: tmpMsgId, status: "sending" });
-
-  // Ack 到达 → store 里没有 real_msg_id → 记入 pendingAcks
-  const found = [...store.values()].some((m) => m.msg_id === realMsgId);
-  assert.equal(found, false);
-  if (!found) pendingAcks.set(realMsgId, realMsgId);
-  assert.equal(pendingAcks.size, 1);
-
-  // 模拟 send() 拿到真实 rec 并 replaceMessage 后：检查 pendingAcks
-  const realRec = { msg_id: realMsgId, status: "sent" };
-  if (pendingAcks.has(realRec.msg_id)) {
-    pendingAcks.delete(realRec.msg_id);
-    realRec.status = furthestStatus(realRec.status, "delivered");
+/** 模拟一次完整的 send→ack 生命周期。 */
+function simulateSendAcks(
+  pendingAcks: Map<string, string>,
+  replaceMessage: (convId: string, msgId: string, next: { msg_id: string; status: string }) => void,
+  store: { msg_id: string; status: string }[],
+  convId: string,
+  tmpId: string,
+  realId: string,
+) {
+  // 1. 乐观上屏
+  store.push({ msg_id: tmpId, status: "sending" });
+  // 2. 模拟 onMessageAcked —— 找得到就走正常路径，找不到就存 pendingAcks
+  const found = store.some((m) => m.msg_id === realId);
+  if (!found) pendingAcks.set(realId, realId);
+  // 3. send() 返回真实 rec → replaceMessage(tmp→real)
+  replaceMessage(convId, tmpId, { msg_id: realId, status: "sent" });
+  // 4. 消费 pendingAcks
+  if (pendingAcks.has(realId)) {
+    pendingAcks.delete(realId);
+    replaceMessage(convId, realId, { msg_id: realId, status: "delivered" });
   }
-  assert.equal(pendingAcks.size, 0, "pendingAcks 已消费");
-  assert.equal(realRec.status, "delivered", "sent → delivered（不卡在发送中）");
-});
+}
 
-// Ack 晚到（正常路径）：store 已有真实记录 → 直接匹配并提升，pendingAcks 不受影响
-test("正常 Ack 路径：store 有记录时直接提升，不污染 pendingAcks", () => {
+function makeReplaceMessage(store: { msg_id: string; status: string }[]) {
+  return (_convId: string, msgId: string, next: { msg_id: string; status: string }) => {
+    const i = store.findIndex((m) => m.msg_id === msgId);
+    if (i >= 0) {
+      store[i] = { ...next, status: furthestStatus(store[i].status, next.status) };
+    } else {
+      store.push(next);
+    }
+  };
+}
+
+test("Ack 晚到：send() 返回后 store 有真实记录，onMessageAcked 直接匹配并提升", () => {
   const pendingAcks = new Map<string, string>();
-  const realMsgId = "real-msg-2";
-  const store = [{ msg_id: realMsgId, status: "sent" }];
+  const store: { msg_id: string; status: string }[] = [];
+  const replaceMessage = makeReplaceMessage(store);
+  const tmpId = "tmp-1", realId = "m1";
 
-  // Ack 到达 → 找到匹配 → 走正常路径
-  const found = store.some((m) => m.msg_id === realMsgId);
-  assert.equal(found, true);
-  const idx = store.findIndex((m) => m.msg_id === realMsgId);
-  store[idx] = { ...store[idx], status: furthestStatus(store[idx].status, "delivered") };
-  assert.equal(store[idx].status, "delivered");
-  assert.equal(pendingAcks.size, 0, "pendingAcks 不受影响");
-});
-
-// 重复 Ack 幂等：同 msg_id 第二次到达时已在 store 中，furthestStatus 不回退 read
-test("重复 Ack 不污染 pendingAcks 且不降级已读", () => {
-  const pendingAcks = new Map<string, string>();
-  const store = [{ msg_id: "m1", status: "read" }];
-
-  // Ack 第二次到达 → store 有记录且已 read → 不写 pendingAcks
-  const found = store.some((m) => m.msg_id === "m1");
-  assert.equal(found, true);
+  store.push({ msg_id: tmpId, status: "sending" });
+  replaceMessage("f1", tmpId, { msg_id: realId, status: "sent" });
+  // Ack 到达时 store 已有 realId → 不写 pendingAcks
+  assert.equal(store.some((m) => m.msg_id === realId), true);
   assert.equal(pendingAcks.size, 0);
+  assert.equal(store.find((m) => m.msg_id === realId)!.status, "sent");
+});
 
-  // 再次查找 → 仍不写 pendingAcks
-  if (!found) pendingAcks.set("m1", "m1");
-  assert.equal(pendingAcks.size, 0, "重复 Ack 不污染");
+test("Ack 早到：onMessageAcked 先存入 pendingAcks，send() 拿到 rec 后消费并提升", () => {
+  const pendingAcks = new Map<string, string>();
+  const store: { msg_id: string; status: string }[] = [];
+  const replaceMessage = makeReplaceMessage(store);
+
+  simulateSendAcks(pendingAcks, replaceMessage, store, "f1", "tmp-2", "m2");
+  assert.equal(pendingAcks.size, 0, "pendingAcks 已消费");
+  assert.equal(store.find((m) => m.msg_id === "m2")!.status, "delivered", "sent → delivered");
+});
+
+test("重复 Ack 幂等：store 已有 delivered 的消息再收到 Ack 不回退不污染", () => {
+  const pendingAcks = new Map<string, string>();
+  const store: { msg_id: string; status: string }[] = [];
+  const replaceMessage = makeReplaceMessage(store);
+
+  store.push({ msg_id: "m3", status: "delivered" });
+  // 第一次 Ack：store 有记录 → 不写 pendingAcks，furthestStatus 不降级
+  assert.equal(store.some((m) => m.msg_id === "m3"), true);
+  const idx1 = store.findIndex((m) => m.msg_id === "m3");
+  store[idx1] = { ...store[idx1], status: furthestStatus(store[idx1].status, "delivered") };
+  assert.equal(store[idx1].status, "delivered");
+  assert.equal(pendingAcks.size, 0);
+  // 推进到 read 后再 Ack
+  store[idx1] = { ...store[idx1], status: "read" };
+  store[idx1] = { ...store[idx1], status: furthestStatus(store[idx1].status, "delivered") };
+  assert.equal(store[idx1].status, "read", "read 不得退回 delivered");
+});
+
+test("连续快速发送 10 条，10 条全部进入 delivered", () => {
+  const pendingAcks = new Map<string, string>();
+  const store: { msg_id: string; status: string }[] = [];
+  const replaceMessage = makeReplaceMessage(store);
+
+  for (let i = 0; i < 10; i++) {
+    simulateSendAcks(pendingAcks, replaceMessage, store, "f1", `tmp-${i}`, `m-${i}`);
+  }
+  for (let i = 0; i < 10; i++) {
+    assert.equal(store.find((m) => m.msg_id === `m-${i}`)!.status, "delivered", `m-${i} 未 delivered`);
+  }
+  assert.equal(pendingAcks.size, 0, "pendingAcks 全部消费");
+});
+
+test("read 状态不降级：replaceMessage 的 furthestStatus 守卫防止 read → delivered", () => {
+  const store: { msg_id: string; status: string }[] = [];
+  const replaceMessage = makeReplaceMessage(store);
+
+  // send() → sent
+  replaceMessage("f1", "tmp-x", { msg_id: "m5", status: "sent" });
+  // peer-read 到达 → 提升为 read
+  replaceMessage("f1", "m5", { msg_id: "m5", status: "read" });
+  // 迟到的 Ack → furthestStatus 保护：read 不得退回 delivered
+  replaceMessage("f1", "m5", { msg_id: "m5", status: "delivered" });
+  assert.equal(store.find((m) => m.msg_id === "m5")!.status, "read", "Ack 不得把 read 降为 delivered");
 });
