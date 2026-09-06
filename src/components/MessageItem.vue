@@ -4,6 +4,7 @@ import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { save } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import CodeBlock from "@/components/CodeBlock.vue";
 import { Check, Circle, Copy, Download, FileText, Loader2, RefreshCw, X } from "lucide-vue-next";
@@ -169,6 +170,18 @@ async function copyText() {
     /* ignore */
   }
 }
+async function openFile() {
+  const path = fileMeta.value?.path;
+  if (!path) {
+    app.toast("文件路径不可用", "error");
+    return;
+  }
+  try {
+    await openPath(path);
+  } catch (e) {
+    app.toast(`打开文件失败：${e}`, "error");
+  }
+}
 async function saveAs() {
   const source = fileMeta.value?.path;
   const filename = fileMeta.value?.name;
@@ -329,6 +342,14 @@ async function retrySend() {
               <div v-if="sendState === 'failed'" class="text-xs text-red-500">发送失败</div>
               <div v-else class="text-xs opacity-70">{{ humanSize(fileMeta.size) }}</div>
             </div>
+            <button
+              v-if="sendState !== 'failed'"
+              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
+              title="打开文件"
+              @click="openFile"
+            >
+              <FileText class="h-4 w-4" />
+            </button>
             <button
               v-if="sendState !== 'failed'"
               class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
