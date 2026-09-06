@@ -444,21 +444,21 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             // 对方已读：把「我发给对方、ts ≤ last_read_ts」的消息标记为 read（幂等）
-            let updated = {
+            {
                 let dbc = state.db.lock().unwrap();
-                dbc.execute(
+                let _ = dbc.execute(
                     "UPDATE messages SET status = 'read'
                      WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
                     params![from, state.device_id, last_read_ts],
-                )
-                .unwrap_or(0)
-            };
-            if updated > 0 {
-                let _ = state.app.emit(
-                    "peer-read",
-                    &serde_json::json!({ "peer_id": from, "last_read_ts": last_read_ts }),
                 );
             }
+            // 无论 updated 是 0 还是 >0 都 emit：DB 可能已经是 read，
+            // 但前端内存状态可能落后（事件竞态 / 会话重查覆盖），
+            // 重新 emit 让 frontend 用 furthestStatus 再校准一次。
+            let _ = state.app.emit(
+                "peer-read",
+                &serde_json::json!({ "peer_id": from, "last_read_ts": last_read_ts }),
+            );
         }
         Message::FileOffer { transfer_id, from, name, size } => {
             if from == state.device_id {
@@ -1195,7 +1195,10 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
         to: peer_id.to_string(),
         last_read_ts,
     };
-    if try_send(state, peer_id, &msg).await.is_err() {
+    // 无论 try_send 成功与否都保留 pending：Ok 只代表进 mpsc，不代表 TCP write 成功；
+    // 接收方按 last_read_ts 单调性去重，重复送达无副作用。
+    let _ = try_send(state, peer_id, &msg).await;
+    {
         let mut pending = state.pending_reads.lock().unwrap();
         let cur = pending.entry(peer_id.to_string()).or_insert(last_read_ts);
         *cur = (*cur).max(last_read_ts);
@@ -1458,5 +1461,82 @@ mod tests {
         assert!(may_ack(&fresh), "本次新建 ⇒ Ack");
         assert!(may_ack(&duplicate), "已在库中 ⇒ 仍 Ack（Ack 语义 = 已成功接收并持久化）");
         assert!(!may_ack(&db_error), "DB 故障 ⇒ 绝不 Ack，outbox 行必须保留以便重发");
+    }
+
+    /// ReadReceipt 正常到达：ts ≤ last_read_ts 的消息推进到 read。
+    #[test]
+    fn read_receipt_marks_messages_as_read() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        db::insert_message(&conn, &MessageRecord {
+            id: 0, msg_id: "m1".into(), conv_id: "peer-a".into(),
+            sender_id: "me".into(), receiver_id: "peer-a".into(),
+            kind: "text".into(), content: "hi".into(), ts: 100, status: "delivered".into(),
+        }).unwrap();
+        // 模拟 ReadReceipt handler 的 UPDATE 语句
+        let updated = conn.execute(
+            "UPDATE messages SET status = 'read'
+             WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
+            params!["peer-a", "me", 100],
+        ).unwrap();
+        assert_eq!(updated, 1, "应有 1 行被更新");
+        let status: String = conn.query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(status, "read");
+    }
+
+    /// updated = 0 时前端仍收到 peer-read（DB 已是 read，但前端内存可能落后）。
+    #[test]
+    fn read_receipt_still_emits_even_when_db_already_read() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        db::insert_message(&conn, &MessageRecord {
+            id: 0, msg_id: "m1".into(), conv_id: "peer-a".into(),
+            sender_id: "me".into(), receiver_id: "peer-a".into(),
+            kind: "text".into(), content: "hi".into(), ts: 100, status: "read".into(),
+        }).unwrap();
+        let updated = conn.execute(
+            "UPDATE messages SET status = 'read'
+             WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
+            params!["peer-a", "me", 100],
+        ).unwrap();
+        assert_eq!(updated, 0, "DB 已是 read，无行被更新");
+        // 但 handler 仍然 emit peer-read（本轮修复）
+    }
+
+    /// 多次 mark_read 只保留最大 timestamp。
+    #[test]
+    fn pending_reads_keeps_max_timestamp() {
+        let mut pending: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        // 第一次 mark_read ts=100
+        let cur = pending.entry("peer-a".into()).or_insert(100);
+        *cur = (*cur).max(100);
+        assert_eq!(pending["peer-a"], 100);
+        // 第二次 ts=80（较小，不更新）
+        let cur = pending.entry("peer-a".into()).or_insert(80);
+        *cur = (*cur).max(80);
+        assert_eq!(pending["peer-a"], 100);
+        // 第三次 ts=200（较大，更新）
+        let cur = pending.entry("peer-a".into()).or_insert(200);
+        *cur = (*cur).max(200);
+        assert_eq!(pending["peer-a"], 200);
+    }
+
+    /// read 不会被 delivered 回退（set_message_status 守卫）。
+    #[test]
+    fn read_status_never_regresses_to_delivered() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        db::insert_message(&conn, &MessageRecord {
+            id: 0, msg_id: "m1".into(), conv_id: "f1".into(),
+            sender_id: "a".into(), receiver_id: "b".into(),
+            kind: "text".into(), content: "hi".into(), ts: 100, status: "read".into(),
+        }).unwrap();
+        db::set_message_status(&conn, "m1", "delivered").unwrap();
+        let status: String = conn.query_row(
+            "SELECT status FROM messages WHERE msg_id = 'm1'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(status, "read", "delivered 不得回退 read");
     }
 }

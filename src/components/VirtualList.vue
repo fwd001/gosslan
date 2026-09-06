@@ -13,7 +13,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 const props = withDefaults(
   defineProps<{
     items: any[];
-    estimateHeight: (item: any) => number;
+    estimateHeight: (item: any, index?: number) => number;
     overscan?: number;
   }>(),
   { overscan: 6 },
@@ -32,7 +32,7 @@ const offsets = computed(() => {
   const arr = new Array<number>(props.items.length + 1);
   arr[0] = 0;
   for (let i = 0; i < props.items.length; i++) {
-    arr[i + 1] = arr[i] + props.estimateHeight(props.items[i]);
+    arr[i + 1] = arr[i] + props.estimateHeight(props.items[i], i);
   }
   return arr;
 });

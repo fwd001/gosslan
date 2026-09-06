@@ -663,9 +663,12 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
                 to: conv_id.clone(),
                 last_read_ts: ts,
             };
-            // 未建链 / 半开链路时 try_send 会失败，回执不能只试一次就丢：
-            // 丢了就只剩「用户再点一次会话」才会让对方变绿。暂存后由心跳冲刷。
-            if crate::network::transport::try_send(s, &conv_id, &msg).await.is_err() {
+            // try_send 返回 Ok 只代表消息进入 mpsc channel，不代表 TCP writer
+            // 真正 write_frame 成功——writer_loop 可能随后发现链路已断而丢弃。
+            // 因此无论 Ok/Err 都保留 pending：下一次心跳/建链时 flush 重发。
+            // 接收方按 last_read_ts 单调性去重，重复送达无副作用。
+            let _ = crate::network::transport::try_send(s, &conv_id, &msg).await;
+            {
                 let mut pending = s.pending_reads.lock().unwrap();
                 let cur = pending.entry(conv_id.clone()).or_insert(ts);
                 *cur = (*cur).max(ts);

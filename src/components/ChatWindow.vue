@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -76,22 +77,57 @@ function jumpToLatest() {
 
 const LONG_TEXT_CHARS = 280;
 
-function estimateHeight(m: MessageRecord): number {
+function estimateHeight(m: MessageRecord, index?: number): number {
+  const prev = index != null && index > 0 ? messages.value[index - 1] : null;
+
+  // --- 基础高度：气泡区域 ---
+  let bubble: number;
   switch (m.kind) {
     case "code":
-      return 340;
+      bubble = 340;
+      break;
     case "image":
-      return 300;
+      bubble = 300;
+      break;
     case "file":
-      return 92;
+      bubble = 92;
+      break;
     case "system":
-      return 28;
+      bubble = 28;
+      break;
     default: {
-      // 长文本默认折叠为 5 行 + 底部操作条
       const lines = m.content.length > LONG_TEXT_CHARS ? 5 : Math.max(1, Math.ceil(m.content.length / 40));
-      return 24 + lines * 22 + (m.content.length > LONG_TEXT_CHARS ? 34 : 0) + 22;
+      bubble = 24 + lines * 22 + (m.content.length > LONG_TEXT_CHARS ? 34 : 0) + 22;
     }
   }
+
+  // --- 紧凑判断（与 MessageItem tight 一致）---
+  const sameSender = prev
+    && prev.kind !== "system"
+    && prev.sender_id === m.sender_id
+    && m.ts - prev.ts < 5 * 60 * 1000
+    && app.chatStyle.compact;
+  const sameMinute = prev && prev.kind !== "system" && dayjs(prev.ts).isSame(m.ts, "minute");
+  const tight = sameSender || sameMinute;
+
+  // --- 时间分割线（≥5 分钟）：32px ---
+  const showDivider = !prev || m.ts - prev.ts >= 5 * 60 * 1000;
+
+  // --- 群聊昵称行（首条非本人消息）：20px ---
+  const showNickname = isGroup && m.sender_id !== app.device?.device_id && !sameSender;
+
+  // --- 气泡垂直 padding ---
+  const py = tight ? 4 /* py-0.5 */ : 12; /* pt-1 pb-2 */
+  // --- 气泡下方时间行 ---
+  const timeH = tight ? 0 : 16; // mt-0.5 text-[11px]
+  // --- 昵称行 ---
+  const nickH = showNickname ? 20 : 0;
+  // --- 分割线 ---
+  const divH = showDivider ? 32 : 0;
+  // --- 头像行 ---
+  const avatarH = sameSender ? 0 : 32; // h-8 w-8
+
+  return bubble + py + timeH + nickH + divH + avatarH;
 }
 
 // 打开会话/未读定位：优先跳到第一条未读（该消息贴视口顶部，分割线置上），

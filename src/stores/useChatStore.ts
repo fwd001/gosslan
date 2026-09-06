@@ -8,6 +8,7 @@ import {
   mergeMessages,
   preserveDeliveryStatus,
   previewText,
+  syncProfileFromPeers,
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
 import {
@@ -465,6 +466,8 @@ export const useChatStore = defineStore("chat", () => {
         peers.value = p;
         const onlineIds = new Set(p.map((x) => x.device_id));
         friends.value.forEach((f) => (f.online = onlineIds.has(f.device_id)));
+        // 同步好友/单聊会话的昵称/头像（对方改名后立即生效）
+        syncProfileFromPeers(friends.value, conversations.value, p);
         void refreshTopology();
       },
       onFriendRequest: (req) => {

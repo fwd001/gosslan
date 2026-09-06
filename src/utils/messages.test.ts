@@ -7,6 +7,7 @@ import {
   mergeMessages,
   preserveDeliveryStatus,
   previewText,
+  syncProfileFromPeers,
 } from "./messages.ts";
 import type { Conversation, MessageRecord } from "../types";
 
@@ -303,4 +304,33 @@ test("7: send 失败 → failed，残留 pendingAck 不提升", () => {
   s.push({ msg_id: "td", status: "failed" });
   assert.equal(a.has("md"), true, "pendingAck 未消费");
   assert.equal(s.find(m => m.msg_id === "td")!.status, "failed");
+});
+
+// ==================== Profile Sync 测试 ====================
+
+test("syncProfileFromPeers: peer 改昵称 → friend + conversation 同步更新", () => {
+  const friends = [{ device_id: "p1", nickname: "旧名", avatar: null as string | null }];
+  const convs = [{ id: "p1", kind: "single", name: "旧名", avatar: null as string | null }];
+  const peers = [{ device_id: "p1", nickname: "新名", avatar: "data:img" }];
+  syncProfileFromPeers(friends, convs, peers);
+  assert.equal(friends[0].nickname, "新名");
+  assert.equal(friends[0].avatar, "data:img");
+  assert.equal(convs[0].name, "新名");
+  assert.equal(convs[0].avatar, "data:img");
+});
+
+test("syncProfileFromPeers: 群聊 conversation 不被修改", () => {
+  const friends: { device_id: string; nickname: string; avatar: string | null }[] = [];
+  const convs = [{ id: "g1", kind: "group", name: "群聊名", avatar: null as string | null }];
+  const peers = [{ device_id: "g1", nickname: "假名", avatar: "x" }];
+  syncProfileFromPeers(friends, convs, peers);
+  assert.equal(convs[0].name, "群聊名", "群聊名不受 peers 影响");
+});
+
+test("syncProfileFromPeers: 无匹配 peer 时保持原值", () => {
+  const friends = [{ device_id: "p1", nickname: "不变", avatar: null as string | null }];
+  const convs = [{ id: "p1", kind: "single", name: "不变", avatar: null as string | null }];
+  syncProfileFromPeers(friends, convs, []);
+  assert.equal(friends[0].nickname, "不变");
+  assert.equal(convs[0].name, "不变");
 });

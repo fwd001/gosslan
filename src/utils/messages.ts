@@ -72,6 +72,33 @@ export function applyReplacements(
   });
 }
 
+/**
+ * 从 peers 列表同步好友昵称/头像到 friends 和单聊 conversations。
+ * 纯函数，便于测试；调用方为 useChatStore.onPeers。
+ */
+export function syncProfileFromPeers(
+  friends: { device_id: string; nickname: string; avatar: string | null }[],
+  conversations: { id: string; kind: string; name: string; avatar: string | null }[],
+  peers: { device_id: string; nickname: string; avatar: string | null }[],
+): void {
+  const peerMap = new Map(peers.map((p) => [p.device_id, p]));
+  for (const f of friends) {
+    const peer = peerMap.get(f.device_id);
+    if (peer) {
+      f.nickname = peer.nickname;
+      f.avatar = peer.avatar;
+    }
+  }
+  for (const c of conversations) {
+    if (c.kind !== "single") continue;
+    const peer = peerMap.get(c.id);
+    if (peer) {
+      c.name = peer.nickname;
+      c.avatar = peer.avatar;
+    }
+  }
+}
+
 /** 消息摘要（会话列表展示）。 */
 export function previewText(rec: MessageRecord): string {
   switch (rec.kind) {

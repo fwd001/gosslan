@@ -50,10 +50,11 @@ const sameSenderRun = computed(() => {
   if (!p || p.kind === "system" || p.sender_id !== props.message.sender_id) return false;
   return props.message.ts - p.ts < 5 * 60 * 1000;
 });
-/** 同一分钟内同一发送者的连续消息：合并显示（省略时间行、气泡更紧凑），不依赖紧凑开关。 */
+/** 同一分钟内的连续消息：合并显示（省略时间行、气泡更紧凑），不依赖紧凑开关。
+ *  时间属于时间轴，不属于发送者——不因 sender 变化而重复时间。 */
 const sameMinuteRun = computed(() => {
   const p = props.prev;
-  if (!p || p.kind === "system" || p.sender_id !== props.message.sender_id) return false;
+  if (!p || p.kind === "system") return false;
   return dayjs(p.ts).isSame(props.message.ts, "minute");
 });
 /** 紧凑布局：连续 run 或同分钟消息。 */
