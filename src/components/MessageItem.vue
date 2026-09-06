@@ -6,7 +6,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import CodeBlock from "@/components/CodeBlock.vue";
-import { Check, Circle, Copy, Download, FileText, Loader2, X } from "lucide-vue-next";
+import { Check, Circle, Copy, Download, FileText, Loader2, RefreshCw, X } from "lucide-vue-next";
 import { humanSize } from "@/utils/color";
 import { findPreset, parsePeerStyle } from "@/utils/chatStyle";
 import type { MessageRecord } from "@/types";
@@ -185,6 +185,15 @@ async function saveAs() {
     app.toast(`保存文件失败：${e}`, "error");
   }
 }
+async function retrySend() {
+  const msg = props.message;
+  if (msg.status !== "failed" || msg.kind === "file") return;
+  try {
+    await chat.send(msg.conv_id, msg.content, msg.kind);
+  } catch {
+    // 失败状态已由 send() 内部处理
+  }
+}
 </script>
 
 <template>
@@ -238,7 +247,9 @@ async function saveAs() {
         <!-- mine 时回执固定在气泡左侧（视觉上贴近对话人头像方向） -->
         <span v-if="mine" class="shrink-0 pb-1.5" :title="receiptTitle">
           <Loader2 v-if="sendState === 'sending' || sendState === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
-          <X v-else-if="sendState === 'failed'" class="h-3.5 w-3.5 text-red-500" />
+          <button v-else-if="sendState === 'failed'" class="flex h-5 w-5 items-center justify-center rounded text-red-500 transition hover:bg-red-500/10" title="重新发送" @click="retrySend">
+            <RefreshCw class="h-3.5 w-3.5" />
+          </button>
           <Circle v-else-if="sendState === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
           <Check v-else-if="sendState === 'read'" class="h-4 w-4 text-emerald-500" />
         </span>

@@ -206,13 +206,14 @@ async function sendMsg(content?: string, kind?: string) {
   const text = content ?? draft.value;
   const k = kind ?? (codeMode.value ? "code" : "text");
   if (k === "text" && !text.trim()) return;
+  // 立即清空输入框（optimistic UI：不等 IPC 返回）
+  draft.value = "";
+  if (!kind) codeMode.value = false;
+  await nextTick();
+  autoResize();
+  // 后台执行实际发送
   try {
     await chat.send(convId, text, k);
-    draft.value = "";
-    // Code Mode 一次性：发送成功后关闭，下一条恢复普通 text
-    if (!kind) codeMode.value = false;
-    await nextTick();
-    autoResize();
   } catch (e) {
     app.toast(`发送失败：${e}`, "error");
   }
