@@ -340,6 +340,45 @@ pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Resu
     Ok(())
 }
 
+/// 搜索消息内容，返回匹配的会话 ID 列表（去重，按最新匹配排序）。
+pub fn search_messages(conn: &Connection, keyword: &str, limit: i64) -> Result<Vec<String>> {
+    let pattern = format!("%{keyword}%");
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT conv_id FROM messages WHERE content LIKE ?1 ORDER BY ts DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![pattern, limit], |r| r.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 获取会话中匹配关键词的最新一条消息（用于搜索结果摘要）。
+pub fn search_messages_in_conv(
+    conn: &Connection,
+    conv_id: &str,
+    keyword: &str,
+    limit: i64,
+) -> Result<Vec<MessageRecord>> {
+    let pattern = format!("%{keyword}%");
+    let mut stmt = conn.prepare(
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, status
+         FROM messages WHERE conv_id = ?1 AND content LIKE ?2
+         ORDER BY ts DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![conv_id, pattern, limit], |r| {
+        Ok(MessageRecord {
+            id: r.get(0)?,
+            msg_id: r.get(1)?,
+            conv_id: r.get(2)?,
+            sender_id: r.get(3)?,
+            receiver_id: r.get(4)?,
+            kind: r.get(5)?,
+            content: r.get(6)?,
+            ts: r.get(7)?,
+            status: r.get(8)?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 // ---------------- 会话 ----------------
 
 pub fn touch_conversation(

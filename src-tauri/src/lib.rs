@@ -106,6 +106,7 @@ pub fn run() {
             commands::request_share_tree,
             commands::download_shared_file,
             commands::copy_file,
+            commands::search_messages,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

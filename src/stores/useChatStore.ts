@@ -470,7 +470,7 @@ export const useChatStore = defineStore("chat", () => {
           const conv = conversations.value.find((c) => c.id === convId);
           if (conv) conv.unread = 0;
         });
-      }, 600);
+      }, 300);
     };
     bindEvents({
       onPeers: (p) => {

@@ -162,3 +162,11 @@ export interface CleanupReport {
 export interface ImagePayload {
   dataUrl: string;
 }
+
+/** 搜索结果 */
+export interface SearchResult {
+  conv_id: string;
+  name: string;
+  match_content: string;
+  match_ts: number;
+}

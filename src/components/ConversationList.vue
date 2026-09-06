@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import { api } from "@/api";
 import { Check, Search, UserMinus, UserPlus, UsersRound, X } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
-import type { Conversation, Friend, PendingRequest } from "@/types";
+import type { Conversation, Friend, PendingRequest, SearchResult } from "@/types";
 
 defineProps<{ view: "chats" | "contacts" }>();
 const emit = defineEmits<{
@@ -17,12 +18,74 @@ const emit = defineEmits<{
 const app = useAppStore();
 const chat = useChatStore();
 const keyword = ref("");
+const searchResults = ref<SearchResult[]>([]);
+const isSearching = ref(false);
+
+// 防抖搜索
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+watch(keyword, (kw) => {
+  if (searchTimer) clearTimeout(searchTimer);
+  const trimmed = kw.trim();
+  if (!trimmed) {
+    searchResults.value = [];
+    isSearching.value = false;
+    return;
+  }
+  isSearching.value = true;
+  searchTimer = setTimeout(async () => {
+    try {
+      searchResults.value = await api.searchMessages(trimmed);
+    } catch {
+      searchResults.value = [];
+    }
+    isSearching.value = false;
+  }, 300);
+});
 
 const filteredConversations = computed(() => {
   const kw = keyword.value.trim().toLowerCase();
   if (!kw) return chat.conversations;
-  return chat.conversations.filter((c) => c.name.toLowerCase().includes(kw));
+  // 如果有消息搜索结果，合并名称匹配 + 内容匹配
+  const matchedIds = new Set(searchResults.value.map((r) => r.conv_id));
+  const nameMatches = chat.conversations.filter((c) => c.name.toLowerCase().includes(kw));
+  // 合并去重，名称匹配优先
+  const result = [...nameMatches];
+  for (const c of chat.conversations) {
+    if (matchedIds.has(c.id) && !result.some((r) => r.id === c.id)) {
+      result.push(c);
+    }
+  }
+  return result;
 });
+
+/** 获取会话的搜索匹配摘要 */
+function getSearchSnippet(convId: string): string | null {
+  const r = searchResults.value.find((x) => x.conv_id === convId);
+  if (!r) return null;
+  // 截取匹配位置前后的内容
+  const kw = keyword.value.trim().toLowerCase();
+  const content = r.match_content;
+  const idx = content.toLowerCase().indexOf(kw);
+  if (idx < 0) return content.slice(0, 60);
+  const start = Math.max(0, idx - 20);
+  const end = Math.min(content.length, idx + kw.length + 40);
+  let snippet = content.slice(start, end);
+  if (start > 0) snippet = "…" + snippet;
+  if (end < content.length) snippet = snippet + "…";
+  return snippet;
+}
+
+/** 安全高亮：将文本按关键词分割，用 <mark> 包裹匹配部分。不做 HTML 解析。 */
+function highlightText(text: string, kw: string): string {
+  if (!kw) return escHtml(text);
+  const safe = escHtml(text);
+  const safeKw = escHtml(kw);
+  const regex = new RegExp(`(${safeKw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+  return safe.replace(regex, '<mark class="bg-yellow-200 dark:bg-yellow-800/50 rounded px-0.5">$1</mark>');
+}
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
 
 const filteredFriends = computed(() => {
   const kw = keyword.value.trim().toLowerCase();
@@ -211,7 +274,12 @@ onUnmounted(() => {
               <span class="ml-2 shrink-0 whitespace-nowrap text-[11px] text-[var(--gosslan-text-2)]">{{ fmtTime(c.last_ts) }}</span>
             </div>
             <div class="flex items-center justify-between">
-              <span class="truncate text-xs text-[var(--gosslan-text-2)]">{{ c.last_msg || "暂无消息" }}</span>
+              <span class="truncate text-xs text-[var(--gosslan-text-2)]">
+                <template v-if="getSearchSnippet(c.id)">
+                  <span v-html="highlightText(getSearchSnippet(c.id)!, keyword.trim())"></span>
+                </template>
+                <template v-else>{{ c.last_msg || "暂无消息" }}</template>
+              </span>
               <span
                 v-if="c.unread > 0"
                 class="ml-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] text-white"

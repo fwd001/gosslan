@@ -1075,6 +1075,44 @@ pub fn copy_file(source: String, destination: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 搜索消息：返回匹配关键词的会话列表及其最新匹配消息。
+#[tauri::command]
+pub fn search_messages(
+    state: State<'_, Arc<AppState>>,
+    keyword: String,
+) -> Result<Vec<SearchResult>, String> {
+    let s = state.inner();
+    let dbc = s.db.lock().unwrap();
+    let conv_ids = db::search_messages(&dbc, &keyword, 20).map_err(|e| e.to_string())?;
+    let mut results = Vec::new();
+    for conv_id in conv_ids {
+        // 获取会话名称
+        let name = db::get_friend(&dbc, &conv_id)
+            .map(|(n, _)| n)
+            .unwrap_or_else(|| conv_id.clone());
+        // 获取最新匹配消息
+        let msgs = db::search_messages_in_conv(&dbc, &conv_id, &keyword, 1)
+            .unwrap_or_default();
+        if let Some(m) = msgs.into_iter().next() {
+            results.push(SearchResult {
+                conv_id,
+                name,
+                match_content: m.content,
+                match_ts: m.ts,
+            });
+        }
+    }
+    Ok(results)
+}
+
+#[derive(Serialize)]
+pub struct SearchResult {
+    conv_id: String,
+    name: String,
+    match_content: String,
+    match_ts: i64,
+}
+
 fn preview(kind: &str, content: &str) -> String {
     match kind {
         "file" => "[文件]".to_string(),

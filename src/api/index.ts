@@ -13,6 +13,7 @@ import type {
   FileProgress,
   Friend,
   Group,
+  SearchResult,
   InterfaceInfo,
   MessageRecord,
   NetworkStatus,
@@ -86,6 +87,7 @@ export const api = {
   saveSettings: (s: AppSettings) => invoke<void>("save_settings", { settings: s }),
   resetSettings: () => invoke<void>("reset_settings"),
   broadcastChatStyle: (style: string) => invoke<void>("broadcast_chat_style", { style }),
+  searchMessages: (keyword: string) => invoke<SearchResult[]>("search_messages", { keyword }),
 };
 
 // ---------------- 事件监听 ----------------

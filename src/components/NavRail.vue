@@ -37,16 +37,16 @@ const initials = computed(() => (app.device?.nickname ?? "?").slice(0, 1).toUppe
 
     <div class="mt-5 flex flex-col items-center gap-3">
       <button
-        class="flex items-center justify-center rounded-lg p-2.5 transition hover:bg-[var(--gosslan-hover)]"
-        :class="view === 'chats' ? 'text-primary' : 'text-[var(--gosslan-text-2)]'"
+        class="flex items-center justify-center rounded-lg p-2.5 transition"
+        :class="view === 'chats' ? 'bg-primary-light text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         title="消息"
         @click="emit('update:view', 'chats')"
       >
         <MessageCircle class="h-5 w-5" />
       </button>
       <button
-        class="relative flex items-center justify-center rounded-lg p-2.5 transition hover:bg-[var(--gosslan-hover)]"
-        :class="view === 'contacts' ? 'text-primary' : 'text-[var(--gosslan-text-2)]'"
+        class="relative flex items-center justify-center rounded-lg p-2.5 transition"
+        :class="view === 'contacts' ? 'bg-primary-light text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         title="联系人"
         @click="emit('update:view', 'contacts')"
       >
