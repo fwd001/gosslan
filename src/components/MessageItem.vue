@@ -292,7 +292,8 @@ async function retrySend() {
               {{ collapsed ? "展开全文" : "收起" }}
             </button>
             <button
-              class="flex items-center gap-1 whitespace-nowrap text-xs opacity-70 transition hover:opacity-100"
+              class="flex items-center gap-1 whitespace-nowrap text-xs transition"
+              :class="copied ? 'text-emerald-600 dark:text-emerald-400' : 'opacity-70 hover:opacity-100'"
               @click="copyText"
             >
               <Check v-if="copied" class="h-3 w-3" />
@@ -303,12 +304,15 @@ async function retrySend() {
           <!-- 普通文本悬停复制按钮 -->
           <button
             v-else
-            class="absolute -top-3 right-1 z-10 hidden items-center gap-1 whitespace-nowrap rounded-md border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-1.5 py-0.5 text-xs text-[var(--gosslan-text-2)] shadow group-hover:flex"
+            class="absolute -top-3 right-1 z-10 hidden items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs shadow transition group-hover:flex"
+            :class="copied
+              ? 'border-emerald-300 bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'
+              : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] text-[var(--gosslan-text-2)]'"
             @click="copyText"
           >
-            <Check v-if="copied" class="h-3 w-3 text-emerald-500" />
+            <Check v-if="copied" class="h-3 w-3" />
             <Copy v-else class="h-3 w-3" />
-            复制
+            {{ copied ? "已复制" : "复制" }}
           </button>
         </div>
 
