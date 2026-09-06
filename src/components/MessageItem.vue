@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, ref, watch, type CSSProperties } from "vue";
 import dayjs from "dayjs";
+import VueEasyLightbox from "vue-easy-lightbox/external-css";
+import "vue-easy-lightbox/external-css/vue-easy-lightbox.css";
 import { loadFilePreview } from "@/utils/filePreview";
+import {
+  CODE_CLAMP_HEIGHT,
+  PREVIEW_LINES,
+  codeNeedsClamp,
+  textNeedsClamp,
+} from "@/utils/previewMetrics";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -9,7 +17,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import CodeBlock from "@/components/CodeBlock.vue";
 import BaseModal from "@/components/BaseModal.vue";
-import { Check, Circle, Copy, Download, FileText, Loader2, RefreshCw, RotateCcw, X, ZoomIn, ZoomOut } from "lucide-vue-next";
+import { Check, Circle, Copy, Download, FileText, Loader2, RefreshCw, X } from "lucide-vue-next";
 import { humanSize } from "@/utils/color";
 import { findPreset, parsePeerStyle } from "@/utils/chatStyle";
 import type { MessageRecord } from "@/types";
@@ -34,7 +42,6 @@ const props = withDefaults(
 const app = useAppStore();
 const chat = useChatStore();
 const mine = computed(() => props.message.sender_id === app.device?.device_id);
-const copied = ref(false);
 
 // ---------------- 显示样式（本机偏好 + 对端广播偏好） ----------------
 /** 我发的消息用我的样式；对方发的消息优先用对方广播的样式（未同步过则回退本机）。 */
@@ -151,16 +158,59 @@ const fileStatusText = computed(() => {
   return t.direction === "send" ? `发送中 ${pct}%` : `接收中 ${pct}%`;
 });
 
-// ---------------- 长文本折叠 ----------------
-const LONG_TEXT_CHARS = 280;
-const isLongText = computed(
-  () => props.message.kind === "text" && props.message.content.length > LONG_TEXT_CHARS,
-);
-const collapsed = ref(true);
+// ---------------- 预览：消息流内固定 5 行，全文只在独立 Modal 里 ----------------
+/** 复制反馈：同一时刻只有一个复制按钮处于「已复制」态。 */
+const copiedKey = ref<"text" | "code" | "full" | null>(null);
+function copyContent(key: "text" | "code" | "full", text: string) {
+  navigator.clipboard
+    .writeText(text)
+    .then(() => {
+      copiedKey.value = key;
+      setTimeout(() => {
+        if (copiedKey.value === key) copiedKey.value = null;
+      }, 1500);
+    })
+    .catch(() => {
+      /* 剪贴板不可用时静默：不弹 toast 打扰发送 */
+    });
+}
 
-// 图片预览（已由 imageModalOpen/imageModalSrc 管理）
-function openPreview() {
-  openImageModal(props.message.content);
+/** 全文弹窗：文本与代码共用一个 Modal，DOM 在消息之外，不参与 VirtualList 排布。 */
+const fullModalOpen = ref(false);
+const fullModalKind = ref<"text" | "code">("text");
+const fullModalContent = ref("");
+function openFullModal(kind: "text" | "code", content: string) {
+  fullModalKind.value = kind;
+  fullModalContent.value = content;
+  fullModalOpen.value = true;
+}
+function closeFullModal() {
+  fullModalOpen.value = false;
+}
+
+/** 长文本判定与 estimateHeight 共用 textNeedsClamp：字号档位变了两边一起变。 */
+const isLongText = computed(
+  () => props.message.kind === "text" && textNeedsClamp(props.message.content, app.chatStyle.fontSize),
+);
+/** 截断样式由 PREVIEW_LINES 驱动，避免 Tailwind 类名里的行数与估算常量各写一份。 */
+const textClampStyle = computed<CSSProperties>(() =>
+  isLongText.value
+    ? {
+        display: "-webkit-box",
+        WebkitBoxOrient: "vertical",
+        WebkitLineClamp: PREVIEW_LINES,
+        overflow: "hidden",
+      }
+    : {},
+);
+
+// ---------------- 图片查看器（vue-easy-lightbox：缩放 / 拖拽 / 滚轮 / Esc / 点遮罩） ----------------
+const lightboxOpen = ref(false);
+const lightboxSrc = ref("");
+function openImageLightbox(src: string) {
+  if (!src) return;
+  lightboxSrc.value = src;
+  lightboxOpen.value = true;
 }
 
 // ---------------- 附件预览（file + subtype = image | code） ----------------
@@ -168,23 +218,6 @@ function openPreview() {
 const attachmentUrl = ref<string | null>(null);
 const attachmentCode = ref<string | null>(null);
 const previewNote = ref<string | null>(null);
-
-/** 代码附件：前5行用于聊天内显示（>5行时截断） */
-const attachmentDisplayCode = computed(() => {
-  if (!attachmentCode.value) return "";
-  const lines = attachmentCode.value.split("\n");
-  return lines.length <= 5 ? attachmentCode.value : lines.slice(0, 5).join("\n");
-});
-/** 代码附件：复制完整内容 */
-const attachmentCopied = ref(false);
-function copyAttachmentCode() {
-  const text = attachmentCode.value;
-  if (!text) return;
-  navigator.clipboard.writeText(text).then(() => {
-    attachmentCopied.value = true;
-    setTimeout(() => (attachmentCopied.value = false), 1500);
-  });
-}
 
 /** 仅当 file 消息本地路径就绪（= 已完成接收 / 本机自选文件）、未失败、且为 image/code 时可预览。 */
 const previewSubtype = computed<"image" | "code" | null>(() => {
@@ -226,85 +259,14 @@ watch(
   { immediate: true },
 );
 
-// ---------------- 代码附件弹窗 ----------------
-const codeModalOpen = ref(false);
-const codeModalCode = ref("");
-
-function openCodeModal() {
-  codeModalCode.value = attachmentCode.value ?? "";
-  codeModalOpen.value = true;
-}
-function closeCodeModal() {
-  codeModalOpen.value = false;
-}
-
-// ---------------- 图片附件弹窗（含缩放） ----------------
-const imageModalOpen = ref(false);
-const imageModalSrc = ref("");
-const imageZoom = ref(1);
-const ZOOM_MIN = 0.25;
-const ZOOM_MAX = 4;
-const ZOOM_STEP = 0.25;
-
-function openImageModal(src: string) {
-  imageModalSrc.value = src;
-  imageZoom.value = 1;
-  imageModalOpen.value = true;
-}
-function closeImageModal() {
-  imageModalOpen.value = false;
-  imageZoom.value = 1;
-}
-function zoomIn() {
-  imageZoom.value = Math.min(ZOOM_MAX, imageZoom.value + ZOOM_STEP);
-}
-function zoomOut() {
-  imageZoom.value = Math.max(ZOOM_MIN, imageZoom.value - ZOOM_STEP);
-}
-function resetZoom() {
-  imageZoom.value = 1;
-}
-function onImageWheel(e: WheelEvent) {
-  if (!imageModalOpen.value) return;
-  if (e.ctrlKey || e.metaKey) {
-    e.preventDefault();
-    const delta = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
-    imageZoom.value = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, imageZoom.value + delta));
-  }
-}
-
-// 两个弹窗的 body scroll lock + Escape
-function onGlobalKeydown(e: KeyboardEvent) {
-  if (e.key !== "Escape") return;
-  if (codeModalOpen.value) closeCodeModal();
-  else if (imageModalOpen.value) closeImageModal();
-}
-watch([codeModalOpen, imageModalOpen], ([code, img]) => {
-  const locked = code || img;
-  document.body.classList.toggle("overflow-hidden", locked);
-  if (locked) {
-    window.addEventListener("keydown", onGlobalKeydown);
-    window.addEventListener("wheel", onImageWheel, { passive: false });
-  } else {
-    window.removeEventListener("keydown", onGlobalKeydown);
-    window.removeEventListener("wheel", onImageWheel);
-  }
+/** 消息流里的代码：inline code 消息取 content，代码附件取本地读到的文本（null=未就绪/失败）。 */
+const streamCode = computed<string | null>(() => {
+  if (props.message.kind === "code") return props.message.content;
+  return attachmentCode.value;
 });
-onBeforeUnmount(() => {
-  window.removeEventListener("keydown", onGlobalKeydown);
-  window.removeEventListener("wheel", onImageWheel);
-  document.body.classList.remove("overflow-hidden");
-});
+/** 截断态用固定高度容器裁掉 CodeBlock 的其余部分：不出现内部滚动条，也不会向下撑开。 */
+const streamCodeClamped = computed(() => (streamCode.value ? codeNeedsClamp(streamCode.value) : false));
 
-async function copyText() {
-  try {
-    await navigator.clipboard.writeText(props.message.content);
-    copied.value = true;
-    setTimeout(() => (copied.value = false), 1500);
-  } catch {
-    /* ignore */
-  }
-}
 async function openFile() {
   const path = fileMeta.value?.path;
   if (!path) {
@@ -413,72 +375,72 @@ async function retrySend() {
           }"
         >
           <div
-            class="overflow-hidden whitespace-pre-wrap break-words"
-            :class="isLongText && collapsed ? 'line-clamp-5' : ''"
-            :style="{ wordBreak: 'break-word' }"
+            class="whitespace-pre-wrap break-words"
+            :style="{ wordBreak: 'break-word', ...textClampStyle }"
           >{{ message.content }}</div>
-          <!-- 长文本折叠条：展开/收起 + 复制 -->
+          <!-- 长文本操作条：高度固定，展开走独立 Modal，消息 DOM 不再变化 -->
           <div v-if="isLongText" class="mt-1.5 flex items-center gap-2 border-t pt-1.5" :style="{ borderColor: 'rgba(128,128,128,0.2)' }">
             <button
               class="text-xs opacity-70 transition hover:opacity-100"
-              @click="collapsed = !collapsed"
-            >
-              {{ collapsed ? "展开全文" : "收起" }}
-            </button>
+              @click="openFullModal('text', message.content)"
+            >展开显示</button>
             <button
               class="flex items-center gap-1 whitespace-nowrap text-xs transition"
-              :class="copied ? 'text-emerald-600 dark:text-emerald-400' : 'opacity-70 hover:opacity-100'"
-              @click="copyText"
+              :class="copiedKey === 'text' ? 'text-emerald-600 dark:text-emerald-400' : 'opacity-70 hover:opacity-100'"
+              @click="copyContent('text', message.content)"
             >
-              <Check v-if="copied" class="h-3 w-3" />
+              <Check v-if="copiedKey === 'text'" class="h-3 w-3" />
               <Copy v-else class="h-3 w-3" />
-              {{ copied ? "已复制" : "复制" }}
+              {{ copiedKey === "text" ? "已复制" : "复制" }}
             </button>
           </div>
           <!-- 普通文本悬停复制按钮 -->
           <button
             v-else
             class="absolute -top-3 right-1 z-10 hidden items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs shadow transition group-hover:flex"
-            :class="copied
+            :class="copiedKey === 'text'
               ? 'border-emerald-300 bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'
               : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] text-[var(--gosslan-text-2)]'"
-            @click="copyText"
+            @click="copyContent('text', message.content)"
           >
-            <Check v-if="copied" class="h-3 w-3" />
+            <Check v-if="copiedKey === 'text'" class="h-3 w-3" />
             <Copy v-else class="h-3 w-3" />
-            {{ copied ? "已复制" : "复制" }}
+            {{ copiedKey === "text" ? "已复制" : "复制" }}
           </button>
         </div>
 
-        <!-- 代码 -->
-        <div v-else-if="message.kind === 'code'" class="min-w-0 flex-1">
-          <CodeBlock :code="message.content" />
+        <!-- 代码：inline code 消息与代码附件同一套预览；超过 5 行裁断，全文进 Modal -->
+        <div v-else-if="streamCode !== null" class="min-w-0 flex-1">
+          <div v-if="streamCodeClamped" class="overflow-hidden rounded-lg" :style="{ height: `${CODE_CLAMP_HEIGHT}px` }">
+            <CodeBlock :code="streamCode" />
+          </div>
+          <CodeBlock v-else :code="streamCode" />
+          <div class="mt-1 flex items-center gap-1 px-1">
+            <button
+              v-if="streamCodeClamped"
+              class="preview-action"
+              @click="openFullModal('code', streamCode)"
+            >展开显示</button>
+            <button
+              class="preview-action"
+              :class="copiedKey === 'code' ? 'text-emerald-600 dark:text-emerald-400' : ''"
+              @click="copyContent('code', streamCode)"
+            >
+              <Check v-if="copiedKey === 'code'" class="h-3 w-3" />
+              <Copy v-else class="h-3 w-3" />
+              {{ copiedKey === "code" ? "已复制" : "复制" }}
+            </button>
+          </div>
         </div>
 
         <!-- 图片 -->
-        <div v-else-if="message.kind === 'image'" class="overflow-hidden rounded-xl cursor-pointer" @click="openPreview">
+        <div v-else-if="message.kind === 'image'" class="overflow-hidden rounded-xl cursor-pointer" @click="openImageLightbox(message.content)">
           <img :src="message.content" class="block max-h-72 max-w-full rounded-xl object-contain" />
         </div>
 
-        <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片，点击→弹窗预览） -->
-        <div v-else-if="message.kind === 'file' && attachmentUrl" class="overflow-hidden rounded-xl cursor-pointer" @click="openImageModal(attachmentUrl)">
+        <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片，点击→查看器） -->
+        <div v-else-if="message.kind === 'file' && attachmentUrl" class="overflow-hidden rounded-xl cursor-pointer" @click="openImageLightbox(attachmentUrl)">
           <img :src="attachmentUrl" class="block max-h-72 max-w-full rounded-xl object-contain" />
-        </div>
-
-        <!-- 附件代码预览（file + subtype:code，完成后读取本地文本交给 CodeBlock） -->
-        <div v-else-if="message.kind === 'file' && attachmentCode !== null" class="min-w-0 flex-1">
-          <CodeBlock :code="attachmentDisplayCode" />
-          <div class="mt-1 flex items-center gap-2 px-1">
-            <button
-              v-if="attachmentCode.split('\n').length > 5"
-              class="rounded-md px-2.5 py-1 text-[11px] transition hover:bg-black/5 dark:hover:bg-white/10"
-              @click="openCodeModal"
-            >弹窗预览</button>
-            <button
-              class="rounded-md px-2.5 py-1 text-[11px] transition hover:bg-black/5 dark:hover:bg-white/10"
-              @click="copyAttachmentCode"
-            >{{ attachmentCopied ? "已复制" : "复制" }}</button>
-          </div>
         </div>
 
         <!-- 文件 -->
@@ -558,38 +520,54 @@ async function retrySend() {
     </div>
   </div>
 
-  <!-- 图片预览弹窗（含缩放控制） -->
-  <BaseModal :open="imageModalOpen" width="max-w-5xl" @close="closeImageModal">
-    <div class="relative flex flex-col items-center gap-3">
-      <!-- 缩放工具栏 -->
-      <div class="flex items-center gap-2">
-        <button class="rounded-lg p-1.5 transition hover:bg-black/10 dark:hover:bg-white/10" title="缩小" @click="zoomOut">
-          <ZoomOut class="h-4 w-4" />
-        </button>
-        <span class="min-w-[3.5rem] text-center text-xs tabular-nums">{{ Math.round(imageZoom * 100) }}%</span>
-        <button class="rounded-lg p-1.5 transition hover:bg-black/10 dark:hover:bg-white/10" title="放大" @click="zoomIn">
-          <ZoomIn class="h-4 w-4" />
-        </button>
-        <button class="rounded-lg p-1.5 transition hover:bg-black/10 dark:hover:bg-white/10" title="恢复默认" @click="resetZoom">
-          <RotateCcw class="h-4 w-4" />
-        </button>
-      </div>
-      <!-- 图片（Ctrl+滚轮缩放，点击不关闭由 BaseModal 处理背景点击） -->
-      <div class="max-h-[65vh] overflow-auto">
-        <img
-          v-if="imageModalSrc"
-          :src="imageModalSrc"
-          class="block rounded shadow-2xl transition-transform duration-150 origin-center"
-          :style="{ transform: `scale(${imageZoom})` }"
-        />
-      </div>
+  <!-- 全文弹窗：文本 / 代码共用，内容可滚动、可复制；关闭后消息布局不变 -->
+  <BaseModal :open="fullModalOpen" :title="fullModalKind === 'code' ? '代码预览' : '完整文本'" width="max-w-4xl" @close="closeFullModal">
+    <div class="max-h-[70vh] overflow-y-auto">
+      <CodeBlock v-if="fullModalKind === 'code'" :code="fullModalContent" />
+      <div
+        v-else
+        class="whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--gosslan-text)]"
+        :style="{ wordBreak: 'break-word' }"
+      >{{ fullModalContent }}</div>
+    </div>
+    <div class="mt-3 flex justify-end">
+      <button
+        class="preview-action"
+        :class="copiedKey === 'full' ? 'text-emerald-600 dark:text-emerald-400' : ''"
+        @click="copyContent('full', fullModalContent)"
+      >
+        <Check v-if="copiedKey === 'full'" class="h-3 w-3" />
+        <Copy v-else class="h-3 w-3" />
+        {{ copiedKey === "full" ? "已复制" : "复制" }}
+      </button>
     </div>
   </BaseModal>
 
-  <!-- 代码附件弹窗：完整代码 + 语法高亮/复制，关闭后聊天布局不变 -->
-  <BaseModal :open="codeModalOpen" title="代码预览" width="max-w-4xl" @close="closeCodeModal">
-    <div class="max-h-[70vh] overflow-y-auto">
-      <CodeBlock v-if="codeModalCode" :code="codeModalCode" />
-    </div>
-  </BaseModal>
+  <!-- 图片查看器：缩放 / 拖拽 / 滚轮 / 双击 / Esc / 点遮罩均由 vue-easy-lightbox 提供 -->
+  <VueEasyLightbox
+    :visible="lightboxOpen"
+    :imgs="lightboxSrc"
+    :rotate-disabled="true"
+    teleport="body"
+    @hide="lightboxOpen = false"
+  />
 </template>
+
+<style scoped>
+/* 预览操作条按钮：py-1 + leading-4 = 24px，加容器 mt-1 = 28px，与 previewMetrics.CODE_ACTION_BAR 一致 */
+.preview-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 6px;
+  color: var(--gosslan-text-2);
+  white-space: nowrap;
+}
+.preview-action:hover {
+  background: rgba(128, 128, 128, 0.12);
+  color: var(--gosslan-text);
+}
+</style>

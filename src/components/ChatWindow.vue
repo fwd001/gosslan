@@ -7,6 +7,11 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import MessageItem from "@/components/MessageItem.vue";
 import VirtualList from "@/components/VirtualList.vue";
 import {
+  CLAMPED_CODE_BLOCK_HEIGHT,
+  codeBlockHeight,
+  textBubbleHeight,
+} from "@/utils/previewMetrics";
+import {
   ArrowDown,
   ArrowLeft,
   Code2,
@@ -75,42 +80,23 @@ function jumpToLatest() {
   listRef.value?.scrollToBottom();
 }
 
-const LONG_TEXT_CHARS = 280;
-
 function estimateHeight(m: MessageRecord, index?: number): number {
   const prev = index != null && index > 0 ? messages.value[index - 1] : null;
 
   // --- 基础高度：气泡区域 ---
+  // 文本与代码的高度算法与 MessageItem 的截断判断共用 previewMetrics，
+  // 保证「流里那 5 行预览的真实 DOM 高度」就是这里估出来的高度。
   let bubble: number;
   switch (m.kind) {
-    case "code": {
-      // CodeBlock 结构：toolbar 32px + code-pre padding 24px + 每行 ≈20px (12.5px × 1.6)
-      // white-space: pre-wrap + word-break: break-word 会导致超长行视觉换行，
-      // 根据内容长度估算视觉行数：每行约 40 字符宽（聊天泡最大宽 ≈320px / 12.5px ≈ 40 字符）
-      const logicalLines = m.content.split("\n");
-      // 折叠条件必须与 CodeBlock.vue 完全一致：lineCount > 7（逻辑行数）
-      const COLLAPSE = 7;
-      const isCollapsed = logicalLines.length > COLLAPSE;
-      // 未折叠时：根据视觉换行估算实际行数（pre-wrap + break-word 导致超长行换行）
-      const CHARS_PER_VISUAL_LINE = 40;
-      let visualLines = 0;
-      for (const line of logicalLines) {
-        visualLines += Math.max(1, Math.ceil(line.length / CHARS_PER_VISUAL_LINE));
-      }
-      // 折叠高度：CodeBlock max-height 9.5rem (152px) + toolbar 32px
-      // 展开高度：toolbar 32px + padding 24px + 视觉行数 × 20px
-      const codeH = isCollapsed
-        ? 152  // collapsed: code-pre max-height 9.5rem
-        : visualLines * 20 + 24;  // expanded: padding + 视觉行数 × line-height
-      bubble = 32 + codeH;
+    case "code":
+      bubble = codeBlockHeight(m.content);
       break;
-    }
     case "image":
       // MessageItem: max-h-72 (288px), object-contain 保持比例，≤320px 宽
       bubble = 288;
       break;
     case "file": {
-      // 普通文件卡片 92；附件图片/代码预览按目标高度估（图片 ≤288，代码折叠 ≈184）。
+      // 普通文件卡片 92；附件图片 ≤288；附件代码按截断态占位（读文件前预知不了行数）。
       let sub = "file";
       let hasPath = false;
       try {
@@ -121,19 +107,15 @@ function estimateHeight(m: MessageRecord, index?: number): number {
         /* 历史 / 异常内容按普通 file 卡片估 */
       }
       if (hasPath && sub === "image") bubble = 288;
-      else if (hasPath && sub === "code") bubble = 184;
+      else if (hasPath && sub === "code") bubble = CLAMPED_CODE_BLOCK_HEIGHT;
       else bubble = 92;
       break;
     }
     case "system":
       bubble = 28;
       break;
-    default: {
-      // 气泡结构（MessageItem line 274）：py-2 = 16px，leading-relaxed = 14px × 1.625 ≈ 23px / 行
-      const lines = m.content.length > LONG_TEXT_CHARS ? 5 : Math.max(1, Math.ceil(m.content.length / 40));
-      // 长文本折叠条（line 287）：mt-1.5(6) + pt-1.5(6) + border(1) + text-xs(16) = 29px
-      bubble = 16 + lines * 23 + (m.content.length > LONG_TEXT_CHARS ? 29 : 0);
-    }
+    default:
+      bubble = textBubbleHeight(m.content, app.chatStyle.fontSize);
   }
 
   // --- 紧凑判断（与 MessageItem tight 一致）---

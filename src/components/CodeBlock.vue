@@ -1,16 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import hljs from "highlight.js";
 import { useAppStore } from "@/stores/useAppStore";
 import darkCss from "highlight.js/styles/github-dark.css?raw";
 import lightCss from "highlight.js/styles/github.css?raw";
-import { Check, Copy } from "lucide-vue-next";
 
 const app = useAppStore();
 
 const props = defineProps<{ code: string; language?: string }>();
 
-const copied = ref(false);
 const lineCount = computed(() => props.code.split("\n").length);
 
 function escapeHtml(s: string): string {
@@ -38,7 +36,6 @@ const codeFg = computed(() => (app.dark ? "#e6edf3" : "#24292e"));
 const toolbarBg = computed(() => (app.dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)"));
 const toolbarFg = computed(() => (app.dark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.4)"));
 const borderStyle = computed(() => app.dark ? "border-white/10" : "border-black/10");
-const toolBtnFg = computed(() => (app.dark ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.45)"));
 
 const html = computed(() => {
   try {
@@ -49,14 +46,6 @@ const html = computed(() => {
   } catch { /* 忽略 */ }
   return escapeHtml(props.code);
 });
-
-async function copy() {
-  try {
-    await navigator.clipboard.writeText(props.code);
-    copied.value = true;
-    setTimeout(() => (copied.value = false), 1500);
-  } catch { /* ignore */ }
-}
 </script>
 
 <template>
@@ -64,10 +53,6 @@ async function copy() {
   <div class="overflow-hidden rounded-lg text-left" :class="borderStyle" :style="{ borderWidth: '1px' }">
     <div class="flex items-center justify-between px-3" style="height: 32px" :style="{ background: toolbarBg }">
       <span class="text-xs" :style="{ color: toolbarFg }">{{ langLabel }} · {{ lineCount }} 行</span>
-      <button class="code-tool" title="复制" @click="copy" :style="{ color: toolBtnFg }">
-        <Check v-if="copied" class="h-3.5 w-3.5 text-green-500" />
-        <Copy v-else class="h-3.5 w-3.5" />
-      </button>
     </div>
     <pre
       class="code-pre"
@@ -77,6 +62,8 @@ async function copy() {
 </template>
 
 <style scoped>
+/* 纯展示：不折叠、不自带滚动条。截断由 MessageItem 的固定高度容器负责，
+   完整内容的滚动由外层 Modal 容器负责。 */
 .code-pre {
   margin: 0;
   padding: 12px 14px;
@@ -85,22 +72,8 @@ async function copy() {
   white-space: pre-wrap;
   word-break: break-word;
   overflow-x: hidden;
-  max-height: 80vh;
-  overflow-y: auto;
 }
 .code-pre code {
   font-family: "JetBrains Mono", "Fira Code", Consolas, Menlo, monospace;
-}
-.code-tool {
-  display: inline-flex;
-  align-items: center;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 4px;
-}
-.code-tool:hover {
-  background: rgba(128, 128, 128, 0.1);
 }
 </style>
