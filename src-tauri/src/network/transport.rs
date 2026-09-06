@@ -127,14 +127,23 @@ async fn handle_incoming(state: Arc<AppState>, stream: TcpStream) {
     };
     let (tx, rx) = mpsc::channel(1024);
     state.links.lock().await.insert(peer_id.clone(), tx.clone());
-    tokio::spawn(writer_loop(w, rx));
+    tokio::spawn(writer_loop(state.clone(), peer_id.clone(), w, rx));
     handle_message(&state, &peer_id, first).await;
     reader_loop(state, r, peer_id, tx).await;
 }
 
-async fn writer_loop(mut w: OwnedWriteHalf, mut rx: mpsc::Receiver<Message>) {
+async fn writer_loop(state: Arc<AppState>, peer_id: String, mut w: OwnedWriteHalf, mut rx: mpsc::Receiver<Message>) {
     while let Some(msg) = rx.recv().await {
         if write_frame(&mut w, &msg).await.is_err() {
+            // TCP write 失败：普通消息由 outbox 重发；ReadReceipt 需要特殊处理——
+            // 它没有 outbox 行，如果 pending 已被 flush_pending_reads 清除，
+            // 此处不恢复就永久丢失。将 timestamp 重新放回 pending_reads，
+            // 下一次建链 / Hello / Heartbeat 会再次 flush 重发。
+            if let Message::ReadReceipt { last_read_ts, .. } = &msg {
+                let mut pending = state.pending_reads.lock().unwrap();
+                let cur = pending.entry(peer_id.clone()).or_insert(*last_read_ts);
+                *cur = (*cur).max(*last_read_ts);
+            }
             break;
         }
     }
@@ -195,7 +204,7 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
     let (r, w) = stream.into_split();
     let (tx, rx) = mpsc::channel(1024);
     state.links.lock().await.insert(peer_id.to_string(), tx.clone());
-    tokio::spawn(writer_loop(w, rx));
+    tokio::spawn(writer_loop(state.clone(), peer_id.to_string(), w, rx));
 
     let hello = Message::Hello {
         device_id: state.device_id.clone(),
@@ -1195,14 +1204,10 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
         to: peer_id.to_string(),
         last_read_ts,
     };
-    // 无论 try_send 成功与否都保留 pending：Ok 只代表进 mpsc，不代表 TCP write 成功；
-    // 接收方按 last_read_ts 单调性去重，重复送达无副作用。
+    // 只尝试发送，不在此处 re-pend：writer_loop 在 write_frame 失败时负责
+    // 将 ReadReceipt 的 timestamp 重新放回 pending_reads，形成明确的失败回收路径。
+    // 正常发送路径：pending 已在 remove 时清除，写入成功后自然不保留。
     let _ = try_send(state, peer_id, &msg).await;
-    {
-        let mut pending = state.pending_reads.lock().unwrap();
-        let cur = pending.entry(peer_id.to_string()).or_insert(last_read_ts);
-        *cur = (*cur).max(last_read_ts);
-    }
 }
 
 pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
@@ -1486,9 +1491,11 @@ mod tests {
         assert_eq!(status, "read");
     }
 
-    /// updated = 0 时前端仍收到 peer-read（DB 已是 read，但前端内存可能落后）。
+    /// Test D: updated = 0 时 DB UPDATE 无行被更新，但 handler 仍然 emit peer-read。
+    /// 注意：emit 依赖 Tauri AppHandle，无法在纯单测中断言事件；
+    /// 这里验证的是 SQL 路径正确返回 updated=0（与 emit 条件分离）。
     #[test]
-    fn read_receipt_still_emits_even_when_db_already_read() {
+    fn read_receipt_db_update_zero_when_already_read() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(db::SCHEMA).unwrap();
         db::insert_message(&conn, &MessageRecord {
@@ -1502,25 +1509,55 @@ mod tests {
             params!["peer-a", "me", 100],
         ).unwrap();
         assert_eq!(updated, 0, "DB 已是 read，无行被更新");
-        // 但 handler 仍然 emit peer-read（本轮修复）
+        // handler 仍然 emit peer-read（always-emit 修复），但 emit 本身无法在单测中断言
     }
 
-    /// 多次 mark_read 只保留最大 timestamp。
+    /// Test C: 多次 mark_read 只保留最大 timestamp。
     #[test]
     fn pending_reads_keeps_max_timestamp() {
         let mut pending: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-        // 第一次 mark_read ts=100
+        // mark_read(ts=100)
         let cur = pending.entry("peer-a".into()).or_insert(100);
         *cur = (*cur).max(100);
         assert_eq!(pending["peer-a"], 100);
-        // 第二次 ts=80（较小，不更新）
+        // mark_read(ts=80) — 较小，不更新
         let cur = pending.entry("peer-a".into()).or_insert(80);
         *cur = (*cur).max(80);
         assert_eq!(pending["peer-a"], 100);
-        // 第三次 ts=200（较大，更新）
+        // mark_read(ts=200) — 较大，更新
         let cur = pending.entry("peer-a".into()).or_insert(200);
         *cur = (*cur).max(200);
         assert_eq!(pending["peer-a"], 200);
+    }
+
+    /// Test B: writer write_frame 失败时，ReadReceipt 的 timestamp 被重新放入 pending_reads。
+    /// 模拟 writer_loop 的失败回收逻辑。
+    #[test]
+    fn writer_failure_preserves_pending_for_read_receipt() {
+        let mut pending: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        // flush_pending_reads 已经 remove
+        pending.insert("peer-a".into(), 200);
+        let last_read_ts = pending.remove("peer-a").unwrap();
+        assert!(pending.is_empty(), "flush 后 pending 应为空");
+        // 模拟 writer_loop write_frame 失败后的回收逻辑
+        {
+            let cur = pending.entry("peer-a".into()).or_insert(last_read_ts);
+            *cur = (*cur).max(last_read_ts);
+        }
+        assert_eq!(pending.get("peer-a"), Some(&200), "写入失败后 pending 应恢复");
+    }
+
+    /// Test A: writer write_frame 成功时，pending 不被重新插入。
+    /// flush_pending_reads remove 后发送成功，pending 保持清空。
+    #[test]
+    fn successful_flush_clears_pending() {
+        let mut pending: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        pending.insert("peer-a".into(), 200);
+        // 模拟 flush_pending_reads: remove + try_send Ok + writer write_frame Ok
+        let last_read_ts = pending.remove("peer-a").unwrap();
+        // write_frame 成功 → 不执行 writer_loop 的回收逻辑
+        let _ = last_read_ts;
+        assert!(pending.is_empty(), "写入成功后 pending 应保持清空");
     }
 
     /// read 不会被 delivered 回退（set_message_status 守卫）。

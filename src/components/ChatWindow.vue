@@ -124,10 +124,10 @@ function estimateHeight(m: MessageRecord, index?: number): number {
   const nickH = showNickname ? 20 : 0;
   // --- 分割线 ---
   const divH = showDivider ? 32 : 0;
-  // --- 头像行 ---
-  const avatarH = sameSender ? 0 : 32; // h-8 w-8
 
-  return bubble + py + timeH + nickH + divH + avatarH;
+  // 头像 h-8 w-8 与气泡同处 flex row（items-end），行高由更高的子元素决定，
+  // 不作为额外纵向高度计入。
+  return bubble + py + timeH + nickH + divH;
 }
 
 // 打开会话/未读定位：优先跳到第一条未读（该消息贴视口顶部，分割线置上），
