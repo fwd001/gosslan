@@ -14,6 +14,11 @@ const MAX_NICKNAME_LEN: usize = 30;
 const MAX_GROUP_NAME_LEN: usize = 30;
 const MAX_SEARCH_LEN: usize = 100;
 const MAX_MESSAGE_LEN: usize = 50_000;
+/// 内联图片（`kind:"image"`）的 data URL 是 Base64：从中间截断会直接损坏图片，
+/// 故不参与 MAX_MESSAGE_LEN 的文本截断。这里给一个"合理上限"而非无限放行——
+/// Base64 解码后 ≈ 3/4 字符数，8M 字符 ≈ 6 MiB 原图，封框（ChaCha20+Base64）后仍
+/// 远低于传输层 MAX_FRAME(64 MiB)。超限一律报错拒发，绝不静默截断。
+const MAX_IMAGE_CONTENT_LEN: usize = 8_000_000;
 
 use crate::crypto;
 use crate::db;
@@ -513,8 +518,20 @@ pub async fn send_message(
         }
     }
 
-    // 消息长度保护：按字符截断（UTF-8 安全）
-    let content: String = content.chars().take(MAX_MESSAGE_LEN).collect();
+    // 长度保护：
+    // - text/code 等普通内容按字符截断（UTF-8 安全），沿用既有 50000 上限；
+    // - image 的 data URL 是 Base64，中途截断 = 图片损坏，因此绝不截断：
+    //   上限内原样透传，超限直接报错拒发（提示改用「发送文件」）。
+    let content: String = if kind == "image" {
+        if content.chars().count() > MAX_IMAGE_CONTENT_LEN {
+            return Err(format!(
+                "图片过大（超过 {MAX_IMAGE_CONTENT_LEN} 字符），请压缩后重试或改用发送文件"
+            ));
+        }
+        content
+    } else {
+        content.chars().take(MAX_MESSAGE_LEN).collect()
+    };
 
     // E2EE 恒开（v0.11.0 起默认且不可关闭）：发送必须拿到对端 X25519 公钥。
     // 好友表优先，回退在线节点表；都缺失时主动探测一次（who_has）等对方/中继
