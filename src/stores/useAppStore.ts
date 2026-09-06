@@ -168,15 +168,16 @@ export const useAppStore = defineStore("app", () => {
   async function resetDefaults() {
     // 先广播昵称/头像恢复默认（LAN 仍在线，好友可收到 UserInfo）
     if (device.value) {
+      await api.updateProfile("Gosslan 用户", null);
       device.value.nickname = "Gosslan 用户";
       device.value.avatar = null;
-      await api.updateProfile("Gosslan 用户", null);
     }
     await api.resetSettings();
     themeColor.value = "#3370ff";
     fontFamily.value = "";
     dark.value = false;
     preferredIp.value = null;
+    boundIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
     peerStyles.value = {};
     localStorage.removeItem(THEME_KEY);
