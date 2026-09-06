@@ -444,6 +444,17 @@ pub fn mark_read(conn: &Connection, conv_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// 仅更新已有 single 会话的昵称和头像（由 UserInfo 同步触发）。
+/// 不修改 last_msg / last_ts / unread / kind / id / 任何其他字段。
+/// 如果会话不存在，UPDATE 0 行即可，不会创建新会话。
+pub fn update_conversation_profile(conn: &Connection, id: &str, name: &str, avatar: Option<&str>) -> Result<()> {
+    conn.execute(
+        "UPDATE conversations SET name = ?2, avatar = ?3 WHERE id = ?1 AND kind = 'single'",
+        params![id, name, avatar],
+    )?;
+    Ok(())
+}
+
 /// 会话内最后一条消息的 ts（无消息返回 0）。用于已读回执与接收时间戳钳制。
 pub fn last_message_ts(conn: &Connection, conv_id: &str) -> i64 {
     conn.query_row(
@@ -1195,5 +1206,43 @@ mod tests {
         assert_eq!(r.len(), 1);
         let r = search_messages(&conn, "HELLO", 10).unwrap();
         assert_eq!(r.len(), 1);
+    }
+
+    /// update_conversation_profile 只更新 name/avatar，不修改 last_msg/last_ts。
+    #[test]
+    fn update_conversation_profile_preserves_last_msg() {
+        let conn = mem();
+        ensure_conversation(&conn, "dev-a", "single", "Old", None).unwrap();
+        touch_conversation(&conn, "dev-a", "single", "Old", None, "Hello", 1).unwrap();
+
+        // 验证初始状态
+        let conv = list_conversations(&conn).unwrap().into_iter().find(|c| c.id == "dev-a").unwrap();
+        assert_eq!(conv.name, "Old");
+        assert_eq!(conv.last_msg.as_deref(), Some("Hello"));
+
+        // 执行 update_conversation_profile
+        update_conversation_profile(&conn, "dev-a", "New", Some("new_avatar")).unwrap();
+
+        // 验证：name/avatar 已更新，last_msg/last_ts 保持不变
+        let conv = list_conversations(&conn).unwrap().into_iter().find(|c| c.id == "dev-a").unwrap();
+        assert_eq!(conv.name, "New", "name 应已更新");
+        assert_eq!(conv.last_msg.as_deref(), Some("Hello"), "last_msg 不应被修改");
+    }
+
+    /// update_conversation_profile 不影响 group 会话。
+    #[test]
+    fn update_conversation_profile_ignores_group() {
+        let conn = mem();
+        ensure_conversation(&conn, "group:g1", "group", "测试群", None).unwrap();
+        update_conversation_profile(&conn, "group:g1", "新名", None).unwrap();
+        let conv = list_conversations(&conn).unwrap().into_iter().find(|c| c.id == "group:g1").unwrap();
+        assert_eq!(conv.name, "测试群", "group 会话不应被修改");
+    }
+
+    /// update_conversation_profile 对不存在的会话不报错。
+    #[test]
+    fn update_conversation_profile_noop_on_missing() {
+        let conn = mem();
+        update_conversation_profile(&conn, "nonexistent", "name", None).unwrap();
     }
 }

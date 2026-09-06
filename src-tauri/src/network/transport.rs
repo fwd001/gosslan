@@ -250,7 +250,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 .map(|p| p.ip.clone())
                 .unwrap_or_default();
             upsert_peer(state, &device_id, &nickname, avatar.clone(), &ip, 0, None, None, None).await;
-            maybe_update_friend(state, &device_id, &nickname, avatar);
+            maybe_update_friend(state, &device_id, &nickname, avatar.clone());
+            // 同步更新 single 会话的昵称/头像（conversations DB）
+            let dbc = state.db.lock().unwrap();
+            db::update_conversation_profile(&dbc, &device_id, &nickname, avatar.as_deref()).ok();
         }
         Message::ChatStyle { from, to, style } => {
             if from == state.device_id {
