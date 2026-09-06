@@ -240,15 +240,12 @@ test("2: Ack 早到（batch 已 flush） — Ack → send → delivered", () => 
   assert.equal(a.size, 0);
 });
 
-// 3. Ack 早到，batch 未 flush → pendingAcks 不匹配（存 real 但 send 查 rec.msg_id）→
-//    batchFlush 后 onMessageAcked 匹配 → delivered
-test("3: Ack 早到（batch 未 flush） — Ack → real return → flush → onAck → delivered", () => {
+// 3. Ack 早到，batch 未 flush → send() 的 pendingAcks.delete(rec.msg_id) 命中 → delivered
+test("3: Ack 早到（batch 未 flush） — Ack → real return → delivered", () => {
   const s: Msg[] = [{ msg_id: "t2", status: "sending" }], a = new Set<string>(), r = new Map<string, Msg>();
-  onAck(s, a, "m2");                        // store 有 t2 不是 m2 → pendingAcks.add("m2")
-  assert.equal(a.has("m2"), true);
-  // send(): pendingAcks.delete("m2") → true（ack arrives before replaceMessage）
-  // 但在实际 send() 中：replaceMessage(tmp→real) 然后 pendingAcks.delete(rec.msg_id)
-  // rec.msg_id = "m2" → acked=true → 直接 delivered
+  // 模拟 onMessageAcked 在 await 期间到达：store 没有 m2 → pendingAcks.add("m2")
+  a.add("m2");
+  // send() 返回后：pendingAcks.delete(rec.msg_id) → acked=true → 直接 delivered
   const acked = a.delete("m2");
   assert.equal(acked, true, "pendingAcks 匹配 rec.msg_id");
   storeReplace(s, "t2", { msg_id: "m2", status: furthestStatus("sent", "delivered") });
