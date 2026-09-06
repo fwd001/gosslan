@@ -8,7 +8,7 @@ import { Check, ChevronDown, ChevronUp, Copy, Maximize2, Minimize2 } from "lucid
 
 const app = useAppStore();
 
-const props = withDefaults(defineProps<{ code: string; language?: string; preview?: boolean; previewLines?: number }>(), {
+const props = withDefaults(defineProps<{ code: string; language?: string; preview?: boolean; previewLines?: number; previewAction?: () => void }>(), {
   preview: false,
   previewLines: 5,
 });
@@ -26,6 +26,8 @@ const clampedCode = computed(() => {
   if (!previewActive.value) return props.code;
   return props.code.split("\n").slice(0, props.previewLines).join("\n");
 });
+/** preview 模式下 pre 的固定高度（行数 × 行高 20px） */
+const previewHeight = computed(() => `${props.previewLines * 20}px`);
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -91,11 +93,17 @@ async function copy() {
     <div class="flex items-center justify-between px-3" style="height: 32px" :style="{ background: toolbarBg }">
       <span class="text-xs" :style="{ color: toolbarFg }">{{ langLabel }} · {{ lineCount }} 行</span>
       <div class="flex items-center gap-1">
+        <!-- 复制：所有模式都显示 -->
         <button class="code-tool" title="复制" @click="copy" :style="{ color: toolBtnFg }">
           <Check v-if="copied" class="h-3.5 w-3.5 text-green-500" />
           <Copy v-else class="h-3.5 w-3.5" />
         </button>
-        <button v-if="lineCount > COLLAPSE_LINES && !previewActive" class="code-tool" :title="collapsed ? '展开' : '折叠'" @click.stop="collapsed = !collapsed" :style="{ color: toolBtnFg }">
+        <!-- preview 模式：「弹窗预览」按钮（调用父组件传入的 previewAction） -->
+        <button v-if="previewActive" class="code-tool text-[11px] whitespace-nowrap" :style="{ color: toolBtnFg }" @click.stop="previewAction?.()">
+          弹窗预览
+        </button>
+        <!-- 非 preview 模式：展开/折叠 + 全屏 -->
+        <button v-if="!previewActive && lineCount > COLLAPSE_LINES" class="code-tool" :title="collapsed ? '展开' : '折叠'" @click.stop="collapsed = !collapsed" :style="{ color: toolBtnFg }">
           <ChevronUp v-if="collapsed" class="h-3.5 w-3.5" />
           <ChevronDown v-else class="h-3.5 w-3.5" />
         </button>
@@ -105,7 +113,12 @@ async function copy() {
         </button>
       </div>
     </div>
-    <div class="relative">
+    <!-- preview 模式：固定高度，无渐变无展开按钮 -->
+    <div v-if="previewActive" class="relative">
+      <pre class="code-pre" :style="{ background: codeBg, color: codeFg, height: previewHeight, overflow: 'hidden' }"><code v-html="html"></code></pre>
+    </div>
+    <!-- 非 preview 模式：原有折叠/全屏逻辑 -->
+    <div v-else class="relative">
       <pre
         class="code-pre"
         :class="expanded ? '' : collapsed ? 'code-collapsed' : 'max-h-80 overflow-y-auto'"
@@ -121,19 +134,6 @@ async function copy() {
         class="absolute bottom-1.5 left-1/2 -translate-x-1/2 rounded-full px-3 py-1 text-[11px] backdrop-blur transition"
         :style="{ background: toolBtnHoverBg, color: toolBtnHoverFg }"
         @click.stop="collapsed = false"
-      >
-        展开全部 {{ lineCount }} 行
-      </button>
-      <!-- preview 模式：渐变遮罩 + 「展开」按钮（点击事件不阻止冒泡，由父组件监听并打开 Modal） -->
-      <div
-        v-if="previewActive"
-        class="pointer-events-none absolute inset-x-0 bottom-0 h-12"
-        :style="{ background: `linear-gradient(to top, ${codeBg}, transparent)` }"
-      ></div>
-      <button
-        v-if="previewActive"
-        class="absolute bottom-1.5 left-1/2 -translate-x-1/2 rounded-full px-3 py-1 text-[11px] backdrop-blur transition"
-        :style="{ background: toolBtnHoverBg, color: toolBtnHoverFg }"
       >
         展开全部 {{ lineCount }} 行
       </button>

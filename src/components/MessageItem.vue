@@ -9,7 +9,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import CodeBlock from "@/components/CodeBlock.vue";
 import BaseModal from "@/components/BaseModal.vue";
-import { Check, Circle, Copy, Download, FileText, Loader2, RefreshCw, X } from "lucide-vue-next";
+import { Check, Circle, Copy, Download, FileText, Loader2, RefreshCw, RotateCcw, X, ZoomIn, ZoomOut } from "lucide-vue-next";
 import { humanSize } from "@/utils/color";
 import { findPreset, parsePeerStyle } from "@/utils/chatStyle";
 import type { MessageRecord } from "@/types";
@@ -158,13 +158,9 @@ const isLongText = computed(
 );
 const collapsed = ref(true);
 
-// 图片预览
-const previewImage = ref<string | null>(null);
+// 图片预览（已由 imageModalOpen/imageModalSrc 管理）
 function openPreview() {
-  previewImage.value = props.message.content;
-}
-function closePreview() {
-  previewImage.value = null;
+  openImageModal(props.message.content);
 }
 
 // ---------------- 附件预览（file + subtype = image | code） ----------------
@@ -213,7 +209,7 @@ watch(
   { immediate: true },
 );
 
-// ---------------- 代码附件弹窗（点击「展开」后以 Modal 展示完整代码，不在消息流内撑开） ----------------
+// ---------------- 代码附件弹窗 ----------------
 const codeModalOpen = ref(false);
 const codeModalCode = ref("");
 
@@ -225,32 +221,61 @@ function closeCodeModal() {
   codeModalOpen.value = false;
 }
 
-/** CodeBlock preview 模式的「展开」按钮不阻止冒泡 → 冒泡到 window → 由这里捕获并打开 Modal */
-function onWindowClickForCodeExpand(e: MouseEvent) {
-  const t = e.target as HTMLElement;
-  if (t.closest && t.closest("button")?.textContent?.includes("展开全部")) {
-    openCodeModal();
+// ---------------- 图片附件弹窗（含缩放） ----------------
+const imageModalOpen = ref(false);
+const imageModalSrc = ref("");
+const imageZoom = ref(1);
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 4;
+const ZOOM_STEP = 0.25;
+
+function openImageModal(src: string) {
+  imageModalSrc.value = src;
+  imageZoom.value = 1;
+  imageModalOpen.value = true;
+}
+function closeImageModal() {
+  imageModalOpen.value = false;
+  imageZoom.value = 1;
+}
+function zoomIn() {
+  imageZoom.value = Math.min(ZOOM_MAX, imageZoom.value + ZOOM_STEP);
+}
+function zoomOut() {
+  imageZoom.value = Math.max(ZOOM_MIN, imageZoom.value - ZOOM_STEP);
+}
+function resetZoom() {
+  imageZoom.value = 1;
+}
+function onImageWheel(e: WheelEvent) {
+  if (!imageModalOpen.value) return;
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
+    imageZoom.value = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, imageZoom.value + delta));
   }
 }
-function onCodeModalKeydown(e: KeyboardEvent) {
-  if (e.key === "Escape") closeCodeModal();
-}
 
-watch(codeModalOpen, (v) => {
-  if (v) {
-    window.addEventListener("click", onWindowClickForCodeExpand);
-    window.addEventListener("keydown", onCodeModalKeydown);
-    document.body.classList.add("overflow-hidden");
+// 两个弹窗的 body scroll lock + Escape
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (e.key !== "Escape") return;
+  if (codeModalOpen.value) closeCodeModal();
+  else if (imageModalOpen.value) closeImageModal();
+}
+watch([codeModalOpen, imageModalOpen], ([code, img]) => {
+  const locked = code || img;
+  document.body.classList.toggle("overflow-hidden", locked);
+  if (locked) {
+    window.addEventListener("keydown", onGlobalKeydown);
+    window.addEventListener("wheel", onImageWheel, { passive: false });
   } else {
-    window.removeEventListener("click", onWindowClickForCodeExpand);
-    window.removeEventListener("keydown", onCodeModalKeydown);
-    document.body.classList.remove("overflow-hidden");
+    window.removeEventListener("keydown", onGlobalKeydown);
+    window.removeEventListener("wheel", onImageWheel);
   }
 });
-
 onBeforeUnmount(() => {
-  window.removeEventListener("click", onWindowClickForCodeExpand);
-  window.removeEventListener("keydown", onCodeModalKeydown);
+  window.removeEventListener("keydown", onGlobalKeydown);
+  window.removeEventListener("wheel", onImageWheel);
   document.body.classList.remove("overflow-hidden");
 });
 
@@ -418,14 +443,14 @@ async function retrySend() {
           <img :src="message.content" class="block max-h-72 max-w-full rounded-xl object-contain" />
         </div>
 
-        <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片，点击→大图） -->
-        <div v-else-if="message.kind === 'file' && attachmentUrl" class="overflow-hidden rounded-xl cursor-pointer" @click="previewImage = attachmentUrl">
+        <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片，点击→弹窗预览） -->
+        <div v-else-if="message.kind === 'file' && attachmentUrl" class="overflow-hidden rounded-xl cursor-pointer" @click="openImageModal(attachmentUrl)">
           <img :src="attachmentUrl" class="block max-h-72 max-w-full rounded-xl object-contain" />
         </div>
 
-        <!-- 附件代码预览（file + subtype:code，完成后读取本地文本交给 CodeBlock，最多5行+展开弹窗） -->
+        <!-- 附件代码预览（file + subtype:code，完成后读取本地文本交给 CodeBlock，最多5行+弹窗预览） -->
         <div v-else-if="message.kind === 'file' && attachmentCode !== null" class="min-w-0 flex-1">
-          <CodeBlock :code="attachmentCode" :preview="true" :preview-lines="5" />
+          <CodeBlock :code="attachmentCode" :preview="true" :preview-lines="5" :preview-action="openCodeModal" />
         </div>
 
         <!-- 文件 -->
@@ -505,23 +530,35 @@ async function retrySend() {
     </div>
   </div>
 
-  <!-- 图片预览浮层 -->
-  <Teleport to="body">
-    <div
-      v-if="previewImage"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
-      @click="closePreview"
-      @keydown.escape.window="closePreview"
-    >
-      <img
-        :src="previewImage"
-        class="max-h-[90vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
-        @click.stop
-      />
+  <!-- 图片预览弹窗（含缩放控制） -->
+  <BaseModal :open="imageModalOpen" width="max-w-5xl" @close="closeImageModal">
+    <div class="relative flex flex-col items-center gap-3">
+      <!-- 缩放工具栏 -->
+      <div class="flex items-center gap-2">
+        <button class="rounded-lg p-1.5 transition hover:bg-black/10 dark:hover:bg-white/10" title="缩小" @click="zoomOut">
+          <ZoomOut class="h-4 w-4" />
+        </button>
+        <span class="min-w-[3.5rem] text-center text-xs tabular-nums">{{ Math.round(imageZoom * 100) }}%</span>
+        <button class="rounded-lg p-1.5 transition hover:bg-black/10 dark:hover:bg-white/10" title="放大" @click="zoomIn">
+          <ZoomIn class="h-4 w-4" />
+        </button>
+        <button class="rounded-lg p-1.5 transition hover:bg-black/10 dark:hover:bg-white/10" title="恢复默认" @click="resetZoom">
+          <RotateCcw class="h-4 w-4" />
+        </button>
+      </div>
+      <!-- 图片（Ctrl+滚轮缩放，点击不关闭由 BaseModal 处理背景点击） -->
+      <div class="max-h-[65vh] overflow-auto">
+        <img
+          v-if="imageModalSrc"
+          :src="imageModalSrc"
+          class="block rounded shadow-2xl transition-transform duration-150 origin-center"
+          :style="{ transform: `scale(${imageZoom})` }"
+        />
+      </div>
     </div>
-  </Teleport>
+  </BaseModal>
 
-  <!-- 代码附件展开弹窗：完整代码 + 语法高亮/复制/全屏，关闭后聊天布局不变 -->
+  <!-- 代码附件弹窗：完整代码 + 语法高亮/复制，关闭后聊天布局不变 -->
   <BaseModal :open="codeModalOpen" title="代码预览" width="max-w-4xl" @close="closeCodeModal">
     <div class="max-h-[70vh] overflow-y-auto">
       <CodeBlock v-if="codeModalCode" :code="codeModalCode" />
