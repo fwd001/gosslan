@@ -5,6 +5,7 @@ mod commands;
 pub mod crypto;
 mod db;
 mod device;
+pub mod discovery;
 /// 聊天记录导出（纯文字单文件）：磁盘满 / 换机时的自救手段。
 pub mod export;
 mod gossip_engine;
