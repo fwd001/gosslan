@@ -1152,17 +1152,51 @@ enum DialOutcome {
 /// 10s = 2 个 announce 周期（announce 5s 一轮），给大 ID 足够时间先拨通。
 const BACKUP_DIAL_AFTER_MS: i64 = 10_000;
 
+/// `ensure_link` 判据的**纯函数内核**（便于非空转单测）：
+/// 该 peer 现有的这些端点里，是否已有**走 LAN 路径**的连接。
+///
+/// 单独抽出来的理由：D5 的回归点正是「把任意连接当成 LAN 已连通」——
+/// 那是**一行布尔表达式**的错误，端到端很难复现（要先 Routed 连上、再等 announce），
+/// 而这里可以逐条钉死：只有 Routed 端点 ⇒ `false`（要继续拨 LAN）。
+fn has_lan_path(endpoints: &[std::net::SocketAddr]) -> bool {
+    endpoints.iter().any(|ep| path_kind_for(ep) == PathKind::Lan)
+}
+
+/// 拨号决策的**可测入口**：把「现有连接 → 是否还要拨 LAN」这一步也收进函数里。
+///
+/// 为什么不直接在 `ensure_link` 里算 `has_lan_link`：那样「把任意连接当成 LAN 已连通」
+/// 这个回归（D5）只会体现在一行布尔表达式上，测试无从钉住（helper 单独测是空的 ——
+/// 只要调用点写错，helper 再对也没用）。收进来后，测试直接喂「只有 Routed 端点」，
+/// 回归时该断言必然 FAIL。
+fn should_dial_for_peer(
+    my_id: &str,
+    peer_id: &str,
+    has_endpoint: bool,
+    existing: &[std::net::SocketAddr],
+    first_seen: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    // 判据是**同路径（LAN）已连通**，不是「有任意连接」：后者会让先经 Routed 连上的
+    // 对等关系永远拿不到 LAN 链路（D5）。
+    let has_lan_link = has_endpoint || has_lan_path(existing);
+    should_dial(my_id, peer_id, has_endpoint, has_lan_link, first_seen, now_ms)
+}
+
 /// 是否该主动拨这个端点（纯函数，便于单测 + 护栏非空转）。
 ///
 /// 决策顺序（越靠前越确定、越便宜，命中即短路）：
 /// 1. `has_endpoint`：**这个端点**已经连上了 → 无事可做。
-/// 2. `has_any_link`：已经和这个 peer 有**任意**连接 → 连通性已建立，不拨。
-///    这一条是 P1-2 的修正。接受侧 `handle_incoming` 记录的 `Link.endpoint` 是 TCP
-///    **源地址（临时端口）**，而这里拿到的是 announce 自报的**监听地址** —— 两者永不相等
-///    ⇒ 被动方（小 ID）的第 1 条永远不命中，10s 后兜底拨号会反向再拨一条，同一对节点
-///    稳定停留 **2 条镜像 TCP**（连接与读写任务翻倍、心跳双份，并让「断一条仍在线」的
-///    判据变成假阳性）。注意 `try_send` 只把消息交给 mpsc（返回 Ok 不代表 TCP 写出成功），
-///    所以那条镜像连接**不会**带来任何送达补偿 —— 纯属浪费。
+/// 2. `has_lan_link`：**LAN 这条路径**已经连通 → 不拨。
+///    这一条源自 P1-2 的修正（原为「任意链路」），但 2026-09-12 复核发现原判据过宽：
+///    只要 peer 有任何一条连接（例如先经 Routed/Tailscale 连上），LAN 路径就**永远拿不到**
+///    ⇒ M3 的「LAN > Routed」优先级在这些拓扑里**永不生效**，多路径退化成单路径。
+///    现在只在「LAN 已连通」时短路，Routed-first 的对等关系仍会补一条 LAN。
+///
+///    为什么不能按「这个端点」判（`has_endpoint` 单独判不行）：接受侧 `handle_incoming`
+///    记录的 `Link.endpoint` 是 TCP **源地址（临时端口）**，而这里拿到的是 announce 自报的
+///    **监听地址**，两者永不相等 ⇒ 被动方（小 ID）的第 1 条永远不命中，10s 后兜底拨号会
+///    反向再拨一条，同一对节点稳定停留 **2 条镜像 TCP**。所以「同路径是否已连通」必须按
+///    **路径类型**判（LAN 链路无论端点记的是监听地址还是临时端口，路径都是 LAN）。
 /// 3. 本机是大 ID（`my_id > peer_id`）：恒拨（对称场景的确定性拨号方）。
 /// 4. 本机是小 ID：仅当对端在线（`first_seen` 有值）且「首次发现」已超过
 ///    `BACKUP_DIAL_AFTER_MS` 才兜底拨 —— 给大 ID 足够时间先拨通；单侧不可达
@@ -1171,11 +1205,11 @@ fn should_dial(
     my_id: &str,
     peer_id: &str,
     has_endpoint: bool,
-    has_any_link: bool,
+    has_lan_link: bool,
     first_seen: Option<i64>,
     now_ms: i64,
 ) -> bool {
-    if has_endpoint || has_any_link {
+    if has_endpoint || has_lan_link {
         return false;
     }
     if my_id > peer_id {
@@ -1195,27 +1229,31 @@ pub async fn ensure_link(
     let Some(endpoint) = socket_addr_from(ip, tcp_port) else { return };
     // ① 这个端点已经连上了（典型是「自己拨出去的那条」）→ 本轮无事可做。
     let has_endpoint = state.has_endpoint(peer_id, &endpoint).await;
-    // ② 已经和这个 peer 有**任意**连接 → 连通性已建立，不再拨。
+    // ② **LAN 这条路径**已经连通 → 不再拨。
     //
-    // 判据必须是「有没有连接」而不是「有没有连到这个端点」：接受侧记录的 `Link.endpoint`
-    // 是 TCP **源地址（临时端口）**，本函数拿到的是 announce 自报的**监听地址**，两者永不
-    // 相等。只按端点判，会让被动方永远认为「没连上」，10s 后兜底拨号反向再拨一条，
-    // 形成镜像重复连接（完整机制见 `should_dial` 的注释）。
-    //
-    // 语义边界（别在这里加多路径逻辑）：本函数只负责**连通性**。多路径由各 Transport 自己
-    // 的驱动产生 —— Routed 由配置驱动直接走 `connect_to_peer`，BLE 由 BLE 发现驱动，
-    // 都不经过这里。将来若要「同一路径的多条连接」（如多网卡冗余），应按**连接健康度**
-    // 收敛，而不是放宽这一条。
-    let has_any_link = has_endpoint || state.has_link(peer_id).await;
+    // 判据是「同路径是否已连通」，不是「有没有任意连接」也不是「有没有连到这个端点」：
+    //   · 按端点判：接受侧记的是临时端口、这里比的是监听地址，永不相等 ⇒ 镜像重拨
+    //     （见 `should_dial` 注释）；
+    //   · 按「任意连接」判：先经 Routed/Tailscale/BLE 连上的对等关系**永远拿不到 LAN 链路**
+    //     ⇒ M3 的「LAN > Routed」优先级永不生效（2026-09-12 复核抓到的多路径硬阻塞）。
+    // 本函数只负责**给 LAN 路径补连通性**；Routed 由配置驱动、BLE 由发现驱动，都不经过这里。
+    // 现有连接的端点快照（锁内只取数据，决策在锁外做）。
+    let existing_endpoints: Vec<std::net::SocketAddr> = {
+        let links = state.links.lock().await;
+        links
+            .get(peer_id)
+            .map(|v| v.iter().map(|l| l.endpoint).collect())
+            .unwrap_or_default()
+    };
     // 首次建链：大 ID 立即拨号，小 ID 等大 ID 拨；小 ID 在「对端在线却迟迟连不上」时兜底。
     let should = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         let first_seen = peers.get(peer_id).and_then(|p| p.first_seen);
-        should_dial(
+        should_dial_for_peer(
             &state.device_id,
             peer_id,
             has_endpoint,
-            has_any_link,
+            &existing_endpoints,
             first_seen,
             db::now_ms(),
         )
@@ -5162,10 +5200,10 @@ mod tests {
     /// **监听地址**）而反向再拨一条 —— 那会让同一对节点稳定停留 2 条镜像 TCP，
     /// 连接与读写任务翻倍、心跳双份，并让「断一条仍在线」的判据变成假阳性。
     ///
-    /// 注意判据是 `has_any_link`，与 `has_endpoint` 无关：这里刻意传
-    /// `has_endpoint=false`（真实场景就是如此）来钉住「只按端点判会误拨」这一点。
+    /// 注意判据是 `has_lan_link`（**同路径**已连通），与 `has_endpoint` 无关：
+    /// 这里刻意传 `has_endpoint=false`（真实场景就是如此）来钉住「只按端点判会误拨」。
     #[test]
-    fn should_dial_skips_when_any_connection_already_exists() {
+    fn should_dial_skips_when_same_path_already_connected() {
         let now = 1_000_000;
         // 小 ID + 已有连接 + 早已超过 10s 阈值 —— 旧实现正是在这里误判为「该兜底拨号」。
         assert!(!should_dial("a", "b", false, true, Some(now - 60_000), now));
@@ -5174,6 +5212,37 @@ mod tests {
         // 同一端点已连 → 不拨（无论 ID 大小、无论阈值）。
         assert!(!should_dial("b", "a", true, true, None, now));
         assert!(!should_dial("a", "b", true, true, Some(now - 60_000), now));
+    }
+
+    /// D5 护栏：判据必须是「**LAN 路径**是否已连通」，不能是「有没有任意连接」。
+    ///
+    /// 回归场景（复核抓到）：peer 先经 Routed/Tailscale 连上，之后 LAN 的 announce 到达；
+    /// 若把任意连接当成「已连通」，LAN 链路**永远不会建立** ⇒ M3 的「LAN > Routed」
+    /// 优先级在该拓扑里永不生效，多路径退化成单路径。
+    /// 这条测试会在把判据回退成「任意连接」时 FAIL —— 因为它明确区分了两种端点。
+    #[test]
+    fn only_routed_connection_still_dials_lan_path() {
+        let lan: std::net::SocketAddr = "192.168.1.20:59992".parse().unwrap();
+        let routed: std::net::SocketAddr = "100.70.10.20:59992".parse().unwrap();
+
+        // 纯函数内核：只有 Routed 端点 ⇒ 不算 LAN 已连通（⇒ 大 ID 会去补一条 LAN）
+        assert!(!has_lan_path(&[routed]));
+        assert!(has_lan_path(&[lan]));
+        assert!(has_lan_path(&[routed, lan]));
+        assert!(!has_lan_path(&[]));
+
+        // 决策层：**只有 Routed 连接**时，大 ID 仍应去补一条 LAN —— 这正是修复点。
+        // 若把判据回退成「有任意连接就不拨」，下面这条断言会 FAIL（非空转）。
+        let now = 1_000_000;
+        assert!(should_dial_for_peer("b", "a", false, &[routed], Some(now - 60_000), now));
+        // 已有 LAN 连接 ⇒ 不重复拨（避免镜像重复连接，P1-2）。
+        assert!(!should_dial_for_peer("b", "a", false, &[lan], Some(now - 60_000), now));
+        // 已有 LAN（含还有一条 Routed 的多路径场景）⇒ 也不拨。
+        assert!(!should_dial_for_peer("b", "a", false, &[routed, lan], Some(now - 60_000), now));
+        // 完全没有连接 ⇒ 拨（原语义不变）。
+        assert!(should_dial_for_peer("b", "a", false, &[], Some(now - 60_000), now));
+        // 小 ID 兜底：只有 Routed 且超过阈值 ⇒ 也去补 LAN。
+        assert!(should_dial_for_peer("a", "b", false, &[routed], Some(now - 60_000), now));
     }
 
     // ---- Hello 握手身份认证（P0 安全修复回归）----
