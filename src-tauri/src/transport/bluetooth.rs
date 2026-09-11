@@ -209,12 +209,49 @@ pub mod driver {
         })
     }
 
+    /// 只负责**写**的一半：整帧分片 → 逐片写特征。
+    ///
+    /// 与读半分开的原因：读要长时间 await 通知流（最长一个扫描/读窗口），
+    /// 若读写共用一把 `Mutex<BleConnection>`，一个正在等待通知的读会把发送也卡住。
+    /// GATT 本身允许写与通知并发，拆开即天然无锁。
+    pub struct BleWriter {
+        peripheral: Peripheral,
+        rx: Characteristic,
+        /// 连接内递增的消息号（分片头用；回绕即可）。
+        next_msg_id: u16,
+    }
+
+    /// 只负责**读**的一半：消费通知流 → 分片重组 → 整帧。
+    pub struct BleReader {
+        notifications: std::pin::Pin<Box<dyn Stream<Item = ValueNotification> + Send>>,
+        tx_uuid: Uuid,
+        reassembler: BleReassembler,
+    }
+
     impl BleConnection {
-        /// 对端标识（日志/诊断用；**不是身份** —— 身份由 Hello 验签建立）。
-        pub fn remote_id(&self) -> String {
-            format!("{:?}", self.peripheral.id())
+        /// 拆成写半与读半（见 `BleWriter`/`BleReader` 的注释）。
+        pub fn into_split(self) -> (BleWriter, BleReader) {
+            (
+                BleWriter {
+                    peripheral: self.peripheral,
+                    rx: self.rx,
+                    next_msg_id: 1,
+                },
+                BleReader {
+                    notifications: self.notifications,
+                    tx_uuid: self.tx.uuid,
+                    reassembler: self.reassembler,
+                },
+            )
         }
 
+        /// 对端标识（日志/诊断用；**不是身份** —— 身份由 Hello 验签建立）。
+        pub fn remote_id(&self) -> String {
+            self.peripheral.id().to_string()
+        }
+    }
+
+    impl BleWriter {
         /// 本连接的分片有效载荷上限（从协商到的 MTU 换算）。
         pub fn payload_mtu(&self) -> usize {
             payload_mtu(self.peripheral.mtu())
@@ -225,10 +262,14 @@ pub mod driver {
         }
 
         /// 发一条完整帧：按 MTU 分片后逐片写特征，返回写入的分片数（诊断用）。
-        pub async fn send_frame(&mut self, payload: &[u8], msg_id: u16) -> Result<usize, String> {
+        pub async fn send_frame(&mut self, payload: &[u8]) -> Result<usize, String> {
+            // 消息号在**本半**自增（分片头用；回绕即可，同一时刻在途的消息很少）
+            let msg_id = self.next_msg_id;
+            self.next_msg_id = self.next_msg_id.wrapping_add(1).max(1);
             let mtu = self.payload_mtu();
-            let chunks = fragment(payload, mtu, msg_id)
-                .ok_or_else(|| format!("帧无法分片（过大或 MTU 非法：len={} mtu={mtu}）", payload.len()))?;
+            let chunks = fragment(payload, mtu, msg_id).ok_or_else(|| {
+                format!("帧无法分片（过大或 MTU 非法：len={} mtu={mtu}）", payload.len())
+            })?;
             let n = chunks.len();
             for chunk in chunks {
                 // WithoutResponse：蓝牙链路层本身有重传与顺序保证，逐片确认会慢一个量级；
@@ -241,9 +282,18 @@ pub mod driver {
             Ok(n)
         }
 
-        /// 取下一个**完整帧**（内部消费 notify 分片；超时返回 `Ok(None)`）。
+        pub async fn disconnect(&self) -> Result<(), String> {
+            self.peripheral
+                .disconnect()
+                .await
+                .map_err(|e| format!("断开失败：{e}"))
+        }
+    }
+
+    impl BleReader {
+        /// 取下一个**完整帧**（内部消费 notify 分片；窗口内没有分片返回 `Ok(None)`）。
         ///
-        /// 超时不让调用方阻塞：外层可以据此周期性 `gc()` 回收半截消息。
+        /// 超时不让调用方永久阻塞：外层据此周期性 `gc()` 回收半截消息。
         pub async fn next_frame(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
             loop {
                 let next = tokio::time::timeout(wait, self.notifications.next()).await;
@@ -253,7 +303,7 @@ pub mod driver {
                     Ok(Some(n)) => n,
                 };
                 // 过滤非本特征的通知（同一连接上可能还有别的订阅）
-                if notification.uuid != self.tx.uuid {
+                if notification.uuid != self.tx_uuid {
                     continue;
                 }
                 match self.reassembler.push(&notification.value, crate::db::now_ms()) {
@@ -266,13 +316,6 @@ pub mod driver {
         /// 回收超时的半截消息（断连/对端消失后调用）。
         pub fn gc(&mut self) -> usize {
             self.reassembler.gc(crate::db::now_ms())
-        }
-
-        pub async fn disconnect(&self) -> Result<(), String> {
-            self.peripheral
-                .disconnect()
-                .await
-                .map_err(|e| format!("断开失败：{e}"))
         }
     }
 

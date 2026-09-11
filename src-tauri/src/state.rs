@@ -462,6 +462,12 @@ pub struct AppState {
     /// 与 `dial_permits` 对称：一个管"我拨出去"，一个管"别人拨进来"。
     /// 128 对 3 台设备绰绰有余，而伪造 announce/洪水连接会被它挡在 accept 之后立刻丢弃。
     pub inbound_permits: Arc<tokio::sync::Semaphore>,
+    /// 蓝牙运行时句柄（`feature = "bluetooth"` 才有；见 `network/ble.rs`）。
+    ///
+    /// 与 LAN 的 `network` 字段同思路：句柄在 AppState 里，`start/stop` 由命令层驱动。
+    /// 默认 `None`，且只有用户在设置里打开「蓝牙」才会启动 —— 局域网不受影响。
+    #[cfg(feature = "bluetooth")]
+    pub ble: Mutex<Option<crate::network::ble::BleHandle>>,
     /// 中继授权配置（P2 / M4）：策略 + 白名单。
     ///
     /// 为什么缓存在内存：转发热路径上 gossip 可能每秒几十条，为了一个策略字段去锁
@@ -727,6 +733,8 @@ impl AppState {
             mesh_router: Mutex::new(MeshRouter::new(100_000, 10_000, 6, 4, 256)),
             relay: Mutex::new(RelayManager::new()),
             relay_policy: Mutex::new(relay_policy),
+            #[cfg(feature = "bluetooth")]
+            ble: Mutex::new(None),
             dialing: Mutex::new(std::collections::HashSet::new()),
             dial_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)),
             inbound_permits: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_CONNECTIONS)),

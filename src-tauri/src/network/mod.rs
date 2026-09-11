@@ -7,6 +7,9 @@
 //!   即可支撑“服务端中转连接电脑与移动端”的场景。
 
 pub mod discovery;
+/// BLE 传输的运行时接线（feature = "bluetooth"；默认关闭，见 ADR-0015）。
+#[cfg(feature = "bluetooth")]
+pub mod ble;
 pub mod file;
 pub mod transport;
 

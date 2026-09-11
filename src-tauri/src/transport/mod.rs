@@ -99,6 +99,11 @@ impl TransportManager {
     }
 
     /// 切换蓝牙通道开关。
+    ///
+    /// ⚠️ 开了 `bluetooth` feature 时**不用它**：那时真正的运行时是 `network::ble`
+    /// （扫描/连接/握手/链路登记），命令层直接调它的 `start/stop`；
+    /// 本方法只服务"未编译 BLE 后端"的默认构建（保留它才能给出明确错误）。
+    #[cfg_attr(feature = "bluetooth", allow(dead_code))]
     pub async fn set_bluetooth_enabled(&mut self, on: bool) -> Result<(), String> {
         if on == self.bt_enabled {
             return Ok(());

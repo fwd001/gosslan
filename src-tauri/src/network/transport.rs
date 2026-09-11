@@ -715,7 +715,7 @@ fn hello_auth_decision(
 /// 明文控制消息（把群从受害者本地删掉、改名）。已建立信任的身份必须签名匹配。
 ///
 /// 返回 `Err(原因)` 表示必须拒绝该连接。
-fn verify_hello(
+pub(crate) fn verify_hello(
     state: &AppState,
     device_id: &str,
     tcp_port: u16,
@@ -1289,7 +1289,7 @@ pub(crate) fn update_conv_link(state: &AppState, conv_id: &str, path: &str, hop:
 /// Phase 2 建立的「任一 Connection 健康 ⇒ Online」才有真实连接数据支撑。
 /// 公钥在此刻可能尚未学到（拨号侧），留空即可 —— 收到 Hello / announce 后由
 /// `PeerIdentity::merge_missing` 补齐（只补空、不覆盖）。
-fn register_connection(state: &AppState, peer_id: &str, endpoint: MeshEndpoint, path_kind: PathKind) {
+pub(crate) fn register_connection(state: &AppState, peer_id: &str, endpoint: MeshEndpoint, path_kind: PathKind) {
     let identity = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         peers
@@ -1339,7 +1339,7 @@ fn register_connection(state: &AppState, peer_id: &str, endpoint: MeshEndpoint, 
 }
 
 /// 连接断开后：从 mesh 层移除**这一条** Connection（同一 peer 的其他连接保留）。
-fn unregister_connection(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
+pub(crate) fn unregister_connection(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     pm.remove_connection(peer_id, endpoint);
     state.logger.info(
@@ -1444,6 +1444,79 @@ enum DialOutcome {
 
 /// 世代是否仍然有效（D8-4）。抽成纯函数是为了让"跨世代必须否决"这条**安全属性**
 /// 有一个能被检索到、能被单测钉住的落点（真实路径要构造 AppState，单测造不出来）。
+/// 某 peer 现有链路的快照 `(端点, 路径类型, 该连接是否健康)`。
+///
+/// 抽成 `pub(crate)` 的唯一目的是**让 BLE 走同一套入站/出站去重判据**
+/// （`should_accept_inbound`），而不是在第三种传输里复制一份"有没有同路径连接"的判断 ——
+/// 复核报告点名过"同一判断两处实现、行为还不一致"是这个项目踩过的坑。
+#[cfg(feature = "bluetooth")]
+pub(crate) async fn link_snapshot(
+    state: &AppState,
+    peer_id: &str,
+) -> Vec<(MeshEndpoint, PathKind, bool)> {
+    let list = {
+        let links = state.links.lock().await;
+        links.get(peer_id).cloned().unwrap_or_default()
+    };
+    let (timeout_ms, max_failures, conns) = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            pm.health_timeout_ms(),
+            pm.max_failures(),
+            pm.get(peer_id)
+                .map(|p| p.connections().to_vec())
+                .unwrap_or_default(),
+        )
+    };
+    let now = db::now_ms();
+    list.iter()
+        .map(|l| {
+            let healthy = conns
+                .iter()
+                .find(|c| c.endpoint == l.endpoint)
+                .map(|c| c.health.is_healthy(now, timeout_ms, max_failures))
+                .unwrap_or(true);
+            (l.endpoint.clone(), l.path_kind, healthy)
+        })
+        .collect()
+}
+
+/// Hello 验签的 `pub(crate)` 包装：BLE 运行时（`network/ble.rs`）复用同一份验签逻辑，
+/// **不允许**任何传输自己实现一遍（身份认证只应有一个实现）。
+#[cfg(feature = "bluetooth")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_hello_for_ble(
+    state: &AppState,
+    device_id: &str,
+    tcp_port: u16,
+    nonce: &str,
+    x25519_pubkey: &str,
+    ed25519_pubkey: &str,
+    sig_b64: &str,
+) -> Result<(), String> {
+    verify_hello(
+        state,
+        device_id,
+        tcp_port,
+        nonce,
+        x25519_pubkey,
+        ed25519_pubkey,
+        sig_b64,
+    )
+}
+
+/// 入站去重判据（BLE 侧复用；TCP 侧在 `handle_incoming` 内联调用同一个函数）。
+#[cfg(feature = "bluetooth")]
+pub(crate) fn should_accept_inbound_public(
+    my_id: &str,
+    peer_id: &str,
+    incoming: PathKind,
+    existing: &[(MeshEndpoint, PathKind, bool)],
+) -> bool {
+    should_accept_inbound(my_id, peer_id, incoming, existing)
+}
+
+/// 世代是否仍然有效（D8-4）。
 fn generation_is_current(captured: u64, current: u64) -> bool {
     captured == current
 }
@@ -5173,7 +5246,7 @@ pub async fn touch_peer(state: &AppState, device_id: &str) {
     state.emit_peers();
 }
 
-async fn mark_peer_offline(state: &Arc<AppState>, device_id: &str) {
+pub(crate) async fn mark_peer_offline(state: &Arc<AppState>, device_id: &str) {
     state.peers.lock().unwrap_or_else(|e| e.into_inner()).remove(device_id);
     // 链路快照随之失效：`conv_link` 记的是"当前可达路径"，节点已离线 ⇒ 该路径不存在。
     // 不清掉的话，聊天头部的链路徽标会在离线后继续显示（用户 2026-09-12 反馈的

@@ -477,14 +477,26 @@ pub async fn set_channel_enabled(
             Ok(())
         }
         "bluetooth" => {
-            let mut mgr = TransportManager::new(s.clone());
-            if enabled {
-                mgr.set_bluetooth_enabled(true).await
-            } else {
-                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::set_setting(&dbc, "bt_enabled", "0").ok();
-                Ok(())
+            // 开了 feature 才真正启动 BLE 运行时；没开 feature 时与今天一致：
+            // 只写偏好（并返回"后端未编译"的明确错误）。
+            #[cfg(feature = "bluetooth")]
+            {
+                if enabled {
+                    crate::network::ble::start(s.clone()).await?;
+                } else {
+                    crate::network::ble::stop(s).await;
+                }
             }
+            #[cfg(not(feature = "bluetooth"))]
+            {
+                if enabled {
+                    let mut mgr = TransportManager::new(s.clone());
+                    mgr.set_bluetooth_enabled(true).await?;
+                }
+            }
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::set_setting(&dbc, "bt_enabled", if enabled { "1" } else { "0" }).ok();
+            Ok(())
         }
         _ => Err(format!("未知通道: {channel}")),
     }
