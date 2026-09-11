@@ -400,9 +400,21 @@ export const useAppStore = defineStore("app", () => {
     void persistSettings();
   }
 
+  /**
+   * 设置共享目录。
+   * 乐观更新（用户 2026-09-12 要求「异步操作尽量乐观更新」）：本地先生效（设置页立即显示
+   * 新目录），再落库；失败回滚并抛出，由调用方 toast。目录来自系统选择器，用户已确认动作，
+   * 等一次 IPC 才回显没有意义。
+   */
   async function setShareDir(path: string) {
-    await api.setShareDir(path);
+    const prev = shareDir.value;
     shareDir.value = path;
+    try {
+      await api.setShareDir(path);
+    } catch (e) {
+      shareDir.value = prev;
+      throw e;
+    }
   }
 
   async function refreshInterfaces() {
