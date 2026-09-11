@@ -722,10 +722,17 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
     let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
     // 同时检查活跃 TCP 链接：链路存活但 peer 已被 discovery sweep 清掉时，
     // 仍应显示在线，避免「实际可通信但 UI 显示离线」。
+    // ⚠️ 只算**非空** Vec（与 `sweep_peers` / `has_link` 同一口径）：
+    // 残留的空 key 会让好友**永久显示在线**。根因已在 reader_loop 修掉，这里是防线。
     let active_links: std::collections::HashSet<String> = s
         .links
         .try_lock()
-        .map(|l| l.keys().cloned().collect())
+        .map(|l| {
+            l.iter()
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(k, _)| k.clone())
+                .collect()
+        })
         .unwrap_or_default();
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut friends = db::list_friends(&dbc).unwrap_or_default();

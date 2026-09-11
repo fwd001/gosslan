@@ -475,10 +475,19 @@ fn should_keep_peer(last_seen: i64, now: i64, has_active_link: bool) -> bool {
 fn sweep_peers(state: &AppState) {
     let now = now_ms();
     // try_lock 非阻塞：锁被占用时跳过本轮清理（下轮会补上），绝不阻塞广播循环。
+    // ⚠️ 只把**非空** Vec 算作「有活跃链路」：`empty()==true` 的 key 曾经会残留
+    // （reader_loop 只 retain 不删 key，已在 transport 侧修掉），而 `keys()` 不区分
+    // 空与非空 ⇒ 一次「连过又掉线」的节点永不被清扫、UI 永久显示在线。
+    // 这里保留非空判据作为第二道防线（与 `AppState::has_link` 口径一致）。
     let active_links: std::collections::HashSet<String> = state
         .links
         .try_lock()
-        .map(|l| l.keys().cloned().collect())
+        .map(|l| {
+            l.iter()
+                .filter(|(_, v)| !v.is_empty())
+                .map(|(k, _)| k.clone())
+                .collect()
+        })
         .unwrap_or_default();
     let changed = {
         let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());

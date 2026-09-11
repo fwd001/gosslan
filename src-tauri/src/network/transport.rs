@@ -882,8 +882,19 @@ async fn reader_loop(
             }
             None => false,
         };
-        // 移除后该 peer 已无任何连接 → 才算真的离线
-        let offline = removed && links.get(&peer_id).map_or(true, |v| v.is_empty());
+        // 移除后该 peer 已无任何连接 → 才算真的离线，并**把空的 Vec 一起删掉**。
+        let empty = links.get(&peer_id).map_or(true, |v| v.is_empty());
+        if removed && empty {
+            // ⚠️ 只 retain 不删 key 会留下一个**空 Vec**，而好几处判定用的是
+            // `links.keys()` / `contains_key`（不是 `has_link` 的非空判据）：
+            //  - `sweep_peers` 认为「有活跃链路」→ 该 peer 永不被清扫；
+            //  - `get_friends` 的 Friend.online 恒 true → 前端**永久显示在线**；
+            //  - 定向转发 `contains_key` 命中「直连」分支 → `try_send` 失败后
+            //    **不再洪泛兜底**，跨跳的好友申请/回执可能永久丢失。
+            // 一次「连过又掉线」的节点就能让上述三条同时成立（复核抓到的 High 缺陷）。
+            links.remove(&peer_id);
+        }
+        let offline = removed && empty;
         drop(links);
         // 释放 links 锁后再动 mesh 层（避免持锁嵌套）
         if let Some(ep) = removed_endpoint {
@@ -1271,63 +1282,85 @@ async fn connect_to_peer(
     let mut r = TcpReceiver::new(raw_r);
     let mut w = TcpSender::new(raw_w);
 
-    // ---- 身份未知：先握手换身份（§8）----
-    let mut learned_hello: Option<Message> = None;
-    let peer_id: String = match known_id {
-        Some(id) => id.to_string(),
-        None => {
-            // 1) 先发自己的 Hello。此刻还不知道对端是谁、没有会话，`conv_clock` 取 0：
-            //    对端的 `observe_clock` 是取 max，不会被 0 拉低；反向对齐由对端 Hello 完成。
-            let hello = build_signed_hello(state, 0);
-            if let Err(e) = write_frame(&mut w, &hello).await {
-                return DialOutcome::Failed(format!("握手发送失败: {e}"));
-            }
-            // 2) 读对端回发的 Hello（对端收到我们的 Hello 后会回发，见 `handle_incoming`）。
-            let first = tokio::select! {
-                biased;
-                _ = shutdown.changed() => return DialOutcome::Stopped,
-                res = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_frame(&mut r)) => match res {
-                    Ok(Ok(m)) => m,
-                    Ok(Err(e)) => return DialOutcome::Failed(format!("握手读取失败: {e}")),
-                    Err(_) => {
-                        return DialOutcome::Failed(format!(
-                            "握手超时（{}s 内未收到对端 Hello —— 对端可能是未升级的旧版本）",
-                            HANDSHAKE_TIMEOUT.as_secs()
-                        ))
-                    }
-                },
-            };
-            // 3) 必须是 Hello，且**必须验签通过** —— 身份不能靠猜，也不能因为「我们是
-            //    主动拨号方」就放松校验（否则任意进程都能冒充任意 device_id 与我们会话）。
-            let Message::Hello {
-                device_id,
-                tcp_port,
-                nonce,
-                sig,
-                x25519_pubkey,
-                ed25519_pubkey,
-                ..
-            } = &first
-            else {
-                return DialOutcome::Failed("握手失败: 对端首帧不是 Hello".to_string());
-            };
-            if let Err(reason) = verify_hello(
-                state,
-                device_id,
-                *tcp_port,
-                nonce,
-                x25519_pubkey,
-                ed25519_pubkey,
-                sig,
-            ) {
-                state.push_diag_event("hello_rejected", &format!("{reason}; from={endpoint}"));
-                return DialOutcome::Failed(format!("握手失败: {reason}"));
-            }
-            let learned = device_id.clone();
-            learned_hello = Some(first);
-            learned
+    // ---- 握手：**两条路径都必须验签**（§8 / ADR-0011）----
+    //
+    // 这里刻意**不做**「已知 id 就跳过握手」的捷径。复核抓到的 High 缺陷正是这个捷径：
+    // `known_id` 来自**未认证的 UDP announce**（`pkt.device_id` + `src.ip()`）或本地配置，
+    // 它只是「对方自称是谁 / 我们以为它是谁」，**不是身份**。跳过握手 ⇒ 任意进程只要
+    // 广播一个好友的 device_id，就会被拨号并**以此身份**接链；随后它能伪造
+    // FriendRemove（静默删好友）/ UserInfo / ReadReceipt / **Ack** —— 其中 Ack 会让
+    // 发送方删掉 outbox 行，等于对**真实**好友的消息静默永久丢失。
+    // 同理，配置里写错或过期的 device_id 会变成「能连上、但对方所有帧都被丢弃」的
+    // 单向黑洞，而且原先**一行日志都没有**。
+    //
+    // 现在：先发自己的 Hello → 读对端 Hello → **必须验签**；`Some(id)` 还要求
+    // 对端自称的 device_id 与预期一致，不一致直接失败并留日志。
+    let conv_clock = match known_id {
+        // 已知身份：可以带上真实会话时钟（未知身份只能发 0，对端 observe_clock 取 max 不会倒退）。
+        Some(id) => {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_clock(&dbc, id)
         }
+        None => 0,
     };
+    let hello = build_signed_hello(state, conv_clock);
+    if let Err(e) = write_frame(&mut w, &hello).await {
+        return DialOutcome::Failed(format!("握手发送失败: {e}"));
+    }
+    // 读对端回发的 Hello（对端收到我们的 Hello 后会回发，见 `handle_incoming`）。
+    let first = tokio::select! {
+        biased;
+        _ = shutdown.changed() => return DialOutcome::Stopped,
+        res = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_frame(&mut r)) => match res {
+            Ok(Ok(m)) => m,
+            Ok(Err(e)) => return DialOutcome::Failed(format!("握手读取失败: {e}")),
+            Err(_) => {
+                return DialOutcome::Failed(format!(
+                    "握手超时（{}s 内未收到对端 Hello —— 对端可能不是 Gosslan 节点）",
+                    HANDSHAKE_TIMEOUT.as_secs()
+                ))
+            }
+        },
+    };
+    let Message::Hello {
+        device_id,
+        tcp_port,
+        nonce,
+        sig,
+        x25519_pubkey,
+        ed25519_pubkey,
+        ..
+    } = &first
+    else {
+        return DialOutcome::Failed("握手失败: 对端首帧不是 Hello".to_string());
+    };
+    // 身份一致性：拨号目标是我们**以为**的 id 时，对端必须就是它。
+    // 不匹配就断开并留日志 —— 既堵住冒充，也让「配置写错」不再表现为静默黑洞。
+    if let Some(expected) = known_id {
+        if device_id != expected {
+            let reason = format!(
+                "握手身份不符：预期 {expected}，对端自称 {device_id}（端点 {endpoint}）"
+            );
+            state.push_diag_event("hello_mismatch", &reason);
+            state.logger.warn("transport", reason.clone());
+            return DialOutcome::Failed(reason);
+        }
+    }
+    if let Err(reason) = verify_hello(
+        state,
+        device_id,
+        *tcp_port,
+        nonce,
+        x25519_pubkey,
+        ed25519_pubkey,
+        sig,
+    ) {
+        state.push_diag_event("hello_rejected", &format!("{reason}; from={endpoint}"));
+        state.logger.warn("transport", format!("握手验签失败：{reason}（端点 {endpoint}）"));
+        return DialOutcome::Failed(format!("握手失败: {reason}"));
+    }
+    let peer_id: String = device_id.clone();
+    let learned_hello: Option<Message> = Some(first);
 
     let (bulk_tx, bulk_rx) = mpsc::channel(1024);
     let (prio_tx, prio_rx) = mpsc::channel(1024);
@@ -1354,27 +1387,19 @@ async fn connect_to_peer(
         shutdown.clone(),
     ));
 
-    match learned_hello {
-        // 身份未知路径：Hello 已在握手阶段发出，这里就地处理对端首帧 —— 走的正是
-        // `handle_incoming` 那条路径（写身份 + 双公钥、对齐会话时钟、冲刷待发队列）。
-        Some(first) => {
-            // 留痕：配置里没写 device_id 时，这行日志是用户/开发者**唯一**能确认
-            // 「到底连上了谁」的地方。
-            state.logger.info(
-                "transport",
-                format!("握手学到对端身份 peer={peer_id} ep={endpoint}"),
-            );
-            handle_message(state, &peer_id, first).await
-        }
-        // 身份已知路径：沿用原逻辑，在链路就位后发 Hello。
-        None => {
-            let conv_clock = {
-                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::get_clock(&dbc, &peer_id)
-            };
-            let hello = build_signed_hello(state, conv_clock);
-            let _ = prio_tx.send(hello).await;
-        }
+    // 握手已在建链前完成（两条路径都发过自己的 Hello，且都验过对端的 Hello），
+    // 这里就地处理对端首帧 —— 走的正是 `handle_incoming` 那条路径
+    // （写身份 + 双公钥、对齐会话时钟、冲刷待发队列）。
+    if known_id.is_none() {
+        // 留痕：配置里没写 device_id 时，这行日志是用户/开发者**唯一**能确认
+        // 「到底连上了谁」的地方。
+        state.logger.info(
+            "transport",
+            format!("握手学到对端身份 peer={peer_id} ep={endpoint}"),
+        );
+    }
+    if let Some(first) = learned_hello {
+        handle_message(state, &peer_id, first).await;
     }
 
     tokio::spawn(reader_loop(
@@ -2750,7 +2775,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         // target 是本机直连就只发它；无直连路径时洪泛兜底（第一版无路由表）。广播帧保持 fan-out。
         let targets: Vec<String> = match env.target.as_deref() {
             Some(t) => {
-                let direct = { state.links.lock().await.contains_key(t) };
+                // ⚠️ 必须判「有**非空**链路」（等价于 `has_link`），不能用 `contains_key`：
+                // 后者会把残留的空 Vec 当成「直连」→ 走只发 target 的分支 →
+                // `try_send` 返回「未建立连接」，而**洪泛兜底不会执行** ⇒
+                // 跨跳的好友申请 / 送达回执 / 已读回执可能永久丢失（复核抓到的缺陷）。
+                let direct = {
+                    let links = state.links.lock().await;
+                    links.get(t).is_some_and(|v| !v.is_empty())
+                };
                 if direct {
                     vec![t.to_string()]
                 } else {
