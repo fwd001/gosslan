@@ -77,7 +77,7 @@ const appearanceOptions: { value: AppearanceMode; label: string }[] = [
         <input
           type="color"
           :value="app.themeColor"
-          class="h-6 w-7 cursor-pointer rounded-[var(--gosslan-radius-xs)] border-0 bg-transparent p-0"
+          class="tap-safe h-6 w-7 cursor-pointer rounded-[var(--gosslan-radius-xs)] border-0 bg-transparent p-0"
           :title="t('settings.appearance.customColor')"
           :aria-label="t('settings.appearance.customColor.aria')"
           @input="(e) => app.setThemeColor((e.target as HTMLInputElement).value)"

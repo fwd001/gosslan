@@ -11,6 +11,12 @@
  *      踩坑：`.glass` / `.frost` 的定义在文件更靠后处，同优先级下"后定义者胜"，
  *      降级规则写在前面被**完整覆盖**（写了日志、加了注释，但实测才发现无效）。
  *
+ *   ⑧ 小尺寸可交互元素必须有 `tap-safe`（触屏点按目标 ≥44pt，HIG）
+ *      踩坑：iOS HIG 的最小点按目标是 44×44pt，而项目里大量图标按钮是 28–32px
+ *      （桌面鼠标没问题，**手指容易点不中甚至误触相邻项**）。项目已有 `.tap-safe`
+ *      （`:pointer: coarse` 下把热区垂直撑到 +16px），但靠自觉使用，本次复核仍扫出 8 处漏网
+ *      —— 其中移动端返回键、删除端点键、取色控件都在手机上真会被点到。
+ *
  *   ⑦ `outline-none` 必须自带焦点指示（否则全局焦点环被它"静默盖掉"）
  *      踩坑：全局焦点环写在 `:where(button, a, input, …, [tabindex], [contenteditable]):focus-visible`
  *      —— **`:where()` 的特异性是 0**，而 Tailwind 的 `.outline-none`（`outline: 2px solid
@@ -333,6 +339,52 @@ export function findOutlineNoneWithoutFocusRing(src: string): GuardIssue[] {
         "② 自己给一个可见指示，如 `focus:ring-2 focus:ring-primary` / `focus:border-[…]`。" +
         "确实不该画环的容器（`role=\"menu\"` / `role=\"dialog\"` + `tabindex=\"-1\"`，焦点由内部承担）" +
         "可在文件里加 `focus-ring-ok` 注释整文件跳过。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- ⑧ 小尺寸可交互元素必须有 tap-safe ----------------
+
+/**
+ * 小尺寸工具类：Tailwind 里 `h-8` = 32px、`h-7` = 28px、`h-6` = 24px、`h-5` = 20px，
+ * 全部**小于 HIG 的 44pt 最小点按目标**。（`h-11` = 44px 才是达标尺寸。）
+ */
+const SMALL_SIZE_RE = /\b(?:h-5|h-6|h-7|h-8|w-5|w-6|w-7|w-8)\b/;
+
+/** 参与点按判定的标签（`button`/`a`/`label`/`select`/`input` 天生可交互；其余看 `@click`）。 */
+const TAPPABLE_TAG_RE = /<(button|a|div|span|li|label|select|input)\b[^>]*>/gs;
+
+/**
+ * 检查一份 .vue 源码里"点按目标过小、又没有触屏撑大"的元素。
+ *
+ * 判据：可交互元素（原生可交互标签，或带 `@click`）+ class 里有小尺寸工具类
+ * + 同一开标签里没有 `tap-safe` → 报出。
+ *
+ * ⚠️ 说清 `tap-safe` 的能力边界（写进提示里，免得以为加上就万无一失）：
+ * 它只在 `@media (pointer: coarse)` 下把热区**垂直**撑 ±8px ⇒ `h-6`→40、`h-7`→44、`h-8`→48；
+ * 因此 `h-5`（20px→36px）仍然不达标，必须改成更大的尺寸。
+ * 逃生阀：文件里带 `tap-target-ok` 注释则整文件跳过。
+ */
+export function findSmallTapTargets(src: string): GuardIssue[] {
+  if (src.includes("tap-target-ok")) return [];
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(TAPPABLE_TAG_RE)) {
+    const tag = m[0];
+    const native = /^<(button|a|label|select|input)\b/.test(tag);
+    if (!native && !/(?:@|v-on:)click/.test(tag)) continue;
+    const classMatch = tag.match(/class="([^"]*)"/);
+    if (!classMatch) continue;
+    if (!SMALL_SIZE_RE.test(classMatch[1])) continue;
+    if (/\btap-safe\b/.test(classMatch[1])) continue;
+    out.push({
+      line: lineAt(src, m.index ?? 0),
+      message:
+        "小尺寸可交互元素没有 `tap-safe` —— iOS HIG 的最小点按目标是 44×44pt，" +
+        "而 `h-8`=32px / `h-7`=28px / `h-6`=24px，手指容易点不中或误触相邻项。" +
+        "加 `tap-safe`（`:pointer: coarse` 下热区垂直 +16px：h-6→40、h-7→44、h-8→48）；" +
+        "`h-5`（20px）即便加了也只有 36px，请改用 `h-7` 以上。" +
+        "确属不需要触屏撑大的场合可加 `tap-target-ok` 注释整文件跳过。",
     });
   }
   return out.sort((a, b) => a.line - b.line);

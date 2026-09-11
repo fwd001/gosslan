@@ -181,7 +181,7 @@ async function removeEndpoint(address: string) {
         {{ ep.address }}
       </span>
       <button
-        class="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
+        class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
         :aria-label="t('settings.network.routed.remove')"
         :title="t('settings.network.routed.remove')"
         @click="removeEndpoint(ep.address)"

@@ -48,7 +48,7 @@ const confirmRemove = ref(false);
       :style="{ height: 'var(--gosslan-header-h)' }"
     >
       <button
-        class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         :title="t('common.back')" :aria-label="t('common.back')"
         @click="app.mobileView = 'list'"
       >

@@ -92,7 +92,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       <button
         v-for="item in navItems"
         :key="item.key"
-        class="flex h-8 w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2.5 text-left text-[13px] transition"
+        class="tap-safe flex h-8 w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2.5 text-left text-[13px] transition"
         :aria-current="section === item.key ? 'true' : undefined"
         :class="section === item.key
           ? 'bg-[var(--gosslan-list-active)] font-medium text-[var(--gosslan-text)]'

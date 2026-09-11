@@ -9,6 +9,7 @@ import {
   findHandWrittenBadges,
   findHoverRevealIssues,
   findOutlineNoneWithoutFocusRing,
+  findSmallTapTargets,
   findTappableWithoutKeyboard,
   findTruncationWithoutTitle,
 } from "./designGuards.ts";
@@ -431,6 +432,63 @@ test("注释里提到 outline-none 不算（只看真实 class 属性）", () =>
   assert.deepEqual(findOutlineNoneWithoutFocusRing(commentOnly), []);
 });
 
+// ---------------- ⑧ 小尺寸可交互元素必须有 tap-safe ----------------
+//
+// 真实情况（2026-09-12 复核）：35 个小尺寸可交互元素里仍有 8 处漏掉 `tap-safe` ——
+// 包括移动端的返回键、删除「跨网段端点」的垃圾桶、自定义主题取色控件。
+// 桌面鼠标点 28px 没问题，**手指点就容易不中或误触相邻项**（HIG 最小 44pt）。
+
+test("复现真实缺陷：h-7 图标按钮没有 tap-safe → 报出", () => {
+  const buggy = `<template>
+  <button class="flex h-7 w-7 items-center justify-center" @click="remove()">
+    <Trash2 />
+  </button>
+</template>`;
+  const issues = findSmallTapTargets(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 2);
+  assert.match(issues[0].message, /44×44pt/);
+});
+
+test("加了 tap-safe 就通过", () => {
+  const ok = `<template>
+  <button class="tap-safe flex h-7 w-7 items-center justify-center" @click="remove()">
+    <Trash2 />
+  </button>
+</template>`;
+  assert.deepEqual(findSmallTapTargets(ok), []);
+});
+
+test("达标的尺寸不算小（h-11 = 44px）", () => {
+  const ok = `<template>
+  <button class="flex h-11 w-11 items-center justify-center" @click="ok()">x</button>
+</template>`;
+  assert.deepEqual(findSmallTapTargets(ok), []);
+});
+
+test("不可交互的小元素不报（纯装饰）", () => {
+  const decorative = `<template>
+  <div class="h-6 w-6 rounded-full bg-primary"></div>
+  <span class="h-5 w-5"><Check /></span>
+</template>`;
+  assert.deepEqual(findSmallTapTargets(decorative), []);
+});
+
+test("带 @click 的非按钮小元素同样要 tap-safe", () => {
+  const buggy = `<template>
+  <div class="h-6 w-6 cursor-pointer" role="button" tabindex="0" @click="go()">x</div>
+</template>`;
+  assert.equal(findSmallTapTargets(buggy).length, 1);
+});
+
+test("tap-target-ok 逃生阀：整文件跳过", () => {
+  const withEscape = `<!-- tap-target-ok -->
+<template>
+  <button class="h-6 w-6" @click="go()">x</button>
+</template>`;
+  assert.deepEqual(findSmallTapTargets(withEscape), []);
+});
+
 // ---------------- 全库扫描：真实文件必须干净 ----------------
 
 function collectVueFiles(dir: string, out: string[] = []): string[] {
@@ -441,6 +499,19 @@ function collectVueFiles(dir: string, out: string[] = []): string[] {
   }
   return out;
 }
+
+test("src 下所有小尺寸可交互元素都带 tap-safe", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findSmallTapTargets(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下元素点按目标过小：\n${bad.join("\n")}`);
+});
 
 test("src 下所有 outline-none 都自带焦点指示", () => {
   const srcDir = join(import.meta.dirname, "..");

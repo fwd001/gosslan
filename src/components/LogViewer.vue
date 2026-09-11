@@ -194,7 +194,7 @@ const levelClass = (lv: string) =>
       <div class="ml-auto flex items-center gap-1">
         <!-- 自动刷新开关 -->
         <button
-          class="flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition hover:bg-[var(--gosslan-hover)]"
           :class="autoRefresh ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
           :title="t('logs.autoRefresh')"
           :aria-label="t('logs.autoRefresh')"
@@ -205,7 +205,7 @@ const levelClass = (lv: string) =>
           <span class="hidden sm:inline">{{ t("logs.autoRefresh") }}</span>
         </button>
         <button
-          class="flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('logs.refresh')"
           :aria-label="t('logs.refresh')"
           @click="load"
@@ -214,7 +214,7 @@ const levelClass = (lv: string) =>
           <span class="hidden sm:inline">{{ t("logs.refresh") }}</span>
         </button>
         <button
-          class="flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition hover:bg-[var(--gosslan-hover)]"
           :class="confirmClear ? 'text-[var(--gosslan-danger-ink)]' : 'text-[var(--gosslan-text-2)]'"
           :title="t('logs.clear')"
           :aria-label="t('logs.clear')"
@@ -229,7 +229,7 @@ const levelClass = (lv: string) =>
           {{ copied ? t("logs.copied") : confirmClear ? t("logs.clearConfirm") : "" }}
         </span>
         <button
-          class="flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-white transition"
+          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-white transition"
           :class="copied ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-primary)] hover:bg-[var(--gosslan-primary-hover)]'"
           :title="t('logs.copy')"
           :aria-label="t('logs.copy')"
