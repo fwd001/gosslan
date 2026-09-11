@@ -70,6 +70,69 @@ pub enum ForwardDecision {
     Drop(DropReason),
 }
 
+/// 有界环形缓冲：容量满时覆盖最旧元素，保证内存有上界。
+///
+/// 用途：待转发帧队列。§39 要求所有 Transport 都有 bounded queue——
+/// 不能因为 BLE 慢就无限积压，也不能让 LAN 的高速把 BLE 的队列撑爆。
+/// 满时**丢弃最旧的**而不是阻塞或无限增长。
+pub struct RingBuffer<T> {
+    buf: Vec<Option<T>>,
+    head: usize,
+    len: usize,
+    cap: usize,
+}
+
+impl<T> RingBuffer<T> {
+    pub fn new(cap: usize) -> Self {
+        let cap = cap.max(1);
+        Self {
+            buf: (0..cap).map(|_| None).collect(),
+            head: 0,
+            len: 0,
+            cap,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// 压入一个元素；容量满时覆盖最旧元素。
+    pub fn push(&mut self, v: T) {
+        if self.len == self.cap {
+            self.buf[self.head] = Some(v);
+            self.head = (self.head + 1) % self.cap;
+        } else {
+            let idx = (self.head + self.len) % self.cap;
+            self.buf[idx] = Some(v);
+            self.len += 1;
+        }
+    }
+
+    pub fn pop_front(&mut self) -> Option<T> {
+        if self.len == 0 {
+            return None;
+        }
+        let v = self.buf[self.head].take();
+        self.head = (self.head + 1) % self.cap;
+        self.len -= 1;
+        v
+    }
+
+    /// 取出全部元素（发送循环消费）。
+    pub fn drain(&mut self) -> Vec<T> {
+        let mut out = Vec::with_capacity(self.len);
+        while let Some(v) = self.pop_front() {
+            out.push(v);
+        }
+        out
+    }
+}
+
 /// Mesh 转发路由器。
 pub struct MeshRouter {
     bloom: BloomFilter,
@@ -78,15 +141,24 @@ pub struct MeshRouter {
     max_ttl: u8,
     /// 有界 fanout：广播时最多向几个下一跳扩散（§20 第一版不做复杂路由算法）。
     fanout: usize,
+    /// 待转发帧队列（有界，§39 背压）。
+    pending: RingBuffer<MeshFrame>,
 }
 
 impl MeshRouter {
-    pub fn new(bloom_capacity: usize, seen_capacity: usize, max_ttl: u8, fanout: usize) -> Self {
+    pub fn new(
+        bloom_capacity: usize,
+        seen_capacity: usize,
+        max_ttl: u8,
+        fanout: usize,
+        pending_capacity: usize,
+    ) -> Self {
         Self {
             bloom: BloomFilter::new(bloom_capacity, 0.01),
             seen: LruSet::new(seen_capacity),
             max_ttl,
             fanout,
+            pending: RingBuffer::new(pending_capacity),
         }
     }
 
@@ -162,6 +234,23 @@ impl MeshRouter {
             .take(self.fanout)
             .collect()
     }
+
+    // ---------------- 待转发队列（§39 有界背压） ----------------
+
+    /// 把待转发帧入队。队列满时**覆盖最旧**的一帧，绝不无限增长。
+    pub fn enqueue(&mut self, frame: MeshFrame) {
+        self.pending.push(frame);
+    }
+
+    /// 取出全部待转发帧（由发送循环消费）。
+    pub fn drain_pending(&mut self) -> Vec<MeshFrame> {
+        self.pending.drain()
+    }
+
+    /// 当前积压的待转发帧数（诊断 / 背压判断用）。
+    pub fn pending_count(&self) -> usize {
+        self.pending.len()
+    }
 }
 
 #[cfg(test)]
@@ -169,7 +258,7 @@ mod tests {
     use super::*;
 
     fn router() -> MeshRouter {
-        MeshRouter::new(1000, 100, 7, 3)
+        MeshRouter::new(1000, 100, 7, 3, 10)
     }
 
     fn frame(id: &str, src: &str, dest: MeshDestination, ttl: u8) -> MeshFrame {
@@ -301,6 +390,37 @@ mod tests {
         let picked = r.select_outgoing(&candidates, "n99");
 
         assert_eq!(picked.len(), 3);
+    }
+
+    /// RingBuffer：容量有界，满时覆盖最旧（§39 内存上界）。
+    #[test]
+    fn ring_buffer_is_bounded_and_evicts_oldest() {
+        let mut rb = RingBuffer::new(3);
+        rb.push(1);
+        rb.push(2);
+        rb.push(3);
+        rb.push(4); // 覆盖 1
+        assert_eq!(rb.len(), 3);
+        assert_eq!(rb.drain(), vec![2, 3, 4]);
+        assert!(rb.is_empty());
+    }
+
+    /// 待转发队列：入队 → 取出；容量满时覆盖最旧，绝不无限增长。
+    #[test]
+    fn pending_queue_is_bounded_and_drainable() {
+        let mut r = MeshRouter::new(100, 10, 7, 3, 2);
+        r.enqueue(frame("f1", "A", MeshDestination::Broadcast, 3));
+        r.enqueue(frame("f2", "A", MeshDestination::Broadcast, 3));
+        assert_eq!(r.pending_count(), 2);
+
+        // 第三个超出容量 → 覆盖最旧，仍是有界的 2
+        r.enqueue(frame("f3", "A", MeshDestination::Broadcast, 3));
+        assert_eq!(r.pending_count(), 2);
+
+        let out = r.drain_pending();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].frame_id, "f2", "最旧的 f1 应已被覆盖");
+        assert_eq!(r.pending_count(), 0);
     }
 
     /// 外部不透明帧（BitChat）走同一条流水线：不解密、只按帧规则处理（§29）。

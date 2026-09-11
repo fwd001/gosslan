@@ -12,8 +12,7 @@ mod gossip_engine;
 pub mod mesh;
 mod network;
 pub mod protocol;
-mod relay;
-mod relay_manager;
+mod relay_manager; // 文件切片中继（BitTorrent 式分发），与 `mesh::router` 无关
 mod state;
 mod storage;
 mod transport;
