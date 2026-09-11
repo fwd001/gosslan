@@ -62,6 +62,22 @@ watch(
   refreshLinkState,
   { immediate: true },
 );
+/**
+ * 切会话：清掉"跟着输入框走的发送上下文"（引用 / 转发草稿）。
+ *
+ * 为什么必须显式清：这两项只在"发送成功"或"用户点取消"时才被清空，
+ * 切会话时留着就会出现 —— 在 B 会话看到 A 的引用条，发出去的消息还带着 A 的消息片段。
+ * 这是会把内容发错会话的缺陷，不是观感问题。
+ * 输入框里的**文字**由模板上的 `:key="chat.activeConv"` 让 MessageComposer 整体重建来清
+ * （编辑器是 contenteditable，DOM 是唯一真相，没有"清空"之外的复位路径）。
+ */
+watch(
+  () => chat.activeConv,
+  () => {
+    quote.value = null;
+    forward.value = null;
+  },
+);
 const isPeerFriend = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return true;
   return chat.friends.some((f) => f.device_id === conv.value!.id);
@@ -539,6 +555,7 @@ function onLoadMore() {
     <div class="shrink-0 bg-[var(--gosslan-chat)] px-4 pb-3 pt-2">
       <MessageComposer
         v-if="isGroup || isPeerFriend"
+        :key="chat.activeConv ?? 'none'"
         :conv-id="chat.activeConv"
         :quote="quote"
         :mention-members="mentionMembers"

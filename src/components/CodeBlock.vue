@@ -106,7 +106,7 @@ const html = computed(() => {
       <span class="text-xs" :style="{ color: toolbarFg }">{{ langLabel }} · {{ t("common.lines", { n: lineCount }) }}</span>
     </div>
     <pre
-      class="code-pre"
+      class="code-pre gosslan-selectable"
       :style="{ background: codeBg, color: codeFg }"
     ><code v-html="html"></code></pre>
   </div>

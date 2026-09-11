@@ -87,8 +87,15 @@ watch(
     if (v) {
       keyword.value = "";
       loading.value = true;
-      await chat.searchNearbyPeers(); // 按需 who_has 群发探测
-      loading.value = false;
+      try {
+        await chat.searchNearbyPeers(); // 按需 who_has 群发探测
+      } catch (e) {
+        // 不接住的话：loading 永远停在 true（弹窗卡在「正在扫描…」），
+        // 并且变成一个 unhandled rejection。
+        app.toastError(e, t("friend.add.scanFail"));
+      } finally {
+        loading.value = false;
+      }
     }
   },
 );

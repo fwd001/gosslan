@@ -403,6 +403,7 @@ export const zhCN: MessageDict = {
   // ---- 好友 ----
   "friend.add.title": "添加好友",
   "friend.add.scanning": "正在扫描局域网节点…",
+  "friend.add.scanFail": "扫描失败，请稍后重试",
   "friend.add.noPeers": "未发现局域网节点，请先确保双方已启动网络",
   "friend.add.searchPlaceholder": "搜索昵称 / IP / 设备 ID",
   "friend.add.alreadyFriend": "已加好友",
@@ -938,6 +939,7 @@ export const enUS: MessageDict = {
   // ---- Friends ----
   "friend.add.title": "Add Friend",
   "friend.add.scanning": "Scanning LAN peers…",
+  "friend.add.scanFail": "Scan failed. Please try again.",
   "friend.add.noPeers": "No LAN peers found. Make sure both devices have the network enabled",
   "friend.add.searchPlaceholder": "Search nickname / IP / device ID",
   "friend.add.alreadyFriend": "Already added",

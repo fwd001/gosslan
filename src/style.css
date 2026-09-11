@@ -280,6 +280,14 @@ body {
 .overflow-auto {
   overscroll-behavior: contain;
 }
+/* 可选文本标记：正文气泡 / 代码块用。
+   两处用途：① 显式允许选字（与下面"控件不选中"的规则区分开）；
+   ② 消息行长按菜单靠它让路 —— 命中可选文本时不弹操作面板，把长按还给原生选字。 */
+.gosslan-selectable {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 /* 控件不长按选中、不弹系统菜单；正文消息区不在此列——那里要能选字复制 */
 button,
 [role="button"] {

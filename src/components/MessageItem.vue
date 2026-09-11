@@ -109,6 +109,17 @@ const {
 } = useMessageFile(() => props.message, () => sendState.value);
 const { copiedKey, copyContent } = useClipboard();
 
+/**
+ * 复制文本并**给出反馈**（右键菜单与移动端操作面板用）。
+ * 这两处点完菜单立刻关闭，气泡上的"已复制"勾不会渲染（它只在长文本操作条里），
+ * 所以必须用 toast 告知结果 —— 否则用户以为没复制上，会反复长按。
+ * 气泡内联的复制按钮仍只靠自身勾选反馈（就在指尖，无需 toast 打扰）。
+ */
+async function copyTextWithToast(key: string, text: string) {
+  const ok = await copyContent(key, text);
+  app.toast(ok ? t("common.copied") : t("msg.copyFail"), ok ? "success" : "error");
+}
+
 /** 头像取色名：必须与列表/回执/弹层同源（昵称），否则同一人两处颜色分叉。
  *  群聊由父组件传 nicknameOf 结果；单聊在此兜一把，防止退化成按设备 ID 哈希。 */
 const avatarName = computed(() =>
@@ -165,6 +176,11 @@ watch(ctxMenuPopup.isActive, (mine) => {
 
 function openContextMenu(e: MouseEvent) {
   if (props.message.kind === "system") return;
+  // 移动端没有右键：长按走底部 ActionSheet。部分 WebView 在长按之后仍会补发
+  // `contextmenu`（也会在长按选中文字时弹系统菜单），若这里再弹一次，就会出现
+  // 「右键菜单 + ActionSheet」同时挂在屏幕上，而两者 claim 的是**同一个**互斥 key
+  // （`menu:${msg_id}`）⇒ 谁也无法通过互斥关掉对方。
+  if (app.isMobile) return;
   ctxMenu.value = { x: e.clientX, y: e.clientY };
   ctxMenuPopup.claim();
 }
@@ -190,8 +206,13 @@ function closeActionSheet() {
   sheetOpen.value = false;
 }
 
-function onTouchStart() {
+function onTouchStart(e: TouchEvent) {
   if (!app.isMobile || props.message.kind === "system") return;
+  // 正文气泡里要能**原生选字/复制链接**（style.css 的约定：消息正文区不套 user-select:none）。
+  // 整行无差别起长按定时器会把这套手势劫持掉：手指按住不动超过 500ms 就弹出操作面板，
+  // 选区随之中断。所以命中可选文本气泡时不启动长按（要整条复制走气泡外侧的长按）。
+  const el = e.target as HTMLElement | null;
+  if (el?.closest(".gosslan-selectable")) return;
   longPressTimer = setTimeout(() => {
     longPressTimer = null;
     openActionSheet();
@@ -516,7 +537,7 @@ async function copyFileToClipboard() {
     :y="ctxMenu.y"
     :kind="message.kind"
     @close="closeContextMenu()"
-    @copy-text="closeContextMenu(); copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
+    @copy-text="closeContextMenu(); copyTextWithToast(message.kind === 'code' ? 'code' : 'text', message.content)"
     @copy-image="copyImage"
     @save-image="saveImage"
     @save-file="saveFileTo"
@@ -531,7 +552,7 @@ async function copyFileToClipboard() {
       <button
         v-if="message.kind === 'text' || message.kind === 'code'"
         class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
-        @click="closeActionSheet(); copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
+        @click="closeActionSheet(); copyTextWithToast(message.kind === 'code' ? 'code' : 'text', message.content)"
       >
         <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.copy") }}

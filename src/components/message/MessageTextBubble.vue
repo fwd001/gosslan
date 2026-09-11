@@ -141,7 +141,7 @@ async function openLink(href: string) {
       <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
     </div>
     <div
-      class="whitespace-pre-wrap break-words"
+      class="gosslan-selectable whitespace-pre-wrap break-words"
       :style="{ wordBreak: 'break-word', ...clampStyle }"
     >
       <template v-for="(seg, i) in segments" :key="i">

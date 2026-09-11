@@ -44,12 +44,31 @@ function onContextMenu(friend: Friend, e: MouseEvent) {
 
 // 移动端没有 contextmenu：长按 500ms 视为「删除好友」入口
 const LONG_PRESS_MS = 500;
+/** 手指抖动容差（px）：小于它不算"滑动"，不取消长按（否则轻微抖动就长按不出来）。 */
+const PRESS_MOVE_TOLERANCE = 10;
 let pressTimer: ReturnType<typeof setTimeout> | null = null;
+let pressStart: { x: number; y: number } | null = null;
+/**
+ * 本次手势已经触发过长按 ⇒ 抑制随之而来的 click。
+ * 不抑制的话同一次长按会「一边弹出菜单、一边把会话/资料页打开」，菜单刚出来就被盖住。
+ * 只在**同一次手势内**生效：下一次 touchstart 会复位，所以不会吃掉用户的下一次点击。
+ */
+let suppressClick = false;
 
 function clearPress() {
   if (pressTimer) {
     clearTimeout(pressTimer);
     pressTimer = null;
+  }
+  pressStart = null;
+}
+
+/** 位移超阈值才取消长按（横向滑动列表 / 纵向滚动时不误弹菜单）。 */
+function onPressMove(e: TouchEvent) {
+  const t = e.touches[0];
+  if (!t || !pressStart) return;
+  if (Math.hypot(t.clientX - pressStart.x, t.clientY - pressStart.y) > PRESS_MOVE_TOLERANCE) {
+    clearPress();
   }
 }
 
@@ -57,12 +76,24 @@ function onTouchStart(friend: Friend, e: TouchEvent) {
   const t = e.touches[0];
   if (!t) return;
   clearPress();
+  suppressClick = false; // 新手势开始：复位上一次的抑制标记
+  pressStart = { x: t.clientX, y: t.clientY };
   pressTimer = setTimeout(() => {
     pressTimer = null;
+    suppressClick = true;
     // 长按菜单弹出时给一次"重"触觉（对应 iOS 的 impact(.heavy) at menu appear）
     haptic("heavy");
     emit("context", friend, t.clientX, t.clientY);
   }, LONG_PRESS_MS);
+}
+
+/** 打开资料页；吃掉"长按那次手势"遗留的 click（见 suppressClick）。 */
+function openFriend(friend: Friend) {
+  if (suppressClick) {
+    suppressClick = false;
+    return;
+  }
+  emit("open", friend);
 }
 
 onUnmounted(clearPress);
@@ -80,12 +111,12 @@ onUnmounted(clearPress);
       active ? 'bg-[var(--gosslan-list-active)]' : 'hover:bg-[var(--gosslan-list-hover)]',
     ]"
     :aria-label="t('friend.listItem.aria', { name: friend.nickname, status: friend.online ? t('common.online') : t('common.offline') })"
-    @click="emit('open', friend)"
-    @keydown.enter.prevent="emit('open', friend)"
-    @keydown.space.prevent="emit('open', friend)"
+    @click="openFriend(friend)"
+    @keydown.enter.prevent="openFriend(friend)"
+    @keydown.space.prevent="openFriend(friend)"
     @contextmenu="onContextMenu(friend, $event)"
     @touchstart.passive="onTouchStart(friend, $event)"
-    @touchmove.passive="clearPress"
+    @touchmove.passive="onPressMove"
     @touchend.passive="clearPress"
     @touchcancel.passive="clearPress"
   >
