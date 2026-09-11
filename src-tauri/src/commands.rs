@@ -771,17 +771,50 @@ pub async fn send_friend_request(
     if peer_id.is_empty() || peer_id == s.device_id {
         return Err("不能向自己发送好友申请".to_string());
     }
-    if !s.peers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&peer_id) {
-        return Err("未找到该在线节点，请先重新扫描".to_string());
-    }
-    let msg = Message::FriendRequest {
-        from: s.device_id.clone(),
-        from_nickname: s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-        from_avatar: s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-        to: peer_id.clone(),
-        ts: db::now_ms(),
+    // 目标必须在 peers 表（announce / Presence 学到），且需有 X25519 公钥才能 E2EE 加密。
+    let target_pubkey = {
+        let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+        peers.get(&peer_id).and_then(|p| p.x25519_pubkey.clone())
     };
-    try_send(s, &peer_id, &msg).await
+    let Some(target_pubkey) = target_pubkey else {
+        return Err("未找到该节点或缺少其公钥，请先重新扫描".to_string());
+    };
+    let nickname = s
+        .nickname
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let avatar = s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    // E2EE 加密好友申请内容（昵称/头像）；from/to 已在信封 sender_id / target 里。
+    let payload =
+        serde_json::json!({ "from_nickname": nickname, "from_avatar": avatar }).to_string();
+    let shared = crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey)
+        .ok_or("密钥交换失败")?;
+    let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or("加密失败")?;
+    let payload_b64 = STANDARD.encode(&sealed);
+    let mut env = {
+        let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
+        gossip.build_envelope(
+            &s.identity,
+            &s.device_id,
+            GossipKind::FriendRequest,
+            None,
+            None,
+            &payload_b64,
+            db::now_ms(),
+            0,
+        )
+    };
+    // 定向目标 + 重签（target 参与 signing_bytes）。
+    env.target = Some(peer_id.clone());
+    env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
+    // 目标直连 → 只发它（精确）；否则广播，靠中间节点按 target 定向转发（跨跳）。
+    if s.has_link(&peer_id).await {
+        try_send(s, &peer_id, &Message::Gossip { envelope: env }).await?;
+    } else {
+        broadcast_gossip(s, env).await;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -806,11 +839,38 @@ pub async fn respond_friend_request(
         // 导致 friends 公钥永久缺失 → 群密钥分发被静默跳过。
         // 与 transport.rs 中 FriendAccept 接收路径的补写行为一致。
         maybe_update_friend(s, &peer_id, &name, None);
-        let msg = Message::FriendAccept {
-            from: s.device_id.clone(),
-            to: peer_id.clone(),
+        // FriendAccept 改走 Gossip 定向：跨跳场景下 try_send 直连发不出去。
+        // 对方公钥由接收 FriendRequest 时同步记录（见 handle_gossip 的 FriendRequest 分支）。
+        let target_pubkey = {
+            let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+            peers.get(&peer_id).and_then(|p| p.x25519_pubkey.clone())
         };
-        try_send(s, &peer_id, &msg).await?;
+        if let Some(target_pubkey) = target_pubkey {
+            let shared = crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey)
+                .ok_or("密钥交换失败")?;
+            let sealed = crypto::seal(&shared, b"{}").ok_or("加密失败")?;
+            let payload_b64 = STANDARD.encode(&sealed);
+            let mut env = {
+                let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                gossip.build_envelope(
+                    &s.identity,
+                    &s.device_id,
+                    GossipKind::FriendAccept,
+                    None,
+                    None,
+                    &payload_b64,
+                    db::now_ms(),
+                    0,
+                )
+            };
+            env.target = Some(peer_id.clone());
+            env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
+            if s.has_link(&peer_id).await {
+                try_send(s, &peer_id, &Message::Gossip { envelope: env }).await?;
+            } else {
+                broadcast_gossip(s, env).await;
+            }
+        }
         s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer_id);
         let _ = s.app.emit("friend-accepted", &peer_id);
     } else {

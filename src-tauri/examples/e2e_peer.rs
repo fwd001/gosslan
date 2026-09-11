@@ -555,6 +555,7 @@ async fn main() {
                         ts: now_ms(),
                         seq: 1,
                         encrypted: true,
+                        target: None,
                     };
                     env.compute_message_id();
                     env.sender_sig = identity.sign_b64(&env.signing_bytes());

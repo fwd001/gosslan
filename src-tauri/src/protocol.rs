@@ -74,6 +74,12 @@ pub enum GossipKind {
     /// 节点通告：周期广播自身身份，跨跳传播让全网节点互相可见（TOFU 语义）。
     /// 明文（encrypted=false），payload 为 JSON（昵称 / 头像）。
     Presence,
+    /// 好友申请（定向跨跳）：payload 为 E2EE 密文（用目标 X25519 公钥加密），
+    /// `target` 指定接收方 device_id；中间节点按 target 定向转发（一跳精确，
+    /// 无路由表时洪泛兜底）。
+    FriendRequest,
+    /// 好友申请同意（定向跨跳）：方向与 FriendRequest 相反，其余同理。
+    FriendAccept,
 }
 
 /// Gossip 广播信封（Epidemic 协议消息体）。
@@ -114,6 +120,10 @@ pub struct GossipEnvelope {
     #[serde(default)]
     pub seq: i64,
     pub encrypted: bool,
+    /// 定向目标 device_id（仅 `FriendRequest` 使用；`None` = 广播）。
+    /// 参与签名，中间节点不可篡改目标；不参与 message_id（nonce 已保证唯一）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 impl GossipEnvelope {
@@ -147,6 +157,7 @@ impl GossipEnvelope {
             &self.ts,
             &self.seq,
             &self.encrypted,
+            &self.target,
         ))
         .unwrap_or_default()
     }
@@ -491,7 +502,62 @@ mod tests {
             ts: 123456,
             seq: 1,
             encrypted: true,
+            target: None,
         }
+    }
+
+    /// 好友申请（定向）信封：加密、签名、验签、解密、target 完整性。
+    #[test]
+    fn friend_request_envelope_encrypt_sign_decrypt_and_target_integrity() {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        use crate::crypto::Identity;
+        use crate::gossip_engine::GossipEngine;
+
+        let a = Identity::generate();
+        let c = Identity::generate();
+        let engine = GossipEngine::new(100, 10, 4, 6);
+
+        // A 构造 FriendRequest（target=C，用 C 的 X25519 公钥加密内容）
+        let payload = r#"{"from_nickname":"Alice","from_avatar":null}"#;
+        let shared = crate::crypto::shared_secret(&a.x25519_secret, &c.x25519_public_b64())
+            .unwrap();
+        let sealed = crate::crypto::seal(&shared, payload.as_bytes()).unwrap();
+        let payload_b64 = B64.encode(&sealed);
+        let mut env = engine.build_envelope(
+            &a,
+            "dev-a",
+            GossipKind::FriendRequest,
+            None,
+            None,
+            &payload_b64,
+            123456,
+            0,
+        );
+        env.target = Some("dev-c".into());
+        env.sender_sig = a.sign_b64(&env.signing_bytes());
+
+        // 验签通过（target 参与签名）
+        assert!(engine.verify_envelope(&env));
+
+        // C 用自己的私钥解开内容
+        let shared2 = crate::crypto::shared_secret(&c.x25519_secret, &env.sender_pubkey).unwrap();
+        let pt = crate::crypto::open(&shared2, &B64.decode(&env.payload).unwrap()).unwrap();
+        assert_eq!(String::from_utf8(pt).unwrap(), payload);
+
+        // 中间节点篡改 target → 验签失败（target 不可篡改）
+        let mut tampered = env.clone();
+        tampered.target = Some("dev-eve".into());
+        assert!(!engine.verify_envelope(&tampered));
+
+        // target 序列化：None 不写键，Some 写入
+        let json_none = serde_json::to_string(&GossipEnvelope {
+            target: None,
+            ..env.clone()
+        })
+        .unwrap();
+        assert!(!json_none.contains("target"), "None 不应写 target 键: {json_none}");
+        let json_some = serde_json::to_string(&env).unwrap();
+        assert!(json_some.contains("dev-c"), "Some 应写 target: {json_some}");
     }
 
     #[test]

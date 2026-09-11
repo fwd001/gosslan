@@ -184,6 +184,7 @@ impl GossipEngine {
             ts,
             seq,
             encrypted: true, // 默认加密；调用方可按 E2EE 开关改写
+            target: None,    // 定向目标由调用方在 build 之后设置并重签
         };
         env.compute_message_id();
         env.sender_sig = identity.sign_b64(&env.signing_bytes());

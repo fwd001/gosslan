@@ -2275,7 +2275,10 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 }
                 // 未认识：仅 Presence（节点通告）允许 TOFU —— 它存在的目的就是
                 // 让「不认识」的节点被全网看到。其余消息仍拒，避免陌生人直接投递。
-                None => env.kind == GossipKind::Presence,
+                None => matches!(
+                    env.kind,
+                    GossipKind::Presence | GossipKind::FriendRequest | GossipKind::FriendAccept
+                ),
             }
         }
     };
@@ -2400,6 +2403,18 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // Presence 必然是明文；收到 encrypted=true 的是异常，丢弃。
                 return;
             }
+            GossipKind::FriendRequest | GossipKind::FriendAccept => {
+                // 定向好友控制消息：发送方用 target 的 X25519 公钥加密，只有 target
+                // 能用自己的私钥解开；中间节点解不开（plaintext=None），无害。
+                let shared =
+                    crypto::shared_secret(&state.identity.x25519_secret, &env.sender_pubkey);
+                shared.and_then(|s| {
+                    STANDARD
+                        .decode(&env.payload)
+                        .ok()
+                        .and_then(|d| crypto::open(&s, &d))
+                })
+            }
         }
     };
 
@@ -2415,10 +2430,36 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
 
     // 4. 转发（fan-out，TTL 衰减）— 所有 GossipKind 统一转发
     if env.ttl > 1 {
-        let peers: Vec<String> = state.peers.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
-        let targets = {
-            let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-            gossip.choose_fanout(&peers, &env.sender_id)
+        // 定向帧（FriendRequest/FriendAccept）优先精确定向：target 是本机直连就只发它；
+        // 无直连路径时洪泛兜底（第一版无路由表）。广播帧保持 fan-out。
+        let targets: Vec<String> = match env.target.as_deref() {
+            Some(t) => {
+                let direct = { state.links.lock().await.contains_key(t) };
+                if direct {
+                    vec![t.to_string()]
+                } else {
+                    let peers: Vec<String> = state
+                        .peers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .keys()
+                        .cloned()
+                        .collect();
+                    let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                    gossip.choose_fanout(&peers, &env.sender_id)
+                }
+            }
+            None => {
+                let peers: Vec<String> = state
+                    .peers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .keys()
+                    .cloned()
+                    .collect();
+                let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                gossip.choose_fanout(&peers, &env.sender_id)
+            }
         };
         let mut fwd = env.clone();
         fwd.ttl -= 1;
@@ -2486,6 +2527,99 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     )
                     .await;
                 }
+            }
+        }
+        GossipKind::FriendRequest => {
+            // 定向好友申请：只有 target == 本机才处理（中间节点已转发，不消费）。
+            if env.target.as_deref() == Some(state.device_id.as_str()) {
+                if let Some(pt) = plaintext {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                        let from_nickname = v
+                            .get("from_nickname")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let from_avatar = v
+                            .get("from_avatar")
+                            .and_then(|a| a.as_str())
+                            .map(|s| s.to_string());
+                        // 同步记录申请方身份与公钥：这样「同意」时才有对方 X25519 公钥
+                        // 可加密回发的 FriendAccept（跨跳场景下 Presense 可能还没到）。
+                        upsert_peer(
+                            state,
+                            &env.sender_id,
+                            &from_nickname,
+                            from_avatar.clone(),
+                            "",
+                            0,
+                            Some(env.sender_pubkey.clone()),
+                            Some(env.sender_ed25519.clone()),
+                            None,
+                        )
+                        .await;
+                        let req = PendingRequest {
+                            from: env.sender_id.clone(),
+                            from_nickname,
+                            from_avatar,
+                            ts: env.ts,
+                        };
+                        state
+                            .pending_requests
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(env.sender_id.clone(), req.clone());
+                        let _ = state.app.emit("friend-request", &req);
+                        // 留痕：跨跳好友申请是内存态（pending_requests），日志是唯一
+                        // 可观测「谁申请了我」的手段（headless 测试与真机排障都靠它）。
+                        eprintln!(
+                            "[friend] 收到跨跳好友申请 peer={} nickname={}",
+                            env.sender_id, req.from_nickname
+                        );
+                        let mut extra = std::collections::HashMap::new();
+                        extra.insert("type".to_string(), "friend_request".to_string());
+                        notify_with_extra(
+                            &state.app,
+                            "好友申请",
+                            &format!("{} 请求添加你为好友", req.from_nickname),
+                            extra,
+                        );
+                    }
+                }
+            }
+        }
+        GossipKind::FriendAccept => {
+            // 定向好友同意：只有 target == 本机才处理（即「我发的申请被对方同意」）。
+            if env.target.as_deref() == Some(state.device_id.as_str()) {
+                let from = env.sender_id.clone();
+                let name = resolve_nickname(state, &from);
+                {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::add_friend(&dbc, &from, &name, None).ok();
+                    // 同步公钥（否则首次加密发送会失败）—— 与 Message::FriendAccept 路径一致。
+                    let (x, e) = {
+                        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+                        peers
+                            .get(&from)
+                            .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
+                            .unwrap_or((None, None))
+                    };
+                    if x.is_some() || e.is_some() {
+                        db::update_friend_pubkeys(&dbc, &from, x.as_deref(), e.as_deref()).ok();
+                    }
+                }
+                state
+                    .pending_requests
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&from);
+                let _ = state.app.emit("friend-accepted", &from);
+                // 留痕：跨跳好友同意是落库（friends 表）+ 内存态，日志便于 headless 观测。
+                eprintln!("[friend] 收到跨跳好友同意 peer={from}");
+                notify(
+                    &state.app,
+                    "好友申请已通过",
+                    &format!("{name} 已成为你的好友"),
+                );
             }
         }
         GossipKind::Chat | GossipKind::Group => {
