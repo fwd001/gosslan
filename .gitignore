@@ -6,6 +6,9 @@ dist-ssr
 
 # Rust / Tauri
 src-tauri/target
+# 仓库根目录的 target/：在根目录误跑 cargo（例如只看元信息的 cargo info/search）
+# 会留下它；它是构建产物，绝不入库
+/target/
 src-tauri/gen/schemas
 
 # 敏感信息与本地配置
