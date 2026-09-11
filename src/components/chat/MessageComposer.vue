@@ -455,8 +455,11 @@ function fileToDataUrl(f: File): Promise<string> {
 
 <template>
   <div class="flex flex-col gap-2">
-    <!-- 微信 4.0 输入卡：白底圆角带细边；文本域在上，图标行在卡内底部，发送键靠右下 -->
-    <div ref="composerCard" class="relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 pb-1.5 pt-2">
+    <!-- 微信 4.0 输入卡：白底圆角带细边；文本域在上，图标行在卡内底部，发送键靠右下。
+         `px-4`（不是 px-3）与工具栏的 `-mx-1` 成对：编辑器的文字左边缘与工具栏第一个
+         图标的**点击热区**左边缘取同一个 16px 起点（图标墨迹在其 28px 热区内再内缩 6px，
+         与文字字形的光学起点对齐）—— 这是用户反馈「左右两边视觉上不在同一条线上」的修法。 -->
+    <div ref="composerCard" class="relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-4 pb-1.5 pt-2">
       <!-- 群聊 @ 成员选择：输入 @ 后浮出，↑↓ 导航 / Enter 或点击选中 -->
       <div
         v-if="mention && mentionFiltered.length > 0"
@@ -516,7 +519,20 @@ function fileToDataUrl(f: File): Promise<string> {
         @click="updateMentionState"
         @paste="onPaste"
       ></div>
-      <div class="mt-1 flex items-center gap-1">
+      <!-- 工具栏行（2026-09-12 按用户反馈重做：对齐 + 统一规格 + 去掉"网页感"）。
+           三条硬性约定，改这一行时必须同时满足：
+           ① **对齐**：行用 `items-center`，左右两组**同高（h-7 = 28px）**。原先右侧发送键
+              是 `h-7 + px-4 + text-[13px]`，而左侧图标按钮 28px 见方、图标 18px ——
+              两者行盒不同（图标按钮的 flex 行盒 vs 文本基线），`items-center` 居中的
+              是两个不同高度的行盒 ⇒ 视觉上看不出在同一条中线上。
+           ② **两侧留白一致**：卡片是 `px-4`（16px），编辑器滚到左边缘 ⇒ 工具栏左右各加
+              `-mx-1`（4px）+ 按钮自身 4px 内缩 = 4px 光学内缩，左侧第一个图标与右侧发送键
+              的边距对称；`-mx-1` 同时让 28px 按钮的点击热区不越出卡片。
+           ③ **统一规格**：图标按钮 28×28 / 图标 16px / 线宽 1.75 / 圆角 radius-sm；
+              发送键同为 28px 高、`px-3`、13px 字号、`rounded-full`。
+           发送键改为**实心主按钮**（有草稿才点亮）：微信 4.0 的观感，
+           无草稿时是低对比的占位态，不抢视觉。 -->
+      <div class="-mx-1 mt-1.5 flex h-7 items-center gap-1.5">
         <div class="relative">
           <button
             class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
@@ -524,7 +540,7 @@ function fileToDataUrl(f: File): Promise<string> {
             :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
             @click.stop="toggleEmoji"
           >
-            <Smile class="h-[18px] w-[18px]" />
+            <Smile class="h-4 w-4" :stroke-width="1.75" />
           </button>
           <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="closeEmoji" />
         </div>
@@ -537,18 +553,20 @@ function fileToDataUrl(f: File): Promise<string> {
           @mousedown.prevent
           @click="codeMode = !codeMode"
         >
-          <Code2 class="h-[18px] w-[18px]" />
+          <Code2 class="h-4 w-4" :stroke-width="1.75" />
         </button>
         <button
           class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('chat.composer.sendFile')" :aria-label="t('chat.composer.sendFile')"
           @click="emit('attach')"
         >
-          <FilePlus class="h-[18px] w-[18px]" />
+          <FilePlus class="h-4 w-4" :stroke-width="1.75" />
         </button>
         <button
-          class="ml-auto flex h-7 shrink-0 items-center rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] px-4 text-[13px] transition"
-          :class="hasDraft ? 'text-[var(--gosslan-accent-ink)] hover:bg-[var(--gosslan-list-active)]' : 'cursor-default text-[var(--gosslan-text-2)]'"
+          class="ml-auto flex h-7 shrink-0 items-center rounded-full px-3 text-[13px] font-medium transition"
+          :class="hasDraft
+            ? 'bg-primary text-white hover:bg-primary-hover'
+            : 'cursor-default bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"
           :disabled="!hasDraft"
           @mousedown.prevent
           @click="send()"
