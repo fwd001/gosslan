@@ -72,19 +72,28 @@ fn is_bulk_message(msg: &Message) -> bool {
 
 /// 尝试通过已建立连接发送消息；无连接则返回 Err。
 pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<(), String> {
-    // 一个 peer 可能有多条连接（Phase 6）；当前取**第一条**活跃连接，
-    // 与改造前「每 peer 一条连接」的行为完全一致（6b-1a 只改结构不改语义）。
+    // 一个 peer 可能有多条连接（LAN + Tailscale + BLE）：**依次尝试**。
+    // 某条连接已断（channel 关闭 → send 失败）就自动换下一条 —— 这是连接级 failover。
+    // 任一连接成功即返回，所以消息仍然只发出一次（单连接场景下与改造前等价）。
     let links = state.links.lock().await;
-    let link = match links.get(peer_id).and_then(|v| v.first()) {
-        Some(l) => l,
-        None => return Err("未建立连接".to_string()),
+    let list = match links.get(peer_id) {
+        Some(l) if !l.is_empty() => l,
+        _ => return Err("未建立连接".to_string()),
     };
-    let tx = if is_bulk_message(msg) {
-        &link.bulk
-    } else {
-        &link.priority
-    };
-    tx.send(msg.clone()).await.map_err(|e| e.to_string())
+
+    let mut last_err = "未建立连接".to_string();
+    for link in list {
+        let tx = if is_bulk_message(msg) {
+            &link.bulk
+        } else {
+            &link.priority
+        };
+        match tx.send(msg.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    Err(last_err)
 }
 
 /// 向所有已连接节点广播一条 Gossip 消息。
@@ -527,22 +536,24 @@ async fn reader_loop(
             fail_group_file_chunk(&state, &tid);
         }
     }
-    // 只移除「本条连接」的 link：若对端已重拨建立了新连接，旧的 reader 退出时
-    // 不能把新连接的发送端删掉（否则会出现「消息发不出去」的间歇性故障）。
-    let was_live_link = {
+    // 只移除**这一条**连接（按 channel 身份匹配），不是整条删光：
+    // 同一 peer 可能还连着别的端点（LAN + Tailscale），断一条 ≠ peer 下线 ——
+    // 这正是 6b 的核心语义。旧实现整条 remove，会让另一条连接一起消失。
+    let peer_now_offline = {
         let mut links = state.links.lock().await;
-        let is_live = links
-            .get(&peer_id)
-            .and_then(|v| v.first())
-            .map(|l| l.bulk.same_channel(&link_tx))
-            .unwrap_or(false);
-        if is_live {
-            links.remove(&peer_id);
-        }
-        is_live
+        let removed = match links.get_mut(&peer_id) {
+            Some(list) => {
+                let before = list.len();
+                list.retain(|l| !l.bulk.same_channel(&link_tx));
+                list.len() != before
+            }
+            None => false,
+        };
+        // 移除后该 peer 已无任何连接 → 才算真的离线
+        removed && links.get(&peer_id).map_or(true, |v| v.is_empty())
     };
-    // 仅当退出的就是当前活跃链路时才标记离线（新链路已接管则不影响在线状态）
-    if was_live_link {
+    // 所有连接都断了才标记离线；还剩别的连接则保持在线（failover 生效）
+    if peer_now_offline {
         mark_peer_offline(&state, &peer_id).await;
     }
 }
