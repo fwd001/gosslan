@@ -15,6 +15,7 @@ use crate::crypto::Identity;
 use crate::db;
 use crate::device::{hardware_fingerprint, hostname_fingerprint};
 use crate::gossip_engine::GossipEngine;
+use crate::mesh::router::MeshRouter;
 use crate::protocol::{Message, TCP_PORT};
 use crate::relay_manager::RelayManager;
 
@@ -331,6 +332,12 @@ pub struct AppState {
     pub identity: Identity,
     /// Gossip 去重 + 扇出引擎
     pub gossip: Mutex<GossipEngine>,
+    /// Mesh 转发路由：全局去重 + TTL + 转发决策（Phase 5）。
+    ///
+    /// 与 `gossip` 的关系：本字段是 **Mesh 层**去重（§16 要求必须在 Mesh 层统一做），
+    /// `gossip` 是业务信封层去重。两者参数一致、键同为 message_id，构成两道防线；
+    /// 待 Mesh 路径稳定后收敛为一道。
+    pub mesh_router: Mutex<MeshRouter>,
     /// 大文件切片中继管理器
     pub relay: Mutex<RelayManager>,
     /// 群密钥缓存：group_id -> 对称密钥
@@ -514,6 +521,8 @@ impl AppState {
             db_path,
             identity,
             gossip: Mutex::new(GossipEngine::new(100_000, 10_000, 4, 6)),
+            // max_ttl / fanout 与 GossipEngine 对齐（6 / 4），保证行为一致。
+            mesh_router: Mutex::new(MeshRouter::new(100_000, 10_000, 6, 4, 256)),
             relay: Mutex::new(RelayManager::new()),
             group_keys: Mutex::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),

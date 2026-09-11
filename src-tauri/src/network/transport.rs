@@ -26,6 +26,7 @@ use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, 
 use crate::state::{
     AppState, FileDoneInfo, FileFailedInfo, FileProgress, MessageRecord, Peer, PendingRequest,
 };
+use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
 use crate::transport::tcp::{TcpReceiver, TcpSender};
 
 /// 字符串 IP 是否为虚拟地址（用于 peers 表中已存储的 IP 字符串判断）。
@@ -1758,6 +1759,30 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             return;
         }
         drop(gossip);
+        // Mesh 层：全局去重 + TTL 判定（§15 / §16 / §17）。
+        //
+        // 必须在**验签之后**才登记去重表，否则攻击者可用伪造的 frame_id 污染
+        // Bloom，抢先占用真实帧的 id 造成合法消息被丢弃——与上面 GossipEngine
+        // 的防护同理。
+        //
+        // 注意：当前 Gossip 是**单跳广播**（发送方广播给所有直连节点，接收方不转发），
+        // 所以这里只取决策、不实际扩散：`Forward` 分支暂不转发，避免引入新的传播
+        // 行为。多跳 relay 由 Phase 5 后续步骤单独启用。
+        {
+            let frame = MeshFrame {
+                frame_id: env.message_id.clone(),
+                source_node_id: env.sender_id.clone(),
+                destination: MeshDestination::Broadcast,
+                ttl: env.ttl,
+                kind: MeshFrameKind::Gosslan,
+                // MeshRouter 不解析载荷内容（P-A03），决策只需要元数据。
+                payload: Vec::new(),
+            };
+            let mut router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
+            if let ForwardDecision::Drop(_) = router.on_receive(frame, &state.device_id) {
+                return;
+            }
+        }
         let mut gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         if !gossip.is_new(&env.message_id) {
             return;
