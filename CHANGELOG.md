@@ -10,6 +10,17 @@
 
 ## [Unreleased]
 
+### Fixed (5 处「能点但键盘够不着」的元素 + 静态护栏)
+- **`div @click` = 只有鼠标/手指能用的按钮**：触屏能用、鼠标能用，但**键盘 Tab 不到、回车没反应**，读屏软件也只念成一段普通文本 —— 与"为 iOS 上架铺路 / 去网页感"直接冲突（原生控件天生带这些语义）。用静态扫描复核出 5 处真缺陷并全修（`16d8e91`）：
+  - `GroupCreateModal` 好友选择行、`GroupMemberPanel` 可添加好友行 → 改**真按钮**（前者带 `aria-pressed` 开关语义）；
+  - `MessageFileBubble`（点开文件）、`MessageImageBubble`（点开大图）→ 补 `:role`/`:tabindex`（**可用时才可聚焦**，避免把加载中的气泡做成"Tab 得到却点不动"的空按钮）+ 回车/空格处理；图片气泡另加 `aria-label`；
+  - `AboutSection` 指纹（点击复制）→ 补 `role`/`tabindex`/键盘处理，**保留 `select-text`** 因此不换成 `<button>`。
+  模态里的两行统一加 `type="button"`，不会误触发表单提交。
+- **新增静态护栏 ⑥ `findTappableWithoutKeyboard`**：扫非交互标签上的**真实动作型** `@click`，要求同标签内有 `role` / `tabindex` / `@keydown|@keyup`（静态与 `:` 绑定都认）。两个**刻意排除**的写法（真实存在，非臆测）：`aria-hidden="true"` 的遮罩层（ActionSheet 的遮罩，Escape 由 Headless UI 的 Dialog 负责）、只有修饰符的 `@click.stop`（EmojiPicker 用来阻止冒泡，不是按钮）。
+- **非空转验证**：往真实组件注入 `<div class="cursor-pointer" @click="…">` → 全库扫描用例 FAIL 并精确指到行号；移除后全绿、无残留标记。
+- 验证：`npm test` **278 passed / 0 fail**（270 → 278）；`vue-tsc` 0 错误；`vite build` 通过；后端未改。
+  ⚠️ 键盘可达性需真键盘走一遍（手册新增验收步骤）；静态护栏只能保证"语义补上了"，不能保证焦点顺序与视觉焦点环在所有页面都好看。
+
 ### Fixed (macOS 沙盒：用户选的目录重启后失访 —— 共享目录"变空"、收到的文件写不进去)
 - **两处用户自选目录改用 security-scoped bookmark 保活**（`bce66f0` + `50cdc0d`）。App Sandbox 下用户在目录选择器里挑的目录，系统**只把访问权授予本次进程**；我们此前只把**路径字符串**存进数据库 ⇒ 重启后路径还在、权限没了：
   - **共享目录**：`read_dir` 失败 ⇒ 「共享目录」列表直接变空、对方拉不到文件；
