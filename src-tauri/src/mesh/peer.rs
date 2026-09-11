@@ -65,7 +65,7 @@ impl Peer {
     }
 
     /// 合并一条 Connection：
-    /// - 同 `endpoint` 已存在 → 更新 health 与 path_kind（幂等，返回 `false`）；
+    /// - 同 `endpoint` 已存在 → 只更新 `path_kind`，**保留已有 health**（幂等，返回 `false`）；
     /// - 新 `endpoint` → 追加（返回 `true`）。
     ///
     /// 这是「LAN + Tailscale + BLE 三条端点汇成同一 Peer」的关键入口：
@@ -80,7 +80,10 @@ impl Peer {
             .iter_mut()
             .find(|c| c.endpoint == conn.endpoint)
         {
-            existing.health = conn.health;
+            // 同 endpoint 只更新路径类型，绝不覆盖 health：
+            // Discovery 周期性 announce（约 5s 一轮）会反复 upsert 同一端点，
+            // 若在此把 health 重置为默认，连接会永远停在「从未成功」，
+            // online_state 恒 Offline —— 直接违反设计 §34。
             existing.path_kind = conn.path_kind;
             false
         } else {
@@ -295,5 +298,23 @@ mod tests {
         }
         // LAN 已不健康，但 Routed 仍健康 → Online
         assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
+    }
+
+    /// 回归护栏：同 endpoint 重复 upsert **不得**重置已有 health。
+    ///
+    /// 若 upsert 覆盖 health，周期性 announce（约 5s 一轮）会把连接打回
+    /// 「从未成功」→ online_state 恒 Offline，直接违反设计 §34。
+    #[test]
+    fn same_endpoint_upsert_preserves_health() {
+        let mut peer = Peer::new("ABC123", PeerIdentity::default());
+        peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan));
+        peer.mark_connection_seen(&lan_endpoint(), 1000, Some(5));
+        assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
+
+        // 同一 endpoint 再次 upsert（模拟下一轮 announce）
+        peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan));
+
+        assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
+        assert_eq!(peer.connections()[0].health.rtt_ms, Some(5));
     }
 }

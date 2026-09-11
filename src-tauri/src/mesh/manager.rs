@@ -231,6 +231,21 @@ mod tests {
         assert_eq!(m.peer_count(), 0);
     }
 
+    /// 回归：周期性 announce（同 endpoint 重复 merge）不得重置 health。
+    /// 否则跨过 Peer 层直接调用 merge 的调用方也会踩到「在线恒 Offline」。
+    #[test]
+    fn repeated_merge_preserves_connection_health() {
+        let mut m = PeerManager::new(10_000, 3);
+        m.merge(cand("ABC123", lan(), PathKind::Lan));
+        assert!(m.mark_connection_seen("ABC123", &lan(), 1000, Some(5)));
+        assert_eq!(m.online_state("ABC123", 1000), PeerOnlineState::Online);
+
+        // 下一轮 announce：同 endpoint 再 merge 一次
+        m.merge(cand("ABC123", lan(), PathKind::Lan));
+
+        assert_eq!(m.online_state("ABC123", 1000), PeerOnlineState::Online);
+    }
+
     /// identity 只补空、不覆盖：公钥冲突不静默覆盖（INV-P11）。
     #[test]
     fn identity_merge_never_overwrites_existing_keys() {
