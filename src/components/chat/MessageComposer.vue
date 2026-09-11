@@ -10,6 +10,7 @@ import { haptic } from "@/utils/haptics";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { classifyPaste } from "@/utils/clipboard";
+import { isImeKey } from "@/utils/ime";
 import { Folder, Smile, SquareCode, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 
@@ -127,7 +128,37 @@ function send(kind?: MsgKind, content?: string) {
   emit("send", { content: text, kind: k });
 }
 
+/**
+ * 输入法组合态（拼音/日文等）。
+ *
+ * ⚠️ 不能只依赖 `KeyboardEvent.isComposing`：macOS WKWebView 上用 Enter 提交候选时，
+ * 事件顺序是 `compositionend` → `keydown`，keydown 那一刻 `isComposing` 已是 false
+ * ⇒ 会把"选字"当成"发送"，把半成品中文直接发出去（用户 2026-09-12 反馈的正是这个）。
+ * 所以自己跟踪组合态，并保留一个"提交后短窗口"兜底；判定逻辑抽在
+ * `utils/ime.ts`（纯函数，有单测钉死）。
+ */
+const composing = ref(false);
+let compositionEndedAt = 0;
+
+function onCompositionStart() {
+  composing.value = true;
+}
+function onCompositionEnd() {
+  composing.value = false;
+  compositionEndedAt = Date.now();
+}
+
+/** 这次按键是否属于输入法组合（必须放行给 IME / 内容）。 */
+function imeKey(e: KeyboardEvent): boolean {
+  return isImeKey(e, composing.value, compositionEndedAt, Date.now());
+}
+
 function onKeydown(e: KeyboardEvent) {
+  // 输入法组合中的按键**一律不拦截**：
+  //   · Enter 交给 IME 提交字母（用户要的"把拼音字母落下来"）；
+  //   · 若该 Enter 其实是给内容的，则走浏览器默认行为插入换行
+  //     （用户要的"回车应该响应聊天内容的回车"）—— 两种情形都不该由我们发送。
+  if (imeKey(e)) return;
   // 微信式 token 联删：caret 前是「token + 尾随 nbsp」时一次退格删掉两者
   // （token 本身是原子，浏览器默认已整删；只补 nbsp 这一格的差距）。
   if (e.key === "Backspace" && !e.isComposing && deleteMentionBeforeCaret()) {
@@ -158,14 +189,14 @@ function onKeydown(e: KeyboardEvent) {
       return;
     }
   }
-  // 中文 IME 确认候选的 Enter 也带 isComposing=true，必须放行，否则选字=发送
-  if (e.key === "Enter" && e.shiftKey && !e.isComposing) {
+  // 到这里的按键都已排除输入法组合（见上面的 `imeKey` 提前返回）
+  if (e.key === "Enter" && e.shiftKey) {
     // 统一换行为 <br>：浏览器默认 insertParagraph 会造嵌套 div，序列化不可控
     e.preventDefault();
     document.execCommand("insertLineBreak");
     return;
   }
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+  if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     send();
   }
@@ -518,6 +549,8 @@ function fileToDataUrl(f: File): Promise<string> {
         :class="codeMode ? 'font-mono text-[13px]' : ''"
         :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
         @keydown="onKeydown"
+        @compositionstart="onCompositionStart"
+        @compositionend="onCompositionEnd"
         @input="onInput"
         @click="updateMentionState"
         @paste="onPaste"
