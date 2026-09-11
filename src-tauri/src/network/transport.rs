@@ -493,7 +493,8 @@ async fn handle_incoming(
         .push(Link {
             endpoint: peer_addr,
             bulk: bulk_tx.clone(),
-            priority: prio_tx,
+            // priority 留一个 sender 在作用域内：首帧验签后要回发 Hello（见下）。
+            priority: prio_tx.clone(),
         });
     // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
     register_connection(&state, &peer_id, peer_addr);
@@ -505,6 +506,22 @@ async fn handle_incoming(
         prio_rx,
         shutdown.clone(),
     ));
+    // 验签通过后**回发**自己的 Hello：让拨号方也能学到本节点的身份与双公钥。
+    //
+    // 为什么需要：只有拨号方发 Hello，被连的一方不回 —— 于是**拨号方**永远不知道
+    // 对面是谁。LAN 场景有 announce 兜底（UDP 广播连带把身份和公钥送过去了）所以
+    // 看不出来；Routed / 跨网场景没有 announce，缺口就暴露为：对端永远不出现在
+    // `peers` 表 →「添加好友」列表里没有它、拿不到 X25519 公钥 → 消息发不出去。
+    //
+    // 防乒乓：只在**首帧**这里回发一次（每条连接一次）；`handle_message` 的 Hello
+    // 分支刻意不回发，因此两个节点之间不会来回刷 Hello。
+    // 走 priority 队列，与主动方发 Hello 的路径对称（不被 bulk 积压排在后面）。
+    let conv_clock = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_clock(&dbc, &peer_id)
+    };
+    let _ = prio_tx.send(build_signed_hello(&state, conv_clock)).await;
+    eprintln!("[transport] 握手补全：已向对端回发本节点 Hello（peer={peer_id}）");
     handle_message(&state, &peer_id, first).await;
     // 用 TCP 对端的真实地址补全 peer IP：解决「被动连接方 peers 表 IP 为空或虚拟」的问题。
     // 新地址必须是非虚拟的可直连 LAN 地址才写入；link-local（169.254.0.0/16）已包含在
