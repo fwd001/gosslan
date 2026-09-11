@@ -1003,7 +1003,7 @@ pub async fn send_message(
     let sealed_content = crypto::seal(&shared, content.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let wire_content = format!("enc1:{}", STANDARD.encode(&sealed_content));
-    let env = {
+    let mut env = {
         let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
         gossip.build_envelope(
             &s.identity,
@@ -1020,6 +1020,10 @@ pub async fn send_message(
     // 统一 msg_id：本地记录 / Gossip 投递 / outbox 补发共用同一确定性 ID，
     // 接收方 message_exists 跨路径去重（防建链竞态窗口内的重复投递）。
     let msg_id = env.message_id.clone();
+    // 单聊定向：target = 接收方。中间节点按 target 定向转发（一跳精确，无路由表时洪泛
+    // 兜底），直连场景不再全网广播（消除广播放大）。target 参与 signing_bytes，必须重签。
+    env.target = Some(friend_id.clone());
+    env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
 
     // 本地落库（明文）
     let rec = MessageRecord {
@@ -1058,7 +1062,14 @@ pub async fn send_message(
 
     // 先入队再投递（INV-003）：此前 broadcast 在插队之前，若心跳的 flush_outbox 正好
     // 落在这个窗口，它看不到 outbox 行 ⇒ 这一轮直发缺席 ⇒ Ack 要等下一个心跳（+5s）。
-    broadcast_gossip(s, env).await;
+    // 定向投递：目标直连 → 只发它（精确，不再全网广播）；否则广播，靠中间节点按 target
+    // 定向转发（跨跳）。投递失败**不返回 Err**：消息已落 outbox 兜底，链路刚断的竞态
+    // 下由 flush_outbox 在下次建链/心跳时补发，返回 Err 会让前端误判「发送失败」而重发。
+    if s.has_link(&friend_id).await {
+        let _ = try_send(s, &friend_id, &Message::Gossip { envelope: env }).await;
+    } else {
+        broadcast_gossip(s, env).await;
+    }
     // 更新会话「当前链路」（发送方视角）：有直连则 hop=0 + 出站路径；无直连
     // （经中继广播）则乐观记 hop=1（实际跳数发送方不可知，等对端回执侧视角校正）。
     {

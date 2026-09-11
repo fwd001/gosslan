@@ -38,6 +38,11 @@
 - **日志规范**：写进 `logging.rs` 模块头注释——只记「可能出错」与关键状态跃迁，Info/Warn/Error 三档；不记消息正文 / 密钥等敏感内容；target 用子系统名（transport / lan / routed / mesh / friend / presence / link …）。
 - **迁移现有诊断日志**：transport（握手/连接/拨号/presence/friend/link）与 network / commands / lib 启动阶段的关键 `eprintln!` 统一迁到 logger（级别、target 归一）。无 `state` 上下文的边界处（`set_abortive_close`、`await_tasks`、`tray::setup`）保留 `eprintln!`。
 
+### Changed (P1 单聊定向化)
+- **单聊消息定向投递**（`send_message`）：单聊 `GossipKind::Chat` 加 `target = 接收方`（参与签名，重签），投递改为「目标直连 → 只发它；否则广播靠中间节点按 target 定向转发」。此前单聊消息无条件 `broadcast_gossip` 全网广播，直连场景也放大到全网。投递失败**不返回 Err**（消息已落 outbox 兜底，链路竞态由 flush_outbox 补发），避免前端误判「发送失败」而重发。
+- **接收端单聊消费加 target 判断**（`handle_gossip`）：`target` 存在且非本机 → 中间节点只转发不消费（防御性；即便不判断，中间节点也因 ECDH 解不开而不会落库，但明确判断语义更清晰）。
+- 送达确认（ChatAck）与已读回执（ChatReadReceipt）此前已定向，本次对齐；outbox 补发走 `Message::ChatMessage` 直发、群聊无 target 广播，均不受影响。
+
 ## [2.1.2] - 2026-09-11
 
 ### Fixed

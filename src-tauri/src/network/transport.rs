@@ -2792,6 +2792,17 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             }
         }
         GossipKind::Chat | GossipKind::Group => {
+            // 单聊定向：target 存在且不是本机 → 中间节点只转发不消费。即便不判断，
+            // 中间节点也会因 ECDH 解不开而 plaintext=None（不会落库），但明确判断
+            // 语义更清晰、也避免无谓的好友关系检查。群聊无 target，走原广播消费逻辑。
+            if env.kind == GossipKind::Chat
+                && env
+                    .target
+                    .as_deref()
+                    .is_some_and(|t| t != state.device_id.as_str())
+            {
+                return;
+            }
             if let Some(pt) = plaintext {
                 let (kind, content) = parse_gossip_payload(&pt);
                 // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）
