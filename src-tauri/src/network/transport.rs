@@ -88,10 +88,26 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
 
 /// 向所有已连接节点广播一条 Gossip 消息。
 pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
-    let msg = Message::Gossip { envelope };
+    let msg = Message::Gossip {
+        envelope: envelope.clone(),
+    };
     let links = state.priority_links.lock().await;
-    for tx in links.values() {
-        let _ = tx.send(msg.clone()).await;
+
+    // 出站目标经 MeshRouter 裁决（§18 source exclusion）。
+    //
+    // 这里刻意用 `exclude_source` 而**不是** `select_outgoing`：后者带 fanout 截断，
+    // 只适用于**转发**（§20 控制风暴）。源发必须覆盖所有直连节点，一旦截断，
+    // 连接数超过 fanout 的节点就会收不到 —— 群消息静默漏发。
+    let candidates: Vec<String> = links.keys().cloned().collect();
+    let picked = {
+        let router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
+        router.exclude_source(&candidates, &envelope.sender_id)
+    };
+
+    for peer in picked {
+        if let Some(tx) = links.get(peer) {
+            let _ = tx.send(msg.clone()).await;
+        }
     }
 }
 

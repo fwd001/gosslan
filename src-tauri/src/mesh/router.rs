@@ -235,6 +235,25 @@ impl MeshRouter {
             .collect()
     }
 
+    /// 只做 source exclusion，**不按 fanout 截断**。
+    ///
+    /// 用于**源发广播**（发送方把帧发给自己的所有直连节点）：此时必须保证覆盖，
+    /// 一旦截断，连接数超过 fanout 的节点就收不到 —— 群消息会静默漏发。
+    ///
+    /// `fanout` 截断只适用于**转发**（§20 控制风暴），见 [`select_outgoing`]。
+    /// 两者不可混用。
+    pub fn exclude_source<'a>(
+        &self,
+        candidates: &'a [String],
+        source_node_id: &str,
+    ) -> Vec<&'a str> {
+        candidates
+            .iter()
+            .filter(|c| c.as_str() != source_node_id)
+            .map(|c| c.as_str())
+            .collect()
+    }
+
     // ---------------- 待转发队列（§39 有界背压） ----------------
 
     /// 把待转发帧入队。队列满时**覆盖最旧**的一帧，绝不无限增长。
@@ -380,6 +399,23 @@ mod tests {
 
         assert!(!picked.contains(&"A"));
         assert!(picked.contains(&"B"));
+    }
+
+    /// 源发广播只排除源、**不截断**：截断会导致连接数超过 fanout 时漏发（群消息丢失）。
+    /// 与 `select_outgoing_is_bounded_by_fanout` 对照，钉住两者的区别。
+    #[test]
+    fn exclude_source_does_not_truncate() {
+        let r = router(); // fanout = 3
+        let candidates: Vec<String> = (0..10).map(|i| format!("n{i}")).collect();
+
+        // 源不在候选里 → 全部保留（10 > fanout 3，仍不截断）
+        let picked = r.exclude_source(&candidates, "nobody");
+        assert_eq!(picked.len(), 10, "源发必须覆盖全部，不能按 fanout 截断");
+
+        // 但仍要排除源
+        let picked2 = r.exclude_source(&candidates, "n0");
+        assert_eq!(picked2.len(), 9);
+        assert!(!picked2.contains(&"n0"));
     }
 
     /// fanout 有界：即使候选很多，也最多选 fanout 个（§20）。
