@@ -576,6 +576,81 @@ button:not(:disabled):active,
 /* 1) 降低透明度：模糊会让浮层上的文字失去可读性 → 退回不透明实底。
    Apple 2026 HIG 要求 Liquid Glass 适配该设置，用户开了它就应自动降级，
    而不是要求用户自己去关掉毛玻璃。 */
+/* ---------------- 统一菜单外观（用户需求 2026-09-12 晚 #4「全局的右键菜单样式尽量保持统一」）----------------
+
+   背景：会话列表、联系人、聊天气泡、右上角「+」原本各写一份面板/条目样式，四处的内边距、
+   圆角、悬停底色、危险色都不完全一致 —— 用户逐条指出「样式参考微信」。
+   这里定义**一套类**，所有菜单（含弹出下拉）都用它，从机制上保证一致：
+     .gosslan-menu            面板（毛玻璃 + 细边 + 大圆角 + 阴影）
+     .gosslan-menu-item       条目（图标 + 文案，微信式 32px 行高 / 14px 圆角）
+     .gosslan-menu-item--danger  危险条目（删除）
+     .gosslan-menu-sep        分组分隔线
+     .gosslan-menu-hint       条目下方的说明小字（如"只删除本机记录"）
+   尺寸参照微信 macOS：面板内边距 6px、条目高 32px、图标 16px、条目字号 13px。 */
+.gosslan-menu {
+  min-width: 168px;
+  padding: 6px;
+  border: 1px solid var(--gosslan-border);
+  border-radius: var(--gosslan-radius-md);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+
+.gosslan-menu-item {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-radius: var(--gosslan-radius-xs);
+  font-size: 13px;
+  color: var(--gosslan-text);
+  text-align: left;
+  transition: background-color 0.12s ease-out;
+}
+
+.gosslan-menu-item:hover {
+  background: var(--gosslan-hover);
+}
+
+.gosslan-menu-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.gosslan-menu-item--danger {
+  color: var(--gosslan-danger-ink);
+}
+
+.gosslan-menu-item--danger:hover {
+  background: var(--gosslan-danger-soft);
+}
+
+/* 图标统一为 16px 且不参与压缩（与 13px 文案基线对齐） */
+.gosslan-menu-item > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--gosslan-text-2);
+}
+
+.gosslan-menu-item--danger > svg {
+  color: currentColor;
+}
+
+.gosslan-menu-sep {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--gosslan-divider);
+}
+
+.gosslan-menu-hint {
+  padding: 2px 8px 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--gosslan-text-2);
+}
+
 @media (prefers-reduced-transparency: reduce) {
   .frost {
     background: var(--gosslan-panel);

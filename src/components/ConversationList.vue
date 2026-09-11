@@ -8,6 +8,7 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import ConversationListItem from "@/components/conversation/ConversationListItem.vue";
 import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
+import ConversationContextMenu from "@/components/conversation/ConversationContextMenu.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { APP_ACTION } from "@/api";
@@ -125,6 +126,20 @@ function openFriend(f: Friend) {
   if (app.isMobile) app.mobileView = "chat";
 }
 
+/**
+ * 联系人右键菜单的「发起聊天」（用户需求 2026-09-12 晚 #12）。
+ * 直接打开与该好友的会话并切到会话视图 —— 与微信「发消息」一致：
+ * 不要求先有历史会话（`openConversation` 会以 device_id 为会话 id 打开/新建）。
+ */
+function startChatWithFriend() {
+  const f = friendMenu.value?.friend;
+  closeFriendMenu();
+  if (!f) return;
+  void chat.openConversation(f.device_id);
+  emit("update:view", "chats");
+  if (app.isMobile) app.mobileView = "chat";
+}
+
 // ---------------- 右键菜单：删除好友 ----------------
 // 参与全局浮层互斥：右键消息、或打开「已读成员」弹层时，本菜单会自动收起
 // （右键只触发 contextmenu 不触发 click，仅靠 document click 关闭会漏）。
@@ -175,9 +190,35 @@ async function confirmDeleteFriend() {
 // ---------------- 删除聊天记录（仅本地，二次确认） ----------------
 const pendingDelete = ref<Conversation | null>(null);
 
-function onAskDeleteConv(conv: Conversation, e: MouseEvent) {
-  e.stopPropagation();
-  pendingDelete.value = conv;
+/**
+ * 会话行右键 / 长按 → 弹统一菜单（用户 2026-09-12 晚 #3：
+ * 「取消叉叉，改为统一的右键删除操作」）。菜单里再点「删除」才进入二次确认 ——
+ * 与微信一致：右键只是入口，破坏性动作仍要确认。
+ */
+const convMenuPopup = useExclusivePopup("conv-menu");
+const convMenu = ref<{ x: number; y: number; conv: Conversation } | null>(null);
+
+watch(convMenuPopup.isActive, (mine) => {
+  if (!mine && convMenu.value) convMenu.value = null;
+});
+
+function onConvContext(conv: Conversation, x: number, y: number) {
+  pendingDelete.value = null;
+  convMenu.value = { x, y, conv };
+  convMenuPopup.claim();
+}
+
+function closeConvMenu() {
+  convMenuPopup.release();
+  convMenu.value = null;
+}
+
+/** 菜单里的「删除」：关菜单 → 进二次确认（确认文案沿用既有弹窗）。 */
+function onAskDeleteConvFromMenu() {
+  const c = convMenu.value?.conv;
+  closeConvMenu();
+  if (!c) return;
+  pendingDelete.value = c;
 }
 
 async function confirmDeleteConv() {
@@ -237,22 +278,17 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         >
           <Plus class="h-[18px] w-[18px]" />
         </button>
-        <div
-          v-if="plusOpen"
-          class="frost absolute right-0 top-8 z-30 w-36 overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] py-1 shadow-lg"
-        >
-          <button
-            class="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-            @click.stop="closePlus(); emit('open-add-friend')"
-          >
-            <UserPlus class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+        <!-- 右上角「+」下拉（用户 2026-09-12 晚 #9：「消息页右上角加号的弹出的下拉弹窗，
+             参考微信这边只是暗色模式；亮色就是配色的话，按现有的配色，但是样式参考微信」）
+             ⇒ 结构与外观统一走 `.gosslan-menu*`（与右键菜单同一套），
+             条目带图标、32px 行高、6px 面板内边距 —— 微信式。 -->
+        <div v-if="plusOpen" class="frost gosslan-menu absolute right-0 top-8 z-30">
+          <button class="gosslan-menu-item" @click.stop="closePlus(); emit('open-add-friend')">
+            <UserPlus />
             {{ t("common.addFriend") }}
           </button>
-          <button
-            class="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-            @click.stop="closePlus(); emit('open-group')"
-          >
-            <UsersRound class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+          <button class="gosslan-menu-item" @click.stop="closePlus(); emit('open-group')">
+            <UsersRound />
             {{ t("common.createGroup") }}
           </button>
         </div>
@@ -271,7 +307,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           :snippet="snippet(c.id)"
           :keyword="keyword"
           @open="openConv"
-          @ask-delete="onAskDeleteConv"
+          @context="onConvContext"
         />
         <!-- 空态（用户需求 #7）：「兜底的界面，也不一定是要加好友。如果有好友的情况下，
              就会有一个『发起聊天』，然后去选好友。如果一个好友都没有的话，就是发现好友。」
@@ -375,10 +411,19 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       </template>
     </div>
 
+    <ConversationContextMenu
+      v-if="convMenu"
+      :x="convMenu.x"
+      :y="convMenu.y"
+      @close="closeConvMenu"
+      @delete="onAskDeleteConvFromMenu"
+    />
+
     <FriendContextMenu
       v-if="friendMenu"
       :x="friendMenu.x"
       :y="friendMenu.y"
+      @chat="startChatWithFriend"
       @close="closeFriendMenu"
       @confirm="onAskDeleteFriend"
     />

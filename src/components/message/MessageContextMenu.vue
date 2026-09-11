@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, onBeforeUnmount, onMounted } from "vue";
 import { Copy, CornerUpLeft, Save, Share2 } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
+import ContextMenu from "@/components/ContextMenu.vue";
 
-const props = defineProps<{
+defineProps<{
   x: number;
   y: number;
   kind: MsgKind;
@@ -23,93 +23,52 @@ const emit = defineEmits<{
 /** 转发支持：文本 / 代码 / 图片 / 文件（文件按本地路径重走传输链路；系统消息不提供）。 */
 const forwardable = (k: MsgKind) => k === "text" || k === "code" || k === "image" || k === "file";
 
-/** 菜单定位：贴近屏幕边缘时向内收，避免溢出。 */
-const pos = computed(() => ({
-  left: `${Math.max(8, Math.min(props.x, window.innerWidth - 160))}px`,
-  top: `${Math.max(8, Math.min(props.y, window.innerHeight - 300))}px`,
-}));
-
-// 点击菜单外 / 按 Esc 关闭（菜单根节点 @click.stop，内部点击不受影响）
-function onDocClick() {
-  emit("close");
-}
-function onKey(e: KeyboardEvent) {
-  if (e.key === "Escape") emit("close");
-}
-onMounted(() => {
-  document.addEventListener("click", onDocClick);
-  window.addEventListener("keydown", onKey);
-});
-onBeforeUnmount(() => {
-  document.removeEventListener("click", onDocClick);
-  window.removeEventListener("keydown", onKey);
-});
+// 定位 / 点外部关闭 / Esc 全部交给统一外壳 `ContextMenu`（#4 全局统一样式）。
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      class="frost fixed z-[70] min-w-[140px] select-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1 shadow-xl"
-      :style="pos"
-      @click.stop
-      @contextmenu.prevent
-    >
-      <button
-        v-if="kind === 'text' || kind === 'code'"
-        class="flex w-full items-center gap-2.5 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-        @click="emit('copy-text')"
-      >
-        <Copy class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+  <!-- 聊天气泡右键菜单（用户 2026-09-12 晚 #11：「聊天气泡的右键菜单也参考微信样式」）。
+       外观与分组统一走 `.gosslan-menu*`：先「内容操作」（复制 / 保存），
+       再分隔线，后「转发 / 引用」—— 与微信把"内容操作"和"消息流转"分组的习惯一致。
+       本应用没有 翻译 / 搜一搜 / 收藏 / 多选 / 提醒 这些能力，就不放空条目。 -->
+  <ContextMenu :x="x" :y="y" :estimated-height="260" @close="emit('close')">
+    <template v-if="kind === 'text' || kind === 'code'">
+      <button class="gosslan-menu-item" @click="emit('copy-text')">
+        <Copy />
         {{ t("common.copy") }}
       </button>
-      <template v-if="kind === 'image'">
-        <button
-          class="flex w-full items-center gap-2.5 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="emit('copy-image')"
-        >
-          <Copy class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-          {{ t("common.copyImage") }}
-        </button>
-        <button
-          class="flex w-full items-center gap-2.5 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="emit('save-image')"
-        >
-          <Save class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-          {{ t("common.saveImage") }}
-        </button>
-      </template>
-      <!-- 文件：保存（另存为）+ 复制（文件本体写 CF_HDROP，可在资源管理器/聊天框直接粘贴） -->
-      <template v-if="kind === 'file'">
-        <button
-          class="flex w-full items-center gap-2.5 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="emit('save-file')"
-        >
-          <Save class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-          {{ t("common.save") }}
-        </button>
-        <button
-          class="flex w-full items-center gap-2.5 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="emit('copy-file')"
-        >
-          <Copy class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-          {{ t("common.copyFile") }}
-        </button>
-      </template>
-      <button
-        class="flex w-full items-center gap-2.5 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-        @click="emit('quote')"
-      >
-        <CornerUpLeft class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-        {{ t("common.quote") }}
+    </template>
+    <template v-if="kind === 'image'">
+      <button class="gosslan-menu-item" @click="emit('copy-image')">
+        <Copy />
+        {{ t("common.copyImage") }}
       </button>
-      <button
-        v-if="forwardable(kind)"
-        class="flex w-full items-center gap-2.5 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-        @click="emit('forward')"
-      >
-        <Share2 class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-        {{ t("common.forward") }}
+      <button class="gosslan-menu-item" @click="emit('save-image')">
+        <Save />
+        {{ t("common.saveImage") }}
       </button>
-    </div>
-  </Teleport>
+    </template>
+    <!-- 文件：保存（另存为）+ 复制（文件本体写 CF_HDROP，可在资源管理器/聊天框直接粘贴） -->
+    <template v-if="kind === 'file'">
+      <button class="gosslan-menu-item" @click="emit('save-file')">
+        <Save />
+        {{ t("common.save") }}
+      </button>
+      <button class="gosslan-menu-item" @click="emit('copy-file')">
+        <Copy />
+        {{ t("common.copyFile") }}
+      </button>
+    </template>
+
+    <div class="gosslan-menu-sep"></div>
+
+    <button class="gosslan-menu-item" @click="emit('quote')">
+      <CornerUpLeft />
+      {{ t("common.quote") }}
+    </button>
+    <button v-if="forwardable(kind)" class="gosslan-menu-item" @click="emit('forward')">
+      <Share2 />
+      {{ t("common.forward") }}
+    </button>
+  </ContextMenu>
 </template>

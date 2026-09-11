@@ -3,8 +3,7 @@ import { t } from "@/i18n";
 import { fmtConversationTime } from "@/utils/time";
 import { highlightText } from "@/utils/highlight";
 import { avatarInitial, nameToColor } from "@/utils/color";
-import { X } from "lucide-vue-next";
-import { computed } from "vue";
+import { computed, onUnmounted } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { haptic } from "@/utils/haptics";
@@ -22,7 +21,14 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   (e: "open", conv: Conversation): void;
-  (e: "ask-delete", conv: Conversation, ev: MouseEvent): void;
+  /**
+   * 右键 / 移动端长按：上报坐标，由父组件弹出统一菜单。
+   * 用户 2026-09-12 晚 #3：「选中框上的『删除好友』的叉叉感觉很丑……取消叉叉，
+   * 改为统一的右键删除操作。即每一个选项都做成单击右键弹出菜单，再点击『删除』。」
+   * ⇒ 原先的悬停叉叉按钮已删除，删除入口只保留右键菜单（移动端用长按等价入口，
+   *   这正是本项目 hover 揭示必须有触屏兜底的既有护栏要求）。
+   */
+  (e: "context", conv: Conversation, x: number, y: number): void;
 }>();
 
 const chat = useChatStore();
@@ -43,6 +49,36 @@ const mentioned = computed(() => chat.mentionedConvs.has(props.conv.id));
 function initials(name: string) {
   return avatarInitial(name);
 }
+
+function onContextMenu(conv: Conversation, e: MouseEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+  emit("context", conv, e.clientX, e.clientY);
+}
+
+// 移动端没有 contextmenu：长按 500ms 视为同一个菜单入口（与 FriendListItem 一致）
+const LONG_PRESS_MS = 500;
+let pressTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearPress() {
+  if (pressTimer) {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+  }
+}
+
+function onTouchStart(conv: Conversation, e: TouchEvent) {
+  const t = e.touches[0];
+  if (!t) return;
+  clearPress();
+  pressTimer = setTimeout(() => {
+    pressTimer = null;
+    haptic("heavy");
+    emit("context", conv, t.clientX, t.clientY);
+  }, LONG_PRESS_MS);
+}
+
+onUnmounted(clearPress);
 
 /** 群头像九宫格成员（微信式 2x2）：资料解析统一走 useMemberProfile（本机/好友/节点，
  *  离线好友照常显示）。必须保持响应式：好友/群数据是异步加载的，非响应式会在
@@ -82,6 +118,11 @@ const gridTiles = computed(() => {
     @click="openConv(conv)"
     @keydown.enter.prevent="openConv(conv)"
     @keydown.space.prevent="openConv(conv)"
+    @contextmenu="onContextMenu(conv, $event)"
+    @touchstart.passive="onTouchStart(conv, $event)"
+    @touchmove.passive="clearPress"
+    @touchend.passive="clearPress"
+    @touchcancel.passive="clearPress"
   >
     <div class="relative shrink-0">
       <!-- 群聊：微信式 2x2 九宫格头像；单聊：单头像 -->
@@ -153,24 +194,9 @@ const gridTiles = computed(() => {
     </div>
     <!-- 微信式行间细分隔线：从文本列起（头像后缩进），最后一行不显（由容器裁边） -->
     <div class="absolute bottom-0 left-[64px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
-    <!-- 删除聊天记录入口。
-         桌面端：悬停行时浮现；**选中行则常显** —— 原先写成 `v-if="!active"`，
-         结果是「选中的会话根本删不掉」：选中后按钮整个不渲染，而选中态又不可能
-         同时 hover 到「未选中」的形态。用户 2026-09-12 反馈「选中的聊天框没法删除，
-         自己应该是可以删除的」。
-         `hover-reveal`：触屏没有 hover —— 没有它这个按钮在手机上永远不显示，
-         等于「桌面能删、手机删不掉」（见 2026-09-10 审计 P0-1）。
-         `tap-safe`：24px 小于 44pt 最小点按目标，触屏下垂直扩命中区（见 style.css）。
-         选中态常显时按钮压在摘要文字上，故给它一个**不透明底色 + 面板描边**，
-         避免与底下文字糊在一起（底色取会话面板色，与选中行浅灰底相邻但可区分）。 -->
-    <button
-      class="hover-reveal tap-safe absolute bottom-1.5 right-1.5 z-10 h-6 w-6 items-center justify-center rounded-[var(--gosslan-radius-xs)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
-      :class="active ? 'flex' : 'hidden group-hover/conv:flex'"
-      :title="t('conv.delete')"
-      :aria-label="t('conv.deleteAria', { name: conv.name })"
-      @click="emit('ask-delete', conv, $event)"
-    >
-      <X class="h-3.5 w-3.5" />
-    </button>
+    <!-- 删除入口**不再有悬停叉叉**（用户 2026-09-12 晚 #3：「选中框上的叉叉感觉很丑……
+         取消叉叉，改为统一的右键删除操作」）：删除走本行的右键菜单（由父组件渲染），
+         移动端用长按等价入口（见本组件 `onTouchStart`，满足 hover 兜底护栏）。
+         顺带消除了"选中态要不要常显叉叉"这个历史难题。 -->
   </div>
 </template>
