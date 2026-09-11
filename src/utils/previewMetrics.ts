@@ -18,10 +18,13 @@ export const PREVIEW_LINES = 5;
  *  与聊天样式里「对方气泡 #eeeef0 才不与画布同色」是同一个坑，故亮色改为一档更深的冷灰。 */
 export const CODE_SURFACE = { dark: "#161b22", light: "#eaeef3" } as const;
 
-/** 文本气泡：leading-relaxed = 1.625 倍行距。 */
-const TEXT_LINE_RATIO = 1.625;
-/** 文本气泡：py-2 纵向内边距。 */
-const TEXT_BUBBLE_PADDING = 16;
+/** 文本气泡：`leading-normal` = 1.5 倍行距（原 1.625 即 `leading-relaxed`，
+ *  2026-09-12 按用户反馈「气泡太高、不如微信和谐」收紧）。
+ *  ⚠️ 与 `MessageTextBubble.vue` 的 `leading-normal` 成对，改一个必须改另一个。 */
+const TEXT_LINE_RATIO = 1.5;
+/** 文本气泡：`py-1.5` 纵向内边距合计 12px（原 `py-2` = 16px，同一次收紧）。
+ *  ⚠️ 与 `MessageTextBubble.vue` / `MessageItem.vue` 兜底气泡的 `py-1.5` 成对。 */
+const TEXT_BUBBLE_PADDING = 12;
 /** MessageItem 给文本气泡统一保留 1px 描边，透明描边也会计入盒模型高度。 */
 const TEXT_BUBBLE_BORDER = 2;
 /** 文本气泡内长文本操作条：mt-1.5(6) + pt-1.5(6) + border-top(1) + text-xs 行高(16)。 */

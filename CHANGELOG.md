@@ -10,6 +10,14 @@
 
 ## [Unreleased]
 
+### Changed (聊天气泡更紧凑 + 正文更清晰，含度量联动护栏)
+- **气泡高度收敛、正文字重提高**（用户 2026-09-12 反馈：「气泡高度太高了，不如微信里的和谐；字重又太细了，一眼看上去不够清晰」）：文本气泡从 `px-3 py-2 leading-relaxed`（上下内边距 16px、行高 1.625）改为 `px-3 py-1.5 leading-normal`（12px、1.5），正文加 `font-medium`（500）。若隐若现的"太细"来自 400 字重在浅色画布上的笔画对比不足，500 提升辨识度又不会像 600 那样变成标题感。
+- **同步虚拟列表高度度量**（关键，否则相邻消息会互相遮挡）：`previewMetrics.ts` 的 `TEXT_LINE_RATIO` 1.625 → 1.5、`TEXT_BUBBLE_PADDING` 16 → 12；`MessageItem` 里未知 kind 的兜底气泡同样改为 `py-1.5 leading-normal`（它与 `MessageTextBubble` 共用同一套高度常量）。
+- **新增护栏 ⑤ `checkBubbleMetricsCoupling`**：把「组件真实排版」与「虚拟列表估算常量」这一对**必须成对演化**的值钉在一起 —— 解析气泡根元素的 `leading-*` / `py-*`，与度量文件里的 `TEXT_LINE_RATIO` / `TEXT_BUBBLE_PADDING` 交叉核对，不一致就报出并**给出应改的数值**。Tailwind 未覆盖 leadings（已确认 `tailwind.config.js` 只 extend 了 colors/fontFamily），故可静态判定。
+- **非空转验证**：把 `TEXT_LINE_RATIO` 临时改回 1.625（marker 已删）→ 全库扫描用例**精确 FAIL**，恢复后 229 全绿。
+- 验证：`npm test` **229 passed / 0 failed**（224 → 229）；`npx vue-tsc --noEmit` 0 错误。
+  ⚠️ 属观感改动，**需真机目视**（本机无头浏览器不可用，见 §七之十二）：重点看长消息滚动时相邻气泡不遮挡、6 套配色下正文可读性。
+
 ### Fixed (M3-0b：连接健康拆开「读活性」与「写活性」)
 - **半开 TCP 不再永久被判健康**（ADR-0014 §3.1 / §7 的前置补丁）。M3-0 的健康记录只有一个 `last_seen_ms`，**写成功与读成功写同一个字段**，而心跳每 5s 会给每条连接写成功一次 ⇒ 一条对端已消失、本机内核仍接受写入的链路会**永久保持「健康」**；选路若据此过滤，就会一直选中这条死路 —— 正是 ADR-0014 §7 列的失效场景。
 - **拆成两个字段**：`last_write_seen_ms`（诊断口径，**不参与**判定）与 `last_read_seen_ms`（唯一「对端活着」的证据）。`is_healthy` 只看读活性 + 连续失败。`writer_loop` 写成功只刷写活性；`reader_loop` 每读到一帧刷读活性。

@@ -220,6 +220,94 @@ export function findTruncationWithoutTitle(src: string): GuardIssue[] {
   return out.sort((a, b) => a.line - b.line);
 }
 
+// ---------------- ⑤ 文本气泡排版必须与虚拟列表高度度量一致 ----------------
+
+/** Tailwind 默认 `leading-*` → 行高倍数（tailwind.config.js 未覆盖 leadings，故可静态判定）。 */
+const LEADING_RATIO: Record<string, number> = {
+  "leading-none": 1,
+  "leading-tight": 1.25,
+  "leading-snug": 1.375,
+  "leading-normal": 1.5,
+  "leading-relaxed": 1.625,
+  "leading-loose": 2,
+};
+
+/** 从一份 .vue 源码里取「类名恰好等于 cls」的元素的 `class` 片段位置（-1 = 没有）。 */
+function classAttrIndexOf(src: string, cls: string): number {
+  for (const m of src.matchAll(CLASS_ATTR_RE)) {
+    const classes = m[1].split(/\s+/).filter(Boolean);
+    if (classes.includes(cls)) return m.index ?? -1;
+  }
+  return -1;
+}
+
+/**
+ * 检查「气泡真实渲染高度」与「虚拟列表估算高度」这一对**必须成对演化**的常量。
+ *
+ * 为什么要机器盯（与 ③ 未读徽标同一类）：`previewMetrics.ts` 的
+ * `TEXT_LINE_RATIO` / `TEXT_BUBBLE_PADDING` 是 `MessageTextBubble.vue` 的
+ * `leading-*` / `py-*` 的**镜像**。改了一边忘了另一边时，编译通过、测试全绿、
+ * 单条消息看着也正常 —— 只有**滚动到相邻消息**才会发现互相遮挡/留白跳变。
+ * 这种「写对了但不起作用、且不在出错点报错」正是本模块要守的东西。
+ *
+ * 参数：组件源码 + 度量文件源码。返回不一致项（含建议修正的具体数值）。
+ */
+export function checkBubbleMetricsCoupling(
+  bubbleSrc: string,
+  metricsSrc: string,
+): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const at = classAttrIndexOf(bubbleSrc, "min-w-0");
+  if (at < 0) {
+    return [{ line: 0, message: "在气泡组件里找不到带 `min-w-0` 的根元素（度量对照失效）" }];
+  }
+  const tag = enclosingTag(bubbleSrc, at);
+  const line = lineAt(bubbleSrc, at);
+  const classes = (tag.match(/\bclass="([^"]*)"/)?.[1] ?? "").split(/\s+/).filter(Boolean);
+
+  // 行高：必须先能识别出 `leading-*`，再从度量文件取比值。
+  const leadingClass = classes.find((c) => c in LEADING_RATIO);
+  const ratioRaw = metricsSrc.match(/TEXT_LINE_RATIO\s*=\s*([\d.]+)/)?.[1];
+  if (!leadingClass || ratioRaw === undefined) {
+    out.push({
+      line,
+      message:
+        "无法核对气泡行高：组件缺少可识别的 `leading-*` 类，或度量文件里找不到 `TEXT_LINE_RATIO`。" +
+        "两者必须成对存在，否则虚拟列表无法估算高度。",
+    });
+  } else if (Math.abs(LEADING_RATIO[leadingClass] - Number(ratioRaw)) > 1e-9) {
+    out.push({
+      line,
+      message:
+        `气泡用 \`${leadingClass}\`（行高 ${LEADING_RATIO[leadingClass]}），` +
+        `但预览度量 \`TEXT_LINE_RATIO\` = ${ratioRaw} —— 两边不一致会让虚拟列表的` +
+        `高度估算与真实渲染对不上（相邻消息遮挡）。把度量值改成 ${LEADING_RATIO[leadingClass]}。`,
+    });
+  }
+
+  // 纵向内边距：`py-N` 一档 = 4px，上下合计 ×2。
+  const pyClass = classes.find((c) => /^py-[\d.]+$/.test(c));
+  const paddingRaw = metricsSrc.match(/TEXT_BUBBLE_PADDING\s*=\s*(\d+)/)?.[1];
+  if (!pyClass || paddingRaw === undefined) {
+    out.push({
+      line,
+      message:
+        "无法核对气泡纵向内边距：组件缺少 `py-*` 类，或度量文件里找不到 `TEXT_BUBBLE_PADDING`。",
+    });
+  } else {
+    const expected = Number(pyClass.slice(3)) * 4 * 2;
+    if (expected !== Number(paddingRaw)) {
+      out.push({
+        line,
+        message:
+          `气泡用 \`${pyClass}\`（上下内边距合计 ${expected}px），` +
+          `但预览度量 \`TEXT_BUBBLE_PADDING\` = ${paddingRaw} —— 同上，改成 ${expected}。`,
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
 // ---------------- ② 媒体查询必须排在 style.css 末尾 ----------------
 
 /** 取某选择器**顶级**定义（行首、无缩进）的最后一次出现位置；找不到返回 -1。 */

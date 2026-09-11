@@ -112,8 +112,15 @@ async function openLink(href: string) {
 </script>
 
 <template>
+  <!-- 气泡排版（用户 2026-09-12 反馈：「气泡高度太高了，不如微信里和谐；字重又太细了，
+       一眼看上去不够清晰」）：
+       - 纵向内边距 py-1.5(12px 合计) 与 leading-normal(行高 1.5)：更紧凑、更接近微信；
+       - `font-medium`(500)：比默认 400 更清晰，又不至于到 600 显得"加粗标题"。
+       ⚠️ 这三个值都被 `utils/previewMetrics.ts` 的 `TEXT_LINE_RATIO` / `TEXT_BUBBLE_PADDING`
+       镜像用于虚拟列表高度估算 —— **改这里必须同步改那里**，否则相邻消息会互相遮挡
+       （该文件顶部写明了这条契约）。 -->
   <div
-    class="group relative min-w-0 px-3 py-2 leading-relaxed"
+    class="group relative min-w-0 px-3 py-1.5 font-medium leading-normal"
     :style="bubbleStyle"
   >
     <!-- 引用块：首行「引用 发送者：片段」，带 msg_id 时可点击跳转原消息 -->

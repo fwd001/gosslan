@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  checkBubbleMetricsCoupling,
   checkStyleCascade,
   checkUnreadBadgeComponent,
   findHandWrittenBadges,
@@ -263,6 +264,48 @@ test("逃生阀：带 truncate-title-ok 注释的文件整体跳过", () => {
   assert.deepEqual(findTruncationWithoutTitle(optedOut), []);
 });
 
+// ---------------- ⑤ 气泡排版必须与虚拟列表高度度量一致 ----------------
+//
+// 真实背景：`previewMetrics.ts` 的 `TEXT_LINE_RATIO` / `TEXT_BUBBLE_PADDING`
+// 是气泡组件 `leading-*` / `py-*` 的镜像。2026-09-12 按用户反馈把气泡从
+// `py-2 + leading-relaxed` 收紧到 `py-1.5 + leading-normal` 时，**两处必须同时改**
+// —— 只改一处不会报错、不会让任何行为测试变红，只有滚动到相邻消息才会互相遮挡。
+
+test("复现风险：气泡行高与度量不一致 → 报出并给出应改的数值", () => {
+  const bubble = `<template>
+  <div class="group relative min-w-0 px-3 py-1.5 leading-relaxed" :style="bubbleStyle"></div>
+</template>`;
+  const metrics = `const TEXT_LINE_RATIO = 1.5;\nconst TEXT_BUBBLE_PADDING = 12;`;
+  const issues = checkBubbleMetricsCoupling(bubble, metrics);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].message, /leading-relaxed/);
+  assert.match(issues[0].message, /1\.625/, "应指出组件实际行高");
+});
+
+test("复现风险：气泡内边距与度量不一致 → 报出", () => {
+  const bubble = `<template>
+  <div class="group relative min-w-0 px-3 py-2 leading-normal"></div>
+</template>`;
+  const metrics = `const TEXT_LINE_RATIO = 1.5;\nconst TEXT_BUBBLE_PADDING = 12;`;
+  const issues = checkBubbleMetricsCoupling(bubble, metrics);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].message, /16px/);
+});
+
+test("两边一致 → 通过", () => {
+  const bubble = `<template>
+  <div class="group relative min-w-0 px-3 py-1.5 leading-normal"></div>
+</template>`;
+  const metrics = `const TEXT_LINE_RATIO = 1.5;\nconst TEXT_BUBBLE_PADDING = 12;`;
+  assert.deepEqual(checkBubbleMetricsCoupling(bubble, metrics), []);
+});
+
+test("找不到气泡根元素 / 缺少常量 → 显式报出（不静默通过）", () => {
+  assert.equal(checkBubbleMetricsCoupling(`<template><div></div></template>`, "x").length, 1);
+  const bubble = `<template><div class="min-w-0 leading-normal py-1.5"></div></template>`;
+  assert.equal(checkBubbleMetricsCoupling(bubble, "const NOTHING = 1;").length, 2);
+});
+
 // ---------------- 全库扫描：真实文件必须干净 ----------------
 
 function collectVueFiles(dir: string, out: string[] = []): string[] {
@@ -297,6 +340,14 @@ test("src 下所有 .vue 的截断文本都带了 title / aria-label", () => {
     }
   }
   assert.deepEqual(bad, [], `发现被截断却没有 title 的文本：\n${bad.join("\n")}`);
+});
+
+test("文本气泡排版与虚拟列表高度度量一致（leading-* ↔ TEXT_LINE_RATIO / py-* ↔ TEXT_BUBBLE_PADDING）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const bubble = readFileSync(join(srcDir, "components", "message", "MessageTextBubble.vue"), "utf8");
+  const metrics = readFileSync(join(srcDir, "utils", "previewMetrics.ts"), "utf8");
+  const issues = checkBubbleMetricsCoupling(bubble, metrics);
+  assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
 });
 
 test("真实的 src/style.css 级联顺序正确", () => {
