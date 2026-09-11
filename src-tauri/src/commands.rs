@@ -1564,13 +1564,29 @@ pub async fn group_remove_member(
             .unwrap_or_default()
     };
     resend_group_key_to(s, &group_id, &remaining, key).await;
-    // 通知被移除者本人清理本地群
-    let msg = Message::GroupMemberRemoved {
+    let removed_msg = Message::GroupMemberRemoved {
         group_id: group_id.clone(),
         from: s.device_id.clone(),
         to: device_id.clone(),
     };
-    let _ = try_send(s, &device_id, &msg).await;
+    // ① 通知**被移除者本人**清理本地群
+    let _ = try_send(s, &device_id, &removed_msg).await;
+    // ② **同时通知其余成员**：此前只发给被移除者，而接收端对 `to != 自己` 直接 return，
+    //    两头都断 —— 表现为「群里其他人打开群，成员没变少、也没有任何提示」。
+    //    现在其余成员收到后同步成员表 + 落一条群内系统消息。
+    for m in &remaining {
+        if m == &s.device_id || m == &device_id {
+            continue;
+        }
+        let _ = try_send(s, m, &removed_msg).await;
+    }
+    // ③ 群主自己也要看到这条系统消息（别人靠 ② 各自插入）
+    let name = resolve_nickname(s, &device_id);
+    crate::network::transport::insert_group_system_message(
+        s,
+        &group_id,
+        &crate::network::transport::group_member_removed_text(s, &name),
+    );
     let _ = s.app.emit("groups-updated", &group_id);
     Ok(())
 }

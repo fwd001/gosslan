@@ -4138,35 +4138,65 @@ async fn handle_group_rename(state: &Arc<AppState>, group_id: String, from: Stri
     let _ = state.app.emit("groups-updated", &group_id);
 }
 
-/// 处理「成员被移出群」：仅当 `to` 是自己且发起方是群创建者时，清理本地群 + 会话 + 密钥。
+/// 处理「成员被移出群」。
+///
+/// 两个分支，**此前只有第一个**：
+/// 1. `to == 本机`：我本人被移出 → 清理本地群 + 会话 + 群密钥；
+/// 2. `to != 本机`：别人被移出 → 同步本地成员表 + 清掉指向他的待补发群消息 +
+///    落一条群内系统消息，让群里的人都知道。
 async fn handle_group_member_removed(
     state: &Arc<AppState>,
     group_id: String,
     from: String,
     to: String,
 ) {
-    if to != state.device_id || from == state.device_id {
-        return;
+    if from == state.device_id {
+        return; // 本机发起的移人，本地已处理（含系统消息）
     }
+    // 只接受**群创建者**发起的移人（防成员互踢）
     let is_creator = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id)
             .map(|g| g.creator == from)
             .unwrap_or(false)
     };
-    if !is_creator {
-        return;
+    match member_removed_action(false, is_creator, to == state.device_id) {
+        MemberRemovedAction::Ignore => return,
+        // ---- ① 我本人被移出 ----
+        MemberRemovedAction::RemoveSelf => {
+            {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::delete_group(&dbc, &group_id).ok();
+                let _ = dbc.execute(
+                    "DELETE FROM settings WHERE key = ?1",
+                    params![format!("gk:{group_id}")],
+                );
+            }
+            state.group_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&group_id);
+            let _ = state.app.emit("group-member-removed", &group_id);
+            let _ = state.app.emit("groups-updated", &group_id);
+            return;
+        }
+        // ---- ② 别人被移出：同步成员表 + 群内系统消息 ----
+        MemberRemovedAction::RemoveOther => {}
     }
-    {
+
+    let changed = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::delete_group(&dbc, &group_id).ok();
-        let _ = dbc.execute(
-            "DELETE FROM settings WHERE key = ?1",
-            params![format!("gk:{group_id}")],
-        );
+        match db::get_group(&dbc, &group_id) {
+            Some(g) if g.members.contains(&to) => {
+                // 他已经不是成员了：指向他的待补发群消息也不该再投递
+                db::delete_group_outbox_for_peer_in_group(&dbc, &group_id, &to).ok();
+                db::remove_group_member(&dbc, &group_id, &to).is_ok()
+            }
+            _ => false,
+        }
+    };
+    if !changed {
+        return; // 幂等：已经不在成员表里就不重复插系统消息
     }
-    state.group_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&group_id);
-    let _ = state.app.emit("group-member-removed", &group_id);
+    let name = resolve_nickname(state, &to);
+    insert_group_system_message(state, &group_id, &group_member_removed_text(state, &name));
     let _ = state.app.emit("groups-updated", &group_id);
 }
 
@@ -4208,12 +4238,17 @@ async fn handle_group_member_left(state: &Arc<AppState>, group_id: String, from:
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         match db::get_group(&dbc, &group_id) {
             Some(g) if g.creator != from && g.members.contains(&from) => {
+                // 他已经退了：指向他的待补发群消息不该再投递
+                db::delete_group_outbox_for_peer_in_group(&dbc, &group_id, &from).ok();
                 db::remove_group_member(&dbc, &group_id, &from).is_ok()
             }
             _ => false,
         }
     };
     if changed {
+        // 群内系统消息 —— 此前成员表会同步，但群里看不到任何提示
+        let name = resolve_nickname(state, &from);
+        insert_group_system_message(state, &group_id, &group_member_left_text(state, &name));
         let _ = state.app.emit("groups-updated", &group_id);
     }
 }
@@ -4627,6 +4662,65 @@ pub(crate) fn resolve_member_x25519(state: &AppState, member_id: &str) -> Option
     pick_member_x25519(peers_key, friends_key)
 }
 
+/// 群成员变更的**群内系统消息**文案。
+///
+/// 后端产生的系统消息同样要跟随语言设置 —— 前端 i18n 覆盖不到后端直接写库的行。
+/// 两条文案各自只有一处实现，供「发起方」与「接收方」共用，避免措辞漂移。
+/// 收到 `GroupMemberRemoved` 后本机应做的动作。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MemberRemovedAction {
+    /// 忽略：非创建者发起（防成员互踢），或本消息就来自本机（本地已处理）
+    Ignore,
+    /// 我本人被移出：清理本地群 + 会话 + 群密钥
+    RemoveSelf,
+    /// 别人被移出：同步本地成员表 + 落群内系统消息
+    RemoveOther,
+}
+
+/// 分支选择（纯函数，便于单测）。
+///
+/// 单独抽出来的理由：这次 bug 的根因就是**少了一个分支** —— 接收端只处理「我本人被
+/// 移出」，其余成员直接 return，于是群里其他人的成员表不变小、也看不到任何提示。
+/// 把三分支的选择做成纯函数，「必须有 RemoveOther」这件事就被测试钉住了。
+pub fn member_removed_action(
+    sender_is_me: bool,
+    sender_is_creator: bool,
+    to_is_me: bool,
+) -> MemberRemovedAction {
+    if sender_is_me || !sender_is_creator {
+        return MemberRemovedAction::Ignore;
+    }
+    if to_is_me {
+        MemberRemovedAction::RemoveSelf
+    } else {
+        MemberRemovedAction::RemoveOther
+    }
+}
+
+/// 往指定群的会话插一条本地系统消息。
+///
+/// 群的 conv_id 约定是 `group:{group_id}` —— 这个约定只有一处实现，避免各处手拼前缀。
+pub fn insert_group_system_message(state: &AppState, group_id: &str, text: &str) {
+    crate::commands::insert_system_message(state, &format!("group:{group_id}"), text);
+}
+
+pub fn group_member_removed_text(state: &AppState, name: &str) -> String {
+    if state.is_zh() {
+        format!("「{name}」已被移出群聊")
+    } else {
+        format!("“{name}” has been removed from the group")
+    }
+}
+
+/// 成员**主动退群**的群内系统消息文案（详见 `group_member_removed_text`）。
+pub fn group_member_left_text(state: &AppState, name: &str) -> String {
+    if state.is_zh() {
+        format!("「{name}」退出了群聊")
+    } else {
+        format!("“{name}” left the group")
+    }
+}
+
 pub fn resolve_nickname(state: &AppState, id: &str) -> String {
     if let Some(p) = state.peers.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
         if !p.nickname.is_empty() {
@@ -4839,6 +4933,31 @@ pub fn notify_with_extra(
 mod tests {
     use super::*;
     use crate::gossip_engine::GossipEngine;
+
+    // ---- 群成员变更：接收端的分支选择 ----
+    //
+    // 真实事故（2026-09-12 用户反馈）：群主移人后，**其余成员**的成员表不变小、
+    // 也没有任何提示。根因是接收端 `handle_group_member_removed` 开头就
+    // `if to != 本机 { return }` —— 压根没有「别人被移出」这个分支。
+    // 下面把三分支的选择（纯函数）用真值表钉住。
+
+    #[test]
+    fn member_removed_action_full_truth_table() {
+        use MemberRemovedAction::*;
+        // 发起方不是创建者 → 一律忽略（防成员互踢），与 `to` 是谁无关
+        assert_eq!(member_removed_action(false, false, false), Ignore);
+        assert_eq!(member_removed_action(false, false, true), Ignore);
+        // 本机自己发起的 → 忽略（本地已处理，含群主自己的系统消息）
+        assert_eq!(member_removed_action(true, true, false), Ignore);
+        assert_eq!(member_removed_action(true, true, true), Ignore);
+        assert_eq!(member_removed_action(true, false, false), Ignore);
+        assert_eq!(member_removed_action(true, false, true), Ignore);
+        // 创建者发起 + 被移出者是别人 → **同步成员表**（本次补齐的分支，
+        // 这条断言正是对「其余成员不能 Ignore」的回归钉子）
+        assert_eq!(member_removed_action(false, true, false), RemoveOther);
+        // 创建者发起 + 被移出者是我 → 清理本地群
+        assert_eq!(member_removed_action(false, true, true), RemoveSelf);
+    }
 
     // ---- 拨号决策（M2 双向建链 + P1-2 镜像重复连接修正）----
 
