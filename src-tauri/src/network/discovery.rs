@@ -18,7 +18,9 @@ use rand_core::{OsRng, RngCore};
 
 use crate::commands::is_virtual_ip;
 use crate::network::transport::{ensure_link, upsert_peer};
-use crate::protocol::{UdpPacket, ANNOUNCE_INTERVAL_SECS, PEER_TIMEOUT_SECS, UDP_PORT};
+use crate::protocol::{
+    UdpPacket, ANNOUNCE_INTERVAL_SECS, RELAY_PEER_TIMEOUT_SECS, UDP_PORT,
+};
 use crate::state::AppState;
 
 /// 组播地址（与广播并行，覆盖被隔离广播域的场景）
@@ -455,10 +457,22 @@ async fn broadcast_probe(
     broadcast(socket, state, tcp_port, _lan_broadcast).await;
 }
 
-/// 清理超过 `PEER_TIMEOUT_SECS` 未活跃的节点，
-/// **但保留仍有活跃 TCP 链接的节点**：避免「TCP 能通信但 UI 显示离线」。
+/// 判定一个节点是否应保留在 peers 表（纯逻辑，便于单测 + 护栏非空转）。
+/// - 有活跃 TCP 链接 → 恒保留（豁免超时，避免「能通信却显示离线」）。
+/// - 无活跃链接（跨跳节点，靠 Presence 经中继保活）→ last_seen 在
+///   `RELAY_PEER_TIMEOUT_SECS` 内才保留。
+fn should_keep_peer(last_seen: i64, now: i64, has_active_link: bool) -> bool {
+    has_active_link || last_seen >= now - RELAY_PEER_TIMEOUT_SECS * 1000
+}
+
+/// 清理超过超时阈值的节点：
+/// - **有活跃 TCP 链接**的节点：直接豁免（避免「TCP 能通信但 UI 显示离线」）。
+/// - **无活跃链接**的节点（跨跳节点，靠 Presence 经中继保活）：用更长的
+///   `RELAY_PEER_TIMEOUT_SECS` 判定，容忍 Tailscale 等高延迟中继的转发抖动——
+///   否则 10s Presence 周期 + 15s 超时只留 5s 余量，Presence 一迟到就被误删，
+///   在线状态「一会儿绿一会儿灰」。
 fn sweep_peers(state: &AppState) {
-    let cutoff = now_ms() - PEER_TIMEOUT_SECS * 1000;
+    let now = now_ms();
     // try_lock 非阻塞：锁被占用时跳过本轮清理（下轮会补上），绝不阻塞广播循环。
     let active_links: std::collections::HashSet<String> = state
         .links
@@ -468,7 +482,7 @@ fn sweep_peers(state: &AppState) {
     let changed = {
         let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         let before = peers.len();
-        peers.retain(|id, p| p.last_seen >= cutoff || active_links.contains(id));
+        peers.retain(|id, p| should_keep_peer(p.last_seen, now, active_links.contains(id)));
         before != peers.len()
     };
     if changed {
@@ -479,6 +493,25 @@ fn sweep_peers(state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 跨跳节点离线判定：45s 超时 + 直连节点豁免（护栏非空转的关键判据）。
+    ///
+    /// 真机反馈「A 看 C 一会儿绿一会儿灰、C 看 A 一直绿」：跨跳节点靠 10s Presence
+    /// 保活，旧 15s 超时只留 5s 余量，Tailscale 中继抖动一迟到就被误删。
+    #[test]
+    fn relay_peer_kept_within_45s_direct_peer_always_kept() {
+        let now = 1_000_000_000_000_i64;
+        // 直连节点：last_seen 远超 45s，但有活跃链接 → 恒保留
+        assert!(should_keep_peer(now - 100_000, now, true));
+        // 跨跳节点：20s 前（旧 15s 阈值早已超，但新 45s 内）→ 保留（修复点）
+        assert!(should_keep_peer(now - 20_000, now, false));
+        // 跨跳节点：30s 前（45s 内）→ 保留
+        assert!(should_keep_peer(now - 30_000, now, false));
+        // 跨跳节点：44s 前（45s 内，边界）→ 保留
+        assert!(should_keep_peer(now - 44_000, now, false));
+        // 跨跳节点：46s 前（超 45s）→ 移除
+        assert!(!should_keep_peer(now - 46_000, now, false));
+    }
 
     /// 自适应周期分档与抖动边界：≤99 节点保持 5s，≥100 → ≥10s，≥500 → ≥20s，抖动 ≤2s。
     #[test]

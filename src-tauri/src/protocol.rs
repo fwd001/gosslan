@@ -16,8 +16,17 @@ pub const MAX_FRAME: usize = 64 * 1024 * 1024;
 pub const FILE_CHUNK: usize = 256 * 1024;
 /// 广播/发现周期（秒）
 pub const ANNOUNCE_INTERVAL_SECS: u64 = 5;
-/// 节点离线判定阈值（秒）
-pub const PEER_TIMEOUT_SECS: i64 = 15;
+/// 跨跳（无直连）节点离线判定阈值（秒）。
+///
+/// 跨跳节点没有直连 TCP，`last_seen` 只能靠 Presence（10s 周期）经中继转发刷新。
+/// 若沿用 15s，10s 周期只留 5s 余量，Tailscale 等高延迟中继一旦抖动，某次 Presence
+/// 迟到超过 15s 就被 `sweep_peers` 误删 → 在线状态「一会儿绿一会儿灰」。
+/// 45s ≈ 4.5 个 Presence 周期，给中继延迟留足余量；代价是跨跳节点真正离线后
+/// 最多约 45s 才判离线（可接受）。
+///
+/// 有直连 TCP 的节点不依赖本阈值：`sweep_peers` 用 `active_links` 直接豁免，
+/// 且连接断开时由 `mark_peer_offline` 立即移除（无需超时兜底）。
+pub const RELAY_PEER_TIMEOUT_SECS: i64 = 45;
 
 /// 消息内容类型
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
