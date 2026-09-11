@@ -1,6 +1,7 @@
 //! 应用全局状态与前端交互类型。
 
 use std::collections::{HashMap, VecDeque};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -43,6 +44,20 @@ pub struct Peer {
     pub ed25519_pubkey: Option<String>,
     /// 建链时间戳
     pub connected_since: Option<i64>,
+}
+
+/// 一条已建立的 TCP 连接。
+///
+/// `endpoint` 让连接可以按**端点**去重（同一 peer 的 LAN 与 Tailscale 是两条不同连接），
+/// 也是 6b「同一 Peer 多条 Connection」的判据。
+#[derive(Clone)]
+pub struct Link {
+    /// 该连接对端的端点。
+    pub endpoint: SocketAddr,
+    /// bulk 通道：大文件分片等，避免挤占聊天。
+    pub bulk: mpsc::Sender<Message>,
+    /// priority 通道：聊天 / 控制 / 心跳，避免被大文件分片饿死（INV-P20）。
+    pub priority: mpsc::Sender<Message>,
 }
 
 /// 待处理的好友申请
@@ -345,15 +360,12 @@ pub struct AppState {
 
     /// 在线节点表：device_id -> Peer
     pub peers: Mutex<HashMap<String, Peer>>,
-    /// 已建立的 TCP 连接出站发送端：device_id -> 该节点的**各条**连接（bulk 通道）。
+    /// 已建立的 TCP 连接：device_id -> 该节点的**各条**连接。
     ///
-    /// Phase 6 起一个 device_id 可以有多条连接（LAN + Tailscale + BLE），因此值是
-    /// `Vec` 而非单个 Sender。当前每节点最多一条 —— 行为与改造前**完全一致**
-    /// （6a 只改结构不改语义）。
-    pub links: tokio::sync::Mutex<HashMap<String, Vec<mpsc::Sender<Message>>>>,
-    /// 同一连接的高优先级发送端：聊天/控制消息走这里，避免被大文件分片饿死。
-    /// 与 `links` **一一对应**（同下标 = 同一条 TCP 连接）。
-    pub priority_links: tokio::sync::Mutex<HashMap<String, Vec<mpsc::Sender<Message>>>>,
+    /// Phase 6 起一个 device_id 可以有多条连接（LAN + Tailscale + BLE），每条连接的
+    /// 端点与两个发送通道放在一起，避免「端点 / bulk / priority」三处平行结构
+    /// 需要手工同步下标 —— 那是 Phase 6 最容易出错的地方。
+    pub links: tokio::sync::Mutex<HashMap<String, Vec<Link>>>,
     /// 待处理好友申请：from_id -> request
     pub pending_requests: Mutex<HashMap<String, PendingRequest>>,
     /// 网络运行时（None 表示未启动）
@@ -532,7 +544,6 @@ impl AppState {
             group_keys: Mutex::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),
             links: tokio::sync::Mutex::new(HashMap::new()),
-            priority_links: tokio::sync::Mutex::new(HashMap::new()),
             pending_requests: Mutex::new(HashMap::new()),
             network: Mutex::new(None),
             pending_reads: Mutex::new(pending_reads_map),
@@ -587,6 +598,18 @@ impl AppState {
             .await
             .get(peer_id)
             .is_some_and(|v| !v.is_empty())
+    }
+
+    /// 该 peer 是否已连到**指定端点**。
+    ///
+    /// 与 `has_link` 的区别：6b 起一个 peer 可有多条连接（LAN + Tailscale），
+    /// 判断「要不要再拨号」必须**按端点**，而不是按 peer —— 否则永远只能建一条。
+    pub async fn has_endpoint(&self, peer_id: &str, endpoint: &SocketAddr) -> bool {
+        self.links
+            .lock()
+            .await
+            .get(peer_id)
+            .is_some_and(|v| v.iter().any(|l| l.endpoint == *endpoint))
     }
 
     /// 标记节点表已变更，并唤醒节流推送任务。

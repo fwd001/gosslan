@@ -138,9 +138,9 @@ pub async fn update_profile(
         nickname,
         avatar,
     };
-    let links = s.priority_links.lock().await;
-    for tx in links.values().flatten() {
-        let _ = tx.send(msg.clone()).await;
+    let links = s.links.lock().await;
+    for link in links.values().flatten() {
+        let _ = link.priority.send(msg.clone()).await;
     }
     drop(links);
 
@@ -700,9 +700,9 @@ pub async fn broadcast_chat_style(
         to: None,
         style,
     };
-    let links = s.priority_links.lock().await;
-    for tx in links.values().flatten() {
-        let _ = tx.send(msg.clone()).await;
+    let links = s.links.lock().await;
+    for link in links.values().flatten() {
+        let _ = link.priority.send(msg.clone()).await;
     }
     Ok(())
 }

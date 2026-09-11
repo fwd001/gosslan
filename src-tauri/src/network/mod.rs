@@ -85,7 +85,6 @@ pub async fn stop(state: &AppState) {
     }
     *state.probe.lock().unwrap_or_else(|e| e.into_inner()) = None;
     state.links.lock().await.clear();
-    state.priority_links.lock().await.clear();
     state.peers.lock().unwrap_or_else(|e| e.into_inner()).clear();
     state.emit_peers();
 }

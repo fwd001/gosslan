@@ -24,7 +24,8 @@ use crate::db;
 use crate::network::file;
 use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind};
 use crate::state::{
-    AppState, FileDoneInfo, FileFailedInfo, FileProgress, MessageRecord, Peer, PendingRequest,
+    AppState, FileDoneInfo, FileFailedInfo, FileProgress, Link, MessageRecord, Peer,
+    PendingRequest,
 };
 use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
 use crate::transport::tcp::{TcpReceiver, TcpSender};
@@ -72,20 +73,18 @@ fn is_bulk_message(msg: &Message) -> bool {
 /// 尝试通过已建立连接发送消息；无连接则返回 Err。
 pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<(), String> {
     // 一个 peer 可能有多条连接（Phase 6）；当前取**第一条**活跃连接，
-    // 与改造前「每 peer 一条连接」的行为完全一致（6a 只改结构不改语义）。
-    if is_bulk_message(msg) {
-        let links = state.links.lock().await;
-        match links.get(peer_id).and_then(|v| v.first()) {
-            Some(tx) => tx.send(msg.clone()).await.map_err(|e| e.to_string()),
-            None => Err("未建立连接".to_string()),
-        }
+    // 与改造前「每 peer 一条连接」的行为完全一致（6b-1a 只改结构不改语义）。
+    let links = state.links.lock().await;
+    let link = match links.get(peer_id).and_then(|v| v.first()) {
+        Some(l) => l,
+        None => return Err("未建立连接".to_string()),
+    };
+    let tx = if is_bulk_message(msg) {
+        &link.bulk
     } else {
-        let links = state.priority_links.lock().await;
-        match links.get(peer_id).and_then(|v| v.first()) {
-            Some(tx) => tx.send(msg.clone()).await.map_err(|e| e.to_string()),
-            None => Err("未建立连接".to_string()),
-        }
-    }
+        &link.priority
+    };
+    tx.send(msg.clone()).await.map_err(|e| e.to_string())
 }
 
 /// 向所有已连接节点广播一条 Gossip 消息。
@@ -93,7 +92,7 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
     let msg = Message::Gossip {
         envelope: envelope.clone(),
     };
-    let links = state.priority_links.lock().await;
+    let links = state.links.lock().await;
 
     // 出站目标经 MeshRouter 裁决（§18 source exclusion）。
     //
@@ -107,8 +106,8 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
     };
 
     for peer in picked {
-        if let Some(tx) = links.get(peer).and_then(|v| v.first()) {
-            let _ = tx.send(msg.clone()).await;
+        if let Some(link) = links.get(peer).and_then(|v| v.first()) {
+            let _ = link.priority.send(msg.clone()).await;
         }
     }
 }
@@ -180,9 +179,9 @@ pub async fn spawn(
                 biased;
                 _ = shutdown.changed() => break,
                 _ = tick.tick() => {
-                    let links = state.priority_links.lock().await;
-                    for tx in links.values().flatten() {
-                        let _ = tx.send(Message::Heartbeat { device_id: state.device_id.clone() }).await;
+                    let links = state.links.lock().await;
+                    for link in links.values().flatten() {
+                        let _ = link.priority.send(Message::Heartbeat { device_id: state.device_id.clone() }).await;
                     }
                 }
             }
@@ -402,21 +401,18 @@ async fn handle_incoming(
     let (bulk_tx, bulk_rx) = mpsc::channel(1024);
     let (prio_tx, prio_rx) = mpsc::channel(1024);
     // 追加到该 peer 的连接列表（而非覆盖）—— 多连接支持的基础。
-    // 当前每 peer 只会有一条，因此行为与改造前一致。
+    // 端点取 TCP 对端的真实地址，使「同一 peer 的不同端点」可被区分。
     state
         .links
         .lock()
         .await
         .entry(peer_id.clone())
         .or_default()
-        .push(bulk_tx.clone());
-    state
-        .priority_links
-        .lock()
-        .await
-        .entry(peer_id.clone())
-        .or_default()
-        .push(prio_tx);
+        .push(Link {
+            endpoint: peer_addr,
+            bulk: bulk_tx.clone(),
+            priority: prio_tx,
+        });
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
@@ -538,11 +534,10 @@ async fn reader_loop(
         let is_live = links
             .get(&peer_id)
             .and_then(|v| v.first())
-            .map(|tx| tx.same_channel(&link_tx))
+            .map(|l| l.bulk.same_channel(&link_tx))
             .unwrap_or(false);
         if is_live {
             links.remove(&peer_id);
-            state.priority_links.lock().await.remove(&peer_id);
         }
         is_live
     };
@@ -564,7 +559,13 @@ pub async fn ensure_link(
     if peer_id >= state.device_id.as_str() {
         return; // 只有小 ID 拨号
     }
-    if state.has_link(peer_id).await {
+    // 按**端点**去重（而非按 peer）：同一 peer 换了个 IP（如同时有 LAN 与 Tailscale）
+    // 是另一条连接，仍然值得拨。解析失败则放弃本轮（下一轮 announce 会再试）。
+    let endpoint: std::net::SocketAddr = match format!("{ip}:{tcp_port}").parse() {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    if state.has_endpoint(peer_id, &endpoint).await {
         return;
     }
     connect_to_peer(state, peer_id, ip, tcp_port, shutdown).await;
@@ -578,13 +579,22 @@ async fn connect_to_peer(
     shutdown: watch::Receiver<bool>,
 ) {
     {
-        if state.has_link(peer_id).await {
+        // 同样按端点去重：与 ensure_link 的检查构成双重保险（announce 是并发触发的）。
+        let endpoint: std::net::SocketAddr = match format!("{ip}:{tcp_port}").parse() {
+            Ok(a) => a,
+            Err(_) => return,
+        };
+        if state.has_endpoint(peer_id, &endpoint).await {
             return;
         }
     }
 
-    let addr = format!("{ip}:{tcp_port}");
-    let stream = match TcpStream::connect(&addr).await {
+    // 端点用 `SocketAddr` 而非字符串：Link 需要它做「按端点去重」的判据。
+    let endpoint: std::net::SocketAddr = match format!("{ip}:{tcp_port}").parse() {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+    let stream = match TcpStream::connect(endpoint).await {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -600,14 +610,11 @@ async fn connect_to_peer(
         .await
         .entry(peer_id.to_string())
         .or_default()
-        .push(bulk_tx.clone());
-    state
-        .priority_links
-        .lock()
-        .await
-        .entry(peer_id.to_string())
-        .or_default()
-        .push(prio_tx.clone());
+        .push(Link {
+            endpoint,
+            bulk: bulk_tx.clone(),
+            priority: prio_tx.clone(),
+        });
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.to_string(),
@@ -1767,7 +1774,7 @@ async fn relay_forward(state: &Arc<AppState>, frame: &MeshFrame, inbound_peer: &
 
     // ① 先排除入站 peer
     let candidates: Vec<String> = {
-        let links = state.priority_links.lock().await;
+        let links = state.links.lock().await;
         links
             .keys()
             .filter(|k| k.as_str() != inbound_peer)
