@@ -79,6 +79,63 @@ fn is_bulk_message(msg: &Message) -> bool {
     )
 }
 
+/// 计算一次发送要按什么顺序尝试各条链路（纯函数，便于单测 + 护栏非空转）。
+///
+/// ## 为什么需要「按端点对齐」这一层
+/// mesh 层（`Connection`）与传输层（`Link`）是**两套**链路表，且**不保证 1:1 同序**：
+/// `handle_incoming` 追加 `Link` 时**不做端点去重**，而 `upsert_connection` 按端点去重；
+/// 两者还有各自的登记/清理窗口。所以 `pick_link` 返回的**下标绝不能直接拿去索引 `Link`**
+/// —— 必须用端点把 mesh 连接映射回传输链路。这正是复核里点名的坑。
+///
+/// ## 缺候选时怎么办（登记窗口）
+/// 传输链路存在、mesh 侧还没登记（或刚被清理）时**合成一条「刚播种」的候选**，
+/// 当作健康处理：它是一条**我们刚接受/建立的真实 TCP 连接**，不能因为登记窗口而
+/// 被判不可用。反过来 mesh 侧多出来的连接（传输已清理）不参与排序。
+///
+/// 返回：`links` 的下标序列，按「优先尝试」排序。全部不健康时 `pick_link` 会退回
+/// 首条（保持可用），其余链路仍然排在后面做 failover。
+fn route_order(
+    links: &[crate::state::Link],
+    peer_id: &str,
+    conns: &[crate::mesh::Connection],
+    now_ms: i64,
+    health_timeout_ms: i64,
+    max_failures: u32,
+) -> Vec<usize> {
+    use crate::mesh::endpoint::Endpoint as MeshEndpoint;
+    use crate::mesh::path::PathKind as MeshPathKind;
+
+    // 与 `links` 同序的候选：能按端点命中就用真实健康信息，否则合成「刚播种」候选。
+    let candidates: Vec<crate::mesh::Connection> = links
+        .iter()
+        .map(|l| {
+            let ep = MeshEndpoint::Tcp(l.endpoint);
+            if let Some(c) = conns.iter().find(|c| c.endpoint == ep) {
+                c.clone()
+            } else {
+                let mut fresh = crate::mesh::Connection::new(peer_id, ep, path_kind_for(&l.endpoint));
+                fresh.health.seed_read_seen(now_ms);
+                fresh
+            }
+        })
+        .collect();
+
+    let Some(best) = crate::mesh::pick_link(&candidates, now_ms, health_timeout_ms, max_failures)
+    else {
+        return Vec::new();
+    };
+    let _ = MeshPathKind::Lan; // 供上面 path_kind_for 的类型推断（避免未使用告警）
+    // 选中的排最前，其余保持插入序做 failover。
+    let mut order: Vec<usize> = Vec::with_capacity(candidates.len());
+    order.push(best);
+    for i in 0..candidates.len() {
+        if i != best {
+            order.push(i);
+        }
+    }
+    order
+}
+
 /// `try_send` 第一轮全部遇到「信道满」时的**有界**补试时长。
 ///
 /// 之所以不是直接 `Err`：信道满只说明对端这一拍消费不过来（writer 正在写 TCP），
@@ -91,6 +148,11 @@ const SEND_QUEUE_FULL_TIMEOUT: Duration = Duration::from_millis(500);
 /// 一个 peer 可能有多条连接（LAN + Tailscale + BLE）：**依次尝试**。
 /// 某条连接已断（channel 关闭 → send 失败）就自动换下一条 —— 这是连接级 failover。
 /// 任一连接成功即返回，所以消息仍然只发出一次（单连接场景下与改造前等价）。
+///
+/// ## 顺序由选路决定（M3-b）
+/// 自 M3-b 起，尝试顺序不再等于插入顺序，而是 `route_order` 给出的顺序：
+/// **活性过滤 + 路径优先级 LAN > Routed > Bluetooth + 稳定序打破平局**（ADR-0014 §3.2，
+/// `mesh::selection::pick_link`）。单链路时顺序无变化（行为零变化）。
 ///
 /// ## 为什么先快照 Sender 再发送（而不是持锁发送）
 ///
@@ -110,20 +172,33 @@ const SEND_QUEUE_FULL_TIMEOUT: Duration = Duration::from_millis(500);
 /// 注意：`Err` 不代表消息丢了 —— 单聊消息在 `send_message` 里已先入 outbox，
 /// 由 Hello/心跳触发 `flush_outbox` 补发（这是既有契约）。
 pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<(), String> {
-    // 锁作用域内只做「取 + 克隆」，不 await。
-    let senders: Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)> = {
-        let links = state.links.lock().await;
-        match links.get(peer_id) {
-            Some(l) if !l.is_empty() => l.iter().map(|l| (l.bulk.clone(), l.priority.clone())).collect(),
+    // ① 锁作用域内只做「取 + 克隆」，不 await（锁跨 await 会让一条拥塞链路锁死全表）。
+    let links: Vec<crate::state::Link> = {
+        let g = state.links.lock().await;
+        match g.get(peer_id) {
+            Some(l) if !l.is_empty() => l.clone(),
             _ => return Err("未建立连接".to_string()),
         }
     };
 
+    // ② 取健康阈值与 mesh 连接（两把锁分别取，不嵌套）。
+    let (health_timeout_ms, max_failures) = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        (pm.health_timeout_ms(), pm.max_failures())
+    };
+    let conns: Vec<crate::mesh::Connection> = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        pm.get(peer_id).map(|p| p.connections().to_vec()).unwrap_or_default()
+    };
+    // ③ 选路（M3-b）：按**端点**对齐两套链路表后交给 `pick_link`，返回发送顺序。
+    let order = route_order(&links, peer_id, &conns, db::now_ms(), health_timeout_ms, max_failures);
+
     let bulk = is_bulk_message(msg);
     let mut last_err = "未建立连接".to_string();
     let mut first_full: Option<&mpsc::Sender<Message>> = None;
-    for (bulk_tx, prio_tx) in &senders {
-        let tx = if bulk { bulk_tx } else { prio_tx };
+    for &i in &order {
+        let link = &links[i];
+        let tx = if bulk { &link.bulk } else { &link.priority };
         match tx.try_send(msg.clone()) {
             Ok(()) => return Ok(()),
             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -137,7 +212,7 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
         }
     }
 
-    // 第二轮：只有「所有链路都满」才会走到这里。有界补试一条，避免既不 failover
+    // ④ 第二轮：只有「所有链路都满」才会走到这里。有界补试一条，避免既不 failover
     // 又永久挂起。
     if let Some(tx) = first_full {
         return match tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone())).await {
@@ -5310,6 +5385,110 @@ mod tests {
         assert!(should_dial_for_peer("b", "a", false, &[], Some(now - 60_000), now));
         // 小 ID 兜底：只有 Routed 且超过阈值 ⇒ 也去补 LAN。
         assert!(should_dial_for_peer("a", "b", false, &[routed], Some(now - 60_000), now));
+    }
+
+    // ---- M3-b：发送顺序（按端点对齐两套链路表 + pick_link 排序）----
+
+    fn make_link(addr: &str) -> (crate::state::Link, mpsc::Receiver<Message>, mpsc::Receiver<Message>) {
+        let (b_tx, b_rx) = mpsc::channel(4);
+        let (p_tx, p_rx) = mpsc::channel(4);
+        let (cancel, _cancel_rx) = watch::channel(false);
+        (
+            crate::state::Link {
+                endpoint: addr.parse().unwrap(),
+                bulk: b_tx,
+                priority: p_tx,
+                cancel,
+            },
+            b_rx,
+            p_rx,
+        )
+    }
+
+    fn mesh_conn(peer: &str, addr: &str, healthy_at: Option<i64>) -> crate::mesh::Connection {
+        let mut c = crate::mesh::Connection::new(
+            peer,
+            crate::mesh::endpoint::Endpoint::Tcp(addr.parse().unwrap()),
+            path_kind_for(&addr.parse().unwrap()),
+        );
+        if let Some(t) = healthy_at {
+            c.health.seed_read_seen(t);
+        }
+        c
+    }
+
+    /// 单链路：顺序无变化（**行为零变化**，M3-b 的前提）。
+    #[test]
+    fn route_order_single_link_is_unchanged() {
+        let (l0, _b0, _p0) = make_link("192.168.1.20:59992");
+        let links = vec![l0];
+        let conns = vec![mesh_conn("peer", "192.168.1.20:59992", Some(1000))];
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        assert_eq!(order, vec![0]);
+    }
+
+    /// 核心（M3-b 的收益）：两条都健康时**LAN 优先**，与插入顺序无关。
+    #[test]
+    fn route_order_prefers_lan_over_routed_regardless_of_insertion() {
+        // 故意把 Routed 放在下标 0（插入在前），LAN 在下标 1
+        let (routed, _b0, _p0) = make_link("100.70.10.20:59992");
+        let (lan, _b1, _p1) = make_link("192.168.1.20:59992");
+        let links = vec![routed, lan];
+        let conns = vec![
+            mesh_conn("peer", "100.70.10.20:59992", Some(1000)),
+            mesh_conn("peer", "192.168.1.20:59992", Some(1000)),
+        ];
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        assert_eq!(order[0], 1, "应优先 LAN（下标 1），而不是插入在前的 Routed");
+        // 不变量：其余链路仍排在后面做 failover，**一条都不能丢**
+        assert_eq!(order.len(), 2);
+        assert!(order.contains(&0) && order.contains(&1));
+    }
+
+    /// failover 核心：LAN 的读活性过期（半开）而 Routed 健康 → 选 Routed。
+    #[test]
+    fn route_order_skips_unhealthy_lan_when_routed_is_healthy() {
+        let (lan, _b0, _p0) = make_link("192.168.1.20:59992");
+        let (routed, _b1, _p1) = make_link("100.70.10.20:59992");
+        let links = vec![lan, routed];
+        let conns = vec![
+            // LAN：只有很早的读活性（已过期）
+            mesh_conn("peer", "192.168.1.20:59992", Some(0)),
+            // Routed：刚刚读到过帧
+            mesh_conn("peer", "100.70.10.20:59992", Some(60_000)),
+        ];
+        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        assert_eq!(order[0], 1, "LAN 不健康时必须降级到 Routed（真 failover）");
+        assert_eq!(order.len(), 2, "不健康链路仍保留在后面（可作最后手段）");
+    }
+
+    /// 登记窗口：传输链路存在但 mesh 侧还没登记 → 合成「刚播种」候选，不能因此被判不可用。
+    #[test]
+    fn route_order_tolerates_missing_mesh_candidate() {
+        let (only, _b0, _p0) = make_link("192.168.1.20:59992");
+        let links = vec![only];
+        let order = route_order(&links, "peer", &[], 1000, 15_000, 3);
+        assert_eq!(order, vec![0], "缺候选时不得丢链路（登记窗口是常态）");
+    }
+
+    /// 全部不健康：`pick_link` 退回首条（保持可用），且顺序仍是全量排列。
+    #[test]
+    fn route_order_keeps_all_links_when_none_healthy() {
+        let (lan, _b0, _p0) = make_link("192.168.1.20:59992");
+        let (routed, _b1, _p1) = make_link("100.70.10.20:59992");
+        let links = vec![lan, routed];
+        let conns = vec![
+            mesh_conn("peer", "192.168.1.20:59992", Some(0)),
+            mesh_conn("peer", "100.70.10.20:59992", Some(0)),
+        ];
+        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        assert_eq!(order.len(), 2, "全不健康也要把链路交出去（可用性优先于择优）");
+    }
+
+    /// 空链路表 → 空顺序（调用方据此返回「未建立连接」）。
+    #[test]
+    fn route_order_empty_when_no_links() {
+        assert!(route_order(&[], "peer", &[], 1000, 15_000, 3).is_empty());
     }
 
     // ---- Hello 握手身份认证（P0 安全修复回归）----
