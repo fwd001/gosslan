@@ -143,12 +143,13 @@ pub struct MeshRouter {
     fanout: usize,
     /// 待转发帧队列（有界，§39 背压）。
     pending: RingBuffer<MeshFrame>,
-    /// 多跳 relay 开关。**默认关闭**。
-    ///
-    /// 当前 Gossip 是单跳广播（见任务文档 §7）；开启多跳会改变传播范围，属于新功能。
-    /// 关闭时 `ForwardDecision::Forward` 不被执行，行为与 Phase 5 ④a 完全一致。
-    relay_enabled: bool,
 }
+
+// ⚠️ 这里**曾经**有个 `relay_enabled` 开关（默认 false、生产从不调用）：代码里"能在"、
+// 运行时"永远不在"，是最容易误导后来者的状态（复核报告 §3 第 6 条点名过它）。
+// 自 2026-09-12（P2/M4）起，**中继授权的唯一真相是设置里的策略** `settings.relay_policy`
+// （见 `mesh/relay_policy.rs` + ADR-0016），开关式 API 与它门控的第二条转发路径已删除。
+// 将来接 BLE（第三种传输）时**不要**再引入第二份开关/转发记账。
 
 impl MeshRouter {
     pub fn new(
@@ -164,19 +165,7 @@ impl MeshRouter {
             max_ttl,
             fanout,
             pending: RingBuffer::new(pending_capacity),
-            relay_enabled: false,
         }
-    }
-
-    /// 是否启用多跳转发（默认 false）。
-    pub fn relay_enabled(&self) -> bool {
-        self.relay_enabled
-    }
-
-    /// 开关多跳转发。关闭时 `Forward` 决策不被执行 —— 这是 Phase 5 ④b 的安全阀：
-    /// 一旦多跳引发问题，关掉即可回到 ④a 的等价行为，无需回滚代码。
-    pub fn set_relay_enabled(&mut self, on: bool) {
-        self.relay_enabled = on;
     }
 
     /// 是否为首次见到的帧（并完成去重登记）。
@@ -447,7 +436,7 @@ mod tests {
 
     /// 多跳 relay 的**前提**：中继节点可以修改 TTL 而不破坏签名。
     ///
-    /// 写回递减后的 TTL 才让跨跳递减真正生效（`relay_forward` 依赖这一点）；
+    /// 写回递减后的 TTL 才让跨跳递减真正生效（`handle_gossip` 第 4 步的转发依赖这一点）；
     /// 若 TTL 参与签名，多跳就无从实现（只能每跳都用原始 TTL，等于不限界）。
     #[test]
     fn modifying_ttl_does_not_break_signature() {
@@ -480,19 +469,6 @@ mod tests {
             env.message_id, message_id_before,
             "TTL 不参与 message_id，去重键保持不变"
         );
-    }
-
-    /// 多跳 relay **默认关闭**（保持现有单跳语义，可随时开关回退）。
-    #[test]
-    fn relay_is_disabled_by_default() {
-        let r = router();
-        assert!(!r.relay_enabled(), "默认必须关闭，否则会改变传播行为");
-
-        let mut r2 = router();
-        r2.set_relay_enabled(true);
-        assert!(r2.relay_enabled());
-        r2.set_relay_enabled(false);
-        assert!(!r2.relay_enabled());
     }
 
     /// RingBuffer：容量有界，满时覆盖最旧（§39 内存上界）。

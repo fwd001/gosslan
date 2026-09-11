@@ -2926,39 +2926,6 @@ fn may_ack(inserted: &Result<bool, rusqlite::Error>) -> bool {
 ///
 /// 转发是**尽力而为**：失败可忽略。Gossip 的可靠性由 outbox / dedup 保证，
 /// 不依赖中继成功。
-async fn relay_forward(state: &Arc<AppState>, frame: &MeshFrame, inbound_peer: &str) {
-    // 载荷由 handle_gossip 在 relay 开启时填入（序列化后的 GossipEnvelope）
-    let Ok(mut env) = serde_json::from_slice::<GossipEnvelope>(&frame.payload) else {
-        return;
-    };
-    // 把 MeshRouter **递减后**的 TTL 写回信封：否则下一跳收到的仍是原始 TTL，
-    // 每跳都从原值重新开始 —— TTL 看似有界实则不限界，失去防环意义。
-    //
-    // TTL 是协议中**唯一允许中继节点修改**的字段：它既不在 `signing_bytes()`
-    // 内，也不参与 `compute_message_id()`，因此写回不会破坏签名（protocol.rs:128）。
-    env.ttl = frame.ttl;
-
-    // ① 先排除入站 peer
-    let candidates: Vec<String> = {
-        let links = state.links.lock().await;
-        links
-            .keys()
-            .filter(|k| k.as_str() != inbound_peer)
-            .cloned()
-            .collect()
-    };
-    // ② 再让 MeshRouter 排除原始源节点，并按 fanout 截断
-    let picked = {
-        let router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
-        router.select_outgoing(&candidates, &frame.source_node_id)
-    };
-
-    let msg = Message::Gossip { envelope: env };
-    for peer in picked {
-        let _ = try_send(state, peer, &msg).await;
-    }
-}
-
 async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope) {
     // Gossip 可经第三方转发，不能仅凭信封内自报的 Ed25519 公钥建立身份。
     // 公钥必须先由 Discovery/Hello 绑定到同一个 device_id；若已知 X25519
@@ -3018,57 +2985,43 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     }
     // 1. 先验签，再进入去重缓存。否则攻击者可以用伪造的唯一 message_id
     // 污染 Bloom/LRU，甚至抢先占用真实消息的 id 造成合法消息被丢弃。
-    let forward: Option<MeshFrame> = {
+    {
         let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         if !gossip.verify_envelope(&env) {
             return;
         }
         drop(gossip);
-        // Mesh 层：全局去重 + TTL 判定（§15 / §16 / §17）。
+        // Mesh 层：**全局去重 + TTL 判定**（§15 / §16 / §17）。
         //
         // 必须在**验签之后**才登记去重表，否则攻击者可用伪造的 frame_id 污染
-        // Bloom，抢先占用真实帧的 id 造成合法消息被丢弃——与上面 GossipEngine
+        // Bloom，抢先占用真实帧的 id 造成合法消息被丢弃 —— 与上面 GossipEngine
         // 的防护同理。
         //
-        // 多跳 relay 由 `MeshRouter::relay_enabled` 控制，**默认关闭**：
-        // 当前 Gossip 是单跳广播，关闭时 `Forward` 决策不执行，行为与 ④a 完全一致。
-        let fwd = {
+        // ⚠️ 这里**只判定不转发**：真正的多跳转发在下面第 4 步（`decide_forward` +
+        // `choose_fanout`）。历史上这里还有一条由 `MeshRouter::relay_enabled` 门控的
+        // 转发路径（默认关闭、生产从不调用），2026-09-12 已删除 ——
+        // **中继授权的唯一真相是 `settings.relay_policy`**（ADR-0016），
+        // 接 BLE 时不要再复制第二份转发记账。
+        {
             let mut router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
-            let relay_on = router.relay_enabled();
             let frame = MeshFrame {
                 frame_id: env.message_id.clone(),
                 source_node_id: env.sender_id.clone(),
                 destination: MeshDestination::Broadcast,
                 ttl: env.ttl,
                 kind: MeshFrameKind::Gosslan,
-                // MeshRouter 不解析载荷内容（P-A03），决策只需要元数据。
-                // 但**转发**需要完整原始信封，否则下一跳收到的是空帧 —— 这是
-                // 开启 relay 时最容易漏的一点。默认关闭时省掉这次序列化开销。
-                payload: if relay_on {
-                    serde_json::to_vec(&env).unwrap_or_default()
-                } else {
-                    Vec::new()
-                },
+                // 转发在别处做，这里只需要元数据（MeshRouter 不解析载荷，P-A03）
+                payload: Vec::new(),
             };
-            match router.on_receive(frame, &state.device_id) {
-                ForwardDecision::Drop(_) => return,
-                ForwardDecision::Forward { frame, .. } if relay_on => Some(frame),
-                _ => None,
+            if let ForwardDecision::Drop(_) = router.on_receive(frame, &state.device_id) {
+                return;
             }
-        };
+        }
         // 业务层去重（Mesh 之后的第二道防线）
         let mut gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         if !gossip.is_new(&env.message_id) {
             return;
         }
-        fwd
-    };
-    // 多跳转发（仅 relay 开启时）：把原始信封发给选中的下一跳。
-    //
-    // **必须等上面 `{}` 结束后再 await**：`std::sync::MutexGuard` 跨 await 会让
-    // future 失去 `Send`，而 `reader_loop` / `handle_incoming` 都是 `tokio::spawn` 的。
-    if let Some(f) = forward {
-        relay_forward(state, &f, peer_id).await;
     }
     // 2. 同步发送方公钥：GossipEnvelope 已携带 x25519_pubkey 用于解密，
     //    但此前未写入 peers/friends，导致后续 outbox 重发的直发 ChatMessage
@@ -3218,9 +3171,16 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         let mut fwd = env.clone();
         fwd.ttl -= 1;
         let fwd_msg = Message::Gossip { envelope: fwd };
-        for t in targets {
-            let _ = try_send(state, &t, &fwd_msg).await;
-        }
+        // ⚠️ 转发**不阻塞本连接的读循环**：`try_send` 在信道满时有界补试 500ms，
+        // 逐条 await 最坏 4 × 500ms = 2s —— 期间这条连接的后续帧（含心跳）都要排队，
+        // shutdown/取消也要等。顺序在这里无关紧要（接收侧按 msg_id 去重，而且这些
+        // 只是同一条消息发给**不同**邻居）。用一个任务串行发完：并发度不变、任务数可控。
+        let st = state.clone();
+        tokio::spawn(async move {
+            for t in targets {
+                let _ = try_send(&st, &t, &fwd_msg).await;
+            }
+        });
     }
 
     // 5. 按 GossipKind 处理
