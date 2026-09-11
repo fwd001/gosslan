@@ -15,6 +15,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# BLE GATT 后端（**可选**，见 [features] bluetooth 与 ADR-0015）。
+# 放在主 [dependencies] 而不是某个 target 段：它跨平台（CoreBluetooth / WinRT / BlueZ / Android），
+# 且因为是 optional，默认构建既不会下载也不会编译它。
+btleplug = { version = "0.13", optional = true }
+
 # tray-icon：系统托盘（关闭主窗口仅隐藏到托盘，退出走托盘菜单）
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-notification = "2"
@@ -65,6 +70,10 @@ objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
 # 默认启用自定义协议；可扩展为自定义 deep-link 唤醒
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# BLE 传输（P3 / Phase 7）：**默认关闭** —— 不开 feature 时依赖不下载、代码不编译，
+# 产物与行为与今天逐字节一致（ADR-0015 §2 的硬性约定）。
+# 引入前必须先读 docs/adr/0015-ble-transport.md（项目规矩：新依赖必须 ADR）。
+bluetooth = ["dep:btleplug"]
 
 [profile.release]
 panic = "abort"
