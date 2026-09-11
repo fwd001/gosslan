@@ -531,7 +531,7 @@ fn db_file_bytes(s: &AppState) -> u64 {
 }
 
 /// 存储占用与当前清理策略。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_cache_info(state: State<'_, Arc<AppState>>) -> CacheInfo {
     let s = state.inner();
     let policy = load_policy(s);
@@ -563,7 +563,7 @@ pub fn set_cache_policy(
 
 /// 立即执行一次清理：按保留时长 / 配额删除过期的图片与文件（含历史遗留 cache 目录），
 /// 并对数据库执行 VACUUM。**不删除聊天文字**；被清理的图片/文件在历史消息里将无法再打开。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clean_cache_now(state: State<'_, Arc<AppState>>) -> CleanupReport {
     let s = state.inner();
     let policy = load_policy(s);
@@ -1124,7 +1124,7 @@ pub fn get_conv_link(
         .cloned()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_messages(
     state: State<'_, Arc<AppState>>,
     conv_id: String,
@@ -1143,7 +1143,7 @@ pub fn get_message_count(state: State<'_, Arc<AppState>>, conv_id: String) -> i6
     db::count_messages(&dbc, &conv_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_conversations(state: State<'_, Arc<AppState>>) -> Vec<Conversation> {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_conversations(&dbc).unwrap_or_default()
@@ -2429,7 +2429,7 @@ fn decode_outgoing_image(data_url: &str) -> Result<(&'static str, Vec<u8>), Stri
 
 /// 把前端 paste 产生的 data URL 解码保存为本地文件。
 /// 仅接受 image/* 常见格式，按解码后字节数限制，返回本地路径/文件名/大小。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_outgoing_image(
     state: State<'_, Arc<AppState>>,
     data_url: String,
@@ -2884,7 +2884,7 @@ pub fn insert_system_message(state: &AppState, conv_id: &str, text: &str) {
 // ---------------- 辅助 ----------------
 
 /// 将文件从 source 复制到 destination（用于"另存为"下载功能）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn copy_file(source: String, destination: String) -> Result<(), String> {
     std::fs::copy(&source, &destination).map_err(|e| e.to_string())?;
     Ok(())
@@ -2931,7 +2931,7 @@ pub fn read_clipboard_file_paths() -> Vec<String> {
 }
 
 /// 将 base64 数据写入目标路径（用于图片消息"另存为"：前端把 dataURL 解出 base64 传回）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_data_file(base64_data: String, destination: String) -> Result<(), String> {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -3007,7 +3007,7 @@ pub fn media_present(state: State<'_, Arc<AppState>>, msg_id: String) -> Result<
 /// 或代码（→TextDecoder）。安全边界见 [`resolve_media_path`]。
 /// 超过 `max_bytes` 返回 "TOO_LARGE"，由前端回退文件卡片；文件已被清理返回
 /// "文件不存在"，由前端渲染成「已清理」占位。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_file_preview(
     state: State<'_, Arc<AppState>>,
     msg_id: String,
@@ -3036,7 +3036,7 @@ pub fn read_file_preview(
 ///
 /// `utc_offset_minutes` 由前端给出（`-new Date().getTimezoneOffset()`）：Rust 侧不引入
 /// 时区库（`AI_RULES §25`），跨夏令时切换的历史消息可能有 1 小时偏差，已在模块注释说明。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn export_chat_text(
     state: State<'_, Arc<AppState>>,
     destination: String,
@@ -3072,7 +3072,7 @@ pub fn export_chat_text(
 /// 清除所有聊天数据（保留好友、身份、设置）。
 /// SQLite 删除使用 transaction，任一失败则 rollback。
 /// 文件系统清理在 DB commit 成功后执行；文件删除失败不影响 DB 结果。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let s = state.inner();
 
@@ -3193,7 +3193,7 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
 }
 
 /// 搜索消息：返回匹配关键词的会话列表及其最新匹配消息。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_messages(
     state: State<'_, Arc<AppState>>,
     keyword: String,

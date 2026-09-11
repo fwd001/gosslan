@@ -337,6 +337,42 @@ mod tests {
         }
     }
 
+    /// 会阻塞主线程的"重"命令必须声明 `#[tauri::command(async)]`。
+    ///
+    /// 依据（读过上游源码，不是猜的）：
+    /// - `tauri-macros` 的 `body_blocking` 把命令函数**内联调用**在 IPC 处理器里；
+    ///   只有 `ExecutionContext::Async` 才走 `respond_async_serialized`（异步运行时线程）。
+    /// - wry 的 `WKScriptMessageHandler::did_receive` 在 AppKit 消息循环里同步回调
+    ///   （`wry-*/src/wkwebview/class/wry_web_view_delegate.rs`），即 **macOS 主线程**。
+    ///
+    /// 于是同步命令 = 在 UI 主线程上跑：读大文件、遍历目录、删文件、`VACUUM`
+    /// （`clean_cache_now`）、全量导出/搜索都会把整个应用卡住（不只是那一个窗口）。
+    /// 这条守门测试盯住已知的重命令，别让 `(async)` 在后续重构里被去掉。
+    #[test]
+    fn heavy_commands_run_off_the_main_thread() {
+        let src = include_str!("commands.rs");
+        // 名字 -> 为什么重（写在这里，改列表时顺手交代理由）
+        for name in [
+            "read_file_preview",   // 读磁盘（图片/文件预览，热路径）
+            "get_messages",        // 分页读库（每次切会话）
+            "get_conversations",   // 列表 + 解密最后一条
+            "search_messages",     // 全表扫描 + 解密
+            "get_cache_info",      // 目录遍历统计
+            "clean_cache_now",     // 删文件 + VACUUM（可能数秒）
+            "export_chat_text",    // 渲染 + 写盘
+            "clear_all_data",      // 递归删除
+            "save_data_file",      // base64 解码 + 写盘
+            "save_outgoing_image", // 写图片
+            "copy_file",           // 文件复制
+        ] {
+            let want = format!("#[tauri::command(async)]\npub fn {name}(");
+            assert!(
+                src.contains(&want),
+                "重命令 `{name}` 必须写成 `#[tauri::command(async)]`：同步命令会在 macOS 主线程上                 执行（wry 的 IPC 回调在 AppKit 消息循环里），读盘/遍历/删除会卡住整个应用"
+            );
+        }
+    }
+
     /// 主窗口标签在 `tray` 里还有一份（那份是 `#[cfg(desktop)]`），两边不许漂移。
     #[cfg(desktop)]
     #[test]
