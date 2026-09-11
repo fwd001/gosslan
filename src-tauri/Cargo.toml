@@ -68,6 +68,10 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSWindow", "NSView", "objc2-quartz-core"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSURL"] }
 objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
+# macOS 的 BLE **peripheral（GATT server）** 角色：btleplug 只做 central（见 ADR-0015 §3.1），
+# 而「手机与电脑不连同一个 Wi-Fi」要能互连，就必须有一侧当外设。
+# optional ⇒ 只有 `--features bluetooth` 的 macOS 构建才引入（默认构建零新增依赖，与今天一致）。
+objc2-core-bluetooth = { version = "0.3", optional = true }
 
 [features]
 # 默认启用自定义协议；可扩展为自定义 deep-link 唤醒
@@ -76,7 +80,7 @@ custom-protocol = ["tauri/custom-protocol"]
 # BLE 传输（P3 / Phase 7）：**默认关闭** —— 不开 feature 时依赖不下载、代码不编译，
 # 产物与行为与今天逐字节一致（ADR-0015 §2 的硬性约定）。
 # 引入前必须先读 docs/adr/0015-ble-transport.md（项目规矩：新依赖必须 ADR）。
-bluetooth = ["dep:btleplug", "dep:futures"]
+bluetooth = ["dep:btleplug", "dep:futures", "dep:objc2-core-bluetooth"]
 
 [profile.release]
 panic = "abort"

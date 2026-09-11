@@ -17,6 +17,8 @@
 //! 本模块整体 `#[cfg(feature = "bluetooth")]`，且即使用 feature 构建，
 //! 也要用户在设置里打开「蓝牙」（`bt_enabled`，默认关闭）才会启动 ——
 //! 局域网路径在任何情况下都不受影响。
+#[cfg(target_os = "macos")]
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,6 +36,10 @@ use crate::network::transport::{
 use crate::protocol::Message;
 use crate::state::{AppState, Link};
 use crate::transport::bluetooth::driver::{self, BleReader, BleWriter};
+#[cfg(target_os = "macos")]
+use crate::transport::bluetooth_peripheral::{
+    self as peripheral, PeripheralEvent, PeripheralWriter,
+};
 
 /// 每轮扫描的观察窗口（`btleplug` 的扫描是"持续到显式停止"，给一个窗口再收结果）。
 const SCAN_WINDOW: Duration = Duration::from_secs(3);
@@ -67,6 +73,13 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let st = state.clone();
     let task = tokio::spawn(async move { scan_loop(st, adapter, shutdown_rx).await });
+
+    // 外设角色（GATT server）：只做 central 的话，手机**永远连不上** Mac
+    // （btleplug 只能主动连，不能被连 —— ADR-0015 §3.1）。这里独立启动、
+    // 独立失败：外设起不来只影响"别人连我们"，不该把整个蓝牙开关判死。
+    #[cfg(target_os = "macos")]
+    start_peripheral(state.clone(), shutdown_tx.subscribe()).await;
+
     *state.ble.lock().unwrap_or_else(|e| e.into_inner()) = Some(BleHandle {
         shutdown: shutdown_tx,
         task,
@@ -269,6 +282,7 @@ async fn dial_and_register(
         shutdown.clone(),
         cancel_rx.clone(),
     ));
+    // ↑ 写循环泛型化：central 写 GATT 特征、外设发通知，逻辑同一份（见 `FrameSink`）
     tokio::spawn(ble_reader_loop(
         state.clone(),
         peer_id.clone(),
@@ -315,11 +329,84 @@ async fn read_one(
     }
 }
 
-async fn ble_writer_loop(
+/// 写方向的抽象：BLE central 用 [`BleWriter`]（GATT client 写特征），
+/// 外设角色用 [`PeripheralSink`]（GATT server 发通知）。
+/// 抽出来只为让「取消息 → 序列化 → 发送 → 失败即收尾」这套逻辑**只有一份**，
+/// 两个角色的差异全部收在各自的适配器里。
+#[async_trait::async_trait]
+trait FrameSink: Send {
+    async fn send_frame(&mut self, payload: &[u8]) -> Result<usize, String>;
+}
+
+#[async_trait::async_trait]
+impl FrameSink for BleWriter {
+    async fn send_frame(&mut self, payload: &[u8]) -> Result<usize, String> {
+        BleWriter::send_frame(self, payload).await
+    }
+}
+
+/// 外设侧的一条链路 = 「发通知的句柄 + 对端 central 标识」。
+#[cfg(target_os = "macos")]
+struct PeripheralSink {
+    writer: PeripheralWriter,
+    central: String,
+}
+
+#[cfg(target_os = "macos")]
+#[async_trait::async_trait]
+impl FrameSink for PeripheralSink {
+    async fn send_frame(&mut self, payload: &[u8]) -> Result<usize, String> {
+        self.writer.send_frame(&self.central, payload).await
+    }
+}
+
+/// 读方向的抽象：central 从 [`BleReader`] 取帧，外设角色从通道取帧
+/// （帧在驱动的 delegate 里就已经重组好了）。
+#[async_trait::async_trait]
+trait FrameSource: Send {
+    /// 等一条**完整帧**；`Ok(None)` = 这个窗口内没有。
+    async fn next_frame(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String>;
+    /// 回收半截消息（对端半途断连时不会永久占内存）。
+    fn gc(&mut self) -> usize;
+}
+
+#[async_trait::async_trait]
+impl FrameSource for BleReader {
+    async fn next_frame(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String> {
+        BleReader::next_frame(self, wait).await
+    }
+    fn gc(&mut self) -> usize {
+        BleReader::gc(self)
+    }
+}
+
+/// 外设侧的读方向：帧已经重组好，直接从通道拿。
+#[cfg(target_os = "macos")]
+struct ChannelSource {
+    rx: mpsc::Receiver<Vec<u8>>,
+}
+
+#[cfg(target_os = "macos")]
+#[async_trait::async_trait]
+impl FrameSource for ChannelSource {
+    async fn next_frame(&mut self, _wait: Duration) -> Result<Option<Vec<u8>>, String> {
+        // 通道关闭 = 驱动退出（对端断开 / 蓝牙被关）⇒ 当成"链路结束"而不是"暂时没数据"
+        match self.rx.recv().await {
+            Some(bytes) => Ok(Some(bytes)),
+            None => Err("外设链路已关闭".to_string()),
+        }
+    }
+    fn gc(&mut self) -> usize {
+        // 半截消息由驱动侧的 `BleReassembler`（带 30s TTL）负责回收
+        0
+    }
+}
+
+async fn ble_writer_loop<S: FrameSink + 'static>(
     state: Arc<AppState>,
     peer_id: String,
     ep: MeshEndpoint,
-    mut writer: BleWriter,
+    mut writer: S,
     mut bulk_rx: mpsc::Receiver<Message>,
     mut prio_rx: mpsc::Receiver<Message>,
     mut shutdown: watch::Receiver<bool>,
@@ -367,11 +454,11 @@ async fn ble_writer_loop(
     }
 }
 
-async fn ble_reader_loop(
+async fn ble_reader_loop<S: FrameSource + 'static>(
     state: Arc<AppState>,
     peer_id: String,
     ep: MeshEndpoint,
-    mut reader: BleReader,
+    mut reader: S,
     mut shutdown: watch::Receiver<bool>,
     mut cancel: watch::Receiver<bool>,
 ) {
@@ -403,4 +490,310 @@ async fn ble_reader_loop(
     }
     // 收尾：只拆这一条（同一 peer 可能还有 LAN 链路）
     teardown_link(&state, &peer_id, &ep).await;
+}
+
+// ===========================================================================
+//                        外设（GATT server）方向
+// ===========================================================================
+//
+// 与上面 central 方向的**唯一**区别是"谁先连谁"：
+//   * central（digits 上面那段）：我们扫 → 我们连 → 我们发 Hello → 等对端 Hello；
+//   * 外设（本段）：对端连我们 → 对端发 Hello（首帧）→ 我们验签 → **我们回 Hello**。
+// 其余全部相同：同一个 `verify_hello_for_ble`、同一个 `should_accept_inbound_public`
+// 去重判据、同一份 `Link`/`PathKind::Bluetooth` 登记、同一套冲刷序列。
+// 因此下面没有第二套身份/信任判断 —— 身份**只能**由双向 Hello 验签建立。
+
+/// 外设事件循环收到的路由控制消息（握手成功后把"往这个 central 投帧"的管道交给循环）。
+#[cfg(target_os = "macos")]
+enum RouteCtl {
+    Add {
+        central: String,
+        tx: mpsc::Sender<Vec<u8>>,
+    },
+}
+
+/// 启动外设角色。失败只记日志：能扫别人但别人连不上我们，属于**降级**而不是故障，
+/// 不该把整个蓝牙开关判为不可用（LAN 更不受影响）。
+#[cfg(target_os = "macos")]
+async fn start_peripheral(state: Arc<AppState>, shutdown: watch::Receiver<bool>) {
+    let startup = match peripheral::start() {
+        Ok(startup) => startup,
+        Err(e) => {
+            state.logger.warn(
+                "ble",
+                format!("蓝牙外设角色未启动（central 角色不受影响，仍可主动连别人）：{e}"),
+            );
+            return;
+        }
+    };
+    // 等 CoreBluetooth 上报状态：把"未授权 / 蓝牙关着 / 广播失败"变成一条**说得清**的错误。
+    // 超时不致命（系统可能只是还没上报），此时按"已启动"继续。
+    match tokio::time::timeout(peripheral::STATE_WAIT, startup.state).await {
+        Ok(Ok(Ok(()))) => state
+            .logger
+            .info("ble", "蓝牙外设角色已启动（广播服务 UUID，等待手机/PC 连入）"),
+        Ok(Ok(Err(e))) => {
+            state
+                .logger
+                .warn("ble", format!("蓝牙外设角色不可用（central 角色不受影响）：{e}"));
+            startup.server.stop();
+            return;
+        }
+        Ok(Err(_)) => {
+            state
+                .logger
+                .warn("ble", "蓝牙外设角色的状态回调通道被关闭，放弃启动");
+            startup.server.stop();
+            return;
+        }
+        Err(_) => state
+            .logger
+            .info("ble", "蓝牙外设角色已启动（未在 3s 内收到状态回调，继续广播）"),
+    }
+    tokio::spawn(peripheral_accept_loop(state, startup.server, shutdown));
+}
+
+/// 外设侧的总循环：把每个 central 的帧分派给它的链路任务，首帧走握手。
+#[cfg(target_os = "macos")]
+async fn peripheral_accept_loop(
+    state: Arc<AppState>,
+    mut server: peripheral::PeripheralServer,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    // central 标识 → 该链路的帧管道；`handshaking` 防止同一个 central 触发多次握手
+    let mut routes: HashMap<String, mpsc::Sender<Vec<u8>>> = HashMap::new();
+    let mut handshaking: HashSet<String> = HashSet::new();
+    let (route_tx, mut route_rx) = mpsc::channel::<RouteCtl>(16);
+
+    loop {
+        let ev = tokio::select! {
+            biased;
+            _ = shutdown.changed() => break,
+            Some(ctl) = route_rx.recv() => {
+                let RouteCtl::Add { central, tx } = ctl;
+                handshaking.remove(&central);
+                routes.insert(central, tx);
+                continue;
+            }
+            maybe = server.events.recv() => match maybe {
+                Some(ev) => ev,
+                None => break,
+            },
+        };
+
+        match ev {
+            PeripheralEvent::Frame { central, bytes } => {
+                // 有活路由就投递。投递失败（接收端已 drop）= 旧链路已死，
+                // 这一帧很可能正是对端**重连**后的 Hello ⇒ 落到下面的握手分支。
+                let mut pending = Some(bytes);
+                if let Some(tx) = routes.get(&central).cloned() {
+                    match tx.send(pending.take().expect("pending 刚被设置")).await {
+                        Ok(()) => continue,
+                        Err(e) => {
+                            pending = Some(e.0);
+                            routes.remove(&central);
+                            state.logger.info(
+                                "ble",
+                                format!("外设侧旧链路已失效，按重连处理 central={central}"),
+                            );
+                        }
+                    }
+                }
+                let bytes = pending.expect("未投递的帧必须还在");
+                if handshaking.insert(central.clone()) {
+                    tokio::spawn(accept_handshake(
+                        state.clone(),
+                        server.writer.clone(),
+                        central,
+                        bytes,
+                        route_tx.clone(),
+                        shutdown.clone(),
+                    ));
+                }
+            }
+            PeripheralEvent::Unlinked { central } => {
+                handshaking.remove(&central);
+                routes.remove(&central);
+                state
+                    .logger
+                    .info("ble", format!("外设侧对端取消订阅（视为断开）central={central}"));
+                let ep = MeshEndpoint::Ble(BleEndpoint::new(central));
+                detach_by_endpoint(&state, &ep).await;
+            }
+        }
+    }
+
+    server.stop();
+    state.logger.info("ble", "蓝牙外设角色已停止广播");
+}
+
+/// 按 BLE 端点摘链路（外设侧只知道 central 标识，peer_id 要反查）。
+#[cfg(target_os = "macos")]
+async fn detach_by_endpoint(state: &Arc<AppState>, ep: &MeshEndpoint) {
+    let peer = {
+        let links = state.links.lock().await;
+        links
+            .iter()
+            .find(|(_, v)| v.iter().any(|l| &l.endpoint == ep))
+            .map(|(p, _)| p.clone())
+    };
+    if let Some(peer) = peer {
+        teardown_link(state, &peer, ep).await;
+    }
+}
+
+/// 外设侧握手的外壳：失败一律**只记日志**（对端可能只是路过、或者根本不是 Gosslan 端）。
+#[cfg(target_os = "macos")]
+async fn accept_handshake(
+    state: Arc<AppState>,
+    writer: PeripheralWriter,
+    central: String,
+    first_bytes: Vec<u8>,
+    route_tx: mpsc::Sender<RouteCtl>,
+    shutdown: watch::Receiver<bool>,
+) {
+    if let Err(e) =
+        try_accept_handshake(&state, writer, &central, first_bytes, route_tx, shutdown).await
+    {
+        state
+            .logger
+            .info("ble", format!("外设侧未建链 central={central}：{e}"));
+    }
+}
+
+/// 真身：验签对端 Hello → 回我们的 Hello → 登记链路 → 起收发。
+#[cfg(target_os = "macos")]
+async fn try_accept_handshake(
+    state: &Arc<AppState>,
+    writer: PeripheralWriter,
+    central: &str,
+    first_bytes: Vec<u8>,
+    route_tx: mpsc::Sender<RouteCtl>,
+    shutdown: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let ep = MeshEndpoint::Ble(BleEndpoint::new(central.to_string()));
+
+    // ---- 1. 首帧必须是 Hello，且签名必须验过（BLE 地址不是身份）----
+    let first: Message = serde_json::from_slice(&first_bytes)
+        .map_err(|e| format!("对端首帧无法解析：{e}"))?;
+    let Message::Hello {
+        device_id,
+        tcp_port,
+        nonce,
+        sig,
+        x25519_pubkey,
+        ed25519_pubkey,
+        ..
+    } = &first
+    else {
+        return Err("对端首帧不是 Hello".to_string());
+    };
+    crate::network::transport::verify_hello_for_ble(
+        state,
+        device_id,
+        *tcp_port,
+        nonce,
+        x25519_pubkey,
+        ed25519_pubkey,
+        sig,
+    )?;
+    let peer_id = device_id.clone();
+
+    // ---- 2. 同一个 BLE 端点的旧链路让位 ----
+    // CoreBluetooth 的外设角色**没有**"central 断开"回调（只有取消订阅），
+    // 所以旧链路可能早就死了而我们还留着它；对端重新连上来时必须由新链路取代，
+    // 否则这个 central 会永远撞在 `should_accept_inbound_public` 上、彻底连不进来。
+    detach_by_endpoint(state, &ep).await;
+
+    // ---- 3. 与 TCP 入站**同一个**去重判据（不要在这里复制第二份规则）----
+    let existing = link_snapshot(state, &peer_id).await;
+    if !should_accept_inbound_public(
+        &state.device_id,
+        &peer_id,
+        PathKind::Bluetooth,
+        &existing,
+    ) {
+        return Err("已有蓝牙链路（或该 peer 链路数已满），不重复建链".to_string());
+    }
+
+    // ---- 4. 路由先就位，再回 Hello ----
+    // 对端收到我们的 Hello 后会**立刻**开始冲刷待发队列；路由早一步挂上，
+    // 那批帧才不会被"注册还没完成"的缝隙吞掉（通道有缓冲，读者随后就来）。
+    let (frame_tx, frame_rx) = mpsc::channel::<Vec<u8>>(1024);
+    route_tx
+        .send(RouteCtl::Add {
+            central: central.to_string(),
+            tx: frame_tx,
+        })
+        .await
+        .map_err(|_| "外设事件循环已退出".to_string())?;
+
+    // ---- 5. 回我们的 Hello（对端正卡在 10s 超时里等它）----
+    if shutdown.borrow().to_owned() {
+        return Err("蓝牙通道正在停止".to_string());
+    }
+    let hello = build_signed_hello(state, 0);
+    let bytes = serde_json::to_vec(&hello).map_err(|e| format!("Hello 序列化失败：{e}"))?;
+    writer
+        .send_frame(central, &bytes)
+        .await
+        .map_err(|e| format!("回 Hello 失败：{e}"))?;
+
+    // ---- 6. 登记链路（端点 = BLE central 标识，路径 = Bluetooth）----
+    let (bulk_tx, bulk_rx) = mpsc::channel(1024);
+    let (prio_tx, prio_rx) = mpsc::channel(1024);
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    state
+        .links
+        .lock()
+        .await
+        .entry(peer_id.clone())
+        .or_default()
+        .push(Link {
+            endpoint: ep.clone(),
+            path_kind: PathKind::Bluetooth,
+            bulk: bulk_tx.clone(),
+            priority: prio_tx.clone(),
+            cancel: cancel_tx,
+        });
+    register_connection(state, &peer_id, ep.clone(), PathKind::Bluetooth);
+    state.logger.info(
+        "ble",
+        format!("+ble-link(外设) peer={peer_id} ep={ep}（双向 Hello 已验签）"),
+    );
+
+    // 对端 Hello 交给统一处理路径：写身份 + 双公钥、对齐会话时钟、冲刷待发队列
+    handle_message(state, &peer_id, first).await;
+
+    tokio::spawn(ble_writer_loop(
+        state.clone(),
+        peer_id.clone(),
+        ep.clone(),
+        PeripheralSink {
+            writer,
+            central: central.to_string(),
+        },
+        bulk_rx,
+        prio_rx,
+        shutdown.clone(),
+        cancel_rx.clone(),
+    ));
+    tokio::spawn(ble_reader_loop(
+        state.clone(),
+        peer_id.clone(),
+        ep.clone(),
+        ChannelSource { rx: frame_rx },
+        shutdown,
+        cancel_rx,
+    ));
+
+    // 建链即冲一次待发队列（与 central / TCP 拨号成功后的序列完全一致）
+    flush_outbox(state, &peer_id).await;
+    flush_group_outbox(state, &peer_id).await;
+    flush_pending_reads(state, &peer_id).await;
+    flush_pending_group_reads(state, &peer_id).await;
+    flush_pending_group_keys(state, &peer_id).await;
+    crate::commands::flush_pending_files(state, &peer_id).await;
+    crate::commands::flush_pending_group_files(state, &peer_id).await;
+    Ok(())
 }

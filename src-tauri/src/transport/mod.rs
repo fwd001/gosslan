@@ -11,6 +11,9 @@
 
 pub mod ble_framing;
 pub mod bluetooth;
+// BLE 外设（GATT server）角色：只有 macOS + `--features bluetooth` 才编译。
+#[cfg(all(feature = "bluetooth", target_os = "macos"))]
+pub mod bluetooth_peripheral;
 pub mod lan;
 pub mod tcp;
 
