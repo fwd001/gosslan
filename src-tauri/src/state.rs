@@ -619,7 +619,13 @@ impl AppState {
             gossip: Mutex::new(GossipEngine::new(100_000, 10_000, 4, 6)),
             // max_ttl / fanout 与 GossipEngine 对齐（6 / 4），保证行为一致。
             // health_timeout 10s（约两个心跳周期）、max_failures 3
-            peer_manager: Mutex::new(PeerManager::new(10_000, 3)),
+            // 健康超时 = 3 × 心跳周期（心跳在 `network::transport` 每 5s 一次）。
+            // ⚠️ 不要退回 10_000：那**恰好等于 2 个心跳周期**，丢一拍就到边界、
+            // 丢两拍即判不健康（判据是闭区间 `<=`），网络抖动会被误报成链路故障。
+            // 上限受 `RELAY_PEER_TIMEOUT_SECS = 45s` 约束（跨跳节点无直连，
+            // 只靠 10s 一轮的 Presence 保活），15s 留足余量且远小于 45s。
+            // 不变量由 `mesh::manager::tests::health_timeout_outlives_three_heartbeats` 守住。
+            peer_manager: Mutex::new(PeerManager::new(15_000, 3)),
             mesh_router: Mutex::new(MeshRouter::new(100_000, 10_000, 6, 4, 256)),
             relay: Mutex::new(RelayManager::new()),
             group_keys: Mutex::new(HashMap::new()),

@@ -295,4 +295,28 @@ mod tests {
         // 空字段被补齐
         assert_eq!(peer.identity.ed25519_public_key.as_deref(), Some("e2"));
     }
+
+    /// 不变量：健康超时必须**明显大于**心跳周期 —— 判据是闭区间 `<=`，
+    /// 恰好 2 个周期时没有任何余量，丢一拍心跳就足以把正常链路判成不健康。
+    ///
+    /// 护栏是复核时补的：生产值曾是 10_000ms、心跳 5s ⇒ 容错**恰好一拍**；
+    /// 叠加当时「心跳串行发送」（已修）会把网络抖动放大成链路故障。
+    /// 上限受 `RELAY_PEER_TIMEOUT_SECS = 45s` 约束（跨跳节点没有直连链路，
+    /// 只靠 10s 一轮的 Presence 保活），故落在 3~9 个心跳周期之间。
+    #[test]
+    fn health_timeout_outlives_three_heartbeats() {
+        use crate::network::transport::HEARTBEAT_INTERVAL_SECS;
+        let health_ms = 15_000i64; // 生产值，与 state.rs 的 PeerManager::new 保持一致
+        let beats = health_ms / (HEARTBEAT_INTERVAL_SECS as i64 * 1000);
+        assert!(
+            beats >= 3,
+            "健康超时 {health_ms}ms 只覆盖 {beats} 个心跳周期（{HEARTBEAT_INTERVAL_SECS}s）—— \
+             少于 3 个会让偶发丢拍被判成链路故障"
+        );
+        assert!(
+            health_ms < crate::protocol::RELAY_PEER_TIMEOUT_SECS * 1000,
+            "健康超时不应达到跨跳节点超时（{}s）：跨跳节点没有直连链路",
+            crate::protocol::RELAY_PEER_TIMEOUT_SECS
+        );
+    }
 }

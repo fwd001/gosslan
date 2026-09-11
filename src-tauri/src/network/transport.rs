@@ -79,28 +79,72 @@ fn is_bulk_message(msg: &Message) -> bool {
     )
 }
 
+/// `try_send` 第一轮全部遇到「信道满」时的**有界**补试时长。
+///
+/// 之所以不是直接 `Err`：信道满只说明对端这一拍消费不过来（writer 正在写 TCP），
+/// 短暂等待通常能成功，直接失败会让上层误判「发送失败」。
+/// 之所以有界：无界等待会在对端僵死时**永久挂起**调用方（复核确认的真实缺陷）。
+const SEND_QUEUE_FULL_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// 尝试通过已建立连接发送消息；无连接则返回 Err。
+///
+/// 一个 peer 可能有多条连接（LAN + Tailscale + BLE）：**依次尝试**。
+/// 某条连接已断（channel 关闭 → send 失败）就自动换下一条 —— 这是连接级 failover。
+/// 任一连接成功即返回，所以消息仍然只发出一次（单连接场景下与改造前等价）。
+///
+/// ## 为什么先快照 Sender 再发送（而不是持锁发送）
+///
+/// `state.links` 是**全局**连接表：建链登记、读循环清理、`has_link`/`ensure_link`、
+/// 心跳、所有 peer 的发送都要拿它。原先这里在**持锁**状态下 `tx.send(..).await` ——
+/// mpsc 容量有限（1024），一条拥塞/僵死的链路会让 `send` **挂起**（而不是返回 Err），
+/// 于是：① 整张连接表被锁住，别人的建链/清理/发送全部阻塞；② 本函数的「换下一条」
+/// 永远走不到（只有 channel **关闭**才返回 Err）。
+/// 快照只克隆 `mpsc::Sender`（廉价、可 clone），锁在 await 之前就释放。
+///
+/// ## 两轮发送（复核确认的 High 缺陷的修法）
+///
+/// 第一轮**全部用非阻塞 `try_send`**：`Closed` / `Full` 都只意味着「这一条现在不行」，
+/// 立刻换下一条。这样「信道满」也能触发 failover —— 原实现只有 `Closed` 才换。
+/// 若所有链路都满（对端普遍消费不过来），才对**第一条满的**做一次有界补试
+/// （`SEND_QUEUE_FULL_TIMEOUT`），超时即返回 Err，**绝不无限挂起**。
+/// 注意：`Err` 不代表消息丢了 —— 单聊消息在 `send_message` 里已先入 outbox，
+/// 由 Hello/心跳触发 `flush_outbox` 补发（这是既有契约）。
 pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<(), String> {
-    // 一个 peer 可能有多条连接（LAN + Tailscale + BLE）：**依次尝试**。
-    // 某条连接已断（channel 关闭 → send 失败）就自动换下一条 —— 这是连接级 failover。
-    // 任一连接成功即返回，所以消息仍然只发出一次（单连接场景下与改造前等价）。
-    let links = state.links.lock().await;
-    let list = match links.get(peer_id) {
-        Some(l) if !l.is_empty() => l,
-        _ => return Err("未建立连接".to_string()),
+    // 锁作用域内只做「取 + 克隆」，不 await。
+    let senders: Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)> = {
+        let links = state.links.lock().await;
+        match links.get(peer_id) {
+            Some(l) if !l.is_empty() => l.iter().map(|l| (l.bulk.clone(), l.priority.clone())).collect(),
+            _ => return Err("未建立连接".to_string()),
+        }
     };
 
+    let bulk = is_bulk_message(msg);
     let mut last_err = "未建立连接".to_string();
-    for link in list {
-        let tx = if is_bulk_message(msg) {
-            &link.bulk
-        } else {
-            &link.priority
-        };
-        match tx.send(msg.clone()).await {
+    let mut first_full: Option<&mpsc::Sender<Message>> = None;
+    for (bulk_tx, prio_tx) in &senders {
+        let tx = if bulk { bulk_tx } else { prio_tx };
+        match tx.try_send(msg.clone()) {
             Ok(()) => return Ok(()),
-            Err(e) => last_err = e.to_string(),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                last_err = "连接已关闭".to_string();
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                if first_full.is_none() {
+                    first_full = Some(tx);
+                }
+            }
         }
+    }
+
+    // 第二轮：只有「所有链路都满」才会走到这里。有界补试一条，避免既不 failover
+    // 又永久挂起。
+    if let Some(tx) = first_full {
+        return match tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone())).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("发送队列已满（对端消费不过来）".to_string()),
+        };
     }
     Err(last_err)
 }
@@ -110,23 +154,30 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
     let msg = Message::Gossip {
         envelope: envelope.clone(),
     };
-    let links = state.links.lock().await;
 
-    // 出站目标经 MeshRouter 裁决（§18 source exclusion）。
-    //
-    // 这里刻意用 `exclude_source` 而**不是** `select_outgoing`：后者带 fanout 截断，
-    // 只适用于**转发**（§20 控制风暴）。源发必须覆盖所有直连节点，一旦截断，
-    // 连接数超过 fanout 的节点就会收不到 —— 群消息静默漏发。
-    let candidates: Vec<String> = links.keys().cloned().collect();
-    let picked = {
-        let router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
-        router.exclude_source(&candidates, &envelope.sender_id)
+    // 与 `try_send` 同理：锁内只做决策 + 克隆 Sender，发送一律在锁外。
+    // 原来在持有 `links` 锁时 `send().await`，一条拥塞链路会锁死整张连接表。
+    let targets: Vec<mpsc::Sender<Message>> = {
+        let links = state.links.lock().await;
+        // 出站目标经 MeshRouter 裁决（§18 source exclusion）。
+        //
+        // 这里刻意用 `exclude_source` 而**不是** `select_outgoing`：后者带 fanout 截断，
+        // 只适用于**转发**（§20 控制风暴）。源发必须覆盖所有直连节点，一旦截断，
+        // 连接数超过 fanout 的节点就会收不到 —— 群消息静默漏发。
+        let candidates: Vec<String> = links.keys().cloned().collect();
+        let picked = {
+            let router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
+            router.exclude_source(&candidates, &envelope.sender_id)
+        };
+        // 每个 peer 仍取第一条（M3-d 才改为按策略选路），但只克隆 Sender。
+        picked
+            .iter()
+            .filter_map(|peer| links.get(*peer).and_then(|v| v.first()).map(|l| l.priority.clone()))
+            .collect()
     };
 
-    for peer in picked {
-        if let Some(link) = links.get(peer).and_then(|v| v.first()) {
-            let _ = link.priority.send(msg.clone()).await;
-        }
+    for tx in &targets {
+        let _ = tx.send(msg.clone()).await;
     }
 }
 
@@ -241,16 +292,44 @@ pub async fn spawn(
     let heartbeat_task = tokio::spawn(async move {
         let state = state_for_heartbeat;
         let mut shutdown = shutdown_for_heartbeat;
-        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        let mut tick = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // 拥塞告警限频（心跳每 5s 一轮，不限频会把日志刷满）。
+        let mut last_congestion_warn = std::time::Instant::now() - Duration::from_secs(60);
         loop {
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
                 _ = tick.tick() => {
-                    let links = state.links.lock().await;
-                    for link in links.values().flatten() {
-                        let _ = link.priority.send(Message::Heartbeat { device_id: state.device_id.clone() }).await;
+                    // 与 `try_send`/`broadcast_gossip` 同理：心跳每 5s 给**每条**链路发一次，
+                    // 若持 `links` 锁 await，一条拥塞链路会把整张连接表连同心跳一起卡住。
+                    // 锁内只克隆 Sender。
+                    let txs: Vec<mpsc::Sender<Message>> = {
+                        let links = state.links.lock().await;
+                        links.values().flatten().map(|l| l.priority.clone()).collect()
+                    };
+                    let hb = Message::Heartbeat { device_id: state.device_id.clone() };
+                    let mut congested = 0usize;
+                    for tx in &txs {
+                        // **非阻塞**发送：心跳是"可丢弃"的活性信号，不值得为它排队等待。
+                        // 复核发现的原实现缺陷：串行 `send().await` ⇒ 一条满信道会**推迟
+                        // 给其后所有链路的心跳**，对端读活性随之过期，被判成"不健康"
+                        // —— 一条拥塞链路能伪造出全网链路故障。
+                        if tx.try_send(hb.clone()).is_err() {
+                            congested += 1;
+                        }
+                    }
+                    // 拥塞是"可能出错"的关键状态跃迁：限频记录（30s 一次），
+                    // 否则每 5s 一条会把日志刷满（logging 规范：只记可能出错的）。
+                    if congested > 0 && last_congestion_warn.elapsed() >= Duration::from_secs(30) {
+                        last_congestion_warn = std::time::Instant::now();
+                        state.logger.warn(
+                            "mesh",
+                            format!(
+                                "heartbeat 丢弃 {congested}/{} 条 —— 发送队列已满（对端消费不过来）",
+                                txs.len()
+                            ),
+                        );
                     }
                 }
             }
@@ -900,7 +979,15 @@ fn register_connection(state: &AppState, peer_id: &str, endpoint: std::net::Sock
     let now = db::now_ms();
     // M3-0b：建链播种的是**读**活性（"刚建好就算活"），此后只由 `reader_loop` 刷新。
     // 若这里改成写活性，半开链路会重新变成永久健康。
-    pm.seed_connection_read_seen(peer_id, &MeshEndpoint::Tcp(endpoint), now);
+    //
+    // ⚠️ **只在真的是新连接时播种**（`is_new_connection`）。
+    // 复核发现的原实现缺陷：无条件播种 ⇒ 同一个端点在握手/重连路径上被再次
+    // `register_connection` 时，一条**已经死掉**（读活性过期）的 Connection 会被
+    // 重新"续命"一个完整超时窗口；更糟的是刚播种的 LAN 链路（可能已是半开）
+    // 会在该窗口内**压过一条真正健康的 Routed 链路**（选路按 LAN > Routed 排序）。
+    if outcome.is_new_connection {
+        pm.seed_connection_read_seen(peer_id, &MeshEndpoint::Tcp(endpoint), now);
+    }
     // `online` 是 mesh 健康信号**在生产路径**唯一的外部可观测点：`ConnectionHealth` 是内存态，
     // 没有它就只能靠读代码相信「信号接上了」（这正是 M3-0 之前的状态）。
     let online = pm.online_state(peer_id, now) == PeerOnlineState::Online;
@@ -1010,6 +1097,10 @@ mod mesh_sync_tests {
 /// 其他节点迟迟不出现）。Routed 拨号同样受影响。
 ///
 /// 5s 远大于正常握手（同链路 <1ms；Tailscale 直连或经中继通常 <2s），只用于截断黑洞。
+/// 心跳周期（秒）。**健康超时必须 ≥ 3 个周期**，见 `state.rs` 里
+/// `PeerManager::new(15_000, 3)` 附近的说明与不变量测试；改这里要同步那个值。
+pub const HEARTBEAT_INTERVAL_SECS: u64 = 5;
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 主动拨号时等待对端回发 Hello 的上限 —— **只有「身份未知」的 Routed 端点会等**
