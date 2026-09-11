@@ -1,6 +1,7 @@
 # ADR-0015: BLE Transport（Phase 7 / P3）
 
 - Status: Proposed（**待用户审核**；实现按 feature 门推进，默认关闭）
+- 进度：7-a/7-b/7-c 完成；7-e 完成"驱动 + 编译/单测验证"，接线与真机待做；7-d 待设计
 - Date: 2026-09-12
 - Owners: Gosslan
 - Related:
@@ -77,8 +78,14 @@ BLE 的价值正在这里：它**不依赖 IP 网段**，天然满足"零配置�
 
 | 步 | 内容 | 验收 |
 |---|---|---|
-| 7-a | 本 ADR + `bluetooth` feature 门骨架（`btleplug` 可选依赖） | 不开 feature 时 `cargo test --lib`/E2E 与今天一致 |
-| 7-b | 收发适配器（分片/重组/流控/MTU），与 `transport/tcp.rs` 同构 | 单测：分片往返、乱序/丢片、超长拒绝 |
-| 7-c | `Link.path_kind` 显式携带 + `Endpoint` 抽象（含 `has_lan_path`/选路/拨号判据迁移） | 单测：LAN/Routed/BLE 三态；私有段 Routed 不再被判成 LAN |
-| 7-d | `BleDiscovery` 产出 `PeerCandidate`（发现 ≠ 建连） | 单测：候选不建连接 |
-| 7-e | BLE 通道完成双向 Hello 验签 + 一条单聊消息 | **真机**：macOS ↔ macOS，然后 macOS ↔ Windows，最后 Android 接入 |
+| 7-a | 本 ADR + `bluetooth` feature 门骨架（`btleplug` 可选依赖） | ✅ `fe0d4a2`，默认构建不含 btleplug（`cargo tree` 已验证） |
+| 7-b | 收发适配器（分片/重组/流控/MTU） | ✅ 编解码 `4984156`（9 条单测：往返/乱序/重复/残缺/恶意头/在途上限/TTL）；驱动用法见 7-e |
+| 7-c | `Link.path_kind` 显式携带 + `Endpoint` 抽象 | ✅ `353a964` + `8ce2b18`：单测覆盖 LAN/Routed/BLE 三态 + "私有段 Routed 不算 LAN" + "BLE 不优先于 TCP" |
+| 7-d | `BleDiscovery` 产出 `PeerCandidate`（发现 ≠ 建连） | ⬜ 待做。**设计要点**：BLE 地址不是身份（身份只能由双向 Hello 验签建立），
+所以候选要么携带占位身份、要么扩展 `PeerCandidate` 允许"身份未知" —— 需要与 P-A01/P-A04 一起定，不能顺手塞。 |
+| 7-e | 驱动 + 接线 + 双向 Hello 验签 + 一条单聊消息 | ⚠️ **一半完成**（`cc273b5`）：`transport/bluetooth.rs::driver` 按 btleplug 0.13 真实源码实现
+（adapter / scan_peers / connect+特征校验 / send_frame 分片写 / next_frame 通知重组 / payload_mtu），
+**`cargo build --features bluetooth` 与 `cargo test --features bluetooth`（367 passed / 0 warning）
+已在本机 macOS 通过**（把 `CARGO_HOME` 指到仓库内 `src-tauri/target/cargo-home` 绕开"不能写 ~/.cargo"）。
+剩：接到 `BluetoothTransport`/`state.links`（`start` 探测 → 扫描任务 → 连接 → 登记
+`Endpoint::Ble` + `PathKind::Bluetooth` → 收发喂 `handle_message`）+ **三平台真机**。 |
