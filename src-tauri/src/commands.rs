@@ -840,10 +840,18 @@ pub async fn respond_friend_request(
         // 与 transport.rs 中 FriendAccept 接收路径的补写行为一致。
         maybe_update_friend(s, &peer_id, &name, None);
         // FriendAccept 改走 Gossip 定向：跨跳场景下 try_send 直连发不出去。
-        // 对方公钥由接收 FriendRequest 时同步记录（见 handle_gossip 的 FriendRequest 分支）。
+        // 对方公钥优先从 peers 表读（接收 FriendRequest 时已 upsert_peer 记录），
+        // friends 表兜底（maybe_update_friend 可能已持久化）。
         let target_pubkey = {
-            let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-            peers.get(&peer_id).and_then(|p| p.x25519_pubkey.clone())
+            let from_peers = {
+                let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+                peers.get(&peer_id).and_then(|p| p.x25519_pubkey.clone())
+            };
+            let from_friends = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::get_friend_x25519(&dbc, &peer_id)
+            };
+            from_peers.or(from_friends)
         };
         if let Some(target_pubkey) = target_pubkey {
             let shared = crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey)
@@ -870,6 +878,12 @@ pub async fn respond_friend_request(
             } else {
                 broadcast_gossip(s, env).await;
             }
+        } else {
+            // 缺对端公钥时**绝不静默**：本地已加好友，但回执发不出去会导致好友关系
+            // 单边成立。打日志留痕（对方 Presence 尚未到达 / 已被 sweep 清理）。
+            eprintln!(
+                "[friend] 同意好友但缺对端公钥，FriendAccept 未发送 peer={peer_id}"
+            );
         }
         s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer_id);
         let _ = s.app.emit("friend-accepted", &peer_id);

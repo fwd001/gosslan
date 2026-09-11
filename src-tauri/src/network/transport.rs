@@ -258,8 +258,11 @@ pub async fn spawn(
     let presence_task = tokio::spawn(async move {
         let state = state_for_presence;
         let mut shutdown = shutdown_for_presence;
-        // 30s 一轮：远低于聊天频率，fan-out 转发冗余可接受；足够快让新节点被发现。
-        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        // 周期必须 **≤ PEER_TIMEOUT_SECS（15s）**：跨跳节点没有直连 TCP，全靠
+        // Presence 刷新 last_seen 保活；若周期 > 15s，节点会被 sweep_peers 每 15s
+        // 清一次，在 peers 表里「出现 15s、消失 15s」—— 表现为「扫好几次才扫到」、
+        // 且加好友时拿不到对端公钥（FriendAccept 静默丢）。取 10s 留 5s 余量。
+        let mut tick = tokio::time::interval(Duration::from_secs(10));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
