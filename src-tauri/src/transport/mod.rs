@@ -9,6 +9,7 @@
 //! - **智能分流**：双通道同时开启时按流量特征分流——大负载走局域网高带宽通道，
 //!   轻量心跳 / 控制信令优先走蓝牙。
 
+pub mod ble_framing;
 pub mod bluetooth;
 pub mod lan;
 pub mod tcp;
