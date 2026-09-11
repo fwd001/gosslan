@@ -5,7 +5,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import { avatarInitial, nameToColor } from "@/utils/color";
-import { Check, UserPlus } from "lucide-vue-next";
+import { Check, UserPlus, X } from "lucide-vue-next";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -24,6 +24,42 @@ const keyword = ref("");
 const MAX_RENDER = 1000;
 
 const friendIds = computed(() => new Set(chat.friends.map((f) => f.device_id)));
+
+/**
+ * 「对方已经先申请加我」的 device_id 集合（用户需求 2026-09-12 第 18 条）。
+ *
+ * 用户原话：「当你在添加好友的时候，就是别人刚好先添加你为好友了。你在添加好友的那个界面，
+ * 那个人的名字后面应该就直接变成『同意』或者『拒绝』……你不用再关掉『添加好友』再去
+ * 『新朋友』里添加他，而是在『添加好友』界面，别人向你申请的那条搜到好友的记录，
+ * 就直接变成了可以直接通过或拒绝。你通过之后，如果加好友成功的话，那这一行就变成
+ * 已经加过好友的那种列表状态了。如果你拒绝的话，那对方也会收到拒绝信息，
+ * 这条就变成你可以再去添加。」
+ */
+const pendingFromIds = computed(() => new Set(chat.pendingRequests.map((r) => r.from)));
+
+/** 正在处理中的 device_id（防连点，避免同一申请被提交两次）。 */
+const responding = ref<Record<string, boolean>>({});
+
+async function respond(peerId: string, accept: boolean) {
+  if (responding.value[peerId]) return;
+  responding.value = { ...responding.value, [peerId]: true };
+  try {
+    await chat.respondRequest(peerId, accept);
+    // 同意 → 好友表刷新后本行自动变「已加好友」（friendIds 重算）；
+    // 拒绝 → 申请从 pendingRequests 移除后本行自动变回「加好友」可再次添加。
+    // 两者都不需要额外的本地状态。
+    app.toast(
+      accept ? t("friend.add.toast.accepted") : t("friend.add.toast.rejected"),
+      "success",
+    );
+  } catch (e) {
+    app.toastError(e, t("common.operationFail"));
+  } finally {
+    const next = { ...responding.value };
+    delete next[peerId];
+    responding.value = next;
+  }
+}
 
 const filteredPeers = computed(() => {
   const k = keyword.value.trim().toLowerCase();
@@ -119,6 +155,25 @@ async function add(peerId: string) {
           >
             <Check class="h-3.5 w-3.5" />
             {{ t("friend.add.alreadyFriend") }}
+          </span>
+          <!-- 对方已先申请加我 → 直接同意/拒绝（与「新朋友」页同一套动作） -->
+          <span v-else-if="pendingFromIds.has(p.device_id)" class="flex shrink-0 items-center gap-1.5">
+            <button
+              class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-avatar-radius)] bg-primary text-white transition hover:bg-primary-hover disabled:opacity-50"
+              :title="t('common.agree')" :aria-label="t('common.agree')"
+              :disabled="responding[p.device_id]"
+              @click="respond(p.device_id, true)"
+            >
+              <Check class="h-4 w-4" />
+            </button>
+            <button
+              class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--gosslan-border)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+              :title="t('common.reject')" :aria-label="t('common.reject')"
+              :disabled="responding[p.device_id]"
+              @click="respond(p.device_id, false)"
+            >
+              <X class="h-4 w-4" />
+            </button>
           </span>
           <button
             v-else-if="inCooldown(p.device_id)"
