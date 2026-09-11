@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api } from "@/api";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import { formatBytes } from "@/utils/format";
-import { Download, FolderOpen, Trash2 } from "lucide-vue-next";
+import { Download, Trash2 } from "lucide-vue-next";
 import { t } from "@/i18n";
 import type { CacheInfo } from "@/types";
 
@@ -21,8 +21,6 @@ const maxQuotaMb = ref(0);
 const cleaning = ref(false);
 /** 导出进行中（读库 + 渲染可能耗时，期间禁用按钮防重复触发）。 */
 const exporting = ref(false);
-/** 文件接收目录（接收的图片/文件落盘于此，未手动另存前都在这里）。 */
-const downloadsDir = ref("");
 
 /** 回显赋值不应触发「改动即保存」。 */
 let suppressAutoSave = false;
@@ -49,34 +47,6 @@ async function loadCache() {
   maxQuotaMb.value = Math.round((cacheInfo.value?.max_bytes ?? 0) / 1048576);
   // 等 watch 同步跳过这一轮由「回显赋值」触发的回调
   setTimeout(() => (suppressAutoSave = false), 0);
-}
-
-async function loadDownloadsDir() {
-  try {
-    downloadsDir.value = await api.getDownloadsDir();
-  } catch {
-    downloadsDir.value = "";
-  }
-}
-
-async function changeDownloadsDir() {
-  const picked = await openDialog({ directory: true });
-  if (typeof picked !== "string") return;
-  try {
-    await api.setDownloadsDir(picked);
-    downloadsDir.value = picked;
-    app.toast(t("settings.storage.toast.dirUpdated"), "success");
-  } catch (e) {
-    app.toastError(e, t("settings.storage.toast.dirFail"));
-  }
-}
-
-async function openDownloadsDir() {
-  try {
-    await api.openDownloadsDir();
-  } catch (e) {
-    app.toastError(e, t("settings.storage.toast.openFail"));
-  }
 }
 
 watch([retentionDays, maxQuotaMb], (_nv, ov) => {
@@ -189,10 +159,7 @@ async function cleanNow() {
 watch(
   () => [props.active, props.reloadToken],
   () => {
-    if (props.active) {
-      void loadCache();
-      void loadDownloadsDir();
-    }
+    if (props.active) void loadCache();
   },
   { immediate: true },
 );
@@ -226,33 +193,6 @@ watch(
           <option v-for="q in quotaOptions" :key="q.value" :value="q.value">{{ t(q.label) }}</option>
         </select>
       </span>
-    </SettingsRow>
-
-    <SettingsRow
-      :label="t('settings.storage.dir')"
-      :description="t('settings.storage.dir.desc')"
-    >
-      <div class="flex min-w-0 flex-col items-end gap-1">
-        <span class="max-w-[240px] truncate text-[11px] text-[var(--gosslan-text-2)]" :title="downloadsDir || t('settings.storage.dir.default')">
-          {{ downloadsDir || t("settings.storage.dir.default") }}
-        </span>
-        <div class="flex items-center gap-1.5">
-          <button
-            class="flex items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-xs transition hover:bg-[var(--gosslan-hover)]"
-            :title="t('settings.storage.dir.open.title')"
-            @click="openDownloadsDir"
-          >
-            <FolderOpen class="h-3.5 w-3.5" />
-            {{ t("settings.storage.dir.open") }}
-          </button>
-          <button
-            class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-xs transition hover:bg-[var(--gosslan-hover)]"
-            @click="changeDownloadsDir"
-          >
-            {{ t("settings.storage.dir.change") }}
-          </button>
-        </div>
-      </div>
     </SettingsRow>
 
     <SettingsRow

@@ -8,6 +8,8 @@ import ProfileSection from "@/components/settings/ProfileSection.vue";
 import AppearanceSection from "@/components/settings/AppearanceSection.vue";
 import ChatStyleSection from "@/components/settings/ChatStyleSection.vue";
 import GeneralSection from "@/components/settings/GeneralSection.vue";
+import NotificationSection from "@/components/settings/NotificationSection.vue";
+import FilesSection from "@/components/settings/FilesSection.vue";
 import NetworkSection from "@/components/settings/NetworkSection.vue";
 import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
@@ -56,11 +58,17 @@ const devDiagOpen = ref(false);
       <span class="text-[15px] font-medium text-[var(--gosslan-text)]">{{ t("settings.title") }}</span>
     </header>
     <div class="min-h-0 flex-1 space-y-5 overflow-y-auto overflow-x-hidden p-4">
+      <!-- 顺序按 iOS 设置的概念：个人资料 → 通用 → 通知 → 外观 → 网络与连接 →
+           文件与共享 → 存储 → 隐私与安全 → 关于；**还原/清除数据放页面最底部**
+           （移动端整页里破坏性操作不该出现在中部；桌面分栏里它属于「通用」，
+           见 `SettingsWindow.vue`）。 -->
       <ProfileSection :active="open" :reload-token="reloadToken" />
+      <GeneralSection />
+      <NotificationSection />
       <AppearanceSection />
       <ChatStyleSection />
-      <GeneralSection />
       <NetworkSection :active="open" :reload-token="reloadToken" />
+      <FilesSection :active="open" :reload-token="reloadToken" />
       <StorageSection :active="open" :reload-token="reloadToken" />
       <SecuritySection />
       <AboutSection @dev-open="devDiagOpen = true" />
@@ -72,10 +80,12 @@ const devDiagOpen = ref(false);
   <BaseModal v-else :open="open" :title="t('settings.title')" width="max-w-xl" @close="emit('close')">
     <div class="-mx-5 -mb-5 max-h-[75vh] space-y-5 overflow-y-auto overflow-x-hidden rounded-b-[var(--gosslan-radius-xl)] bg-[var(--gosslan-bg)] p-5">
       <ProfileSection :active="open" :reload-token="reloadToken" />
+      <GeneralSection />
+      <NotificationSection />
       <AppearanceSection />
       <ChatStyleSection />
-      <GeneralSection />
       <NetworkSection :active="open" :reload-token="reloadToken" />
+      <FilesSection :active="open" :reload-token="reloadToken" />
       <StorageSection :active="open" :reload-token="reloadToken" />
       <SecuritySection />
       <AboutSection @dev-open="devDiagOpen = true" />

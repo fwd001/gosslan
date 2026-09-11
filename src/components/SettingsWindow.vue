@@ -16,15 +16,26 @@ import ProfileSection from "@/components/settings/ProfileSection.vue";
 import AppearanceSection from "@/components/settings/AppearanceSection.vue";
 import ChatStyleSection from "@/components/settings/ChatStyleSection.vue";
 import GeneralSection from "@/components/settings/GeneralSection.vue";
+import NotificationSection from "@/components/settings/NotificationSection.vue";
+import FilesSection from "@/components/settings/FilesSection.vue";
 import NetworkSection from "@/components/settings/NetworkSection.vue";
 import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
-import { UserRound, Palette, SlidersHorizontal, Wifi, HardDrive, Lock, Info } from "lucide-vue-next";
+import { UserRound, Palette, SlidersHorizontal, Wifi, HardDrive, Lock, Info, Bell, FolderOpen } from "lucide-vue-next";
 import { t } from "@/i18n";
 
-type SectionKey = "profile" | "appearance" | "general" | "network" | "storage" | "security" | "about";
+type SectionKey =
+  | "profile"
+  | "general"
+  | "notifications"
+  | "appearance"
+  | "network"
+  | "files"
+  | "storage"
+  | "security"
+  | "about";
 
 const section = ref<SectionKey>("profile");
 /** 各分区按需加载：恢复默认等改动后 bump 令牌触发重载（与 SettingsPanel 同一套语义）。 */
@@ -32,11 +43,24 @@ const reloadToken = ref(0);
 const devDiagOpen = ref(false);
 
 /** 导航项：图标 + 文案。`icon` 用组件引用，避免在模板里写一长串 v-if。 */
+/**
+ * 导航项按 **iOS 设置的概念**排序（2026-09-12 用户反馈「分类不合理」后重排）：
+ * 个人资料 → 通用 → 通知 → 外观 → 网络与连接 → 文件与共享 → 存储 → 隐私与安全 → 关于。
+ *
+ * ⚠️ 教训：导航项的**标签必须与它打开的分区内容一致**。此前 `general` 这一项
+ * 写着「通知」，点开却是「语言 + 通知 + 共享目录」—— 用户看到"通知里第一项是语言、
+ * 第三项是共享目录"，这就是分类错误。现在每一项只放它字面意思里的东西：
+ *   · 通用（iOS「通用」）＝ 语言与地区 + 还原；
+ *   · 通知（iOS「通知」）＝ 允许通知 + 显示预览（消息正文）；
+ *   · 文件与共享 ＝ 接收文件目录 + 共享目录（都是"文件放哪儿/给谁看"）。
+ */
 const navItems = computed<{ key: SectionKey; label: string; icon: unknown }[]>(() => [
   { key: "profile", label: t("settings.group.profile"), icon: UserRound },
+  { key: "general", label: t("settings.group.general"), icon: SlidersHorizontal },
+  { key: "notifications", label: t("settings.group.notifications"), icon: Bell },
   { key: "appearance", label: t("settings.group.appearance"), icon: Palette },
-  { key: "general", label: t("settings.group.notifications"), icon: SlidersHorizontal },
   { key: "network", label: t("settings.group.network"), icon: Wifi },
+  { key: "files", label: t("settings.group.files"), icon: FolderOpen },
   { key: "storage", label: t("settings.group.storage"), icon: HardDrive },
   { key: "security", label: t("settings.group.security"), icon: Lock },
   { key: "about", label: t("settings.group.about"), icon: Info },
@@ -87,13 +111,20 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         <AppearanceSection />
         <ChatStyleSection />
       </div>
-      <GeneralSection v-else-if="section === 'general'" />
+      <!-- iOS 的「通用」里同时有「语言与地区」与「还原」⇒ 这里把 ResetSection 一起放在本分区 -->
+      <div v-else-if="section === 'general'" class="space-y-5">
+        <GeneralSection />
+        <ResetSection @restored="reloadToken++" />
+      </div>
+      <NotificationSection v-else-if="section === 'notifications'" />
+      <FilesSection v-else-if="section === 'files'" :active="true" :reload-token="reloadToken" />
       <NetworkSection v-else-if="section === 'network'" :active="true" :reload-token="reloadToken" />
       <StorageSection v-else-if="section === 'storage'" :active="true" :reload-token="reloadToken" />
       <SecuritySection v-else-if="section === 'security'" />
-      <div v-else class="space-y-5">
+      <!-- 显式写 about 分支（不用兜底 v-else）：`SectionKey` 是闭合联合，且静态守卫要求
+           「每个导航项都有可被检索到的渲染分支」，兜底分支会让守卫漏检 -->
+      <div v-else-if="section === 'about'" class="space-y-5">
         <AboutSection @dev-open="devDiagOpen = true" />
-        <ResetSection @restored="reloadToken++" />
       </div>
     </div>
 
