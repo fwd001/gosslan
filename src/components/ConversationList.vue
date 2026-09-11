@@ -257,16 +257,28 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           @open="openConv"
           @ask-delete="onAskDeleteConv"
         />
+        <!-- 空态（用户需求 #7）：「兜底的界面，也不一定是要加好友。如果有好友的情况下，
+             就会有一个『发起聊天』，然后去选好友。如果一个好友都没有的话，就是发现好友。」
+             ⇒ 有好友时主行动 = 发起聊天（切到通讯录选人），另有次行动 = 发现好友；
+                一个好友都没有时主行动 = 发现好友（去搜索添加）。
+             搜索无结果时不给这些（那是"换个词"的场景，不是"没人"）。 -->
         <div v-if="filtered.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
           <span>{{ keyword.trim() ? t("conv.noMatchConv") : t("conv.noConversation") }}</span>
-          <!-- 空态给下一步：新用户在这里直接能去加人（搜索无结果时不给，那是"换个词"的场景） -->
-          <button
-            v-if="!keyword.trim()"
-            class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="emit('open-add-friend')"
-          >
-            {{ t("common.addFriend") }}
-          </button>
+          <template v-if="!keyword.trim()">
+            <button
+              v-if="chat.friends.length"
+              class="rounded-[var(--gosslan-radius-md)] bg-primary px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
+              @click="emit('update:view', 'contacts')"
+            >
+              {{ t("conv.startChat") }}
+            </button>
+            <button
+              class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+              @click="emit('open-add-friend')"
+            >
+              {{ t("conv.discoverFriends") }}
+            </button>
+          </template>
         </div>
       </template>
 
@@ -315,6 +327,21 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         </div>
       </template>
     </div>
+
+    <!-- 聊天列表常驻「发现好友」入口（用户需求 #8：「有好友的情况下也可以发现，也应该有
+         『发现好友』这个功能，就是在聊天列表」）。
+         放在滚动区**之外**做成固定页脚，而不是混在会话行里：会话一多它就滚走了，
+         等于没有入口。常驻可见，且不干扰会话列表的排序与滚动位置。
+         高度 44px：桌面端与移动端都是可点尺寸（`tap-safe` 再兜一层触屏命中区）。 -->
+    <button
+      v-if="view === 'chats'"
+      class="tap-safe flex h-11 shrink-0 items-center justify-center gap-2 border-t border-[var(--gosslan-divider)] text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)] hover:text-[var(--gosslan-text)]"
+      :title="t('conv.discoverFriends')"
+      @click="emit('open-add-friend')"
+    >
+      <UserPlus class="h-4 w-4" />
+      {{ t("conv.discoverFriends") }}
+    </button>
 
     <FriendContextMenu
       v-if="friendMenu"
