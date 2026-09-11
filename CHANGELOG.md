@@ -10,6 +10,15 @@
 
 ## [Unreleased]
 
+### Fixed (7 处输入框的焦点环被 `outline-none` 静默盖掉 + 护栏 ⑦)
+- **全局焦点环其实一条都没生效**：`style.css` 的焦点环写在 `:where(button, a, input, textarea, select, [tabindex], [contenteditable]):focus-visible` 里，而 `:where()` 让整条选择器**特异性变成 0**；Tailwind 的 `.outline-none`（`outline: 2px solid transparent; outline-offset: 2px`）是 0,1,0 ⇒ **只要元素带 `outline-none`，焦点环必定被覆盖**（透明 2px = 看不见）。源码注释里"必须包含 `[contenteditable]`，否则消息输入框看不到焦点"的**本意是对的，但因为特异性加了也不生效**（`754167b`）。
+- **修掉 7 处**（全是 `outline-none` 且无替代指示）：`MessageComposer`（最高频的消息输入框）、`ConversationList` 搜索、`LogViewer` 搜索、`ChatSearchDialog` 搜索、`GroupCreateModal` 群名、`RenameGroupModal` 群名、`AddFriendModal` 搜索 —— 统一**删掉 `outline-none`**，让项目本来就设计好的全局焦点环生效。
+- **两处合法例外显式声明**：`ContextMenu`（`role="menu" tabindex="-1"`）与 `ImageLightbox`（`role="dialog" tabindex="-1"`）的**容器**，焦点由内部条目承担，给弹出菜单/全屏遮罩画环只会变噪声 ⇒ 加 `focus-ring-ok` 文件级逃生阀并写明理由。（`style.css` 的 `.gosslan-select` 同为 `outline: none`，但自带 `.gosslan-select:focus { border-color }` 替代指示，合规。）
+- **新增静态护栏 ⑦ `findOutlineNoneWithoutFocusRing`**：带 `outline-none` 的开标签必须自带 `focus:` / `focus-visible:` 的 `ring|border|outline|bg|shadow` 之一。
+- **非空转验证**：把 `outline-none` 加回真实的消息输入框 → 全库扫描用例 FAIL 并精确指到 `MessageComposer.vue:598`；移除后全绿。
+- 验证：`npm test` **284 passed / 0 fail**（278 → 284）；`vue-tsc` 0 错误；`vite build` 通过；后端未改。
+  ⚠️ 桌面端点击这些输入框时会开始出现焦点环（`<input>` 聚焦即匹配 `:focus-visible`）—— 这是补上"设计好但没生效"的可见焦点，观感需真机确认（手册键盘验收那条已覆盖）。
+
 ### Fixed (5 处「能点但键盘够不着」的元素 + 静态护栏)
 - **`div @click` = 只有鼠标/手指能用的按钮**：触屏能用、鼠标能用，但**键盘 Tab 不到、回车没反应**，读屏软件也只念成一段普通文本 —— 与"为 iOS 上架铺路 / 去网页感"直接冲突（原生控件天生带这些语义）。用静态扫描复核出 5 处真缺陷并全修（`16d8e91`）：
   - `GroupCreateModal` 好友选择行、`GroupMemberPanel` 可添加好友行 → 改**真按钮**（前者带 `aria-pressed` 开关语义）；
