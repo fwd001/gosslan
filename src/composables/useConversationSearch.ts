@@ -1,8 +1,12 @@
 import { computed, ref, watch, type Ref } from "vue";
 import { api } from "@/api";
+import { useDeferredRef } from "@/composables/useDeferredRef";
 import type { Conversation, SearchResult } from "@/types";
 
-/** 搜索防抖时长（ms）。 */
+/** 名称过滤的延迟镜像时长（ms）：让输入框先走，列表后跟。 */
+const DEFER_MS = 120;
+
+/** 消息内容搜索的防抖时长（ms）：跨进程调用，窗口给大一些。 */
 const DEBOUNCE_MS = 300;
 
 /**
@@ -10,7 +14,16 @@ const DEBOUNCE_MS = 300;
  * 同一时刻可能有多个在途请求，只接受最新一次的结果（seq 比对）。
  */
 export function useConversationSearch(conversations: Ref<Conversation[]>) {
+  /** 绑在输入框上的**原值**：每次按键都变（DOM 立即更新，不触发任何重算）。 */
   const keyword = ref("");
+  /**
+   * 延迟镜像：过滤、空态判断、列表项高亮都用它。
+   *
+   * 为什么要有这一层：下面的 `filtered` 一变，整个会话列表（含 `v-memo` 依赖里的
+   * 关键词）就要重渲染；按住 Ctrl+V 连发粘贴时关键词每秒变十几次，重渲染把主线程
+   * 占满 ⇒ 输入框自己的 caret 掉帧。原值即时、派生延迟，输入就始终跟手。
+   */
+  const query = useDeferredRef(keyword, DEFER_MS);
   const results = ref<SearchResult[]>([]);
   const isSearching = ref(false);
 
@@ -40,7 +53,7 @@ export function useConversationSearch(conversations: Ref<Conversation[]>) {
 
   /** 名称匹配优先，其次补上内容命中的会话（去重）。 */
   const filtered = computed<Conversation[]>(() => {
-    const kw = keyword.value.trim().toLowerCase();
+    const kw = query.value.trim().toLowerCase();
     if (!kw) return conversations.value;
     const matchedIds = new Set(results.value.map((r) => r.conv_id));
     const out = conversations.value.filter((c) => c.name.toLowerCase().includes(kw));
@@ -54,7 +67,7 @@ export function useConversationSearch(conversations: Ref<Conversation[]>) {
   function snippet(convId: string): string | null {
     const r = results.value.find((x) => x.conv_id === convId);
     if (!r) return null;
-    const kw = keyword.value.trim().toLowerCase();
+    const kw = query.value.trim().toLowerCase();
     const content = r.match_content;
     const idx = content.toLowerCase().indexOf(kw);
     if (idx < 0) return content.slice(0, 60);
@@ -71,5 +84,5 @@ export function useConversationSearch(conversations: Ref<Conversation[]>) {
     return results.value.find((r) => r.conv_id === convId)?.match_msg_id ?? null;
   }
 
-  return { keyword, results, isSearching, filtered, snippet, hitMsgId };
+  return { keyword, query, results, isSearching, filtered, snippet, hitMsgId };
 }

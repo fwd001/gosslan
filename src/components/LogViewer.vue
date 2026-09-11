@@ -4,6 +4,7 @@ import { ArrowLeft, Copy, RefreshCw, Search, Trash2, X } from "lucide-vue-next";
 import { api } from "@/api";
 import { t } from "@/i18n";
 import { highlightText } from "@/utils/highlight";
+import { useDeferredRef } from "@/composables/useDeferredRef";
 import { LOG_LEVEL_TEXT, filterLogLines } from "@/utils/logFilter";
 import type { LogEntry } from "@/types";
 
@@ -33,8 +34,15 @@ function fmt(ts: number): string {
 }
 
 /** 过滤词。字面**包含**匹配（不区分大小写，不做模糊/正则）—— 见 `@/utils/logFilter`。 */
+/** 绑在过滤框上的原值（立即更新）。 */
 const filter = ref("");
-const trimmedFilter = computed(() => filter.value.trim());
+/**
+ * 延迟镜像：过滤 + 每行 4 处高亮都用它。
+ * 日志动辄上千行，`rows` 每次重算都要重建上千个 `v-html` 节点；连发粘贴时若每个
+ * 字符都算一遍，主线程会被占满 ⇒ 过滤框打字/粘贴一顿一顿（见 utils/defer.ts 说明）。
+ */
+const deferredFilter = useDeferredRef(filter);
+const trimmedFilter = computed(() => deferredFilter.value.trim());
 
 /**
  * 展示行（倒序）—— 只补上「已格式化的时间」，匹配判据完全交给 `@/utils/logFilter`。
@@ -52,7 +60,7 @@ const lines = computed(() =>
 );
 
 /** 命中过滤词的行（保持倒序）。 */
-const matched = computed(() => filterLogLines(lines.value, filter.value));
+const matched = computed(() => filterLogLines(lines.value, deferredFilter.value));
 
 /** 渲染行：命中处加高亮标记（复用会话搜索同一套 `highlightText`，视觉语言一致）。 */
 const rows = computed(() =>
@@ -258,7 +266,17 @@ const levelClass = (lv: string) =>
         {{ t("logs.filterEmpty") }}
       </div>
       <div v-else>
-        <div v-for="r in rows" :key="r.key" class="flex gap-2 rounded px-1 py-0.5 hover:bg-[var(--gosslan-hover)]">
+        <!-- `v-memo`：行内容全部来自这几个字符串（v-html 的 4 段 + 级别色），
+             所以只要它们没变就跳过 patch。两个收益：
+             ① 打字/粘贴时（过滤值走延迟镜像，这些字符串没变）每行零 patch；
+             ② 日志每 2 秒轮询刷新时，未变动的行也不重新写 innerHTML。
+             改这一行时注意：**新增任何渲染字段都要加进依赖数组**，否则该字段不刷新。 -->
+        <div
+          v-for="r in rows"
+          :key="r.key"
+          v-memo="[r.time, r.levelText, r.target, r.message, r.level]"
+          class="flex gap-2 rounded px-1 py-0.5 hover:bg-[var(--gosslan-hover)]"
+        >
           <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="r.time"></span>
           <span class="w-12 shrink-0 select-none font-semibold" :class="levelClass(r.level)" v-html="r.levelText"></span>
           <span class="min-w-0 break-all">

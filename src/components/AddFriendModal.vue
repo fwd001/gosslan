@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, ref, watch } from "vue";
+import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
@@ -14,6 +15,12 @@ const app = useAppStore();
 const chat = useChatStore();
 const loading = ref(false);
 const keyword = ref("");
+/**
+ * 延迟镜像：过滤用。
+ * 连发粘贴时关键词每秒变十几次，而每次变化都要重算并重渲染候选列表 ⇒
+ * 输入框自己的 caret 会掉帧。原值即时、列表延迟，输入就始终跟手。
+ */
+const query = useDeferredRef(keyword);
 
 // 大规模局域网（设计规模 500–1000 节点）下最多渲染多少行。
 //
@@ -62,7 +69,7 @@ async function respond(peerId: string, accept: boolean) {
 }
 
 const filteredPeers = computed(() => {
-  const k = keyword.value.trim().toLowerCase();
+  const k = query.value.trim().toLowerCase();
   const pool = k
     ? chat.peers.filter(
         (p) =>
@@ -129,6 +136,10 @@ async function add(peerId: string) {
       <input
         v-model="keyword"
         maxlength="100"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
         class="mb-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
         :placeholder="t('friend.add.searchPlaceholder')"
       />

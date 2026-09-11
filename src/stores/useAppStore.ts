@@ -4,6 +4,7 @@ import { api } from "@/api";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { applyTheme } from "@/utils/color";
 import { reportError } from "@/utils/errors";
+import { debounce } from "@/utils/defer";
 import {
   APPEARANCE_STORAGE_KEY,
   LEGACY_DARK_STORAGE_KEY,
@@ -221,6 +222,27 @@ export const useAppStore = defineStore("app", () => {
   }
 
   /**
+   * 高频写入的**去抖持久化**：视觉立即生效，落库合并到 300ms 内一次。
+   *
+   * 为什么需要：颜色选择器（`<input type="color">`）拖动时每个像素变化都发一次
+   * `input`，原实现每次都走一遍 `persistSettings()`（一个 IPC + 一条 SQLite 写）。
+   * 连发粘贴的场景里同类问题是"每次按键一次 IPC" —— 主线程被 IPC 往返占住，
+   * 输入框自己的渲染就掉帧。去抖后：拖动/连发期间只写最后一次，停手 300ms 内必落库。
+   *
+   * 读者注意：`persistSettings` 在**执行时**读当前 store 值，所以即使它与其它
+   * 直接调用交错，后写的那一次总是最新值，不会把旧值写回去。
+   */
+  const persistSoon = debounce(() => void persistSettings(), 300);
+
+  /** 窗口卸载/隐藏前把待写入的偏好落库（去抖窗口内退出也不丢最后一次改动）。 */
+  if (typeof window !== "undefined") {
+    window.addEventListener("beforeunload", () => persistSoon.flush());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") persistSoon.flush();
+    });
+  }
+
+  /**
    * 切换外观的**唯一**写入口：改模式 → 落 localStorage → 应用到 DOM → 持久化。
    * `theme-switching` 用来在变量整体翻转的那一帧禁用全站过渡（否则会看到渐变色闪一下）。
    */
@@ -269,7 +291,8 @@ export const useAppStore = defineStore("app", () => {
     themeColor.value = c;
     localStorage.setItem(THEME_KEY, c);
     applyThemeNow();
-    void persistSettings();
+    // 颜色选择器是连续输入（拖动/按住不放），持久化必须去抖；本地即时生效不受影响
+    persistSoon();
   }
 
   function setFontFamily(f: string) {

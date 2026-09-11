@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, ref } from "vue";
+import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useChatStore } from "@/stores/useChatStore";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import BaseModal from "@/components/BaseModal.vue";
@@ -17,9 +18,11 @@ const emit = defineEmits<{ (e: "close"): void; (e: "pick", convId: string): void
 
 const chat = useChatStore();
 const keyword = ref("");
+/** 延迟镜像：过滤会话列表用（连发粘贴时避免每个字符重渲染整列，见 useDeferredRef）。 */
+const query = useDeferredRef(keyword);
 
 const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase();
+  const kw = query.value.trim().toLowerCase();
   if (!kw) return chat.conversations;
   return chat.conversations.filter((c) => c.name.toLowerCase().includes(kw));
 });
@@ -41,6 +44,10 @@ const kindLabel = computed(
       <input
         v-model="keyword"
         maxlength="50"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
         :placeholder="t('msg.searchConversation')"
         class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-[var(--gosslan-primary)]"
       />

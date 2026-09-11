@@ -34,12 +34,14 @@ const emit = defineEmits<{
 const app = useAppStore();
 const chat = useChatStore();
 
-const { keyword, results, filtered, snippet, hitMsgId } = useConversationSearch(
+// `keyword` 绑输入框（立即），`query` 是延迟镜像：过滤/分组/空态/高亮都用它，
+// 免得连发粘贴时每个字符都重渲染整个列表（见 useConversationSearch 注释）。
+const { keyword, query, results, filtered, snippet, hitMsgId } = useConversationSearch(
   computed(() => chat.conversations),
 );
 
 const filteredFriends = computed(() => {
-  const kw = keyword.value.trim().toLowerCase();
+  const kw = query.value.trim().toLowerCase();
   if (!kw) return chat.friends;
   return chat.friends.filter((f) => f.nickname.toLowerCase().includes(kw));
 });
@@ -54,7 +56,7 @@ const filteredFriends = computed(() => {
  * 搜索时不做分组：此时用户在找**某个人**，分组只会把结果切碎。
  */
 const friendGroups = computed(() =>
-  keyword.value.trim() ? [] : groupByInitial(filteredFriends.value, (f) => f.nickname),
+  query.value.trim() ? [] : groupByInitial(filteredFriends.value, (f) => f.nickname),
 );
 
 /**
@@ -306,6 +308,11 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           ref="searchInput"
           v-model="keyword"
           maxlength="100"
+          enterkeyhint="search"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
           class="w-full bg-transparent text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)]"
           :placeholder="view === 'chats' ? t('common.search') : t('common.searchContacts')"
         />
@@ -351,12 +358,12 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         <ConversationListItem
           v-for="c in filtered"
           :key="c.id"
-          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), keyword, results.length, chat.friends.length, chat.groups.length]"
+          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), query, results.length, chat.friends.length, chat.groups.length]"
           :conv="c"
           :active="chat.activeConv === c.id"
           :online="isOnline(c.id)"
           :snippet="snippet(c.id)"
-          :keyword="keyword"
+          :keyword="query"
           @open="openConv"
           @context="onConvContext"
         />
@@ -366,11 +373,11 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
                 一个好友都没有时主行动 = 发现好友（去搜索添加）。
              搜索无结果时不给这些（那是"换个词"的场景，不是"没人"）。 -->
         <div v-if="filtered.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
-          <span>{{ keyword.trim() ? t("conv.noMatchConv") : t("conv.noConversation") }}</span>
+          <span>{{ query.trim() ? t("conv.noMatchConv") : t("conv.noConversation") }}</span>
           <!-- 空态下一步（用户 2026-09-12 晚）：**有好友 → 发起聊天**；**一个好友都没有 →
                只有「添加好友」**（原先还并列一个「发现好友」，与本条冲突，已去掉）。
                两个入口都带一句说明文字：空态只陈述"没有会话"会让人不知所措。 -->
-          <template v-if="!keyword.trim()">
+          <template v-if="!query.trim()">
             <button
               v-if="chat.friends.length"
               class="tap-safe rounded-[var(--gosslan-radius-md)] bg-primary px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
@@ -417,7 +424,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           </span>
         </button>
         <!-- 搜索：平铺（用户正在找某个人，分组会把结果切碎） -->
-        <template v-if="keyword.trim()">
+        <template v-if="query.trim()">
           <FriendListItem
             v-for="f in filteredFriends"
             :key="f.device_id"
@@ -450,9 +457,9 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           </template>
         </template>
         <div v-if="filteredFriends.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
-          <span>{{ keyword.trim() ? t("conv.noMatchContact") : t("conv.noFriends") }}</span>
+          <span>{{ query.trim() ? t("conv.noMatchContact") : t("conv.noFriends") }}</span>
           <button
-            v-if="!keyword.trim()"
+            v-if="!query.trim()"
             class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
             @click="emit('open-add-friend')"
           >
