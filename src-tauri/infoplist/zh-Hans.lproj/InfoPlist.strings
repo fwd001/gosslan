@@ -2,3 +2,7 @@
    通过 tauri.conf.json > bundle.macOS.files 复制到
    <App>.app/Contents/Resources/zh-Hans.lproj/InfoPlist.strings。 */
 "CFBundleDisplayName" = "相闻";
+
+/* 本地网络用途说明（首次联网时系统弹窗的文案）。与 Info.plist 的默认值同文，
+   这里显式写出来是为了让两种语言**成对**存在，以后改文案不会漏掉一边。 */
+"NSLocalNetworkUsageDescription" = "Gosslan 需要访问本地网络，用于发现并连接同一局域网内的设备，实现无服务器的即时通讯与文件传输。";

@@ -2,3 +2,8 @@
    通过 tauri.conf.json > bundle.macOS.files 复制到
    <App>.app/Contents/Resources/en.lproj/InfoPlist.strings。 */
 "CFBundleDisplayName" = "Gosslan";
+
+/* 本地网络用途说明（首次联网时系统弹窗的文案）。
+   不本地化的话，英文系统上会显示 Info.plist 里的中文原文 —— 权限弹窗是用户第一次
+   看到应用的界面之一，必须是用户看得懂的语言。 */
+"NSLocalNetworkUsageDescription" = "Gosslan needs local network access to discover and connect to devices on the same network for serverless messaging and file transfer.";
