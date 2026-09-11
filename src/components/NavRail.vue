@@ -4,6 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { MessageCircle, Moon, ScrollText, Sun, Users } from "lucide-vue-next";
+import UnreadBadge from "@/components/UnreadBadge.vue";
 import { t } from "@/i18n";
 
 defineProps<{ view: "chats" | "contacts" }>();
@@ -16,11 +17,6 @@ const emit = defineEmits<{
 const app = useAppStore();
 const chat = useChatStore();
 const initials = computed(() => avatarInitial(app.device?.nickname));
-/** 未读徽标显示上限 */
-const unreadLabel = computed(() => (chat.totalUnread > 99 ? "99+" : String(chat.totalUnread)));
-const pendingLabel = computed(() =>
-  chat.pendingRequests.length > 99 ? "99+" : String(chat.pendingRequests.length),
-);
 </script>
 
 <template>
@@ -61,12 +57,11 @@ const pendingLabel = computed(() =>
         @click="emit('update:view', 'chats')"
       >
         <MessageCircle class="h-[22px] w-[22px]" :fill="view === 'chats' ? 'currentColor' : 'none'" :stroke-width="view === 'chats' ? 2 : 1.9" />
-        <span
+        <UnreadBadge
           v-if="chat.totalUnread > 0"
-          class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium leading-none text-white"
-        >
-          {{ unreadLabel }}
-        </span>
+          :count="chat.totalUnread"
+          class="absolute -right-0.5 -top-0.5"
+        />
       </button>
       <button
         class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
@@ -78,12 +73,11 @@ const pendingLabel = computed(() =>
         @click="emit('update:view', 'contacts')"
       >
         <Users class="h-[22px] w-[22px]" :fill="view === 'contacts' ? 'currentColor' : 'none'" :stroke-width="view === 'contacts' ? 2 : 1.9" />
-        <span
+        <UnreadBadge
           v-if="chat.pendingRequests.length"
-          class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium leading-none text-white"
-        >
-          {{ pendingLabel }}
-        </span>
+          :count="chat.pendingRequests.length"
+          class="absolute -right-0.5 -top-0.5"
+        />
       </button>
     </div>
 

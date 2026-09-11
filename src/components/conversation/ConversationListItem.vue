@@ -8,6 +8,7 @@ import { computed } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { haptic } from "@/utils/haptics";
+import UnreadBadge from "@/components/UnreadBadge.vue";
 import type { Conversation } from "@/types";
 
 const props = defineProps<{
@@ -114,12 +115,7 @@ const gridTiles = computed(() => {
         :class="online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
       ></span>
       <!-- 未读小红点：正常显示 -->
-      <span
-        v-if="conv.unread > 0"
-        class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium leading-none text-white"
-      >
-        {{ conv.unread > 99 ? "99+" : conv.unread }}
-      </span>
+      <UnreadBadge v-if="conv.unread > 0" :count="conv.unread" class="absolute -right-1 -top-1" />
     </div>
     <div class="min-w-0 flex-1 overflow-hidden">
       <div class="flex items-center justify-between gap-2">

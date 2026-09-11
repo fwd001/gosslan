@@ -9,6 +9,7 @@ import ConversationListItem from "@/components/conversation/ConversationListItem
 import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
 import BaseModal from "@/components/BaseModal.vue";
+import UnreadBadge from "@/components/UnreadBadge.vue";
 import { APP_ACTION } from "@/api";
 import { Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
 import type { Conversation, Friend } from "@/types";
@@ -280,12 +281,11 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             <span class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
               <UserPlus class="h-5 w-5" />
             </span>
-            <span
+            <UnreadBadge
               v-if="chat.pendingRequests.length"
-              class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium leading-none text-white"
-            >
-              {{ chat.pendingRequests.length > 99 ? "99+" : chat.pendingRequests.length }}
-            </span>
+              :count="chat.pendingRequests.length"
+              class="absolute -right-1 -top-1"
+            />
           </span>
           <span class="min-w-0 flex-1 text-left">
             <span class="block truncate text-[13px] leading-5 text-[var(--gosslan-text)]">{{ t("conv.newFriends") }}</span>

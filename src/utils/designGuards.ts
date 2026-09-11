@@ -11,7 +11,12 @@
  *      踩坑：`.glass` / `.frost` 的定义在文件更靠后处，同优先级下"后定义者胜"，
  *      降级规则写在前面被**完整覆盖**（写了日志、加了注释，但实测才发现无效）。
  *
- * 两者都是"写对了但不起作用"，读代码几乎看不出来 —— 正是最该由机器盯住的那类。
+ *   ③ 未读徽标必须走唯一实现（`UnreadBadge.vue`）
+ *      踩坑：徽标数字需要 1.5px 光学补偿才能垂直居中，而 5 处手写副本里有 2 处漏了
+ *      配套的 `leading-none` —— 同一种徽标在不同位置基线不一致，肉眼可见「没居中」，
+ *      读代码看不出来。
+ *
+ * 三者都是"写对了但不起作用"，读代码几乎看不出来 —— 正是最该由机器盯住的那类。
  */
 
 export interface GuardIssue {
@@ -81,6 +86,80 @@ export function findHoverRevealIssues(src: string): GuardIssue[] {
     }
   }
   return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- ③ 未读徽标必须走唯一实现 ----------------
+
+/**
+ * 检查一份 .vue 源码里"手写的未读徽标"。
+ *
+ * 判据：同一个静态 `class` 里同时出现 `min-w-4` 与 `gosslan-danger` —— 这个组合是
+ * 未读徽标独有的（红底胶囊 + 最小宽度 16px），不会误伤其他元素。
+ *
+ * 为什么必须走唯一实现：徽标数字需要 **1.5px 光学补偿**才能在圆内垂直居中
+ * （字形在行盒里天然偏下：实测上间隙 10 / 下间隙 7，2x 截图）。此前有 5 处手写副本，
+ * 其中 2 处漏了配套的 `leading-none` —— 同一种徽标在不同位置的基线不一致，
+ * 肉眼能看出「数字没居中」，但读代码几乎看不出来。用组件收敛后由本护栏守住。
+ */
+export function findHandWrittenBadges(src: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(CLASS_ATTR_RE)) {
+    const classes = m[1].split(/\s+/).filter(Boolean);
+    if (classes.includes("min-w-4") && classes.some((c) => c.includes("gosslan-danger"))) {
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message:
+          "手写的未读徽标 —— 请改用 `@/components/UnreadBadge.vue`。" +
+          "徽标数字依赖 1.5px 光学补偿做到垂直居中，手写副本极易漏掉配套的 `leading-none`，" +
+          "导致同一徽标在不同位置基线不一致（详见组件注释）。",
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/**
+ * `UnreadBadge.vue` 自身必须保留「垂直居中补偿」与其前提 `leading-none`。
+ *
+ * 这两条是**一对**：补偿量 `pb-[1.5px]` 是按「行盒高 = font-size」推算的
+ * （`(16 − 1.5 − 11) / 2 = 1.75`，未补偿时 2.5 → 上移 0.75px），
+ * 单独删掉任何一个都会让数字重新偏下。数值本身是实测结果，不是随手写的边距。
+ */
+export function checkUnreadBadgeComponent(src: string): GuardIssue[] {
+  // ⚠️ 必须只看**真实的 class 属性**，不能 `src.includes(...)` 扫全文：
+  // 组件里的注释本来就会提到这些类名，扫全文会让护栏「因为注释而通过」——
+  // 这正是本模块要防的假通过（首版就是这么写的，靠非空转验证才抓出来）。
+  let badgeLine = 0;
+  let classes: string[] = [];
+  for (const m of src.matchAll(CLASS_ATTR_RE)) {
+    const cs = m[1].split(/\s+/).filter(Boolean);
+    if (cs.includes("min-w-4")) {
+      badgeLine = lineAt(src, m.index ?? 0);
+      classes = cs;
+      break;
+    }
+  }
+  if (classes.length === 0) {
+    return [{ line: 0, message: "`UnreadBadge.vue` 里找不到徽标的 class 属性（含 `min-w-4` 的那一行）" }];
+  }
+
+  const out: GuardIssue[] = [];
+  if (!classes.includes("pb-[1.5px]")) {
+    out.push({
+      line: badgeLine,
+      message:
+        "`UnreadBadge.vue` 缺少 `pb-[1.5px]` 垂直居中补偿 —— 数字会偏下（实测上间隙 10 / 下间隙 7）。",
+    });
+  }
+  if (!classes.includes("leading-none")) {
+    out.push({
+      line: badgeLine,
+      message:
+        "`UnreadBadge.vue` 缺少 `leading-none` —— 补偿值按「行盒高 = font-size」推算，" +
+        "行高变 normal（≈13.2px）后补偿不再成立。",
+    });
+  }
+  return out;
 }
 
 // ---------------- ② 媒体查询必须排在 style.css 末尾 ----------------

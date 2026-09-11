@@ -10,6 +10,7 @@ import NavRail from "@/components/NavRail.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import ConversationList from "@/components/ConversationList.vue";
 import ChatWindow from "@/components/ChatWindow.vue";
+import UnreadBadge from "@/components/UnreadBadge.vue";
 import FriendProfile from "@/components/FriendProfile.vue";
 import FriendRequestList from "@/components/conversation/FriendRequestList.vue";
 import SettingsPanel from "@/components/SettingsPanel.vue";
@@ -320,12 +321,11 @@ function onResizeEnd() {
       >
         <span class="relative">
           <MessageCircle class="h-5 w-5" />
-          <span
+          <UnreadBadge
             v-if="chat.totalUnread > 0"
-            class="absolute -right-2.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium text-white"
-          >
-            {{ chat.totalUnread > 99 ? "99+" : chat.totalUnread }}
-          </span>
+            :count="chat.totalUnread"
+            class="absolute -right-2.5 -top-1"
+          />
         </span>
         <span class="text-[11px]">{{ t("nav.chats") }}</span>
       </button>
@@ -336,12 +336,11 @@ function onResizeEnd() {
       >
         <span class="relative">
           <Users class="h-5 w-5" />
-          <span
+          <UnreadBadge
             v-if="chat.pendingRequests.length"
-            class="absolute -right-2.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium text-white"
-          >
-            {{ chat.pendingRequests.length > 99 ? "99+" : chat.pendingRequests.length }}
-          </span>
+            :count="chat.pendingRequests.length"
+            class="absolute -right-2.5 -top-1"
+          />
         </span>
         <span class="text-[11px]">{{ t("nav.contacts") }}</span>
       </button>
