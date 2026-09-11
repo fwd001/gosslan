@@ -4981,7 +4981,20 @@ pub async fn touch_peer(state: &AppState, device_id: &str) {
 
 async fn mark_peer_offline(state: &Arc<AppState>, device_id: &str) {
     state.peers.lock().unwrap_or_else(|e| e.into_inner()).remove(device_id);
+    // 链路快照随之失效：`conv_link` 记的是"当前可达路径"，节点已离线 ⇒ 该路径不存在。
+    // 不清掉的话，聊天头部的链路徽标会在离线后继续显示（用户 2026-09-12 反馈的
+    // 「离线却显示『桥接 1』」）。前端也做了 `online` 绑定，这里是数据侧的对称清理。
+    clear_conv_link(state, device_id);
     state.emit_peers();
+}
+
+/// 清掉某会话的链路快照（`conv_link` 是内存态；无条目时无操作）。
+pub(crate) fn clear_conv_link(state: &AppState, conv_id: &str) {
+    state
+        .conv_link
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(conv_id);
 }
 
 pub(crate) fn maybe_update_friend(

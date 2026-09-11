@@ -489,12 +489,20 @@ fn sweep_peers(state: &AppState) {
                 .collect()
         })
         .unwrap_or_default();
-    let changed = {
+    let removed: Vec<String> = {
         let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        let before = peers.len();
+        let before: Vec<String> = peers.keys().cloned().collect();
         peers.retain(|id, p| should_keep_peer(p.last_seen, now, active_links.contains(id)));
-        before != peers.len()
+        let after: std::collections::HashSet<&String> = peers.keys().collect();
+        before.into_iter().filter(|id| !after.contains(id)).collect()
     };
+    // 被清扫掉的节点：连带清掉它的链路快照（`conv_link` 是"当前可达路径"，
+    // 节点已不在 peers 表 ⇒ 该路径失效）。否则聊天头部的链路徽标会在节点早已被清扫后
+    // 继续显示历史路径（用户 2026-09-12 反馈的「离线却显示『桥接 1』」）。
+    let changed = !removed.is_empty();
+    for id in removed {
+        crate::network::transport::clear_conv_link(state, &id);
+    }
     if changed {
         state.emit_peers();
     }

@@ -78,8 +78,14 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
         <Smartphone v-if="deviceType === 'mobile'" class="h-4 w-4" />
         <Monitor v-else class="h-4 w-4" />
       </span>
+      <!-- 链路徽标只在**对方在线**时显示。
+           用户 2026-09-12 反馈：「现在这个用户是离线的，但是聊天框后面居然有一个『桥接 1』
+           的图标，这个是错误的。」根因：`conv_link` 是"最近一条消息走的路径"的**快照**，
+           由发送侧乐观写入（无直连时记 hop=1），而对方离线后这个快照并不会自动消失 ⇒
+           徽标把"历史路径"读成了"当前链路"。语义上它是**当前可达路径**，
+           所以必须与 `online` 绑定（离线时路径不存在，什么都不该显示）。 -->
       <span
-        v-if="!isGroup && linkState"
+        v-if="!isGroup && online && linkState"
         class="inline-flex shrink-0 items-center gap-0.5 text-[var(--gosslan-text-2)]"
         :title="linkIcon(linkState.path, linkState.hop).label"
         :aria-label="linkIcon(linkState.path, linkState.hop).label"
