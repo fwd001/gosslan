@@ -6,3 +6,8 @@
 /* 本地网络用途说明（首次联网时系统弹窗的文案）。与 Info.plist 的默认值同文，
    这里显式写出来是为了让两种语言**成对**存在，以后改文案不会漏掉一边。 */
 "NSLocalNetworkUsageDescription" = "Gosslan 需要访问本地网络，用于发现并连接同一局域网内的设备，实现无服务器的即时通讯与文件传输。";
+
+/* 蓝牙用途说明（iOS 上调用 CoreBluetooth 前系统弹窗的文案）。
+   缺失该键会**直接崩溃**，不是"权限被拒"那么温和。 */
+"NSBluetoothAlwaysUsageDescription" = "Gosslan 使用蓝牙发现并连接附近的设备，让手机与电脑无需在同一 Wi-Fi 下也能建立点对点连接。";
+"NSBluetoothPeripheralUsageDescription" = "Gosslan 使用蓝牙发现并连接附近的设备，让手机与电脑无需在同一 Wi-Fi 下也能建立点对点连接。";

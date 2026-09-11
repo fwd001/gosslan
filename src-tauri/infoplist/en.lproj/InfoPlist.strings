@@ -7,3 +7,8 @@
    不本地化的话，英文系统上会显示 Info.plist 里的中文原文 —— 权限弹窗是用户第一次
    看到应用的界面之一，必须是用户看得懂的语言。 */
 "NSLocalNetworkUsageDescription" = "Gosslan needs local network access to discover and connect to devices on the same network for serverless messaging and file transfer.";
+
+/* Bluetooth purpose strings (shown by iOS before CoreBluetooth is used).
+   Missing these keys makes the app crash outright, not merely fail the request. */
+"NSBluetoothAlwaysUsageDescription" = "Gosslan uses Bluetooth to discover and connect to nearby devices, so your phone and computer can talk to each other without being on the same Wi-Fi.";
+"NSBluetoothPeripheralUsageDescription" = "Gosslan uses Bluetooth to discover and connect to nearby devices, so your phone and computer can talk to each other without being on the same Wi-Fi.";

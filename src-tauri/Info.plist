@@ -9,6 +9,14 @@
 	<string>相闻</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Gosslan 需要访问本地网络，用于发现并连接同一局域网内的设备，实现无服务器的即时通讯与文件传输。</string>
+	<!-- 蓝牙 mesh：手机与**不在同一局域网**的设备（例如同一房间里的 Mac）互联。
+	     没有这条用途串，iOS 上调用 CoreBluetooth 会直接崩溃。
+	     `NSBluetoothPeripheralUsageDescription` 是 iOS 12 及以下的旧键，一并声明，
+	     免得最低系统版本下探时才发现缺失。 -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Gosslan 使用蓝牙发现并连接附近的设备，让手机与电脑无需在同一 Wi-Fi 下也能建立点对点连接。</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Gosslan 使用蓝牙发现并连接附近的设备，让手机与电脑无需在同一 Wi-Fi 下也能建立点对点连接。</string>
 	<!-- 方向：移动端当前只做竖屏布局（与 Android 的 screenOrientation="portrait" 保持一致）。
 	     横屏布局尚未适配（会破坏安全区/导航），等横屏布局就绪后再放开 iPad 多方向。 -->
 	<key>UISupportedInterfaceOrientations</key>

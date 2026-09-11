@@ -1,9 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 触觉反馈：WebView 里的 navigator.vibrate 需要此权限；缺失时 utils/haptics 会静默 no-op。
          只用于按钮/长按等交互反馈，不做任何后台震动。 -->
     <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- ============ 蓝牙（P3 / Phase 7 BLE Transport 的前置声明）============
+         · Android 12+（API 31+）：BLUETOOTH_SCAN / BLUETOOTH_CONNECT 是**运行时**权限，
+           代码没申请前不会弹窗（声明本身不影响现有功能）。
+         · `neverForLocation` 是关键：不加这个标志，系统会因为"扫描结果可用于推断位置"
+           而要求定位权限 —— 那会让用户看到「允许访问位置」这种对聊天应用极其可疑的弹窗，
+           而我们的 BLE 只用来发现**本应用**的对端，不做任何位置推断。
+         · Android 11 及以下只认安装期权限 BLUETOOTH / BLUETOOTH_ADMIN，且**扫 BLE 设备
+           必须有定位权限**（系统限制）⇒ 带 `maxSdkVersion="30"` 限定，新系统上不会多要。
+         三端一致的目标见 docs/adr/0015-ble-transport.md。 -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+
+    <!-- BLE 只是"可选增强"：设备没有蓝牙（或用户拒绝授权）时应用必须照常走局域网/中继。
+         声明 required=false，避免 Play 商店把无蓝牙设备过滤掉。 -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
