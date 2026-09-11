@@ -2815,6 +2815,11 @@ pub fn open_downloads_dir(state: State<'_, Arc<AppState>>) -> Result<(), String>
 }
 
 /// 跨平台在系统文件管理器里打开指定目录。
+///
+/// ⚠️ 移动端（Android/iOS）**没有**"文件管理器"这种东西：那里三个平台分支全被裁掉，
+/// `path` 于是成了未使用变量。显式声明"移动端不使用该参数"而不是加 `_`——后者会让
+/// 桌面端也丢掉名字（编译器就再也帮不上忙）。
+#[cfg_attr(mobile, allow(unused_variables))]
 fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -3616,6 +3621,14 @@ pub fn open_log_window(
     Ok(())
 }
 
+/// 移动端桩：移动端的日志是**整页**（`LogViewer` 的全屏分支），没有独立窗口。
+/// 必须有这个桩，否则 `generate_handler!` 在移动端编译不过（见 `open_settings_window`）。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn open_log_window(_app: tauri::AppHandle) -> Result<(), String> {
+    Err("移动端没有独立日志窗口（日志是整页）".to_string())
+}
+
 /// 桌面端：打开独立的「设置」窗口（已存在则聚焦）。
 ///
 /// 与日志窗口同一范式：加载同一个前端，由前端按窗口 label（`settings`）渲染设置页。
@@ -3664,6 +3677,19 @@ pub fn open_settings_window(
     Ok(())
 }
 
+/// 移动端桩：独立的设置窗口是**桌面**概念（`decorations:false` 自绘标题栏 + 多窗口），
+/// 移动端用的是整页设置页（`SettingsPanel` 的全屏分支）。
+///
+/// 为什么必须有这个桩：`lib.rs` 的 `generate_handler!` 是**无条件**列出命令的，
+/// 而 `#[tauri::command]` 生成的包装宏跟着函数一起被 `#[cfg(desktop)]` 裁掉
+/// ⇒ Android/iOS 目标上 `generate_handler!` 找不到它、**整个移动端编译不过**。
+/// （这是真实缺陷：本轮为了验证蓝牙在 Android 上能否编译时才发现。）
+#[cfg(mobile)]
+#[tauri::command]
+pub fn open_settings_window(_app: tauri::AppHandle) -> Result<(), String> {
+    Err("移动端没有独立设置窗口（设置是整页，见 SettingsPanel）".to_string())
+}
+
 /// 桌面端：关闭独立的「设置」窗口。
 #[cfg(desktop)]
 #[tauri::command]
@@ -3674,6 +3700,14 @@ pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 移动端桩：见 `open_settings_window` 的说明（`generate_handler!` 无条件列出，
+/// 桌面专属命令必须有移动端对应物，否则移动端编译不过）。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn close_settings_window(_app: tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
 /// 桌面端：关闭独立的「运行日志」窗口。
 #[cfg(desktop)]
 #[tauri::command]
@@ -3681,6 +3715,13 @@ pub fn close_log_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(crate::WINDOW_LOGS) {
         let _ = win.close();
     }
+    Ok(())
+}
+
+/// 移动端桩：见 `open_log_window` 的说明。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn close_log_window(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 

@@ -812,6 +812,8 @@ impl AppState {
     /// 应用显示名：中文系统「相闻」、英文系统 "Gosslan"。
     ///
     /// 用于托盘提示、日志窗口标题、通知等后端自行生成的用户可见文案。
+    // 移动端用不到后端生成的显示名（托盘/独立窗口标题都是桌面概念）⇒ 显式允许未使用
+    #[cfg_attr(mobile, allow(dead_code))]
     pub fn display_name(&self) -> String {
         if self.is_zh() {
             "相闻".to_string()
