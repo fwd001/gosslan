@@ -154,6 +154,13 @@ export interface ChannelStatus {
   peers: number;
 }
 
+/** 手动配置的跨子网端点（Tailscale / VPN / 跨网段）。
+ *  只填地址即可，`device_id` 由握手时自动学到（后端 `RoutedEndpoint` 序列化而来）。 */
+export interface RoutedEndpoint {
+  device_id?: string;
+  address: string;
+}
+
 /** 应用偏好设置（外观 / 网卡选择 / 聊天样式，持久化到本地 SQLite）。
  *  E2EE 自 v0.11.0 起恒开且不可关闭，不再作为设置项。 */
 export interface AppSettings {

@@ -28,6 +28,7 @@ import type {
   TransferInfo,
   DiscoveryDiag,
   InterfaceCandidate,
+  RoutedEndpoint,
 } from "@/types";
 
 export const api = {
@@ -125,6 +126,12 @@ export const api = {
   getChannelStatus: () => invoke<ChannelStatus[]>("get_channel_status"),
   setChannelEnabled: (channel: string, enabled: boolean) =>
     invoke<void>("set_channel_enabled", { channel, enabled }),
+  /** 跨子网（Routed）端点：列表 / 添加 / 移除。添加只填地址即可（device_id 由握手学）。 */
+  listRoutedEndpoints: () => invoke<RoutedEndpoint[]>("list_routed_endpoints"),
+  addRoutedEndpoint: (address: string) =>
+    invoke<RoutedEndpoint[]>("add_routed_endpoint", { deviceId: null, address }),
+  removeRoutedEndpoint: (address: string) =>
+    invoke<RoutedEndpoint[]>("remove_routed_endpoint", { address }),
   getCacheInfo: () => invoke<CacheInfo>("get_cache_info"),
   setCachePolicy: (retentionDays: number | null, maxBytes: number | null) =>
     invoke<void>("set_cache_policy", { retentionDays, maxBytes }),

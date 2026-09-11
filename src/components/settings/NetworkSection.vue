@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { Trash2 } from "lucide-vue-next";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -7,7 +8,7 @@ import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import { t } from "@/i18n";
-import type { ChannelStatus } from "@/types";
+import type { ChannelStatus, RoutedEndpoint } from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -35,6 +36,7 @@ watch(
     selectedIp.value = app.boundIp ?? app.preferredIp ?? "0.0.0.0";
     await app.refreshInterfaces();
     await loadChannels();
+    await loadEndpoints();
   },
   { immediate: true },
 );
@@ -86,6 +88,35 @@ async function toggleBluetooth() {
   }
   await loadChannels();
 }
+
+// ---- 跨网段（Routed）端点配置 ----
+const endpoints = ref<RoutedEndpoint[]>([]);
+const newAddress = ref("");
+
+async function loadEndpoints() {
+  endpoints.value = await api.listRoutedEndpoints();
+}
+
+async function addEndpoint() {
+  const addr = newAddress.value.trim();
+  if (!addr) return;
+  try {
+    endpoints.value = await api.addRoutedEndpoint(addr);
+    newAddress.value = "";
+    app.toast(t("settings.network.routed.toast.added"), "success");
+  } catch (e) {
+    app.toastError(e, t("settings.network.routed.toast.addFailed"));
+  }
+}
+
+async function removeEndpoint(address: string) {
+  try {
+    endpoints.value = await api.removeRoutedEndpoint(address);
+    app.toast(t("settings.network.routed.toast.removed"), "info");
+  } catch (e) {
+    app.toastError(e, t("settings.network.routed.toast.removeFailed"));
+  }
+}
 </script>
 
 <template>
@@ -129,5 +160,52 @@ async function toggleBluetooth() {
         />
       </div>
     </SettingsRow>
+  </SettingsGroup>
+
+  <SettingsGroup
+    :title="t('settings.network.routed')"
+    :footer="t('settings.network.routed.desc')"
+  >
+    <!-- 已配置端点列表 -->
+    <div
+      v-for="ep in endpoints"
+      :key="ep.address"
+      class="flex items-center gap-2 px-4 py-2.5"
+    >
+      <span class="min-w-0 flex-1 truncate font-mono text-[13px] text-[var(--gosslan-text)]">
+        {{ ep.address }}
+      </span>
+      <button
+        class="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
+        :aria-label="t('settings.network.routed.remove')"
+        :title="t('settings.network.routed.remove')"
+        @click="removeEndpoint(ep.address)"
+      >
+        <Trash2 :size="14" />
+      </button>
+    </div>
+    <div v-if="endpoints.length" class="ml-4 h-px bg-[var(--gosslan-divider)]" />
+
+    <!-- 空状态 -->
+    <p v-if="!endpoints.length" class="px-4 py-3 text-xs text-[var(--gosslan-text-2)]">
+      {{ t("settings.network.routed.empty") }}
+    </p>
+
+    <!-- 添加 -->
+    <div class="flex items-center gap-2 px-4 py-3">
+      <input
+        v-model="newAddress"
+        type="text"
+        :placeholder="t('settings.network.routed.placeholder')"
+        class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-[var(--gosslan-primary)]"
+        @keyup.enter="addEndpoint"
+      />
+      <button
+        class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+        @click="addEndpoint"
+      >
+        {{ t("settings.network.routed.add") }}
+      </button>
+    </div>
   </SettingsGroup>
 </template>
