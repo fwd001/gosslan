@@ -11,12 +11,16 @@
 //! - P-A01：Identity 永远独立于网络（`device_id` 是唯一 Node Identity）。
 //! - P-A02：Peer 与 Connection 分离（一个 Peer 拥有多条 Connection）。
 
+pub mod candidate;
 pub mod connection;
 pub mod endpoint;
+pub mod manager;
 pub mod path;
 pub mod peer;
 
+pub use candidate::PeerCandidate;
 pub use connection::{Connection, ConnectionHealth};
 pub use endpoint::{BleEndpoint, Endpoint};
+pub use manager::{MergeOutcome, PeerManager};
 pub use path::PathKind;
-pub use peer::{Peer, PeerIdentity};
+pub use peer::{Peer, PeerIdentity, PeerOnlineState};

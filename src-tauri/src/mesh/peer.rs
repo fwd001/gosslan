@@ -8,12 +8,34 @@ use super::connection::Connection;
 use super::endpoint::Endpoint;
 
 /// Peer 的公开身份（只含公钥，绝不含私钥）。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PeerIdentity {
     /// X25519 公钥（base64，ECDH 用）。
     pub x25519_public_key: Option<String>,
     /// Ed25519 公钥（base64，验签用）。
     pub ed25519_public_key: Option<String>,
+}
+
+impl PeerIdentity {
+    /// 只补空字段、不覆盖已有值（公钥冲突不静默覆盖，对齐 INV-P11 语义）。
+    pub fn merge_missing(&mut self, other: &PeerIdentity) {
+        if self.x25519_public_key.is_none() {
+            self.x25519_public_key = other.x25519_public_key.clone();
+        }
+        if self.ed25519_public_key.is_none() {
+            self.ed25519_public_key = other.ed25519_public_key.clone();
+        }
+    }
+}
+
+/// Peer 的整体在线状态：由 Connection 集合聚合而来。
+///
+/// 规则（设计 §34）：**任何** Connection 健康 ⇒ Online；
+/// 绝不因为「一条连接断开」就判 Offline。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PeerOnlineState {
+    Online,
+    Offline,
 }
 
 /// 一个稳定节点。
@@ -79,6 +101,53 @@ impl Peer {
         let before = self.connections.len();
         self.connections.retain(|c| c.id != id);
         self.connections.len() != before
+    }
+
+    /// 聚合在线状态：任何 Connection 健康 ⇒ Online。
+    ///
+    /// `health_timeout_ms` / `max_failures` 是健康判定阈值（由 PeerManager 提供）。
+    pub fn online_state(
+        &self,
+        now_ms: i64,
+        health_timeout_ms: i64,
+        max_failures: u32,
+    ) -> PeerOnlineState {
+        let online = self
+            .connections
+            .iter()
+            .any(|c| c.health.is_healthy(now_ms, health_timeout_ms, max_failures));
+        if online {
+            PeerOnlineState::Online
+        } else {
+            PeerOnlineState::Offline
+        }
+    }
+
+    /// 标记某条 Connection 成功收发（返回是否命中）。
+    pub fn mark_connection_seen(
+        &mut self,
+        endpoint: &Endpoint,
+        now_ms: i64,
+        rtt_ms: Option<u64>,
+    ) -> bool {
+        match self.connections.iter_mut().find(|c| c.endpoint == *endpoint) {
+            Some(c) => {
+                c.health.mark_seen(now_ms, rtt_ms);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 标记某条 Connection 失败（返回是否命中）。
+    pub fn mark_connection_failure(&mut self, endpoint: &Endpoint) -> bool {
+        match self.connections.iter_mut().find(|c| c.endpoint == *endpoint) {
+            Some(c) => {
+                c.health.mark_failure();
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -179,5 +248,52 @@ mod tests {
         assert!(peer.remove_connection_by_id(&id));
         assert_eq!(peer.connection_count(), 0);
         assert!(!peer.remove_connection_by_id(&id));
+    }
+
+    /// 关键不变量（设计 §34）：一条连接断开 ≠ Peer 离线。
+    #[test]
+    fn online_state_is_any_connection_healthy() {
+        let mut peer = Peer::new("ABC123", PeerIdentity::default());
+        peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan));
+        peer.upsert_connection(Connection::new("ABC123", routed_endpoint(), PathKind::Routed));
+
+        // 初始：无健康记录 → Offline
+        assert_eq!(peer.online_state(0, 10_000, 3), PeerOnlineState::Offline);
+
+        // LAN 健康 → Online
+        assert!(peer.mark_connection_seen(&lan_endpoint(), 1000, Some(5)));
+        assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
+
+        // LAN 超时但 Routed 健康 → 仍 Online（一条断开不回退）
+        assert!(peer.mark_connection_seen(&routed_endpoint(), 2000, Some(30)));
+        assert_eq!(peer.online_state(12_000, 10_000, 3), PeerOnlineState::Online);
+
+        // 两条都超时 → Offline
+        assert_eq!(peer.online_state(13_000, 10_000, 3), PeerOnlineState::Offline);
+    }
+
+    #[test]
+    fn empty_connections_are_offline() {
+        let peer = Peer::new("ABC123", PeerIdentity::default());
+        assert_eq!(peer.online_state(0, 10_000, 3), PeerOnlineState::Offline);
+    }
+
+    /// 连续失败超过阈值 → 该条 connection 不健康，但另一条仍可撑住 Online。
+    #[test]
+    fn consecutive_failures_break_only_that_connection() {
+        let mut peer = Peer::new("ABC123", PeerIdentity::default());
+        peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan));
+        peer.upsert_connection(Connection::new("ABC123", routed_endpoint(), PathKind::Routed));
+
+        peer.mark_connection_seen(&lan_endpoint(), 1000, Some(5));
+        peer.mark_connection_seen(&routed_endpoint(), 1000, Some(5));
+        assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
+
+        // LAN 连续失败 4 次（> max_failures=3）
+        for _ in 0..4 {
+            peer.mark_connection_failure(&lan_endpoint());
+        }
+        // LAN 已不健康，但 Routed 仍健康 → Online
+        assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
     }
 }
