@@ -44,7 +44,8 @@ Offline。这与 Phase 2 review 抓到的 `upsert_connection` health 覆盖 bug 
 2. 选路策略 = 路径优先级（LAN > Routed > Bluetooth）+ 活性过滤 + 稳定序打破平局。
    **不做 RTT 排序**。
 3. 源发广播保持「每个 peer 选一条、但不裁剪 peer 集合」（§8.1 #5 红线不变）。
-4. ensure_link 的「连通性」语义保持不变（见 ADR-0015 / P1-2 修正）：
+4. ensure_link 的「连通性」语义保持不变（见 P1-2 修正 `f69b917` 与
+   `.workbuddy/mesh-task/mesh-architecture-evolution.md` §7.10）：
    多路径由**各 Transport 自己的驱动**负责产生（Routed 由配置驱动、BLE 由发现驱动），
    选路层只负责「已有多条时挑哪条」。
 ```
@@ -70,15 +71,25 @@ RTT 的唯一可行来源是给 `Heartbeat` 加回包（新 wire 变体），需
 
 | 事件 | 落点 | 语义 |
 |---|---|---|
-| 出站 `write_frame` 成功 | `writer_loop` → `mark_connection_seen(peer, endpoint, now, None)` | 该连接**能写出** |
-| 入站读到任意一帧 | `reader_loop` → 同上 | 该连接**能读到**（更强：对端活着） |
-| 建链完成 | `register_connection` → 先 `mark_seen` 一次 | 「刚建好」必须算健康 |
+| 出站 `write_frame` 成功 | `writer_loop` → 写**出站**活性 | 该连接**能写出** |
+| 入站读到任意一帧 | `reader_loop` → 写**入站**活性 | 该连接**能读到**（更强：对端活着） |
+| 建链完成 | `register_connection` → 建链时**一次性播种**入站活性 | 「刚建好」必须算健康（否则会触发重拨，见下方注意 1） |
 | 写失败 / 读循环退出 | `mark_connection_failure` / 现有 `unregister_connection` | 该连接不可用 |
+
+⚠️ **M3-0b 前置补丁（2026-09-12 复核发现的缺口，必须先做）**：M3-0 落地时
+`ConnectionHealth` **只有一个** `last_seen_ms`，写成功（`writer_loop`）与读成功（`reader_loop`）
+写的是**同一个字段**，而 5s 心跳会给每条链路写成功 ⇒ **半开 TCP（对端已死、内核仍收写）
+会永久「健康」**，上表「入站更强」在实现上不成立，本 ADR §7 要解决的正是这种链路。
+M3-0b 把健康拆成 `last_write_seen_ms` / `last_read_seen_ms`（或等价地加 `last_inbound_ms`），
+并让 `is_healthy` 要求**近期有入站观测**（建链时播种一次，见注意 1；此后只由 `reader_loop` 刷新）。
+在 M3-0b 合入之前，**不得开始 M3-b 接线** —— 否则 `pick_link` 会持续选中半开链路。
 
 **两条硬性注意（都是踩过的坑）**：
 
-1. **建链时必须先 `mark_seen` 一次**。否则「已建立但尚未收发」的连接会被判为不健康，
-   `should_dial` 会反复重拨 —— 与 P1-2 修正叠加会重新制造重复连接。
+1. **建链时必须先播种一次入站活性**（`register_connection`）。否则「已建立但尚未收发」的连接
+   会被判为不健康，`should_dial` 会反复重拨 —— 与 P1-2 修正叠加会重新制造重复连接。
+   这是**唯一**允许在 `reader_loop` 之外写入站活性的地方；写成「写成功也刷新入站活性」
+   就等于退回 M3-0b 之前的缺陷。
 2. **同 endpoint `upsert_connection` 绝不能覆盖 health**（Phase 2 review 抓到的真 bug：
    `Connection::new` 的 health 恒为 `default()`，周期性 announce 会把已建链连接打回
    「从未成功」→ 在线恒 Offline）。已有两个护栏测试，M3-0 不得回退它们。
@@ -91,7 +102,7 @@ RTT 字段（`ConnectionHealth.rtt_ms`）本阶段**保持为 `None`**，并在�
 ```text
 pick_link(candidates: &[LinkView], now_ms) -> Option<usize>
 
-  1) 过滤：只保留「健康」的连接（last_seen 在阈值内 && 连续失败 <= 阈值）
+  1) 过滤：只保留「健康」的连接（**近期有入站观测** && 连续失败 <= 阈值；见 §3.1 M3-0b）
   2) 排序：路径优先级 LAN > Routed > Bluetooth
   3) 打破平局：建链顺序（稳定、可复现，不引入随机性）
   4) 全不健康时：**退回首个连接**（保持可用，不报错）—— 与今天的兜底行为一致
@@ -107,12 +118,18 @@ pick_link(candidates: &[LinkView], now_ms) -> Option<usize>
 
 | 步 | 内容 | 行为变化 |
 |---|---|---|
-| M3-0 | 健康信号接入（§3.1） | 无（只写不读） |
-| M3-a | `pick_link` 纯函数 + 单测 | 无（只用于日志上报选中哪条） |
-| M3-b | `try_send` 接线 + 半开链路回退广播（P1-1 遗留项） | 有（顺序可能改变） |
+| M3-0 | 健康信号接入（§3.1） | 无（只写不读）—— ✅ `03ae61a` |
+| M3-a | `pick_link` 纯函数 + 单测 | 无（**落地时连日志都没接**；§3.3 原写「只用于日志上报」不准确）—— ✅ `af9fca5` |
+| **M3-0b** | **健康拆读写活性**（`last_write_seen_ms` / `last_read_seen_ms`，`is_healthy` 要求近期入站）+ 建链播种 | 无（纯旁路；但修复了「半开链路永久健康」）—— 🔴 **M3-b 的前置** |
+| M3-b | `try_send` 接线 + 半开链路回退广播（P1-1 遗留项）；**同时**把「持 `links` 锁跨 `await` 阻塞发送」改为锁内快照、锁外发送 | 有（顺序可能改变） |
 | M3-c | 失败判据（连续失败摘链路） | 有（边界收敛） |
 | M3-d | `broadcast_gossip` 接线 | 有 |
 | M3-e | 可观测性（route 日志 + conv_link 语义校正） | 无 |
+
+> ⚠️ 复核补充（2026-09-12）：`try_send` 现在的「failover」只对**信道关闭**生效 ——
+> `tx.send().await` 在信道满时是**挂起**而非 `Err`，且此时 `state.links` 全局锁被持有。
+> M3-b 必须一并收敛（锁内快照 `Vec<Link>` 克隆 → 锁外发送；必要时改用非阻塞 `try_send`
+> 并对 `Full` 走下一跳）。`broadcast_gossip`(`:113`+`:128`) 与心跳循环同病。
 
 ---
 
@@ -150,22 +167,26 @@ pick_link(candidates: &[LinkView], now_ms) -> Option<usize>
 
 | 失效场景 | 表现 | 缓解 |
 |---|---|---|
-| 半开 TCP：写「成功」但对方已消失 | 健康信号仍刷新 → 选路继续选它 | 心跳写出最终会失败 → 摘链路；后续可按连续失败阈值提前收敛 |
+| 半开 TCP：写「成功」但对方已消失 | 健康信号仍刷新 → 选路继续选它 | **M3-0b 之后**：写出不再刷新入站活性 ⇒ 该链路在一个阈值内自然被判不健康；在此之前（M3-0 现状）**无缓解** —— 这是必须补 M3-0b 的原因 |
 | 全部连接都不健康 | 选路无候选 | 退回「首个连接」而非报错（保持可用） |
 | 健康阈值过紧 | 正常的 Tailscale 高延迟连接被判不健康 → 频繁切换 | 阈值参照既有 `RELAY_PEER_TIMEOUT_SECS = 45s` / 心跳 5s 的量级标定，并留 2–3 个心跳周期余量 |
-| 健康阈值过松 | 僵尸连接长期被选中 | 由 §3.1 的入站 `mark_seen` 提供更强证据（能读到帧才是真活） |
-| 与 P1-2 修正叠加 | 选路切换触发重拨 → 重复连接 | `ensure_link` 已有 `has_any_link` 短路；M3-0 的 `mark_seen` 在建链时打点，避免误判不健康 |
+| 健康阈值过松 | 僵尸连接长期被选中 | 由 §3.1 的**入站**活性提供更强证据（能读到帧才是真活）；前提是 M3-0b 已拆读写 |
+| 流量拥塞导致信道满 | `try_send` 的 `send().await` **挂起**（非 Err）→ 既不降级下一条，又持锁阻塞全表 | M3-b 一并收敛：锁内快照、锁外发送；必要时改用非阻塞 `try_send` 并对 `Full` 走下一跳 |
+| 与 P1-2 修正叠加 | 选路切换触发重拨 → 重复连接 | `ensure_link` 已有 `has_any_link` 短路；建链时的播种避免误判不健康 |
 
 ---
 
 ## 8. Testing
 
 - **单测**：`pick_link` 纯函数（健康过滤 / 路径优先级 / 平局稳定序 / 全不健康回退）。
-- **决定性判据（扩展 `examples/dual_link.rs`）**：当前它只验「建立了 2 条」，
+  **M3-0b 追加**：「只写不读的连接不算健康」「建链播种后算健康」「读一帧后刷新」。
+- **决定性判据（扩展 `examples/dual_link.rs`）**：当前它只验「建立了 2 条 + 另一条还能收心跳」，
   **不验「切换」**。M3-b 必须扩展为：同一 peer 两条连接 → **主动切断被选中的那条**
-  → 消息仍能送达（真 failover）。
+  → **消息仍能送达**（真 failover，不是「收到心跳」）。
 - **护栏非空转**：临时把策略改成恒 `first()` → failover 判据必须 FAIL。
 - **回归**：`cargo test --lib` 全绿 / 0 warning；`npm test`；`bash scripts/e2e-dev.sh` 失败数恒 0。
+- **M3-0 的判据目前没有护栏**：`scripts/t4-mirror-dial.sh` 里 `online` **0 命中**，
+  当时 `online=1` 是一次性人工看日志。应把 `online=1` 断言固化进 T4。
 - **真机**：一台设备同时有 LAN + Routed 两条连接 → 日志显示按策略选中 → 拔网线后
   Routed 接管、聊天不中断。
 
@@ -174,9 +195,14 @@ pick_link(candidates: &[LinkView], now_ms) -> Option<usize>
 ## 9. Consequences
 
 **Positive**
-- 「在线」从启发式（`last_seen` + 45s 超时）升级为**连接级事实**（`ConnectionHealth` 终于有数据）。
+- 健康信号**已落库到运行时**（M3-0：`ConnectionHealth` 终于有真实数据）。
+  ⚠️ 但**「在线」判定尚未升级为连接级事实** —— `online_state()` 目前在生产路径
+  只用于 `[mesh] +conn` 的 `online=` 日志字段，UI 的在线仍是旧启发式
+  （`peers` 表 + `RELAY_PEER_TIMEOUT_SECS`，见 `commands.rs` 的 friend online 判定）。
+  该项要等 M3-c/M3-e 才真正兑现。
 - 为后续 BLE（Phase 7）接入铺好路：BLE 与 LAN 并存时，选路层不需要为每个 Transport 写特例。
-- 半开链路造成的「消息投进死路」有明确收敛路径。
+- 半开链路造成的「消息投进死路」有了**收敛路径的设计**（读出问题 → 降级），
+  但**该路径要等 M3-0b 拆开读写活性之后才成立**。
 
 **Negative / 代价（明确承认）**
 - 引入选路后，消息可能**换路**：这会让「同一对节点两次投递走不同路径」成为常态，
