@@ -25,6 +25,7 @@
 - `0011-gossip-envelope-authentication.md`
 - `0012-logical-sequence-ordering.md`
 - `0013-transport-priority-queues.md`
+- `0014-multi-path-connection-selection.md`
 
 > Earlier ADRs `0001`–`0006` (message idempotency, outbox+ACK, E2EE, transport, no-Web-Worker,
 > device fingerprint) were removed; their normative content now lives in
