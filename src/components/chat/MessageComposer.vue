@@ -500,7 +500,7 @@ function fileToDataUrl(f: File): Promise<string> {
         <button
           v-for="(m, i) in mentionFiltered"
           :key="m.id"
-          class="flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-2 py-1.5 text-left text-[13px] transition"
+          class="tap-safe flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-2 py-1.5 text-left text-[13px] transition"
           :class="i === mentionActive ? 'bg-[var(--gosslan-list-active)]' : 'hover:bg-[var(--gosslan-hover)]'"
           @mousedown.prevent
           @click="applyMention(m)"
@@ -524,7 +524,7 @@ function fileToDataUrl(f: File): Promise<string> {
           :title="`${t('common.quote')} ${quote.sender}：${quote.snippet}`"
         >{{ t("common.quote") }} {{ quote.sender }}：{{ quote.snippet }}</span>
         <button
-          class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('chat.composer.cancelQuote')" :aria-label="t('chat.composer.cancelQuote')"
           @click="emit('close-quote')"
         >
@@ -575,7 +575,7 @@ function fileToDataUrl(f: File): Promise<string> {
       <div class="-mx-1 mt-1 flex h-8 items-center gap-2">
         <div class="relative">
           <button
-            class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
+            class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
             :class="emojiOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
             :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
             @click.stop="toggleEmoji"
@@ -587,7 +587,7 @@ function fileToDataUrl(f: File): Promise<string> {
         <!-- @mousedown.prevent 保持编辑器焦点：否则点击按钮后焦点落到按钮上，
              紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->
         <button
-          class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
+          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
           :class="codeMode ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           :title="t('chat.composer.code')" :aria-label="t('chat.composer.code')"
           @mousedown.prevent
@@ -602,14 +602,14 @@ function fileToDataUrl(f: File): Promise<string> {
           <SquareCode class="h-5 w-5" :stroke-width="1.75" />
         </button>
         <button
-          class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('chat.composer.sendFile')" :aria-label="t('chat.composer.sendFile')"
           @click="emit('attach')"
         >
           <Folder class="h-5 w-5" :stroke-width="1.75" />
         </button>
         <button
-          class="ml-auto flex h-8 shrink-0 items-center rounded-[6px] px-3.5 text-[13px] font-medium transition"
+          class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[6px] px-3.5 text-[13px] font-medium transition"
           :class="hasDraft
             ? 'bg-primary text-white hover:bg-primary-hover'
             : 'cursor-default bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"

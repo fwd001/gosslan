@@ -51,6 +51,7 @@ async function pickShareDir() {
             v-for="l in languageOptions"
             :key="l.value"
             class="whitespace-nowrap rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 text-xs transition"
+            :aria-pressed="app.language === l.value"
             :class="app.language === l.value
               ? 'bg-primary text-white'
               : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"

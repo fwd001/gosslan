@@ -172,11 +172,11 @@ async function openLink(href: string) {
       class="mt-1.5 flex items-center gap-2 border-t pt-1.5"
       :style="{ borderColor: 'rgba(128,128,128,0.2)' }"
     >
-      <button class="text-xs opacity-70 transition hover:opacity-100" @click="emit('expand', content)">
+      <button class="tap-safe text-xs opacity-70 transition hover:opacity-100" @click="emit('expand', content)">
         {{ t("common.expand") }}
       </button>
       <button
-        class="flex items-center gap-1 whitespace-nowrap text-xs transition"
+        class="tap-safe flex items-center gap-1 whitespace-nowrap text-xs transition"
         :class="copied ? 'opacity-100' : 'opacity-70 hover:opacity-100'"
         @click="emit('copy', content)"
       >

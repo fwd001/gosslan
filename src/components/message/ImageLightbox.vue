@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChevronLeft, ChevronRight, Save, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/useAppStore";
 import { loadFilePreview } from "@/utils/filePreview";
@@ -141,6 +141,27 @@ watch(
   () => reset(),
 );
 
+/**
+ * 打开时把焦点移进浮层（HIG：模态浮层要有 dialog 语义且焦点在其中）。
+ * 本组件没有引入 headlessui Dialog（它是自绘的全屏预览），所以至少做到：
+ * `role="dialog" aria-modal="true"` + 打开即聚焦容器（Tab 之后在浮层内流转），
+ * 关闭后把焦点还给触发元素。
+ */
+const dialogRef = ref<HTMLElement | null>(null);
+let restoreFocus: HTMLElement | null = null;
+watch(
+  () => props.open,
+  (open) => {
+    if (open) {
+      restoreFocus = document.activeElement as HTMLElement | null;
+      void nextTick(() => dialogRef.value?.focus());
+    } else {
+      restoreFocus?.focus?.();
+      restoreFocus = null;
+    }
+  },
+);
+
 onMounted(() => window.addEventListener("keydown", onKey));
 onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 </script>
@@ -155,8 +176,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
     >
       <div
         v-if="open"
-        class="fixed inset-0 z-[80] flex items-center justify-center"
-        style="background: rgba(0, 0, 0, 0.45); backdrop-filter: var(--gosslan-blur); -webkit-backdrop-filter: var(--gosslan-blur)"
+        ref="dialogRef"
+        tabindex="-1"
+        class="glass fixed inset-0 z-[80] flex items-center justify-center outline-none"
+        style="background: rgba(0, 0, 0, 0.45)"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="t('common.image')"
         @click="emit('close')"
         @wheel="onWheel"
       >

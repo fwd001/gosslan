@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useConversationSearch } from "@/composables/useConversationSearch";
@@ -76,12 +76,53 @@ function togglePlus() {
   }
   plusOpen.value = true;
   plusPopup.claim();
+  // 打开即把焦点移进第一条，键盘可以接着 ↑/↓ 或 Enter
+  void nextTick(() => {
+    plusMenuRef.value?.querySelector<HTMLElement>(".gosslan-menu-item:not([disabled])")?.focus();
+  });
 }
 
 function closePlus() {
   plusPopup.release();
   plusOpen.value = false;
+  // 关闭后把焦点还给「+」按钮（HIG：浮层关闭焦点不丢）。只在这两种情况下还：
+  // 焦点还在菜单里，或已经掉到 body —— 否则会抢走鼠标刚点到的行/输入框。
+  const active = document.activeElement;
+  const stuck = active === document.body || (!!plusMenuRef.value && plusMenuRef.value.contains(active));
+  if (stuck) void nextTick(() => plusBtn.value?.focus());
 }
+
+/**
+ * 「+」下拉的键盘可达（HIG *Full Keyboard Access*）：打开即聚焦第一条，
+ * ↑/↓ 循环、Esc 关闭。与右键菜单（`ContextMenu.vue`）同一套交互约定。
+ */
+function onPlusMenuKey(e: KeyboardEvent) {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    closePlus();
+    return;
+  }
+  const list = Array.from(
+    plusMenuRef.value?.querySelectorAll<HTMLElement>(".gosslan-menu-item:not([disabled])") ?? [],
+  );
+  if (!list.length) return;
+  const idx = list.indexOf(document.activeElement as HTMLElement);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const delta = e.key === "ArrowDown" ? 1 : -1;
+    const next = idx < 0 ? (delta > 0 ? 0 : list.length - 1) : (idx + delta + list.length) % list.length;
+    list[next]?.focus();
+  } else if (e.key === "Home") {
+    e.preventDefault();
+    list[0]?.focus();
+  } else if (e.key === "End") {
+    e.preventDefault();
+    list[list.length - 1]?.focus();
+  }
+}
+
+const plusBtn = ref<HTMLButtonElement | null>(null);
+const plusMenuRef = ref<HTMLElement | null>(null);
 
 function onDocClickForPlus() {
   closePlus();
@@ -272,8 +313,11 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       <div class="relative flex shrink-0 items-center">
         <!-- 微信式：单个加号，点开下拉（添加好友 / 创建群聊） -->
         <button
+          ref="plusBtn"
           class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
           :title="t('conv.addTitle')" :aria-label="t('conv.addTitle')"
+          :aria-expanded="plusOpen"
+          aria-haspopup="menu"
           @click.stop="togglePlus"
         >
           <Plus class="h-[18px] w-[18px]" />
@@ -282,12 +326,19 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
              参考微信这边只是暗色模式；亮色就是配色的话，按现有的配色，但是样式参考微信」）
              ⇒ 结构与外观统一走 `.gosslan-menu*`（与右键菜单同一套），
              条目带图标、32px 行高、6px 面板内边距 —— 微信式。 -->
-        <div v-if="plusOpen" class="frost gosslan-menu absolute right-0 top-8 z-30">
-          <button class="gosslan-menu-item" @click.stop="closePlus(); emit('open-add-friend')">
+        <div
+          v-if="plusOpen"
+          ref="plusMenuRef"
+          class="frost gosslan-menu absolute right-0 top-8 z-30"
+          role="menu"
+          aria-orientation="vertical"
+          @keydown="onPlusMenuKey"
+        >
+          <button role="menuitem" class="gosslan-menu-item" @click.stop="closePlus(); emit('open-add-friend')">
             <UserPlus />
             {{ t("common.addFriend") }}
           </button>
-          <button class="gosslan-menu-item" @click.stop="closePlus(); emit('open-group')">
+          <button role="menuitem" class="gosslan-menu-item" @click.stop="closePlus(); emit('open-group')">
             <UsersRound />
             {{ t("common.createGroup") }}
           </button>
@@ -322,14 +373,14 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           <template v-if="!keyword.trim()">
             <button
               v-if="chat.friends.length"
-              class="rounded-[var(--gosslan-radius-md)] bg-primary px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-primary px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
               @click="emit('update:view', 'contacts')"
             >
               {{ t("conv.startChat") }}
             </button>
             <button
               v-else
-              class="rounded-[var(--gosslan-radius-md)] bg-primary px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-primary px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
               @click="emit('open-add-friend')"
             >
               {{ t("common.addFriend") }}
@@ -402,7 +453,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           <span>{{ keyword.trim() ? t("conv.noMatchContact") : t("conv.noFriends") }}</span>
           <button
             v-if="!keyword.trim()"
-            class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
             @click="emit('open-add-friend')"
           >
             {{ t("common.addFriend") }}

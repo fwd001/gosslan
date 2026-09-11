@@ -320,14 +320,14 @@ function onResizeEnd() {
                  无好友 → 添加好友；两种情况都配同一句说明文字。 -->
           <button
             v-if="chat.friends.length"
-            class="mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+            class="tap-safe mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
             @click="view = 'contacts'"
           >
             {{ t("conv.startChat") }}
           </button>
           <button
             v-else
-            class="mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+            class="tap-safe mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
             @click="addFriendOpen = true"
           >
             {{ t("common.addFriend") }}

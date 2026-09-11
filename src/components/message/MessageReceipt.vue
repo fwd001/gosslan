@@ -78,7 +78,7 @@ function readerAvatar(id: string): string | null {
   <div v-if="isGroup" class="relative shrink-0 pb-1.5">
     <button
       v-if="readerIds.length > 0"
-      class="-space-x-1 flex items-center rounded-full p-0.5 transition hover:bg-[var(--gosslan-hover)]"
+      class="tap-safe -space-x-1 flex items-center rounded-full p-0.5 transition hover:bg-[var(--gosslan-hover)]"
       :title="t('msg.readBy', { n: readerIds.length })"
       :aria-label="t('msg.readByView', { n: readerIds.length })"
       @click.stop="toggleReaders"

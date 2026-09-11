@@ -22,7 +22,7 @@ const emit = defineEmits<{
 
 <template>
   <ContextMenu :x="x" :y="y" :estimated-height="90" @close="emit('close')">
-    <button class="gosslan-menu-item gosslan-menu-item--danger" @click="emit('delete')">
+    <button role="menuitem" class="gosslan-menu-item gosslan-menu-item--danger" @click="emit('delete')">
       <Trash2 />
       {{ t("conv.delete") }}
     </button>

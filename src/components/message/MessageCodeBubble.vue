@@ -49,9 +49,9 @@ const tailBg = computed(() => surface.value);
     <CodeBlock v-else :code="code" attached />
     <!-- 操作条＝代码卡片的底栏：总高恒为 previewMetrics.CODE_ACTION_BAR(28px)，改样式不要动高度 -->
     <div class="code-actions" :style="actionsStyle">
-      <button v-if="clamped" class="preview-action" @click="emit('expand', code)">{{ t("common.expand") }}</button>
+      <button v-if="clamped" class="tap-safe preview-action" @click="emit('expand', code)">{{ t("common.expand") }}</button>
       <button
-        class="preview-action"
+        class="tap-safe preview-action"
         :class="copied ? 'opacity-100' : 'opacity-70 hover:opacity-100'"
         @click="emit('copy', code)"
       >

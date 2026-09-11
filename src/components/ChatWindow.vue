@@ -527,7 +527,7 @@ function onLoadMore() {
       <!-- 回到最新（离开底部时出现） -->
       <button
         v-if="!nearBottom"
-        class="absolute bottom-4 right-5 z-10 flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe absolute bottom-4 right-5 z-10 flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
         @click="nearBottom = true; listRef?.scrollToBottom()"
       >
         <ArrowDown class="h-3.5 w-3.5" />

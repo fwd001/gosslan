@@ -53,6 +53,16 @@ function initials(name: string) {
 function onContextMenu(conv: Conversation, e: MouseEvent) {
   e.preventDefault();
   e.stopPropagation();
+  // 键盘唤起（Shift+F10 / 菜单键）时 clientX/Y 为 0 ⇒ 菜单会被贴到窗口左上角，
+  // 而不是这一行。此时改用**行的矩形**定位（取行底部左缘），与鼠标右键体验一致。
+  const fromKeyboard = e.clientX === 0 && e.clientY === 0;
+  if (fromKeyboard) {
+    const rect = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+    if (rect) {
+      emit("context", conv, rect.left + 24, rect.bottom - 4);
+      return;
+    }
+  }
   emit("context", conv, e.clientX, e.clientY);
 }
 

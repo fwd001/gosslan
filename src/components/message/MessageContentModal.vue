@@ -97,7 +97,7 @@ async function openLink(href: string) {
     </div>
     <div class="mt-3 flex justify-end">
       <button
-        class="preview-action"
+        class="tap-safe preview-action"
         :class="copied ? 'text-[var(--gosslan-accent-ink)]' : ''"
         @click="emit('copy', content)"
       >

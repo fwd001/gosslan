@@ -33,36 +33,36 @@ const forwardable = (k: MsgKind) => k === "text" || k === "code" || k === "image
        本应用没有 翻译 / 搜一搜 / 收藏 / 多选 / 提醒 这些能力，就不放空条目。 -->
   <ContextMenu :x="x" :y="y" :estimated-height="260" @close="emit('close')">
     <template v-if="kind === 'text' || kind === 'code'">
-      <button class="gosslan-menu-item" @click="emit('copy-text')">
+      <button role="menuitem" class="gosslan-menu-item" @click="emit('copy-text')">
         <Copy />
         {{ t("common.copy") }}
       </button>
     </template>
     <template v-if="kind === 'image'">
-      <button class="gosslan-menu-item" @click="emit('copy-image')">
+      <button role="menuitem" class="gosslan-menu-item" @click="emit('copy-image')">
         <Copy />
         {{ t("common.copyImage") }}
       </button>
-      <button class="gosslan-menu-item" @click="emit('save-image')">
+      <button role="menuitem" class="gosslan-menu-item" @click="emit('save-image')">
         <Save />
         {{ t("common.saveImage") }}
       </button>
     </template>
     <!-- 文件：保存（另存为）+ 复制（文件本体写 CF_HDROP，可在资源管理器/聊天框直接粘贴） -->
     <template v-if="kind === 'file'">
-      <button class="gosslan-menu-item" @click="emit('save-file')">
+      <button role="menuitem" class="gosslan-menu-item" @click="emit('save-file')">
         <Save />
         {{ t("common.save") }}
       </button>
-      <button class="gosslan-menu-item" @click="emit('copy-file')">
+      <button role="menuitem" class="gosslan-menu-item" @click="emit('copy-file')">
         <Copy />
         {{ t("common.copyFile") }}
       </button>
     </template>
 
-    <div class="gosslan-menu-sep"></div>
+    <div class="gosslan-menu-sep" role="separator"></div>
 
-    <button class="gosslan-menu-item" @click="emit('quote')">
+    <button role="menuitem" class="gosslan-menu-item" @click="emit('quote')">
       <CornerUpLeft />
       {{ t("common.quote") }}
     </button>

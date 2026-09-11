@@ -23,12 +23,12 @@ const emit = defineEmits<{
 
 <template>
   <ContextMenu :x="x" :y="y" :estimated-height="130" @close="emit('close')">
-    <button class="gosslan-menu-item" @click="emit('chat')">
+    <button role="menuitem" class="gosslan-menu-item" @click="emit('chat')">
       <MessageSquare />
       {{ t("conv.startChat") }}
     </button>
-    <div class="gosslan-menu-sep"></div>
-    <button class="gosslan-menu-item gosslan-menu-item--danger" @click="emit('confirm')">
+    <div class="gosslan-menu-sep" role="separator"></div>
+    <button role="menuitem" class="gosslan-menu-item gosslan-menu-item--danger" @click="emit('confirm')">
       <UserMinus />
       {{ t("common.deleteFriend") }}
     </button>

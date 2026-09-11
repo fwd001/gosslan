@@ -29,7 +29,7 @@ const emit = defineEmits<{
       <button
         v-for="e in EMOJIS"
         :key="e.file"
-        class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
         :title="e.displayName"
         @click="emit('select', e.displayName)"
       >

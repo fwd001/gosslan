@@ -27,6 +27,7 @@ function swatchOf(p: ChatPreset): { mineBubble: string; otherBubble: string } {
           :key="f.key"
           class="flex-1 rounded-[var(--gosslan-radius-sm)] py-1.5 text-sm transition"
           :class="app.chatStyle.fontSize === f.key ? 'bg-[var(--gosslan-panel)] text-[var(--gosslan-text)] shadow-sm' : 'text-[var(--gosslan-text-2)] hover:text-[var(--gosslan-text)]'"
+          :aria-pressed="app.chatStyle.fontSize === f.key"
           @click="app.setChatStyle({ fontSize: f.key })"
         >
           {{ t(f.label) }}
@@ -46,6 +47,7 @@ function swatchOf(p: ChatPreset): { mineBubble: string; otherBubble: string } {
           class="rounded-[var(--gosslan-radius-md)] border p-2 transition hover:bg-[var(--gosslan-hover)]"
           :class="app.chatStyle.preset === p.key ? 'border-primary ring-1 ring-primary' : 'border-[var(--gosslan-border)]'"
           :title="t(p.label)"
+          :aria-pressed="app.chatStyle.preset === p.key"
           @click="app.setChatStyle({ preset: p.key })"
         >
           <div class="mb-1 text-center text-[11px] text-[var(--gosslan-text-2)]">{{ t(p.label) }}</div>

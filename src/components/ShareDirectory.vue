@@ -7,6 +7,7 @@ import { api } from "@/api";
 import BaseModal from "@/components/BaseModal.vue";
 import { Download, Folder, RefreshCw } from "lucide-vue-next";
 import { humanSize } from "@/utils/color";
+import { reportError } from "@/utils/errors";
 import type { ShareEntry } from "@/types";
 
 const props = defineProps<{ open: boolean }>();
@@ -32,7 +33,9 @@ async function load() {
   try {
     entries.value = await api.requestShareTree(friendId());
   } catch (e) {
-    error.value = String(e);
+    // 不把 Rust 的 Err(String) 原样丢给用户（项目其它路径都走 reportError 出可读文案）；
+    // 同时给读屏一个 role="alert" 的提示（见模板）。
+    error.value = reportError(e, t("share.loadFail"));
   } finally {
     loading.value = false;
   }
@@ -71,7 +74,7 @@ watch(
     </div>
 
     <div class="max-h-80 overflow-y-auto">
-      <div v-if="error" class="py-4 text-sm text-[var(--gosslan-danger-ink)]">{{ error }}</div>
+      <div v-if="error" class="py-4 text-sm text-[var(--gosslan-danger-ink)]" role="alert">{{ error }}</div>
       <div v-else-if="entries.length === 0 && !loading" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ t("share.empty") }}
       </div>

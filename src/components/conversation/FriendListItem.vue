@@ -29,6 +29,16 @@ function initials(name: string) {
 function onContextMenu(friend: Friend, e: MouseEvent) {
   e.preventDefault();
   e.stopPropagation();
+  // 键盘唤起（Shift+F10 / 菜单键）时 clientX/Y 为 0 ⇒ 会用窗口左上角定位，
+  // 与"这一行"对不上。此时改用行的矩形（见 ConversationListItem 同款处理）。
+  const fromKeyboard = e.clientX === 0 && e.clientY === 0;
+  if (fromKeyboard) {
+    const rect = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+    if (rect) {
+      emit("context", friend, rect.left + 24, rect.bottom - 4);
+      return;
+    }
+  }
   emit("context", friend, e.clientX, e.clientY);
 }
 
