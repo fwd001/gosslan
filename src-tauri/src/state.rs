@@ -63,8 +63,10 @@ pub struct Peer {
     pub x25519_pubkey: Option<String>,
     /// Ed25519 公钥（base64，验签用）
     pub ed25519_pubkey: Option<String>,
-    /// 建链时间戳
-    pub connected_since: Option<i64>,
+    /// 首次发现该节点的时间戳（announce / Presence 首次学到）。用于「小 ID 兜底拨号」
+    /// 判断「对端在线却迟迟连不上」（单向可达）——语义是**发现时间**，不是建链时间。
+    #[serde(default)]
+    pub first_seen: Option<i64>,
 }
 
 /// 一条已建立的 TCP 连接。

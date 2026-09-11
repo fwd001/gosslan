@@ -22,7 +22,8 @@ export interface Peer {
   rtt_ms: number | null;
   x25519_pubkey: string | null;
   ed25519_pubkey: string | null;
-  connected_since: number | null;
+  /** 首次发现该节点的时间戳 */
+  first_seen: number | null;
 }
 
 export interface Friend {

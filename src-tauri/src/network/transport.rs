@@ -1,7 +1,8 @@
 //! TCP 消息传输与协议分发（含 Gossip 广播、中继切片、群密钥、E2EE 解密）。
 //!
 //! 连接建立规则（避免重复建链的竞态）：
-//! - 每个节点对，由 **device_id 字典序较小** 的一方主动拨号（dial），较大的一方只被动接受。
+//! - 默认由 **device_id 字典序较大** 的一方主动拨号（dial），较小的一方被动接受；
+//! - 较小的一方在「对端在线却迟迟连不上」（单向可达）时**兜底拨号**（见 ensure_link）。
 //! - 双方各自维护一个出站 mpsc 发送端，读循环负责解析帧并分发。
 
 use std::collections::{HashMap, HashSet};
@@ -970,6 +971,24 @@ enum DialOutcome {
     Failed(String),
 }
 
+/// 小 ID 兜底拨号的触发阈值：对端在线（announce 首次学到）却在本机无连接超过该时长，
+/// 说明大 ID 一方拨不过来（单向可达 / 大 ID 长期离线），小 ID 兜底主动拨号。
+/// 10s = 2 个 announce 周期（announce 5s 一轮），给大 ID 足够时间先拨通。
+const BACKUP_DIAL_AFTER_MS: i64 = 10_000;
+
+/// 是否该主动拨号（纯函数，便于单测 + 护栏非空转）。
+///
+/// - 本机是大 ID（`my_id > peer_id`）：恒拨（对称场景的确定性规则）。
+/// - 本机是小 ID：仅当对端在线（`first_seen` 有值）且「首次发现」已超过
+///   `BACKUP_DIAL_AFTER_MS` 才兜底拨 —— 避免对称场景两端同时拨号产生重复连接，
+///   同时补齐单向可达（大 ID 拨不过来）时的连通性。
+fn should_dial(my_id: &str, peer_id: &str, first_seen: Option<i64>, now_ms: i64) -> bool {
+    if my_id > peer_id {
+        return true;
+    }
+    first_seen.is_some_and(|since| now_ms - since >= BACKUP_DIAL_AFTER_MS)
+}
+
 pub async fn ensure_link(
     state: &Arc<AppState>,
     peer_id: &str,
@@ -977,13 +996,19 @@ pub async fn ensure_link(
     tcp_port: u16,
     shutdown: watch::Receiver<bool>,
 ) {
-    if peer_id >= state.device_id.as_str() {
-        return; // 只有小 ID 拨号
-    }
     // 按**端点**去重（而非按 peer）：同一 peer 换了个 IP（如同时有 LAN 与 Tailscale）
     // 是另一条连接，仍然值得拨。解析失败则放弃本轮（下一轮 announce 会再试）。
     let Some(endpoint) = socket_addr_from(ip, tcp_port) else { return };
     if state.has_endpoint(peer_id, &endpoint).await {
+        return;
+    }
+    // 默认：大 ID 立即拨号，小 ID 等大 ID 拨；小 ID 在「对端在线却迟迟连不上」时兜底。
+    let should = {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let first_seen = peers.get(peer_id).and_then(|p| p.first_seen);
+        should_dial(&state.device_id, peer_id, first_seen, db::now_ms())
+    };
+    if !should {
         return;
     }
     // LAN 发现路径的拨号失败是常态（对端离线、或本轮该由对端拨），刻意不打日志。
@@ -4195,7 +4220,7 @@ pub async fn upsert_peer(
                         rtt_ms,
                         x25519_pubkey: x25519.clone(),
                         ed25519_pubkey: ed25519.clone(),
-                        connected_since: Some(ts),
+                        first_seen: Some(ts),
                     },
                 );
                 (true, true, false)
@@ -4726,6 +4751,33 @@ pub fn notify_with_extra(
 mod tests {
     use super::*;
     use crate::gossip_engine::GossipEngine;
+
+    // ---- 小 ID 兜底拨号（M2 双向建链）----
+
+    #[test]
+    fn should_dial_larger_id_always_dials() {
+        // 本机是大 ID（my_id > peer_id）：对称场景的确定性拨号方，恒拨。
+        assert!(should_dial("b", "a", None, 0));
+        assert!(should_dial("b", "a", Some(0), 0));
+    }
+
+    #[test]
+    fn should_dial_smaller_id_waits_within_threshold() {
+        // 本机是小 ID：对端在线但「首次发现」未超过 10s，不拨（等大 ID 拨）。
+        let now = 1_000_000;
+        assert!(!should_dial("a", "b", Some(now - 9_000), now));
+        assert!(!should_dial("a", "b", Some(now), now));
+        // 对端尚未在线（first_seen=None）：不拨。
+        assert!(!should_dial("a", "b", None, now));
+    }
+
+    #[test]
+    fn should_dial_smaller_id_backups_after_threshold() {
+        // 本机是小 ID：对端在线却超过 10s 连不上（单向可达），兜底拨。
+        let now = 1_000_000;
+        assert!(should_dial("a", "b", Some(now - 10_000), now));
+        assert!(should_dial("a", "b", Some(now - 60_000), now));
+    }
 
     // ---- Hello 握手身份认证（P0 安全修复回归）----
 

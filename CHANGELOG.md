@@ -43,6 +43,11 @@
 - **接收端单聊消费加 target 判断**（`handle_gossip`）：`target` 存在且非本机 → 中间节点只转发不消费（防御性；即便不判断，中间节点也因 ECDH 解不开而不会落库，但明确判断语义更清晰）。
 - 送达确认（ChatAck）与已读回执（ChatReadReceipt）此前已定向，本次对齐；outbox 补发走 `Message::ChatMessage` 直发、群聊无 target 广播，均不受影响。
 
+### Changed (P1 M2 双向建链兜底)
+- **小 ID 兜底拨号**（`ensure_link`）：此前只由「device_id 字典序较大」的一方拨号，小 ID 一方被动等。若大 ID 一方因单向可达（不对称 NAT/防火墙）拨不过来、或长期离线，小 ID 永远连不上。现在小 ID 在「对端在线却迟迟连不上」（首次发现超过 10s 仍无连接）时兜底主动拨号，补齐「谁能连上谁建链」的对等性；对称场景仍是大 ID 先拨（避免两端同时拨号产生重复连接）。
+- 抽纯函数 `should_dial(my_id, peer_id, first_seen, now)` + 三个单测钉住「大 ID 恒拨 / 小 ID 阈值内等待 / 小 ID 超阈值兜底」，护栏非空转验证（临时禁用兜底 → 测试 FAIL）。
+- `Peer.connected_since` 语义修正重命名为 `first_seen`（其值本就是「首次发现时间」而非「建链时间」，此前从未被读取）；前端 types 同步。
+
 ## [2.1.2] - 2026-09-11
 
 ### Fixed
