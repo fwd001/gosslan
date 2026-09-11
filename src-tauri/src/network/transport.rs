@@ -1223,8 +1223,9 @@ pub async fn ensure_link(
     if !should {
         return;
     }
-    // LAN 发现路径的拨号失败是常态（对端离线、或本轮该由对端拨），刻意不打日志。
-    // 身份来自 announce 包（`peer_id`）⇒ 走「已知身份」路径，不等对端 Hello。
+    // LAN 发现路径的拨号失败是常态（对端离线、或本轮该由对端拨），刻意不打日志；
+    // 但**握手验签失败/身份不符**会在 `connect_to_peer` 内以 warn + 诊断事件留痕
+    // （那是「有人冒充」或「配置写错」的信号，不能静默）。
     let _ = connect_to_peer(state, Some(peer_id), endpoint, shutdown).await;
 }
 
@@ -1234,8 +1235,11 @@ pub async fn ensure_link(
 /// 这里不再「拼字符串再解析」（那是 IPv6 丢方括号的根源）。
 ///
 /// `known_id` 决定握手方式：
-/// - `Some(id)`：身份已知（LAN announce 学到 / 用户显式配置了 `device_id`）。链路 key
-///   直接用 `id`，发完 Hello 即进入正常收发 —— 与历史行为一致。
+/// - `Some(id)`：身份已知（LAN announce 学到 / 用户显式配置了 `device_id`）。
+///   ⚠️ **仍然要握手验签**：`id` 只说明「对方自称/我们以为它是谁」，
+///   未认证的 announce 不能充当身份（否则任意进程可冒用好友 id 接链并伪造 Ack /
+///   FriendRemove）。且要求对端自称的 device_id 与 `id` 一致，不一致即失败留痕 ——
+///   这样「配置写错」不再表现为静默单向黑洞。
 /// - `None`：身份未知（Routed 端点只填了地址）。此时**必须先握手**：发自己的 Hello →
 ///   等对端回发的 Hello → 验签 → 得到真实 `device_id` 与双公钥，再登记链路。
 ///   这正是 §8 的 `IP:PORT → TCP → Hello → Node ID → Identity`，
