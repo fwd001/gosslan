@@ -1,6 +1,6 @@
 //! Tauri 命令层：前端调用的所有后端入口。
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,7 +45,7 @@ const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 use crate::crypto;
 use crate::db;
 use crate::discovery::routed::{
-    encode_endpoints, parse_endpoints, RoutedEndpoint, ROUTED_ENDPOINTS_KEY,
+    encode_endpoints, parse_endpoint_addr, parse_endpoints, RoutedEndpoint, ROUTED_ENDPOINTS_KEY,
 };
 use crate::export;
 use crate::network::transport::{
@@ -53,7 +53,7 @@ use crate::network::transport::{
     resolve_member_x25519, resolve_nickname, try_send,
 };
 use crate::network::{self, file};
-use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry, FILE_CHUNK, TCP_PORT};
+use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry, FILE_CHUNK};
 use crate::state::{
     AppState, Conversation, DeviceInfo, Friend, Group, GroupFile, InterfaceInfo, MessageRecord,
     Peer, PendingRequest, TopologyInfo, TransferInfo,
@@ -3034,14 +3034,11 @@ fn preview(kind: &str, content: &str) -> String {
 /// IPv6 端点即使拨出去也连不上。在这里当场拒绝，好过「存下来了但永远连不上」
 /// —— 后者对用户完全不可见（配置成功、日志无错、就是没反应）。
 fn normalize_routed_address(input: &str) -> Result<String, String> {
-    // 用户从别处复制地址常带空白
-    let input = input.trim();
-    let addr: SocketAddr = match input.parse::<SocketAddr>() {
-        Ok(a) => a,
-        Err(_) => match input.parse::<IpAddr>() {
-            Ok(ip) => SocketAddr::new(ip, TCP_PORT),
-            Err(_) => return Err(format!("地址格式应为 ip 或 ip:port，收到：{input}")),
-        },
+    let trimmed = input.trim();
+    // 解析（含「裸 IP 补标准端口」）由 `parse_endpoint_addr` 单点负责 ——
+    // 拨号侧走的是同一个实现，避免两条路径行为不一致。
+    let Some(addr) = parse_endpoint_addr(trimmed) else {
+        return Err(format!("地址格式应为 ip 或 ip:port，收到：{trimmed}"));
     };
     if addr.is_ipv6() {
         return Err(
@@ -3115,7 +3112,7 @@ pub fn remove_routed_endpoint(
 mod tests {
     use super::{
         check_message_content, decode_outgoing_image, image_extension, normalize_routed_address,
-        MAX_MESSAGE_LEN, MAX_OUTGOING_IMAGE_BYTES, TCP_PORT,
+        MAX_MESSAGE_LEN, MAX_OUTGOING_IMAGE_BYTES,
     };
 
     /// Routed 端点地址：`ip` 与 `ip:port` 两种写法都收（省略端口补标准 `TCP_PORT`），
@@ -3126,7 +3123,7 @@ mod tests {
         // 省略端口 → 补标准端口（端口是内部细节，用户不必知道）
         assert_eq!(
             normalize_routed_address("100.64.0.1").unwrap(),
-            format!("100.64.0.1:{TCP_PORT}")
+            format!("100.64.0.1:{}", crate::protocol::TCP_PORT)
         );
         // 显式端口 → 原样保留（对端用了 --instance 的场景）
         assert_eq!(
@@ -3136,7 +3133,7 @@ mod tests {
         // 前后空白容错（从聊天窗口复制地址常带空格）
         assert_eq!(
             normalize_routed_address("  192.168.1.5  ").unwrap(),
-            format!("192.168.1.5:{TCP_PORT}")
+            format!("192.168.1.5:{}", crate::protocol::TCP_PORT)
         );
 
         // 格式错误

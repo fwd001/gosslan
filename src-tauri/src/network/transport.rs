@@ -227,7 +227,15 @@ pub async fn spawn(
                     // 并发拨号：一个「黑洞」端点不能把同一轮里的其他端点拖住。
                     let mut dials = tokio::task::JoinSet::new();
                     for ep in list {
-                        let Some(addr) = ep.socket_addr() else { continue };
+                        // 解析失败**必须留痕**：用户配置了东西却什么都不发生时，
+                        // 这条日志是唯一的线索（此前是静默 `continue`）。
+                        let Some(addr) = ep.socket_addr() else {
+                            eprintln!(
+                                "[routed] 跳过无法解析的地址 peer={} address={:?}",
+                                ep.device_id, ep.address
+                            );
+                            continue;
+                        };
                         if state.has_endpoint(&ep.device_id, &addr).await {
                             continue; // 该端点已连上
                         }

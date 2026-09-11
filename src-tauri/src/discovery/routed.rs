@@ -16,7 +16,7 @@
 //! 第一版只支持手动端点：不扫描整个网络（§52）。
 
 use std::collections::VecDeque;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,7 @@ use crate::mesh::candidate::PeerCandidate;
 use crate::mesh::endpoint::Endpoint;
 use crate::mesh::path::PathKind;
 use crate::mesh::peer::PeerIdentity;
+use crate::protocol::TCP_PORT;
 
 /// 手动配置的 Routed 端点在 `settings` 表中的键。
 pub const ROUTED_ENDPOINTS_KEY: &str = "routed_endpoints";
@@ -51,10 +52,29 @@ impl RoutedEndpoint {
         }
     }
 
-    /// 解析出可拨号的地址；格式非法返回 `None`（调用方应跳过而非报错）。
+    /// 解析出可拨号的地址；格式非法返回 `None`（调用方负责记录并跳过，不要静默丢）。
     pub fn socket_addr(&self) -> Option<SocketAddr> {
-        self.address.parse().ok()
+        parse_endpoint_addr(&self.address)
     }
+}
+
+/// 解析端点地址字符串（`ip` 或 `ip:port`）为 `SocketAddr`。
+///
+/// 省略端口时按标准 [`TCP_PORT`] 补全：端口是内部实现细节，用户没有理由必须知道它，
+/// 更不该因为漏写而在拨号时被**静默跳过**。
+///
+/// **这是唯一实现** —— `RoutedEndpoint::socket_addr()`（拨号侧）与命令层的校验 /
+/// 规范化都走它，避免「两处各解析一遍、行为还不一致」（曾真实发生：命令层接受
+/// 裸 IP 并告诉用户「只填 IP 即可」，而拨号侧只认 `ip:port`，于是裸 IP 静默失效）。
+pub fn parse_endpoint_addr(address: &str) -> Option<SocketAddr> {
+    let address = address.trim();
+    if let Ok(addr) = address.parse::<SocketAddr>() {
+        return Some(addr);
+    }
+    address
+        .parse::<IpAddr>()
+        .ok()
+        .map(|ip| SocketAddr::new(ip, TCP_PORT))
 }
 
 /// 解析存储的 JSON 数组。**逐条跳过非法条目**，绝不因一条坏数据导致整体失败。
@@ -206,12 +226,36 @@ mod tests {
         assert!(parse_endpoints("{}").is_empty());
     }
 
+    /// 端点地址解析：显式端口、**裸 IP（省略端口按 TCP_PORT 补全）**、空白容错；
+    /// 非法输入返回 None。
+    ///
+    /// 裸 IP 这条是回归护栏：曾经命令层接受裸 IP 并提示「只填 IP 即可」，
+    /// 而拨号侧只认 `ip:port` → 裸 IP 被静默跳过、永远不拨（用户无从察觉）。
     #[test]
-    fn socket_addr_parses_or_none() {
-        assert!(RoutedEndpoint::new("a", "100.64.0.1:59992")
-            .socket_addr()
-            .is_some());
-        assert!(RoutedEndpoint::new("a", "garbage").socket_addr().is_none());
+    fn socket_addr_accepts_bare_ip_and_explicit_port() {
+        // 显式端口
+        assert_eq!(
+            RoutedEndpoint::new("a", "100.64.0.1:60002").socket_addr(),
+            Some(sa("100.64.0.1:60002"))
+        );
+        // 裸 IP → 补标准端口（手写 settings 时最常出现的形式）
+        assert_eq!(
+            RoutedEndpoint::new("a", "100.64.0.1").socket_addr(),
+            Some(SocketAddr::new("100.64.0.1".parse().unwrap(), TCP_PORT))
+        );
+        // 前后空白容错（从聊天窗口复制地址常带空格）
+        assert_eq!(
+            RoutedEndpoint::new("a", "  100.64.0.1:60002  ").socket_addr(),
+            Some(sa("100.64.0.1:60002"))
+        );
+        // 非法输入
+        assert_eq!(RoutedEndpoint::new("a", "garbage").socket_addr(), None);
+        assert_eq!(RoutedEndpoint::new("a", "").socket_addr(), None);
+        assert_eq!(RoutedEndpoint::new("a", "100.64.0.1:").socket_addr(), None);
+    }
+
+    fn sa(s: &str) -> SocketAddr {
+        s.parse().unwrap()
     }
 
     #[test]
