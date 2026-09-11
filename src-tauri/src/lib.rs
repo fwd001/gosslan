@@ -9,6 +9,7 @@ pub mod discovery;
 /// 聊天记录导出（纯文字单文件）：磁盘满 / 换机时的自救手段。
 pub mod export;
 mod gossip_engine;
+mod logging;
 pub mod mesh;
 mod network;
 pub mod protocol;
@@ -70,7 +71,7 @@ pub fn run() {
             // 菜单失败只是没有菜单，快捷键还有前端兜底）。
             #[cfg(target_os = "macos")]
             if let Err(e) = menu::setup(app.handle()) {
-                eprintln!("[gosslan] 菜单栏初始化失败（不影响启动）：{e}");
+                state.logger.warn("menu", format!("菜单栏初始化失败（不影响启动）：{e}"));
             }
             // macOS：`decorations: false` 使 tao 以 `Borderless`（不含 `Closable` 位）样式
             // 掩码创建 NSWindow，AppKit 据此把「关闭窗口」菜单项（Cmd+W / performClose:）
@@ -80,7 +81,7 @@ pub fn run() {
             #[cfg(all(desktop, target_os = "macos"))]
             if let Some(win) = app.handle().get_webview_window(tray::MAIN_WINDOW_LABEL) {
                 if let Err(e) = win.set_closable(true) {
-                    eprintln!("[window] 恢复 macOS Cmd+W 关闭能力失败: {e}");
+                    state.logger.warn("window", format!("恢复 macOS Cmd+W 关闭能力失败: {e}"));
                 }
                 // 关系统阴影（与圆角冲突；NSWindow 级、不被 wry 替换 contentView 影响）。
                 // 圆角本身在 WebView 加载完成后由前端调 `apply_macos_window_shape` 命令设置
@@ -97,11 +98,14 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 let handle = app.handle().clone();
+                let st_timeout = state.clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
                     if let Some(win) = handle.get_webview_window(tray::MAIN_WINDOW_LABEL) {
                         if matches!(win.is_visible(), Ok(false)) {
-                            eprintln!("[window] 前端未在超时内显示窗口，兜底显示");
+                            st_timeout
+                                .logger
+                                .warn("window", "前端未在超时内显示窗口，兜底显示");
                             let _ = win.show();
                             let _ = win.set_focus();
                         }
@@ -124,13 +128,15 @@ pub fn run() {
                         crate::db::get_lan_enabled(&dbc)
                     };
                     if forced || enabled {
+                        // st 即将 move 进 start，先 clone 一份用于失败日志。
+                        let st_log = st.clone();
                         let started = if forced {
                             network::start(st, "0.0.0.0".to_string()).await
                         } else {
                             network::start_from_prefs(st).await
                         };
                         if let Err(e) = started {
-                            eprintln!("[lan] 自动开启局域网通道失败: {e}");
+                            st_log.logger.error("lan", format!("自动开启局域网通道失败: {e}"));
                         }
                     }
                 });
@@ -216,6 +222,10 @@ pub fn run() {
             commands::list_routed_endpoints,
             commands::add_routed_endpoint,
             commands::remove_routed_endpoint,
+            commands::get_logs,
+            commands::clear_logs,
+            commands::open_log_window,
+            commands::close_log_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -19,6 +19,7 @@ import type {
   SearchResult,
   InterfaceInfo,
   LinkState,
+  LogEntry,
   MessageRecord,
   NetworkStatus,
   Peer,
@@ -154,6 +155,13 @@ export const api = {
   // 开发者诊断（隐藏面板用）
   getDiscoveryDiag: () => invoke<DiscoveryDiag>("get_discovery_diag"),
   getInterfaceCandidates: () => invoke<InterfaceCandidate[]>("get_interface_candidates"),
+
+  // 运行日志（「运行日志」页 / 独立窗口用）
+  getLogs: () => invoke<LogEntry[]>("get_logs"),
+  clearLogs: () => invoke<void>("clear_logs"),
+  /** 桌面端：打开独立日志窗口；移动端不要调用（用页面跳转）。 */
+  openLogWindow: () => invoke<void>("open_log_window"),
+  closeLogWindow: () => invoke<void>("close_log_window"),
 };
 
 // ---------------- 事件监听 ----------------

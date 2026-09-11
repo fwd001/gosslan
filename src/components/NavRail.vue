@@ -3,13 +3,14 @@ import { computed } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { avatarInitial, nameToColor } from "@/utils/color";
-import { MessageCircle, Moon, Sun, Users } from "lucide-vue-next";
+import { MessageCircle, Moon, ScrollText, Sun, Users } from "lucide-vue-next";
 import { t } from "@/i18n";
 
 defineProps<{ view: "chats" | "contacts" }>();
 const emit = defineEmits<{
   (e: "update:view", v: "chats" | "contacts"): void;
   (e: "open-settings"): void;
+  (e: "open-logs"): void;
 }>();
 
 const app = useAppStore();
@@ -105,6 +106,13 @@ const pendingLabel = computed(() =>
           <circle cx="12" cy="12" r="3" />
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
         </svg>
+      </button>
+      <button
+        class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
+        :title="t('nav.logs')" :aria-label="t('nav.logs')"
+        @click="emit('open-logs')"
+      >
+        <ScrollText class="h-[19px] w-[19px]" />
       </button>
     </div>
   </aside>

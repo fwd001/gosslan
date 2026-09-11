@@ -27,6 +27,20 @@ export const zhCN: MessageDict = {
   "nav.me.openSettings": "我，{status}，打开设置",
   "nav.chats.unread": "聊天，{n} 条未读",
   "nav.contacts.pending": "通讯录，{n} 条好友申请",
+  "nav.logs": "日志",
+
+  // ---- 运行日志页 ----
+  "logs.title": "运行日志",
+  "logs.empty": "暂无日志。应用只在关键事件或出错时记录，正常情况下保持安静。",
+  "logs.count": "{n} 条",
+  "logs.copy": "复制",
+  "logs.copied": "已复制",
+  "logs.clear": "清空",
+  "logs.clearConfirm": "再点一次确认清空",
+  "logs.refresh": "刷新",
+  "logs.autoRefresh": "自动刷新",
+  "logs.close": "关闭",
+  "logs.back": "返回",
 
   // ---- 设置页主框架 ----
   "settings.title": "设置",
@@ -519,6 +533,20 @@ export const enUS: MessageDict = {
   "nav.me.openSettings": "My profile, {status}. Open settings.",
   "nav.chats.unread": "Chats, {n} unread",
   "nav.contacts.pending": "Contacts, {n} friend requests",
+  "nav.logs": "Logs",
+
+  // ---- Runtime logs page ----
+  "logs.title": "Runtime Logs",
+  "logs.empty": "No logs yet. Gosslan only logs key events or errors, staying quiet otherwise.",
+  "logs.count": "{n} entries",
+  "logs.copy": "Copy",
+  "logs.copied": "Copied",
+  "logs.clear": "Clear",
+  "logs.clearConfirm": "Click again to confirm",
+  "logs.refresh": "Refresh",
+  "logs.autoRefresh": "Auto refresh",
+  "logs.close": "Close",
+  "logs.back": "Back",
 
   // ---- Settings shell ----
   "settings.title": "Settings",

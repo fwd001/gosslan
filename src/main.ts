@@ -1,6 +1,7 @@
 import { createApp } from "vue";
 import { createPinia } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./style.css";
 import App from "./App.vue";
 
@@ -20,6 +21,13 @@ app.mount("#app");
 // rAF 可能永远不触发，会把窗口永久留在隐藏态。
 // Rust 侧另有超时兜底（见 lib.rs），前端初始化异常时也不会出现"没有窗口的应用"。
 function revealMainWindow() {
+  // 独立的「运行日志」窗口由 Rust open_log_window 自行 show，不触发主窗口显示
+  // （否则打开日志窗口会把已隐藏到托盘的主窗口也拉出来）。
+  try {
+    if (getCurrentWindow().label === "logs") return;
+  } catch {
+    /* 非 Tauri 环境（纯 vite dev）忽略 */
+  }
   // 非 Tauri 环境（纯 vite dev）会 reject，忽略即可
   void invoke("focus_window").catch(() => {});
 }

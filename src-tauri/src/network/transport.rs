@@ -302,10 +302,13 @@ pub async fn spawn(
                         // 解析失败**必须留痕**：用户配置了东西却什么都不发生时，
                         // 这条日志是唯一的线索（此前是静默 `continue`）。
                         let Some(addr) = ep.socket_addr() else {
-                            eprintln!(
-                                "[routed] 跳过无法解析的地址 peer={} address={:?}",
-                                ep.display_id(),
-                                ep.address
+                            state.logger.warn(
+                                "routed",
+                                format!(
+                                    "跳过无法解析的地址 peer={} address={:?}",
+                                    ep.display_id(),
+                                    ep.address
+                                ),
                             );
                             continue;
                         };
@@ -324,13 +327,16 @@ pub async fn spawn(
                                 .await
                             {
                                 DialOutcome::Connected => {
-                                    eprintln!("[routed] 已连上 peer={} ep={addr}", ep.display_id())
+                                    state.logger.info(
+                                        "routed",
+                                        format!("已连上 peer={} ep={addr}", ep.display_id()),
+                                    )
                                 }
                                 // 每 10s 一轮的常态：端点已有连接，静默（见 DialOutcome 定义）。
                                 DialOutcome::AlreadyConnected => {}
-                                DialOutcome::Failed(e) => eprintln!(
-                                    "[routed] 拨号未成功 peer={} ep={addr}：{e}",
-                                    ep.display_id()
+                                DialOutcome::Failed(e) => state.logger.warn(
+                                    "routed",
+                                    format!("拨号未成功 peer={} ep={addr}：{e}", ep.display_id()),
                                 ),
                                 // 正常停机：不打日志，否则退出时会多出一批误导性的「失败」
                                 DialOutcome::Stopped => {}
@@ -551,7 +557,10 @@ async fn handle_incoming(
                 sig,
             ) {
                 state.push_diag_event("hello_rejected", &format!("{reason}; from={peer_addr}"));
-                eprintln!("[transport] 拒绝未通过身份认证的 Hello: {reason}");
+                state.logger.warn(
+                    "transport",
+                    format!("拒绝未通过身份认证的 Hello: {reason}"),
+                );
                 return;
             }
             device_id.clone()
@@ -599,7 +608,10 @@ async fn handle_incoming(
         db::get_clock(&dbc, &peer_id)
     };
     let _ = prio_tx.send(build_signed_hello(&state, conv_clock)).await;
-    eprintln!("[transport] 握手补全：已向对端回发本节点 Hello（peer={peer_id}）");
+    state.logger.info(
+        "transport",
+        format!("握手补全：已向对端回发本节点 Hello（peer={peer_id}）"),
+    );
     handle_message(&state, &peer_id, first).await;
     // 用 TCP 对端的真实地址补全 peer IP：解决「被动连接方 peers 表 IP 为空或虚拟」的问题。
     // 新地址必须是非虚拟的可直连 LAN 地址才写入；link-local（169.254.0.0/16）已包含在
@@ -791,7 +803,7 @@ pub(crate) fn update_conv_link(state: &AppState, conv_id: &str, path: &str, hop:
                 hop,
             },
         );
-        eprintln!("[link] conv={conv_id} path={path} hop={hop}");
+        state.logger.info("link", format!("conv={conv_id} path={path} hop={hop}"));
     }
 }
 
@@ -818,12 +830,15 @@ fn register_connection(state: &AppState, peer_id: &str, endpoint: std::net::Sock
         PeerCandidate::new(peer_id, identity, MeshEndpoint::Tcp(endpoint), path.clone());
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     let (_, outcome) = pm.merge(candidate);
-    eprintln!(
-        "[mesh] +conn peer={peer_id} ep={endpoint} path={path:?} \
-         new_peer={} new_conn={} conns={}",
-        outcome.is_new_peer,
-        outcome.is_new_connection,
-        pm.get(peer_id).map(|p| p.connection_count()).unwrap_or(0)
+    state.logger.info(
+        "mesh",
+        format!(
+            "+conn peer={peer_id} ep={endpoint} path={path:?} \
+             new_peer={} new_conn={} conns={}",
+            outcome.is_new_peer,
+            outcome.is_new_connection,
+            pm.get(peer_id).map(|p| p.connection_count()).unwrap_or(0)
+        ),
     );
 }
 
@@ -831,9 +846,12 @@ fn register_connection(state: &AppState, peer_id: &str, endpoint: std::net::Sock
 fn unregister_connection(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     pm.remove_connection(peer_id, &MeshEndpoint::Tcp(endpoint));
-    eprintln!(
-        "[mesh] -conn peer={peer_id} ep={endpoint} conns={}",
-        pm.get(peer_id).map(|p| p.connection_count()).unwrap_or(0)
+    state.logger.info(
+        "mesh",
+        format!(
+            "-conn peer={peer_id} ep={endpoint} conns={}",
+            pm.get(peer_id).map(|p| p.connection_count()).unwrap_or(0)
+        ),
     );
 }
 
@@ -1115,7 +1133,10 @@ async fn connect_to_peer(
         Some(first) => {
             // 留痕：配置里没写 device_id 时，这行日志是用户/开发者**唯一**能确认
             // 「到底连上了谁」的地方。
-            eprintln!("[transport] 握手学到对端身份 peer={peer_id} ep={endpoint}");
+            state.logger.info(
+                "transport",
+                format!("握手学到对端身份 peer={peer_id} ep={endpoint}"),
+            );
             handle_message(state, &peer_id, first).await
         }
         // 身份已知路径：沿用原逻辑，在链路就位后发 Hello。
@@ -1704,7 +1725,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 }
                 Err(e) => {
                     let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
-                    eprintln!("接收文件初始化失败: {e}");
+                    state.logger.error("file", format!("接收文件初始化失败: {e}"));
                 }
             }
         }
@@ -2579,9 +2600,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         !peers.contains_key(&env.sender_id)
                     };
                     if is_new {
-                        eprintln!(
-                            "[presence] 学到远端节点 peer={} nickname={}",
-                            env.sender_id, nickname
+                        state.logger.info(
+                            "presence",
+                            format!("学到远端节点 peer={} nickname={}", env.sender_id, nickname),
                         );
                     }
                     // ip 空、tcp_port 0：跨跳转发不知道对端真实地址，仅记录身份
@@ -2645,9 +2666,12 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         let _ = state.app.emit("friend-request", &req);
                         // 留痕：跨跳好友申请是内存态（pending_requests），日志是唯一
                         // 可观测「谁申请了我」的手段（headless 测试与真机排障都靠它）。
-                        eprintln!(
-                            "[friend] 收到跨跳好友申请 peer={} nickname={}",
-                            env.sender_id, req.from_nickname
+                        state.logger.info(
+                            "friend",
+                            format!(
+                                "收到跨跳好友申请 peer={} nickname={}",
+                                env.sender_id, req.from_nickname
+                            ),
                         );
                         let mut extra = std::collections::HashMap::new();
                         extra.insert("type".to_string(), "friend_request".to_string());
@@ -2688,7 +2712,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     .remove(&from);
                 let _ = state.app.emit("friend-accepted", &from);
                 // 留痕：跨跳好友同意是落库（friends 表）+ 内存态，日志便于 headless 观测。
-                eprintln!("[friend] 收到跨跳好友同意 peer={from}");
+                state.logger.info("friend", format!("收到跨跳好友同意 peer={from}"));
                 notify(
                     &state.app,
                     "好友申请已通过",

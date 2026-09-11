@@ -161,7 +161,7 @@ pub async fn start_from_prefs(state: Arc<AppState>) -> Result<(), String> {
     match start(state.clone(), bind_ip.clone()).await {
         Ok(()) => Ok(()),
         Err(e) if bind_ip != AUTO_BIND_IP => {
-            eprintln!("[lan] 绑定 {bind_ip} 失败（{e}），回落到自动选择网卡");
+            state.logger.warn("lan", format!("绑定 {bind_ip} 失败（{e}），回落到自动选择网卡"));
             start(state, AUTO_BIND_IP.to_string()).await
         }
         Err(e) => Err(e),

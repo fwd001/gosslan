@@ -3,7 +3,7 @@ import { t } from "@/i18n";
 import { ref, onMounted, onUnmounted, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { APP_ACTION, bindMenuEvents } from "@/api";
+import { api, APP_ACTION, bindMenuEvents } from "@/api";
 import { useShortcuts } from "@/composables/useShortcuts";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import NavRail from "@/components/NavRail.vue";
@@ -16,7 +16,8 @@ import SettingsPanel from "@/components/SettingsPanel.vue";
 import AddFriendModal from "@/components/AddFriendModal.vue";
 import GroupCreateModal from "@/components/GroupCreateModal.vue";
 import ShareDirectory from "@/components/ShareDirectory.vue";
-import { CheckCircle2, Info, MessageCircle, Settings, Users, XCircle } from "lucide-vue-next";
+import LogViewer from "@/components/LogViewer.vue";
+import { CheckCircle2, Info, MessageCircle, ScrollText, Settings, Users, XCircle } from "lucide-vue-next";
 import type { Friend, PendingRequest } from "@/types";
 
 const app = useAppStore();
@@ -29,10 +30,20 @@ const settingsOpen = ref(false);
 const addFriendOpen = ref(false);
 const groupOpen = ref(false);
 const shareOpen = ref(false);
+const logsOpen = ref(false);
 
 function openSettings() {
   settingsOpen.value = true;
   if (app.isMobile) app.mobileView = "list";
+}
+
+/** 打开运行日志：桌面端开独立窗口，移动端跳全屏页面（带返回）。 */
+function openLogs() {
+  if (app.isMobile) {
+    logsOpen.value = true;
+  } else {
+    void api.openLogWindow().catch((e) => app.toastError(e, t("common.operationFail")));
+  }
 }
 
 function openFriendProfile(f: Friend) {
@@ -205,7 +216,7 @@ function onResizeEnd() {
     <!-- 桌面：rail（左）| 列表（中）| 聊天（右）三列；移动端按 mobileView 抽屉切换 -->
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
     <!-- 左侧导航栏：顶格到 caption 之下，浅灰与 caption 一体 -->
-    <NavRail :view="view" @update:view="view = $event" @open-settings="openSettings" />
+    <NavRail :view="view" @update:view="view = $event" @open-settings="openSettings" @open-logs="openLogs" />
 
     <!-- 会话列表：桌面宽度可拖拽调（默认250px，持久化）；移动端整屏抽屉，靠 translate 滑动切换 -->
     <aside
@@ -341,6 +352,13 @@ function onResizeEnd() {
         <Settings class="h-5 w-5" />
         <span class="text-[11px]">{{ t("nav.settings") }}</span>
       </button>
+      <button
+        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)]"
+        @click="openLogs"
+      >
+        <ScrollText class="h-5 w-5" />
+        <span class="text-[11px]">{{ t("nav.logs") }}</span>
+      </button>
     </nav>
 
     <!-- 弹窗 -->
@@ -348,6 +366,9 @@ function onResizeEnd() {
     <AddFriendModal :open="addFriendOpen" @close="addFriendOpen = false" />
     <GroupCreateModal :open="groupOpen" @close="groupOpen = false" />
     <ShareDirectory :open="shareOpen" @close="shareOpen = false" />
+
+    <!-- 移动端运行日志页：全屏覆盖、带返回（桌面端走独立窗口，见 open_log_window） -->
+    <LogViewer v-if="app.isMobile && logsOpen" @back="logsOpen = false" />
 
     <!-- Toast：统一中性 HUD 底 + 白字（微信式，与主题色解耦；错误红保留语义）。
          底色走 --gosslan-hud：亮色是深灰、暗色抬亮一档，两套主题下都是"浮在界面之上"的一层。

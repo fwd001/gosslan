@@ -48,6 +48,7 @@ use crate::discovery::routed::{
     encode_endpoints, parse_endpoint_addr, parse_endpoints, RoutedEndpoint, ROUTED_ENDPOINTS_KEY,
 };
 use crate::export;
+use crate::logging::LogEntry;
 use crate::network::transport::{
     broadcast_gossip, get_group_key, mark_pending_group_key, maybe_update_friend,
     resolve_member_x25519, resolve_nickname, try_send,
@@ -889,8 +890,9 @@ pub async fn respond_friend_request(
         } else {
             // 缺对端公钥时**绝不静默**：本地已加好友，但回执发不出去会导致好友关系
             // 单边成立。打日志留痕（对方 Presence 尚未到达 / 已被 sweep 清理）。
-            eprintln!(
-                "[friend] 同意好友但缺对端公钥，FriendAccept 未发送 peer={peer_id}"
+            s.logger.warn(
+                "friend",
+                format!("同意好友但缺对端公钥，FriendAccept 未发送 peer={peer_id}"),
             );
         }
         s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer_id);
@@ -3225,6 +3227,55 @@ pub fn remove_routed_endpoint(
             .map_err(|e| format!("保存失败: {e}"))?;
     }
     Ok(list)
+}
+
+// ---------------- 运行日志 ----------------
+
+/// 读取内存中的全部运行日志（时间正序：旧 → 新）。
+#[tauri::command]
+pub fn get_logs(state: tauri::State<'_, Arc<AppState>>) -> Vec<LogEntry> {
+    state.logger.snapshot()
+}
+
+/// 清空运行日志（内存 + 落盘文件）。
+#[tauri::command]
+pub fn clear_logs(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.logger.clear();
+    Ok(())
+}
+
+/// 桌面端：打开独立的「运行日志」窗口（已存在则聚焦）。
+///
+/// 日志窗口加载同一个前端，由前端按窗口 label（`logs`）渲染日志页；窗口用系统标题栏
+/// （含关闭按钮），关闭即销毁，下次打开再重建 —— 与主窗口的「关闭到托盘」互不影响。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn open_log_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    if let Some(win) = app.get_webview_window("logs") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let win = WebviewWindowBuilder::new(&app, "logs", WebviewUrl::App("index.html".into()))
+        .title("Gosslan")
+        .inner_size(760.0, 560.0)
+        .min_inner_size(420.0, 320.0)
+        .build()
+        .map_err(|e| format!("创建日志窗口失败: {e}"))?;
+    let _ = win.show();
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// 桌面端：关闭独立的「运行日志」窗口。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn close_log_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("logs") {
+        let _ = win.close();
+    }
+    Ok(())
 }
 
 #[cfg(test)]

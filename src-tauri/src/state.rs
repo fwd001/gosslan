@@ -16,6 +16,7 @@ use crate::crypto::Identity;
 use crate::db;
 use crate::device::{hardware_fingerprint, hostname_fingerprint};
 use crate::gossip_engine::GossipEngine;
+use crate::logging::Logger;
 use crate::mesh::manager::PeerManager;
 use crate::mesh::router::MeshRouter;
 use crate::protocol::{Message, TCP_PORT};
@@ -371,6 +372,8 @@ pub struct AppState {
     pub cache_dir: PathBuf,
     /// SQLite 数据库文件路径（存储页展示占用用；含 -wal/-shm 伴生文件）。
     pub db_path: PathBuf,
+    /// 应用级运行日志（内存 ring buffer + 落盘文件），供「运行日志」页读取与排查。
+    pub logger: Logger,
 
     /// 节点身份（X25519 + Ed25519）
     pub identity: Identity,
@@ -494,6 +497,14 @@ impl AppState {
         let db_path = app_data.join(db_name);
         let conn = db::init(&db_path)?;
 
+        // 运行日志：多开实例用独立文件（gosslan-1.log），避免测试实例互相覆盖。
+        let log_stem = if instance > 0 {
+            format!("gosslan-{instance}")
+        } else {
+            "gosslan".to_string()
+        };
+        let logger = Logger::new(app_data.join("logs"), &log_stem);
+
         // 文件接收目录：默认 app_data/downloads，允许用户在设置里改（持久化到 settings）。
         let downloads_dir = db::get_setting(&conn, "downloads_dir")
             .map(PathBuf::from)
@@ -576,6 +587,7 @@ impl AppState {
             downloads_dir: Mutex::new(downloads_dir),
             cache_dir,
             db_path,
+            logger,
             identity,
             gossip: Mutex::new(GossipEngine::new(100_000, 10_000, 4, 6)),
             // max_ttl / fanout 与 GossipEngine 对齐（6 / 4），保证行为一致。

@@ -31,6 +31,13 @@
 - **未触碰 Frozen Core**：msg_id / E2EE / Outbox / Ack / SQLite / 好友 / 文件 / 通知 / Chat UI 全部零改动。
 - **后续**：「Routed 配置 UI」（让用户从好友列表选人 + 只填地址）排期独立；BLE 跨网段发现独立推进。
 
+### Added (运行日志系统)
+- **应用级运行日志**（`src-tauri/src/logging.rs`）：内存有界 ring buffer（500 条）+ 落盘文件（`logs/gosslan.log`，单文件 512 KB 超限轮转 `.old.log`，磁盘上界约 1 MB，惰性清理不另起后台任务）。生产环境（Windows release 无控制台）此前关键诊断日志只走 `eprintln!` 到 stderr 而全部丢失，现在统一进日志系统。
+- **「运行日志」页**（`LogViewer.vue`）：桌面端走独立窗口（`open_log_window` 动态创建，label="logs"，系统标题栏、关闭即销毁），移动端走全屏页面（带返回）。支持滑动浏览、按级别着色（INFO/WARN/ERROR）、一键复制（时间正序）、清空（两段式确认）、自动刷新（2s 可关）。
+- **入口**：桌面 NavRail 底部 + 移动端底部导航各加「日志」按钮（`ScrollText` 图标）。
+- **日志规范**：写进 `logging.rs` 模块头注释——只记「可能出错」与关键状态跃迁，Info/Warn/Error 三档；不记消息正文 / 密钥等敏感内容；target 用子系统名（transport / lan / routed / mesh / friend / presence / link …）。
+- **迁移现有诊断日志**：transport（握手/连接/拨号/presence/friend/link）与 network / commands / lib 启动阶段的关键 `eprintln!` 统一迁到 logger（级别、target 归一）。无 `state` 上下文的边界处（`set_abortive_close`、`await_tasks`、`tray::setup`）保留 `eprintln!`。
+
 ## [2.1.2] - 2026-09-11
 
 ### Fixed

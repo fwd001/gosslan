@@ -266,3 +266,16 @@ export interface DiscoveryDiag {
   candidates: InterfaceCandidate[];
   recent_events: DiscoveryEvent[];
 }
+
+// ---------------- 运行日志（「运行日志」页用） ----------------
+
+export type LogLevel = "info" | "warn" | "error";
+
+export interface LogEntry {
+  /** Unix 毫秒时间戳 */
+  ts: number;
+  level: LogLevel;
+  /** 子系统名（transport / lan / routed / mesh / friend …） */
+  target: string;
+  message: string;
+}
