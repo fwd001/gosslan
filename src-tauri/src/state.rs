@@ -622,6 +622,23 @@ impl AppState {
             .is_some_and(|v| v.iter().any(|l| l.endpoint == *endpoint))
     }
 
+    /// 是否有**任意** peer 已连到指定端点（不看身份）。
+    ///
+    /// 用于「还不知道对端 device_id」的拨号去重：Routed 端点可以只填地址
+    /// （身份由握手学来），此时拨号任务的 10s 重试无法按 peer 判断「是否已连上」，
+    /// 只能按端点 —— 否则每轮都会重复建链。
+    ///
+    /// 方向性说明：主动方记录的 endpoint 是**对端的监听地址**（与配置一致）；
+    /// 被动方记录的是对端拨入时的**临时源端口**，不会与配置地址相同，故不会误判。
+    pub async fn has_endpoint_addr(&self, endpoint: &SocketAddr) -> bool {
+        self.links
+            .lock()
+            .await
+            .values()
+            .flatten()
+            .any(|l| l.endpoint == *endpoint)
+    }
+
     /// 标记节点表已变更，并唤醒节流推送任务。
     ///
     /// 500-1000 节点场景下，每秒会收到数百条 `announce`/`heartbeat`，若每次

@@ -33,23 +33,37 @@ pub const ROUTED_ENDPOINTS_KEY: &str = "routed_endpoints";
 
 /// 一个手动配置的 Routed 端点。
 ///
-/// **必须携带 `device_id`**：跨子网拨号时，主动方在收到 Hello 之前无从得知对端身份，
-/// 而 `handle_message` 的 Hello 分支要求 `device_id == peer_id`（身份绑定校验，
-/// 见 INV-P21），用占位值会让连接被直接丢弃。因此 Routed 的语义是
-/// 「连接**已知**节点的跨子网 / VPN 路径」，而不是「扫描未知节点」。
+/// `device_id` **可选**，两种语义：
+/// - `Some(id)`：连接**已知**节点的跨子网 / VPN 路径。链路 key 直接用 `id`，
+///   行为与历史版本完全一致（向后兼容旧配置）。
+/// - `None`：连接**该地址上的** Gosslan 节点 —— 身份由 TCP 握手学来，正是 §8 的流程
+///   `IP:PORT → TCP → Hello → Node ID → Identity → 建立 Peer`。
+///   这是「少配置」的关键：用户没有理由被要求抄一串内部标识。
+///
+/// 历史说明：旧版注释曾写「必须携带 device_id」，理由是 `handle_message` 的 Hello
+/// 分支要求 `device_id == peer_id`（身份绑定校验，见 INV-P21），主动方在收到 Hello
+/// 之前无从得知对端身份。该限制已被「握手补全」（被动方回发 Hello）解除 ——
+/// 主动方现在能在建链**之前**先完成一次握手、拿到真实身份，再登记链路。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutedEndpoint {
-    pub device_id: String,
-    /// `"ip:port"`，如 `100.64.0.1:59992`
+    /// 对端 device_id；省略表示「由握手学」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    /// `"ip:port"`（经命令层规范化后总是带端口，如 `100.64.0.1:59992`）
     pub address: String,
 }
 
 impl RoutedEndpoint {
-    pub fn new(device_id: impl Into<String>, address: impl Into<String>) -> Self {
+    pub fn new(device_id: Option<String>, address: impl Into<String>) -> Self {
         Self {
-            device_id: device_id.into(),
+            device_id,
             address: address.into(),
         }
+    }
+
+    /// 日志用：未指定 `device_id` 时给一个可读的占位。
+    pub fn display_id(&self) -> &str {
+        self.device_id.as_deref().unwrap_or("<握手学>")
     }
 
     /// 解析出可拨号的地址；格式非法返回 `None`（调用方负责记录并跳过，不要静默丢）。
@@ -211,8 +225,8 @@ mod tests {
     #[test]
     fn endpoints_serialize_roundtrip() {
         let list = vec![
-            RoutedEndpoint::new("dev-a", "100.64.0.1:59992"),
-            RoutedEndpoint::new("dev-b", "10.0.0.5:60002"),
+            RoutedEndpoint::new(Some("dev-a".into()), "100.64.0.1:59992"),
+            RoutedEndpoint::new(Some("dev-b".into()), "10.0.0.5:60002"),
         ];
         let json = encode_endpoints(&list);
         assert_eq!(parse_endpoints(&json), list);
@@ -235,23 +249,23 @@ mod tests {
     fn socket_addr_accepts_bare_ip_and_explicit_port() {
         // 显式端口
         assert_eq!(
-            RoutedEndpoint::new("a", "100.64.0.1:60002").socket_addr(),
+            RoutedEndpoint::new(Some("a".into()), "100.64.0.1:60002").socket_addr(),
             Some(sa("100.64.0.1:60002"))
         );
         // 裸 IP → 补标准端口（手写 settings 时最常出现的形式）
         assert_eq!(
-            RoutedEndpoint::new("a", "100.64.0.1").socket_addr(),
+            RoutedEndpoint::new(Some("a".into()), "100.64.0.1").socket_addr(),
             Some(SocketAddr::new("100.64.0.1".parse().unwrap(), TCP_PORT))
         );
         // 前后空白容错（从聊天窗口复制地址常带空格）
         assert_eq!(
-            RoutedEndpoint::new("a", "  100.64.0.1:60002  ").socket_addr(),
+            RoutedEndpoint::new(Some("a".into()), "  100.64.0.1:60002  ").socket_addr(),
             Some(sa("100.64.0.1:60002"))
         );
         // 非法输入
-        assert_eq!(RoutedEndpoint::new("a", "garbage").socket_addr(), None);
-        assert_eq!(RoutedEndpoint::new("a", "").socket_addr(), None);
-        assert_eq!(RoutedEndpoint::new("a", "100.64.0.1:").socket_addr(), None);
+        assert_eq!(RoutedEndpoint::new(Some("a".into()), "garbage").socket_addr(), None);
+        assert_eq!(RoutedEndpoint::new(Some("a".into()), "").socket_addr(), None);
+        assert_eq!(RoutedEndpoint::new(Some("a".into()), "100.64.0.1:").socket_addr(), None);
     }
 
     fn sa(s: &str) -> SocketAddr {
@@ -270,5 +284,31 @@ mod tests {
         assert!(d.remove_endpoint(&a));
         assert!(!d.remove_endpoint(&a));
         assert!(d.endpoints().is_empty());
+    }
+
+    /// `device_id` 可省略：旧格式（带 id）与新格式（仅地址）都必须能解析。
+    /// 省略时语义是「身份由握手学」—— 即 §8 的 `IP:PORT → TCP → Hello → Node ID`。
+    ///
+    /// 这是「少配置」的护栏：用户不该被要求抄一串内部标识；同时钉住**向后兼容**，
+    /// 因为旧配置里是带着 `device_id` 的。
+    #[test]
+    fn device_id_is_optional_and_backward_compatible() {
+        // 旧格式（历史配置）继续可解析、语义不变
+        let legacy: Vec<RoutedEndpoint> =
+            serde_json::from_str(r#"[{"device_id":"dev-a","address":"100.64.0.1:59992"}]"#).unwrap();
+        assert_eq!(legacy[0].device_id.as_deref(), Some("dev-a"));
+        assert_eq!(legacy[0].display_id(), "dev-a");
+
+        // 新格式：只填地址
+        let minimal: Vec<RoutedEndpoint> =
+            serde_json::from_str(r#"[{"address":"100.64.0.1"}]"#).unwrap();
+        assert!(minimal[0].device_id.is_none(), "省略 device_id 应为 None");
+        assert_eq!(minimal[0].display_id(), "<握手学>");
+        assert_eq!(minimal[0].socket_addr(), Some(sa("100.64.0.1:59992")));
+
+        // 序列化时 None 不写该键（配置保持干净），且往返一致
+        let encoded = encode_endpoints(&minimal);
+        assert!(!encoded.contains("device_id"), "未指定时不应写出该键: {encoded}");
+        assert_eq!(parse_endpoints(&encoded), minimal);
     }
 }

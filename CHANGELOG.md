@@ -10,6 +10,20 @@
 
 ## [Unreleased]
 
+### Changed (Phase 6 网络层演进)
+- **Routed 端点 `device_id` 改为可选**：`RoutedEndpoint` 的 `device_id` 由 `String` 改为 `Option<String>`；JSON 序列化时 `None` 不写入该键（`skip_serializing_if`）；旧格式 `{"device_id":"...","address":"..."}` 完全兼容，可直接被新代码反序列化。`scripts/t2-learn-id.sh` 端到端验证（向后兼容见 `discovery/routed::tests::device_id_is_optional_and_backward_compatible` 单测）。
+- **主动拨号时无 peer_id 不再要求预配置身份**：`connect_to_peer` 接受 `known_id: Option<&str>`。`None` 路径遵循 §8 的 `IP:PORT → TCP → Hello → Node ID → Identity → 建立 Peer`：先发自身 Hello → 读对端回发的 Hello（被动方在「握手补全」中负责回发）→ 验签 → 学到真实身份后再登记链路 / 注册 mesh Connection / flush 待发队列。`HANDSHAKE_TIMEOUT = 5s`（大于正常握手，但覆盖「对端是未升级的旧版本、不会回发 Hello」兜底）。
+- **`AppState::has_endpoint_addr(&SocketAddr)`**：身份未知时只能按端点判「要不要拨号」，否则 10s 周期重试会重复建链。方向性说明：主动方记录的 endpoint 是**对端的监听地址**（与配置一致），被动方记录的是**临时源端口**，故不会误判。
+- **`add_routed_endpoint` 接受 `device_id: Option<String>`、`remove_routed_endpoint` 仅按地址匹配**：去重按地址而非 `(device_id, address)` —— 同一物理地址无论是否带 id 都是同一个端点；空字符串与 `None` 等价。
+- **Routed 拨号任务的去重**：`spawn` 的拨号循环原本在循环内做 `has_endpoint` 检查；现在统一移到 `connect_to_peer` 里（按端点去重，且 `Some(id)` 时按 peer+endpoint、`None` 时按 endpoint）。理由：避免「同一判断两处实现、行为不一致」（项目踩过的坑）。
+
+### Verification (Phase 6 Step 2)
+- **T2-A 决定性验证（`scripts/t2-learn-id.sh`）**：实例1 (`--instance 1`) 配置 `[{"address":"127.0.0.1:60012"}]`（无 device_id），实例2 (`--instance 2`) 标准启动 → **7/7 PASS**：实例1 日志含 `[transport] 握手学到对端身份 peer=...-i2` + `[routed] 已连上 peer=<握手学>` + 实例1 DB `conversation_clocks` 出现 `...-i2` 行 + 实例2 DB 出现 `...-i1` 行（双向 observe_clock）+ 实例2 日志含 `[transport] 握手补全`（被动方回 Hello）+ 实例1 mesh 层 `[mesh] +conn peer=...-i2`。
+- **护栏非空转验证**：在 `connect_to_peer` 的 `None` 分支临时注入「身份未知直接返回 Failed」回到旧行为，重跑 T2-A → **6/6 核心判据全部按预期 FAIL**（仅配置验证 PASS），证明判据**不是空转**。判定包括对话时钟表（已加 `DELETE FROM conversation_clocks WHERE conv_id LIKE '%-i1' OR '%-i2'` 防上次残留）。（基线 marker 已删。）
+- **全门**：`cargo test --lib` 288 passed / 0 failed / 0 warning；`bash scripts/e2e-dev.sh` 30/0/1（功能零回归）；`npm test` 196 pass / 0 fail。
+- **未触碰 Frozen Core**：msg_id / E2EE / Outbox / Ack / SQLite / 好友 / 文件 / 通知 / Chat UI 全部零改动。
+- **后续**：「Routed 配置 UI」（让用户从好友列表选人 + 只填地址）排期独立；BLE 跨网段发现独立推进。
+
 ## [2.1.2] - 2026-09-11
 
 ### Fixed

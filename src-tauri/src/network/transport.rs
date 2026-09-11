@@ -232,28 +232,31 @@ pub async fn spawn(
                         let Some(addr) = ep.socket_addr() else {
                             eprintln!(
                                 "[routed] 跳过无法解析的地址 peer={} address={:?}",
-                                ep.device_id, ep.address
+                                ep.display_id(),
+                                ep.address
                             );
                             continue;
                         };
-                        if state.has_endpoint(&ep.device_id, &addr).await {
-                            continue; // 该端点已连上
-                        }
                         // 刻意**不走** `ensure_link`：那条路径带「只有小 device_id 拨号」
                         // 的规则，用于避免 LAN 广播发现时两端同时拨号。但 Routed 端点
                         // 是用户显式配置的明确意图，50% 概率会因 ID 大小被静默跳过，
-                        // 表现为「配了却连不上且无任何提示」。这里直接拨号，去重由
-                        // `connect_to_peer` 内部的按端点检查保证。
+                        // 表现为「配了却连不上且无任何提示」。这里直接拨号。
+                        //
+                        // 去重**只在** `connect_to_peer` 里做（按身份，或身份未知时按端点）——
+                        // 「同一判断两处实现、行为还不一致」是这个项目踩过的坑。
+                        // `device_id` 可省略（`None` = 身份由握手学），见 `RoutedEndpoint`。
                         let state = state.clone();
                         let shutdown = shutdown.clone();
                         dials.spawn(async move {
-                            match connect_to_peer(&state, &ep.device_id, addr, shutdown).await {
+                            match connect_to_peer(&state, ep.device_id.as_deref(), addr, shutdown)
+                                .await
+                            {
                                 DialOutcome::Connected => {
-                                    eprintln!("[routed] 已连上 peer={} ep={addr}", ep.device_id)
+                                    eprintln!("[routed] 已连上 peer={} ep={addr}", ep.display_id())
                                 }
                                 DialOutcome::Failed(e) => eprintln!(
                                     "[routed] 拨号未成功 peer={} ep={addr}：{e}",
-                                    ep.device_id
+                                    ep.display_id()
                                 ),
                                 // 正常停机：不打日志，否则退出时会多出一批误导性的「失败」
                                 DialOutcome::Stopped => {}
@@ -807,6 +810,13 @@ mod mesh_sync_tests {
 /// 5s 远大于正常握手（同链路 <1ms；Tailscale 直连或经中继通常 <2s），只用于截断黑洞。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// 主动拨号时等待对端回发 Hello 的上限 —— **只有「身份未知」的 Routed 端点会等**
+/// （已知身份的路径不等，行为与历史一致）。
+///
+/// 远大于正常握手（同链路 <1ms、Tailscale 直连或中继 <2s），只用来兜住
+/// 「对端是未升级的旧版本、不会回发 Hello」——否则该轮拨号会一直挂着。
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// 由字符串 IP + 端口构造 `SocketAddr`。
 ///
 /// **刻意不用 `format!("{ip}:{port}").parse()`**：那种写法把地址与端口先拼成字符串，
@@ -846,21 +856,39 @@ pub async fn ensure_link(
         return;
     }
     // LAN 发现路径的拨号失败是常态（对端离线、或本轮该由对端拨），刻意不打日志。
-    let _ = connect_to_peer(state, peer_id, endpoint, shutdown).await;
+    // 身份来自 announce 包（`peer_id`）⇒ 走「已知身份」路径，不等对端 Hello。
+    let _ = connect_to_peer(state, Some(peer_id), endpoint, shutdown).await;
 }
 
 /// 建立一条到 `endpoint` 的连接。
 ///
 /// 调用方传 **已解析好的 `SocketAddr`**：地址的解析与校验在配置/announce 层各做一次，
 /// 这里不再「拼字符串再解析」（那是 IPv6 丢方括号的根源）。
+///
+/// `known_id` 决定握手方式：
+/// - `Some(id)`：身份已知（LAN announce 学到 / 用户显式配置了 `device_id`）。链路 key
+///   直接用 `id`，发完 Hello 即进入正常收发 —— 与历史行为一致。
+/// - `None`：身份未知（Routed 端点只填了地址）。此时**必须先握手**：发自己的 Hello →
+///   等对端回发的 Hello → 验签 → 得到真实 `device_id` 与双公钥，再登记链路。
+///   这正是 §8 的 `IP:PORT → TCP → Hello → Node ID → Identity`，
+///   也是「不用手填 device_id」的实现方式。
+///
+/// 为什么必须「先握手、再登记」：链路 key（`links` 的 HashMap key，以及 `writer_loop`
+/// 持有的 `peer_id`）必须在 spawn 之前确定，而 `writer_loop` 要用它回写
+/// `pending_reads`，事后无法改名。
 async fn connect_to_peer(
     state: &Arc<AppState>,
-    peer_id: &str,
+    known_id: Option<&str>,
     endpoint: SocketAddr,
     mut shutdown: watch::Receiver<bool>,
 ) -> DialOutcome {
     // 按端点去重：与 `ensure_link` 的检查构成双重保险（announce 与 Routed 拨号会并发触发）。
-    if state.has_endpoint(peer_id, &endpoint).await {
+    // 身份未知时只能按端点判 —— 否则 10s 重试的每一轮都会重复建链。
+    let already = match known_id {
+        Some(id) => state.has_endpoint(id, &endpoint).await,
+        None => state.has_endpoint_addr(&endpoint).await,
+    };
+    if already {
         return DialOutcome::Connected;
     }
 
@@ -882,15 +910,75 @@ async fn connect_to_peer(
     };
 
     let (raw_r, raw_w) = stream.into_split();
-    let r = TcpReceiver::new(raw_r);
-    let w = TcpSender::new(raw_w);
+    // 握手阶段要直接读写 socket（此时还没有 writer / reader 循环），故声明为 mut。
+    let mut r = TcpReceiver::new(raw_r);
+    let mut w = TcpSender::new(raw_w);
+
+    // ---- 身份未知：先握手换身份（§8）----
+    let mut learned_hello: Option<Message> = None;
+    let peer_id: String = match known_id {
+        Some(id) => id.to_string(),
+        None => {
+            // 1) 先发自己的 Hello。此刻还不知道对端是谁、没有会话，`conv_clock` 取 0：
+            //    对端的 `observe_clock` 是取 max，不会被 0 拉低；反向对齐由对端 Hello 完成。
+            let hello = build_signed_hello(state, 0);
+            if let Err(e) = write_frame(&mut w, &hello).await {
+                return DialOutcome::Failed(format!("握手发送失败: {e}"));
+            }
+            // 2) 读对端回发的 Hello（对端收到我们的 Hello 后会回发，见 `handle_incoming`）。
+            let first = tokio::select! {
+                biased;
+                _ = shutdown.changed() => return DialOutcome::Stopped,
+                res = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_frame(&mut r)) => match res {
+                    Ok(Ok(m)) => m,
+                    Ok(Err(e)) => return DialOutcome::Failed(format!("握手读取失败: {e}")),
+                    Err(_) => {
+                        return DialOutcome::Failed(format!(
+                            "握手超时（{}s 内未收到对端 Hello —— 对端可能是未升级的旧版本）",
+                            HANDSHAKE_TIMEOUT.as_secs()
+                        ))
+                    }
+                },
+            };
+            // 3) 必须是 Hello，且**必须验签通过** —— 身份不能靠猜，也不能因为「我们是
+            //    主动拨号方」就放松校验（否则任意进程都能冒充任意 device_id 与我们会话）。
+            let Message::Hello {
+                device_id,
+                tcp_port,
+                nonce,
+                sig,
+                x25519_pubkey,
+                ed25519_pubkey,
+                ..
+            } = &first
+            else {
+                return DialOutcome::Failed("握手失败: 对端首帧不是 Hello".to_string());
+            };
+            if let Err(reason) = verify_hello(
+                state,
+                device_id,
+                *tcp_port,
+                nonce,
+                x25519_pubkey,
+                ed25519_pubkey,
+                sig,
+            ) {
+                state.push_diag_event("hello_rejected", &format!("{reason}; from={endpoint}"));
+                return DialOutcome::Failed(format!("握手失败: {reason}"));
+            }
+            let learned = device_id.clone();
+            learned_hello = Some(first);
+            learned
+        }
+    };
+
     let (bulk_tx, bulk_rx) = mpsc::channel(1024);
     let (prio_tx, prio_rx) = mpsc::channel(1024);
     state
         .links
         .lock()
         .await
-        .entry(peer_id.to_string())
+        .entry(peer_id.clone())
         .or_default()
         .push(Link {
             endpoint,
@@ -898,39 +986,52 @@ async fn connect_to_peer(
             priority: prio_tx.clone(),
         });
     // 同步到 mesh 层（拨号侧同样登记，path_kind 由端点地址推断）
-    register_connection(state, peer_id, endpoint);
+    register_connection(state, &peer_id, endpoint);
     tokio::spawn(writer_loop(
         state.clone(),
-        peer_id.to_string(),
+        peer_id.clone(),
         w,
         bulk_rx,
         prio_rx,
         shutdown.clone(),
     ));
 
-    let conv_clock = {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_clock(&dbc, peer_id)
-    };
-    let hello = build_signed_hello(state, conv_clock);
-    let _ = prio_tx.send(hello).await;
+    match learned_hello {
+        // 身份未知路径：Hello 已在握手阶段发出，这里就地处理对端首帧 —— 走的正是
+        // `handle_incoming` 那条路径（写身份 + 双公钥、对齐会话时钟、冲刷待发队列）。
+        Some(first) => {
+            // 留痕：配置里没写 device_id 时，这行日志是用户/开发者**唯一**能确认
+            // 「到底连上了谁」的地方。
+            eprintln!("[transport] 握手学到对端身份 peer={peer_id} ep={endpoint}");
+            handle_message(state, &peer_id, first).await
+        }
+        // 身份已知路径：沿用原逻辑，在链路就位后发 Hello。
+        None => {
+            let conv_clock = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::get_clock(&dbc, &peer_id)
+            };
+            let hello = build_signed_hello(state, conv_clock);
+            let _ = prio_tx.send(hello).await;
+        }
+    }
 
     tokio::spawn(reader_loop(
         state.clone(),
         r,
-        peer_id.to_string(),
+        peer_id.clone(),
         bulk_tx,
         shutdown,
     ));
-    flush_outbox(state, peer_id).await;
-    flush_group_outbox(state, peer_id).await;
-    flush_pending_reads(state, peer_id).await;
-    flush_pending_group_reads(state, peer_id).await;
-    crate::commands::flush_pending_files(state, peer_id).await;
+    flush_outbox(state, &peer_id).await;
+    flush_group_outbox(state, &peer_id).await;
+    flush_pending_reads(state, &peer_id).await;
+    flush_pending_group_reads(state, &peer_id).await;
+    crate::commands::flush_pending_files(state, &peer_id).await;
     // 主动拨号建链完成：补发此前因无 link 而未送达的群密钥
-    flush_pending_group_keys(state, peer_id).await;
+    flush_pending_group_keys(state, &peer_id).await;
     // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
-    crate::commands::flush_pending_group_files(state, peer_id).await;
+    crate::commands::flush_pending_group_files(state, &peer_id).await;
     DialOutcome::Connected
 }
 

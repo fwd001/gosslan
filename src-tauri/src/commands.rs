@@ -3057,28 +3057,32 @@ pub fn list_routed_endpoints(state: tauri::State<'_, Arc<AppState>>) -> Vec<Rout
     parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default())
 }
 
-/// 添加一个跨子网端点。**必须提供 `device_id`**：
-/// 跨子网拨号时主动方在 Hello 之前无从得知对端身份，而 Hello 分支要求
-/// `device_id == peer_id`，用占位值会让连接被丢弃。
+/// 添加一个跨子网端点。
+///
+/// `device_id` **可省略**（传 `null` 或空串都当作未指定）：
+/// - 提供时：语义是「连接这个**已知**节点」，链路 key 直接用它，行为与历史一致；
+/// - 省略时：身份由 TCP 握手学来（§8：`IP:PORT → TCP → Hello → Node ID → Identity`），
+///   用户只需要知道对方地址 —— 这才是「少配置」。
 ///
 /// 地址接受 `ip` 或 `ip:port`（省略端口按标准 [`TCP_PORT`] 补全），目前仅 IPv4：
 /// TCP 监听侧绑的是 `Ipv4Addr`，IPv6 端点拨出去也连不上。
 #[tauri::command]
 pub fn add_routed_endpoint(
     state: tauri::State<'_, Arc<AppState>>,
-    device_id: String,
+    device_id: Option<String>,
     address: String,
 ) -> Result<Vec<RoutedEndpoint>, String> {
-    if device_id.trim().is_empty() {
-        return Err("device_id 不能为空".to_string());
-    }
+    // 空串等同「未指定」：UI 上的输入框没填时通常会传空串，不该存下一个没意义的值。
+    let device_id = device_id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let address = normalize_routed_address(&address)?;
-    let candidate = RoutedEndpoint::new(device_id.clone(), address.clone());
+    let candidate = RoutedEndpoint::new(device_id, address);
 
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut list = parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
-    // 同一 (device_id, address) 不重复添加
-    if !list.contains(&candidate) {
+    // 同一个**地址**不重复添加，无论是否带 device_id —— 一个地址只对应一个端点。
+    if !list.iter().any(|e| e.address == candidate.address) {
         list.push(candidate);
     }
     db::set_setting(&dbc, ROUTED_ENDPOINTS_KEY, &encode_endpoints(&list))
@@ -3086,21 +3090,22 @@ pub fn add_routed_endpoint(
     Ok(list)
 }
 
-/// 移除一个跨子网端点。
+/// 移除一个跨子网端点（只按**地址**匹配）。
+///
+/// 地址是端点的唯一标识：`device_id` 可以省略，用它当判据会让「只填地址添加、
+/// 带指纹删除」匹配不上。地址先规范化（与 `add` 存进去的形式一致），否则
+/// 用 `100.64.0.1` 添加、用 `100.64.0.1:59992` 删除同样匹配不上 —— 都表现为
+/// 「列表里删不掉」。
 #[tauri::command]
 pub fn remove_routed_endpoint(
     state: tauri::State<'_, Arc<AppState>>,
-    device_id: String,
     address: String,
 ) -> Result<Vec<RoutedEndpoint>, String> {
-    // 先规范化（与 `add` 存进去的形式一致）再比较：否则用 `100.64.0.1` 添加、
-    // 用 `100.64.0.1:59992` 删除会匹配不上 —— 表现为「列表里删不掉」。
     let address = normalize_routed_address(&address)?;
-    let target = RoutedEndpoint::new(device_id, address);
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut list = parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
     let before = list.len();
-    list.retain(|e| e != &target);
+    list.retain(|e| e.address != address);
     if list.len() != before {
         db::set_setting(&dbc, ROUTED_ENDPOINTS_KEY, &encode_endpoints(&list))
             .map_err(|e| format!("保存失败: {e}"))?;
