@@ -11,6 +11,7 @@
 
 pub mod bluetooth;
 pub mod lan;
+pub mod tcp;
 
 use std::sync::Arc;
 
