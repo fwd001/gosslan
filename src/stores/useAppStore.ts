@@ -16,6 +16,7 @@ import { DEFAULT_CHAT_STYLE, fontPx, parsePeerStyle, type ChatStyleConfig } from
 import {
   t,
   applyPreference,
+  currentLocale,
   currentPreference,
   isLanguagePreference,
   type LanguagePreference,
@@ -118,10 +119,24 @@ export const useAppStore = defineStore("app", () => {
   /** 语言偏好（system / zh-CN / en-US，后端持久化；默认跟随系统）。 */
   const language = ref<LanguagePreference>(currentPreference());
 
+  /**
+   * 把解析后的语言推给后端重建 macOS 菜单栏（原生控件的文案不归 WebView 管）。
+   * 前端是"跟随系统"规则的唯一真相，所以由这里推，而不是后端自己检测。
+   *
+   * 静默吞错的理由与 `persistSettings` 相同：失败只影响菜单栏文案，
+   * 界面本身已经切好了，弹 toast 只会打扰用户。
+   */
+  function pushUiLanguage() {
+    void api.setUiLanguage(currentLocale()).catch(() => {
+      /* 非 macOS 平台为空实现；偶发 IPC 失败不影响使用 */
+    });
+  }
+
   /** 切换语言偏好：立即生效（i18n 响应式更新）+ 持久化到后端。 */
   function setLanguage(p: LanguagePreference) {
     applyPreference(p);
     language.value = p;
+    pushUiLanguage();
     void persistSettings();
   }
 
@@ -303,6 +318,7 @@ export const useAppStore = defineStore("app", () => {
     // 语言（null/脏值 = 默认跟随系统）
     if (isLanguagePreference(s.language)) applyPreference(s.language);
     language.value = currentPreference();
+    pushUiLanguage();
     preferredIp.value = s.bindIp;
     if (s.chatStyle) chatStyle.value = parsePeerStyle(s.chatStyle);
     if (s.peerStyles) {
@@ -366,6 +382,7 @@ export const useAppStore = defineStore("app", () => {
     notifyShowContent.value = true;
     applyPreference("system");
     language.value = "system";
+    pushUiLanguage();
     preferredIp.value = null;
     boundIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };

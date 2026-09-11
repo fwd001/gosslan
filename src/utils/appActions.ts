@@ -13,6 +13,7 @@ export const APP_ACTION = {
   openSettings: "gosslan:open-settings",
   addFriend: "gosslan:add-friend",
   focusSearch: "gosslan:focus-search",
+  openLogs: "gosslan:open-logs",
 } as const;
 
 export type AppAction = (typeof APP_ACTION)[keyof typeof APP_ACTION];

@@ -174,6 +174,7 @@ onMounted(() => {
   window.addEventListener("navigate-to-contacts", onNavigateToContacts);
   window.addEventListener(APP_ACTION.openSettings, openSettings);
   window.addEventListener(APP_ACTION.addFriend, onAddFriendAction);
+  window.addEventListener(APP_ACTION.openLogs, openLogs);
   // 原生菜单（仅 macOS）；非 macOS 平台该 Promise 仍会 resolve，只是收不到事件
   void bindMenuEvents().then((fns) => (unlistenMenu = fns));
 });
@@ -181,6 +182,7 @@ onUnmounted(() => {
   window.removeEventListener("navigate-to-contacts", onNavigateToContacts);
   window.removeEventListener(APP_ACTION.openSettings, openSettings);
   window.removeEventListener(APP_ACTION.addFriend, onAddFriendAction);
+  window.removeEventListener(APP_ACTION.openLogs, openLogs);
   unlistenMenu?.forEach((fn) => fn());
 });
 

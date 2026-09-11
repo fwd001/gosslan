@@ -91,8 +91,17 @@ pub fn run() {
             // 属"锦上添花"——初始化失败**不阻断启动**（与托盘不同：托盘失败会改行为，
             // 菜单失败只是没有菜单，快捷键还有前端兜底）。
             #[cfg(target_os = "macos")]
-            if let Err(e) = menu::setup(app.handle()) {
-                state.logger.warn("menu", format!("菜单栏初始化失败（不影响启动）：{e}"));
+            {
+                // 初始语言取持久化的**显式**偏好（"跟随系统"交给前端推到 `set_ui_language`，
+                // 避免后端再实现一份系统语言检测 —— 见 menu.rs 顶部注释）。
+                let persisted = {
+                    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::get_setting(&conn, "language")
+                };
+                let lang = menu::initial_lang(persisted.as_deref());
+                if let Err(e) = menu::setup(app.handle(), lang) {
+                    state.logger.warn("menu", format!("菜单栏初始化失败（不影响启动）：{e}"));
+                }
             }
             // macOS：`decorations: false` 使 tao 以 `Borderless`（不含 `Closable` 位）样式
             // 掩码创建 NSWindow，AppKit 据此把「关闭窗口」菜单项（Cmd+W / performClose:）
@@ -181,6 +190,7 @@ pub fn run() {
             commands::set_cache_policy,
             commands::clean_cache_now,
             commands::get_settings,
+            commands::set_ui_language,
             commands::save_settings,
             commands::reset_settings,
             commands::broadcast_chat_style,

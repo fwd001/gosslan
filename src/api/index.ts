@@ -146,6 +146,11 @@ export const api = {
     invoke<ExportSummary>("export_chat_text", { destination, utcOffsetMinutes }),
 
   getSettings: () => invoke<AppSettings>("get_settings"),
+  /**
+   * 把**解析后**的界面语言推给后端重建 macOS 原生菜单栏（`src-tauri/src/menu.rs`）。
+   * 非 macOS 平台是空实现（后端命令存在，直接 Ok），前端不必按平台分支。
+   */
+  setUiLanguage: (lang: string) => invoke<void>("set_ui_language", { lang }),
   saveSettings: (s: AppSettings) => invoke<void>("save_settings", { settings: s }),
   resetSettings: () => invoke<void>("reset_settings"),
   broadcastChatStyle: (style: string) => invoke<void>("broadcast_chat_style", { style }),
@@ -234,5 +239,6 @@ export async function bindMenuEvents(): Promise<UnlistenFn[]> {
     listen("menu://settings", to(APP_ACTION.openSettings)),
     listen("menu://add-friend", to(APP_ACTION.addFriend)),
     listen("menu://search", to(APP_ACTION.focusSearch)),
+    listen("menu://logs", to(APP_ACTION.openLogs)),
   ]);
 }

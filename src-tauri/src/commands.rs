@@ -622,6 +622,26 @@ const APPEARANCE_MODES: [&str; 3] = ["system", "light", "dark"];
 /// "system" = 前端按系统语言决定（zh* → 中文，其余 → 英文）。
 const LANGUAGES: [&str; 3] = ["system", "zh-CN", "en-US"];
 
+/// 把前端**解析后**的界面语言推给后端，用于重建 macOS 菜单栏（见 `menu.rs` 顶部注释）。
+///
+/// 为什么要这条命令：macOS 的菜单栏是原生控件，文案不归 WebView 管；而"跟随系统"
+/// 的解析规则只在前端有一份。前端在启动完成与每次切换语言时各推一次。
+///
+/// 非 macOS 平台下这个模块整体不编译，所以这里必须 cfg 掉函数体（保留命令本身，
+/// 让前端调用在其它平台也能拿到 Ok —— 前端不需要按平台分支）。
+#[tauri::command]
+pub fn set_ui_language(app: tauri::AppHandle, lang: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::menu::apply(&app, crate::menu::UiLang::parse(&lang)).map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&app, &lang);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
