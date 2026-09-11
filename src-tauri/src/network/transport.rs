@@ -28,6 +28,7 @@ use crate::state::{
     PendingRequest,
 };
 use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
+use crate::discovery::routed::{parse_endpoints, ROUTED_ENDPOINTS_KEY};
 use crate::mesh::{Endpoint as MeshEndpoint, PathKind, PeerCandidate, PeerIdentity};
 use crate::transport::tcp::{TcpReceiver, TcpSender};
 
@@ -160,8 +161,12 @@ pub async fn spawn(
         }
         Err(e) => return Err(format!("TCP 绑定 {bind} 失败: {e}")),
     };
+    // 两个后台任务都要用 state / shutdown，且 `async move` 会把它们移进闭包，
+    // 因此必须在 accept_task 之前把所有副本准备好。
     let state_for_heartbeat = state.clone();
     let shutdown_for_heartbeat = shutdown.clone();
+    let state_for_routed = state.clone();
+    let shutdown_for_routed = shutdown.clone();
     let accept_task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -197,7 +202,48 @@ pub async fn spawn(
             }
         }
     });
-    Ok(vec![accept_task, heartbeat_task])
+
+    // 跨子网（Routed）端点拨号：手动配置的端点周期性重试，直到连上。
+    //
+    // 每次循环都重新读配置 —— 这样运行时新增的端点无需重启即可生效。
+    // 实际是否拨号由 `ensure_link` 的「小 ID 拨号」规则决定（避免双向建链竞态），
+    // 因此对端也需要配置本节点，或由 device_id 较小的一方发起。
+    let routed_task = tokio::spawn(async move {
+        let state = state_for_routed;
+        let mut shutdown = shutdown_for_routed;
+        let mut tick = tokio::time::interval(Duration::from_secs(10));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                _ = tick.tick() => {
+                    let list = {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        parse_endpoints(
+                            &db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default(),
+                        )
+                    };
+                    for ep in list {
+                        let Some(addr) = ep.socket_addr() else { continue };
+                        if state.has_endpoint(&ep.device_id, &addr).await {
+                            continue; // 该端点已连上
+                        }
+                        ensure_link(
+                            &state,
+                            &ep.device_id,
+                            &addr.ip().to_string(),
+                            addr.port(),
+                            shutdown.clone(),
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(vec![accept_task, heartbeat_task, routed_task])
 }
 
 /// 绑定监听端口，仅在 `AddrInUse` 时做有限退避重试。

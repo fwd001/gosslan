@@ -44,6 +44,9 @@ const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 
 use crate::crypto;
 use crate::db;
+use crate::discovery::routed::{
+    encode_endpoints, parse_endpoints, RoutedEndpoint, ROUTED_ENDPOINTS_KEY,
+};
 use crate::export;
 use crate::network::transport::{
     broadcast_gossip, get_group_key, mark_pending_group_key, maybe_update_friend,
@@ -3014,6 +3017,62 @@ fn preview(kind: &str, content: &str) -> String {
             }
         }
     }
+}
+
+// ---------------- 跨子网（Routed）端点配置 ----------------
+
+/// 列出手动配置的跨子网端点（Tailscale / VPN / 跨网段）。
+#[tauri::command]
+pub fn list_routed_endpoints(state: tauri::State<'_, Arc<AppState>>) -> Vec<RoutedEndpoint> {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default())
+}
+
+/// 添加一个跨子网端点。**必须提供 `device_id`**：
+/// 跨子网拨号时主动方在 Hello 之前无从得知对端身份，而 Hello 分支要求
+/// `device_id == peer_id`，用占位值会让连接被丢弃。
+#[tauri::command]
+pub fn add_routed_endpoint(
+    state: tauri::State<'_, Arc<AppState>>,
+    device_id: String,
+    address: String,
+) -> Result<Vec<RoutedEndpoint>, String> {
+    if device_id.trim().is_empty() {
+        return Err("device_id 不能为空".to_string());
+    }
+    let candidate = RoutedEndpoint::new(device_id.clone(), address.clone());
+    if candidate.socket_addr().is_none() {
+        return Err(format!("地址格式应为 ip:port，收到：{address}"));
+    }
+
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let mut list = parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
+    // 同一 (device_id, address) 不重复添加
+    if !list.contains(&candidate) {
+        list.push(candidate);
+    }
+    db::set_setting(&dbc, ROUTED_ENDPOINTS_KEY, &encode_endpoints(&list))
+        .map_err(|e| format!("保存失败: {e}"))?;
+    Ok(list)
+}
+
+/// 移除一个跨子网端点。
+#[tauri::command]
+pub fn remove_routed_endpoint(
+    state: tauri::State<'_, Arc<AppState>>,
+    device_id: String,
+    address: String,
+) -> Result<Vec<RoutedEndpoint>, String> {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let mut list = parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
+    let target = RoutedEndpoint::new(device_id.clone(), address.clone());
+    let before = list.len();
+    list.retain(|e| e != &target);
+    if list.len() != before {
+        db::set_setting(&dbc, ROUTED_ENDPOINTS_KEY, &encode_endpoints(&list))
+            .map_err(|e| format!("保存失败: {e}"))?;
+    }
+    Ok(list)
 }
 
 #[cfg(test)]

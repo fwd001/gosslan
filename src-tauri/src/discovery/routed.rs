@@ -19,12 +19,53 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::discovery::Discovery;
 use crate::mesh::candidate::PeerCandidate;
 use crate::mesh::endpoint::Endpoint;
 use crate::mesh::path::PathKind;
 use crate::mesh::peer::PeerIdentity;
+
+/// 手动配置的 Routed 端点在 `settings` 表中的键。
+pub const ROUTED_ENDPOINTS_KEY: &str = "routed_endpoints";
+
+/// 一个手动配置的 Routed 端点。
+///
+/// **必须携带 `device_id`**：跨子网拨号时，主动方在收到 Hello 之前无从得知对端身份，
+/// 而 `handle_message` 的 Hello 分支要求 `device_id == peer_id`（身份绑定校验，
+/// 见 INV-P21），用占位值会让连接被直接丢弃。因此 Routed 的语义是
+/// 「连接**已知**节点的跨子网 / VPN 路径」，而不是「扫描未知节点」。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutedEndpoint {
+    pub device_id: String,
+    /// `"ip:port"`，如 `100.64.0.1:59992`
+    pub address: String,
+}
+
+impl RoutedEndpoint {
+    pub fn new(device_id: impl Into<String>, address: impl Into<String>) -> Self {
+        Self {
+            device_id: device_id.into(),
+            address: address.into(),
+        }
+    }
+
+    /// 解析出可拨号的地址；格式非法返回 `None`（调用方应跳过而非报错）。
+    pub fn socket_addr(&self) -> Option<SocketAddr> {
+        self.address.parse().ok()
+    }
+}
+
+/// 解析存储的 JSON 数组。**逐条跳过非法条目**，绝不因一条坏数据导致整体失败。
+pub fn parse_endpoints(json: &str) -> Vec<RoutedEndpoint> {
+    serde_json::from_str::<Vec<RoutedEndpoint>>(json).unwrap_or_default()
+}
+
+/// 序列化待存储。
+pub fn encode_endpoints(list: &[RoutedEndpoint]) -> String {
+    serde_json::to_string(list).unwrap_or_else(|_| "[]".to_string())
+}
 
 /// Routed 发现机制。
 pub struct RoutedDiscovery {
@@ -144,6 +185,33 @@ mod tests {
 
         assert!(!d.on_hello_verified("EVIL", PeerIdentity::default(), addr(1, 2, 3, 4)));
         assert!(d.next_candidate().await.is_none());
+    }
+
+    /// 配置序列化往返
+    #[test]
+    fn endpoints_serialize_roundtrip() {
+        let list = vec![
+            RoutedEndpoint::new("dev-a", "100.64.0.1:59992"),
+            RoutedEndpoint::new("dev-b", "10.0.0.5:60002"),
+        ];
+        let json = encode_endpoints(&list);
+        assert_eq!(parse_endpoints(&json), list);
+    }
+
+    /// 坏数据 / 空输入不 panic，且解析结果为空
+    #[test]
+    fn malformed_endpoints_json_yields_empty() {
+        assert!(parse_endpoints("").is_empty());
+        assert!(parse_endpoints("not json").is_empty());
+        assert!(parse_endpoints("{}").is_empty());
+    }
+
+    #[test]
+    fn socket_addr_parses_or_none() {
+        assert!(RoutedEndpoint::new("a", "100.64.0.1:59992")
+            .socket_addr()
+            .is_some());
+        assert!(RoutedEndpoint::new("a", "garbage").socket_addr().is_none());
     }
 
     #[test]
