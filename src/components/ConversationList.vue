@@ -11,6 +11,7 @@ import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { APP_ACTION } from "@/api";
+import { groupByInitial } from "@/utils/nameGroup";
 import { Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
 import type { Conversation, Friend } from "@/types";
 
@@ -41,6 +42,19 @@ const filteredFriends = computed(() => {
   if (!kw) return chat.friends;
   return chat.friends.filter((f) => f.nickname.toLowerCase().includes(kw));
 });
+
+/**
+ * 通讯录按首字母分组（用户需求 2026-09-12 第 17 条）：
+ * 「以他们的这个字母名字母的首字母，和用一套规则首字母或用户的拼音的首字母去排列
+ *  顺序然后去分组，然后这个头像可以小一些……离线、在线的这个还是要有的。
+ *  就是它跟那个消息列表可以区别一下。」
+ *
+ * 首字母来源见 `utils/nameGroup`（内置生成表，跨端一致，不依赖平台 ICU）。
+ * 搜索时不做分组：此时用户在找**某个人**，分组只会把结果切碎。
+ */
+const friendGroups = computed(() =>
+  keyword.value.trim() ? [] : groupByInitial(filteredFriends.value, (f) => f.nickname),
+);
 
 /**
  * 加号下拉菜单展开态：点击外部自动收起；并参与全局浮层互斥
@@ -308,15 +322,39 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             </span>
           </span>
         </button>
-        <FriendListItem
-          v-for="f in filteredFriends"
-          :key="f.device_id"
-          v-memo="[f.nickname, f.avatar, f.online, props.activeFriendId === f.device_id]"
-          :friend="f"
-          :active="props.activeFriendId === f.device_id"
-          @open="openFriend"
-          @context="onFriendContext"
-        />
+        <!-- 搜索：平铺（用户正在找某个人，分组会把结果切碎） -->
+        <template v-if="keyword.trim()">
+          <FriendListItem
+            v-for="f in filteredFriends"
+            :key="f.device_id"
+            v-memo="[f.nickname, f.avatar, f.online, props.activeFriendId === f.device_id]"
+            :friend="f"
+            :active="props.activeFriendId === f.device_id"
+            compact
+            @open="openFriend"
+            @context="onFriendContext"
+          />
+        </template>
+        <!-- 浏览：按首字母分组，组头 + 小头像行 -->
+        <template v-else>
+          <template v-for="g in friendGroups" :key="g.letter">
+            <div
+              class="sticky top-0 z-10 bg-[var(--gosslan-list)] px-3 py-1 text-[11px] font-medium text-[var(--gosslan-text-2)]"
+            >
+              {{ g.letter }}
+            </div>
+            <FriendListItem
+              v-for="f in g.items"
+              :key="f.device_id"
+              v-memo="[f.nickname, f.avatar, f.online, props.activeFriendId === f.device_id]"
+              :friend="f"
+              :active="props.activeFriendId === f.device_id"
+              compact
+              @open="openFriend"
+              @context="onFriendContext"
+            />
+          </template>
+        </template>
         <div v-if="filteredFriends.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
           <span>{{ keyword.trim() ? t("conv.noMatchContact") : t("conv.noFriends") }}</span>
           <button

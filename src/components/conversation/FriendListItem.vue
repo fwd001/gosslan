@@ -5,7 +5,17 @@ import { avatarInitial, nameToColor } from "@/utils/color";
 import { haptic } from "@/utils/haptics";
 import type { Friend } from "@/types";
 
-defineProps<{ friend: Friend; active: boolean }>();
+defineProps<{
+  friend: Friend;
+  active: boolean;
+  /**
+   * 通讯录分组模式（用户需求 2026-09-12 第 17 条）：
+   * 「这个头像可以小一些……但是离线、在线的这个还是要有的。就是它跟那个消息列表可以区别一下。」
+   * compact = 头像 40→32px、行高 64→56px、缩进线跟着左移；**在线状态点保留**（离线仍标灰半透），
+   * 只是省掉「在线/离线」文字行把列表压得更紧凑。
+   */
+  compact?: boolean;
+}>();
 const emit = defineEmits<{
   (e: "open", friend: Friend): void;
   /** 右键 / 移动端长按：上报坐标，由父组件定位菜单（x/y 为视口坐标）。 */
@@ -54,10 +64,11 @@ onUnmounted(clearPress);
   <div
     role="button"
     tabindex="0"
-    class="relative flex h-[64px] cursor-pointer items-center gap-3 px-3 transition-colors"
-    :class="active
-      ? 'bg-[var(--gosslan-list-active)]'
-      : 'hover:bg-[var(--gosslan-list-hover)]'"
+    class="relative flex cursor-pointer items-center gap-3 px-3 transition-colors"
+    :class="[
+      compact ? 'h-[56px]' : 'h-[64px]',
+      active ? 'bg-[var(--gosslan-list-active)]' : 'hover:bg-[var(--gosslan-list-hover)]',
+    ]"
     :aria-label="t('friend.listItem.aria', { name: friend.nickname, status: friend.online ? t('common.online') : t('common.offline') })"
     @click="emit('open', friend)"
     @keydown.enter.prevent="emit('open', friend)"
@@ -69,15 +80,18 @@ onUnmounted(clearPress);
     @touchcancel.passive="clearPress"
   >
     <!-- 微信式行间细分隔线：从文本列起（头像后缩进） -->
-    <div class="absolute bottom-0 left-[64px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
+    <div
+      class="absolute bottom-0 right-0 h-px bg-[var(--gosslan-divider)]"
+      :class="compact ? 'left-[56px]' : 'left-[64px]'"
+    ></div>
     <div class="relative shrink-0">
       <div
-        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-        :class="!friend.online ? 'grayscale opacity-70' : ''"
+        class="flex items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+        :class="[compact ? 'h-8 w-8' : 'h-10 w-10', !friend.online ? 'grayscale opacity-70' : '']"
         :style="{ backgroundColor: nameToColor(friend.nickname) }"
       >
         <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
-        <span v-else class="text-sm font-medium">{{ initials(friend.nickname) }}</span>
+        <span v-else :class="compact ? 'text-xs font-medium' : 'text-sm font-medium'">{{ initials(friend.nickname) }}</span>
       </div>
       <span
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"
@@ -94,6 +108,7 @@ onUnmounted(clearPress);
         {{ friend.nickname }}
       </div>
       <div
+        v-if="!compact"
         class="truncate text-xs leading-5 text-[var(--gosslan-text-2)]"
         :title="friend.online ? t('common.online') : t('common.offline')"
       >
