@@ -620,6 +620,10 @@ async fn peripheral_accept_loop(
                 let ep = MeshEndpoint::Ble(BleEndpoint::new(central));
                 detach_by_endpoint(&state, &ep).await;
             }
+            // 驱动侧的诊断/告警：**必须**记进日志 —— 蓝牙在真机上出问题时，
+            // 这是用户唯一能贴给我们的线索（"开着蓝牙却没人能发现我们"就是这类）。
+            PeripheralEvent::Notice(text) => state.logger.info("ble", text),
+            PeripheralEvent::Warning(text) => state.logger.warn("ble", text),
         }
     }
 

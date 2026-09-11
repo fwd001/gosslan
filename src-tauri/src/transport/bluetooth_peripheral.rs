@@ -96,6 +96,42 @@ pub fn central_payload_mtu(max_update_value_length: usize) -> usize {
     }
 }
 
+/// 蓝牙状态的中文说明。
+///
+/// 为什么要有它：`CBManagerState` 只有数字（4/5…），日志里出现"状态码 4"对用户毫无意义；
+/// 而"蓝牙关着"与"没授权"要给的**处理建议完全不同**（前者去开蓝牙，后者去隐私设置）。
+pub fn state_label(state: CBManagerState) -> &'static str {
+    if state == CBManagerState::PoweredOn {
+        "已开启"
+    } else if state == CBManagerState::PoweredOff {
+        "蓝牙已关闭"
+    } else if state == CBManagerState::Unauthorized {
+        "未授权（去「系统设置 → 隐私与安全性 → 蓝牙」允许本应用）"
+    } else if state == CBManagerState::Unsupported {
+        "本机不支持低功耗蓝牙"
+    } else if state == CBManagerState::Resetting {
+        "系统蓝牙服务正在重置"
+    } else {
+        "状态未知"
+    }
+}
+
+/// 离开"已开启"之后，需要**主动摘掉**的 central 列表（纯函数，便于单测）。
+///
+/// 为什么必须主动摘：系统蓝牙关闭 / 权限被撤 / 服务重置时，CoreBluetooth 会清空本地
+/// GATT 数据库并断开所有 central，但它**不会**回调 `didUnsubscribeFromCharacteristic:`
+/// ⇒ 我们手里那份"谁订阅了我"的集合会变成**陈旧状态**：`is_subscribed` 仍返回 true，
+/// 于是写任务会一直等到 `updateValue` 失败（最长 8s）才收尾，而用户看不到任何日志。
+/// 因此：只要状态不是 PoweredOn，就把之前记住的订阅**全部**当成失效。
+pub fn detach_targets(state: CBManagerState, subscribed: &HashSet<String>) -> Vec<String> {
+    if state == CBManagerState::PoweredOn {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = subscribed.iter().cloned().collect();
+    out.sort(); // 稳定顺序：日志与单测都好读
+    out
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -133,7 +169,15 @@ pub enum PeripheralEvent {
     /// 收到一条完整帧。`central` 是 CoreBluetooth 的 central 标识（≈ 我们的"端点地址"）。
     Frame { central: String, bytes: Vec<u8> },
     /// 对端取消订阅（CoreBluetooth 外设角色**没有**"central 断开"回调，这是唯一可靠的信号）。
+    ///
+    /// 另外：**系统蓝牙被关掉 / 权限被撤**时 CoreBluetooth 也不会回调取消订阅，
+    /// 我们会主动为每个已订阅的 central 各发一条 —— 否则链路要等到写入失败（最长 8s）才被拆，
+    /// 而且用户完全看不出发生了什么。
     Unlinked { central: String },
+    /// 诊断信息（走 `logger.info`）：状态变化、恢复广播等。
+    Notice(String),
+    /// 需要用户知道的问题（走 `logger.warn`）：广播启动失败、蓝牙不可用等。
+    Warning(String),
 }
 
 /// 共享的 per-central 状态（订阅集合 + 协商到的通知载荷上限）。
@@ -379,29 +423,49 @@ define_class!(
         fn did_update_state(&self, peripheral: &CBPeripheralManager) {
             let state = unsafe { peripheral.state() };
             if state == CBManagerState::PoweredOn {
+                // 每次回到 PoweredOn 都要**重新** addService + startAdvertising：
+                // CoreBluetooth 在离开 PoweredOn 时会清空本地 GATT 数据库，
+                // 重新打开蓝牙后不重新发布就永远不会再有人能连上我们。
                 self.add_service_and_advertise(peripheral);
-                if let Some(tx) = self
-                    .ivars()
-                    .init_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
+                self.notice(format!("蓝牙{}，本机已在广播（等待对端连入）", state_label(state)));
+                if let Some(tx) = self.ivars().init_state.lock().unwrap_or_else(|e| e.into_inner()).take()
                 {
                     let _ = tx.send(Ok(()));
                 }
-            } else {
-                if let Some(tx) = self
-                    .ivars()
-                    .init_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                {
-                    let _ = tx.send(Err(format!(
-                        "蓝牙不可用（状态码 {}）：请确认已开启蓝牙并在系统设置里允许本应用使用蓝牙",
-                        state.0
-                    )));
-                }
+                return;
+            }
+
+            // ---- 离开"已开启"：把订阅状态与半截消息全部作废，并**主动**通知上层拆链路 ----
+            // （CoreBluetooth 不会补发 didUnsubscribe，见 `detach_targets` 的注释）
+            let victims = {
+                let mut st = self.ivars().state.lock().unwrap_or_else(|e| e.into_inner());
+                let targets = detach_targets(state, &st.subscribed);
+                st.subscribed.clear();
+                st.mtu.clear();
+                targets
+            };
+            self.ivars()
+                .reassemblers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+            for central in &victims {
+                let _ = self.ivars().events.send(PeripheralEvent::Unlinked {
+                    central: central.clone(),
+                });
+            }
+            let _ = self.ivars().signal.send(1); // 唤醒可能在等订阅的写任务，让它们立刻失败收尾
+            self.warn(format!(
+                "蓝牙不可用（{}）：已断开 {} 条 BLE 链路，等待蓝牙恢复",
+                state_label(state),
+                victims.len()
+            ));
+            if let Some(tx) = self.ivars().init_state.lock().unwrap_or_else(|e| e.into_inner()).take()
+            {
+                let _ = tx.send(Err(format!(
+                    "蓝牙不可用（{}）：请确认已开启蓝牙并在系统设置里允许本应用使用蓝牙",
+                    state_label(state)
+                )));
             }
         }
 
@@ -436,12 +500,13 @@ define_class!(
                 let mut st = self.ivars().state.lock().unwrap_or_else(|e| e.into_inner());
                 st.subscribed.remove(&id);
                 st.mtu.remove(&id);
-                self.ivars()
-                    .reassemblers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&id);
             }
+            // 两次取锁分开，不在持有 `state` 时去拿 `reassemblers`（锁序越简单越不会出事）
+            self.ivars()
+                .reassemblers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
             let _ = self.ivars().events.send(PeripheralEvent::Unlinked {
                 central: id.clone(),
             });
@@ -488,7 +553,13 @@ define_class!(
             error: Option<&objc2_foundation::NSError>,
         ) {
             if let Some(err) = error {
-                // 这里没有 logger，只能在初始状态通道上尽力报一次；之后靠上层日志兜底
+                // ⚠️ 必须走 `events` 报给上层日志，**不能**只在 `init_state` 通道上尽力报一次：
+                // 那个通道只在首次状态回调时还开着，之后（例如用户关掉蓝牙再打开、
+                // 我们重新广播时失败）错误会**被静默丢弃** —— 现象就是"蓝牙开着却没人能发现我们"，
+                // 而日志里一个字都没有。
+                self.warn(format!(
+                    "蓝牙广播启动失败：{err}（对端将无法发现本机；可尝试关闭再打开蓝牙开关）"
+                ));
                 if let Some(tx) = self
                     .ivars()
                     .init_state
@@ -546,6 +617,16 @@ impl Delegate {
             reassemblers: Mutex::new(HashMap::new()),
         });
         unsafe { objc2::msg_send![super(this), init] }
+    }
+
+    /// 诊断信息（上层记 info）。
+    fn notice(&self, text: String) {
+        let _ = self.ivars().events.send(PeripheralEvent::Notice(text));
+    }
+
+    /// 需要用户知道的问题（上层记 warn）。
+    fn warn(&self, text: String) {
+        let _ = self.ivars().events.send(PeripheralEvent::Warning(text));
     }
 
     /// 分片 ⇒ 完整帧 ⇒ 事件。半截消息由 `BleReassembler` 自己带 TTL 回收。
@@ -617,6 +698,59 @@ mod tests {
                 "绝不能返回 0：分片会全部失败"
             );
         }
+    }
+
+    /// 状态文案必须把"关着"和"没授权"分开 —— 两者的处理建议完全不同
+    /// （一个去开蓝牙，一个去隐私设置），日志里只说"状态码 4"等于什么都没说。
+    #[test]
+    fn state_label_tells_the_user_what_to_do() {
+        assert_eq!(state_label(CBManagerState::PoweredOn), "已开启");
+        assert_eq!(state_label(CBManagerState::PoweredOff), "蓝牙已关闭");
+        let unauthorized = state_label(CBManagerState::Unauthorized);
+        assert!(
+            unauthorized.contains("系统设置"),
+            "未授权必须给出处理建议（去系统设置），实际：{unauthorized}"
+        );
+        assert_eq!(state_label(CBManagerState::Unsupported), "本机不支持低功耗蓝牙");
+        assert_eq!(state_label(CBManagerState::Resetting), "系统蓝牙服务正在重置");
+        assert_eq!(state_label(CBManagerState::Unknown), "状态未知");
+    }
+
+    /// 只要离开 PoweredOn，**所有**已订阅的 central 都必须被摘掉。
+    ///
+    /// 这条守着一个真实的静默故障：CoreBluetooth 在蓝牙被关/权限被撤时不会回调
+    /// `didUnsubscribeFromCharacteristic:`，于是"谁订阅了我"会一直是旧数据 ——
+    /// 写任务要等 `updateValue` 失败（最长 8s）才收尾，用户日志里也一片空白。
+    #[test]
+    fn leaving_powered_on_detaches_every_subscribed_central() {
+        let mut subscribed = HashSet::new();
+        subscribed.insert("central-a".to_string());
+        subscribed.insert("central-b".to_string());
+
+        assert!(
+            detach_targets(CBManagerState::PoweredOn, &subscribed).is_empty(),
+            "已经开启时不该摘任何链路"
+        );
+        for state in [
+            CBManagerState::PoweredOff,
+            CBManagerState::Unauthorized,
+            CBManagerState::Unsupported,
+            CBManagerState::Resetting,
+            CBManagerState::Unknown,
+        ] {
+            let mut got = detach_targets(state, &subscribed);
+            got.sort();
+            assert_eq!(
+                got,
+                vec!["central-a".to_string(), "central-b".to_string()],
+                "状态 {:?} 时必须把订阅全部当成失效",
+                state.0
+            );
+        }
+        assert!(
+            detach_targets(CBManagerState::PoweredOff, &HashSet::new()).is_empty(),
+            "从来没订阅过就没什么可摘的"
+        );
     }
 
     /// 用 clamp 出来的 MTU 分片，必须能被**对端同一套**重组器逐字节还原
