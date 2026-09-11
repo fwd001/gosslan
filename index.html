@@ -47,6 +47,14 @@
           el.lang = lang;
           // 应用显示名本地化：中文「相闻」/ 英文 "Gosslan"（<title> 与骨架 brand 共用）。
           document.title = lang === "zh-CN" ? "相闻" : "Gosslan";
+          // macOS 标记：首屏骨架需要按平台取标题栏高度（原生 macOS caption 是 28px，
+          // 而 Windows/Linux 用 38px 的自绘 caption）——骨架先于 app.init 运行，
+          // 所以这里自己判一次。平台判定只认 `Macintosh`（不要用 `Mac OS X`，本项目既有约定）。
+          try {
+            if (/Macintosh/.test(navigator.userAgent)) el.classList.add("is-mac");
+          } catch (e) {
+            /* 忽略：非浏览器环境 */
+          }
           // 日志窗口：渲染「日志页骨架」而非「聊天三栏骨架」（Rust open_log_window 注入）。
           try {
             if (window.__GOSSLAN_WINDOW__ === "logs") el.classList.add("boot-logs");
@@ -196,6 +204,10 @@
         margin: 0 16px 14px;
         height: 76px;
         border-radius: 8px; /* = token md，与真实输入框一致 */
+      }
+      /* macOS 骨架的标题栏与原生 28px 对齐（与 style.css 的 .platform-mac 覆盖一致） */
+      html.is-mac .boot-cap {
+        height: 28px;
       }
       .boot-ava {
         width: 40px;

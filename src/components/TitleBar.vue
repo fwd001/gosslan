@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "@/stores/useAppStore";
 import { api } from "@/api";
-import { Minus, X, Maximize2, Minimize2 } from "lucide-vue-next";
+import { Minus, X } from "lucide-vue-next";
 import { isMac } from "@/utils/platform";
 import { t } from "@/i18n";
 
@@ -24,6 +25,17 @@ async function toggleMaximize() {
     /* 忽略 */
   }
 }
+
+/**
+ * 窗口是否聚焦（macOS 红绿灯的**失焦变灰**是原生行为）。
+ *
+ * 用户 2026-09-12 反馈：「mac 自己写的三个关闭按钮，和原生的关闭按钮的样式好像不太一样，
+ * 还有大小。」最明显的差异就是这条：原生在窗口失焦时把整组变成**中性灰**（不带红黄绿、
+ * 也不显示符号），而我们自绘的一直是彩色的 —— 一旦主窗口与设置窗口并排（设置窗口聚焦、
+ * 主窗口失焦），两套摆在一起就明显不像。
+ */
+const focused = ref(true);
+let unlistenFocus: (() => void) | null = null;
 
 /** macOS 绿灯的 Option-click → 全屏（HIG：缩放按钮按住 Option 进入/退出全屏）。 */
 const fullscreen = ref(false);
@@ -69,9 +81,23 @@ function onKeydown(e: KeyboardEvent) {
 onMounted(() => {
   refreshMaximized();
   window.addEventListener("keydown", onKeydown);
+  // 焦点跟踪：失败（非 Tauri 环境 / 权限）就保持"聚焦"外观，不影响任何功能。
+  void (async () => {
+    try {
+      const w = getCurrentWindow();
+      focused.value = await w.isFocused();
+      unlistenFocus = await w.onFocusChanged(({ payload }) => {
+        focused.value = payload;
+      });
+    } catch {
+      /* 忽略：非 Tauri 环境（纯 vite dev） */
+    }
+  })();
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
+  unlistenFocus?.();
+  unlistenFocus = null;
 });
 </script>
 
@@ -82,37 +108,80 @@ onBeforeUnmount(() => {
     v-if="!app.isMobile"
     data-tauri-drag-region
     class="flex shrink-0 select-none items-center bg-[var(--gosslan-caption)]"
-    :class="isMac ? 'justify-start pl-3' : 'justify-end'"
+    :class="isMac ? 'justify-start pl-[13px]' : 'justify-end'"
     :style="{ height: 'var(--gosslan-title-h)' }"
     @dblclick="onTitlebarDblClick"
   >
-    <!-- macOS：红绿灯（最左，模拟系统样式；悬停整组时显示符号）。
+    <!-- macOS：红绿灯。按**原生度量与状态**绘制（用户 2026-09-12 反馈：
+         「mac 自己写的三个关闭按钮，和原生的关闭按钮的样式好像不太一样，还有大小」）：
+         · 尺寸/间距：直径 **12px**、间距 **8px**（圆心相距 20px）、距左 **13px** —— 与系统一致；
+         · 颜色与描边取系统取值（#ff5f57/#febc2e/#28c840 + 各自的深色 1px 内描边），
+           而不是笼统的 `border-black/15`（那会让三个球的重量看起来不匀）；
+         · **失焦整组变灰**（原生行为）：主窗口与设置窗口并排时，这一条差异最显眼；
+         · 符号只在"聚焦 + 悬停整组"时出现，且用与原生一致的细线造型（× / − / 对角三角），
+           不再用 lucide 的箭头（`Maximize2` 那种双箭头与系统造型不同）。
          组上加 @dblclick.stop：双击红绿灯不应冒泡成"双击标题栏"触发缩放。 -->
-    <div v-if="isMac" class="group/traffic flex h-full items-center gap-2" @dblclick.stop>
+    <div v-if="isMac" class="group/traffic flex h-full items-center" style="gap: 8px" @dblclick.stop>
       <button
-        class="flex h-3 w-3 items-center justify-center rounded-full border border-black/15 bg-[#ff5f57]"
+        class="flex h-3 w-3 items-center justify-center rounded-full transition-colors"
+        :class="focused
+          ? 'bg-[#ff5f57] shadow-[inset_0_0_0_1px_#e0443e]'
+          : 'bg-[#d4d4d4] dark:bg-[#575757]'"
         :title="t('window.close')" :aria-label="t('window.close')"
         @click="api.windowClose()"
       >
-        <X class="hover-reveal-op h-2 w-2 text-black/50 opacity-0 transition-opacity group-hover/traffic:opacity-100" />
+        <svg
+          v-if="focused"
+          viewBox="0 0 12 12"
+          class="hover-reveal-op h-3 w-3 opacity-0 transition-opacity group-hover/traffic:opacity-100"
+          fill="none" stroke="#4d0000" stroke-width="1.3" stroke-linecap="round"
+        >
+          <path d="M4.2 4.2l3.6 3.6M7.8 4.2L4.2 7.8" />
+        </svg>
       </button>
       <button
-        class="flex h-3 w-3 items-center justify-center rounded-full border border-black/15 bg-[#febc2e]"
+        class="flex h-3 w-3 items-center justify-center rounded-full transition-colors"
+        :class="focused
+          ? 'bg-[#febc2e] shadow-[inset_0_0_0_1px_#dea123]'
+          : 'bg-[#d4d4d4] dark:bg-[#575757]'"
         :title="t('window.minimize')" :aria-label="t('window.minimize')"
         @click="api.windowMinimize()"
       >
-        <Minus class="hover-reveal-op h-2 w-2 text-black/50 opacity-0 transition-opacity group-hover/traffic:opacity-100" />
+        <svg
+          v-if="focused"
+          viewBox="0 0 12 12"
+          class="hover-reveal-op h-3 w-3 opacity-0 transition-opacity group-hover/traffic:opacity-100"
+          fill="none" stroke="#5a3a00" stroke-width="1.3" stroke-linecap="round"
+        >
+          <path d="M4 6h4" />
+        </svg>
       </button>
       <button
-        class="flex h-3 w-3 items-center justify-center rounded-full border border-black/15 bg-[#28c840]"
+        class="flex h-3 w-3 items-center justify-center rounded-full transition-colors"
+        :class="focused
+          ? 'bg-[#28c840] shadow-[inset_0_0_0_1px_#1aab29]'
+          : 'bg-[#d4d4d4] dark:bg-[#575757]'"
         :title="fullscreen ? t('window.fullscreenExit') : maximized ? t('window.restore') : t('window.zoom')"
         :aria-label="fullscreen ? t('window.fullscreenExit') : maximized ? t('window.restore') : t('window.zoom')"
         @click="onGreenClick"
       >
-        <component
-          :is="fullscreen || maximized ? Minimize2 : Maximize2"
-          class="hover-reveal-op h-2 w-2 text-black/50 opacity-0 transition-opacity group-hover/traffic:opacity-100"
-        />
+        <!-- 原生造型：非全屏时是两个**对角三角**（进出全屏）；全屏/最大化时是收拢的三角。
+             用自绘路径而不是 lucide 箭头，是为了和系统观感一致。 -->
+        <svg
+          v-if="focused"
+          viewBox="0 0 12 12"
+          class="hover-reveal-op h-3 w-3 opacity-0 transition-opacity group-hover/traffic:opacity-100"
+          fill="#0b3d0b"
+        >
+          <template v-if="fullscreen || maximized">
+            <path d="M3.2 3.2h3v3z" />
+            <path d="M8.8 8.8h-3v-3z" />
+          </template>
+          <template v-else>
+            <path d="M3.2 3.2h3.4L3.2 6.6z" />
+            <path d="M8.8 8.8H5.4l3.4-3.4z" />
+          </template>
+        </svg>
       </button>
     </div>
 

@@ -130,6 +130,11 @@
      `.boot-logs-toolbar`（日志窗口），否则首屏会跳高 4px —— 这是本项目的既有约定。 */
   --gosslan-header-h: 48px;
   /* 顶部窗口拖拽条高度：caption 容纳右上三枚窗口按钮 */
+  /* 自绘标题栏高度。Windows / Linux 用它承载自绘三键（与系统 caption 高度接近）。
+     macOS 走下面 `.platform-mac` 的覆盖值 —— 那边要与**原生标题栏 28px** 对齐，
+     否则自绘红绿灯所在的横条比系统的高一截，并排时"按钮大小"看着就不一样
+     （用户 2026-09-12 反馈：「mac 自己写的三个关闭按钮，和原生的关闭按钮的样式好像
+     不太一样，还有大小」）。 */
   --gosslan-title-h: 38px;
   /* ---------------- 圆角梯度（对齐 iOS HIG / WWDC25「Shape & Concentricity」） ----------------
      选形状看"密度与层级"，不要到处都圆：
@@ -451,6 +456,13 @@ button:not(:disabled):active,
 /* macOS：恢复系统 overlay 滚动条（滚动时才浮出、不占布局宽度，符合 HIG）。
    Windows/Android 保留上面的 6px 细滚动条（自绘标题栏/触屏语境下常显更明确）。
    ⚠️ 必须写在上面全局滚动条样式**之后**：同优先级"后定义者胜"，写前面会被覆盖。 */
+/* macOS：标题栏高度对齐系统（28px）。自绘红绿灯的圆心位置、与窗口顶边的距离
+   因此与原生窗口一致；配合 TitleBar 里的 12px 直径 / 8px 间距 / 13px 左边距，
+   整组与系统视觉等价。 */
+.platform-mac {
+  --gosslan-title-h: 28px;
+}
+
 .platform-mac ::-webkit-scrollbar {
   width: auto;
   height: auto;
