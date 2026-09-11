@@ -322,12 +322,23 @@ export const useAppStore = defineStore("app", () => {
     mq.addEventListener("change", (e) => (isMobile.value = e.matches));
     watchKeyboard();
 
-    device.value = await api.getDeviceInfo();
-    interfaces.value = await api.listInterfaces();
-    shareDir.value = await api.getShareDir();
-    const st = await api.getNetworkStatus();
-    online.value = st.online;
-    boundIp.value = st.bound_ip;
+    // 这四项互不依赖 ⇒ **并行**拉取（原先串行 await，启动要多等 3 个 IPC 往返；
+    // 用户 2026-09-12 要求「不要有任何阻断渲染的操作」）。
+    // 用 `allSettled` 而不是 `all`：任一项失败（例如网卡枚举在权限受限时抛错）
+    // 不该把设备信息 / 共享目录一起弄丢 —— 逐项取成功值、失败保持默认。
+    const [dev, ifaces, share, st] = await Promise.allSettled([
+      api.getDeviceInfo(),
+      api.listInterfaces(),
+      api.getShareDir(),
+      api.getNetworkStatus(),
+    ]);
+    if (dev.status === "fulfilled") device.value = dev.value;
+    if (ifaces.status === "fulfilled") interfaces.value = ifaces.value;
+    if (share.status === "fulfilled") shareDir.value = share.value;
+    if (st.status === "fulfilled") {
+      online.value = st.value.online;
+      boundIp.value = st.value.bound_ip;
+    }
     // 自动启动在后台异步执行：init 读取时可能尚未完成，导致 online=false
     // 而实际网络已经在运行。延迟刷新一次以修正 UI 状态。
     setTimeout(async () => {

@@ -412,21 +412,36 @@ export const useChatStore = defineStore("chat", () => {
     // 跳未读造成闪烁。
     const unreadBefore = conversations.value.find((c) => c.id === id)?.unread ?? 0;
     unreadJump.value = unreadBefore > 0 ? { convId: id, index: -1 } : null;
-    // 会话行不存在（如新加好友还没发过消息）→ 后端补建，保证左侧列表有对应可高亮的项
-    if (!conversations.value.some((c) => c.id === id) && !id.startsWith("group:")) {
-      try {
-        const conv = await api.ensureConversation(id);
-        conversations.value = [conv, ...conversations.value];
-      } catch {
-        /* 忽略：不影响打开聊天 */
-      }
-    }
-    // 先发 ReadReceipt（不等 loadMessages），让对方尽早看到绿勾
-    void api.markRead(id).then(() => {
-      const conv = conversations.value.find((c) => c.id === id);
-      if (conv) conv.unread = 0;
+    // 未读清零走**乐观更新**（用户 2026-09-12 要求「所有异步操作尽量乐观更新」）：
+    // 打开会话即视为已读，本地立刻清零，别让红点在 await 期间继续显示。
+    const optimisticClearUnread = (convId: string) => {
+      const conv = conversations.value.find((c) => c.id === convId);
+      if (conv && conv.unread !== 0) conv.unread = 0;
+    };
+    optimisticClearUnread(id);
+    // 会话行不存在（如新加好友还没发过消息）→ 后端补建，保证左侧列表有对应可高亮的项。
+    // ⚠️ **不阻塞消息加载**：补建会话行与 loadMessages 互不依赖，串行 await 会让
+    // 「切到一个全新会话」白等一次 IPC（骨架已经渲染，但内容迟迟不来）。
+    // 因此并行发起，回来后若仍未出现再补进列表。
+    const ensureConv = conversations.value.some((c) => c.id === id) || id.startsWith("group:")
+      ? Promise.resolve()
+      : api
+          .ensureConversation(id)
+          .then((conv) => {
+            if (!conversations.value.some((c) => c.id === id)) {
+              conversations.value = [conv, ...conversations.value];
+            }
+          })
+          .catch(() => {
+            /* 忽略：不影响打开聊天 */
+          });
+    // ReadReceipt 与消息加载并行：让对方尽早看到绿勾，且不拖慢本端渲染。
+    // 原先这里发了两次 markRead（一次 void、末尾再一次 await），属重复 IPC，一并去掉。
+    const readReceipt = api.markRead(id).catch(() => {
+      /* 回执失败不回滚已读：本地确实已经看到了 */
     });
-    await loadMessages(id);
+    await Promise.all([loadMessages(id), ensureConv]);
+    await readReceipt;
     if (unreadBefore > 0) {
       const list = messages.value[id] ?? [];
       const idx = list.length - Math.min(unreadBefore, list.length);
@@ -437,9 +452,8 @@ export const useChatStore = defineStore("chat", () => {
         unreadJump.value = null;
       }
     }
-    await api.markRead(id);
-    const conv = conversations.value.find((c) => c.id === id);
-    if (conv) conv.unread = 0;
+    // 未读已在上面乐观清零；这里只做一次兜底（若期间又来了新消息把 unread 加回去，
+    // 说明是"打开之后"到达的，此时不该再清）。
     // 切会话后收缩一次：刚被切走的会话若已冷，就可释放其内存副本
     enforceMessageCacheBound();
   }
