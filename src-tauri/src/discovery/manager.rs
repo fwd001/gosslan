@@ -131,6 +131,43 @@ mod tests {
         assert_eq!(endpoints.len(), 3);
     }
 
+    /// 全链路串联：Discovery（LAN + Routed 两源）→ PeerManager，
+    /// 同一 device_id 的两条端点必须合并成 **1 Peer + 2 Connections**。
+    ///
+    /// 这是 Phase 2 与 Phase 3 的协同验收：发现层只产候选，合并语义由 PeerManager 持有。
+    #[tokio::test]
+    async fn discovery_to_peer_manager_merges_multipath() {
+        use crate::mesh::manager::PeerManager;
+
+        let mut dm = DiscoveryManager::new();
+        dm.register(Box::new(MockDiscovery {
+            name: "lan",
+            items: vec![cand("ABC123", lan(), PathKind::Lan)],
+        }));
+        dm.register(Box::new(MockDiscovery {
+            name: "routed",
+            items: vec![cand("ABC123", routed(), PathKind::Routed)],
+        }));
+
+        let mut pm = PeerManager::new(10_000, 3);
+        for c in dm.poll_candidates().await {
+            pm.merge(c);
+        }
+
+        assert_eq!(pm.peer_count(), 1, "同一 device_id 必须只有一个 Peer");
+        assert_eq!(
+            pm.get("ABC123").unwrap().connection_count(),
+            2,
+            "LAN 与 Routed 各一条 Connection"
+        );
+
+        // 未握手 ⇒ 无健康记录 ⇒ 仍 Offline（发现 ≠ 连通，Phase 5 建链后才 mark_seen）
+        assert_eq!(
+            pm.online_state("ABC123", 0),
+            crate::mesh::peer::PeerOnlineState::Offline
+        );
+    }
+
     /// 已耗尽的源再次 poll 不应重复产出（幂等，配合 PeerManager 的幂等 merge）。
     #[tokio::test]
     async fn drained_source_yields_nothing_on_second_poll() {
