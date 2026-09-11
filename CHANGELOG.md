@@ -10,6 +10,20 @@
 
 ## [Unreleased]
 
+### Fixed (macOS 沙盒：用户选的目录重启后失访 —— 共享目录"变空"、收到的文件写不进去)
+- **两处用户自选目录改用 security-scoped bookmark 保活**（`bce66f0` + `50cdc0d`）。App Sandbox 下用户在目录选择器里挑的目录，系统**只把访问权授予本次进程**；我们此前只把**路径字符串**存进数据库 ⇒ 重启后路径还在、权限没了：
+  - **共享目录**：`read_dir` 失败 ⇒ 「共享目录」列表直接变空、对方拉不到文件；
+  - **文件接收目录**：收到的文件**写不进去**（用户把接收目录改到自定义位置后重启即触发）。
+  两者都**没有任何报错弹窗**，是最容易被误判成"网络问题"的一类故障。
+- **修法**：存 security-scoped bookmark，启动时 `URLByResolvingBookmarkData:` 解析（**解析即隐式开始访问**，因此不再额外调 `startAccessingSecurityScopedResource` 免得引用计数只加不减），过期则用解析出来的 URL 续期并写回；**书签优先于数据库里的路径**（书签记的是"资源"，用户在 Finder 里移动/重命名目录后解析出的路径比旧路径更新），书签坏了则退回路径 —— 绝不能因为书签失效就让用户重选一次。
+- **两级书签策略**：先试安全作用域书签，被拒则退回**普通书签**（不带沙盒授权，但能跟踪目录移动，且未沙盒环境里它就是完整可用的），两者都失败才退回"只存路径"。解析侧对称（选项必须与创建时一致）。这条兜底同时让本机的未沙盒测试二进制能**真实验证** objc2 调用姿势。
+- 🔴 **补 `com.apple.security.files.bookmarks.app-scope`**：沙盒里缺这条权限，`NSURLBookmarkCreationWithSecurityScope` 会被系统拒绝 —— 也就是说"书签代码写了"在真机上依然不生效。⚠️ 已装旧版的 Mac 必须**重装**这一版。
+- 新文件 `macos_bookmark.rs`（书签读写）、`user_dirs.rs`（两个目录共用的持久化 + 纯决策函数 `pick`）；`state.rs` 启动、`commands::set_share_dir` / `set_downloads_dir` 接线。
+- 单测 +12：书签**真往返**（本机未沙盒也走通创建→解析并比对路径）、坏输入干净报错不 panic、目录被删后解析不得当成可用、端到端 `store → load` 两种模式、坏书签被清理且退回路径、书签优先/路径兜底/空路径拒绝、**两个目录互不串键**。
+- **非空转验证**：① `pick` 改成"路径优先" → 2 条 FAIL；② 书签建失败时连路径也不落库 → 2 条 FAIL；③ `RECEIVE` 的键改成与 `SHARE` 相同 → 串键护栏 FAIL；恢复后全绿、无残留标记。
+- 验证：`cargo test --lib` **378 passed / 0 failed / 0 warning**；`--features bluetooth` 383 passed / 0 warning；`cargo check --all-targets` 0 warning；`scripts/check-mobile.sh [--bluetooth]` Android 双 PASS / 0 warning；前端未改（npm 270 / vue-tsc 0 / vite build 通过）。
+  ⚠️ 沙盒授权本身只能在**打包版**上验：手册 §4 顶部新增"选共享目录/接收目录 → ⌘Q 完全退出 → 重开 → 目录仍然可用"的验收步骤（`npm run tauri dev` 未沙盒，测不出区别）。
+
 ### Added (BLE 外设角色：手机不必与 Mac 同一 Wi-Fi 也能连入)
 - **macOS 上新增 BLE peripheral（GATT server）角色**（`b317c27`）。`btleplug` 只能当 central（其 README 原文 "host/central mode only"），只能主动扫/连、**不能**被连 —— 所以只做 central 的 Mac 在蓝牙上永远不可被发现，"手机与电脑不在同一局域网也能加入"这条产品目标根本无法落地。现在 Mac 同时具备两种角色：
 
