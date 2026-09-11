@@ -1,6 +1,6 @@
 # ADR-0014: Multi-Path Connection Selection
 
-- Status: Proposed（待用户审核后转 Accepted）
+- Status: Accepted（2026-09-12 用户审核通过）
 - Date: 2026-09-12
 - Owners: Gosslan
 - Related:

@@ -63,6 +63,13 @@
 - **判据是「所见即所匹配」**：只在界面上真实渲染出来的文本（时间 HH:MM:SS · 级别 · target · 消息）上匹配，不把未显示的日期部分纳入 —— 否则会出现「保留了这一行但整行没有高亮」的困惑。
 - **过滤逻辑抽为可测纯函数 `utils/logFilter.ts`**：新增 9 条单测钉住语义（空词不过滤 / 子串命中 / 大小写不敏感 / **跨词不连续不算命中** / 正则元字符按字面处理 / 保持顺序）；另补 6 条 `utils/highlight.ts` 单测（转义安全 + 正则元字符不是模式 + 每处都标记）。
 
+### Changed (M3-0 连接级健康信号，ADR-0014 §3.1)
+- **`ConnectionHealth` 首次真正被喂上数据**：此前 `mark_seen` / `mark_failure` 只有 `mesh/peer.rs` 内部与单测在调用、`register_connection` 只 `merge` 出 `default()` 健康值，于是 `PeerManager::online_state()` 在生产路径**恒返回 Offline**（模型在、数据空 —— 与 Phase 2 review 抓到的 `upsert_connection` health 覆盖 bug 属同一类陷阱）。本步把它接上，且**纯旁路、行为零变化**：只写不读，选路仍照旧。
+- **三个成功打点 + 一个失败打点**（全部复用现有帧，**零新协议**）：① 建链即打一次（否则「已建立但还没收发」的连接会被健康判据算作不健康，M3 选路会因此退化成「按固定顺序挑」甚至反复重拨 —— ADR-0014 §3.1 硬性注意 ①）；② `writer_loop` 每次写帧成功（心跳每 5s 一次 ⇒ 无业务消息时也至少每 5s 刷新）；③ `reader_loop` 每收到一帧（比「写成功」**更强**：对端确实活着，是半开 TCP 下唯一能区分真活/假活的信号）；④ 写失败记一次失败。RTT 恒为 `None` —— `Heartbeat` 是单向的、无回包，ADR-0014 明确本阶段不做 RTT，这里也不假装有数据。
+- **`[mesh] +conn` 日志新增 `online=` 字段**：`ConnectionHealth` 是内存态，这是 mesh 健康信号在生产路径**唯一的外部可观测点**；没有它就只能靠读代码相信「信号接上了」。
+- **验证（决定性 + 非空转）**：`bash scripts/t4-mirror-dial.sh` 实跑，三条连接（含真实局域网节点）全部 `online=1`；临时去掉建链打点 → 三条全部 `online=0`。后者同时**实测证实**了「M3-0 之前 `online_state()` 恒 Offline」这一 review 结论。
+- `docs/adr/0014-multi-path-connection-selection.md` 状态 Proposed → **Accepted**（用户 2026-09-12 审核通过）。
+
 ## [2.1.2] - 2026-09-11
 
 ### Fixed

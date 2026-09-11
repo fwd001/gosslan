@@ -36,7 +36,7 @@ use crate::state::{
 };
 use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
 use crate::discovery::routed::{parse_endpoints, ROUTED_ENDPOINTS_KEY};
-use crate::mesh::{Endpoint as MeshEndpoint, PathKind, PeerCandidate, PeerIdentity};
+use crate::mesh::{Endpoint as MeshEndpoint, PathKind, PeerCandidate, PeerIdentity, PeerOnlineState};
 use crate::transport::tcp::{TcpReceiver, TcpSender};
 
 /// 字符串 IP 是否为虚拟地址（用于 peers 表中已存储的 IP 字符串判断）。
@@ -595,6 +595,7 @@ async fn handle_incoming(
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
+        peer_addr,
         w,
         bulk_rx,
         prio_rx,
@@ -636,12 +637,34 @@ async fn handle_incoming(
         }
     }
     state.emit_peers();
-    reader_loop(state, r, peer_id, bulk_tx, shutdown).await;
+    reader_loop(state, r, peer_id, peer_addr, bulk_tx, shutdown).await;
+}
+
+/// 把「某条连接成功收发」喂给 mesh 层的 `ConnectionHealth`（ADR-0014 §3.1）。
+///
+/// 信号**全部复用现有帧**，零新协议。RTT 恒传 `None`：`Message::Heartbeat` 是**单向**的
+/// （收到只 `touch_peer` + flush，不回包），没有可靠的往返测量来源；ADR-0014 明确本阶段
+/// 不做 RTT，这里也不假装有数据。
+///
+/// 复杂度：每条连接每 5s 至少一次（心跳），加上真实收发，都是 std 锁上的一次查表 ——
+/// 与 `register_connection` 同量级，不构成热点。
+fn mark_conn_seen(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.mark_connection_seen(peer_id, &MeshEndpoint::Tcp(endpoint), db::now_ms(), None);
+}
+
+/// 把「某条连接失败」喂给 mesh 层（写失败）。读循环退出时链路会被 `unregister_connection`
+/// 整条摘掉，无需再记失败。
+fn mark_conn_failure(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.mark_connection_failure(peer_id, &MeshEndpoint::Tcp(endpoint));
 }
 
 async fn writer_loop(
     state: Arc<AppState>,
     peer_id: String,
+    // 本连接的端点：健康信号要按**连接**记，必须能唯一定位到是哪一条。
+    endpoint: std::net::SocketAddr,
     mut w: TcpSender,
     mut bulk_rx: mpsc::Receiver<Message>,
     mut prio_rx: mpsc::Receiver<Message>,
@@ -673,8 +696,13 @@ async fn writer_loop(
                         let cur = pending.entry(peer_id.clone()).or_insert(*last_read_ts);
                         *cur = (*cur).max(*last_read_ts);
                     }
+                    // 这条连接已经写不出去了 —— 记一次失败，供 M3 的选路与收敛使用。
+                    mark_conn_failure(&state, &peer_id, endpoint);
                     break;
                 }
+                // 写成功 = 这条连接此刻确实可用。心跳每 5s 一次 ⇒ 即使没有业务消息，
+                // 每条连接也至少每 5s 刷新一次健康信号（ADR-0014 §3.1）。
+                mark_conn_seen(&state, &peer_id, endpoint);
             }
             None => {
                 // select 无法直接区分是哪个分支关闭，用两个 recv 的 is_closed 兜底。
@@ -696,6 +724,8 @@ async fn reader_loop(
     state: Arc<AppState>,
     mut r: TcpReceiver,
     peer_id: String,
+    // 本连接的端点，用于按连接记健康信号。
+    endpoint: std::net::SocketAddr,
     link_tx: mpsc::Sender<Message>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -706,7 +736,12 @@ async fn reader_loop(
             res = read_frame(&mut r) => res,
         };
         match res {
-            Ok(msg) => handle_message(&state, &peer_id, msg).await,
+            Ok(msg) => {
+                // 入站读到帧是比「写成功」**更强**的活性证据：对端确实活着（不只是内核收下了
+                // 我们的字节）。这条信号正是半开 TCP 场景下唯一能区分「真活 / 假活」的东西。
+                mark_conn_seen(&state, &peer_id, endpoint);
+                handle_message(&state, &peer_id, msg).await
+            }
             Err(_) => break,
         }
     }
@@ -837,14 +872,23 @@ fn register_connection(state: &AppState, peer_id: &str, endpoint: std::net::Sock
         PeerCandidate::new(peer_id, identity, MeshEndpoint::Tcp(endpoint), path.clone());
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     let (_, outcome) = pm.merge(candidate);
+    // 建链即算一次「成功收发」—— 否则「已建立但还没收发」的连接会被健康判据算作不健康
+    // （ADR-0014 §3.1 的硬性注意 ①：漏掉这一步，M3 的选路会把刚建好的连接判为不可用，
+    // 进而退化成「按固定顺序挑」，甚至触发反复重拨）。
+    let now = db::now_ms();
+    pm.mark_connection_seen(peer_id, &MeshEndpoint::Tcp(endpoint), now, None);
+    // `online` 是 mesh 健康信号**在生产路径**唯一的外部可观测点：`ConnectionHealth` 是内存态，
+    // 没有它就只能靠读代码相信「信号接上了」（这正是 M3-0 之前的状态）。
+    let online = pm.online_state(peer_id, now) == PeerOnlineState::Online;
     state.logger.info(
         "mesh",
         format!(
             "+conn peer={peer_id} ep={endpoint} path={path:?} \
-             new_peer={} new_conn={} conns={}",
+             new_peer={} new_conn={} conns={} online={}",
             outcome.is_new_peer,
             outcome.is_new_connection,
-            pm.get(peer_id).map(|p| p.connection_count()).unwrap_or(0)
+            pm.get(peer_id).map(|p| p.connection_count()).unwrap_or(0),
+            u8::from(online),
         ),
     );
 }
@@ -1188,6 +1232,7 @@ async fn connect_to_peer(
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
+        endpoint,
         w,
         bulk_rx,
         prio_rx,
@@ -1221,6 +1266,7 @@ async fn connect_to_peer(
         state.clone(),
         r,
         peer_id.clone(),
+        endpoint,
         bulk_tx,
         shutdown,
     ));
