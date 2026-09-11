@@ -142,6 +142,32 @@ impl PeerManager {
             .is_some_and(|p| p.mark_connection_failure(endpoint))
     }
 
+    /// 列出**健康判据认为已死**的连接（`(device_id, endpoint)`）。
+    ///
+    /// 供 M3#6 的「死链路拆除」使用：半开 TCP 上读循环永久阻塞、链路却一直留在表里，
+    /// 于是 `ensure_link` 认为已连通不再重拨，而 `try_send` 只把消息投进 mpsc 就返回 Ok
+    /// ⇒ 消息静默投进死路。watchdog 用**放大后的超时**（见调用点）调用本方法拿候选，
+    /// 再精确取消那一条连接的读写任务并把它移出链路表，让发现层重新建链。
+    ///
+    /// 注意：这里只做**查询**，不改状态 —— 拆除动作由 `network::transport` 负责
+    /// （mesh 层不该反过来操作传输层）。
+    pub fn stale_connections(
+        &self,
+        now_ms: i64,
+        timeout_ms: i64,
+        max_failures: u32,
+    ) -> Vec<(String, Endpoint)> {
+        let mut out = Vec::new();
+        for (device_id, peer) in &self.peers {
+            for c in peer.connections() {
+                if !c.health.is_healthy(now_ms, timeout_ms, max_failures) {
+                    out.push((device_id.clone(), c.endpoint.clone()));
+                }
+            }
+        }
+        out
+    }
+
     /// 移除某 peer 的某条 connection（返回是否真的移除）。
     pub fn remove_connection(&mut self, device_id: &str, endpoint: &Endpoint) -> bool {
         self.peers
@@ -294,6 +320,51 @@ mod tests {
         assert_eq!(peer.identity.x25519_public_key.as_deref(), Some("x1"));
         // 空字段被补齐
         assert_eq!(peer.identity.ed25519_public_key.as_deref(), Some("e2"));
+    }
+
+    /// M3#6 死链路拆除的判据：只有**读活性过期**的连接才会进候选。
+    ///
+    /// 这是「消息不再静默投进死路」的关键一步：watchdog 每 5s 拿这个候选列表，
+    /// 命中就精确取消那条连接的读写任务并移出链路表（`ensure_link` 随后才会重拨）。
+    /// 断言刻意覆盖三种形态：
+    ///   · 刚建链（播种读活性）→ **不**候选；
+    ///   · 只写不读（半开 TCP 的签名）→ **候选**；
+    ///   · 持续有入站帧（健康链路，心跳每 5s 一次）→ **永不**候选。
+    #[test]
+    fn stale_connections_flags_only_links_without_recent_read() {
+        let timeout = 15_000i64;
+        let max_failures = 3u32;
+        let mut m = PeerManager::new(timeout, max_failures);
+        m.merge(PeerCandidate::new("ABC123", PeerIdentity::default(), lan(), PathKind::Lan));
+
+        // 建链播种读活性（register_connection 的行为）→ t=0 时健康，不进候选
+        m.seed_connection_read_seen("ABC123", &lan(), 0);
+        assert!(m.stale_connections(0, timeout, max_failures).is_empty());
+
+        // 半开链路：一直只有写成功（心跳），从未读到帧；跨过 3× 超时后必须进候选
+        let mut writes = 5_000i64;
+        while writes <= 60_000 {
+            m.mark_connection_seen("ABC123", &lan(), writes, None, false);
+            writes += 5_000;
+        }
+        let stale = m.stale_connections(60_000, timeout * 3, max_failures);
+        assert_eq!(
+            stale.len(),
+            1,
+            "只写不读的连接必须被判死（否则 ensure_link 不重拨、消息静默投进死路）"
+        );
+        assert_eq!(stale[0].0, "ABC123");
+
+        // 健康链路：每 5s 有入站帧 ⇒ 任何时刻都不进候选
+        let mut reads = 60_000i64;
+        while reads <= 120_000 {
+            m.mark_connection_seen("ABC123", &lan(), reads, None, true);
+            assert!(
+                m.stale_connections(reads, timeout * 3, max_failures).is_empty(),
+                "持续有入站帧的链路永远不该被拆"
+            );
+            reads += 5_000;
+        }
     }
 
     /// 不变量：健康超时必须**明显大于**心跳周期 —— 判据是闭区间 `<=`，

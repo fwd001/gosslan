@@ -331,6 +331,58 @@ pub async fn spawn(
                             ),
                         );
                     }
+
+                    // ---- 死链路拆除（M3#6）----
+                    //
+                    // 半开 TCP（对端消失、本机内核仍收写）上：读循环**永久阻塞**、
+                    // `Link` 一直留在表里 ⇒ `ensure_link` 认为已连通不再重拨；
+                    // 而 `try_send` 只把消息投进 mpsc 就返回 `Ok` ⇒ 前端显示「已发送」，
+                    // 消息却**静默投进死路**（outbox 也不会被触发补发，因为没有任何入站帧）。
+                    //
+                    // 判据刻意保守：读活性要跨过 **3 × 健康超时**（15s × 3 = 45s）才算死。
+                    // 健康连接每 5s 必有一次入站心跳，所以正常链路**永远不会**落到这里；
+                    // 只有真正半开/僵死的连接会被拆。拆掉后下一轮 announce（≤5s）即可重拨。
+                    let stale_ms = {
+                        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+                        pm.health_timeout_ms().saturating_mul(3)
+                    };
+                    let reaped = {
+                        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+                        let max_failures = pm.max_failures();
+                        pm.stale_connections(db::now_ms(), stale_ms, max_failures)
+                    };
+                    for (peer, ep) in reaped {
+                        let MeshEndpoint::Tcp(addr) = ep else { continue };
+                        // ① 精确取消这一条连接的读写任务（半开的读只有它能打断）。
+                        let cancel = {
+                            let links = state.links.lock().await;
+                            links
+                                .get(&peer)
+                                .and_then(|v| v.iter().find(|l| l.endpoint == addr))
+                                .map(|l| l.cancel.clone())
+                        };
+                        let Some(cancel) = cancel else { continue };
+                        let _ = cancel.send(true);
+                        // ② 从传输链路表移除（空 Vec 连 key 一起删），让 `ensure_link` 能重拨。
+                        {
+                            let mut links = state.links.lock().await;
+                            if let Some(v) = links.get_mut(&peer) {
+                                v.retain(|l| l.endpoint != addr);
+                                if v.is_empty() {
+                                    links.remove(&peer);
+                                }
+                            }
+                        }
+                        // ③ 同步 mesh 层（读循环收尾时也会做一次，这里是幂等的）。
+                        unregister_connection(&state, &peer, addr);
+                        state.logger.warn(
+                            "mesh",
+                            format!(
+                                "-conn peer={peer} ep={addr} 读活性超过 {}s 无入站帧 ⇒ 拆除死链路并等待重拨",
+                                stale_ms / 1000
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -655,6 +707,8 @@ async fn handle_incoming(
     };
     let (bulk_tx, bulk_rx) = mpsc::channel(1024);
     let (prio_tx, prio_rx) = mpsc::channel(1024);
+    // 本连接独立的取消信号（M3#6）：健康 watchdog 判定僵尸链路时精确断开这一条。
+    let (cancel_tx, cancel_rx) = watch::channel(false);
     // 追加到该 peer 的连接列表（而非覆盖）—— 多连接支持的基础。
     // 端点取 TCP 对端的真实地址，使「同一 peer 的不同端点」可被区分。
     state
@@ -668,6 +722,7 @@ async fn handle_incoming(
             bulk: bulk_tx.clone(),
             // priority 留一个 sender 在作用域内：首帧验签后要回发 Hello（见下）。
             priority: prio_tx.clone(),
+            cancel: cancel_tx,
         });
     // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
     register_connection(&state, &peer_id, peer_addr);
@@ -679,6 +734,7 @@ async fn handle_incoming(
         bulk_rx,
         prio_rx,
         shutdown.clone(),
+        cancel_rx.clone(),
     ));
     // 验签通过后**回发**自己的 Hello：让拨号方也能学到本节点的身份与双公钥。
     //
@@ -716,7 +772,7 @@ async fn handle_incoming(
         }
     }
     state.emit_peers();
-    reader_loop(state, r, peer_id, peer_addr, bulk_tx, shutdown).await;
+    reader_loop(state, r, peer_id, peer_addr, bulk_tx, shutdown, cancel_rx).await;
 }
 
 /// 把「某条连接成功收发」喂给 mesh 层的 `ConnectionHealth`（ADR-0014 §3.1）。
@@ -770,6 +826,8 @@ async fn writer_loop(
     mut bulk_rx: mpsc::Receiver<Message>,
     mut prio_rx: mpsc::Receiver<Message>,
     mut shutdown: watch::Receiver<bool>,
+    // 本连接的取消信号（M3#6）：由健康 watchdog 在半开链路上触发。
+    mut cancel: watch::Receiver<bool>,
 ) {
     let mut bulk_open = true;
     let mut prio_open = true;
@@ -782,6 +840,8 @@ async fn writer_loop(
             // 停止信号优先：立刻放弃待发帧并 drop 写半，让 socket 尽快关闭
             // （Windows 上配合 SO_LINGER=0 发 RST，不留下 TIME_WAIT）。
             _ = shutdown.changed() => break,
+            // 本连接被判死（读活性长期过期）→ 与全局停机同样立即收尾。
+            _ = cancel.changed() => break,
             maybe = prio_rx.recv(), if prio_open => maybe,
             maybe = bulk_rx.recv(), if bulk_open => maybe,
         };
@@ -829,11 +889,14 @@ async fn reader_loop(
     endpoint: std::net::SocketAddr,
     link_tx: mpsc::Sender<Message>,
     mut shutdown: watch::Receiver<bool>,
+    // 本连接的取消信号（M3#6）：半开链路上的读会永久阻塞，只有它能打断。
+    mut cancel: watch::Receiver<bool>,
 ) {
     loop {
         let res = tokio::select! {
             biased;
             _ = shutdown.changed() => break,
+            _ = cancel.changed() => break,
             res = read_frame(&mut r) => res,
         };
         match res {
@@ -1406,6 +1469,8 @@ async fn connect_to_peer(
 
     let (bulk_tx, bulk_rx) = mpsc::channel(1024);
     let (prio_tx, prio_rx) = mpsc::channel(1024);
+    // 本连接独立的取消信号（M3#6），语义同 `handle_incoming`。
+    let (cancel_tx, cancel_rx) = watch::channel(false);
     state
         .links
         .lock()
@@ -1416,6 +1481,7 @@ async fn connect_to_peer(
             endpoint,
             bulk: bulk_tx.clone(),
             priority: prio_tx.clone(),
+            cancel: cancel_tx,
         });
     // 同步到 mesh 层（拨号侧同样登记，path_kind 由端点地址推断）
     register_connection(state, &peer_id, endpoint);
@@ -1427,6 +1493,7 @@ async fn connect_to_peer(
         bulk_rx,
         prio_rx,
         shutdown.clone(),
+        cancel_rx.clone(),
     ));
 
     // 握手已在建链前完成（两条路径都发过自己的 Hello，且都验过对端的 Hello），
@@ -1450,7 +1517,7 @@ async fn connect_to_peer(
         peer_id.clone(),
         endpoint,
         bulk_tx,
-        shutdown,
+        shutdown, cancel_rx,
     ));
     flush_outbox(state, &peer_id).await;
     flush_group_outbox(state, &peer_id).await;

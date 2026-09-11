@@ -81,6 +81,15 @@ pub struct Link {
     pub bulk: mpsc::Sender<Message>,
     /// priority 通道：聊天 / 控制 / 心跳，避免被大文件分片饿死（INV-P20）。
     pub priority: mpsc::Sender<Message>,
+    /// **本连接**的取消信号（M3#6 死链路拆除用）。
+    ///
+    /// 为什么需要它：全局 `shutdown` 只能整体停网，无法单独断开一条僵尸连接。
+    /// 半开 TCP 上读循环会**永久**阻塞在 `read_frame`（既无数据也无错误），
+    /// 于是链路一直留在 `links` 里 ⇒ `ensure_link` 认为 LAN 已连通、不再重拨，
+    /// `try_send` 又只把消息投进 mpsc 就返回 Ok ⇒ **消息静默投进死路**。
+    /// 有了它，健康 watchdog 可以在读活性长期过期时精确拆掉这一条连接，
+    /// 让发现层重新建链。读写循环都会 select 这个信号。
+    pub cancel: watch::Sender<bool>,
 }
 
 /// 待处理的好友申请
