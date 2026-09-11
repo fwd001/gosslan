@@ -139,7 +139,7 @@ pub async fn update_profile(
         avatar,
     };
     let links = s.priority_links.lock().await;
-    for tx in links.values() {
+    for tx in links.values().flatten() {
         let _ = tx.send(msg.clone()).await;
     }
     drop(links);
@@ -701,7 +701,7 @@ pub async fn broadcast_chat_style(
         style,
     };
     let links = s.priority_links.lock().await;
-    for tx in links.values() {
+    for tx in links.values().flatten() {
         let _ = tx.send(msg.clone()).await;
     }
     Ok(())
@@ -1874,7 +1874,7 @@ pub async fn send_group_file(
     // 可达成员：有 TCP link 且 peers 信息完整；其余保持 pending，由上线事件自动投递。
     let mut reachable: Vec<String> = Vec::new();
     for m in &members {
-        if s.links.lock().await.contains_key(m) && resolve_member_x25519(&s, m).is_some() {
+        if s.has_link(m).await && resolve_member_x25519(&s, m).is_some() {
             reachable.push(m.clone());
         }
     }
@@ -2316,7 +2316,7 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
         return;
     }
     // 没有链路时不做无谓尝试，保持 pending，等下一次连接事件再触发。
-    if !state.links.lock().await.contains_key(peer_id) {
+    if !state.has_link(peer_id).await {
         state.file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id);
         return;
     }
@@ -2332,7 +2332,7 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
     let peer = peer_id.to_string();
     tauri::async_runtime::spawn(async move {
         for (transfer_id, local_path) in pending {
-            if !st.links.lock().await.contains_key(&peer) {
+            if !st.has_link(&peer).await {
                 break;
             }
             {

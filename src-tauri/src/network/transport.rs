@@ -71,15 +71,17 @@ fn is_bulk_message(msg: &Message) -> bool {
 
 /// 尝试通过已建立连接发送消息；无连接则返回 Err。
 pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<(), String> {
+    // 一个 peer 可能有多条连接（Phase 6）；当前取**第一条**活跃连接，
+    // 与改造前「每 peer 一条连接」的行为完全一致（6a 只改结构不改语义）。
     if is_bulk_message(msg) {
         let links = state.links.lock().await;
-        match links.get(peer_id) {
+        match links.get(peer_id).and_then(|v| v.first()) {
             Some(tx) => tx.send(msg.clone()).await.map_err(|e| e.to_string()),
             None => Err("未建立连接".to_string()),
         }
     } else {
         let links = state.priority_links.lock().await;
-        match links.get(peer_id) {
+        match links.get(peer_id).and_then(|v| v.first()) {
             Some(tx) => tx.send(msg.clone()).await.map_err(|e| e.to_string()),
             None => Err("未建立连接".to_string()),
         }
@@ -105,7 +107,7 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
     };
 
     for peer in picked {
-        if let Some(tx) = links.get(peer) {
+        if let Some(tx) = links.get(peer).and_then(|v| v.first()) {
             let _ = tx.send(msg.clone()).await;
         }
     }
@@ -179,7 +181,7 @@ pub async fn spawn(
                 _ = shutdown.changed() => break,
                 _ = tick.tick() => {
                     let links = state.priority_links.lock().await;
-                    for tx in links.values() {
+                    for tx in links.values().flatten() {
                         let _ = tx.send(Message::Heartbeat { device_id: state.device_id.clone() }).await;
                     }
                 }
@@ -399,16 +401,22 @@ async fn handle_incoming(
     };
     let (bulk_tx, bulk_rx) = mpsc::channel(1024);
     let (prio_tx, prio_rx) = mpsc::channel(1024);
+    // 追加到该 peer 的连接列表（而非覆盖）—— 多连接支持的基础。
+    // 当前每 peer 只会有一条，因此行为与改造前一致。
     state
         .links
         .lock()
         .await
-        .insert(peer_id.clone(), bulk_tx.clone());
+        .entry(peer_id.clone())
+        .or_default()
+        .push(bulk_tx.clone());
     state
         .priority_links
         .lock()
         .await
-        .insert(peer_id.clone(), prio_tx);
+        .entry(peer_id.clone())
+        .or_default()
+        .push(prio_tx);
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
@@ -529,6 +537,7 @@ async fn reader_loop(
         let mut links = state.links.lock().await;
         let is_live = links
             .get(&peer_id)
+            .and_then(|v| v.first())
             .map(|tx| tx.same_channel(&link_tx))
             .unwrap_or(false);
         if is_live {
@@ -555,7 +564,7 @@ pub async fn ensure_link(
     if peer_id >= state.device_id.as_str() {
         return; // 只有小 ID 拨号
     }
-    if state.links.lock().await.contains_key(peer_id) {
+    if state.has_link(peer_id).await {
         return;
     }
     connect_to_peer(state, peer_id, ip, tcp_port, shutdown).await;
@@ -569,8 +578,7 @@ async fn connect_to_peer(
     shutdown: watch::Receiver<bool>,
 ) {
     {
-        let links = state.links.lock().await;
-        if links.contains_key(peer_id) {
+        if state.has_link(peer_id).await {
             return;
         }
     }
@@ -590,12 +598,16 @@ async fn connect_to_peer(
         .links
         .lock()
         .await
-        .insert(peer_id.to_string(), bulk_tx.clone());
+        .entry(peer_id.to_string())
+        .or_default()
+        .push(bulk_tx.clone());
     state
         .priority_links
         .lock()
         .await
-        .insert(peer_id.to_string(), prio_tx.clone());
+        .entry(peer_id.to_string())
+        .or_default()
+        .push(prio_tx.clone());
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.to_string(),

@@ -63,7 +63,7 @@ impl Transport for LanTransport {
     async fn broadcast(&self, payload: &[u8]) -> Result<(), String> {
         let msg: Message = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         let links = self.state.links.lock().await;
-        for tx in links.values() {
+        for tx in links.values().flatten() {
             let _ = tx.send(msg.clone()).await;
         }
         Ok(())

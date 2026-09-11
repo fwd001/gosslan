@@ -345,10 +345,15 @@ pub struct AppState {
 
     /// 在线节点表：device_id -> Peer
     pub peers: Mutex<HashMap<String, Peer>>,
-    /// 已建立的 TCP 连接出站发送端：device_id -> mpsc Sender
-    pub links: tokio::sync::Mutex<HashMap<String, mpsc::Sender<Message>>>,
+    /// 已建立的 TCP 连接出站发送端：device_id -> 该节点的**各条**连接（bulk 通道）。
+    ///
+    /// Phase 6 起一个 device_id 可以有多条连接（LAN + Tailscale + BLE），因此值是
+    /// `Vec` 而非单个 Sender。当前每节点最多一条 —— 行为与改造前**完全一致**
+    /// （6a 只改结构不改语义）。
+    pub links: tokio::sync::Mutex<HashMap<String, Vec<mpsc::Sender<Message>>>>,
     /// 同一连接的高优先级发送端：聊天/控制消息走这里，避免被大文件分片饿死。
-    pub priority_links: tokio::sync::Mutex<HashMap<String, mpsc::Sender<Message>>>,
+    /// 与 `links` **一一对应**（同下标 = 同一条 TCP 连接）。
+    pub priority_links: tokio::sync::Mutex<HashMap<String, Vec<mpsc::Sender<Message>>>>,
     /// 待处理好友申请：from_id -> request
     pub pending_requests: Mutex<HashMap<String, PendingRequest>>,
     /// 网络运行时（None 表示未启动）
@@ -569,6 +574,19 @@ impl AppState {
             q.pop_front();
         }
         true
+    }
+
+    /// 该 peer 是否至少有一条可用连接。
+    ///
+    /// **不要用 `links.contains_key` 代替**：Phase 6 起 `links` 的值是 `Vec`
+    /// （一个 peer 可有多条连接），条目可能存在但 Vec 已空——此时 `contains_key`
+    /// 仍返回 true，会误判为「已连接」。
+    pub async fn has_link(&self, peer_id: &str) -> bool {
+        self.links
+            .lock()
+            .await
+            .get(peer_id)
+            .is_some_and(|v| !v.is_empty())
     }
 
     /// 标记节点表已变更，并唤醒节流推送任务。
