@@ -23,7 +23,7 @@ import {
   type LanguagePreference,
 } from "@/i18n";
 import { isMac } from "@/utils/platform";
-import type { DeviceInfo, InterfaceInfo } from "@/types";
+import type { DeviceInfo, InterfaceInfo, RelayPolicy } from "@/types";
 
 export type { AppearanceMode };
 
@@ -113,6 +113,30 @@ export const useAppStore = defineStore("app", () => {
 
   function setNotifyShowContent(v: boolean) {
     notifyShowContent.value = v;
+    void persistSettings();
+  }
+
+  // ---------------- 中继授权（P2 / M4） ----------------
+  /**
+   * 我愿不愿意替别人转发消息（多跳中继）。
+   *
+   * 默认 `all` = **与今天的行为完全一致**（多跳转发一直是无条件的）。默认不做成 `off`：
+   * 跨跳投递依赖中间节点转发，默认关掉会让已有拓扑静默丢消息（用户明确要求
+   * "现有局域网聊天不能搞坏"）。想限制中继的用户在设置页显式选择。
+   */
+  const relayPolicy = ref<RelayPolicy>("all");
+  /** 白名单（`allowlist` 策略用）：只替这些设备转发。 */
+  const relayAllowlist = ref<string[]>([]);
+
+  function setRelayPolicy(p: RelayPolicy) {
+    relayPolicy.value = p;
+    void persistSettings();
+  }
+
+  function toggleRelayAllowlist(deviceId: string) {
+    relayAllowlist.value = relayAllowlist.value.includes(deviceId)
+      ? relayAllowlist.value.filter((x) => x !== deviceId)
+      : [...relayAllowlist.value, deviceId];
     void persistSettings();
   }
 
@@ -227,6 +251,8 @@ export const useAppStore = defineStore("app", () => {
         notifyEnabled: notifyEnabled.value,
         notifyShowContent: notifyShowContent.value,
         language: language.value,
+        relayPolicy: relayPolicy.value,
+        relayAllowlist: JSON.stringify(relayAllowlist.value),
         bindIp: boundIp.value ?? preferredIp.value,
         chatStyle: JSON.stringify(chatStyle.value),
         peerStyles: null, // 对端样式表由后端维护，前端只读
@@ -355,6 +381,18 @@ export const useAppStore = defineStore("app", () => {
     if (s.notifyShowContent != null) notifyShowContent.value = s.notifyShowContent;
     // 语言（null/脏值 = 默认跟随系统）
     if (isLanguagePreference(s.language)) applyPreference(s.language);
+    // 中继授权（脏值一律回落默认 all —— 与后端 RelayConfig::parse 同口径）
+    if (s.relayPolicy === "off" || s.relayPolicy === "friends" || s.relayPolicy === "allowlist" || s.relayPolicy === "all") {
+      relayPolicy.value = s.relayPolicy;
+    }
+    if (s.relayAllowlist) {
+      try {
+        const list = JSON.parse(s.relayAllowlist) as unknown;
+        if (Array.isArray(list)) relayAllowlist.value = list.filter((x): x is string => typeof x === "string");
+      } catch {
+        relayAllowlist.value = [];
+      }
+    }
     language.value = currentPreference();
     pushUiLanguage();
     preferredIp.value = s.bindIp;
@@ -421,6 +459,9 @@ export const useAppStore = defineStore("app", () => {
     applyPreference("system");
     language.value = "system";
     pushUiLanguage();
+    // 中继授权也回到默认（后端 reset_settings 已清掉这两个键）
+    relayPolicy.value = "all";
+    relayAllowlist.value = [];
     preferredIp.value = null;
     boundIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
@@ -494,6 +535,10 @@ export const useAppStore = defineStore("app", () => {
     ensureNotifyPermission,
     language,
     setLanguage,
+    relayPolicy,
+    relayAllowlist,
+    setRelayPolicy,
+    toggleRelayAllowlist,
     themeColor,
     fontFamily,
     chatStyle,

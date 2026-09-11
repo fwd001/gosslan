@@ -597,11 +597,20 @@ pub struct Settings {
     /// 对端样式表 JSON（device_id -> style JSON）。仅由后端在收到 ChatStyle 消息时写入，
     /// 前端只读；save_settings 忽略该字段。
     pub peer_styles: Option<String>,
+    /// 中继授权策略："off" | "friends" | "allowlist" | "all"。
+    ///
+    /// 缺省/脏值 = `all` —— **与今天的行为完全一致**（多跳转发一直是无条件的）。
+    /// 为什么默认不是更"安全"的 off：跨跳投递（A—B—C 且 A/C 无直连）依赖中间节点转发，
+    /// 默认关掉会让已有拓扑静默丢消息（红线 §8.1 #3：不得在重构里顺手改变传播语义）。
+    /// 想限制中继的用户在设置里显式选择。见 `mesh/relay_policy.rs` 与 ADR-0016。
+    pub relay_policy: Option<String>,
+    /// 中继白名单（JSON 字符串数组，`allowlist` 策略用）。
+    pub relay_allowlist: Option<String>,
 }
 
 /// e2ee_enabled 键保留在 reset 链中仅为清理 v0.10.0 及更早版本的残留值；
 /// v0.11.0 起 E2EE 恒开、不可关闭，该键不再被读写。
-const SETTINGS_KEYS: [&str; 11] = [
+const SETTINGS_KEYS: [&str; 13] = [
     "theme_color",
     "font_family",
     "dark_mode",
@@ -613,6 +622,8 @@ const SETTINGS_KEYS: [&str; 11] = [
     "chat_style",
     "e2ee_enabled",
     "lan_enabled",
+    "relay_policy",
+    "relay_allowlist",
 ];
 
 /// appearance_mode 的合法取值：脏值一律忽略（宁可回落"跟随系统"，也不要写进库）。
@@ -621,6 +632,9 @@ const APPEARANCE_MODES: [&str; 3] = ["system", "light", "dark"];
 /// language 的合法取值：脏值一律忽略（回落"跟随系统"）。
 /// "system" = 前端按系统语言决定（zh* → 中文，其余 → 英文）。
 const LANGUAGES: [&str; 3] = ["system", "zh-CN", "en-US"];
+
+/// relay_policy 的合法取值（与 `mesh::relay_policy::RelayPolicy::as_str` 一一对应）。
+const RELAY_POLICIES: [&str; 4] = ["off", "friends", "allowlist", "all"];
 
 /// 把前端**解析后**的界面语言推给后端，用于重建 macOS 菜单栏（见 `menu.rs` 顶部注释）。
 ///
@@ -654,6 +668,8 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
         notify_enabled: db::get_setting(&dbc, "notify_enabled").map(|v| v != "0").or(Some(true)),
         notify_show_content: db::get_setting(&dbc, "notify_show_content").map(|v| v != "0").or(Some(true)),
         language: db::get_setting(&dbc, "language"),
+        relay_policy: db::get_setting(&dbc, "relay_policy"),
+        relay_allowlist: db::get_setting(&dbc, "relay_allowlist"),
         bind_ip: db::get_setting(&dbc, "bind_ip"),
         chat_style: db::get_setting(&dbc, "chat_style"),
         peer_styles: db::get_setting(&dbc, "chat_peer_styles"),
@@ -694,6 +710,27 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     if let Some(v) = settings.chat_style {
         db::set_setting(&dbc, "chat_style", &v).map_err(|e| e.to_string())?;
     }
+    // 中继授权：脏值一律忽略（宁可维持现状，也不要写进库让传播语义变得不可预期）
+    if let Some(v) = settings.relay_policy.as_deref() {
+        if RELAY_POLICIES.contains(&v) {
+            db::set_setting(&dbc, "relay_policy", v).map_err(|e| e.to_string())?;
+        }
+    }
+    if let Some(v) = settings.relay_allowlist.as_deref() {
+        // 只接受合法 JSON 数组：写进脏值会让 RelayConfig::parse 静默退化成空表，
+        // 用户会看到"白名单明明填了却不生效"。
+        if serde_json::from_str::<Vec<String>>(v).is_ok() {
+            db::set_setting(&dbc, "relay_allowlist", v).map_err(|e| e.to_string())?;
+        }
+    }
+    // 回读一遍写进内存缓存（转发路径热读，不能每次去锁 SQLite）。
+    // ⚠️ 先放掉 DB 锁再更新缓存：避免与转发路径形成锁顺序纠缠。
+    let relay = crate::mesh::relay_policy::RelayConfig::parse(
+        db::get_setting(&dbc, "relay_policy").as_deref(),
+        db::get_setting(&dbc, "relay_allowlist").as_deref(),
+    );
+    drop(dbc);
+    state.set_relay_policy_config(relay);
     Ok(())
 }
 
@@ -712,6 +749,10 @@ pub fn reset_settings(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     ]) {
         db::delete_setting(&dbc, key).map_err(|e| e.to_string())?;
     }
+    // 「恢复默认」也清掉了 relay_policy / relay_allowlist ⇒ 内存缓存必须回到默认（All），
+    // 否则用户点了恢复默认、行为却还是旧的限制策略（要重启才生效）。
+    drop(dbc);
+    state.set_relay_policy_config(crate::mesh::relay_policy::RelayConfig::default());
     Ok(())
 }
 

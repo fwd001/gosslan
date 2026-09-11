@@ -192,7 +192,14 @@ export interface AppSettings {
   chatStyle: string | null;
   /** 对端样式表 JSON（device_id -> style JSON，后端收 ChatStyle 消息时写入） */
   peerStyles: string | null;
+  /** 中继授权策略："off" | "friends" | "allowlist" | "all"（null 视为 "all"）。 */
+  relayPolicy: string | null;
+  /** 中继白名单 JSON 字符串数组（`allowlist` 策略用）。 */
+  relayAllowlist: string | null;
 }
+
+/** 中继授权策略（与后端 `mesh::relay_policy::RelayPolicy` 一一对应）。 */
+export type RelayPolicy = "off" | "friends" | "allowlist" | "all";
 
 /** 缓存目录占用与策略 */
 export interface CacheInfo {

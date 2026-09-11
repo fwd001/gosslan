@@ -8,7 +8,7 @@ import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import { t } from "@/i18n";
-import type { ChannelStatus, RoutedEndpoint } from "@/types";
+import type { ChannelStatus, RelayPolicy, RoutedEndpoint } from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -24,6 +24,9 @@ const interfaceOptions = computed(() => [
   { value: "0.0.0.0", label: "settings.network.interface.auto" },
   ...app.interfaces.map((i) => ({ value: i.ip, label: `${i.name}（${i.ip}）` })),
 ]);
+
+/** 当前策略的一句话说明（放在行描述里，用户不用猜 off/friends 到底转发给谁）。 */
+const policyDescription = computed(() => t(`settings.relay.policy.${app.relayPolicy}.desc`));
 
 async function loadChannels() {
   channels.value = await api.getChannelStatus();
@@ -210,4 +213,41 @@ async function removeEndpoint(address: string) {
       </button>
     </div>
   </SettingsGroup>
+
+    <!-- 中继授权（P2 / M4）——「我愿不愿意替别人转发消息」是本机策略，不读远端自报 -->
+    <SettingsGroup :title="t('settings.relay.title')" :footer="t('settings.relay.footer')">
+      <SettingsRow :label="t('settings.relay.policy')" :description="policyDescription">
+        <span class="gosslan-select-wrap">
+          <select
+            :aria-label="t('settings.relay.policy')"
+            class="gosslan-select"
+            :value="app.relayPolicy"
+            @change="app.setRelayPolicy(($event.target as HTMLSelectElement).value as RelayPolicy)"
+          >
+            <option value="all">{{ t("settings.relay.policy.all") }}</option>
+            <option value="friends">{{ t("settings.relay.policy.friends") }}</option>
+            <option value="allowlist">{{ t("settings.relay.policy.allowlist") }}</option>
+            <option value="off">{{ t("settings.relay.policy.off") }}</option>
+          </select>
+        </span>
+      </SettingsRow>
+
+      <!-- 白名单：只在 allowlist 模式下出现，平时不占地方 -->
+      <template v-if="app.relayPolicy === 'allowlist'">
+        <div v-if="!chat.friends.length" class="px-4 py-3 text-xs text-[var(--gosslan-text-2)]">
+          {{ t("settings.relay.allowlist.empty") }}
+        </div>
+        <div v-for="f in chat.friends" :key="f.device_id" class="flex items-center gap-3 px-4 py-2.5">
+          <span class="min-w-0 flex-1 truncate text-sm text-[var(--gosslan-text)]" :title="f.nickname">
+            {{ f.nickname }}
+          </span>
+          <SettingsToggle
+            size="sm"
+            :model-value="app.relayAllowlist.includes(f.device_id)"
+            :label="t('settings.relay.allowlist.toggle', { name: f.nickname })"
+            @update:model-value="app.toggleRelayAllowlist(f.device_id)"
+          />
+        </div>
+      </template>
+    </SettingsGroup>
 </template>
