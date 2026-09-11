@@ -10,6 +10,13 @@
 
 ## [Unreleased]
 
+### Fixed (跨网段中继稳定性)
+- **定向 Gossip 帧到达目标后不再转发**：`handle_gossip` 第 4 步转发前新增 `is_target` 判定——`env.target == 本机` 时只消费不转发。此前目标节点会把自己是目标的定向帧（FriendRequest/FriendAccept 等）再洪泛给其他邻居，邻居又按 target 定向转发回来，形成冗余中转与回环，真机表现为「同网段好友申请一直中转、清掉还冒出来」。
+- **单聊送达确认跨跳（`GossipKind::ChatAck`）**：接收方在 `handle_gossip` 单聊分支持久化后回发定向 Gossip 送达确认（明文 `{"msg_id":...}`，`target`=原始发送方）。此前单聊消息走 Gossip 多跳到达，但 Ack 只走 `try_send` 直连，跨 Tailscale 无直连时送达确认永远到不了发送方，消息状态卡在 `sent` 一直转圈。发送方按 `outbox(msg_id, sender)` 命中才接受，防伪造送达。
+- **单聊已读回执跨跳（`GossipKind::ChatReadReceipt`）**：`mark_read` / `flush_pending_reads` 改走 `send_read_receipt_route`——有直连走 `Message::ReadReceipt`，无直连（跨跳）走定向 Gossip。修复跨网段聊天「双方都看到了却始终没有已读回执」。
+- **拒绝好友申请不再被发送失败阻塞**：`respond_friend_request` 拒绝分支 `try_send(...).await?` 改为 `let _ = ...`——此前跨跳无直连时拒绝回执发不出去会导致 `pending_requests` 不删除、申请「清掉又冒出来」；现在本地清理与回执发送解耦，并补发 `friend-rejected` 事件。
+- **回执/确认的身份绑定**：`sender_trusted` 对 `ChatAck` / `ChatReadReceipt` 不允许 TOFU，未在 peers 表时回退到 friends 表持久化的 ed25519 公钥做身份绑定（进程重启后 peers 内存态为空时不误拒跨跳回执）。
+
 ### Changed (Phase 6 网络层演进)
 - **Routed 端点 `device_id` 改为可选**：`RoutedEndpoint` 的 `device_id` 由 `String` 改为 `Option<String>`；JSON 序列化时 `None` 不写入该键（`skip_serializing_if`）；旧格式 `{"device_id":"...","address":"..."}` 完全兼容，可直接被新代码反序列化。`scripts/t2-learn-id.sh` 端到端验证（向后兼容见 `discovery/routed::tests::device_id_is_optional_and_backward_compatible` 单测）。
 - **主动拨号时无 peer_id 不再要求预配置身份**：`connect_to_peer` 接受 `known_id: Option<&str>`。`None` 路径遵循 §8 的 `IP:PORT → TCP → Hello → Node ID → Identity → 建立 Peer`：先发自身 Hello → 读对端回发的 Hello（被动方在「握手补全」中负责回发）→ 验签 → 学到真实身份后再登记链路 / 注册 mesh Connection / flush 待发队列。`HANDSHAKE_TIMEOUT = 5s`（大于正常握手，但覆盖「对端是未升级的旧版本、不会回发 Hello」兜底）。

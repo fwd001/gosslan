@@ -80,6 +80,14 @@ pub enum GossipKind {
     FriendRequest,
     /// 好友申请同意（定向跨跳）：方向与 FriendRequest 相反，其余同理。
     FriendAccept,
+    /// 单聊送达确认（定向跨跳）：接收方成功持久化某条单聊 Gossip 后回给原始发送方。
+    /// 明文（encrypted=false），payload 为 JSON `{"msg_id":"..."}`，`target` = 原始发送方。
+    /// 与直连 `Message::Ack` 语义一致，但可跨跳（跨 Tailscale 无直连时 Ack 到不了发送方）。
+    ChatAck,
+    /// 单聊已读回执（定向跨跳）：接收方读到某发送方消息后回执。明文，
+    /// payload 为 JSON `{"last_read_ts":n,"last_read_msg_id":"..."}`，`target` = 原始发送方。
+    /// 与直连 `Message::ReadReceipt` 语义一致，但可跨跳。
+    ChatReadReceipt,
 }
 
 /// Gossip 广播信封（Epidemic 协议消息体）。
@@ -558,6 +566,60 @@ mod tests {
         assert!(!json_none.contains("target"), "None 不应写 target 键: {json_none}");
         let json_some = serde_json::to_string(&env).unwrap();
         assert!(json_some.contains("dev-c"), "Some 应写 target: {json_some}");
+    }
+
+    /// ChatAck / ChatReadReceipt（定向、明文）信封：签名、验签、target 完整性、明文往返。
+    #[test]
+    fn chat_ack_and_read_receipt_plaintext_directed_envelope_integrity() {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        use crate::crypto::Identity;
+        use crate::gossip_engine::GossipEngine;
+
+        let c = Identity::generate();
+        let engine = GossipEngine::new(100, 10, 4, 6);
+
+        // ChatAck：接收方 C 回给原始发送方 A，明文 { msg_id }
+        let ack_payload = r#"{"msg_id":"deadbeef"}"#;
+        let mut ack = engine.build_envelope(
+            &c,
+            "dev-c",
+            GossipKind::ChatAck,
+            None,
+            None,
+            &B64.encode(ack_payload.as_bytes()),
+            123456,
+            0,
+        );
+        ack.encrypted = false;
+        ack.target = Some("dev-a".into());
+        ack.sender_sig = c.sign_b64(&ack.signing_bytes());
+
+        // 验签通过（target 参与签名）
+        assert!(engine.verify_envelope(&ack));
+        // 明文：直接 base64 解码即可得到原始 JSON，无需解密
+        assert_eq!(B64.decode(&ack.payload).unwrap(), ack_payload.as_bytes());
+        // 篡改 target → 验签失败
+        let mut tampered = ack.clone();
+        tampered.target = Some("dev-eve".into());
+        assert!(!engine.verify_envelope(&tampered));
+
+        // ChatReadReceipt：定向明文，payload 含 last_read_ts / last_read_msg_id
+        let rr_payload = r#"{"last_read_ts":99,"last_read_msg_id":"m-1"}"#;
+        let mut rr = engine.build_envelope(
+            &c,
+            "dev-c",
+            GossipKind::ChatReadReceipt,
+            None,
+            None,
+            &B64.encode(rr_payload.as_bytes()),
+            123456,
+            0,
+        );
+        rr.encrypted = false;
+        rr.target = Some("dev-a".into());
+        rr.sender_sig = c.sign_b64(&rr.signing_bytes());
+        assert!(engine.verify_envelope(&rr));
+        assert_eq!(B64.decode(&rr.payload).unwrap(), rr_payload.as_bytes());
     }
 
     #[test]

@@ -2278,10 +2278,21 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 }
                 // 未认识：仅 Presence（节点通告）允许 TOFU —— 它存在的目的就是
                 // 让「不认识」的节点被全网看到。其余消息仍拒，避免陌生人直接投递。
-                None => matches!(
-                    env.kind,
-                    GossipKind::Presence | GossipKind::FriendRequest | GossipKind::FriendAccept
-                ),
+                None => match env.kind {
+                    GossipKind::Presence
+                    | GossipKind::FriendRequest
+                    | GossipKind::FriendAccept => true,
+                    // 回执/确认不能 TOFU：发送方必须是「已绑定身份」的好友。
+                    // peers 是内存态，进程重启后为空，此处回退到 friends 表
+                    // （持久化的 ed25519 公钥）完成身份绑定，避免重启后跨跳
+                    // 回执被误拒。
+                    GossipKind::ChatAck | GossipKind::ChatReadReceipt => {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        db::get_friend_ed25519(&dbc, &env.sender_id).as_deref()
+                            == Some(env.sender_ed25519.as_str())
+                    }
+                    _ => false,
+                },
             }
         }
     };
@@ -2418,6 +2429,10 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         .and_then(|d| crypto::open(&s, &d))
                 })
             }
+            GossipKind::ChatAck | GossipKind::ChatReadReceipt => {
+                // 回执/确认必然是明文；收到 encrypted=true 的是异常，丢弃。
+                return;
+            }
         }
     };
 
@@ -2432,9 +2447,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     }
 
     // 4. 转发（fan-out，TTL 衰减）— 所有 GossipKind 统一转发
-    if env.ttl > 1 {
-        // 定向帧（FriendRequest/FriendAccept）优先精确定向：target 是本机直连就只发它；
-        // 无直连路径时洪泛兜底（第一版无路由表）。广播帧保持 fan-out。
+    //
+    // 定向帧到达目标后**停止转发**（本机就是 target，只消费）：否则目标会把定向帧
+    // 再洪泛给其他邻居，邻居又按 target 定向转发回来，形成冗余中转与回环。真机反馈
+    // 「同网段好友申请一直中转、清掉还冒出来」正是这个回环造成的。
+    let is_target = env.target.as_deref() == Some(state.device_id.as_str());
+    if !is_target && env.ttl > 1 {
+        // 定向帧（FriendRequest/FriendAccept/ChatAck/ChatReadReceipt）优先精确定向：
+        // target 是本机直连就只发它；无直连路径时洪泛兜底（第一版无路由表）。广播帧保持 fan-out。
         let targets: Vec<String> = match env.target.as_deref() {
             Some(t) => {
                 let direct = { state.links.lock().await.contains_key(t) };
@@ -2625,6 +2645,77 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 );
             }
         }
+        GossipKind::ChatAck => {
+            // 定向送达确认：只有 target == 本机才处理（即「我发的消息被对方收到」）。
+            if env.target.as_deref() == Some(state.device_id.as_str()) {
+                if let Some(pt) = plaintext {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                        if let Some(msg_id) = v.get("msg_id").and_then(|m| m.as_str()) {
+                            // 只有「我发给 sender、且仍在 outbox」的 msg_id 才接受：
+                            // msg_id 随机不可预测 + 必须命中 outbox 目标，双重防伪造送达。
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            let is_expected = dbc
+                                .query_row(
+                                    "SELECT 1 FROM outbox WHERE msg_id = ?1 AND peer_id = ?2",
+                                    params![msg_id, env.sender_id],
+                                    |_| Ok(()),
+                                )
+                                .is_ok();
+                            if !is_expected {
+                                return;
+                            }
+                            db::set_message_status(&dbc, msg_id, "delivered").ok();
+                            dbc.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id])
+                                .ok();
+                            drop(dbc);
+                            let _ = state.app.emit("message-acked", msg_id);
+                        }
+                    }
+                }
+            }
+        }
+        GossipKind::ChatReadReceipt => {
+            // 定向已读回执：只有 target == 本机才处理。
+            if env.target.as_deref() == Some(state.device_id.as_str()) {
+                if let Some(pt) = plaintext {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                        let from = env.sender_id.clone();
+                        let last_read_ts = v.get("last_read_ts").and_then(|t| t.as_i64()).unwrap_or(0);
+                        let last_read_msg_id = v
+                            .get("last_read_msg_id")
+                            .and_then(|m| m.as_str())
+                            .map(|s| s.to_string());
+                        // 与 Message::ReadReceipt 分支同构：用 msg_id 换算回本机时间戳。
+                        let effective_ts = {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            last_read_msg_id
+                                .as_deref()
+                                .and_then(|msg_id| {
+                                    dbc.query_row(
+                                        "SELECT ts FROM messages WHERE msg_id = ?1 AND sender_id = ?2 AND conv_id = ?3",
+                                        params![msg_id, state.device_id, from],
+                                        |r| r.get::<_, i64>(0),
+                                    )
+                                    .ok()
+                                })
+                                .unwrap_or(last_read_ts)
+                        };
+                        {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            let _ = dbc.execute(
+                                "UPDATE messages SET status = 'read'
+                                 WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
+                                params![from, state.device_id, effective_ts],
+                            );
+                        }
+                        let _ = state.app.emit(
+                            "peer-read",
+                            &serde_json::json!({ "peer_id": from, "last_read_ts": effective_ts }),
+                        );
+                    }
+                }
+            }
+        }
         GossipKind::Chat | GossipKind::Group => {
             if let Some(pt) = plaintext {
                 let (kind, content) = parse_gossip_payload(&pt);
@@ -2757,6 +2848,40 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         from: state.device_id.clone(),
                     };
                     let _ = try_send(state, &env.sender_id, &ack).await;
+                }
+                // 单聊送达确认：跨跳（无直连）时直连 Ack 到不了原始发送方，改走定向
+                // Gossip ChatAck；有直连时也走 Gossip，让「已送达」立即出现，不必等
+                // 心跳触发 outbox 直发补 Ack。接收端按 outbox(msg_id, sender) 命中才接受，
+                // 防伪造送达。
+                if conv_kind == "single" && !matches!(&inserted, Err(_)) {
+                    let payload = serde_json::json!({ "msg_id": env.message_id }).to_string();
+                    let payload_b64 = STANDARD.encode(payload.as_bytes());
+                    let mut ack_env = {
+                        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                        gossip.build_envelope(
+                            &state.identity,
+                            &state.device_id,
+                            GossipKind::ChatAck,
+                            None,
+                            None,
+                            &payload_b64,
+                            db::now_ms(),
+                            0,
+                        )
+                    };
+                    ack_env.encrypted = false;
+                    ack_env.target = Some(env.sender_id.clone());
+                    ack_env.sender_sig = state.identity.sign_b64(&ack_env.signing_bytes());
+                    if state.has_link(&env.sender_id).await {
+                        let _ = try_send(
+                            state,
+                            &env.sender_id,
+                            &Message::Gossip { envelope: ack_env },
+                        )
+                        .await;
+                    } else {
+                        broadcast_gossip(state, ack_env).await;
+                    }
                 }
             }
         }
@@ -4367,6 +4492,53 @@ pub async fn flush_group_outbox(state: &AppState, peer_id: &str) {
     }
 }
 
+/// 发送单聊已读回执：同网段有直连走 `Message::ReadReceipt`（可被 pending 重试），
+/// 跨跳（无直连）改走定向 Gossip `ChatReadReceipt`（广播靠中继按 target 转发）。
+///
+/// 返回是否「已发出」：直连失败返回 false（供 flush 决定是否重新入队），
+/// Gossip 广播是尽力而为、视为已发出返回 true。
+pub async fn send_read_receipt_route(
+    state: &AppState,
+    peer_id: &str,
+    msg_id: Option<String>,
+    last_read_ts: i64,
+) -> bool {
+    if state.has_link(peer_id).await {
+        let msg = Message::ReadReceipt {
+            from: state.device_id.clone(),
+            to: peer_id.to_string(),
+            last_read_ts,
+            last_read_msg_id: msg_id,
+        };
+        try_send(state, peer_id, &msg).await.is_ok()
+    } else {
+        let payload = serde_json::json!({
+            "last_read_ts": last_read_ts,
+            "last_read_msg_id": msg_id,
+        })
+        .to_string();
+        let payload_b64 = STANDARD.encode(payload.as_bytes());
+        let mut env = {
+            let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+            gossip.build_envelope(
+                &state.identity,
+                &state.device_id,
+                GossipKind::ChatReadReceipt,
+                None,
+                None,
+                &payload_b64,
+                db::now_ms(),
+                0,
+            )
+        };
+        env.encrypted = false;
+        env.target = Some(peer_id.to_string());
+        env.sender_sig = state.identity.sign_b64(&env.signing_bytes());
+        broadcast_gossip(state, env).await;
+        true
+    }
+}
+
 /// 冲刷待发的单聊已读回执（触发点与 `flush_outbox` 一致：建链 / Hello / 心跳）。
 ///
 /// `mark_read` 将 pending 同时写入内存 HashMap 和 SQLite。此处成功发送后
@@ -4388,14 +4560,8 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
         db::delete_pending_read(&dbc, peer_id).ok();
         return;
     };
-    let msg = Message::ReadReceipt {
-        from: state.device_id.clone(),
-        to: peer_id.to_string(),
-        last_read_ts,
-        last_read_msg_id: Some(msg_id),
-    };
-    if try_send(state, peer_id, &msg).await.is_err() {
-        // 发送失败：内存重新放入 pending，DB 保留（已由 mark_read 写入）
+    if !send_read_receipt_route(state, peer_id, Some(msg_id), last_read_ts).await {
+        // 直连发送失败：内存重新放入 pending，DB 保留（已由 mark_read 写入）
         let mut pending = state.pending_reads.lock().unwrap_or_else(|e| e.into_inner());
         let cur = pending.entry(peer_id.to_string()).or_insert(last_read_ts);
         *cur = (*cur).max(last_read_ts);

@@ -888,12 +888,15 @@ pub async fn respond_friend_request(
         s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer_id);
         let _ = s.app.emit("friend-accepted", &peer_id);
     } else {
+        // 拒绝回执：跨跳（无直连）时 try_send 会失败，但**绝不因此阻塞本地清理**——
+        // 否则「拒绝」发不出去会导致 pending 不被删除、申请「清掉又冒出来」。
         let msg = Message::FriendReject {
             from: s.device_id.clone(),
             to: peer_id.clone(),
         };
-        try_send(s, &peer_id, &msg).await?;
+        let _ = try_send(s, &peer_id, &msg).await;
         s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer_id);
+        let _ = s.app.emit("friend-rejected", &peer_id);
     }
     Ok(())
 }
@@ -1122,16 +1125,13 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
             db::last_message_from_sender(&dbc, &conv_id, &conv_id)
         };
         if let Some((msg_id, ts)) = last {
-            let msg = Message::ReadReceipt {
-                from: s.device_id.clone(),
-                to: conv_id.clone(),
-                last_read_ts: ts,
-                last_read_msg_id: Some(msg_id),
-            };
+            // 同网段走直连 ReadReceipt，跨跳走定向 Gossip ChatReadReceipt。
             // try_send 返回 Ok 只代表消息进入 mpsc channel，不代表 TCP writer
             // 真正 write_frame 成功——writer_loop 可能随后发现链路已断而丢弃。
-            // 因此无论 Ok/Err 都保留 pending：下一次心跳/建链时 flush 重发。
-            let _ = crate::network::transport::try_send(s, &conv_id, &msg).await;
+            // 因此无论结果都保留 pending：下一次心跳/建链时 flush 重发。
+            let _ =
+                crate::network::transport::send_read_receipt_route(s, &conv_id, Some(msg_id), ts)
+                    .await;
             {
                 let mut pending = s.pending_reads.lock().unwrap_or_else(|e| e.into_inner());
                 let cur = pending.entry(conv_id.clone()).or_insert(ts);
