@@ -12,7 +12,7 @@ use std::sync::Arc;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rusqlite::params;
 use tauri::Emitter;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
@@ -23,7 +23,7 @@ use crate::commands::{is_virtual_ip, MAX_GROUP_NAME_LEN};
 use crate::crypto;
 use crate::db;
 use crate::network::file;
-use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind, MAX_FRAME};
+use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind};
 use crate::state::{
     AppState, FileDoneInfo, FileFailedInfo, FileProgress, MessageRecord, Peer, PendingRequest,
 };
@@ -41,30 +41,14 @@ fn is_virtual_ip_str(ip_str: &str) -> bool {
 pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> std::io::Result<()> {
     let json = serde_json::to_vec(msg)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    if json.is_empty() || json.len() > MAX_FRAME || json.len() > u32::MAX as usize {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "帧过大",
-        ));
-    }
-    let len = json.len() as u32;
-    w.write_all(&len.to_be_bytes()).await?;
-    w.write_all(&json).await?;
-    Ok(())
+    // 分帧（4 字节大端长度 + payload）与长度校验统一交给 bytes 层，
+    // 业务侧只负责序列化 —— 单一真相源见 `transport::tcp`（P-A03）。
+    crate::transport::tcp::write_bytes(w, &json).await
 }
 
 pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Message> {
-    let mut len_buf = [0u8; 4];
-    r.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len == 0 || len > MAX_FRAME {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "非法帧长度",
-        ));
-    }
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf).await?;
+    // 同上：解帧与长度校验由 bytes 层负责，这里只做业务反序列化。
+    let buf = crate::transport::tcp::read_bytes(r).await?;
     serde_json::from_slice(&buf)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }

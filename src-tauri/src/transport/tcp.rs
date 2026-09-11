@@ -129,27 +129,30 @@ mod tests {
         assert!(read_bytes(&mut r).await.is_err());
     }
 
-    /// **关键兼容性护栏**：bytes 抽象必须与现有 `write_frame` 字节级一致。
-    /// 一旦不一致，新旧客户端就无法互通 —— 属于协议语义变更。
+    /// **关键协议护栏**：线上帧格式必须是「4 字节大端长度 + payload」。
+    ///
+    /// 本测试最初用于比对「新旧两个实现是否字节级一致」；Phase 4 第二步之后
+    /// `network::transport::write_frame` 已复用本模块的 bytes 原语，两者合流，
+    /// 因此改为直接钉住线格式本身——一旦有人改了长度前缀的字节序 / 宽度，
+    /// 或改动了 payload 的摆放，这里立刻失败（那属于协议语义变更）。
     #[tokio::test]
-    async fn wire_format_matches_legacy_write_frame() {
+    async fn wire_format_is_length_prefixed_big_endian() {
         let msg = Message::Heartbeat {
             device_id: "dev-1".into(),
         };
+        let json = serde_json::to_vec(&msg).unwrap();
 
-        let mut legacy = Vec::new();
-        crate::network::transport::write_frame(&mut legacy, &msg)
+        let mut buf = Vec::new();
+        crate::network::transport::write_frame(&mut buf, &msg)
             .await
             .unwrap();
 
-        let json = serde_json::to_vec(&msg).unwrap();
-        let mut new = Vec::new();
-        write_bytes(&mut new, &json).await.unwrap();
-
         assert_eq!(
-            legacy, new,
-            "bytes 抽象的线格式必须与现有 write_frame 完全一致"
+            &buf[..4],
+            &(json.len() as u32).to_be_bytes(),
+            "帧头必须是 4 字节大端长度"
         );
+        assert_eq!(&buf[4..], json.as_slice(), "帧体必须是原始 payload");
     }
 
     /// 真实回环 TCP 上验证 send/receive_bytes（不需要业务协议）。
