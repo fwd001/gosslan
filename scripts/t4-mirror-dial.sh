@@ -12,6 +12,11 @@
 #      若不是 1 条，本次运行 **INCONCLUSIVE**（不能拿"没触发"当"没复现"）。
 #    · 被测 peer `aaa-mirror-peer`（先拨入建立连接，再被 announce）——
 #      1 条 = PASS（无镜像）／2 条 = FAIL（复现镜像 bug）。
+#    · **两条 +conn 都必须 `online=1`**（M3-0/M3-0b 健康信号的回归护栏）：
+#      `online=` 是 `ConnectionHealth` 在生产路径唯一的外部可观测点。建链时若不播种
+#      读活性，这里会全变成 `online=0`（本轮 M3-0b 之前实测过这个现象）——
+#      而 M3-b 的选路一旦上线，`online=0` 就意味着「刚建好的链路被判不可用」，
+#      会直接退化成按固定顺序挑、甚至反复重拨。故在此把它钉成硬判据。
 #
 #  用法：bash scripts/t4-mirror-dial.sh
 #  依赖：cargo build --bin gosslan && cargo build --example mirror_dial
@@ -68,11 +73,16 @@ SUBJECT_LINES="$(grep -F "+conn peer=${SUBJECT_ID}" "$LOG")"
 CONTROL_LINES="$(grep -F "+conn peer=${CONTROL_ID}" "$LOG")"
 SUBJECT_N="$(printf '%s' "$SUBJECT_LINES" | grep -c .)"
 CONTROL_N="$(printf '%s' "$CONTROL_LINES" | grep -c .)"
+# M3-0/M3-0b 健康信号判据：每条 +conn 都必须带 online=1
+ONLINE_BAD="$(printf '%s\n%s\n' "$SUBJECT_LINES" "$CONTROL_LINES" | grep -c 'online=0')"
+ONLINE_GOOD="$(printf '%s\n%s\n' "$SUBJECT_LINES" "$CONTROL_LINES" | grep -c 'online=1')"
 
 echo "--- 对照 ${CONTROL_ID}（期望恰好 1 条）---"
 [ "$CONTROL_N" = "0" ] && echo "  （无）" || printf '%s\n' "$CONTROL_LINES"
 echo "--- 被测 ${SUBJECT_ID}（期望 1 条）---"
 [ "$SUBJECT_N" = "0" ] && echo "  （无）" || printf '%s\n' "$SUBJECT_LINES"
+echo "--- 健康信号（期望每条 +conn 都是 online=1）---"
+echo "  online=1: ${ONLINE_GOOD} 条 / online=0: ${ONLINE_BAD} 条"
 echo
 
 if [ "$CONTROL_N" != "1" ]; then
@@ -83,8 +93,23 @@ if [ "$CONTROL_N" != "1" ]; then
   exit 3
 fi
 
+# 健康信号护栏（M3-0/M3-0b）：日志里根本没有 online= 字段说明日志格式倒了，
+# 属 INCONCLUSIVE；有 online=0 才是真 FAIL（建链没播种读活性）。
+if [ "$ONLINE_GOOD" = "0" ] && [ "$ONLINE_BAD" = "0" ]; then
+  echo "INCONCLUSIVE | 日志中找不到 online= 字段 —— 无法判断健康信号是否接上"
+  echo "  ⇒ 可能二进制是旧的；请先 cargo build --bin gosslan"
+  cat "$LOG"
+  exit 3
+fi
+if [ "$ONLINE_BAD" != "0" ]; then
+  echo "FAIL | 有 ${ONLINE_BAD} 条 +conn 的 online=0 ⇒ **建链未播种读活性**"
+  echo "  ⇒ M3-0b 回归：刚建好的连接被判为不健康；M3-b 选路会让它不可用并触发重拨。"
+  exit 1
+fi
+
 if [ "$SUBJECT_N" = "1" ]; then
-  echo "PASS | 对照 1 条（announce 送达、拨号链路有效），被测仅 1 条 ⇒ **未产生镜像重复连接**"
+  echo "PASS | 对照 1 条（announce 送达、拨号链路有效），被测仅 1 条 ⇒ **未产生镜像重复连接**；"
+  echo "       两条 +conn 均 online=1 ⇒ 健康信号（M3-0/M3-0b）未回归"
   exit 0
 elif [ "$SUBJECT_N" -ge 2 ]; then
   echo "FAIL | 被测出现 ${SUBJECT_N} 条连接 ⇒ **复现镜像重复拨号**"
