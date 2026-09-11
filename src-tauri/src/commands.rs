@@ -1,6 +1,6 @@
 //! Tauri 命令层：前端调用的所有后端入口。
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -3021,6 +3021,24 @@ fn preview(kind: &str, content: &str) -> String {
 
 // ---------------- 跨子网（Routed）端点配置 ----------------
 
+/// 校验手动配置的 Routed 端点地址。
+///
+/// 只接受 **IPv4**：TCP 监听侧绑的是 `Ipv4Addr`（`network::transport::spawn`），
+/// IPv6 端点即使拨出去也连不上。在这里当场拒绝，好过「存下来了但永远连不上」
+/// —— 后者对用户完全不可见（配置成功、日志无错、就是没反应）。
+fn validate_routed_address(address: &str) -> Result<SocketAddr, String> {
+    let addr: SocketAddr = address
+        .parse()
+        .map_err(|_| format!("地址格式应为 ip:port，收到：{address}"))?;
+    if addr.is_ipv6() {
+        return Err(
+            "暂不支持 IPv6 地址（当前 TCP 监听仅 IPv4）。请填写 IPv4，例如 100.64.0.1:59992"
+                .to_string(),
+        );
+    }
+    Ok(addr)
+}
+
 /// 列出手动配置的跨子网端点（Tailscale / VPN / 跨网段）。
 #[tauri::command]
 pub fn list_routed_endpoints(state: tauri::State<'_, Arc<AppState>>) -> Vec<RoutedEndpoint> {
@@ -3031,6 +3049,8 @@ pub fn list_routed_endpoints(state: tauri::State<'_, Arc<AppState>>) -> Vec<Rout
 /// 添加一个跨子网端点。**必须提供 `device_id`**：
 /// 跨子网拨号时主动方在 Hello 之前无从得知对端身份，而 Hello 分支要求
 /// `device_id == peer_id`，用占位值会让连接被丢弃。
+///
+/// 地址目前只接受 **IPv4**：TCP 监听侧绑的是 `Ipv4Addr`，IPv6 端点拨出去也连不上。
 #[tauri::command]
 pub fn add_routed_endpoint(
     state: tauri::State<'_, Arc<AppState>>,
@@ -3040,10 +3060,8 @@ pub fn add_routed_endpoint(
     if device_id.trim().is_empty() {
         return Err("device_id 不能为空".to_string());
     }
+    validate_routed_address(&address)?;
     let candidate = RoutedEndpoint::new(device_id.clone(), address.clone());
-    if candidate.socket_addr().is_none() {
-        return Err(format!("地址格式应为 ip:port，收到：{address}"));
-    }
 
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut list = parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
@@ -3078,9 +3096,30 @@ pub fn remove_routed_endpoint(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_message_content, decode_outgoing_image, image_extension, MAX_MESSAGE_LEN,
-        MAX_OUTGOING_IMAGE_BYTES,
+        check_message_content, decode_outgoing_image, image_extension, validate_routed_address,
+        MAX_MESSAGE_LEN, MAX_OUTGOING_IMAGE_BYTES,
     };
+
+    /// Routed 端点地址校验：只收 IPv4；IPv6 必须**当场明确拒绝**，
+    /// 而不是「存下来了但永远连不上」（后者对用户完全不可见）。
+    #[test]
+    fn routed_endpoint_address_must_be_ipv4() {
+        assert!(validate_routed_address("100.64.0.1:59992").is_ok());
+        assert!(validate_routed_address("192.168.1.5:59992").is_ok());
+        assert_eq!(
+            validate_routed_address("100.64.0.1:59992").unwrap().port(),
+            59992
+        );
+
+        // 格式错误
+        assert!(validate_routed_address("100.64.0.1").is_err(), "缺端口应拒绝");
+        assert!(validate_routed_address("garbage").is_err());
+
+        // IPv6：拒绝，且错误信息要能给出可操作的指引
+        let err = validate_routed_address("[fd7a:115c:a1e0::1]:59992").unwrap_err();
+        assert!(err.contains("IPv6"), "错误信息应点明 IPv6：{err}");
+        assert!(validate_routed_address("::1:59992").is_err());
+    }
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
     // ---------- 单条消息长度上限：超限报错，绝不静默截断 ----------

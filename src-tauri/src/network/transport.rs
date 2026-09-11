@@ -5,7 +5,7 @@
 //! - 双方各自维护一个出站 mpsc 发送端，读循环负责解析帧并分发。
 
 use std::collections::{HashMap, HashSet};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -235,14 +235,7 @@ pub async fn spawn(
                         // 表现为「配了却连不上且无任何提示」。这里直接拨号，去重由
                         // `connect_to_peer` 内部的按端点检查保证。
                         eprintln!("[routed] 尝试拨号 peer={} ep={addr}", ep.device_id);
-                        connect_to_peer(
-                            &state,
-                            &ep.device_id,
-                            &addr.ip().to_string(),
-                            addr.port(),
-                            shutdown.clone(),
-                        )
-                        .await;
+                        connect_to_peer(&state, &ep.device_id, addr, shutdown.clone()).await;
                     }
                 }
             }
@@ -734,9 +727,39 @@ mod mesh_sync_tests {
         );
         assert_eq!(path_kind_for(&sa6("2408:8207::1")), PathKind::Routed);
     }
+
+    /// 地址构造不依赖「拼字符串再解析」，因此 IPv6 **不需要方括号**。
+    ///
+    /// 旧实现 `format!("{ip}:{port}").parse()` 在 IPv6 上会得到 `fd7a::1:59992`
+    /// 这种非法地址 → 解析失败 → 静默丢掉连接。这正是「IPv6 端点配了却不拨号」的根因。
+    #[test]
+    fn socket_addr_from_accepts_v4_and_bare_v6() {
+        assert_eq!(socket_addr_from("192.168.1.20", 59992), Some(sa(192, 168, 1, 20)));
+        assert_eq!(
+            socket_addr_from("fd7a:115c:a1e0::1", 59992),
+            Some(sa6("fd7a:115c:a1e0::1"))
+        );
+        assert_eq!(socket_addr_from("::1", 59992), Some(sa6("::1")));
+        // 非法输入返回 None（调用方跳过本轮，不 panic）
+        assert_eq!(socket_addr_from("not-an-ip", 1), None);
+        assert_eq!(socket_addr_from("", 1), None);
+        // 方括号写法是 `"host:port"` 整体的语法，不是裸 IP —— 传到这里应当被拒绝
+        assert_eq!(socket_addr_from("[fd7a::1]", 1), None);
+    }
 }
 
 // ---------------- 主动建链（小 ID 拨号） ----------------
+
+/// 由字符串 IP + 端口构造 `SocketAddr`。
+///
+/// **刻意不用 `format!("{ip}:{port}").parse()`**：那种写法把地址与端口先拼成字符串，
+/// 而 IPv6 只有写成 `[fd7a::1]:59992` 才是合法 SocketAddr，直接拼会得到
+/// `fd7a::1:59992` → 解析失败。调用方拿到的地址在配置层已校验通过，重建失败就等于
+/// **把一条合法配置静默丢掉**（曾真实发生：IPv6 端点「配了却永远不拨号」）。
+/// 分开解析 IP 与端口，v4 / v6 都成立，也不需要方括号。
+fn socket_addr_from(ip: &str, port: u16) -> Option<SocketAddr> {
+    ip.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, port))
+}
 
 pub async fn ensure_link(
     state: &Arc<AppState>,
@@ -750,39 +773,28 @@ pub async fn ensure_link(
     }
     // 按**端点**去重（而非按 peer）：同一 peer 换了个 IP（如同时有 LAN 与 Tailscale）
     // 是另一条连接，仍然值得拨。解析失败则放弃本轮（下一轮 announce 会再试）。
-    let endpoint: std::net::SocketAddr = match format!("{ip}:{tcp_port}").parse() {
-        Ok(a) => a,
-        Err(_) => return,
-    };
+    let Some(endpoint) = socket_addr_from(ip, tcp_port) else { return };
     if state.has_endpoint(peer_id, &endpoint).await {
         return;
     }
-    connect_to_peer(state, peer_id, ip, tcp_port, shutdown).await;
+    connect_to_peer(state, peer_id, endpoint, shutdown).await;
 }
 
+/// 建立一条到 `endpoint` 的连接。
+///
+/// 调用方传 **已解析好的 `SocketAddr`**：地址的解析与校验在配置/announce 层各做一次，
+/// 这里不再「拼字符串再解析」（那是 IPv6 丢方括号的根源）。
 async fn connect_to_peer(
     state: &Arc<AppState>,
     peer_id: &str,
-    ip: &str,
-    tcp_port: u16,
+    endpoint: SocketAddr,
     shutdown: watch::Receiver<bool>,
 ) {
-    {
-        // 同样按端点去重：与 ensure_link 的检查构成双重保险（announce 是并发触发的）。
-        let endpoint: std::net::SocketAddr = match format!("{ip}:{tcp_port}").parse() {
-            Ok(a) => a,
-            Err(_) => return,
-        };
-        if state.has_endpoint(peer_id, &endpoint).await {
-            return;
-        }
+    // 按端点去重：与 `ensure_link` 的检查构成双重保险（announce 与 Routed 拨号会并发触发）。
+    if state.has_endpoint(peer_id, &endpoint).await {
+        return;
     }
 
-    // 端点用 `SocketAddr` 而非字符串：Link 需要它做「按端点去重」的判据。
-    let endpoint: std::net::SocketAddr = match format!("{ip}:{tcp_port}").parse() {
-        Ok(a) => a,
-        Err(_) => return,
-    };
     let stream = match TcpStream::connect(endpoint).await {
         Ok(s) => s,
         Err(_) => return,
