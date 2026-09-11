@@ -50,6 +50,31 @@ BLE 的价值正在这里：它**不依赖 IP 网段**，天然满足"零配置�
 | `bluer`（BlueZ）/`ble-peripheral` | ❌ 只覆盖 Linux 或只有外设角色 |
 | 走 IP 隧道（把 BLE 当串口） | ❌ 等于自造 L2 协议，工作量与风险都更高 |
 
+### 3.1 ⚠️ 更正：btleplug **只做 central（host）角色**
+
+2026-09-12 深夜在本机拉下 btleplug 0.13 源码后核实（`README.md` 第 19 行原文）：
+> btleplug is meant to be *host/central mode only*. If you are interested in peripheral BTLE
+> (i.e. advertising), use `bluster` or `ble-peripheral-rust`.
+
+也就是说：**两个 Gosslan 节点不能只靠 btleplug 互相发现** —— GATT 连接必须有一方
+**广播（advertise）并提供服务端**，而 btleplug 不提供这个角色。这推翻了我在本 ADR §3
+里"一套 API 覆盖三平台"的表述（那句话在"central 角色"这个维度上是对的，但**角色不齐**）。
+
+可选的补法（已核实的现实）：
+
+| 方案 | 覆盖 | 代价 |
+|---|---|---|
+| `bluster` 0.2 / `ble-peripheral-rust` 0.2（peripheral 角色） | macOS/iOS（CoreBluetooth）、Linux（BlueZ）；关键字里**没有 Windows** | 新增第二个蓝牙依赖；Windows 仍缺 |
+| 平台原生实现的 peripheral 角色 | macOS/iOS `CBPeripheralManager`（项目已有 `objc2`）；Android `BluetoothLeAdvertiser` + `BluetoothGattServer`（需 JNI）；Windows `GattServiceProvider`（WinRT，需 `windows` crate） | 三套平台代码，且只能真机验证 |
+
+**建议（待用户裁决）**：**角色分工** —— PC（macOS/Windows）做 **central**（btleplug，已实现），
+**手机做 peripheral**（Android/iOS 平台 API）。理由：
+① 用户的真实场景就是"手机 ↔ 电脑"，手机做 peripheral 刚好覆盖；
+② 只需在移动端实现一个角色，桌面端零额外平台代码；
+③ Windows 的 peripheral 角色在 Rust 生态里目前没有现成 crate，绕开它是关键收益。
+代价：手机与手机之间在 BLE 上要连，得有一方当 central（btleplug 在 Android 上可用），
+但那一侧的服务端仍要等移动端 peripheral 实现后才能被连 —— 属后续增强。
+
 **已知代价（必须写下来）**：btleplug 的 GATT 是"写特征 + notify 分片"，**不是字节流**，
 所以 `writer_loop`/`reader_loop` 不能原样复用，需要一个收发适配器（分片/重组 + 流控），
 以及 MTU 协商（默认 23 字节 → 协商后常见 185/512）。这是 Phase 7 的主要工作量。
@@ -83,7 +108,7 @@ BLE 的价值正在这里：它**不依赖 IP 网段**，天然满足"零配置�
 | 7-c | `Link.path_kind` 显式携带 + `Endpoint` 抽象 | ✅ `353a964` + `8ce2b18`：单测覆盖 LAN/Routed/BLE 三态 + "私有段 Routed 不算 LAN" + "BLE 不优先于 TCP" |
 | 7-d | `BleDiscovery` 产出 `PeerCandidate`（发现 ≠ 建连） | ⬜ 待做。**设计要点**：BLE 地址不是身份（身份只能由双向 Hello 验签建立），
 所以候选要么携带占位身份、要么扩展 `PeerCandidate` 允许"身份未知" —— 需要与 P-A01/P-A04 一起定，不能顺手塞。 |
-| 7-e | 驱动 + 接线 + 双向 Hello 验签 + 一条单聊消息 | ⚠️ **一半完成**（`cc273b5`）：`transport/bluetooth.rs::driver` 按 btleplug 0.13 真实源码实现
+| 7-e | 驱动 + 接线 + 双向 Hello 验签 + 一条单聊消息 | ⚠️ **central 侧完成**（`cc273b5` + `c2124ef`；见 §3.1 的更正：peripheral 角色仍需移动端平台实现）：`transport/bluetooth.rs::driver` 按 btleplug 0.13 真实源码实现
 （adapter / scan_peers / connect+特征校验 / send_frame 分片写 / next_frame 通知重组 / payload_mtu），
 **`cargo build --features bluetooth` 与 `cargo test --features bluetooth`（367 passed / 0 warning）
 已在本机 macOS 通过**（把 `CARGO_HOME` 指到仓库内 `src-tauri/target/cargo-home` 绕开"不能写 ~/.cargo"）。
