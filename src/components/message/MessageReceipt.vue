@@ -125,18 +125,23 @@ function readerAvatar(id: string): string | null {
   <!-- 单聊：回执图标固定在气泡左侧（视觉上贴近对话人头像方向）。
        ♿ 回执是**纯图标**状态（转圈/空心圆/绿勾/红叉），读屏下原本什么也读不到 ——
        发送中 / 已送达 / 已读 是聊天最核心的状态，必须给可访问名。
-       role="img" + aria-label 让状态被朗读出来；内部的 Loader2/Circle/Check 都是装饰。 -->
-  <span v-else class="shrink-0 pb-1.5" role="img" :title="title" :aria-label="title">
-    <Loader2 v-if="state === 'sending' || state === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
+       ⚠️ `role="img"` 只能加在**只包静态图标**的元素上：ARIA 的 `img` 会应用
+       *Children Presentational*，把后代的角色/名字/动作**从无障碍树里抹掉**。
+       此前它套在含「重发」按钮的外层 ⇒ 读屏用户**点不到重发**（失败消息无法重发）。
+       现在：按钮是兄弟节点，`role="img"` 只包状态图标。 -->
+  <span v-else class="flex shrink-0 items-center pb-1.5">
     <button
-      v-else-if="state === 'failed'"
+      v-if="state === 'failed'"
       class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
       :title="t('msg.resend')" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
       <RefreshCw class="h-3.5 w-3.5" />
     </button>
-    <Circle v-else-if="state === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-    <Check v-else-if="state === 'read'" class="h-4 w-4 text-[var(--gosslan-success-ink)]" />
+    <span v-else class="flex items-center" role="img" :title="title" :aria-label="title">
+      <Loader2 v-if="state === 'sending' || state === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
+      <Circle v-else-if="state === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+      <Check v-else-if="state === 'read'" class="h-4 w-4 text-[var(--gosslan-success-ink)]" />
+    </span>
   </span>
 </template>

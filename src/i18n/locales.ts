@@ -296,6 +296,7 @@ export const zhCN: MessageDict = {
   "common.lines": "{n} 行",
 
   // ---- 聊天输入区 ----
+  "chat.composer.inputAria": "消息输入框",
   "chat.composer.emoji": "表情",
   "chat.composer.code": "代码消息",
   "chat.composer.sendFile": "发送文件（自动选择最优路线）",
@@ -819,6 +820,7 @@ export const enUS: MessageDict = {
   "common.lines": "{n} lines",
 
   // ---- Composer ----
+  "chat.composer.inputAria": "Message input",
   "chat.composer.emoji": "Emoji",
   "chat.composer.code": "Code message",
   "chat.composer.sendFile": "Send file (auto route)",

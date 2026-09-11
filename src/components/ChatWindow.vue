@@ -500,6 +500,7 @@ function onLoadMore() {
         v-else
         ref="listRef"
         :items="messages"
+        live
         :auto-scroll-on-swap="!(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"
         :estimate-height="estimateHeight"
         @load-more="onLoadMore"

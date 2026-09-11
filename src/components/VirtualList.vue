@@ -17,8 +17,16 @@ const props = withDefaults(
     overscan?: number;
     /** 切换会话（末条 key 变化）时是否自动贴底；未读跳转场景由父组件关掉，改走 scrollToIndex */
     autoScrollOnSwap?: boolean;
+    /**
+     * 作为**实时日志区域**播报（用户 2026-09-12 HIG 审查）：聊天列表的核心事件是
+     * "来了新消息"，但本组件此前没有任何 live region ⇒ 读屏用户**完全听不到新消息**。
+     * 打开后容器带 `role="log" aria-live="polite" aria-relevant="additions"`
+     * （只播报新增，不做整体重读；虚拟列表回收旧行不会造成刷屏）。
+     * 默认关闭：本组件是通用的，其他用途（如设置里的长列表）不该被当作 live region。
+     */
+    live?: boolean;
   }>(),
-  { overscan: 6, autoScrollOnSwap: true },
+  { overscan: 6, autoScrollOnSwap: true, live: false },
 );
 
 const emit = defineEmits<{
@@ -362,7 +370,14 @@ defineExpose({ scrollToBottom, scrollToIndex, recentScrollUp, setPinned });
 </script>
 
 <template>
-  <div ref="container" class="h-full overflow-y-auto overflow-x-hidden pb-6" @scroll.passive="onScroll">
+  <div
+    ref="container"
+    class="h-full overflow-y-auto overflow-x-hidden pb-6"
+    :role="live ? 'log' : undefined"
+    :aria-live="live ? 'polite' : undefined"
+    :aria-relevant="live ? 'additions' : undefined"
+    @scroll.passive="onScroll"
+  >
     <div :style="{ height: `${totalHeight}px`, position: 'relative' }">
       <div
         v-for="v in visible"

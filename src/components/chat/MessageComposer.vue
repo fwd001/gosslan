@@ -541,6 +541,7 @@ function fileToDataUrl(f: File): Promise<string> {
         contenteditable="true"
         role="textbox"
         aria-multiline="true"
+        :aria-label="t('chat.composer.inputAria')"
         enterkeyhint="send"
         :spellcheck="!codeMode"
         :autocorrect="codeMode ? 'off' : 'on'"

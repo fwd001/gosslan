@@ -316,7 +316,10 @@ button:not(:disabled):active,
   filter: brightness(1.15);
 }
 /* 键盘焦点环：只对 :focus-visible 生效（鼠标点击不出现焦点环） */
-:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+/* ⚠️ 必须包含 `[contenteditable]`：消息输入框是 `div[contenteditable]`（不是 textarea），
+   它的类里有 `outline-none` ⇒ 不在这里列出来，键盘用户**看不到焦点在哪**
+   （输入框是最高频的控件，这条属 WCAG 2.4.7 可见焦点）。 */
+:where(button, a, input, textarea, select, [tabindex], [contenteditable]):focus-visible {
   outline: 2px solid var(--gosslan-focus-ring);
   outline-offset: 1px;
 }
