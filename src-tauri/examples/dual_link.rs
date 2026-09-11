@@ -90,6 +90,7 @@ async fn connect_and_hello(
         device_id: device_id.to_string(),
         nickname: "dual-link".to_string(),
         avatar: None,
+        device_type: "desktop".to_string(),
         tcp_port: 0,
         x25519_pubkey: x25519,
         ed25519_pubkey: ed25519,
