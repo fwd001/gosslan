@@ -226,6 +226,8 @@ pub fn run() {
             commands::clear_logs,
             commands::open_log_window,
             commands::close_log_window,
+            commands::open_settings_window,
+            commands::close_settings_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

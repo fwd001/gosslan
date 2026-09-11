@@ -24,7 +24,8 @@ function revealMainWindow() {
   // 独立的「运行日志」窗口由 Rust open_log_window 自行 show，不触发主窗口显示
   // （否则打开日志窗口会把已隐藏到托盘的主窗口也拉出来）。
   try {
-    if (getCurrentWindow().label === "logs") return;
+    const label = getCurrentWindow().label;
+    if (label === "logs" || label === "settings") return;
   } catch {
     /* 非 Tauri 环境（纯 vite dev）忽略 */
   }
@@ -39,6 +40,7 @@ revealMainWindow();
 // 兜底定时器：初始化异常/卡住时也必须移除，绝不能把骨架永久挡在界面上。
 const boot = document.getElementById("boot");
 const bootLogs = document.getElementById("boot-logs");
+const bootSettings = document.getElementById("boot-settings");
 let bootDismissed = false;
 
 function dismissBoot() {
@@ -46,7 +48,7 @@ function dismissBoot() {
   bootDismissed = true;
   // 主窗口骨架（#boot）与日志窗口骨架（#boot-logs）只会有一个实际显示，
   // 这里统一加淡出类并移除，另一个即便不存在也无害。
-  for (const el of [boot, bootLogs]) {
+  for (const el of [boot, bootLogs, bootSettings]) {
     if (!el) continue;
     el.classList.add("boot-hide");
     window.setTimeout(() => el.remove(), 220);

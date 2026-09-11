@@ -162,6 +162,8 @@ export const api = {
   /** 桌面端：打开独立日志窗口；移动端不要调用（用页面跳转）。 */
   openLogWindow: () => invoke<void>("open_log_window"),
   closeLogWindow: () => invoke<void>("close_log_window"),
+  openSettingsWindow: () => invoke<void>("open_settings_window"),
+  closeSettingsWindow: () => invoke<void>("close_settings_window"),
 };
 
 // ---------------- 事件监听 ----------------

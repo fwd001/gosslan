@@ -33,9 +33,22 @@ const groupOpen = ref(false);
 const shareOpen = ref(false);
 const logsOpen = ref(false);
 
+/**
+ * 打开设置。
+ * 桌面端：**独立窗口**（用户 2026-09-12 反馈：「PC 端的设置页面可以按照这种布局，
+ * 弹一个单独的窗口」——参考图是左侧窄导航 + 右侧内容的设置窗口，不是盖在聊天上的弹窗）。
+ * 移动端：整页设置（`SettingsPanel` 的全屏分支，iOS 标准）。
+ * 独立窗口不可用时**回退到应用内弹窗**，保证「设置」在任何环境下都打得开。
+ */
 function openSettings() {
-  settingsOpen.value = true;
-  if (app.isMobile) app.mobileView = "list";
+  if (app.isMobile) {
+    settingsOpen.value = true;
+    app.mobileView = "list";
+    return;
+  }
+  void api.openSettingsWindow().catch(() => {
+    settingsOpen.value = true;
+  });
 }
 
 /** 打开运行日志：桌面端开独立窗口，移动端跳全屏页面（带返回）。 */

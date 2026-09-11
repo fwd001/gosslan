@@ -3392,6 +3392,64 @@ pub fn open_log_window(
     Ok(())
 }
 
+/// 桌面端：打开独立的「设置」窗口（已存在则聚焦）。
+///
+/// 与日志窗口同一范式：加载同一个前端，由前端按窗口 label（`settings`）渲染设置页。
+/// 用户 2026-09-12 反馈：「PC 端的设置页面可以按照这种布局，弹一个单独的窗口」——
+/// 参考图是「左侧窄导航 + 右侧内容」的设置窗口，而不是盖在聊天上的居中弹窗。
+/// 窗口用系统标题栏（含关闭按钮），关闭即销毁，下次打开再重建。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn open_settings_window(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    // 背景色跟随主题：与日志窗口同源（暗色下打开时"闪一下白"的根因见 open_log_window）。
+    let dark = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_setting(&dbc, "dark_mode").map(|v| v == "1").unwrap_or(false)
+    };
+    let bg = if dark {
+        tauri::window::Color(11, 18, 32, 255) // #0b1220
+    } else {
+        tauri::window::Color(237, 241, 246, 255) // #edf1f6
+    };
+    let title = if state.is_zh() {
+        format!("{} · 设置", state.display_name())
+    } else {
+        format!("{} · Settings", state.display_name())
+    };
+    let win = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html".into()))
+        .title(&title)
+        .inner_size(780.0, 600.0)
+        .min_inner_size(560.0, 420.0)
+        // 注入窗口标识：index.html 内联骨架据此渲染「设置页骨架」，
+        // 而不是聊天三栏骨架或日志骨架。
+        .initialization_script("window.__GOSSLAN_WINDOW__ = 'settings';")
+        .build()
+        .map_err(|e| format!("创建设置窗口失败: {e}"))?;
+    let _ = win.set_background_color(Some(bg));
+    let _ = win.show();
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// 桌面端：关闭独立的「设置」窗口。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.close();
+    }
+    Ok(())
+}
+
 /// 桌面端：关闭独立的「运行日志」窗口。
 #[cfg(desktop)]
 #[tauri::command]
