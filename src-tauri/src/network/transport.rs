@@ -386,10 +386,13 @@ pub async fn spawn(
                     };
                     let st = state.clone();
                     let sd = shutdown.clone();
+                    // 捕获**接受时刻**的世代：握手可能持续数秒，期间用户可能切换网卡
+                    // （stop→start）。旧世代的任务握手成功后**不允许**登记链路。
+                    let generation = state.network_generation();
                     tokio::spawn(async move {
                         // permit 随任务存活：连接结束（函数返回）才释放
                         let _permit = permit;
-                        handle_incoming(st, stream, peer_addr, sd).await;
+                        handle_incoming(st, stream, peer_addr, sd, generation).await;
                     });
                 }
             }
@@ -784,6 +787,8 @@ async fn handle_incoming(
     stream: TcpStream,
     peer_addr: std::net::SocketAddr,
     shutdown: watch::Receiver<bool>,
+    // 接受这条连接时的网络世代（见 `AppState::network_generation`）
+    generation: u64,
 ) {
     // Windows：先标记 abortive close，再拆分成读写半（拆分后拿不到 socket 句柄了）。
     #[cfg(windows)]
@@ -840,6 +845,15 @@ async fn handle_incoming(
         }
         _ => return, // 首帧必须是 Hello
     };
+    // ⚠️ **世代校验**：握手跨了 stop/start（换网卡、重开通道）就必须自我否决 ——
+    // 否则会把链路登记进新世代的表里，成为一条无人管理、也收不到新 shutdown 的幽灵连接。
+    if !generation_is_current(generation, state.network_generation()) {
+        state.logger.info(
+            "transport",
+            format!("丢弃跨世代的入站连接 peer={peer_id} ep={peer_addr}（网络已重启）"),
+        );
+        return;
+    }
     // ⚠️ **入站去重**：验签之后、登记链路之前判（判据见 `should_accept_inbound`）。
     // 放在这里而不是更早：身份要验签通过才有意义；也不能更晚：登记后再拒会留下半条状态。
     let existing: Vec<(MeshEndpoint, PathKind)> = {
@@ -987,6 +1001,14 @@ fn mark_conn_failure(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     pm.mark_connection_failure(peer_id, endpoint);
 }
 
+/// 单次写出的结果（D8-4）。把"主动放弃"与"写失败"分开：
+/// 前者是我们在停机/拆链路，不该记成链路故障（否则选路会把正在关闭的链路算成失败）。
+enum WriteOutcome {
+    Ok,
+    Failed,
+    Stopped,
+}
+
 async fn writer_loop(
     state: Arc<AppState>,
     peer_id: String,
@@ -1018,7 +1040,31 @@ async fn writer_loop(
         };
         match msg {
             Some(msg) => {
-                if write_frame(&mut w, &msg).await.is_err() {
+                // ⚠️ **写必须可被打断**（D8-4）：对端不读时发送缓冲满，`write_all` 会长时间
+                // 阻塞；而 shutdown/cancel 只有在回到循环顶部才会被轮询 ⇒ 退出流程与
+                // watchdog 的"精确拆链路"在写阻塞场景下都会失效（STOP_TASK_TIMEOUT 兜底
+                // 也只能打日志放行）。放进 select 后，停机与判死都能立刻放弃这一帧。
+                //
+                // 主动放弃时**不记失败**：那不是链路故障，是我们自己在拆。半写出去的分片
+                // 会让对端看到截断帧并自行断开 —— 本来就是要断的链路，无妨。
+                let outcome = tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => WriteOutcome::Stopped,
+                    _ = cancel.changed() => WriteOutcome::Stopped,
+                    res = write_frame(&mut w, &msg) => {
+                        if res.is_ok() { WriteOutcome::Ok } else { WriteOutcome::Failed }
+                    }
+                };
+                if matches!(outcome, WriteOutcome::Ok) {
+                    // 写成功只记**出站**活性（诊断口径）。M3-0b 起它**不**参与 is_healthy：
+                    // 半开 TCP 上写会一直"成功"，那是本缺陷要被排除的伪证据。
+                    mark_conn_write_seen(&state, &peer_id, &endpoint);
+                    continue;
+                }
+                if matches!(outcome, WriteOutcome::Stopped) {
+                    break;
+                }
+                {
                     // TCP write 失败：普通消息由 outbox 重发；ReadReceipt 需要特殊处理——
                     // 它没有 outbox 行，如果 pending 已被 flush_pending_reads 清除，
                     // 此处不恢复就永久丢失。将 timestamp 重新放回 pending_reads，
@@ -1032,9 +1078,6 @@ async fn writer_loop(
                     mark_conn_failure(&state, &peer_id, &endpoint);
                     break;
                 }
-                // 写成功只记**出站**活性（诊断口径）。M3-0b 起它**不**参与 is_healthy：
-                // 半开 TCP 上写会一直"成功"，那是本缺陷要被排除的伪证据。
-                mark_conn_write_seen(&state, &peer_id, &endpoint);
             }
             None => {
                 // select 无法直接区分是哪个分支关闭，用两个 recv 的 is_closed 兜底。
@@ -1376,6 +1419,12 @@ enum DialOutcome {
     /// 拨号被停机信号中断（应用正在退出 / 切换网络）。
     Stopped,
     Failed(String),
+}
+
+/// 世代是否仍然有效（D8-4）。抽成纯函数是为了让"跨世代必须否决"这条**安全属性**
+/// 有一个能被检索到、能被单测钉住的落点（真实路径要构造 AppState，单测造不出来）。
+fn generation_is_current(captured: u64, current: u64) -> bool {
+    captured == current
 }
 
 /// 单个 peer 允许并存的最大链路数（防御"同 peer 反复建链"的无界增长）。
@@ -5735,6 +5784,15 @@ mod tests {
             should_dial_for_peer("b", "a", false, &[(ble, PathKind::Bluetooth)], Some(now - 60_000), now),
             "只有 BLE 连接时仍应补 LAN"
         );
+    }
+
+    /// 跨世代的入站连接必须被否决（D8-4）。
+    #[test]
+    fn stale_generation_is_rejected() {
+        assert!(generation_is_current(3, 3), "同一世代允许登记");
+        assert!(!generation_is_current(3, 4), "stop/start 之后的旧世代不得登记");
+        // 世代只增不减，但"捕获值比当前大"同样视为无效（防御性：不做大小比较）
+        assert!(!generation_is_current(4, 3));
     }
 
     /// 入站去重判据的真值表。这条判据改错的后果是"两边互拒 ⇒ 谁也连不上"，

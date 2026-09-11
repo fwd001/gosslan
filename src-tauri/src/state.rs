@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -570,6 +570,14 @@ pub struct AppState {
 
     /// 节点表是否需要向前端推送（节流合并用，见 `spawn_peer_emitter`）
     pub peers_dirty: AtomicBool,
+    /// **网络世代号**（D8-4）：每次 `start()`/`stop()` 自增。
+    ///
+    /// 为什么需要：`handle_incoming` 是 accept 时就 spawn 的长任务，它要**握手完成后**
+    /// 才登记链路。若期间用户切换了网卡/重开通道（stop→start），这个"上个世代"的任务
+    /// 仍会把链路登记进**新世代**的 `links`/`peer_manager` —— 一条没人认识、也不会被
+    /// 新世代 shutdown 覆盖的连接（旧 socket 早已断，但状态是真的）。
+    /// 世代号让"登记前先确认自己还属于当前世代"成为一行判断。
+    pub network_generation: AtomicU64,
     /// 节点表变更通知（节流合并的唤醒信号）
     pub peers_notify: Arc<Notify>,
     /// 按需探测触发：值递增 → 发现任务立即群发一次 `who_has`（好友搜索用）
@@ -744,6 +752,7 @@ impl AppState {
             file_receivers: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),
             peers_dirty: AtomicBool::new(false),
+            network_generation: AtomicU64::new(0),
             peers_notify: Arc::new(Notify::new()),
             probe: Mutex::new(None),
             diag: Mutex::new(DiscoveryDiag::default()),
@@ -751,6 +760,16 @@ impl AppState {
             seen_hello_nonces: Mutex::new(VecDeque::new()),
             key_conflict_warned: Mutex::new(std::collections::HashSet::new()),
         }))
+    }
+
+    /// 当前网络世代号。
+    pub fn network_generation(&self) -> u64 {
+        self.network_generation.load(Ordering::Acquire)
+    }
+
+    /// 进入新世代（`start()` 成功后 / `stop()` 开始时调用）并返回新值。
+    pub fn bump_network_generation(&self) -> u64 {
+        self.network_generation.fetch_add(1, Ordering::AcqRel) + 1
     }
 
     /// 读取中继授权配置（克隆一份：一次短锁 + 小结构体拷贝，热路径可接受）。
