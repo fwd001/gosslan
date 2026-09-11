@@ -17,6 +17,7 @@ pub mod endpoint;
 pub mod manager;
 pub mod path;
 pub mod peer;
+pub mod relay_policy;
 pub mod router;
 pub mod selection;
 
@@ -25,6 +26,7 @@ pub use connection::{Connection, ConnectionHealth};
 pub use endpoint::{BleEndpoint, Endpoint};
 pub use manager::{MergeOutcome, PeerManager};
 pub use path::PathKind;
+pub use relay_policy::{should_forward, RelayInput, RelayPolicy};
 pub use peer::{Peer, PeerIdentity, PeerOnlineState};
 pub use router::{
     ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind, MeshRouter, DropReason,

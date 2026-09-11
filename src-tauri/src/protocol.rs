@@ -12,6 +12,20 @@ pub const UDP_PORT: u16 = 59991;
 pub const TCP_PORT: u16 = 59992;
 /// 单帧最大字节数（64MB）
 pub const MAX_FRAME: usize = 64 * 1024 * 1024;
+
+/// **预认证阶段**的单帧上限（Hello 帧远小于此：device_id + 公钥 + 签名 ≈ 数百字节）。
+///
+/// 为什么需要单独一个更小的上限：首帧由**任何**能连上 TCP 端口的主机发送，
+/// 而 `read_bytes` 会先 `vec![0u8; len]` 再读——声明 64MiB 只发 4 字节头即可让本机
+/// 先分配缓冲，且（在加超时之前）可以无限期挂在那里。预认证阶段收紧到 64KiB，
+/// 把这种"未验签就吃内存"的路子堵住；验签之后才按 `MAX_FRAME` 收。
+///
+/// 这是"我们拒收更大帧"，不改我们发出的字节 ⇒ 无 wire 兼容问题。
+pub const MAX_PREAUTH_FRAME: usize = 64 * 1024;
+
+/// 首帧（Hello）等待上限。超时即断开：对端 accept 后一个字节都不发、
+/// 或对端断电导致的半开连接，都不会再永久占着任务与 socket。
+pub const FIRST_FRAME_TIMEOUT_SECS: u64 = 10;
 /// 文件分片原始大小（256KB，base64 后约 342KB）
 pub const FILE_CHUNK: usize = 256 * 1024;
 /// 广播/发现周期（秒）

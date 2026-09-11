@@ -308,14 +308,25 @@ pub async fn spawn(
                                     pkt.ed25519_pubkey.clone(),
                                     None,
                                 ).await;
-                                ensure_link(
-                                    &state,
-                                    &pkt.device_id,
-                                    &src.ip().to_string(),
-                                    pkt.tcp_port,
-                                    shutdown.clone(),
-                                )
-                                .await;
+                                // ⚠️ **必须 spawn**：`ensure_link` 内部会做 connect + 握手，
+                                // 最坏阻塞 = CONNECT_TIMEOUT(5s) + HANDSHAKE_TIMEOUT(5s) ≈ 10s。
+                                // 而 announce 周期只有 5s ⇒ 串行 await 会让收包循环**永远落后**：
+                                // 一个收得到 UDP、TCP 被 DROP 的"黑洞"对端（VPN/防火墙场景）就足以
+                                // 把循环堵死，UDP 接收缓冲溢出后其它节点的 announce/who_has 静默丢失
+                                // —— 用户看到的是"扫不到节点 / 加不上好友"。
+                                // 拨号风暴由 `connect_to_peer` 的在途去重 + 并发上限挡住。
+                                let state = state.clone();
+                                let shutdown = shutdown.clone();
+                                tokio::spawn(async move {
+                                    ensure_link(
+                                        &state,
+                                        &pkt.device_id,
+                                        &src.ip().to_string(),
+                                        pkt.tcp_port,
+                                        shutdown,
+                                    )
+                                    .await;
+                                });
                             }
                             "who_has" => {
                                 // 惊群治理：who_has 是「打开添加好友」时向全网发的一次探测，

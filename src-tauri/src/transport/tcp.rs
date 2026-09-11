@@ -36,12 +36,23 @@ pub async fn write_bytes<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> st
     Ok(())
 }
 
-/// 读出一帧的 payload（不含长度前缀）。
+/// 读出一帧的 payload（不含长度前缀），上限 `MAX_FRAME`。
 pub async fn read_bytes<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Vec<u8>> {
+    read_bytes_capped(r, MAX_FRAME).await
+}
+
+/// 同 `read_bytes`，但允许调用方指定更小的上限（预认证阶段用 `MAX_PREAUTH_FRAME`）。
+///
+/// ⚠️ 顺序很重要：**先校验长度前缀、再分配缓冲**。当前实现即是如此 ——
+/// 反过来的话，一个 4 字节的"声明 64MiB"就足以让对端在本机先拿到一大块内存。
+pub async fn read_bytes_capped<R: AsyncRead + Unpin>(
+    r: &mut R,
+    max: usize,
+) -> std::io::Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    if len == 0 || len > MAX_FRAME {
+    if len == 0 || len > max {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "非法帧长度",
@@ -166,6 +177,32 @@ mod tests {
         assert_eq!(&buf[..4], &(payload.len() as u32).to_be_bytes());
         let mut reader = &buf[..];
         assert_eq!(read_bytes(&mut reader).await.unwrap(), payload);
+    }
+
+    /// 预认证阶段的小上限必须真的生效：长度前缀声明得比上限大 ⇒ 立刻拒绝，
+    /// **且不会先去分配那块缓冲**（先校验、后分配；顺序反了就是一个 4 字节的
+    /// "声明 64MiB" 就能让本机先拿到一大块内存）。
+    #[tokio::test]
+    async fn capped_read_rejects_oversized_length_prefix() {
+        let cap = 1024usize;
+        // 只给 4 字节长度前缀（声明 1MiB），后面没有数据 —— 正确实现应当在分配前就返回 Err
+        let mut reader = &(1u32 << 20).to_be_bytes()[..];
+        let err = read_bytes_capped(&mut reader, cap).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+
+        // 恰好等于上限：允许
+        let payload = vec![1u8; cap];
+        let mut buf = Vec::new();
+        write_bytes(&mut buf, &payload).await.unwrap();
+        let mut reader = &buf[..];
+        assert_eq!(read_bytes_capped(&mut reader, cap).await.unwrap().len(), cap);
+
+        // 比上限多 1 字节：拒绝（边界是闭区间上限，与项目其它长度判据一致）
+        let payload = vec![1u8; cap + 1];
+        let mut buf = Vec::new();
+        write_bytes(&mut buf, &payload).await.unwrap();
+        let mut reader = &buf[..];
+        assert!(read_bytes_capped(&mut reader, cap).await.is_err());
     }
 
     /// 大载荷（接近 MAX_FRAME 上限）也要能往返。

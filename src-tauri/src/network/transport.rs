@@ -64,6 +64,13 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Mess
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
+/// 预认证阶段读首帧：上限收紧到 `MAX_PREAUTH_FRAME`（未验签的连接不得要求大缓冲）。
+async fn read_frame_preauth<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Message> {
+    let buf = crate::transport::tcp::read_bytes_capped(r, crate::protocol::MAX_PREAUTH_FRAME).await?;
+    serde_json::from_slice(&buf)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 // ---------------- 出站发送 ----------------
 
 /// 大数据分片走普通通道；聊天/控制/小控制帧走高优先级通道，避免被大文件饿死。
@@ -374,9 +381,19 @@ pub async fn spawn(
                 _ = shutdown.changed() => break,
                 accept = listener.accept() => {
                     let Ok((stream, peer_addr)) = accept else { continue };
+                    // **入站连接上限**：没有它，一台主机可以无限建连（每个连接 2 个 1024
+                    // 容量信道 + 2 个任务）。拿不到许可就直接 drop stream（等价于拒绝），
+                    // 不排队 —— 排队只会把资源消耗推迟到以后。
+                    let Ok(permit) = state.inbound_permits.clone().try_acquire_owned() else {
+                        continue;
+                    };
                     let st = state.clone();
                     let sd = shutdown.clone();
-                    tokio::spawn(handle_incoming(st, stream, peer_addr, sd));
+                    tokio::spawn(async move {
+                        // permit 随任务存活：连接结束（函数返回）才释放
+                        let _permit = permit;
+                        handle_incoming(st, stream, peer_addr, sd).await;
+                    });
                 }
             }
         }
@@ -565,8 +582,10 @@ pub async fn spawn(
                                         format!("已连上 peer={} ep={addr}", ep.display_id()),
                                     )
                                 }
-                                // 每 10s 一轮的常态：端点已有连接，静默（见 DialOutcome 定义）。
-                                DialOutcome::AlreadyConnected => {}
+                                // 每 10s 一轮的常态：端点已有连接 / 已有拨号在途 / 并发已满，静默。
+                                DialOutcome::AlreadyConnected
+                                | DialOutcome::AlreadyDialing
+                                | DialOutcome::DialBusy => {}
                                 DialOutcome::Failed(e) => state.logger.warn(
                                     "routed",
                                     format!("拨号未成功 peer={} ep={addr}：{e}", ep.display_id()),
@@ -764,9 +783,21 @@ async fn handle_incoming(
     let (raw_r, raw_w) = stream.into_split();
     let mut r = TcpReceiver::new(raw_r);
     let w = TcpSender::new(raw_w);
-    let first = match read_frame(&mut r).await {
-        Ok(m) => m,
-        Err(_) => return,
+    // ⚠️ 首帧必须**有超时且能被停机打断**：验签前的连接既不在 `links` 也不在
+    // `peer_manager`，45s 死链路 watchdog 覆盖不到它 —— 对端 accept 后一个字节都不发
+    // （或对端断电留下的半开连接），任务与 socket 就会永久存活。这里两条都堵住。
+    let mut shutdown_first = shutdown.clone();
+    let first = tokio::select! {
+        biased;
+        _ = shutdown_first.changed() => return,
+        res = tokio::time::timeout(
+            Duration::from_secs(crate::protocol::FIRST_FRAME_TIMEOUT_SECS),
+            read_frame_preauth(&mut r),
+        ) => match res {
+            Ok(Ok(m)) => m,
+            // 超时 / 非法帧 / 连接断开：直接返回 ⇒ drop socket，不留残留状态
+            _ => return,
+        },
     };
     // 首帧必须是 Hello，且必须先通过身份认证才允许建立链路。
     // 认证失败直接丢弃连接（不插入 links），否则任意节点可冒用他人 device_id 建链。
@@ -1300,6 +1331,10 @@ enum DialOutcome {
     /// 端点已有一条连接（去重命中）。拨号任务每 10s 一轮，这是**常态**，不打日志
     /// —— 否则「已连上」会每 10s 重复刷屏，把真正的新连接淹掉。
     AlreadyConnected,
+    /// 同一目标已有拨号在途（D6 在途去重命中）⇒ 本次不拨。同样是常态，不打日志。
+    AlreadyDialing,
+    /// 并发拨号已达上限（`MAX_CONCURRENT_DIALS`）⇒ 本轮放弃，下个周期再试。常态，不打日志。
+    DialBusy,
     /// 拨号被停机信号中断（应用正在退出 / 切换网络）。
     Stopped,
     Failed(String),
@@ -1450,7 +1485,24 @@ async fn connect_to_peer(
     endpoint: SocketAddr,
     mut shutdown: watch::Receiver<bool>,
 ) -> DialOutcome {
-    // 按端点去重：与 `ensure_link` 的检查构成双重保险（announce 与 Routed 拨号会并发触发）。
+    // ① **在途去重（D6）**：`has_endpoint` 与"登记链路"之间隔着 connect + 握手（最长 10s），
+    //    两条并发路径会同时看到"还没连上"从而各拨一条 ⇒ `links[peer]` 出现两条同端点链路。
+    //    这里用 RAII 守卫登记"我正在拨"，任何提前返回/panic 都会自动释放。
+    //    键：身份已知用 `peer:`（同一 peer 的不同地址不该同时拨），否则用 `ep:`。
+    let dial_key = match known_id {
+        Some(id) => format!("peer:{id}"),
+        None => format!("ep:{endpoint}"),
+    };
+    let _in_flight = match crate::state::DialGuard::try_acquire(state, dial_key) {
+        Some(g) => g,
+        None => return DialOutcome::AlreadyDialing,
+    };
+    // ② 并发上限：挡"大量**不同**目标"的拨号洪泛（伪造 announce 可批量制造）。
+    //    拿不到许可就本轮放弃 —— announce 5s 一轮、Routed 10s 一轮，都会再来。
+    let Ok(_permit) = state.dial_permits.clone().try_acquire_owned() else {
+        return DialOutcome::DialBusy;
+    };
+    // ③ 按端点去重：与 `ensure_link` 的检查构成双重保险（announce 与 Routed 拨号会并发触发）。
     // 身份未知时只能按端点判 —— 否则 10s 重试的每一轮都会重复建链。
     let already = match known_id {
         Some(id) => state.has_endpoint(id, &endpoint).await,
@@ -2968,13 +3020,33 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         }
     }
 
-    // 4. 转发（fan-out，TTL 衰减）— 所有 GossipKind 统一转发
+    // 4. 转发（fan-out，TTL 衰减）— 先过**中继授权**（P2 / M4），再选人转发。
     //
-    // 定向帧到达目标后**停止转发**（本机就是 target，只消费）：否则目标会把定向帧
-    // 再洪泛给其他邻居，邻居又按 target 定向转发回来，形成冗余中转与回环。真机反馈
-    // 「同网段好友申请一直中转、清掉还冒出来」正是这个回环造成的。
+    // 三条判据全部收在 `mesh::relay_policy::decide_forward` 里（真值表有单测），
+    // 这里只负责喂事实，避免把传播语义散落成 if：
+    //   ① 定向帧到达目标后**停止转发**（本机就是 target，只消费）：否则目标会把定向帧
+    //      再洪泛给其他邻居，邻居又按 target 定向转发回来，形成冗余中转与回环。真机反馈
+    //      「同网段好友申请一直中转、清掉还冒出来」正是这个回环造成的；
+    //   ② TTL 耗尽不再转发；
+    //   ③ 替**别人**转发要过授权策略（自己发的信封不受策略限制）。
+    //
+    // ⚠️ 默认策略是 `all`（与今天逐字节一致）；好友/白名单查询是**按需**的 ——
+    // `all`/`off` 下一次库都不查，转发热路径零额外开销。
     let is_target = env.target.as_deref() == Some(state.device_id.as_str());
-    if !is_target && env.ttl > 1 {
+    let sender_is_me = env.sender_id == state.device_id;
+    let relay_cfg = state.relay_policy_config();
+    let may_forward = crate::mesh::relay_policy::decide_forward(
+        &relay_cfg,
+        is_target,
+        env.ttl,
+        sender_is_me,
+        &env.sender_id,
+        || {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_friend(&dbc, &env.sender_id).is_some()
+        },
+    );
+    if may_forward {
         // 定向帧（FriendRequest/FriendAccept/ChatAck/ChatReadReceipt）优先精确定向：
         // target 是本机直连就只发它；无直连路径时洪泛兜底（第一版无路由表）。广播帧保持 fan-out。
         let targets: Vec<String> = match env.target.as_deref() {

@@ -388,11 +388,75 @@ pub struct NetworkHandle {
 /// 一次 panic 就会让之后**所有**加锁点级联 panic（整个应用不可用）；
 /// `into_inner()` 取回内部数据继续用，把影响限制在最初那次 panic。
 /// （`tokio::sync::Mutex` 无中毒概念，正常 `.lock().await` 即可。）
+/// 同时进行的拨号上限（见 `AppState::dial_permits`）。
+/// 取 16：3 台设备的日常场景远远用不到，而伪造 announce 的洪泛会被它挡住。
+pub const MAX_CONCURRENT_DIALS: usize = 16;
+
+/// 同时保持的入站连接上限（见 `AppState::inbound_permits`）。
+pub const MAX_INBOUND_CONNECTIONS: usize = 128;
+
+/// 拨号在途标记的 RAII 守卫：Drop 即释放（任何提前 return / panic 都不会漏放）。
+pub struct DialGuard {
+    state: Arc<AppState>,
+    key: String,
+}
+
+impl DialGuard {
+    /// 尝试登记一个在途拨号；已被其他拨号占用时返回 `None`（调用方应直接返回）。
+    pub fn try_acquire(state: &Arc<AppState>, key: String) -> Option<Self> {
+        let inserted = state
+            .dialing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.clone());
+        if !inserted {
+            return None;
+        }
+        Some(Self {
+            state: state.clone(),
+            key,
+        })
+    }
+}
+
+impl Drop for DialGuard {
+    fn drop(&mut self) {
+        self.state
+            .dialing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
 pub struct AppState {
     pub app: AppHandle,
     pub db: Mutex<Connection>,
     pub device_id: String,
     pub tcp_port: u16,
+    /// **在途拨号**集合（D6）：正在 connect/握手的拨号键（peer_id 或端点字符串）。
+    ///
+    /// 为什么需要：`connect_to_peer` 的"已连接？"检查与"登记链路"之间隔着 connect +
+    /// 握手（最长 10s），是典型的 check-then-act。两条并发路径（Routed 每端点一个任务、
+    /// LAN announce 触发的 ensure_link）会同时看到"还没连上" ⇒ 同一目标被拨两次，
+    /// `links[peer]` 出现两条完全相同的端点。有了在途标记，第二个拨号直接返回。
+    pub dialing: Mutex<std::collections::HashSet<String>>,
+    /// 并发拨号上限信号量（**不是**在途去重，是资源上限）。
+    ///
+    /// 为什么还要它：在途集合只挡"同一目标"，挡不住"一万个不同目标"——伪造 announce
+    /// 可以让发现层对着大量黑洞地址同时发起 connect，每个最长 10s。给一个上限后，
+    /// 超出部分本轮直接放弃（下一个 announce 周期还会再来），不会堆积任务与 socket。
+    pub dial_permits: Arc<tokio::sync::Semaphore>,
+    /// 入站连接上限（`handle_incoming` 任务持一个许可直到连接结束）。
+    ///
+    /// 与 `dial_permits` 对称：一个管"我拨出去"，一个管"别人拨进来"。
+    /// 128 对 3 台设备绰绰有余，而伪造 announce/洪水连接会被它挡在 accept 之后立刻丢弃。
+    pub inbound_permits: Arc<tokio::sync::Semaphore>,
+    /// 中继授权配置（P2 / M4）：策略 + 白名单。
+    ///
+    /// 为什么缓存在内存：转发热路径上 gossip 可能每秒几十条，为了一个策略字段去锁
+    /// SQLite 是纯浪费。启动时从 settings 读入，`save_settings` 时更新。
+    pub relay_policy: Mutex<crate::mesh::relay_policy::RelayConfig>,
     /// 文件接收落盘目录（可变：设置页可改，改后新接收的文件落到新目录）。
     pub downloads_dir: Mutex<PathBuf>,
     /// 缓存目录：图片 / 音频 / 文件等二进制落盘于此（SQLite 不存 BLOB）
@@ -615,6 +679,13 @@ impl AppState {
             }
         };
 
+        // 中继授权（P2 / M4）：启动时读一次，之后由 save_settings 更新内存缓存。
+        // 缺失/脏值 → 默认 `All`（= 今天的行为，见 mesh/relay_policy.rs 顶部说明）。
+        let relay_policy = crate::mesh::relay_policy::RelayConfig::parse(
+            db::get_setting(&conn, "relay_policy").as_deref(),
+            db::get_setting(&conn, "relay_allowlist").as_deref(),
+        );
+
         Ok(Arc::new(AppState {
             app,
             db: Mutex::new(conn),
@@ -637,6 +708,10 @@ impl AppState {
             peer_manager: Mutex::new(PeerManager::new(15_000, 3)),
             mesh_router: Mutex::new(MeshRouter::new(100_000, 10_000, 6, 4, 256)),
             relay: Mutex::new(RelayManager::new()),
+            relay_policy: Mutex::new(relay_policy),
+            dialing: Mutex::new(std::collections::HashSet::new()),
+            dial_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)),
+            inbound_permits: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_CONNECTIONS)),
             group_keys: Mutex::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),
             links: tokio::sync::Mutex::new(HashMap::new()),
@@ -666,6 +741,21 @@ impl AppState {
             seen_hello_nonces: Mutex::new(VecDeque::new()),
             key_conflict_warned: Mutex::new(std::collections::HashSet::new()),
         }))
+    }
+
+    /// 读取中继授权配置（克隆一份：一次短锁 + 小结构体拷贝，热路径可接受）。
+    ///
+    /// ⚠️ 返回的是**快照**：调用方不要在持有它的时候再去读库（避免锁顺序纠缠）。
+    pub fn relay_policy_config(&self) -> crate::mesh::relay_policy::RelayConfig {
+        self.relay_policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// 更新中继授权内存缓存（`save_settings` 写入设置后调用）。
+    pub fn set_relay_policy_config(&self, cfg: crate::mesh::relay_policy::RelayConfig) {
+        *self.relay_policy.lock().unwrap_or_else(|e| e.into_inner()) = cfg;
     }
 
     /// 当前界面语言是否为中文。语言偏好存 settings.language（三态 system / zh-CN /
