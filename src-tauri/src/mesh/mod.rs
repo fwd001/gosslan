@@ -18,6 +18,7 @@ pub mod manager;
 pub mod path;
 pub mod peer;
 pub mod router;
+pub mod selection;
 
 pub use candidate::PeerCandidate;
 pub use connection::{Connection, ConnectionHealth};
@@ -28,3 +29,4 @@ pub use peer::{Peer, PeerIdentity, PeerOnlineState};
 pub use router::{
     ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind, MeshRouter, DropReason,
 };
+pub use selection::pick_link;

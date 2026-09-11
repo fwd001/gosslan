@@ -70,6 +70,15 @@
 - **验证（决定性 + 非空转）**：`bash scripts/t4-mirror-dial.sh` 实跑，三条连接（含真实局域网节点）全部 `online=1`；临时去掉建链打点 → 三条全部 `online=0`。后者同时**实测证实**了「M3-0 之前 `online_state()` 恒 Offline」这一 review 结论。
 - `docs/adr/0014-multi-path-connection-selection.md` 状态 Proposed → **Accepted**（用户 2026-09-12 审核通过）。
 
+### Added (M3-a 选路纯函数，ADR-0014 §3.2)
+- **`mesh::selection::pick_link`**：多路径选路的**纯函数**（候选连接 → 该用哪一条）。策略：① 按活性过滤不健康连接 ② 路径优先级 **LAN > Routed > Bluetooth** ③ 同优先级用**建链顺序**打破平局（稳定可复现，不引入随机性）④ 全部不健康时**退回第一条**而非返回 `None`（保持可用优于报错，与改造前「首个成功即返回」的兜底一致）。
+- **本步行为零变化**：函数先就位，只被单测调用，**没有接进 `try_send`** —— 按 ADR-0014 §9 Risks 把「策略」与「接线」拆开提交，接线（M3-b）出问题时可二分定位。
+- **不做 RTT 排序**：`Heartbeat` 单向、无可靠往返测量来源，而 LAN 与 Tailscale 的差距由路径优先级已能区分（ADR-0014 §2）。
+- `path_rank` 用**显式 match** 而非枚举声明顺序 —— 枚举顺序是巧合，以后往中间插一个变体就会静默改变选路优先级（已加单测钉住语义顺序）。
+- `PeerManager` 新增 `health_timeout_ms()` / `max_failures()` 访问器：让选路复用**同一个**健康阈值，避免阈值散落两处（本项目踩过「同一判断两处实现、行为不一致」的坑）。
+- 单测 +11（空集合 / 单条 / 全不健康兜底 / LAN>Routed>Bluetooth / 顺序打乱仍选 LAN / 不健康 LAN 不阻塞健康 Routed（failover 核心）/ 同优先级取先出现 / 过期不算健康 / 连续失败超阈值不算健康 / 恰好等于阈值仍算健康 / 优先级语义顺序）。**非空转验证**：临时把 LAN 降级 → 4 条优先级护栏按预期 FAIL。
+- 验证：`cargo test --lib` **311 passed** / 0 warning；E2E 30/0/1（行为零变化）。
+
 ## [2.1.2] - 2026-09-11
 
 ### Fixed

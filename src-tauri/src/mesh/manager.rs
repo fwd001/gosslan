@@ -93,6 +93,19 @@ impl PeerManager {
             .unwrap_or(PeerOnlineState::Offline)
     }
 
+    /// 健康判定阈值：最近多久内有过成功才算「活」。
+    ///
+    /// 暴露出来是为了让选路（`mesh::selection::pick_link`）复用**同一个**阈值 ——
+    /// 阈值散落两处是「同一判断两处实现、行为还不一致」的老坑（本项目已踩过一次）。
+    pub fn health_timeout_ms(&self) -> i64 {
+        self.health_timeout_ms
+    }
+
+    /// 健康判定阈值：连续失败超过该值即视为不健康。
+    pub fn max_failures(&self) -> u32 {
+        self.max_failures
+    }
+
     /// 标记某 peer 的某条 connection 成功收发（返回是否命中）。
     pub fn mark_connection_seen(
         &mut self,
