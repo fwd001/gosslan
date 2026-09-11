@@ -33,9 +33,25 @@ const emit = defineEmits<{
 const app = useAppStore();
 const codeMode = ref(false);
 
-/** 输入框单条消息的字符硬上限：超过即截断。粘贴与发送两处都会兜底，
- *  防止粘贴超大文本时 contenteditable 塞进几十万字符、把界面卡死。 */
+/** 草稿**总量**的字符硬上限。三处兜底：粘贴按剩余容量截断、发送前再截一次。
+ *  为什么要按总量（而不是"单次粘贴量"）：按住 Ctrl+V 连发时每次都会成功插入一份，
+ *  草稿无界增长 ⇒ contenteditable 的布局/绘制成本随字符数线性上升，越粘越卡。 */
 const MAX_INPUT_LENGTH = 50_000;
+
+/**
+ * 草稿总长度上限提示的节流窗口（ms）。
+ * 按住 Ctrl+V 连发时每次粘贴都会撞上限，提示必须节流，否则刷屏。
+ */
+const FULL_WARN_INTERVAL_MS = 3000;
+let lastFullWarnAt = 0;
+
+/** 草稿已满时提示一次（3 秒内不重复）。 */
+function warnDraftFull() {
+  const now = Date.now();
+  if (now - lastFullWarnAt < FULL_WARN_INTERVAL_MS) return;
+  lastFullWarnAt = now;
+  app.toast(t("chat.composer.tooLong", { max: MAX_INPUT_LENGTH }), "error");
+}
 // ---------------- contenteditable 输入框（DOM 为源，uncontrolled） ----------------
 // textarea 画不了局部颜色、overlay mirror 又会排版错位（已踩坑回退），改用
 // contenteditable：@提及 是真正的内联原子 token（contenteditable=false 的 span，
@@ -231,6 +247,25 @@ function caretContext(): { node: Text; offset: number } | null {
   return { node: node as Text, offset: sel.focusOffset };
 }
 
+/**
+ * @提及 查询串最长 20 字符（正则里就是 `{0,20}`），加 `@` 本身共 21 —— 所以只看
+ * caret 前 21 个字符就够判定。
+ *
+ * ⚠️ 不要改回「取整个文本节点再匹配」：粘贴长文本后节点可能有几十万字符，
+ * 每次输入/`selectionchange` 都要整段 slice + 正则扫描，连发粘贴时纯属白烧主线程
+ * （表现为"越粘越卡"）。从 caret 往前取固定窗口，成本与文本长度**无关**。
+ */
+const MENTION_LOOKBEHIND = 21;
+
+/** caret 前的 @查询（只看固定窗口，见 MENTION_LOOKBEHIND）。 */
+function mentionQueryAt(ctx: { node: Text; offset: number }): { query: string; startIndex: number } | null {
+  const from = Math.max(0, ctx.offset - MENTION_LOOKBEHIND);
+  const tail = (ctx.node.data ?? "").slice(from, ctx.offset);
+  const m = tail.match(/@([^\s@]{0,20})$/);
+  if (!m) return null;
+  return { query: m[1], startIndex: ctx.offset - m[0].length };
+}
+
 /** 由 caret 位置推导 @ 触发态（输入/点击/方向键挪 caret 时都会调用）。 */
 function updateMentionState() {
   if (!props.mentionMembers?.length) {
@@ -242,11 +277,10 @@ function updateMentionState() {
     mention.value = null;
     return;
   }
-  const m = (ctx.node.textContent ?? "").slice(0, ctx.offset).match(/@([^\s@]{0,20})$/);
-  if (m) {
-    const start = ctx.offset - m[0].length;
-    const sameAt = mention.value?.startIndex === start;
-    mention.value = { query: m[1], startIndex: start };
+  const q = mentionQueryAt(ctx);
+  if (q) {
+    const sameAt = mention.value?.startIndex === q.startIndex;
+    mention.value = q;
     if (!sameAt) mentionActive.value = 0;
   } else {
     mention.value = null;
@@ -260,10 +294,10 @@ function applyMention(member: { id: string; name: string }) {
   if (!el || !sel || sel.rangeCount === 0) return;
   const ctx = caretContext();
   if (!ctx) return;
-  const m = (ctx.node.textContent ?? "").slice(0, ctx.offset).match(/@([^\s@]{0,20})$/);
-  if (!m) return;
+  const q = mentionQueryAt(ctx);
+  if (!q) return;
   const range = document.createRange();
-  range.setStart(ctx.node, ctx.offset - m[0].length);
+  range.setStart(ctx.node, q.startIndex);
   range.setEnd(ctx.node, ctx.offset);
   range.deleteContents();
   // token：不可编辑原子 → 退格/选区删除天然整块处理；nbsp 保证 token 与后续文字不粘连
@@ -469,9 +503,19 @@ async function onPaste(e: ClipboardEvent) {
   // 纯文本：contenteditable 默认粘贴会带外来 HTML 结构（污染 token/样式），
   // 统一拦掉按纯文本插入（execCommand 保 undo 栈；含 \n 时 Chromium 自行转 <br>）。
   const text = cd.getData("text/plain");
-  // 截断到硬上限：超长文本若完整塞进 contenteditable，插入 + 后续 innerText 读都会
-  // 触发大范围 reflow，几十万字符足以把界面卡死（"粘贴一大段就卡死"的根因）。
-  if (text) document.execCommand("insertText", false, text.slice(0, MAX_INPUT_LENGTH));
+  if (!text) return;
+  // ⚠️ 上限要按**草稿总量**算，不能只看这一次粘贴的文本：按住 Ctrl+V 连发时
+  // 每次都会成功插入一份，草稿无界增长 ⇒ contenteditable 的布局/绘制成本随字符数
+  // 线性上升，越粘越卡、最后卡死（用户实测的"一直按着 Ctrl+V 一顿一顿"）。
+  // 这里按剩余容量截断，满了就不再插入（并节流提示一次）。
+  const used = (editorRef.value?.textContent ?? "").length;
+  const room = MAX_INPUT_LENGTH - used;
+  if (room <= 0) {
+    warnDraftFull();
+    return;
+  }
+  if (text.length > room) warnDraftFull();
+  document.execCommand("insertText", false, text.slice(0, room));
 }
 
 function fileToDataUrl(f: File): Promise<string> {

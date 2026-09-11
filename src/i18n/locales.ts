@@ -309,6 +309,7 @@ export const zhCN: MessageDict = {
   "chat.composer.sendFile": "发送文件（自动选择最优路线）",
   "chat.composer.remind": "选择提醒的人",
   "chat.composer.cancelQuote": "取消引用",
+  "chat.composer.tooLong": "内容已达上限（{max} 字符），本次未全部粘贴",
 
   // ---- 消息 ----
   "msg.image": "[图片]",
@@ -843,6 +844,7 @@ export const enUS: MessageDict = {
   "chat.composer.sendFile": "Send file (auto route)",
   "chat.composer.remind": "Choose people to notify",
   "chat.composer.cancelQuote": "Cancel quote",
+  "chat.composer.tooLong": "Input limit reached ({max} characters); the paste was truncated",
 
   // ---- Message ----
   "msg.image": "[Image]",
