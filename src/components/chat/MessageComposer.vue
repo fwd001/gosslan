@@ -459,7 +459,7 @@ function fileToDataUrl(f: File): Promise<string> {
          `px-4`（不是 px-3）与工具栏的 `-mx-1` 成对：编辑器的文字左边缘与工具栏第一个
          图标的**点击热区**左边缘取同一个 16px 起点（图标墨迹在其 28px 热区内再内缩 6px，
          与文字字形的光学起点对齐）—— 这是用户反馈「左右两边视觉上不在同一条线上」的修法。 -->
-    <div ref="composerCard" class="relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-4 pb-2 pt-2">
+    <div ref="composerCard" class="relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-4 pb-2.5 pt-2">
       <!-- 群聊 @ 成员选择：输入 @ 后浮出，↑↓ 导航 / Enter 或点击选中 -->
       <div
         v-if="mention && mentionFiltered.length > 0"
@@ -514,7 +514,7 @@ function fileToDataUrl(f: File): Promise<string> {
         :spellcheck="!codeMode"
         :autocorrect="codeMode ? 'off' : 'on'"
         :autocapitalize="codeMode ? 'off' : 'sentences'"
-        class="min-h-12 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-relaxed outline-none whitespace-pre-wrap break-words"
+        class="min-h-10 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal outline-none whitespace-pre-wrap break-words"
         :class="codeMode ? 'font-mono text-[13px]' : ''"
         :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
         @keydown="onKeydown"
@@ -531,26 +531,29 @@ function fileToDataUrl(f: File): Promise<string> {
            ② **两侧留白一致**：卡片是 `px-4`（16px），编辑器滚到左边缘 ⇒ 工具栏左右各加
               `-mx-1`（4px）+ 按钮自身 4px 内缩 = 4px 光学内缩，左侧第一个图标与右侧发送键
               的边距对称；`-mx-1` 同时让 28px 按钮的点击热区不越出卡片。
-           ③ **统一规格**：图标按钮 28×28 / 图标 16px / 线宽 1.75 / 圆角 radius-sm；
-              发送键同为 28px 高、`px-3`、13px 字号、`rounded-full`。
+           ③ **统一规格**（2026-09-12 晚按微信参考图二次校准）：
+              图标按钮 **32×32**（`h-8 w-8`）/ 图标 **20px**（`h-5 w-5`）/ 线宽 1.75 /
+              圆角 **radius-md(8px)** —— 圆角要与圆形字形"同心"，hover 底色块才像微信那样
+              是一个包住图标的圆角方块（用户原话：「它的 hover 和周围的圆角感觉也是同心圆」）；
+              按钮间距 8px、与文本间距 4px、卡片底距 10px。
            发送键改为**实心主按钮**（有草稿才点亮）：微信 4.0 的观感，
            无草稿时是低对比的占位态，不抢视觉。 -->
-      <div class="-mx-1 mt-1.5 flex h-8 items-center gap-1.5">
+      <div class="-mx-1 mt-1 flex h-8 items-center gap-2">
         <div class="relative">
           <button
-            class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
+            class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
             :class="emojiOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
             :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
             @click.stop="toggleEmoji"
           >
-            <Smile class="h-4 w-4" :stroke-width="1.75" />
+            <Smile class="h-5 w-5" :stroke-width="1.75" />
           </button>
           <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="closeEmoji" />
         </div>
         <!-- @mousedown.prevent 保持编辑器焦点：否则点击按钮后焦点落到按钮上，
              紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->
         <button
-          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
+          class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
           :class="codeMode ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           :title="t('chat.composer.code')" :aria-label="t('chat.composer.code')"
           @mousedown.prevent
@@ -562,14 +565,14 @@ function fileToDataUrl(f: File): Promise<string> {
                现改为 `SquareCode`：方形描边外框 + 内部 `</>`，既是代码语义，
                又与左 `Smile`（圆）、右 `Folder`（方）同属「几何外框 + 内部细节」一套；
                尺寸 16px / 线宽 1.75 与两侧完全一致（见上方工具栏规格说明）。 -->
-          <SquareCode class="h-4 w-4" :stroke-width="1.75" />
+          <SquareCode class="h-5 w-5" :stroke-width="1.75" />
         </button>
         <button
-          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('chat.composer.sendFile')" :aria-label="t('chat.composer.sendFile')"
           @click="emit('attach')"
         >
-          <Folder class="h-4 w-4" :stroke-width="1.75" />
+          <Folder class="h-5 w-5" :stroke-width="1.75" />
         </button>
         <button
           class="ml-auto flex h-8 shrink-0 items-center rounded-[6px] px-3.5 text-[13px] font-medium transition"
