@@ -114,3 +114,57 @@ BLE 的价值正在这里：它**不依赖 IP 网段**，天然满足"零配置�
 已在本机 macOS 通过**（把 `CARGO_HOME` 指到仓库内 `src-tauri/target/cargo-home` 绕开"不能写 ~/.cargo"）。
 剩：接到 `BluetoothTransport`/`state.links`（`start` 探测 → 扫描任务 → 连接 → 登记
 `Endpoint::Ble` + `PathKind::Bluetooth` → 收发喂 `handle_message`）+ **三平台真机**。 |
+
+---
+
+## 7. 实施清单：peripheral 角色（macOS 先做，供 7-e 收尾）
+
+> 本节是**照着实测过的 API 写的**（2026-09-12 把 `objc2-core-bluetooth` 0.3.2 的 `.crate`
+> 解包后逐个核对方法签名），执行时不必再猜。**决策未定前不动代码。**
+
+### 7.1 依赖（macOS 专属 + 纳入 `bluetooth` feature）
+```toml
+[target.'cfg(target_os = "macos")'.dependencies]
+# peripheral 角色：btleplug 只做 central（见 §3.1），macOS 用 CoreBluetooth 的
+# CBPeripheralManager（objc2 家族，与现有 objc2 0.6 / objc2-app-kit 0.3 同版本线）
+objc2-core-bluetooth = { version = "0.3", optional = true, default-features = false, features = [
+  "std", "CBPeripheralManager", "CBPeripheralManagerConstants", "CBATTRequest",
+  "CBAdvertisementData", "CBService", "CBCharacteristic", "CBUUID", "CBManager", "CBCentral",
+] }
+objc2-foundation = { version = "0.3", optional = true, features = ["NSData","NSString","NSError","NSUUID","NSArray","NSDictionary","NSObject","NSValue"] }
+```
+- ⚠️ 实测：`objc2-core-bluetooth` 的 feature 名只有类名（CBService / CBCharacteristic …），
+  **没有** `CBMutableService`/`CBMutableCharacteristic` 这两个 feature —— 它们是
+  `CBService`/`CBCharacteristic` 模块里的类型（`CBService::CBMutableService`）。
+- `objc2-foundation` 目前只是 dev-dependency，要实现 peripheral 必须提升为 macOS 可选依赖。
+- 两者都纳入 `bluetooth` feature；**默认构建与其它平台完全不受影响**。
+
+### 7.2 文件与角色选择
+- 新文件 `src-tauri/src/transport/bluetooth_peripheral.rs`（macOS 实现）；
+- `network/ble.rs` 增加"本机是否做 peripheral"的分支。建议：**桌面做 central、手机做 peripheral**
+  （见 §3.1），用一个设置项表达（默认值按平台给，用户可改）。
+
+### 7.3 关键调用顺序（实测签名）
+1. `CBPeripheralManager::initWithDelegate_queue(delegate, queue)` —— 传**私有串行队列**
+   （不能用主队列：delegate 回调里要做分片重组与 `handle_message`）。
+2. delegate `peripheralManagerDidUpdateState:` → `state == PoweredOn` 才继续；
+   否则把通道标为不可用（未授权、无适配器都在这里）。
+3. `CBMutableCharacteristic::initWithType_properties_value_permissions(RX, Write|WriteWithoutResponse, nil, 0)`
+   与 `(TX, Notify, nil, 0)`；`CBMutableService::initWithType_primary(SERVICE_UUID, true)`，
+   用 `setCharacteristics:` 挂上两个特征 → `addService:`。
+4. `startAdvertising:` 传 `{ CBAdvertisementDataServiceUUIDsKey: [SERVICE_UUID] }`。
+5. 收数据：delegate `peripheralManager:didReceiveWriteRequests:` → 逐个 `CBATTRequest`
+   取 `value` 喂 `BleReassembler`；**必须** `respondToRequest_withResult(req, CBATTErrorSuccess)`，
+   否则中心端每次写都会等到超时（GATT 语义）。
+6. 发数据：`updateValue_forCharacteristic_onSubscribedCentrals(TX, data, centrals)`；
+   它在发送队列满时返回 `false` → 必须等 `peripheralManagerIsReadyToUpdateSubscribers:`
+   再重试，**否则静默丢帧**（这是 peripheral 侧最容易漏的一处）。
+7. 订阅跟踪：`peripheralManager:central:didSubscribeToCharacteristic:` 记下 central 列表。
+
+### 7.4 验证（必须真机，逐条）
+1. 另一台设备（Windows/Android 的 central，已实现）能**扫到**并连上；
+2. 双向 Hello **验签通过**（日志里 `+ble-link peer=…`）；
+3. 单聊一条消息**双向**送达（含图片/文件分片）；
+4. 关掉「蓝牙」开关后：BLE 链路全拆、**局域网聊天不受影响**；
+5. 手机做 peripheral 时同样跑 1–4（Android `BluetoothLeAdvertiser` + `BluetoothGattServer`
+   经 JNI；iOS `CBPeripheralManager` 经 objc2，与 macOS 同款代码）。
