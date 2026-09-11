@@ -5,6 +5,7 @@ import { api } from "@/api";
 import { t } from "@/i18n";
 import { highlightText } from "@/utils/highlight";
 import { useDeferredRef } from "@/composables/useDeferredRef";
+import { useBackLayer } from "@/composables/useBackLayer";
 import { LOG_LEVEL_TEXT, filterLogLines } from "@/utils/logFilter";
 import type { LogEntry } from "@/types";
 
@@ -15,6 +16,15 @@ import type { LogEntry } from "@/types";
  */
 const props = defineProps<{ standalone?: boolean }>();
 const emit = defineEmits<{ (e: "back"): void }>();
+
+/**
+ * 移动端全屏日志页参与分层返回：系统返回键回上一步，而不是退出应用。
+ * `standalone`（桌面独立日志窗口）不参与 —— 那个窗口有自己的系统标题栏与关闭语义。
+ */
+useBackLayer(
+  () => !props.standalone,
+  () => emit("back"),
+);
 
 /** 时间正序（旧 → 新）的原始日志；展示与复制都从它派生。 */
 const logs = ref<LogEntry[]>([]);

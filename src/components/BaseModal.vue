@@ -1,10 +1,21 @@
 <script setup lang="ts">
 import { Dialog, DialogPanel, DialogTitle, TransitionChild, TransitionRoot } from "@headlessui/vue";
+import { useBackLayer } from "@/composables/useBackLayer";
 
-withDefaults(defineProps<{ open: boolean; title?: string; width?: string }>(), {
+const props = withDefaults(defineProps<{ open: boolean; title?: string; width?: string }>(), {
   width: "max-w-md",
 });
 const emit = defineEmits<{ (e: "close"): void }>();
+
+/**
+ * 系统返回键 / 后退导航：先关最上面的弹窗，而不是**直接退出应用**
+ * （Android 上没有这层绑定的话，用户在"添加好友"弹窗里按返回会退出整个应用）。
+ * 见 `composables/useBackLayer.ts`。
+ */
+useBackLayer(
+  () => props.open,
+  () => emit("close"),
+);
 </script>
 
 <template>

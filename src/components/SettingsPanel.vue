@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useBackLayer } from "@/composables/useBackLayer";
 import { ref } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
@@ -14,8 +15,14 @@ import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import { t } from "@/i18n";
 
-defineProps<{ open: boolean }>();
+const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
+
+/** 移动端整页设置也是一"层"：系统返回键先回上一页，而不是退出应用。 */
+useBackLayer(
+  () => props.open,
+  () => emit("close"),
+);
 
 const app = useAppStore();
 

@@ -5,6 +5,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api, APP_ACTION, bindMenuEvents } from "@/api";
 import { useShortcuts } from "@/composables/useShortcuts";
+import { useBackLayer } from "@/composables/useBackLayer";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import NavRail from "@/components/NavRail.vue";
 import TitleBar from "@/components/TitleBar.vue";
@@ -167,6 +168,18 @@ function onAddFriendAction() {
   if (app.isMobile) app.mobileView = "list";
 }
 useShortcuts();
+
+/**
+ * 移动端「聊天页」是一层：系统返回键 → 回到会话列表（而不是退出应用）。
+ * 只在移动端且当前在聊天页时压历史条目；`inert` 那条平移面板同样是状态驱动的，
+ * 两者一起保证"返回"和"侧滑"语义一致。
+ */
+useBackLayer(
+  () => app.isMobile && app.mobileView === "chat",
+  () => {
+    app.mobileView = "list";
+  },
+);
 
 let unlistenMenu: UnlistenFn[] | null = null;
 
