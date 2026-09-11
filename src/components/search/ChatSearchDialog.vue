@@ -218,7 +218,7 @@ function showSender(group: ChatSearchGroup): boolean {
           spellcheck="false"
           :placeholder="t('search.placeholder')"
           :aria-label="t('search.placeholder')"
-          class="w-full bg-transparent text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)]"
+          class="w-full bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)]"
           @keydown.enter.prevent="onEnter"
           @compositionstart="ime.onStart"
           @compositionend="ime.onEnd"

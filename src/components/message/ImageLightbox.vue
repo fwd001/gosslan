@@ -1,4 +1,8 @@
 <script setup lang="ts">
+/* focus-ring-ok：本组件的**容器**带 `outline-none`（`role="menu"` / `role="dialog"` +
+   `tabindex="-1"`，只用于把焦点接进来），焦点指示由内部条目/控件承担；
+   给整块容器画 2px 环在全屏遮罩/弹出菜单上只会变成噪声。
+   ⇒ 按 `designGuards` ⑦ 的约定，用文件级逃生阀显式声明，而不是靠"没人发现"。 */
 import { clampScale, pinchScale, swipeDirection } from "@/utils/lightboxGestures";
 import { t } from "@/i18n";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";

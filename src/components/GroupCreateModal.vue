@@ -62,7 +62,7 @@ async function create() {
       <div class="mb-1.5 text-sm">{{ t("group.name") }}</div>
       <input
         v-model="name"
-        class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
+        class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm"
         :placeholder="t('group.namePlaceholder')"
         maxlength="40"
       />

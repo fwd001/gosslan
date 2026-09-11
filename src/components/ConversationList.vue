@@ -332,7 +332,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           autocorrect="off"
           autocapitalize="off"
           spellcheck="false"
-          class="w-full bg-transparent text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)]"
+          class="w-full bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)]"
           :placeholder="view === 'chats' ? t('common.search') : t('common.searchContacts')"
           @keydown.enter.prevent="onSearchEnter"
           @compositionstart="ime.onStart"

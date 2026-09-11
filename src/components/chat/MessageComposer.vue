@@ -595,7 +595,7 @@ function fileToDataUrl(f: File): Promise<string> {
         :spellcheck="!codeMode"
         :autocorrect="codeMode ? 'off' : 'on'"
         :autocapitalize="codeMode ? 'off' : 'sentences'"
-        class="min-h-10 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal outline-none whitespace-pre-wrap break-words"
+        class="min-h-10 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal whitespace-pre-wrap break-words"
         :class="codeMode ? 'font-mono text-[13px]' : ''"
         :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
         @keydown="onKeydown"

@@ -11,6 +11,13 @@
  *      踩坑：`.glass` / `.frost` 的定义在文件更靠后处，同优先级下"后定义者胜"，
  *      降级规则写在前面被**完整覆盖**（写了日志、加了注释，但实测才发现无效）。
  *
+ *   ⑦ `outline-none` 必须自带焦点指示（否则全局焦点环被它"静默盖掉"）
+ *      踩坑：全局焦点环写在 `:where(button, a, input, …, [tabindex], [contenteditable]):focus-visible`
+ *      —— **`:where()` 的特异性是 0**，而 Tailwind 的 `.outline-none`（`outline: 2px solid
+ *      transparent`）是 0,1,0 ⇒ 只要元素带 `outline-none`，那条"让键盘用户看得见焦点"的
+ *      规则就**一条都不生效**。7 处输入框（含最高频的输入框）因此完全没有焦点指示。
+ *      这正是"写对了但不起作用"，与本模块其它条同源。
+ *
  *   ⑥ 可点击元素必须能用键盘触发（`div` + `@click` 是"只有鼠标/手指能用"的按钮）
  *      踩坑：好友选择行、图片/文件气泡、指纹复制等处都是 `div @click` ——
  *      触屏能用、鼠标能用，但**键盘完全够不着**（Tab 跳不到、回车没反应）。
@@ -282,6 +289,50 @@ export function findTappableWithoutKeyboard(src: string): GuardIssue[] {
         "`role=\"button\"` + `tabindex=\"0\"` + `@keydown.enter`（空格键用 `@keydown.space.prevent`）。" +
         "确实不该聚焦的元素（遮罩层等），加 `aria-hidden=\"true\"` 或用 `@click.stop` 表明它只是拦事件；" +
         "整文件例外可加 `tap-keyboard-ok` 注释。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- ⑦ `outline-none` 必须自带焦点指示 ----------------
+
+/**
+ * 可见的焦点指示替代写法（Tailwind）。
+ *
+ * ⚠️ 为什么必须显式要求：全局焦点环用的是
+ * `:where(button, a, input, textarea, select, [tabindex], [contenteditable]):focus-visible`
+ * —— `:where()` 让整条选择器的特异性变成 **0**，而 `.outline-none`
+ * （`outline: 2px solid transparent; outline-offset: 2px`）是 0,1,0。
+ * 于是**只要元素带 `outline-none`，全局焦点环一定被它覆盖**（透明 2px 边框 = 看不见）。
+ */
+const FOCUS_INDICATOR_RE = /(?:focus|focus-visible):(?:ring|border|outline|bg|shadow)[-\w[]/;
+
+/**
+ * 检查一份 .vue 源码里"关掉了轮廓、却没给替代焦点指示"的元素。
+ *
+ * 判据：开标签里有 `outline-none`，且同一标签里既没有 `focus:ring/border/outline/bg/shadow`
+ * 也没有 `focus-visible:` 同款 → 报出。
+ * 逃生阀：文件里带 `focus-ring-ok` 注释则整文件跳过
+ * （用于"焦点在容器上但不该画环"的场合：菜单容器 `role="menu" tabindex="-1"`、
+ *  全屏对话框容器 `role="dialog" tabindex="-1"` —— 它们的焦点由内部条目承担）。
+ */
+export function findOutlineNoneWithoutFocusRing(src: string): GuardIssue[] {
+  if (src.includes("focus-ring-ok")) return [];
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(CLASS_ATTR_RE)) {
+    const classes = m[1].split(/\s+/).filter(Boolean);
+    if (!classes.includes("outline-none")) continue;
+    const tag = enclosingTag(src, m.index ?? 0);
+    if (FOCUS_INDICATOR_RE.test(tag)) continue;
+    out.push({
+      line: lineAt(src, m.index ?? 0),
+      message:
+        "带 `outline-none` 却没有替代的焦点指示 —— 全局焦点环用的是 `:where(...)`（特异性 0），" +
+        "会被 `.outline-none`（特异性 0,1,0）**静默覆盖**，键盘用户看不到焦点在哪（WCAG 2.4.7）。" +
+        "两种改法：① 直接删掉 `outline-none`（让全局环生效，文本框类控件推荐这个）；" +
+        "② 自己给一个可见指示，如 `focus:ring-2 focus:ring-primary` / `focus:border-[…]`。" +
+        "确实不该画环的容器（`role=\"menu\"` / `role=\"dialog\"` + `tabindex=\"-1\"`，焦点由内部承担）" +
+        "可在文件里加 `focus-ring-ok` 注释整文件跳过。",
     });
   }
   return out.sort((a, b) => a.line - b.line);

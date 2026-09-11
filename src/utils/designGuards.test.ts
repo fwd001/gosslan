@@ -8,6 +8,7 @@ import {
   checkUnreadBadgeComponent,
   findHandWrittenBadges,
   findHoverRevealIssues,
+  findOutlineNoneWithoutFocusRing,
   findTappableWithoutKeyboard,
   findTruncationWithoutTitle,
 } from "./designGuards.ts";
@@ -377,6 +378,59 @@ test("tap-keyboard-ok 逃生阀：整文件跳过", () => {
   assert.deepEqual(findTappableWithoutKeyboard(withEscape), []);
 });
 
+// ---------------- ⑦ `outline-none` 必须自带焦点指示 ----------------
+//
+// 真实缺陷（2026-09-12）：全局焦点环写在 `:where(...)` 里（特异性 0），
+// 会被 Tailwind 的 `.outline-none`（0,1,0）**静默覆盖** —— 7 处输入框
+// （含最高频的消息输入框）因此完全没有焦点指示，而代码看起来"有全局规则在管"。
+// 这条护栏把"关掉了轮廓就必须自己给指示"钉死。
+
+test("复现真实缺陷：outline-none 且没有替代指示 → 报出", () => {
+  const buggy = `<template>
+  <input class="w-full outline-none" />
+</template>`;
+  const issues = findOutlineNoneWithoutFocusRing(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 2);
+  assert.match(issues[0].message, /静默覆盖/);
+});
+
+test("给了替代焦点指示就通过（ring / border 都算）", () => {
+  for (const extra of [
+    "focus:ring-2 focus:ring-primary",
+    "focus-visible:ring-2 focus-visible:ring-primary",
+    "focus:border-[var(--gosslan-primary)]",
+    "focus-visible:outline-none focus-visible:ring-1",
+  ]) {
+    const ok = `<template>\n  <input class="outline-none ${extra}" />\n</template>`;
+    assert.deepEqual(findOutlineNoneWithoutFocusRing(ok), [], `带 ${extra} 时不该报`);
+  }
+});
+
+test("删掉 outline-none（改用全局焦点环）就通过", () => {
+  const ok = `<template>
+  <input class="w-full" />
+  <div contenteditable="true" class="min-h-10"></div>
+</template>`;
+  assert.deepEqual(findOutlineNoneWithoutFocusRing(ok), []);
+});
+
+test("focus-ring-ok 逃生阀：菜单/对话框容器整文件跳过", () => {
+  const withEscape = `<!-- focus-ring-ok -->
+<template>
+  <div role="menu" tabindex="-1" class="frost outline-none">…</div>
+</template>`;
+  assert.deepEqual(findOutlineNoneWithoutFocusRing(withEscape), []);
+});
+
+test("注释里提到 outline-none 不算（只看真实 class 属性）", () => {
+  const commentOnly = `<!-- 注意：不要在这里加 outline-none -->
+<template>
+  <input class="w-full" />
+</template>`;
+  assert.deepEqual(findOutlineNoneWithoutFocusRing(commentOnly), []);
+});
+
 // ---------------- 全库扫描：真实文件必须干净 ----------------
 
 function collectVueFiles(dir: string, out: string[] = []): string[] {
@@ -387,6 +441,19 @@ function collectVueFiles(dir: string, out: string[] = []): string[] {
   }
   return out;
 }
+
+test("src 下所有 outline-none 都自带焦点指示", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findOutlineNoneWithoutFocusRing(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下元素关掉了焦点指示却没有替代：\n${bad.join("\n")}`);
+});
 
 test("src 下所有可点击元素都能用键盘触发", () => {
   const srcDir = join(import.meta.dirname, "..");
