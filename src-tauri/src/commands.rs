@@ -3167,9 +3167,12 @@ pub fn add_routed_endpoint(
 /// 移除一个跨子网端点（只按**地址**匹配）。
 ///
 /// 地址是端点的唯一标识：`device_id` 可以省略，用它当判据会让「只填地址添加、
-/// 带指纹删除」匹配不上。地址先规范化（与 `add` 存进去的形式一致），否则
-/// 用 `100.64.0.1` 添加、用 `100.64.0.1:59992` 删除同样匹配不上 —— 都表现为
-/// 「列表里删不掉」。
+/// 带指纹删除」匹配不上。地址先规范化（与 `add` 存进去的形式一致）。
+///
+/// **比对时也把库里已存的那条再规范化一次**，兜住「历史脏数据」（比如老版本直接
+/// 写 SQLite 没经过 `add` 的裸 IP 无端口），否则会出现「列表里看得见但删不掉」——
+/// 用户的真实反馈：UI 看着有 `100.101.221.60`，删的时候 normalize 成
+/// `100.101.221.60:59992`，而库里存的就是裸 `100.101.221.60`，字符串不相等。
 #[tauri::command]
 pub fn remove_routed_endpoint(
     state: tauri::State<'_, Arc<AppState>>,
@@ -3179,7 +3182,13 @@ pub fn remove_routed_endpoint(
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut list = parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
     let before = list.len();
-    list.retain(|e| e.address != address);
+    list.retain(|e| {
+        // 库里的历史脏数据可能未归一化（裸 IP / 裸 IP 带非标准端口），按当前规则再过一遍
+        // 归一化后比较。归一化失败的条目（语法错乱）保守地按字符串相等判，免得误删。
+        let stored_norm = normalize_routed_address(&e.address)
+            .unwrap_or_else(|_| e.address.clone());
+        stored_norm != address
+    });
     if list.len() != before {
         db::set_setting(&dbc, ROUTED_ENDPOINTS_KEY, &encode_endpoints(&list))
             .map_err(|e| format!("保存失败: {e}"))?;
