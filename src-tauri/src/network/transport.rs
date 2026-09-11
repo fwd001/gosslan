@@ -840,6 +840,30 @@ async fn handle_incoming(
         }
         _ => return, // 首帧必须是 Hello
     };
+    // ⚠️ **入站去重**：验签之后、登记链路之前判（判据见 `should_accept_inbound`）。
+    // 放在这里而不是更早：身份要验签通过才有意义；也不能更晚：登记后再拒会留下半条状态。
+    let existing: Vec<(MeshEndpoint, PathKind)> = {
+        let links = state.links.lock().await;
+        links
+            .get(&peer_id)
+            .map(|v| v.iter().map(|l| (l.endpoint.clone(), l.path_kind)).collect())
+            .unwrap_or_default()
+    };
+    if !should_accept_inbound(
+        &state.device_id,
+        &peer_id,
+        PathKind::Lan,
+        &existing,
+    ) {
+        state.logger.info(
+            "transport",
+            format!(
+                "拒收重复入站连接 peer={peer_id} ep={peer_addr} path=lan（已有 {} 条链路）",
+                existing.len()
+            ),
+        );
+        return;
+    }
     let (bulk_tx, bulk_rx) = mpsc::channel(1024);
     let (prio_tx, prio_rx) = mpsc::channel(1024);
     // 本连接独立的取消信号（M3#6）：健康 watchdog 判定僵尸链路时精确断开这一条。
@@ -1352,6 +1376,41 @@ enum DialOutcome {
     /// 拨号被停机信号中断（应用正在退出 / 切换网络）。
     Stopped,
     Failed(String),
+}
+
+/// 单个 peer 允许并存的最大链路数（防御"同 peer 反复建链"的无界增长）。
+///
+/// 正常拓扑一个 peer 最多 3 条（LAN + Routed + BLE），取 6 留余量（例如换网瞬间新旧并存）。
+const MAX_LINKS_PER_PEER: usize = 6;
+
+/// **入站去重判据**（D6-2/D6-3 的核心，纯函数便于钉住）。
+///
+/// 背景：接受侧原先**无条件**把新连接 append 进 `links`，于是——
+/// * 任意已验签对端可以反复建链，链条无界增长（每条 2 个 1024 容量信道 + 2 个任务）；
+/// * 两侧都配了对方地址（或 LAN announce 时序不对称）时，同一对等关系会稳定停在
+///   2 条镜像 TCP，`route_order`/心跳/候选都翻倍，还污染 M3 的多路径验收。
+///
+/// 判据设计（必须**确定性且对称**，否则会两边互拒导致谁也连不上）：
+/// 1. 已有同**路径类型**的连接，且「本机是指定拨号方」（`my_id > peer_id`，与
+///    `should_dial` 同一规则）⇒ 拒收这条入站：镜像里保留**我方拨出的**那条
+///    （我方连接由我方健康判据管理，语义最清楚）。对端（小 ID）在同一条件下
+///    会接受我们的拨入 ⇒ 双方算出同一个赢家，不会互拒。
+/// 2. 链路数已达 `MAX_LINKS_PER_PEER` ⇒ 拒收（防无界增长）。
+/// 3. 其余一律接受 —— 尤其**一条都没有时必须接受**，否则直接断掉连通性。
+fn should_accept_inbound(
+    my_id: &str,
+    peer_id: &str,
+    incoming: PathKind,
+    existing: &[(MeshEndpoint, PathKind)],
+) -> bool {
+    if existing.len() >= MAX_LINKS_PER_PEER {
+        return false;
+    }
+    // 只有"指定拨号方"才拒绝镜像；小 ID 方始终接受（它本来就不主动拨）
+    if my_id > peer_id && existing.iter().any(|(_, k)| *k == incoming) {
+        return false;
+    }
+    true
 }
 
 /// 小 ID 兜底拨号的触发阈值：对端在线（announce 首次学到）却在本机无连接超过该时长，
@@ -5676,6 +5735,45 @@ mod tests {
             should_dial_for_peer("b", "a", false, &[(ble, PathKind::Bluetooth)], Some(now - 60_000), now),
             "只有 BLE 连接时仍应补 LAN"
         );
+    }
+
+    /// 入站去重判据的真值表。这条判据改错的后果是"两边互拒 ⇒ 谁也连不上"，
+    /// 或者"镜像连接永久并存"，两者都不是肉眼能立刻发现的，所以逐格钉住。
+    #[test]
+    fn inbound_dedup_truth_table() {
+        let lan_ep: MeshEndpoint = "192.168.1.20:59992"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
+        let routed_ep: MeshEndpoint = "100.70.10.20:59992"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
+
+        // ① 一条都没有 ⇒ **必须接受**（否则彻底断连）
+        assert!(should_accept_inbound("b", "a", PathKind::Lan, &[]));
+
+        // ② 大 ID 方（my_id > peer_id）：已有同路径 ⇒ 拒收镜像；不同路径 ⇒ 接受（多路径！）
+        let with_lan = [(lan_ep.clone(), PathKind::Lan)];
+        assert!(!should_accept_inbound("b", "a", PathKind::Lan, &with_lan));
+        assert!(should_accept_inbound("b", "a", PathKind::Routed, &with_lan));
+
+        // ③ 小 ID 方（my_id < peer_id）：**始终接受** —— 否则双方互拒，谁也连不上
+        assert!(should_accept_inbound("a", "b", PathKind::Lan, &with_lan));
+
+        // ④ 链路数到上限 ⇒ 拒收（防无界增长），且与路径是否重复无关
+        let full: Vec<(MeshEndpoint, PathKind)> = (0..MAX_LINKS_PER_PEER)
+            .map(|i| {
+                (
+                    format!("10.0.0.{i}:59992").parse::<std::net::SocketAddr>().unwrap().into(),
+                    if i % 2 == 0 { PathKind::Lan } else { PathKind::Routed },
+                )
+            })
+            .collect();
+        assert!(!should_accept_inbound("a", "b", PathKind::Bluetooth, &full));
+        // 未到上限但已有 Routed ⇒ 接受（③ 的小 ID 方不受 ② 限制）
+        let one_routed = [(routed_ep, PathKind::Routed)];
+        assert!(should_accept_inbound("a", "b", PathKind::Routed, &one_routed));
     }
 
     /// 徽标必须反映**实际选中的那条**，而不是插入顺序的第一条。
