@@ -1743,9 +1743,15 @@ fn may_ack(inserted: &Result<bool, rusqlite::Error>) -> bool {
 /// 不依赖中继成功。
 async fn relay_forward(state: &Arc<AppState>, frame: &MeshFrame, inbound_peer: &str) {
     // 载荷由 handle_gossip 在 relay 开启时填入（序列化后的 GossipEnvelope）
-    let Ok(env) = serde_json::from_slice::<GossipEnvelope>(&frame.payload) else {
+    let Ok(mut env) = serde_json::from_slice::<GossipEnvelope>(&frame.payload) else {
         return;
     };
+    // 把 MeshRouter **递减后**的 TTL 写回信封：否则下一跳收到的仍是原始 TTL，
+    // 每跳都从原值重新开始 —— TTL 看似有界实则不限界，失去防环意义。
+    //
+    // TTL 是协议中**唯一允许中继节点修改**的字段：它既不在 `signing_bytes()`
+    // 内，也不参与 `compute_message_id()`，因此写回不会破坏签名（protocol.rs:128）。
+    env.ttl = frame.ttl;
 
     // ① 先排除入站 peer
     let candidates: Vec<String> = {

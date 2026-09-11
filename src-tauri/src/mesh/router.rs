@@ -445,6 +445,43 @@ mod tests {
         assert_eq!(picked.len(), 3);
     }
 
+    /// 多跳 relay 的**前提**：中继节点可以修改 TTL 而不破坏签名。
+    ///
+    /// 写回递减后的 TTL 才让跨跳递减真正生效（`relay_forward` 依赖这一点）；
+    /// 若 TTL 参与签名，多跳就无从实现（只能每跳都用原始 TTL，等于不限界）。
+    #[test]
+    fn modifying_ttl_does_not_break_signature() {
+        use crate::gossip_engine::GossipEngine;
+        use crate::protocol::GossipKind;
+
+        let id = crate::crypto::Identity::generate();
+        let engine = GossipEngine::new(100, 10, 4, 6);
+        let mut env = engine.build_envelope(
+            &id,
+            "dev-a",
+            GossipKind::Chat,
+            None,
+            None,
+            "cipher",
+            42,
+            1,
+        );
+        assert!(engine.verify_envelope(&env));
+        let message_id_before = env.message_id.clone();
+
+        // 中继把 TTL 从 6 改成 3
+        env.ttl = 3;
+
+        assert!(
+            engine.verify_envelope(&env),
+            "修改 TTL 后签名必须仍然有效，否则多跳 relay 无法成立"
+        );
+        assert_eq!(
+            env.message_id, message_id_before,
+            "TTL 不参与 message_id，去重键保持不变"
+        );
+    }
+
     /// 多跳 relay **默认关闭**（保持现有单跳语义，可随时开关回退）。
     #[test]
     fn relay_is_disabled_by_default() {
