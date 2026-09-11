@@ -36,9 +36,15 @@ function onFingerprintTap() {
   <SettingsGroup :title="t('settings.group.about')" :footer="t('settings.group.about.footer', { version })">
     <div class="px-4 py-3">
       <div class="text-sm text-[var(--gosslan-text)]">{{ t("settings.about.fingerprint") }}</div>
+      <!-- 保留 `select-text`（指纹要能手动选中复制），所以不换成 <button>，
+           而是补 role/tabindex/键盘 —— 键盘用户同样要能触发"点击复制"。 -->
       <div
         class="mt-1 select-text break-all font-mono text-xs leading-relaxed text-[var(--gosslan-text-2)]"
+        role="button"
+        tabindex="0"
         @click="onFingerprintTap"
+        @keydown.enter.prevent="onFingerprintTap"
+        @keydown.space.prevent="onFingerprintTap"
       >
         {{ fullId }}
       </div>

@@ -190,10 +190,12 @@ async function confirmAction() {
             </button>
           </div>
           <div class="max-h-40 overflow-y-auto">
-            <div
+            <!-- 真按钮（不是 `div @click`）：键盘要能 Tab 到并回车添加 -->
+            <button
               v-for="f in addableFriends"
               :key="f.device_id"
-              class="flex cursor-pointer items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2 py-1.5 transition hover:bg-[var(--gosslan-hover)]"
+              type="button"
+              class="flex w-full cursor-pointer items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2 py-1.5 text-left transition hover:bg-[var(--gosslan-hover)]"
               @click="addMember(f)"
             >
               <div
@@ -205,7 +207,7 @@ async function confirmAction() {
               </div>
               <span class="min-w-0 flex-1 truncate text-sm" :title="f.nickname">{{ f.nickname }}</span>
               <Plus class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
-            </div>
+            </button>
             <div v-if="addableFriends.length === 0" class="py-3 text-center text-xs text-[var(--gosslan-text-2)]">
               {{ t("group.allInGroup") }}
             </div>

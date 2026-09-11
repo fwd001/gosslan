@@ -27,7 +27,12 @@ watch(
        代价（已知并接受）：竖长图会在 13rem 的框内左右留白，换来「发出后尺寸恒定」。 -->
   <div
     class="relative w-52 max-w-full cursor-pointer overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
+    :role="state === 'loaded' ? 'button' : undefined"
+    :tabindex="state === 'loaded' ? 0 : undefined"
+    :aria-label="state === 'loaded' ? t('msg.clickToOpen') : undefined"
     @click="state === 'loaded' && emit('open', src)"
+    @keydown.enter.prevent="state === 'loaded' && emit('open', src)"
+    @keydown.space.prevent="state === 'loaded' && emit('open', src)"
   >
     <!-- 骨架：加载中占位，尺寸与常见截图相近，加载完成后被图片替换。
          与容器同宽，加载前后不跳变。 -->

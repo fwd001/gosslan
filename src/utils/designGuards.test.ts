@@ -8,6 +8,7 @@ import {
   checkUnreadBadgeComponent,
   findHandWrittenBadges,
   findHoverRevealIssues,
+  findTappableWithoutKeyboard,
   findTruncationWithoutTitle,
 } from "./designGuards.ts";
 
@@ -306,6 +307,76 @@ test("找不到气泡根元素 / 缺少常量 → 显式报出（不静默通过
   assert.equal(checkBubbleMetricsCoupling(bubble, "const NOTHING = 1;").length, 2);
 });
 
+// ---------------- ⑥ 可点击元素必须能用键盘触发 ----------------
+//
+// 真实情况（2026-09-12 复核）：好友选择行、图片/文件气泡、指纹复制都是 `div @click`。
+// 触屏和鼠标都能用，**键盘完全够不着** —— 这类缺陷在真机上"能用"，只有拿键盘走一遍
+// 或开读屏才会发现，因此必须由机器盯住。
+
+test("复现真实缺陷：div + @click 没有任何键盘/语义补充 → 报出", () => {
+  const buggy = `<template>
+  <div class="cursor-pointer" @click="open()">打开</div>
+</template>`;
+  const issues = findTappableWithoutKeyboard(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 2, "应精确指到那一行");
+  assert.match(issues[0].message, /Tab 不到/);
+});
+
+test("role + tabindex + 回车/空格键处理之后通过", () => {
+  const fixed = `<template>
+  <div role="button" tabindex="0" @click="open()" @keydown.enter.prevent="open()" @keydown.space.prevent="open()">打开</div>
+</template>`;
+  assert.deepEqual(findTappableWithoutKeyboard(fixed), []);
+});
+
+test("三种补充写法任意一种即可（含 :role / :tabindex 绑定形式）", () => {
+  for (const extra of [
+    'role="button"',
+    ':role="ready ? \'button\' : undefined"',
+    'tabindex="0"',
+    ':tabindex="ready ? 0 : undefined"',
+    '@keydown.enter="open()"',
+    'v-on:keyup.enter="open()"',
+  ]) {
+    const ok = `<template>\n  <div @click="open()" ${extra}>x</div>\n</template>`;
+    assert.deepEqual(findTappableWithoutKeyboard(ok), [], `补 ${extra} 后不该再报`);
+  }
+});
+
+test("遮罩层（aria-hidden）不是按钮，不报", () => {
+  const backdrop = `<template>
+  <div class="fixed inset-0 bg-black/40" aria-hidden="true" @click="emit('close')" />
+</template>`;
+  assert.deepEqual(findTappableWithoutKeyboard(backdrop), []);
+});
+
+test("只拦冒泡的 @click.stop 不是动作，不报", () => {
+  const stopper = `<template>
+  <div class="frost absolute" @click.stop>
+    <span>内容</span>
+  </div>
+</template>`;
+  assert.deepEqual(findTappableWithoutKeyboard(stopper), []);
+});
+
+test("原生按钮与链接不在扫描范围", () => {
+  const native = `<template>
+  <button type="button" @click="open()">打开</button>
+  <a href="#" @click.prevent="open()">链接</a>
+  <label @click="pick()">选择</label>
+</template>`;
+  assert.deepEqual(findTappableWithoutKeyboard(native), []);
+});
+
+test("tap-keyboard-ok 逃生阀：整文件跳过", () => {
+  const withEscape = `<!-- tap-keyboard-ok -->
+<template>
+  <div @click="open()">x</div>
+</template>`;
+  assert.deepEqual(findTappableWithoutKeyboard(withEscape), []);
+});
+
 // ---------------- 全库扫描：真实文件必须干净 ----------------
 
 function collectVueFiles(dir: string, out: string[] = []): string[] {
@@ -316,6 +387,19 @@ function collectVueFiles(dir: string, out: string[] = []): string[] {
   }
   return out;
 }
+
+test("src 下所有可点击元素都能用键盘触发", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findTappableWithoutKeyboard(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下元素能点但键盘够不着：\n${bad.join("\n")}`);
+});
 
 test("src 下所有 .vue 的悬停揭示都带了触屏兜底", () => {
   const srcDir = join(import.meta.dirname, "..");

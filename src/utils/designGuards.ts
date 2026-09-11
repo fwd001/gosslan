@@ -11,6 +11,12 @@
  *      踩坑：`.glass` / `.frost` 的定义在文件更靠后处，同优先级下"后定义者胜"，
  *      降级规则写在前面被**完整覆盖**（写了日志、加了注释，但实测才发现无效）。
  *
+ *   ⑥ 可点击元素必须能用键盘触发（`div` + `@click` 是"只有鼠标/手指能用"的按钮）
+ *      踩坑：好友选择行、图片/文件气泡、指纹复制等处都是 `div @click` ——
+ *      触屏能用、鼠标能用，但**键盘完全够不着**（Tab 跳不到、回车没反应）。
+ *      在"为 iOS 上架铺路 + 去网页感"的目标下，这类元素还缺 `role`，
+ *      读屏软件也只会念成一段普通文本。
+ *
  *   ③ 未读徽标必须走唯一实现（`UnreadBadge.vue`）
  *      踩坑：徽标数字需要 1.5px 光学补偿才能垂直居中，而 5 处手写副本里有 2 处漏了
  *      配套的 `leading-none` —— 同一种徽标在不同位置基线不一致，肉眼可见「没居中」，
@@ -216,6 +222,67 @@ export function findTruncationWithoutTitle(src: string): GuardIssue[] {
           "确属不会截断的短文案，可在文件内加 `truncate-title-ok` 注释整文件跳过。",
       });
     }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- ⑥ 可点击元素必须能用键盘触发 ----------------
+
+/**
+ * 非交互标签（这些标签天生没有"可点击"语义，只能靠 `role` / `tabindex` / 键盘事件补）。
+ * `button` / `a` / `input` / `label` / `summary` 等有原生语义，不在扫描范围。
+ */
+const NON_INTERACTIVE_TAGS = "div|span|li|tr|td|section|article|header|footer|p|img|main|aside|figure";
+
+/** 元素开标签（跨行；到第一个 `>` 为止）。 */
+const OPEN_TAG_RE = new RegExp(`<(${NON_INTERACTIVE_TAGS})\\b[^>]*>`, "gs");
+
+/**
+ * 从开标签里取"真实动作型"的 `@click` / `v-on:click`。
+ *
+ * 两种**不算动作**的写法（都是修护栏时才发现的真实存在）：
+ *   —— 只有修饰符、没有表达式：`@click.stop`（这是"阻止冒泡"，不是按钮）；
+ *   —— 元素本身 `aria-hidden="true"`：整块对读屏隐藏（例如遮罩层点外部关闭），
+ *      给它加 `tabindex` 反而会做出"读屏看不见、键盘却能聚焦"的怪东西。
+ */
+function clickAction(tag: string): boolean {
+  if (/aria-hidden\s*=\s*"true"/.test(tag)) return false;
+  for (const m of tag.matchAll(/(?:@|v-on:)click(?:\.\w+)*\s*=\s*"([^"]*)"/g)) {
+    if (m[1].trim().length > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * 检查一份 .vue 源码里"能点、但键盘够不着"的元素。
+ *
+ * 判据（能确定的才报）：
+ *   —— 非交互标签 + 有真实动作的 `@click`；
+ *   —— 同一开标签里既没有 `role`（含 `:role`），也没有 `tabindex`（含 `:tabindex`），
+ *      也没有 `@keydown` / `@keyup`（含 `v-on:` 与 `:keydown` 简写）。
+ * 逃生阀：文件里带 `tap-keyboard-ok` 注释则整文件跳过。
+ */
+export function findTappableWithoutKeyboard(src: string): GuardIssue[] {
+  if (src.includes("tap-keyboard-ok")) return [];
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(OPEN_TAG_RE)) {
+    const tag = m[0];
+    if (!clickAction(tag)) continue;
+    const hasRole = /(?:^|\s)(?::|v-bind:)?role\s*=/.test(tag);
+    const hasTabindex = /(?:^|\s)(?::|v-bind:)?tabindex\s*=/.test(tag);
+    const hasKey = /(?:@|v-on:|:)key(?:down|up)/.test(tag);
+    if (hasRole || hasTabindex || hasKey) continue;
+    out.push({
+      line: lineAt(src, m.index ?? 0),
+      message:
+        "`" +
+        m[1] +
+        "` 上有 @click，但它没有原生按钮语义 —— 键盘用户 Tab 不到、按回车也没反应" +
+        "（读屏只会念成普通文本）。请改用 <button type=\"button\">，或补上 " +
+        "`role=\"button\"` + `tabindex=\"0\"` + `@keydown.enter`（空格键用 `@keydown.space.prevent`）。" +
+        "确实不该聚焦的元素（遮罩层等），加 `aria-hidden=\"true\"` 或用 `@click.stop` 表明它只是拦事件；" +
+        "整文件例外可加 `tap-keyboard-ok` 注释。",
+    });
   }
   return out.sort((a, b) => a.line - b.line);
 }

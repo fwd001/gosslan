@@ -163,7 +163,11 @@ const pct = computed(() => Math.round((props.progress ?? 0) * 100));
     :class="ready ? 'cursor-pointer' : ''"
     :style="bubbleStyle"
     :title="ready ? t('msg.clickToOpen') : undefined"
+    :role="ready ? 'button' : undefined"
+    :tabindex="ready ? 0 : undefined"
     @click="ready && emit('open')"
+    @keydown.enter.prevent="ready && emit('open')"
+    @keydown.space.prevent="ready && emit('open')"
   >
     <div class="flex items-center gap-2.5">
       <div

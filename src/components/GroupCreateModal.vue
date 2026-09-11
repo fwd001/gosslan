@@ -70,10 +70,14 @@ async function create() {
 
     <div class="mb-1.5 text-sm">{{ t("group.selectMembers") }}</div>
     <div class="max-h-56 overflow-y-auto">
-      <div
+      <!-- 选择行必须是**真按钮**：`div @click` 触屏/鼠标能用，键盘 Tab 不到、回车没反应，
+           读屏也只会念成一段普通文本。`aria-pressed` 表达"选中/未选中"开关语义。 -->
+      <button
         v-for="f in chat.friends"
         :key="f.device_id"
-        class="flex cursor-pointer items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
+        type="button"
+        class="flex w-full cursor-pointer items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2 py-2 text-left transition hover:bg-[var(--gosslan-hover)]"
+        :aria-pressed="selected.includes(f.device_id)"
         @click="toggle(f.device_id)"
       >
         <div
@@ -91,7 +95,7 @@ async function create() {
         </div>
         <span class="flex-1 text-sm">{{ f.nickname }}</span>
         <span class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? t("common.online") : t("common.offline") }}</span>
-      </div>
+      </button>
       <div v-if="chat.friends.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ t("group.noFriends") }}
       </div>
