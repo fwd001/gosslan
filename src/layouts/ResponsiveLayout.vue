@@ -42,8 +42,11 @@ const logsOpen = ref(false);
  */
 function openSettings() {
   if (app.isMobile) {
+    // ⚠️ **不要**在这里改 `app.mobileView`：设置是整页浮层，盖在当前页面之上；
+    // 一旦改成 "list"，用户从「聊天」里打开设置、返回时就会落到会话列表，
+    // 而不是回到进入前的页面（用户 2026-09-12 晚 #1：「点击返回的话，
+    // 就是返回到进入之前的上一个页面」）。保持底层视图不动，返回即还原。
     settingsOpen.value = true;
-    app.mobileView = "list";
     return;
   }
   void api.openSettingsWindow().catch(() => {
@@ -309,14 +312,29 @@ function onResizeEnd() {
           <div class="text-base">{{ t("layout.selectConversation") }}</div>
           <div class="text-xs opacity-70">{{ t("layout.tagline") }}</div>
           <!-- 空态要给**下一步**，不只陈述状态（HIG：empty state should guide）。
-               新用户最常卡在"怎么加人"，这里直接给入口，省得去找左上角的加号。 -->
+               用户 2026-09-12 晚 #13：「聊天界面如果没有聊天信息的话，这一块左右两边有点割裂。
+               他们的样式能不能统一一点？主要的功能是：1. 如果你有好友，就有一个『发起聊天』；
+               2. 如果你没有好友列表，就只有一个『添加好友』的按钮。这个按钮在会话框页面和
+               聊天列表页面，你可以做一个文字说明兜底，或者在样式上做一个空状态就行了。」
+               ⇒ 与左侧会话列表**同一口径**：有好友 → 发起聊天（跳通讯录选人）；
+                 无好友 → 添加好友；两种情况都配同一句说明文字。 -->
           <button
+            v-if="chat.friends.length"
+            class="mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+            @click="view = 'contacts'"
+          >
+            {{ t("conv.startChat") }}
+          </button>
+          <button
+            v-else
             class="mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
             @click="addFriendOpen = true"
           >
             {{ t("common.addFriend") }}
           </button>
-          <div class="text-xs opacity-70">{{ t("layout.autoDiscover") }}</div>
+          <div class="text-xs opacity-70">
+            {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
+          </div>
         </div>
       </div>
     </main>
