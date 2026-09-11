@@ -28,6 +28,7 @@ use crate::state::{
     PendingRequest,
 };
 use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
+use crate::mesh::{Endpoint as MeshEndpoint, PathKind, PeerCandidate, PeerIdentity};
 use crate::transport::tcp::{TcpReceiver, TcpSender};
 
 /// 字符串 IP 是否为虚拟地址（用于 peers 表中已存储的 IP 字符串判断）。
@@ -422,6 +423,8 @@ async fn handle_incoming(
             bulk: bulk_tx.clone(),
             priority: prio_tx,
         });
+    // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
+    register_connection(&state, &peer_id, peer_addr);
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
@@ -540,6 +543,14 @@ async fn reader_loop(
     // 同一 peer 可能还连着别的端点（LAN + Tailscale），断一条 ≠ peer 下线 ——
     // 这正是 6b 的核心语义。旧实现整条 remove，会让另一条连接一起消失。
     let peer_now_offline = {
+        // 先记下被移除的是哪个端点（mesh 层要按端点删对应的 Connection）
+        let removed_endpoint = {
+            let links = state.links.lock().await;
+            links
+                .get(&peer_id)
+                .and_then(|list| list.iter().find(|l| l.bulk.same_channel(&link_tx)))
+                .map(|l| l.endpoint)
+        };
         let mut links = state.links.lock().await;
         let removed = match links.get_mut(&peer_id) {
             Some(list) => {
@@ -550,11 +561,108 @@ async fn reader_loop(
             None => false,
         };
         // 移除后该 peer 已无任何连接 → 才算真的离线
-        removed && links.get(&peer_id).map_or(true, |v| v.is_empty())
+        let offline = removed && links.get(&peer_id).map_or(true, |v| v.is_empty());
+        drop(links);
+        // 释放 links 锁后再动 mesh 层（避免持锁嵌套）
+        if let Some(ep) = removed_endpoint {
+            unregister_connection(&state, &peer_id, ep);
+        }
+        offline
     };
     // 所有连接都断了才标记离线；还剩别的连接则保持在线（failover 生效）
     if peer_now_offline {
         mark_peer_offline(&state, &peer_id).await;
+    }
+}
+
+// ---------------- 传输层 ↔ mesh 层 同步（6b-3） ----------------
+
+/// 依据端点地址判断路径类型。
+///
+/// 私有 / 环回 / 链路本地地址视为 LAN；其余（含 Tailscale 的 100.64/10 CGNAT 段，
+/// 它**不是** RFC1918 私有地址）视为 Routed —— 正好符合「跨子网走 Routed」的预期。
+fn path_kind_for(endpoint: &std::net::SocketAddr) -> PathKind {
+    use std::net::IpAddr;
+    match endpoint.ip() {
+        IpAddr::V4(v4) if v4.is_private() || v4.is_loopback() || v4.is_link_local() => PathKind::Lan,
+        IpAddr::V6(v6) if v6.is_loopback() => PathKind::Lan,
+        _ => PathKind::Routed,
+    }
+}
+
+/// 连接建立后：把这条连接登记到 mesh 层的 `PeerManager`。
+///
+/// 这样 mesh 层的 Peer/Connection 才与传输层的 `Link` 一一对应，
+/// Phase 2 建立的「任一 Connection 健康 ⇒ Online」才有真实连接数据支撑。
+/// 公钥在此刻可能尚未学到（拨号侧），留空即可 —— 收到 Hello / announce 后由
+/// `PeerIdentity::merge_missing` 补齐（只补空、不覆盖）。
+fn register_connection(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
+    let identity = {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        peers
+            .get(peer_id)
+            .map(|p| PeerIdentity {
+                x25519_public_key: p.x25519_pubkey.clone(),
+                ed25519_public_key: p.ed25519_pubkey.clone(),
+            })
+            .unwrap_or_default()
+    };
+
+    let candidate = PeerCandidate::new(
+        peer_id,
+        identity,
+        MeshEndpoint::Tcp(endpoint),
+        path_kind_for(&endpoint),
+    );
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    let (_, outcome) = pm.merge(candidate);
+    let path = path_kind_for(&endpoint);
+    eprintln!(
+        "[mesh] +conn peer={peer_id} ep={endpoint} path={path:?} \
+         new_peer={} new_conn={} conns={}",
+        outcome.is_new_peer,
+        outcome.is_new_connection,
+        pm.get(peer_id).map(|p| p.connection_count()).unwrap_or(0)
+    );
+}
+
+/// 连接断开后：从 mesh 层移除**这一条** Connection（同一 peer 的其他连接保留）。
+fn unregister_connection(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.remove_connection(peer_id, &MeshEndpoint::Tcp(endpoint));
+    eprintln!(
+        "[mesh] -conn peer={peer_id} ep={endpoint} conns={}",
+        pm.get(peer_id).map(|p| p.connection_count()).unwrap_or(0)
+    );
+}
+
+#[cfg(test)]
+mod mesh_sync_tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn sa(a: u8, b: u8, c: u8, d: u8) -> std::net::SocketAddr {
+        std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(a, b, c, d)), 59992)
+    }
+
+    /// 路径分类：RFC1918 / 环回 / 链路本地 = LAN；其余 = Routed。
+    ///
+    /// 关键用例是 Tailscale 的 100.64/10 —— 它是 CGNAT 段，**不是** RFC1918，
+    /// 必须判为 Routed，否则跨子网连接会被当成局域网路径处理。
+    #[test]
+    fn path_kind_classifies_endpoints() {
+        assert_eq!(path_kind_for(&sa(192, 168, 1, 20)), PathKind::Lan);
+        assert_eq!(path_kind_for(&sa(10, 0, 0, 5)), PathKind::Lan);
+        assert_eq!(path_kind_for(&sa(172, 16, 0, 1)), PathKind::Lan);
+        assert_eq!(path_kind_for(&sa(127, 0, 0, 1)), PathKind::Lan);
+        assert_eq!(path_kind_for(&sa(169, 254, 1, 1)), PathKind::Lan);
+
+        assert_eq!(
+            path_kind_for(&sa(100, 64, 0, 1)),
+            PathKind::Routed,
+            "Tailscale CGNAT 段必须判为 Routed"
+        );
+        assert_eq!(path_kind_for(&sa(8, 8, 8, 8)), PathKind::Routed);
     }
 }
 
@@ -626,6 +734,8 @@ async fn connect_to_peer(
             bulk: bulk_tx.clone(),
             priority: prio_tx.clone(),
         });
+    // 同步到 mesh 层（拨号侧同样登记，path_kind 由端点地址推断）
+    register_connection(state, peer_id, endpoint);
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.to_string(),

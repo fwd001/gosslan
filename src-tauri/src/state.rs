@@ -16,6 +16,7 @@ use crate::crypto::Identity;
 use crate::db;
 use crate::device::{hardware_fingerprint, hostname_fingerprint};
 use crate::gossip_engine::GossipEngine;
+use crate::mesh::manager::PeerManager;
 use crate::mesh::router::MeshRouter;
 use crate::protocol::{Message, TCP_PORT};
 use crate::relay_manager::RelayManager;
@@ -347,6 +348,13 @@ pub struct AppState {
     pub identity: Identity,
     /// Gossip 去重 + 扇出引擎
     pub gossip: Mutex<GossipEngine>,
+    /// Mesh 层的 Peer 生命周期管理（Phase 2 建、6b-3 接线）。
+    ///
+    /// 与 `links` 的关系：`links` 是**传输层**的连接表（每条 TCP 连接一个 `Link`），
+    /// 这里是 **mesh 层**的 Peer/Connection 模型。两者由 `register_connection` /
+    /// `unregister_connection` 保持同步 —— 6b-3 之后，「任一 Connection 健康 ⇒ Online」
+    /// 的语义才有真实的连接数据支撑。
+    pub peer_manager: Mutex<PeerManager>,
     /// Mesh 转发路由：全局去重 + TTL + 转发决策（Phase 5）。
     ///
     /// 与 `gossip` 的关系：本字段是 **Mesh 层**去重（§16 要求必须在 Mesh 层统一做），
@@ -539,6 +547,8 @@ impl AppState {
             identity,
             gossip: Mutex::new(GossipEngine::new(100_000, 10_000, 4, 6)),
             // max_ttl / fanout 与 GossipEngine 对齐（6 / 4），保证行为一致。
+            // health_timeout 10s（约两个心跳周期）、max_failures 3
+            peer_manager: Mutex::new(PeerManager::new(10_000, 3)),
             mesh_router: Mutex::new(MeshRouter::new(100_000, 10_000, 6, 4, 256)),
             relay: Mutex::new(RelayManager::new()),
             group_keys: Mutex::new(HashMap::new()),
