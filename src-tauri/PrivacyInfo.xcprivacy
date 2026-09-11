@@ -23,7 +23,11 @@
 			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
 			<key>NSPrivacyAccessedAPITypeReasons</key>
 			<array>
+				<!-- 应用容器内（缓存清理按修改时间淘汰、日志/数据库文件） -->
 				<string>C617.1</string>
+				<!-- 用户自己选定的文件/目录（共享目录、发送的文件、另存为的目标）：
+				     这些路径在容器外，读 size/mtime 属于「用户主动选择的文件」，必须申明 3B52.1。 -->
+				<string>3B52.1</string>
 			</array>
 		</dict>
 		<dict>
