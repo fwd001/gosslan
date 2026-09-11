@@ -66,6 +66,13 @@ impl ConnectionHealth {
 
     /// 是否健康：最近 `timeout_ms` 内**读到过**对端的帧、且连续失败未超过阈值。
     ///
+    /// ⚠️ 关于 `max_failures`：在当前设计里**这个分支不会触发** —— `writer_loop` 首次写失败
+    /// 即 `break`（连接报废，不累积计数），而每次成功读写都会清零 `consecutive_failures`，
+    /// 所以它只可能是 0 或 1。真正需要防的是**半开链路**（对端消失、内核仍收写：既不写失败
+    /// 也读不到帧），它由**读活性超时拆除**处理（见 `network::transport` 的 watchdog 与
+    /// ADR-0014 §3.3 的 M3-c 说明）。保留该参数只为将来引入显式失败信号时复用，
+    /// **不要**在它上面继续加逻辑。
+    ///
     /// 只认读活性（`last_read_seen_ms`）—— 写成功不构成「对端活着」的证据（半开 TCP）。
     /// 语义对齐设计 §34：只有「任一 Connection 健康」才 ONLINE，反之 offline。
     pub fn is_healthy(&self, now_ms: i64, timeout_ms: i64, max_failures: u32) -> bool {
