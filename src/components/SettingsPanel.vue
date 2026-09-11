@@ -29,7 +29,10 @@ const devDiagOpen = ref(false);
        用户 2026-09-12 反馈：「安卓端可以保持现有的功能，但它不是一个弹窗，
        而是占满整个页面、可以上下滑动的，类似于 iOS 的那种标准。」
        桌面端仍走 BaseModal（卡片式），三种外壳共用同一批分区组件（ProfileSection … ResetSection）。 -->
-  <div v-if="app.isMobile && open" class="fixed inset-0 z-50 flex flex-col bg-[var(--gosslan-bg)]">
+  <div
+    v-if="app.isMobile && open"
+    class="fixed inset-0 z-50 flex flex-col bg-[var(--gosslan-bg)] pt-[env(safe-area-inset-top)]"
+  >
     <header
       class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-3"
       :style="{ height: 'var(--gosslan-header-h)' }"

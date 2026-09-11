@@ -353,7 +353,13 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       </div>
     </div>
 
-    <div class="flex-1 select-none overflow-y-auto">
+    <!-- 底部内边距：移动端底部导航是 `fixed bottom-0`，不给列表留位就会永久盖住最后一行，
+         而且滚到底也露不出来（聊天区早有同样的补偿，这里此前漏了）。
+         键盘弹出时导航收起，补偿随之换成键盘补量（由外层容器负责）。 -->
+    <div
+      class="flex-1 select-none overflow-y-auto"
+      :class="app.isMobile && !app.keyboardOpen ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : ''"
+    >
       <template v-if="view === 'chats'">
         <ConversationListItem
           v-for="c in filtered"

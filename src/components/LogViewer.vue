@@ -154,14 +154,18 @@ const levelClass = (lv: string) =>
 </script>
 
 <template>
-  <div class="fixed inset-0 z-[70] flex flex-col bg-[var(--gosslan-app-bg)] font-gosslan text-[var(--gosslan-text)]">
+  <!-- 整页浮层在移动端会盖住外层那条 `.safe-top` 占位 ⇒ 自己补顶部安全区，
+       否则返回键/标题顶到刘海与状态栏下面（点不到、看不全）。 -->
+  <div
+    class="fixed inset-0 z-[70] flex flex-col bg-[var(--gosslan-app-bg)] pt-[env(safe-area-inset-top)] font-gosslan text-[var(--gosslan-text)]"
+  >
     <!-- 顶部工具栏 -->
     <div
       class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3"
       :style="{ height: 'var(--gosslan-header-h)' }"
     >
       <button
-        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         :title="standalone ? t('logs.close') : t('logs.back')"
         :aria-label="standalone ? t('logs.close') : t('logs.back')"
         @click="close"
@@ -248,7 +252,7 @@ const levelClass = (lv: string) =>
       </span>
       <button
         v-if="trimmedFilter"
-        class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         :title="t('logs.filterClear')"
         :aria-label="t('logs.filterClear')"
         @click="filter = ''"

@@ -175,15 +175,30 @@ export const useAppStore = defineStore("app", () => {
   const mobileView = ref<"list" | "chat">("list");
   /** 移动端软键盘是否弹出（视口被压缩超过阈值即认为弹出）：用于收起底部导航，避免浮在键盘上方。 */
   const keyboardOpen = ref(false);
+  /**
+   * 被软键盘盖住的高度（px）。**这是"键盘遮挡输入框"的真正补量**：
+   *
+   * - Android（WebView 走 adjustResize）：`window.innerHeight` 会随键盘一起缩，
+   *   两者相减≈0 ⇒ 这里得到 0，布局不需要额外补偿（避免补偿两次把界面顶飞）；
+   * - iOS（键盘只缩视觉视口，布局视口不变）：差值≈键盘高度 ⇒ 用它给聊天区加底部
+   *   内边距，输入框才会浮在键盘之上，而不是被压在键盘下面。
+   *
+   * 之前只有 `keyboardOpen` 布尔量、从不做高度补偿 ⇒ iOS 上输入框被键盘盖住。
+   */
+  const keyboardInset = ref(0);
 
   function watchKeyboard() {
     const vv = window.visualViewport;
     if (!vv) return;
     const onChange = () => {
-      keyboardOpen.value = window.innerHeight - vv.height > 120;
+      // 视觉视口底部（offsetTop + height）以上的部分才是可见区，其余被键盘/工具栏盖住
+      const covered = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      keyboardInset.value = covered < 80 ? 0 : covered; // 阈值滤掉地址栏收缩这类小抖动
+      keyboardOpen.value = keyboardInset.value > 0;
     };
     vv.addEventListener("resize", onChange);
     vv.addEventListener("scroll", onChange);
+    onChange();
   }
 
   function applyThemeNow() {
@@ -486,6 +501,7 @@ export const useAppStore = defineStore("app", () => {
     isMobile,
     mobileView,
     keyboardOpen,
+    keyboardInset,
     init,
     toggleDark,
     updateProfile,

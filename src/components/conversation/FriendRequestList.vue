@@ -28,7 +28,7 @@ function initials(name: string) {
       >
         <span>{{ t("friend.request.title") }}</span>
         <button
-          class="flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-0.5 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-0.5 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('common.collapse')" :aria-label="t('common.collapse')"
           @click="emit('close')"
         >

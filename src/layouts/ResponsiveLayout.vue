@@ -196,6 +196,8 @@ const listW = ref(
 let resizing = false;
 
 function onResizeStart(e: PointerEvent) {
+  // 只认鼠标左键：中键/右键拖拽不该改变列表宽度（右键还会弹系统菜单）
+  if (e.button !== 0) return;
   resizing = true;
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   document.body.style.cursor = "col-resize";
@@ -205,6 +207,11 @@ function onResizeMove(e: PointerEvent) {
   if (!resizing) return;
   listW.value = Math.min(LIST_W_MAX, Math.max(LIST_W_MIN, e.clientX - RAIL_W));
 }
+/**
+ * 结束拖拽。除了正常抬手，还要覆盖：指针被系统抢走（`lostpointercapture`）、
+ * 指针移出窗口后在其他窗口抬起（收不到 pointerup）——那样 `body` 会残留
+ * `col-resize` 与全局 `user-select: none`，用户会以为"界面卡住/选不中字了"。
+ */
 function onResizeEnd() {
   if (!resizing) return;
   resizing = false;
@@ -241,7 +248,7 @@ function onResizeEnd() {
     <aside
       class="h-full shrink-0 overflow-hidden rounded-tl-[var(--gosslan-radius-lg)] bg-[var(--gosslan-list)]"
       :class="app.isMobile
-        ? 'absolute inset-y-0 left-0 z-20 w-full transition-transform duration-300 ease-out ' +
+        ? 'absolute inset-y-0 left-0 z-20 w-full transition-transform duration-300 ' +
           (app.mobileView === 'list' ? 'translate-x-0' : '-translate-x-full')
         : ''"
       :style="app.isMobile ? undefined : { width: `${listW}px` }"
@@ -268,18 +275,28 @@ function onResizeEnd() {
       @pointermove="onResizeMove"
       @pointerup="onResizeEnd"
       @pointercancel="onResizeEnd"
+      @lostpointercapture="onResizeEnd"
     ></div>
 
     <!-- 右侧聊天区：白色面板，左上角圆角与列表相交（微信式），面板色差替代分割线 -->
+    <!-- 移动端：聊天区与列表**一起**平移（iOS push/pop 观感）。
+         ⚠️ 不要改回 `v-if`/`hidden` 切换：那样列表滑出的 300ms 里右侧露出的是根节点底色
+         （一片灰），而且滑动是单边的，看起来"像网页换页"。
+         离屏时用 `inert` 摘掉焦点与交互（键盘用户 Tab 不进不可见面板）。 -->
     <main
       class="flex h-full min-w-0 flex-1 flex-col rounded-tl-[var(--gosslan-radius-lg)] bg-[var(--gosslan-chat)]"
-      :class="app.isMobile && app.mobileView === 'list' ? 'hidden' : ''"
+      :class="app.isMobile
+        ? 'absolute inset-y-0 left-0 z-10 w-full transition-transform duration-300 ' +
+          (app.mobileView === 'list' ? 'translate-x-full' : 'translate-x-0')
+        : ''"
+      :inert="app.isMobile && app.mobileView === 'list'"
     >
       <div
         class="min-h-0 flex-1 md:pb-0"
-        :class="app.isMobile
-          ? (app.keyboardOpen ? 'pb-2' : 'pb-[calc(4rem+env(safe-area-inset-bottom))]')
-          : ''"
+        :class="app.isMobile && !app.keyboardOpen ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : ''"
+        :style="app.isMobile && app.keyboardInset > 0
+          ? { paddingBottom: `${app.keyboardInset + 8}px` }
+          : undefined"
       >
         <!-- 新的朋友页：右侧展示好友申请列表（微信式） -->
         <div v-if="showRequests" class="flex h-full flex-col">
@@ -411,7 +428,7 @@ function onResizeEnd() {
     <div
       role="status"
       aria-live="polite"
-      class="pointer-events-none fixed left-1/2 top-4 z-[60] flex -translate-x-1/2 flex-col items-center gap-2"
+      class="pointer-events-none fixed left-1/2 top-4 z-[90] flex -translate-x-1/2 flex-col items-center gap-2"
     >
       <div
         v-for="t in app.toasts"

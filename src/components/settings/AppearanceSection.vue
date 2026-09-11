@@ -63,12 +63,12 @@ const appearanceOptions: { value: AppearanceMode; label: string }[] = [
       :label="t('settings.appearance.themeColor')"
       :description="t('settings.appearance.themeColor.desc')"
     >
-      <div class="flex items-center gap-1.5">
+      <div class="flex items-center gap-2">
         <!-- aria-label：色板格子只有颜色没有文字，读屏下必须靠 label 才知道它是什么 -->
         <button
           v-for="c in presets"
           :key="c"
-          class="h-6 w-6 rounded-full transition hover:scale-110"
+          class="tap-safe h-6 w-6 rounded-full transition hover:scale-110"
           :style="{ background: c, outline: app.themeColor === c ? '2px solid var(--gosslan-text)' : 'none', outlineOffset: '1px' }"
           :aria-label="t('settings.appearance.themeColor.aria', { color: c })"
           :aria-pressed="app.themeColor === c"

@@ -229,7 +229,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         <template v-if="src">
           <img :alt="current?.name || t('msg.imagePreview')"
             :src="src"
-            class="max-h-[85vh] max-w-[88vw] select-none rounded-[var(--gosslan-radius-lg)] shadow-2xl"
+            class="max-h-[85vh] max-w-[88vw] touch-none select-none rounded-[var(--gosslan-radius-lg)] shadow-2xl"
             :style="{
               transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
               cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-in',

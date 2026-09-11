@@ -357,6 +357,33 @@ button:not(:disabled):active,
   }
 }
 
+/* iOS 会在聚焦 **font-size < 16px 的表单控件**时自动放大整页，而且不会自动还原 ——
+   是"这不像原生应用"最典型的一处。只能把控件字号提到 16px 来规避：
+   不能用 `maximum-scale=1` / `user-scalable=no` 兜（那会禁掉用户缩放，违反无障碍要求）。
+   · 只针对表单控件：`contenteditable` 不在 iOS 的放大启发式里，且聊天字号是用户设置
+     （`--gosslan-msg-size`，可到 13px），不能被这里覆盖；
+   · `!important` 是为了压过组件上的 `text-[13px]` 等 Tailwind 工具类（同优先级下
+     工具类在 @tailwind utilities 里，本文件在其之后本可胜出，但 `text-sm` 等类
+     特异性更高，必须显式提升）。 */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="color"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* macOS 自绘红绿灯：视觉直径 12px 与原生一致，但原生判定区比 12px 大。
+   只加不可见的命中扩展，不改视觉（点错关闭/最小化在桌面上很烦人）。 */
+.traffic-hit {
+  position: relative;
+}
+.traffic-hit::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+}
+
 /* 尊重"减弱动态效果"（Apple 无障碍要求）：关掉过渡与动画 */
 @media (prefers-reduced-motion: reduce) {
   *,

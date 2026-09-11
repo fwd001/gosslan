@@ -123,7 +123,7 @@ onBeforeUnmount(() => {
          组上加 @dblclick.stop：双击红绿灯不应冒泡成"双击标题栏"触发缩放。 -->
     <div v-if="isMac" class="group/traffic flex h-full items-center" style="gap: 8px" @dblclick.stop>
       <button
-        class="flex h-3 w-3 items-center justify-center rounded-full transition-colors"
+        class="traffic-hit flex h-3 w-3 items-center justify-center rounded-full transition-colors"
         :class="focused
           ? 'bg-[#ff5f57] shadow-[inset_0_0_0_1px_#e0443e]'
           : 'bg-[#d4d4d4] dark:bg-[#575757]'"
@@ -140,7 +140,7 @@ onBeforeUnmount(() => {
         </svg>
       </button>
       <button
-        class="flex h-3 w-3 items-center justify-center rounded-full transition-colors"
+        class="traffic-hit flex h-3 w-3 items-center justify-center rounded-full transition-colors"
         :class="focused
           ? 'bg-[#febc2e] shadow-[inset_0_0_0_1px_#dea123]'
           : 'bg-[#d4d4d4] dark:bg-[#575757]'"
@@ -157,7 +157,7 @@ onBeforeUnmount(() => {
         </svg>
       </button>
       <button
-        class="flex h-3 w-3 items-center justify-center rounded-full transition-colors"
+        class="traffic-hit flex h-3 w-3 items-center justify-center rounded-full transition-colors"
         :class="focused
           ? 'bg-[#28c840] shadow-[inset_0_0_0_1px_#1aab29]'
           : 'bg-[#d4d4d4] dark:bg-[#575757]'"

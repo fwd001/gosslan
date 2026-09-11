@@ -444,10 +444,15 @@ function insertEmoji(e: string) {
     range.collapse(true);
     sel.removeAllRanges();
     sel.addRange(range);
+    // 点表情按钮会让编辑器失焦（移动端软键盘随之收起）。这里把焦点还给编辑器，
+    // **不动已设好的 range** ⇒ 光标停在刚插入的表情之后，用户可以接着打字；
+    // 桌面上这条通常已是焦点态，focus() 是空操作。
+    if (document.activeElement !== el) el.focus();
   } else {
     el.appendChild(span);
     el.appendChild(document.createTextNode("\u00A0"));
-    if (!app.isMobile) focusEditor();
+    // 无选区（编辑器从未聚焦过）时内容追加到末尾，光标也放到末尾
+    focusEditor();
   }
   // 直接改 DOM 不会触发 input 事件 → 必须手动同步，否则「只有表情时发送键是灰的」
   syncDraftState();

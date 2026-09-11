@@ -181,6 +181,24 @@
         display: flex;
         flex-direction: column;
       }
+      /* 移动端首屏骨架：整屏只有列表栏（与移动端抽屉布局一致）。
+         此前不分平台都画桌面三栏 —— 手机上 64px rail + 250px 列表把聊天列压到
+         几十像素宽，第一眼就是个"错版的桌面截图"，比不画骨架还糟。
+         `env(safe-area-inset-top)` 让标题行不被刘海/状态栏压住（与真实界面同口径）。 */
+      @media (max-width: 767px) {
+        .boot-rail,
+        .boot-chat {
+          display: none;
+        }
+        .boot-list {
+          width: 100%;
+          border-top-left-radius: 0;
+        }
+        .boot-cap {
+          height: calc(38px + env(safe-area-inset-top));
+          padding-top: env(safe-area-inset-top);
+        }
+      }
       .boot-head {
         height: 48px;
         flex: none;

@@ -203,7 +203,7 @@ async function add(peerId: string) {
           </button>
           <button
             v-else
-            class="flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
             @click="add(p.device_id)"
           >
             <UserPlus class="h-3.5 w-3.5" />

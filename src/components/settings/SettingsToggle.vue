@@ -19,7 +19,7 @@ const emit = defineEmits<{ (e: "update:modelValue", v: boolean): void }>();
 
 <template>
   <button
-    class="relative shrink-0 rounded-full transition"
+    class="tap-safe relative shrink-0 rounded-full transition"
     :class="[
       size === 'md' ? 'h-6 w-11' : 'h-5 w-9',
       modelValue ? 'bg-primary' : 'bg-[var(--gosslan-border)]',
