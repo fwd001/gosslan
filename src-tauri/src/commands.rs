@@ -3727,6 +3727,56 @@ pub fn close_log_window(_app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    /// `generate_handler!` 里列出的命令在**移动端也必须存在**。
+    ///
+    /// 为什么必须守：`lib.rs` 的 `generate_handler!` 是**无条件**列出命令名的，而
+    /// `#[tauri::command]` 生成的包装宏跟着函数一起被 `#[cfg(desktop)]` 裁掉 ——
+    /// 于是"桌面专属命令 + 无条件列出"就等于 **Android/iOS 目标编译失败（E0433）**。
+    /// 2026-09-12 本轮就是这样踩到的：四个设置/日志窗口命令让移动端整包编不出来，
+    /// 而当时**没有任何守门**（`cargo test --lib` 只按桌面口径检查）。
+    ///
+    /// 判据：凡是被列出的、且定义处带 `#[cfg(desktop)]` 的命令，必须同时有
+    /// `#[cfg(mobile)]` 的桩（沿用 `focus_window` 的范式）。
+    #[test]
+    fn every_handler_command_exists_for_mobile() {
+        // 本文件自身的源码（用于查 `#[cfg(desktop)]` / `#[cfg(mobile)]` 成对性）
+        let src = include_str!("commands.rs");
+        let lib_src = include_str!("lib.rs");
+        let start = lib_src
+            .find("generate_handler![")
+            .expect("lib.rs 应有 generate_handler!");
+        let rest = &lib_src[start..];
+        let end = rest.find(']').expect("generate_handler! 应有收尾方括号");
+        let listed: Vec<&str> = rest[..end]
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("commands::"))
+            .map(|s| s.trim().trim_end_matches(','))
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert!(
+            listed.len() > 50,
+            "命令列表解析异常（只解析出 {} 条）—— 守卫会变成空转",
+            listed.len()
+        );
+        for name in listed {
+            let desktop_only = src.contains(&format!(
+                "#[cfg(desktop)]\n#[tauri::command]\npub fn {name}("
+            ));
+            if !desktop_only {
+                continue; // 非桌面专属 ⇒ 移动端本来就有
+            }
+            let has_mobile = src.contains(&format!(
+                "#[cfg(mobile)]\n#[tauri::command]\npub fn {name}("
+            ));
+            assert!(
+                has_mobile,
+                "命令 `{name}` 是桌面专属（#[cfg(desktop)]）却被 generate_handler! 无条件列出，\n\
+                 且没有 #[cfg(mobile)] 桩 ⇒ Android/iOS 目标会编译失败（E0433）。\n\
+                 修法：照着 `focus_window` 加一个移动端桩（打开类返回明确 Err、关闭类 Ok(())）。"
+            );
+        }
+    }
+
     use super::{
         check_message_content, decode_outgoing_image, group_file_progress_from, image_extension,
         normalize_routed_address, MAX_MESSAGE_LEN, MAX_OUTGOING_IMAGE_BYTES,
