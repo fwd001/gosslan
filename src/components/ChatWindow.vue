@@ -80,9 +80,26 @@ function estimateHeight(m: MessageRecord, index?: number): number {
 // ---------------- 图片相册预览（点击图片 → 打开本会话全部图片，可左右切换） ----------------
 const lightboxOpen = ref(false);
 const lightboxIndex = ref(0);
-/** 会话内全部图片（kind=image 或 kind=file 且 subtype=image），按消息顺序排列。 */
-const lightboxImages = computed<{ msgId: string; name: string; dataSrc: string | null }[]>(() =>
-  messages.value
+/**
+ * 会话内图片列表（kind=image，或 kind=file 且 subtype=image），**打开预览时才构建**。
+ *
+ * ⚠️ 这里刻意**不用 computed**（用户 2026-09-12 要求「不要有任何阻断渲染的操作」）：
+ * 原先它是 computed，于是**每次消息变化都会重扫全部消息并对每条文件消息 JSON.parse**
+ * —— 而消息变化发生在每收一条、每改一次状态（送达/已读回执）时；单会话缓存上限是
+ * 10 页 × 100 条 = 1000 条，等于每条消息都要付一次 O(n) 扫描 + 解析。
+ * 而这份列表**只在打开图片预览时用得到**，且打开期间图片集合不会变
+ * （新图片到达时用户正在看图，让他下次打开再看到即可）。
+ * 因此改为**命令式快照**：只在 `openImageAt` 里构建一次并存入 ref，
+ * 热路径（消息流）不再有任何全表扫描。
+ */
+interface LightboxImage {
+  msgId: string;
+  name: string;
+  dataSrc: string | null;
+}
+
+function buildLightboxImages(): LightboxImage[] {
+  return messages.value
     .filter((m) => {
       if (m.kind === "image") return true;
       if (m.kind === "file") {
@@ -107,10 +124,14 @@ const lightboxImages = computed<{ msgId: string; name: string; dataSrc: string |
         }
       }
       return { msgId: m.msg_id, name, dataSrc };
-    }),
-);
+    });
+}
+
+/** 打开期间的图片快照（只在 openImageAt 里赋值）。 */
+const lightboxImages = ref<LightboxImage[]>([]);
 
 function openImageAt(msgId: string) {
+  lightboxImages.value = buildLightboxImages();
   const idx = lightboxImages.value.findIndex((x) => x.msgId === msgId);
   if (idx < 0) return;
   lightboxIndex.value = idx;
