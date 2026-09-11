@@ -704,29 +704,105 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /**
+   * 群操作的**乐观更新**骨架（用户 2026-09-12 要求「所有异步操作尽量乐观更新」）。
+   *
+   * 原先四个群操作都是「await 后端 → await refreshGroups → await refreshConversations」：
+   * 点一下要等 **3 个 IPC 往返**才看到变化（成员列表、群主标识都不动），
+   * 与「不阻断渲染」的要求相反。这里统一成与 `renameGroup` 相同的范式：
+   * **先本地改（可感知即时）→ 调后端 → 失败回滚 + 抛错**（调用方负责 toast）。
+   * 后端仍是权威：成功后会 refresh 一次收敛（成员/会话行以后端为准）。
+   */
+  function withGroupRollback<T>(
+    mutate: () => () => void,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    const rollback = mutate();
+    return call().catch((e) => {
+      rollback();
+      throw e;
+    });
+  }
+
   /** 加人入群（群主）。 */
   async function addGroupMember(groupId: string, deviceId: string) {
-    await api.groupAddMember(groupId, deviceId);
+    await withGroupRollback(
+      () => {
+        const prev = groups.value;
+        groups.value = groups.value.map((g) =>
+          g.id === groupId && !g.members.includes(deviceId)
+            ? { ...g, members: [...g.members, deviceId] }
+            : g,
+        );
+        return () => {
+          groups.value = prev;
+        };
+      },
+      () => api.groupAddMember(groupId, deviceId),
+    );
     await refreshGroups();
     await refreshConversations();
   }
 
   /** 移除成员（群主）。 */
   async function removeGroupMember(groupId: string, deviceId: string) {
-    await api.groupRemoveMember(groupId, deviceId);
+    await withGroupRollback(
+      () => {
+        const prev = groups.value;
+        groups.value = groups.value.map((g) =>
+          g.id === groupId ? { ...g, members: g.members.filter((m) => m !== deviceId) } : g,
+        );
+        return () => {
+          groups.value = prev;
+        };
+      },
+      () => api.groupRemoveMember(groupId, deviceId),
+    );
     await refreshGroups();
     await refreshConversations();
   }
 
   /** 转让群主（仅当前群主）。后端会向全体成员广播新群主。 */
   async function transferGroupCreator(groupId: string, newCreator: string) {
-    await api.transferGroupCreator(groupId, newCreator);
+    await withGroupRollback(
+      () => {
+        const prev = groups.value;
+        groups.value = groups.value.map((g) =>
+          g.id === groupId ? { ...g, creator: newCreator } : g,
+        );
+        return () => {
+          groups.value = prev;
+        };
+      },
+      () => api.transferGroupCreator(groupId, newCreator),
+    );
     await refreshGroups();
   }
 
   /** 退出群聊（群主须先转让）。退出后复用「被移出群」的本地清理路径。 */
   async function leaveGroup(groupId: string) {
-    await api.leaveGroup(groupId);
+    const convId = `group:${groupId}`;
+    const prevGroups = groups.value;
+    const prevConvs = conversations.value;
+    const prevActive = activeConv.value;
+    const prevMessages = messages.value[convId];
+    // 乐观：立刻把群从本地移除并关掉会话（用户点了"退出"就该马上看到结果）
+    groups.value = groups.value.filter((g) => g.id !== groupId);
+    conversations.value = conversations.value.filter((c) => c.id !== convId);
+    if (activeConv.value === convId) {
+      activeConv.value = null;
+      unreadJump.value = null;
+    }
+    try {
+      await api.leaveGroup(groupId);
+    } catch (e) {
+      // 回滚：退群失败（例如群主未转让）时把群与会话原样放回
+      groups.value = prevGroups;
+      conversations.value = prevConvs;
+      activeConv.value = prevActive;
+      if (prevMessages !== undefined) messages.value = { ...messages.value, [convId]: prevMessages };
+      throw e;
+    }
     await handleSelfRemovedFromGroup(groupId);
   }
 
