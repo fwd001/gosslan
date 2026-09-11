@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { clampScale, pinchScale, swipeDirection } from "@/utils/lightboxGestures";
 import { t } from "@/i18n";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChevronLeft, ChevronRight, Save, X } from "lucide-vue-next";
@@ -77,23 +78,38 @@ async function saveImage() {
   }
 }
 
-/** 缩放（滚轮，1~5 倍）与拖拽平移（放大后可拖动查看局部），双击复位。 */
+/**
+ * 手势与缩放（HIG：查看大图要支持**双指缩放 + 左右滑动切图**，不是只有箭头按钮）。
+ *
+ * 三种手势共用一个指针表：
+ *  · 单指 + 已放大 ⇒ 平移（看局部）；
+ *  · 单指 + 原始尺寸 ⇒ 左右滑动切图（仅触屏；鼠标拖动不切图，避免误换图）；
+ *  · 双指 ⇒ 按两指距离比例缩放（锚点不动，iOS 相册的手感）。
+ * 判定阈值/主轴/边界全在 `utils/lightboxGestures.ts`（纯函数 + 单测）。
+ */
 const scale = ref(1);
 const tx = ref(0);
 const ty = ref(0);
 let dragging = false;
 let lastX = 0;
 let lastY = 0;
+/** 当前按下的指针（触屏才可能有多指）：id → 位置。 */
+const pointers = new Map<number, { x: number; y: number }>();
+/** 双指手势的起点：两指距离与当时的倍率。 */
+let pinchStart: { distance: number; scale: number } | null = null;
 
 function reset() {
   scale.value = 1;
   tx.value = 0;
   ty.value = 0;
+  pointers.clear();
+  pinchStart = null;
+  dragging = false;
 }
 
 function onWheel(e: WheelEvent) {
   e.preventDefault();
-  const next = Math.min(5, Math.max(1, scale.value + (e.deltaY < 0 ? 0.2 : -0.2)));
+  const next = clampScale(scale.value + (e.deltaY < 0 ? 0.2 : -0.2));
   if (next === 1) {
     tx.value = 0;
     ty.value = 0;
@@ -101,21 +117,73 @@ function onWheel(e: WheelEvent) {
   scale.value = next;
 }
 
+function twoPointerDistance(): number | null {
+  if (pointers.size < 2) return null;
+  const [a, b] = [...pointers.values()];
+  if (!a || !b) return null;
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
 function onPointerDown(e: PointerEvent) {
-  if (scale.value <= 1) return;
-  dragging = true;
-  lastX = e.clientX;
-  lastY = e.clientY;
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  if (pointers.size === 2) {
+    // 进入双指：记下起点，随后按距离比例缩放
+    pinchStart = { distance: twoPointerDistance() ?? 0, scale: scale.value };
+    dragging = false;
+    return;
+  }
+  if (scale.value > 1) {
+    dragging = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+  }
 }
+
 function onPointerMove(e: PointerEvent) {
-  if (!dragging) return;
-  tx.value += e.clientX - lastX;
-  ty.value += e.clientY - lastY;
-  lastX = e.clientX;
-  lastY = e.clientY;
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  // ① 双指缩放
+  if (pointers.size >= 2 && pinchStart) {
+    const d = twoPointerDistance();
+    if (d !== null) scale.value = pinchScale(pinchStart.distance, d, pinchStart.scale);
+    // 缩回原始尺寸时把位移归零，否则图会停在屏幕外
+    if (scale.value <= 1) {
+      tx.value = 0;
+      ty.value = 0;
+    }
+    return;
+  }
+  // ② 单指：已放大 ⇒ 平移
+  if (dragging) {
+    tx.value += e.clientX - lastX;
+    ty.value += e.clientY - lastY;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    return;
+  }
+  // ③ 单指（仅触屏）在原始尺寸下的横向滑动留给 pointerup 判定（这里只累积，不做事），
+  //    避免边滑边切图（手指还没抬起来就换图会很突兀）。
 }
-function onPointerUp() {
+
+function onPointerUp(e: PointerEvent) {
+  const start = pointers.get(e.pointerId);
+  pointers.delete(e.pointerId);
+  if (pointers.size === 0) pinchStart = null;
+  if (!start) return;
+  // 触屏滑动切图：只有"原始尺寸 + 单指 + 触屏"才判（鼠标拖动不换图）
+  if (e.pointerType === "touch" && !dragging && scale.value <= 1) {
+    const dir = swipeDirection(
+      e.clientX - start.x,
+      e.clientY - start.y,
+      scale.value,
+      props.index,
+      props.images.length,
+    );
+    if (dir !== null) go(dir);
+  }
   dragging = false;
 }
 
