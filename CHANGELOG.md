@@ -10,6 +10,25 @@
 
 ## [Unreleased]
 
+### Added (BLE 外设角色：手机不必与 Mac 同一 Wi-Fi 也能连入)
+- **macOS 上新增 BLE peripheral（GATT server）角色**（`b317c27`）。`btleplug` 只能当 central（其 README 原文 "host/central mode only"），只能主动扫/连、**不能**被连 —— 所以只做 central 的 Mac 在蓝牙上永远不可被发现，"手机与电脑不在同一局域网也能加入"这条产品目标根本无法落地。现在 Mac 同时具备两种角色：
+
+  ```text
+  手机（Android/iOS，central）──BLE──▶ Mac（peripheral）──局域网──▶ Windows
+  ```
+
+  手机侧**零新增原生代码**（仍走 `btleplug` central 路径），Mac 负责把消息中继给同局域网的 PC。
+- **线格式零改动**：广播里只放服务 UUID，特征 UUID、分片/重组、Hello 握手、验签、去重判据全部复用 central 侧那一套 —— 没有新增任何线上协议，因此不需要 ADR-0017 的能力门控。新增依赖 `objc2-core-bluetooth`（macOS target 专属 + optional，纳入 `bluetooth` feature），默认构建与其它平台完全不受影响（`cargo metadata`/Android `cargo check` 均已验证）。
+- **`network/ble.rs` 里只多了一个"谁先连谁"的分支**：外设侧首帧就是对端的 Hello，验签通过后再回我们的 Hello。写/读循环泛型化为 `FrameSink`/`FrameSource` 两个私有 trait（`BleWriter`/`BleReader` 与新增的 `PeripheralSink`/`ChannelSource` 各实现一次），于是「取消息 → 序列化 → 发送 → 失败即收尾」与「收帧 → 解析 → `handle_message`」各**只有一份**实现，去重判据仍是同一个 `should_accept_inbound_public`。
+- **三处必须写清的细节**（否则真机上必踩）：① BLE 外设角色**没有** "central 断开" 回调（只有取消订阅），旧链路可能早就死了而我们不知道 ⇒ 同一 BLE 端点的旧链路必须让位给新连接，否则该设备重连时会永远撞在去重判据上形成黑洞；② 路由先就位、再回 Hello（对端收到 Hello 会立刻冲刷待发队列，通道先挂上这批帧才不会被"注册还没完成"的缝隙吞掉）；③ `updateValue` 返回 `false`（对端接收窗口满）不是错误，等 `peripheralManagerIsReadyToUpdateSubscribers:` 再重试（8s 上限），未订阅时等订阅信号 —— 等待一律 `timeout + 50ms` 兜底，**绝不忙等**。
+- **不阻断渲染**：delegate 回调走主队列，但回调里只做「拷字节 + 查表 + 发通道」，验签/写库/加解密全在 tokio 侧；CoreBluetooth 对象通过显式 `SendObj` 断言跨线程使用（依据 Apple 文档：manager 方法可从任意线程调用、回调串行派发到构造时给的队列），`Retained<NSData>` 等非 `Send` 对象一律在任何 `await` 之前析构，`start()` 全程同步（否则 future 会被染成 `!Send`，一路炸到 `#[tauri::command]`）。
+- 单测 +3：广播净荷受 31 字节 legacy 上限约束且**故意不放**本地名；对端 `maximumUpdateValueLength` 异常值必须退回默认而**绝不返回 0**；用 clamp 出的 MTU 分片能被对端同一套重组器逐字节还原。**非空转验证**：把 MTU 下限判据改成 1 → FAIL；把 128 位 UUID 记成 16 字节 → FAIL；恢复后 PASS。
+- 验证：`cargo test --lib --features bluetooth` **371 passed / 0 failed / 0 warning**；`cargo test --lib` 366 passed / 0 warning；`cargo check --all-targets` 干净；`bash scripts/check-mobile.sh --bluetooth` Android target **PASS / 0 warning**；前端未改（npm 270 / vue-tsc 0 / vite build 通过）。
+  ⚠️ **射频行为未验证**（本机无第二台设备、无头运行会被 CoreBluetooth 授权弹窗挡住）：广播能否被手机发现、真实吞吐必须在真机跑，步骤见 `.workbuddy/audit/2026-09-12-真机测试手册.md` §5。手机/Windows 自己做外设（ADR-0015 的 7-f）仍未做，因此手机 ↔ Windows 之间只能经 Mac 中转。
+
+### Fixed (macOS 沙盒缺蓝牙权限：开了开关却一个设备都发现不了)
+- **`entitlements.plist` 补 `com.apple.security.device.bluetooth`，并显式声明 `bundle.macOS.infoPlist`**（`42c1108`）。两个都是"运行期才暴露、且现象具有误导性"的打包缺口：App Sandbox 下没有蓝牙权限时，CoreBluetooth 的 manager 状态会一直停在 Unauthorized —— **central（扫描/连接）也一起失效**，现象是"打开了蓝牙开关、一个设备也发现不了"，极易被误判成"对面没开蓝牙"；macOS 11+ 同样要求 Info.plist 里有 `NSBluetoothAlwaysUsageDescription`，之前只有 iOS 那一侧显式配置，现在 macOS 侧也显式指向同一个 `Info.plist`，不再依赖"自动探测同名文件"这种隐式行为。⚠️ 已装过旧版本的设备必须**重装**这一版才会带上新 entitlement。
+
 ### Changed (窄导航栏通讯录图标与选中态 + 输入框工具栏对齐)
 - **通讯录图标换成 `Contact`**（用户反馈「最左侧那一栏通讯录的图标跟上面的聊天图标不像是一整套」）：原 `Users` 是「宽而扁」的双人剪影，与近正方形的聊天气泡并排时外接框与视觉重量都不一致；`Contact`（通讯录卡片）同为方形容器，两者并排才像一套。
 - **导航栏选中态改为「图标 + 底色块」双通道**：原先只有图标变色、选中时还把图标填色（`fill=currentColor`）—— 填色对双人图标会变成两块墨团，且只靠颜色表达「现在在哪一栏」。现在用既有但从未被使用的 `--gosslan-rail-active`（浅色 `#cbd5e1` / 深色 `#253246`）作底色块 + `--gosslan-rail-text-active` 作图标色，图标**保持线性不填充**，与底部工具图标同一套描边语言。

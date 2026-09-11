@@ -1,7 +1,7 @@
 # ADR-0015: BLE Transport（Phase 7 / P3）
 
 - Status: Proposed（**待用户审核**；实现按 feature 门推进，默认关闭）
-- 进度：7-a/7-b/7-c 完成；7-e 完成"驱动 + 编译/单测验证"，接线与真机待做；7-d 待设计
+- 进度：7-a/7-b/7-c 完成；7-e **central + macOS peripheral 两侧接线均已完成**（编译/单测验证），真机待做；7-d 待设计；7-f（移动端做 peripheral）待做
 - Date: 2026-09-12
 - Owners: Gosslan
 - Related:
@@ -108,19 +108,22 @@ BLE 的价值正在这里：它**不依赖 IP 网段**，天然满足"零配置�
 | 7-c | `Link.path_kind` 显式携带 + `Endpoint` 抽象 | ✅ `353a964` + `8ce2b18`：单测覆盖 LAN/Routed/BLE 三态 + "私有段 Routed 不算 LAN" + "BLE 不优先于 TCP" |
 | 7-d | `BleDiscovery` 产出 `PeerCandidate`（发现 ≠ 建连） | ⬜ 待做。**设计要点**：BLE 地址不是身份（身份只能由双向 Hello 验签建立），
 所以候选要么携带占位身份、要么扩展 `PeerCandidate` 允许"身份未知" —— 需要与 P-A01/P-A04 一起定，不能顺手塞。 |
-| 7-e | 驱动 + 接线 + 双向 Hello 验签 + 一条单聊消息 | ⚠️ **central 侧完成**（`cc273b5` + `c2124ef`；见 §3.1 的更正：peripheral 角色仍需移动端平台实现）：`transport/bluetooth.rs::driver` 按 btleplug 0.13 真实源码实现
+| 7-e | 驱动 + 接线 + 双向 Hello 验签 + 一条单聊消息 | ⚠️ **central + macOS peripheral 两侧完成，真机待验**（central：`cc273b5` + `c2124ef`；peripheral：`b317c27`，沙盒权限 `42c1108`）：`transport/bluetooth.rs::driver` 按 btleplug 0.13 真实源码实现
 （adapter / scan_peers / connect+特征校验 / send_frame 分片写 / next_frame 通知重组 / payload_mtu），
 **`cargo build --features bluetooth` 与 `cargo test --features bluetooth`（367 passed / 0 warning）
 已在本机 macOS 通过**（把 `CARGO_HOME` 指到仓库内 `src-tauri/target/cargo-home` 绕开"不能写 ~/.cargo"）。
-剩：接到 `BluetoothTransport`/`state.links`（`start` 探测 → 扫描任务 → 连接 → 登记
-`Endpoint::Ble` + `PathKind::Bluetooth` → 收发喂 `handle_message`）+ **三平台真机**。 |
+接线已完成（`start` 探测 → 扫描任务 → 连接 → 登记 `Endpoint::Ble` + `PathKind::Bluetooth`
+→ 收发喂 `handle_message`），macOS 侧另补了 **peripheral（GATT server）角色**（见 §7）。
+`cargo test --lib --features bluetooth` = **371 passed / 0 warning**，Android target 同样 0 warning。
+剩：**三平台真机**。 |
+| 7-f | 移动端/Windows 的 peripheral 角色 | ⬜ 待做。手机做 peripheral（Android `BluetoothLeAdvertiser` + `BluetoothGattServer` 经 JNI；iOS 与 macOS **同款 `CBPeripheralManager` 代码**）后，Windows/手机之间才能不经 Mac 直连；Windows 仍需 `GattServiceProvider`（WinRT）。 |
 
 ---
 
 ## 7. 实施清单：peripheral 角色（macOS 先做，供 7-e 收尾）
 
 > 本节是**照着实测过的 API 写的**（2026-09-12 把 `objc2-core-bluetooth` 0.3.2 的 `.crate`
-> 解包后逐个核对方法签名），执行时不必再猜。**决策未定前不动代码。**
+> 解包后逐个核对方法签名）。**已于 `b317c27` 落地，实施结果与偏差见 §7.5。**
 
 ### 7.1 依赖（macOS 专属 + 纳入 `bluetooth` feature）
 ```toml
@@ -161,10 +164,43 @@ objc2-foundation = { version = "0.3", optional = true, features = ["NSData","NSS
    再重试，**否则静默丢帧**（这是 peripheral 侧最容易漏的一处）。
 7. 订阅跟踪：`peripheralManager:central:didSubscribeToCharacteristic:` 记下 central 列表。
 
-### 7.4 验证（必须真机，逐条）
-1. 另一台设备（Windows/Android 的 central，已实现）能**扫到**并连上；
-2. 双向 Hello **验签通过**（日志里 `+ble-link peer=…`）；
-3. 单聊一条消息**双向**送达（含图片/文件分片）；
-4. 关掉「蓝牙」开关后：BLE 链路全拆、**局域网聊天不受影响**；
-5. 手机做 peripheral 时同样跑 1–4（Android `BluetoothLeAdvertiser` + `BluetoothGattServer`
+### 7.4 验证（必须真机，逐条；状态 ⬜ = 待用户实测）
+1. ⬜ 另一台设备（Android 手机的 central，已实现）能**扫到** Mac 并连上；
+2. ⬜ 双向 Hello **验签通过**（日志里 `+ble-link(外设) peer=…`）；
+3. ⬜ 单聊一条消息**双向**送达（含图片/文件分片）；
+4. ⬜ 关掉「蓝牙」开关后：BLE 链路全拆、**局域网聊天不受影响**；
+5. ⬜ 手机做 peripheral 时同样跑 1–4（Android `BluetoothLeAdvertiser` + `BluetoothGattServer`
    经 JNI；iOS `CBPeripheralManager` 经 objc2，与 macOS 同款代码）。
+
+### 7.5 实施结果与偏差（`b317c27` + `42c1108`）
+
+实际写下来，与 §7.1–7.3 清单有六处**有意**的偏差，都记在这里以免下次重蹈：
+
+1. **用主队列，不是私有串行队列**（清单第 1 条）。回调里只做「拷字节 + 查表 + 发通道」，
+   重活（验签、`handle_message`、加解密）全在 tokio 侧，因此不存在"卡住回调"的风险；
+   而私有队列要求我们自己驱动它，反而多一层复杂度。**这条是"不阻断渲染"红线的一部分：
+   回调在主队列上必须是微秒级的。**
+2. **`default-features = false` 不需要**：直接用默认 feature 即可 ——
+   `objc2-core-bluetooth` 自己会打开 `objc2-foundation` 的 NSData/NSArray/NSDictionary/NSString，
+   feature 统一后**没有**修改 `objc2-foundation` 的依赖声明（清单第 139 行的假设不成立）。
+3. **`start()` 必须是同步函数**：`Retained<CBUUID>`/`Retained<NSData>` **不是 `Send`**，
+   只要它们跨过任何 `await`，整个 future 就非 `Send`，会一路传染到 `#[tauri::command]`
+   的返回值（`set_channel_enabled` 编译失败）。于是 CoreBluetooth 对象的构造全程无 await，
+   "等状态回调"这一步交给调用方（它手里只有 `PeripheralServer` 和 oneshot，都是 `Send`）。
+   同理，`NSData` 的构造/析构被限在一个块里，**在 await 之前**完成。
+4. **`SendObj<T>` 是必要的显式断言**：objc2 保守地不为框架类实现 `Send`/`Sync`。
+   断言依据是 Apple 文档（manager 方法可从任意线程调用、回调串行派发到构造时给的队列），
+   且本模块从不在多个任务里并发调用同一对象的同一方法。
+5. **外设角色没有"central 断开"回调**（只有 `didUnsubscribeFromCharacteristic:`）：
+   所以「同一 BLE 端点的旧链路让位」是**必须**的 —— 否则对端重连时会永远撞在
+   `should_accept_inbound_public` 上，形成黑洞。写入失败/通道关闭也会促成收尾。
+6. **发送队列满 = 等待而不是报错**：`updateValue` 返回 `false` 时等
+   `peripheralManagerIsReadyToUpdateSubscribers:`（8s 上限）再重试；未订阅时等订阅信号
+   （Hello 回程常常赶在订阅完成之前）。等待用 `timeout + 50ms 兜底`，
+   **绝不能忙等**（watch 通道关闭时 `changed()` 会立刻返回 `Err`，不睡就是死循环）。
+
+另外两条**打包层**的坑（`42c1108`），不解决的话射频代码再对也没用：
+- macOS 沙盒缺 `com.apple.security.device.bluetooth` ⇒ CoreBluetooth 的 state 恒为
+  Unauthorized，**central 也一起失效**（现象是"开着蓝牙却一个设备都扫不到"）；
+- macOS 11+ 同样要求 Info.plist 里有 `NSBluetoothAlwaysUsageDescription` ⇒
+  已显式声明 `bundle.macOS.infoPlist`，不再依赖"自动探测同名文件"。
