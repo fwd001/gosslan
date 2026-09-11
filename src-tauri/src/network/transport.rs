@@ -1730,6 +1730,44 @@ fn may_ack(inserted: &Result<bool, rusqlite::Error>) -> bool {
 
 // ---------------- Gossip 处理 ----------------
 
+/// 多跳转发：把 MeshFrame 载荷还原成 GossipEnvelope，发给选中的下一跳。
+///
+/// **不新增协议**：转发出去的仍是 `Message::Gossip`，下一跳按现有逻辑处理，
+/// 因此 wire 格式不变、新旧客户端仍然互通（避免触发 INV-P13 的协议变更流程）。
+///
+/// 排除两类目标：
+/// ① 原始源节点（§18 source exclusion，由 `select_outgoing` 完成）；
+/// ② 该帧的入站 peer —— 发回去只是浪费，下一跳的 dedup 也会把它丢弃。
+///
+/// 转发是**尽力而为**：失败可忽略。Gossip 的可靠性由 outbox / dedup 保证，
+/// 不依赖中继成功。
+async fn relay_forward(state: &Arc<AppState>, frame: &MeshFrame, inbound_peer: &str) {
+    // 载荷由 handle_gossip 在 relay 开启时填入（序列化后的 GossipEnvelope）
+    let Ok(env) = serde_json::from_slice::<GossipEnvelope>(&frame.payload) else {
+        return;
+    };
+
+    // ① 先排除入站 peer
+    let candidates: Vec<String> = {
+        let links = state.priority_links.lock().await;
+        links
+            .keys()
+            .filter(|k| k.as_str() != inbound_peer)
+            .cloned()
+            .collect()
+    };
+    // ② 再让 MeshRouter 排除原始源节点，并按 fanout 截断
+    let picked = {
+        let router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
+        router.select_outgoing(&candidates, &frame.source_node_id)
+    };
+
+    let msg = Message::Gossip { envelope: env };
+    for peer in picked {
+        let _ = try_send(state, peer, &msg).await;
+    }
+}
+
 async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope) {
     // Gossip 可经第三方转发，不能仅凭信封内自报的 Ed25519 公钥建立身份。
     // 公钥必须先由 Discovery/Hello 绑定到同一个 device_id；若已知 X25519
@@ -1769,7 +1807,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     }
     // 1. 先验签，再进入去重缓存。否则攻击者可以用伪造的唯一 message_id
     // 污染 Bloom/LRU，甚至抢先占用真实消息的 id 造成合法消息被丢弃。
-    {
+    let forward: Option<MeshFrame> = {
         let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         if !gossip.verify_envelope(&env) {
             return;
@@ -1781,10 +1819,11 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         // Bloom，抢先占用真实帧的 id 造成合法消息被丢弃——与上面 GossipEngine
         // 的防护同理。
         //
-        // 注意：当前 Gossip 是**单跳广播**（发送方广播给所有直连节点，接收方不转发），
-        // 所以这里只取决策、不实际扩散：`Forward` 分支暂不转发，避免引入新的传播
-        // 行为。多跳 relay 由 Phase 5 后续步骤单独启用。
-        {
+        // 多跳 relay 由 `MeshRouter::relay_enabled` 控制，**默认关闭**：
+        // 当前 Gossip 是单跳广播，关闭时 `Forward` 决策不执行，行为与 ④a 完全一致。
+        let fwd = {
+            let mut router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
+            let relay_on = router.relay_enabled();
             let frame = MeshFrame {
                 frame_id: env.message_id.clone(),
                 source_node_id: env.sender_id.clone(),
@@ -1792,17 +1831,33 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 ttl: env.ttl,
                 kind: MeshFrameKind::Gosslan,
                 // MeshRouter 不解析载荷内容（P-A03），决策只需要元数据。
-                payload: Vec::new(),
+                // 但**转发**需要完整原始信封，否则下一跳收到的是空帧 —— 这是
+                // 开启 relay 时最容易漏的一点。默认关闭时省掉这次序列化开销。
+                payload: if relay_on {
+                    serde_json::to_vec(&env).unwrap_or_default()
+                } else {
+                    Vec::new()
+                },
             };
-            let mut router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
-            if let ForwardDecision::Drop(_) = router.on_receive(frame, &state.device_id) {
-                return;
+            match router.on_receive(frame, &state.device_id) {
+                ForwardDecision::Drop(_) => return,
+                ForwardDecision::Forward { frame, .. } if relay_on => Some(frame),
+                _ => None,
             }
-        }
+        };
+        // 业务层去重（Mesh 之后的第二道防线）
         let mut gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         if !gossip.is_new(&env.message_id) {
             return;
         }
+        fwd
+    };
+    // 多跳转发（仅 relay 开启时）：把原始信封发给选中的下一跳。
+    //
+    // **必须等上面 `{}` 结束后再 await**：`std::sync::MutexGuard` 跨 await 会让
+    // future 失去 `Send`，而 `reader_loop` / `handle_incoming` 都是 `tokio::spawn` 的。
+    if let Some(f) = forward {
+        relay_forward(state, &f, peer_id).await;
     }
     // 2. 同步发送方公钥：GossipEnvelope 已携带 x25519_pubkey 用于解密，
     //    但此前未写入 peers/friends，导致后续 outbox 重发的直发 ChatMessage

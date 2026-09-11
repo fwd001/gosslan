@@ -143,6 +143,11 @@ pub struct MeshRouter {
     fanout: usize,
     /// 待转发帧队列（有界，§39 背压）。
     pending: RingBuffer<MeshFrame>,
+    /// 多跳 relay 开关。**默认关闭**。
+    ///
+    /// 当前 Gossip 是单跳广播（见任务文档 §7）；开启多跳会改变传播范围，属于新功能。
+    /// 关闭时 `ForwardDecision::Forward` 不被执行，行为与 Phase 5 ④a 完全一致。
+    relay_enabled: bool,
 }
 
 impl MeshRouter {
@@ -159,7 +164,19 @@ impl MeshRouter {
             max_ttl,
             fanout,
             pending: RingBuffer::new(pending_capacity),
+            relay_enabled: false,
         }
+    }
+
+    /// 是否启用多跳转发（默认 false）。
+    pub fn relay_enabled(&self) -> bool {
+        self.relay_enabled
+    }
+
+    /// 开关多跳转发。关闭时 `Forward` 决策不被执行 —— 这是 Phase 5 ④b 的安全阀：
+    /// 一旦多跳引发问题，关掉即可回到 ④a 的等价行为，无需回滚代码。
+    pub fn set_relay_enabled(&mut self, on: bool) {
+        self.relay_enabled = on;
     }
 
     /// 是否为首次见到的帧（并完成去重登记）。
@@ -426,6 +443,19 @@ mod tests {
         let picked = r.select_outgoing(&candidates, "n99");
 
         assert_eq!(picked.len(), 3);
+    }
+
+    /// 多跳 relay **默认关闭**（保持现有单跳语义，可随时开关回退）。
+    #[test]
+    fn relay_is_disabled_by_default() {
+        let r = router();
+        assert!(!r.relay_enabled(), "默认必须关闭，否则会改变传播行为");
+
+        let mut r2 = router();
+        r2.set_relay_enabled(true);
+        assert!(r2.relay_enabled());
+        r2.set_relay_enabled(false);
+        assert!(!r2.relay_enabled());
     }
 
     /// RingBuffer：容量有界，满时覆盖最旧（§39 内存上界）。
