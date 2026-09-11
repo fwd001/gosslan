@@ -238,6 +238,28 @@ export interface SearchResult {
   match_msg_id: string;
 }
 
+/** 「搜索聊天记录」结果页的一条命中消息。 */
+export interface ChatSearchMessage {
+  msg_id: string;
+  sender_id: string;
+  sender_name: string;
+  kind: string;
+  content: string;
+  ts: number;
+}
+
+/** 按会话分组的检索结果（左栏一个会话一行，右栏是它的命中消息）。 */
+export interface ChatSearchGroup {
+  conv_id: string;
+  name: string;
+  kind: string;
+  avatar: string | null;
+  /** 当前筛选条件下该会话的命中总数（微信式「共 N 条相关聊天记录」）。 */
+  total: number;
+  latest_ts: number;
+  messages: ChatSearchMessage[];
+}
+
 // ---------------- Discovery 诊断（隐藏开发者面板用） ----------------
 
 export interface InterfaceCandidate {

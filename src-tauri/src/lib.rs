@@ -191,6 +191,7 @@ pub fn run() {
             commands::clean_cache_now,
             commands::get_settings,
             commands::set_ui_language,
+            commands::search_chat_history,
             commands::save_settings,
             commands::reset_settings,
             commands::broadcast_chat_style,
@@ -357,6 +358,7 @@ mod tests {
             "get_messages",        // 分页读库（每次切会话）
             "get_conversations",   // 列表 + 解密最后一条
             "search_messages",     // 全表扫描 + 解密
+            "search_chat_history", // 全表 LIKE 扫描（结果页）
             "get_cache_info",      // 目录遍历统计
             "clean_cache_now",     // 删文件 + VACUUM（可能数秒）
             "export_chat_text",    // 渲染 + 写盘

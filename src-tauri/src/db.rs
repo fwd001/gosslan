@@ -830,6 +830,72 @@ pub fn search_messages_in_conv(
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// 全历史检索的一条命中（含"该会话命中总数"，供「共 N 条相关聊天记录」用）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatSearchHit {
+    pub conv_id: String,
+    pub msg_id: String,
+    pub sender_id: String,
+    pub kind: String,
+    pub content: String,
+    pub ts: i64,
+    /// **该会话**在本次筛选条件下的命中总数（`COUNT(*) OVER (PARTITION BY conv_id)`）。
+    /// 注意与返回条数的区别：`limit` 只截断返回条数，总数仍是全量命中数
+    /// —— 否则"共 N 条"会随分页变小，用户会以为搜漏了。
+    pub total: i64,
+}
+
+/// 历史检索（「搜索聊天记录」用）。
+///
+/// 与 `search_messages_in_conv`（会话内取最新一条做摘要）的区别：这里要的是
+/// **结果页**需要的形态 —— 跨会话、按时间倒序、每条都带发送者与类型，
+/// 并且每个会话给出命中总数与最新命中时间。
+///
+/// 过滤条件都在 SQL 里做（而不是取回前端再筛）：① 命中数才是准的（"共 N 条"必须按
+/// 当前筛选算）；② 不必把全库命中都搬到前端。
+///   · `sender_id`：按**发送者**筛（微信搜索页的「发送人」）；
+///   · `since_ms` / `until_ms`：时间区间（「日期」）。
+///
+/// 刻意排除 `kind = 'system'`：系统提示（被移出群聊、解密失败占位等）不是用户发的
+/// 聊天内容，搜出来只会干扰 —— 微信也不会把它们算进"聊天记录"。
+pub fn search_history(
+    conn: &Connection,
+    keyword: &str,
+    sender_id: Option<&str>,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+    limit: i64,
+) -> Result<Vec<ChatSearchHit>> {
+    let pattern = format!("%{}%", escape_like(keyword));
+    let mut stmt = conn.prepare(
+        "SELECT conv_id, msg_id, sender_id, kind, content, ts,
+                COUNT(*) OVER (PARTITION BY conv_id) AS total
+         FROM messages
+         WHERE content LIKE ?1 ESCAPE '\\'
+           AND kind <> 'system'
+           AND (?2 IS NULL OR sender_id = ?2)
+           AND (?3 IS NULL OR ts >= ?3)
+           AND (?4 IS NULL OR ts <= ?4)
+         ORDER BY ts DESC, id DESC
+         LIMIT ?5",
+    )?;
+    let rows = stmt.query_map(
+        params![pattern, sender_id, since_ms, until_ms, limit],
+        |r| {
+            Ok(ChatSearchHit {
+                conv_id: r.get(0)?,
+                msg_id: r.get(1)?,
+                sender_id: r.get(2)?,
+                kind: r.get(3)?,
+                content: r.get(4)?,
+                ts: r.get(5)?,
+                total: r.get(6)?,
+            })
+        },
+    )?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 /// 转义 LIKE 通配符：将 % 和 _ 替换为字面值。
 fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
@@ -1611,6 +1677,58 @@ mod tests {
         let friends = list_friends(&conn).unwrap();
         assert_eq!(friends.len(), 1);
         assert_eq!(friends[0].nickname, "张三回来了");
+    }
+
+    /// 历史检索：发送人/时间过滤、每会话命中总数、排除系统消息。
+    /// 这些判据直接决定搜索结果页上「共 N 条」与筛选是否可信，所以逐条钉住。
+    #[test]
+    fn search_history_filters_sender_time_and_excludes_system() {
+        let conn = mem();
+        let mut a1 = rec_as("m1", "c1", "text", "想你 今天一起吃饭");
+        a1.sender_id = "alice".into();
+        a1.ts = 1_000;
+        let mut b1 = rec_as("m2", "c1", "text", "我也想你");
+        b1.sender_id = "bob".into();
+        b1.ts = 2_000;
+        let mut a2 = rec_as("m3", "c1", "text", "想你想你想你");
+        a2.sender_id = "alice".into();
+        a2.ts = 3_000;
+        let mut sys = rec_as("m4", "c1", "system", "想你 被移出群聊");
+        sys.sender_id = "sys".into();
+        sys.ts = 4_000;
+        let mut other = rec_as("m5", "c2", "text", "想你");
+        other.sender_id = "alice".into();
+        other.ts = 5_000;
+        for m in [&a1, &b1, &a2, &sys, &other] {
+            insert_message(&conn, m).unwrap();
+        }
+
+        // 无筛选：跨会话、按时间倒序、排除 system，且每会话总数正确
+        let all = search_history(&conn, "想你", None, None, None, 100).unwrap();
+        assert_eq!(all.len(), 4, "system 消息必须被排除");
+        assert_eq!(all[0].msg_id, "m5", "按时间倒序（最新在前）");
+        assert_eq!(all[0].total, 1, "c2 只有 1 条命中");
+        let c1 = all.iter().find(|h| h.msg_id == "m3").unwrap();
+        assert_eq!(c1.total, 3, "c1 有 3 条命中（不含 system）");
+
+        // 发送人筛选：只留 alice 发的
+        let by_alice = search_history(&conn, "想你", Some("alice"), None, None, 100).unwrap();
+        assert_eq!(by_alice.len(), 3);
+        assert!(by_alice.iter().all(|h| h.sender_id == "alice"));
+        // 总数按**当前筛选**算（c1 只剩 2 条 alice 的）
+        let c1_alice = by_alice.iter().find(|h| h.conv_id == "c1").unwrap();
+        assert_eq!(c1_alice.total, 2);
+
+        // 时间区间：[2000, 3000] ⇒ m2 + m3
+        let ranged = search_history(&conn, "想你", None, Some(2_000), Some(3_000), 100).unwrap();
+        let mut ids: Vec<&str> = ranged.iter().map(|h| h.msg_id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["m2", "m3"]);
+
+        // limit 只截断返回条数，不改总数（否则"共 N 条"会随分页变小）
+        let capped = search_history(&conn, "想你", None, None, None, 1).unwrap();
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].total, 1, "被截断的是 c2 那条，其 total 仍是 1");
     }
 
     #[test]

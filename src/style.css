@@ -280,6 +280,31 @@ body {
 .overflow-auto {
   overscroll-behavior: contain;
 }
+/* 搜索/筛选小胶囊（「发送人」「日期」这类开关）。
+   与 `.gosslan-menu` 同族取值：圆角用统一 token、颜色全部走语义变量 —— 不写死微信色值。 */
+.gosslan-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--gosslan-radius-md);
+  border: 1px solid var(--gosslan-border);
+  background: transparent;
+  color: var(--gosslan-text-2);
+  font-size: 13px;
+  transition: background-color var(--gosslan-duration-fast) var(--gosslan-ease);
+}
+.gosslan-filter-chip:hover {
+  background: var(--gosslan-hover);
+  color: var(--gosslan-text);
+}
+/* 已筛选：主色描边 + 主色文字（不用实心块，避免与发送键抢视觉） */
+.gosslan-filter-chip--on {
+  border-color: var(--gosslan-primary);
+  color: var(--gosslan-accent-ink);
+}
+
 /* 可选文本标记：正文气泡 / 代码块用。
    两处用途：① 显式允许选字（与下面"控件不选中"的规则区分开）；
    ② 消息行长按菜单靠它让路 —— 命中可选文本时不弹操作面板，把长按还给原生选字。 */

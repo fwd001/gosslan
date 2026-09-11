@@ -29,6 +29,8 @@ const emit = defineEmits<{
   (e: "open-group"): void;
   (e: "open-friend", f: Friend): void;
   (e: "open-requests"): void;
+  /** 在搜索框里按回车 → 打开「搜索聊天记录」结果页（微信式分工：输入即过滤，回车进结果页） */
+  (e: "search-history", keyword: string): void;
 }>();
 
 const app = useAppStore();
@@ -138,6 +140,17 @@ function focusSearch() {
   searchInput.value?.focus();
   searchInput.value?.select();
 }
+/**
+ * 回车：用当前关键词打开「搜索聊天记录」结果页。
+ * 关键词为空时不动作（没有可搜的内容，弹一个空结果页只会让人困惑）。
+ */
+function onSearchEnter() {
+  // 只在「消息」页生效：通讯录页的搜索是为了找人，回车弹"聊天记录"结果页会让人困惑
+  if (props.view !== "chats") return;
+  const kw = keyword.value.trim();
+  if (kw) emit("search-history", kw);
+}
+
 onMounted(() => window.addEventListener(APP_ACTION.focusSearch, focusSearch));
 onUnmounted(() => window.removeEventListener(APP_ACTION.focusSearch, focusSearch));
 
@@ -315,6 +328,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           spellcheck="false"
           class="w-full bg-transparent text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)]"
           :placeholder="view === 'chats' ? t('common.search') : t('common.searchContacts')"
+          @keydown.enter.prevent="onSearchEnter"
         />
       </div>
       <div class="relative flex shrink-0 items-center">

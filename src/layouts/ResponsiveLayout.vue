@@ -16,6 +16,7 @@ import FriendProfile from "@/components/FriendProfile.vue";
 import FriendRequestList from "@/components/conversation/FriendRequestList.vue";
 import SettingsPanel from "@/components/SettingsPanel.vue";
 import AddFriendModal from "@/components/AddFriendModal.vue";
+import ChatSearchDialog from "@/components/search/ChatSearchDialog.vue";
 import GroupCreateModal from "@/components/GroupCreateModal.vue";
 import ShareDirectory from "@/components/ShareDirectory.vue";
 import LogViewer from "@/components/LogViewer.vue";
@@ -62,6 +63,27 @@ function openLogs() {
   } else {
     void api.openLogWindow().catch((e) => app.toastError(e, t("common.operationFail")));
   }
+}
+
+/** 搜索聊天记录结果页的开关与初始关键词（由会话列表搜索框回车触发）。 */
+const searchOpen = ref(false);
+const searchSeed = ref("");
+
+function openSearchHistory(keyword: string) {
+  searchSeed.value = keyword;
+  searchOpen.value = true;
+}
+
+/**
+ * 从结果页「进入聊天」：打开该会话并**跳到命中那一条**。
+ * 跳转复用 `locateMessageInConv`（它会翻页直到找到那条消息），失败时提示而不是静默
+ * —— 用户点"进入聊天"就是想看那条，没跳到会以为功能坏了。
+ */
+async function onOpenSearchHit(payload: { convId: string; msgId: string }) {
+  searchOpen.value = false;
+  if (app.isMobile) app.mobileView = "chat";
+  const r = await chat.locateMessageInConv(payload.convId, payload.msgId);
+  if (r !== "found") app.toast(t("search.locateFail"), "error");
 }
 
 function openFriendProfile(f: Friend) {
@@ -275,6 +297,7 @@ function onResizeEnd() {
         @open-group="groupOpen = true"
         @open-friend="openFriendProfile"
         @open-requests="openRequests"
+        @search-history="openSearchHistory"
       />
     </aside>
 
@@ -425,6 +448,14 @@ function onResizeEnd() {
 
     <!-- 弹窗 -->
     <SettingsPanel :open="settingsOpen" @close="settingsOpen = false" />
+    <!-- 搜索聊天记录结果页（会话列表搜索框回车打开） -->
+    <ChatSearchDialog
+      :open="searchOpen"
+      :initial-keyword="searchSeed"
+      @close="searchOpen = false"
+      @open-conversation="onOpenSearchHit"
+    />
+
     <AddFriendModal :open="addFriendOpen" @close="addFriendOpen = false" />
     <GroupCreateModal :open="groupOpen" @close="groupOpen = false" />
     <ShareDirectory :open="shareOpen" @close="shareOpen = false" />

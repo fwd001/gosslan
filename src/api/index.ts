@@ -2,36 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type {
-  AppSettings,
-  CacheInfo,
-  ChannelStatus,
-  CleanupReport,
-  ExportSummary,
-  Conversation,
-  DeviceInfo,
-  FileDoneInfo,
-  FileFailedInfo,
-  FileProgress,
-  Friend,
-  GroupReadInfo,
-  Group,
-  SearchResult,
-  InterfaceInfo,
-  LinkState,
-  LogEntry,
-  MessageRecord,
-  NetworkStatus,
-  Peer,
-  PeerReadInfo,
-  PendingRequest,
-  ShareEntry,
-  TopologyInfo,
-  TransferInfo,
-  DiscoveryDiag,
-  InterfaceCandidate,
-  RoutedEndpoint,
-} from "@/types";
+import type { AppSettings, CacheInfo, ChannelStatus, ChatSearchGroup, CleanupReport, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, NetworkStatus, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 
 export const api = {
   getDeviceInfo: () => invoke<DeviceInfo>("get_device_info"),
@@ -162,6 +133,22 @@ export const api = {
   getInterfaceCandidates: () => invoke<InterfaceCandidate[]>("get_interface_candidates"),
 
   // 运行日志（「运行日志」页 / 独立窗口用）
+  /**
+   * 搜索聊天记录（跨会话、按会话分组，支持「发送人 / 日期」筛选）。
+   * 结果页用；会话列表里那点是 `searchMessages`（每会话只回一条摘要）。
+   */
+  searchChatHistory: (p: {
+    keyword: string;
+    senderId?: string | null;
+    sinceMs?: number | null;
+    untilMs?: number | null;
+  }) =>
+    invoke<ChatSearchGroup[]>("search_chat_history", {
+      keyword: p.keyword,
+      senderId: p.senderId ?? null,
+      sinceMs: p.sinceMs ?? null,
+      untilMs: p.untilMs ?? null,
+    }),
   getLogs: () => invoke<LogEntry[]>("get_logs"),
   clearLogs: () => invoke<void>("clear_logs"),
   /** 桌面端：打开独立日志窗口；移动端不要调用（用页面跳转）。 */
