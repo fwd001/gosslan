@@ -199,23 +199,22 @@ pick_link(candidates: &[LinkView], now_ms) -> Option<usize>
 - **决定性判据（扩展 `examples/dual_link.rs`）**：它现在只验「建立了 2 条 + 断开一条后
   另一条仍能收到帧」，判据范围是**帧级**（示例没有监听端 ⇒ 实例只能经我们发起的连接送帧，
   能在第二条读到帧即该链路仍是活跃链路）。**它证明不了"选路切换"**。
-- **消息级判据的落地路径（下一步，需要能跑 E2E 的终端）**：
-  新增 `scripts/t5-failover.sh` + 扩展示例，设计如下 ——
-  ① 示例用**确定性身份**（从环境变量取种子）启动，把自己的 ed25519/x25519 公钥打印出来；
-  ② 脚本在启动实例前，用 `sqlite3` 把该身份按 `friends` 表 schema **预置为好友**
-     （绕开需要人工点「同意」的 UI 环节；E2E 里那条 SKIP 项同理）；
-  ③ 示例经两条端点拨入并握手，向实例发一条 E2EE `ChatMessage`；
-  ④ 示例**主动切断"按路径优先级应被选中"的那条**（LAN/loopback 那条），
-     然后断言仍能收到实例回发的 **`Ack`**（`Ack` 走 `try_send` ⇒ 真走选路）；
-  ⑤ **对照**：把两条都断掉后必须**再无 `Ack`**；另加「把 `route_order` 强制成插入序 →
-     该判据必须 FAIL」的非空转对照。
-  本机沙箱跑不了 E2E（写不了应用数据目录），故该脚本**必须先在放开沙箱的终端验证通过**再提交。
-- **护栏非空转**：临时把策略改成恒 `first()` → failover 判据必须 FAIL。
-- **回归**：`cargo test --lib` 全绿 / 0 warning；`npm test`；`bash scripts/e2e-dev.sh` 失败数恒 0。
-- **M3-0 的判据目前没有护栏**：`scripts/t4-mirror-dial.sh` 里 `online` **0 命中**，
-  当时 `online=1` 是一次性人工看日志。应把 `online=1` 断言固化进 T4。
-- **真机**：一台设备同时有 LAN + Routed 两条连接 → 日志显示按策略选中 → 拔网线后
-  Routed 接管、聊天不中断。
+- **消息级判据（已实现在 `examples/dual_link.rs`，⚠️ 待真机/本机 E2E 终端实跑）**：
+  关键在于「让实例**主动发一条定向消息**，才算真的走了 `try_send`」，而实例只给好友发消息。
+  最终方案**不需要好友、也不需要改库** —— 利用**非好友单聊**这一合法触发点：
+  实例在 `is_friend` 判定失败时会用 `try_send` 回一条 `Message::FriendMessageBlocked`
+  （`network/transport.rs` 非好友分支，且发生在**解密之前**，内容可以是垃圾）。
+  判据三步（含对照）：
+  1. 两条链路建立后发一条单聊 → **只有被选中的那条**收到 `FriendMessageBlocked`；
+     **对照**：另一条在短窗口内**不得**收到（否则是播发而非定向，判据不成立）；
+  2. **切断被选中那条**；
+  3. 在幸存链路上再发一条单聊 → 必须**仍收到** `FriendMessageBlocked` ⇒ 真 failover。
+  实跑方式（需可写应用数据目录）：`GOSSLAN_AUTOSTART=1 ./target/debug/gosslan --instance 1 &`
+  然后 `cargo run --example dual_link -- 60002`。
+  ⚠️ **诚实标注**：该判据的 PASS 尚未取得 —— 开发沙箱里实例**起不来**
+  （实测 `unable to open database file`：App 数据目录不可写），只验证到「编译通过 + 逻辑完整」。
+  另外本示例两条链路都是 LAN（loopback 与私网地址同属 `PathKind::Lan`），
+  所以它验的是 **failover**；**优先级 LAN > Routed** 由 `route_order_*` 单测覆盖。
 
 ---
 

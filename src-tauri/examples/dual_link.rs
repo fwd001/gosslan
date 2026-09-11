@@ -1,24 +1,26 @@
-//! 双连接（Phase 6b）验证对端：**同一 device_id 从两个不同端点**连入同一实例。
+//! 双连接（Phase 6b + M3-b）验证对端：**同一 device_id 从两个不同端点**连入同一实例，
+//! 并验证「切断被选中那条 → 消息仍送达」这条**消息级** failover 判据（ADR-0014 §8）。
 //!
-//! 验证 6b 的核心语义：
-//! 1. 同一 peer 的两个端点 = 两条连接（不再是「一个 peer 只能有一条连接」）；
-//! 2. **断开其中一条，另一条仍然存活**；
-//! 3. 断一条**不会**让对端把本节点整条删掉（旧实现会 `remove(peer_id)` 全删）。
+//! ## 为什么能拿到「消息级」判据（关键设计）
+//! 只有当实例**主动发一条定向消息**给我们时，才真的走了 `try_send`（M3-b 的选路路径）。
+//! 但实例只给**好友**发消息，而本示例无法成为好友（需要人工点同意或改库）。
+//! 找到的合法触发点是：**非好友单聊** —— 实例在 `is_friend` 判定失败时会用 `try_send`
+//! 回一条 `Message::FriendMessageBlocked`（见 `network/transport.rs` 的非好友分支，
+//! 且发生在解密**之前**，所以内容可以是任意垃圾）。这条回复：
+//!   · 是**定向**的（只走一条链路，走 M3-b 选路）⇒ 可用来判定"实例选了哪条"；
+//!   · 不需要好友关系、不需要合法密文 ⇒ 本示例可独立触发。
 //!
-//! 判据：实例每 **5 秒**向 `links` 里的每条连接发一次 Heartbeat。
-//! 所以「断开端点1 后端点2 仍能收到帧」= 实例仍在维护该 peer 的另一条连接。
-//! 若对端把整个 peer 删了，端点2 就再也收不到任何帧。
+//! ## 判据（三步，含对照）
+//! 1. 两条链路都建立后发一条单聊 → **只有被选中的那条**收到 `FriendMessageBlocked`；
+//!    **对照**：另一条在短窗口内**不得**收到 —— 否则说明是播发而非定向，判据不成立；
+//! 2. **切断被选中的那条**；
+//! 3. 在幸存链路上再发一条单聊 → 必须**仍收到** `FriendMessageBlocked`
+//!    ⇒ 实例把定向发送切到了幸存链路 = **真 failover**。
 //!
-//! ## 判据与局限（2026-09-12 复核后补）
-//!
-//! 本对端只能验到**帧级**：实例每 5s 向**每条**链路发心跳，因此「断一条后另一条仍有帧」
-//! 只说明还有一条活着，**不能**证明实例"切换"了选路。为把这条断言变成非空转，这里加了
-//! **对照**：随后把第二条也断掉，必须**再无任何帧** —— 否则说明之前的帧来自第三条路径，
-//! 第一条断开的结论就不成立。
-//!
-//! 真正的**消息级** failover 判据（「切断被选中那条 → 消息仍送达」，ADR-0014 §8）需要
-//! 双方是好友且能解密（实例只会给好友发消息），本示例不具备该前提 ⇒ 由真机/双实例
-//! 手工回归覆盖（见 ADR-0014 §8 与任务文档的真机验收清单）。
+//! ## 局限（如实标注，不假装覆盖）
+//! 两条链路对本示例都是 LAN（loopback 与私网地址都判为 `PathKind::Lan`），所以本示例验证的是
+//! **failover（断一条仍送达）**；**选路优先级 LAN > Routed** 由
+//! `network::transport::route_order_*` 单测覆盖（那里能构造 Routed 端点）。
 //!
 //! 用法（需先启动实例）：
 //! ```bash
@@ -31,7 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // 注意：lib 名是 `gosslan_lib`（Cargo.toml `[lib] name`），不是 `gosslan`。
 use gosslan_lib::crypto::Identity;
-use gosslan_lib::protocol::{hello_signing_bytes, Message};
+use gosslan_lib::protocol::{hello_signing_bytes, Message, MsgKind};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -50,10 +52,7 @@ async fn read_msg<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Message> {
     r.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
     if len == 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "空帧",
-        ));
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "空帧"));
     }
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf).await?;
@@ -76,23 +75,34 @@ fn second_ip() -> Option<String> {
         .map(|i| i.ip().to_string())
 }
 
-/// 建立一条连接并完成 Hello 握手（成功 = 能读到对端后续帧）。
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+/// 建立一条连接并完成 Hello 握手，返回 (读半, 写半, **对端（实例）的 device_id**)。
+///
+/// 学到实例的 device_id 是必需的：单聊帧的 `to` 必须等于它，否则实例会静默丢弃
+/// （`to != state.device_id → return`），我们也就拿不到那条定向回复。
 async fn connect_and_hello(
     endpoint: &str,
     device_id: &str,
     id: &Identity,
-) -> Result<(tokio::net::tcp::OwnedReadHalf, tokio::net::tcp::OwnedWriteHalf), String> {
+) -> Result<
+    (
+        tokio::net::tcp::OwnedReadHalf,
+        tokio::net::tcp::OwnedWriteHalf,
+        String,
+    ),
+    String,
+> {
     let stream = TcpStream::connect(endpoint)
         .await
         .map_err(|e| format!("连接 {endpoint} 失败: {e}"))?;
 
-    let nonce = format!(
-        "nonce-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default()
-    );
+    let nonce = format!("nonce-{}", now_ms());
     let x25519 = id.x25519_public_b64();
     let ed25519 = id.ed25519_public_b64();
     let sig = id.sign_b64(&hello_signing_bytes(device_id, 0, &nonce, &x25519, &ed25519));
@@ -116,9 +126,49 @@ async fn connect_and_hello(
         .map_err(|e| format!("发送 Hello 失败: {e}"))?;
 
     match tokio::time::timeout(std::time::Duration::from_secs(5), read_msg(&mut r)).await {
-        Ok(Ok(_)) => Ok((r, w)),
+        Ok(Ok(Message::Hello { device_id, .. })) => Ok((r, w, device_id)),
+        Ok(Ok(other)) => Err(format!("握手首帧不是 Hello：{other:?}")),
         Ok(Err(e)) => Err(format!("读取对端帧失败（Hello 可能被拒）: {e}")),
         Err(_) => Err("握手超时：5s 内未收到对端任何帧".to_string()),
+    }
+}
+
+/// 发出一条**单聊**帧（内容任意：实例对非好友在解密前就会回 `FriendMessageBlocked`）。
+async fn send_chat<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    my_id: &str,
+    app_id: &str,
+    seq: i64,
+) -> Result<(), String> {
+    let msg = Message::ChatMessage {
+        msg_id: format!("dual-link-{}-{seq}", now_ms()),
+        from: my_id.to_string(),
+        to: app_id.to_string(),
+        kind: MsgKind::Text,
+        content: "dual-link-probe".to_string(),
+        ts: now_ms(),
+        seq,
+    };
+    write_msg(w, &msg)
+        .await
+        .map_err(|e| format!("发送单聊失败: {e}"))
+}
+
+/// 等待 `FriendMessageBlocked`；跳过心跳等无关帧。
+/// `Ok(true)` = 收到；`Ok(false)` = 窗口内没收到；`Err` = 连接出错。
+async fn wait_blocked<R: AsyncRead + Unpin>(r: &mut R, secs: u64) -> Result<bool, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Ok(false);
+        }
+        match tokio::time::timeout(left, read_msg(r)).await {
+            Ok(Ok(Message::FriendMessageBlocked { .. })) => return Ok(true),
+            Ok(Ok(_)) => continue, // 心跳 / 其它帧：继续等
+            Ok(Err(e)) => return Err(format!("读帧出错: {e}")),
+            Err(_) => return Ok(false),
+        }
     }
 }
 
@@ -132,34 +182,98 @@ async fn main() -> Result<(), String> {
     let e1 = format!("127.0.0.1:{port}");
     let e2 = format!("{ip2}:{port}");
 
-    println!("[1/4] 端点1 = {e1}");
-    println!("[2/4] 端点2 = {e2}   （同一 device_id={device_id}，不同端点）");
+    println!("[1/5] 端点1 = {e1}");
+    println!("      端点2 = {e2}   （同一 device_id={device_id}，不同端点）");
+    let (r1, w1, app1) = connect_and_hello(&e1, &device_id, &id).await?;
+    println!("      ✓ 端点1 握手成功（实例 device_id={app1}）");
+    let (r2, w2, app2) = connect_and_hello(&e2, &device_id, &id).await?;
+    if app1 != app2 {
+        return Err(format!(
+            "INCONCLUSIVE | 两个端点连到的不是同一个实例（{app1} vs {app2}）"
+        ));
+    }
+    println!("      ✓ 端点2 握手成功 —— 对端应为该 peer 建立 2 条连接");
 
-    let (r1, w1) = connect_and_hello(&e1, &device_id, &id).await?;
-    println!("     ✓ 端点1 握手成功");
-    let (mut r2, _w2) = connect_and_hello(&e2, &device_id, &id).await?;
-    println!("     ✓ 端点2 握手成功 —— 对端应为该 peer 建立 2 条连接");
+    // 两半都放进 Option：步骤 4 要按"被选中的一侧"整体丢弃，Option::take 才好表达
+    // （Rust 的移动语义下，直接 drop 之后再引用另一分支会被借用检查拒绝）。
+    let (mut r1, mut w1) = (Some(r1), Some(w1));
+    let (mut r2, mut w2) = (Some(r2), Some(w2));
 
-    println!("[3/4] 断开端点1（只断这一条）…");
-    drop(w1);
-    drop(r1);
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // ---- 步骤 2：发单聊，看实例把定向回复发到哪条 ----
+    println!("[2/5] 端点1 发一条单聊，观察实例的定向回复走哪条链路…");
+    send_chat(w1.as_mut().unwrap(), &device_id, &app1, 1).await?;
+    let (selected, got) = tokio::select! {
+        got = wait_blocked(r1.as_mut().unwrap(), 8) => (0usize, got),
+        got = wait_blocked(r2.as_mut().unwrap(), 8) => (1usize, got),
+    };
+    match got {
+        Ok(true) => println!(
+            "      ✓ 实例选中了**端点{}**（该链路收到 FriendMessageBlocked）",
+            selected + 1
+        ),
+        Ok(false) => {
+            return Err(
+                "FAIL | 8s 内两条链路都没收到 FriendMessageBlocked —— 实例没有回定向帧\
+                 （实例未运行 / 版本不同 / 单聊分支被改）"
+                    .to_string(),
+            )
+        }
+        Err(e) => return Err(format!("INCONCLUSIVE | 端点{} 读帧出错: {e}", selected + 1)),
+    }
 
-    println!("[4/4] 等端点2 的下一帧（实例每 5s 心跳一次，最多等 10s）…");
-    match tokio::time::timeout(std::time::Duration::from_secs(10), read_msg(&mut r2)).await {
-        Ok(Ok(m)) => {
-            println!("PASS | 断开端点1 后端点2 仍收到帧：{m:?}");
-            println!("     → 双连接语义成立：断一条不影响另一条，也未把 peer 整条删除");
-            println!("     （判据范围：**帧级**。本示例没有监听端，实例只能经由我们发起的连接");
-            println!("       把帧送过来，所以能在端点2 读到帧即证明该连接仍是实例的活跃链路；");
-            println!("       **消息级** failover（切断被选中那条 → 消息仍送达）需要双方是好友且能");
-            println!("       解密，见 ADR-0014 §8 的真机验收清单。）");
+    // ---- 步骤 3：对照 —— 另一条**不得**收到定向帧 ----
+    //
+    // 没有这一步，「收到回复」证明不了"定向"：若实例把回复播发到所有链路，
+    // 那么「切断被选中那条、另一条仍收到」就毫无意义（本来就都收得到）。
+    println!("[3/5] 对照：另一条链路在 2s 内**不得**收到定向帧…");
+    let other = if selected == 0 { r2.as_mut().unwrap() } else { r1.as_mut().unwrap() };
+    match wait_blocked(other, 2).await {
+        Ok(false) => println!("      ✓ 对照成立：未被选中的那条没有收到定向帧（确实是定向投递）"),
+        Ok(true) => {
+            return Err(
+                "INCONCLUSIVE | 两条链路都收到了定向帧 ⇒ 实例是播发而非定向，本判据不成立"
+                    .to_string(),
+            )
+        }
+        Err(e) => return Err(format!("INCONCLUSIVE | 对照链路读帧出错: {e}")),
+    }
+
+    // ---- 步骤 4：切断被选中那条，验证幸存链路上仍能送达 ----
+    println!("[4/5] 切断被选中的**端点{}**，只留另一条…", selected + 1);
+    if selected == 0 {
+        w1.take();
+        r1.take();
+    } else {
+        w2.take();
+        r2.take();
+    }
+    // 给实例一点时间感知 FIN：读循环报错 → 摘掉该链路（或 writer 先因 channel 关闭退出）。
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+    println!("[5/5] 在幸存链路上再发一条单聊，必须**仍收到**定向回复…");
+    let (survivor_r, survivor_w) = if selected == 0 {
+        (r2.as_mut().unwrap(), w2.as_mut().unwrap())
+    } else {
+        (r1.as_mut().unwrap(), w1.as_mut().unwrap())
+    };
+    send_chat(survivor_w, &device_id, &app2, 2).await?;
+    match wait_blocked(survivor_r, 10).await {
+        Ok(true) => {
+            println!();
+            println!("PASS | 消息级 failover 成立：");
+            println!("       · 实例的定向回复确实只走被选中的一条（对照通过）；");
+            println!("       · 切断那条之后，在幸存链路上发单聊**仍收到定向回复**；");
+            println!("       · ⇒ try_send 的选路真的切到了存活链路（不是投进死路）。");
+            println!();
+            println!("判据范围：failover（断一条仍送达）。选路**优先级**（LAN > Routed）由");
+            println!("`route_order_*` 单测覆盖 —— 本示例两条链路都是 LAN。");
             Ok(())
         }
-        Ok(Err(e)) => Err(format!("FAIL | 端点2 读帧出错: {e}")),
-        Err(_) => Err(
-            "FAIL | 10s 内端点2 未收到任何帧 —— 对端可能把整个 peer 删掉了（旧的单连接行为）"
+        Ok(false) => Err(
+            "FAIL | 切断被选中链路后，幸存链路上 10s 内没有收到定向回复\
+             ⇒ 实例没有把定向发送切到存活链路（这正是 M3-b 要解决的问题）"
                 .to_string(),
         ),
+        Err(e) => Err(format!("INCONCLUSIVE | 幸存链路读帧出错: {e}")),
     }
 }
