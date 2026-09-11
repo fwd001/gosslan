@@ -441,6 +441,7 @@ pub fn list_friends(conn: &Connection) -> Result<Vec<Friend>> {
             device_id: r.get(0)?,
             nickname: r.get(1)?,
             avatar: r.get(2)?,
+            device_type: String::new(),
             online: false,
         })
     })?;

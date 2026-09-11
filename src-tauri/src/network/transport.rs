@@ -24,7 +24,7 @@ use crate::db;
 use crate::network::file;
 use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind};
 use crate::state::{
-    AppState, FileDoneInfo, FileFailedInfo, FileProgress, Link, MessageRecord, Peer,
+    AppState, FileDoneInfo, FileFailedInfo, FileProgress, Link, LinkState, MessageRecord, Peer,
     PendingRequest,
 };
 use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
@@ -139,10 +139,11 @@ async fn broadcast_presence(state: &Arc<AppState>) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    // payload：明文 JSON（昵称/头像）。身份与双公钥已在 GossipEnvelope 字段里。
+    // payload：明文 JSON（昵称/头像/设备类型）。身份与双公钥已在 GossipEnvelope 字段里。
     let payload = serde_json::json!({
         "nickname": nickname,
         "avatar": avatar,
+        "device_type": crate::protocol::current_device_type(),
     })
     .to_string();
     let payload_b64 = STANDARD.encode(payload.as_bytes());
@@ -501,6 +502,7 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
         device_id,
         nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         avatar: state.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        device_type: crate::protocol::current_device_type().to_string(),
         tcp_port,
         x25519_pubkey,
         ed25519_pubkey,
@@ -756,6 +758,40 @@ fn path_kind_for(endpoint: &std::net::SocketAddr) -> PathKind {
         IpAddr::V4(v4) if v4.is_private() || v4.is_loopback() || v4.is_link_local() => PathKind::Lan,
         IpAddr::V6(v6) if v6.is_loopback() || v6.is_unicast_link_local() => PathKind::Lan,
         _ => PathKind::Routed,
+    }
+}
+
+/// 某 peer 当前第一条连接（入站视角）的路径类型字符串。
+///
+/// 直连时这就是「对方 ↔ 我」的真实路径；桥接时是「中继 ↔ 我」的最后一段。
+pub(crate) async fn inbound_path_kind(state: &AppState, peer_id: &str) -> String {
+    let links = state.links.lock().await;
+    links
+        .get(peer_id)
+        .and_then(|l| l.first())
+        .map(|l| path_kind_for(&l.endpoint).as_str().to_string())
+        .unwrap_or_else(|| PathKind::Lan.as_str().to_string())
+}
+
+/// 更新会话的「当前链路」快照（最近一条消息的链路 + 中间节点数）。
+///
+/// 只在链路**变化**时写并留一行日志——链路状态是内存态，日志是唯一可观测手段
+/// （真机排障看连接实际走了哪条路）。收发消息频繁，不做无谓的重复写。
+pub(crate) fn update_conv_link(state: &AppState, conv_id: &str, path: &str, hop: u8) {
+    let mut links = state.conv_link.lock().unwrap_or_else(|e| e.into_inner());
+    let changed = match links.get(conv_id) {
+        Some(old) => old.path != path || old.hop != hop,
+        None => true,
+    };
+    if changed {
+        links.insert(
+            conv_id.to_string(),
+            LinkState {
+                path: path.to_string(),
+                hop,
+            },
+        );
+        eprintln!("[link] conv={conv_id} path={path} hop={hop}");
     }
 }
 
@@ -1120,6 +1156,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             device_id,
             nickname,
             avatar,
+            device_type,
             tcp_port,
             x25519_pubkey,
             ed25519_pubkey,
@@ -1141,6 +1178,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 &device_id,
                 &nickname,
                 avatar.clone(),
+                &device_type,
                 &ip,
                 tcp_port,
                 Some(x25519_pubkey),
@@ -1181,6 +1219,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             device_id,
             nickname,
             avatar,
+            device_type,
         } => {
             if device_id != peer_id {
                 return;
@@ -1197,6 +1236,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 &device_id,
                 &nickname,
                 avatar.clone(),
+                &device_type,
                 &ip,
                 0,
                 None,
@@ -1443,6 +1483,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             if announced_on(&inserted) {
                 let _ = state.app.emit("message-received", &out_rec);
+                // 直连单聊消息：链路 = 入站连接的路径，0 个中间节点。
+                let path = inbound_path_kind(state, peer_id).await;
+                update_conv_link(state, &from, &path, 0);
             }
             // Ack 与「是否本次新建」无关：消息已在库中（无论是哪条路径先写的）即代表已成功接收
             let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
@@ -2524,6 +2567,11 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         .get("avatar")
                         .and_then(|a| a.as_str())
                         .map(|s| s.to_string());
+                    let device_type = v
+                        .get("device_type")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     // 首次学到才留痕：peers 是内存结构、不落库，这行日志是唯一可观测
                     // 「跨跳发现了谁」的手段（与 [mesh] ±conn、握手学到身份同理）。
                     let is_new = {
@@ -2543,6 +2591,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         &env.sender_id,
                         &nickname,
                         avatar,
+                        &device_type,
                         "",
                         0,
                         Some(env.sender_pubkey.clone()),
@@ -2574,6 +2623,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             &env.sender_id,
                             &from_nickname,
                             from_avatar.clone(),
+                            "",
                             "",
                             0,
                             Some(env.sender_pubkey.clone()),
@@ -2838,6 +2888,17 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 重复投递与数据库失败都不产生本地副作用；Gossip 的转发已在上面完成。
                 if announced_on(&inserted) {
                     let _ = state.app.emit("message-received", &out_rec);
+                }
+                // 更新会话「当前链路」：单聊消息的 hop 由 Gossip ttl 反推
+                // （初始 ttl - 收到 ttl），path 取入站连接的路径（直连准确，桥接为最后一段）。
+                // 仅首次落库（非重复投递）才更新，避免「走了不同路径的重复副本」干扰。
+                if conv_kind == "single" && announced_on(&inserted) {
+                    let hop = {
+                        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                        gossip.ttl.saturating_sub(env.ttl) as u8
+                    };
+                    let path = inbound_path_kind(state, peer_id).await;
+                    update_conv_link(state, &conv_id, &path, hop);
                 }
                 // 群消息现在有 outbox 兜底：只要消息确实已持久化（无论本次是否新建），
                 // 就回 GroupAck 让发送方删除对应 (msg_id, peer_id) 的待发记录。
@@ -4072,6 +4133,7 @@ pub async fn upsert_peer(
     device_id: &str,
     nickname: &str,
     avatar: Option<String>,
+    device_type: &str,
     ip: &str,
     tcp_port: u16,
     x25519: Option<String>,
@@ -4091,6 +4153,7 @@ pub async fn upsert_peer(
                         device_id: device_id.to_string(),
                         nickname: nickname.to_string(),
                         avatar,
+                        device_type: device_type.to_string(),
                         ip: ip.to_string(),
                         tcp_port,
                         last_seen: ts,
@@ -4114,6 +4177,9 @@ pub async fn upsert_peer(
                 p.nickname = nickname.to_string();
                 if avatar.is_some() {
                     p.avatar = avatar;
+                }
+                if !device_type.is_empty() {
+                    p.device_type = device_type.to_string();
                 }
                 if !ip.is_empty() {
                     p.ip = ip.to_string();

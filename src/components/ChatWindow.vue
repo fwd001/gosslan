@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -15,7 +16,7 @@ import ForwardModal from "@/components/message/ForwardModal.vue";
 import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
 import { ArrowDown } from "lucide-vue-next";
-import type { MessageRecord, MsgKind } from "@/types";
+import type { LinkState, MessageRecord, MsgKind } from "@/types";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
 
@@ -40,6 +41,27 @@ const online = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return false;
   return chat.friends.some((f) => f.device_id === conv.value!.id && f.online);
 });
+/** 单聊对方的设备类型（"desktop"/"mobile"，空串 = 未知）。群聊不显示。 */
+const deviceType = computed(() => {
+  if (!conv.value || conv.value.kind !== "single") return "";
+  return chat.friends.find((f) => f.device_id === conv.value!.id)?.device_type ?? "";
+});
+
+/** 会话当前链路（最近一条消息的链路 + 跳数）。单聊显示，群聊不显示。 */
+const linkState = ref<LinkState | null>(null);
+async function refreshLinkState() {
+  const id = chat.activeConv;
+  if (!id || id.startsWith("group:")) {
+    linkState.value = null;
+    return;
+  }
+  linkState.value = await api.getConvLink(id);
+}
+watch(
+  () => [chat.activeConv, messages.value.length] as const,
+  refreshLinkState,
+  { immediate: true },
+);
 const isPeerFriend = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return true;
   return chat.friends.some((f) => f.device_id === conv.value!.id);
@@ -404,6 +426,8 @@ function onLoadMore() {
       :conv="conv"
       :is-group="isGroup"
       :online="online"
+      :device-type="deviceType"
+      :link-state="linkState"
       :member-count="memberCount"
       :can-rename="canRename"
       :show-back="app.isMobile"

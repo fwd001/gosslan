@@ -232,6 +232,12 @@ export const zhCN: MessageDict = {
   "chat.header.members": "群成员",
   "chat.header.rename": "修改群名称",
   "chat.header.share": "共享目录",
+  "chat.header.deviceDesktop": "对方设备：电脑",
+  "chat.header.deviceMobile": "对方设备：手机",
+  "chat.header.linkLan": "局域网直连",
+  "chat.header.linkRouted": "跨网段直连",
+  "chat.header.linkBluetooth": "蓝牙直连",
+  "chat.header.linkRelay": "桥接 · {n} 个中间节点",
 
   // ---- 通用（按钮 / 状态） ----
   "common.back": "返回",
@@ -723,6 +729,12 @@ export const enUS: MessageDict = {
   "chat.header.members": "Members",
   "chat.header.rename": "Rename Group",
   "chat.header.share": "Shared Folder",
+  "chat.header.deviceDesktop": "Peer device: Desktop",
+  "chat.header.deviceMobile": "Peer device: Mobile",
+  "chat.header.linkLan": "LAN direct",
+  "chat.header.linkRouted": "Cross-subnet direct",
+  "chat.header.linkBluetooth": "Bluetooth",
+  "chat.header.linkRelay": "Relayed · {n} hops",
 
   // ---- Common (buttons / states) ----
   "common.back": "Back",

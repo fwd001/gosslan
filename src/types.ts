@@ -4,6 +4,7 @@ export interface DeviceInfo {
   device_id: string;
   nickname: string;
   avatar: string | null;
+  device_type: string;
   tcp_port: number;
   online: boolean;
   x25519_pubkey: string;
@@ -14,6 +15,7 @@ export interface Peer {
   device_id: string;
   nickname: string;
   avatar: string | null;
+  device_type: string;
   ip: string;
   tcp_port: number;
   last_seen: number;
@@ -27,6 +29,7 @@ export interface Friend {
   device_id: string;
   nickname: string;
   avatar: string | null;
+  device_type: string;
   online: boolean;
 }
 
@@ -61,6 +64,12 @@ export interface Conversation {
   last_msg: string | null;
   last_ts: number | null;
   unread: number;
+}
+
+/** 会话的「当前链路」快照：最近一条消息走的链路 + 中间节点数。 */
+export interface LinkState {
+  path: "lan" | "routed" | "bluetooth";
+  hop: number;
 }
 
 export interface Group {

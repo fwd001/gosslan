@@ -28,6 +28,19 @@ pub const ANNOUNCE_INTERVAL_SECS: u64 = 5;
 /// 且连接断开时由 `mark_peer_offline` 立即移除（无需超时兜底）。
 pub const RELAY_PEER_TIMEOUT_SECS: i64 = 45;
 
+/// 当前平台的设备类型标识（"desktop" / "mobile"）。
+///
+/// 供 Hello / UserInfo / Presence 携带，让对端知道「我是电脑还是手机」。
+/// 它是**展示信息**（不参与签名、不绑定身份），旧端缺省时按空串处理。
+#[cfg(desktop)]
+pub fn current_device_type() -> &'static str {
+    "desktop"
+}
+#[cfg(mobile)]
+pub fn current_device_type() -> &'static str {
+    "mobile"
+}
+
 /// 消息内容类型
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -194,6 +207,9 @@ pub enum Message {
         device_id: String,
         nickname: String,
         avatar: Option<String>,
+        /// 设备类型（"desktop" / "mobile"，空串 = 旧端/未知）。展示信息，不参与签名。
+        #[serde(default)]
+        device_type: String,
         tcp_port: u16,
         x25519_pubkey: String,
         ed25519_pubkey: String,
@@ -217,6 +233,9 @@ pub enum Message {
         device_id: String,
         nickname: String,
         avatar: Option<String>,
+        /// 设备类型（"desktop" / "mobile"，空串 = 旧端/未知）。
+        #[serde(default)]
+        device_type: String,
     },
     /// 聊天样式同步：发送方广播自己的气泡/字体偏好，接收方持久化并按其偏好渲染该发送者的消息
     ChatStyle {
@@ -729,6 +748,7 @@ mod tests {
             device_id: "dev-a".into(),
             nickname: "A".into(),
             avatar: None,
+            device_type: "desktop".into(),
             tcp_port: 59992,
             x25519_pubkey: "xk".into(),
             ed25519_pubkey: "ek".into(),
@@ -750,6 +770,34 @@ mod tests {
             Message::Hello { nonce, sig, .. } => {
                 assert!(nonce.is_empty() && sig.is_empty());
             }
+            _ => panic!("expect hello"),
+        }
+    }
+
+    /// device_type：序列化往返保持，旧 Hello 缺省为空串（旧端兼容，不参与签名）。
+    #[test]
+    fn hello_device_type_roundtrip_and_legacy_default() {
+        let hello = Message::Hello {
+            device_id: "a".into(),
+            nickname: "A".into(),
+            avatar: None,
+            device_type: "mobile".into(),
+            tcp_port: 1,
+            x25519_pubkey: "x".into(),
+            ed25519_pubkey: "e".into(),
+            conv_clock: 0,
+            nonce: "n".into(),
+            sig: "s".into(),
+        };
+        let json = serde_json::to_string(&hello).unwrap();
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::Hello { device_type, .. } => assert_eq!(device_type, "mobile"),
+            _ => panic!("expect hello"),
+        }
+        // 旧 Hello（无 device_type 字段）→ 缺省空串
+        let legacy = r#"{"type":"hello","device_id":"a","nickname":"A","avatar":null,"tcp_port":1,"x25519_pubkey":"x","ed25519_pubkey":"e","conv_clock":0}"#;
+        match serde_json::from_str::<Message>(legacy).unwrap() {
+            Message::Hello { device_type, .. } => assert!(device_type.is_empty()),
             _ => panic!("expect hello"),
         }
     }

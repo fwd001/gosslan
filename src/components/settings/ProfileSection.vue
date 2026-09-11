@@ -129,7 +129,7 @@ function processAvatar(file: File): Promise<string> {
       <div class="min-w-0 flex-1">
         <input
           v-model="nickname"
-          maxlength="30"
+          maxlength="40"
           class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
           :placeholder="t('settings.profile.nickname.placeholder')"
           @blur="saveProfileNow"

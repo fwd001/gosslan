@@ -92,6 +92,7 @@ async function add(peerId: string) {
     <template v-else>
       <input
         v-model="keyword"
+        maxlength="100"
         class="mb-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
         :placeholder="t('friend.add.searchPlaceholder')"
       />

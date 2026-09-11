@@ -11,8 +11,8 @@ use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
 /// 业务输入长度限制（按字符数，非字节数）
-const MAX_NICKNAME_LEN: usize = 30;
-pub const MAX_GROUP_NAME_LEN: usize = 30;
+const MAX_NICKNAME_LEN: usize = 40;
+pub const MAX_GROUP_NAME_LEN: usize = 40;
 const MAX_SEARCH_LEN: usize = 100;
 /// 单条消息内容上限（按**字符数**，非字节数）。UTF-8 下一个中文字符 3 字节，
 /// 5 万字符对应最大约 150 KB 落库——足够覆盖任何真实聊天输入，又不可能被
@@ -98,6 +98,7 @@ pub fn get_device_info(state: State<'_, Arc<AppState>>) -> DeviceInfo {
         device_id: s.device_id.clone(),
         nickname: s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         avatar: s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        device_type: crate::protocol::current_device_type().to_string(),
         tcp_port: s.tcp_port,
         online: s.network.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
         x25519_pubkey: s.identity.x25519_public_b64(),
@@ -140,6 +141,7 @@ pub async fn update_profile(
         device_id: s.device_id.clone(),
         nickname,
         avatar,
+        device_type: crate::protocol::current_device_type().to_string(),
     };
     let links = s.links.lock().await;
     for link in links.values().flatten() {
@@ -151,6 +153,7 @@ pub async fn update_profile(
         device_id: s.device_id.clone(),
         nickname: s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         avatar: s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        device_type: crate::protocol::current_device_type().to_string(),
         tcp_port: s.tcp_port,
         online: s.network.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
         x25519_pubkey: s.identity.x25519_public_b64(),
@@ -727,6 +730,11 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
     let mut friends = db::list_friends(&dbc).unwrap_or_default();
     for f in friends.iter_mut() {
         f.online = peers.contains_key(&f.device_id) || active_links.contains(&f.device_id);
+        // 设备类型从 peers 表现场读取（Hello/UserInfo/Presence 都会更新它）。
+        f.device_type = peers
+            .get(&f.device_id)
+            .map(|p| p.device_type.clone())
+            .unwrap_or_default();
     }
     friends
 }
@@ -1049,8 +1057,31 @@ pub async fn send_message(
     // 先入队再投递（INV-003）：此前 broadcast 在插队之前，若心跳的 flush_outbox 正好
     // 落在这个窗口，它看不到 outbox 行 ⇒ 这一轮直发缺席 ⇒ Ack 要等下一个心跳（+5s）。
     broadcast_gossip(s, env).await;
+    // 更新会话「当前链路」（发送方视角）：有直连则 hop=0 + 出站路径；无直连
+    // （经中继广播）则乐观记 hop=1（实际跳数发送方不可知，等对端回执侧视角校正）。
+    {
+        let hop = if s.has_link(&friend_id).await { 0 } else { 1 };
+        let path = crate::network::transport::inbound_path_kind(s, &friend_id).await;
+        crate::network::transport::update_conv_link(s, &friend_id, &path, hop);
+    }
 
     Ok(rec)
+}
+
+/// 读取会话的「当前链路」快照（最近一条消息的链路 + 中间节点数）。
+/// 前端聊天窗口据此显示连接图标（LAN / 桥接 / 蓝牙 + 节点数）。
+#[tauri::command]
+pub fn get_conv_link(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+) -> Option<crate::state::LinkState> {
+    state
+        .inner()
+        .conv_link
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&conv_id)
+        .cloned()
 }
 
 #[tauri::command]

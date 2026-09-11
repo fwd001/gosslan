@@ -301,6 +301,7 @@ pub async fn spawn(
                                     &pkt.device_id,
                                     &pkt.nickname,
                                     None,
+                                    "",
                                     &src.ip().to_string(),
                                     pkt.tcp_port,
                                     pkt.x25519_pubkey.clone(),

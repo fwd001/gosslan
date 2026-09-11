@@ -64,7 +64,7 @@ async function create() {
         v-model="name"
         class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
         :placeholder="t('group.namePlaceholder')"
-        maxlength="32"
+        maxlength="40"
       />
     </div>
 

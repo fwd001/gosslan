@@ -18,6 +18,7 @@ import type {
   Group,
   SearchResult,
   InterfaceInfo,
+  LinkState,
   MessageRecord,
   NetworkStatus,
   Peer,
@@ -55,6 +56,7 @@ export const api = {
     invoke<MessageRecord>("send_message", { friendId, content, kind }),
   getMessages: (convId: string, limit?: number, offset?: number) =>
     invoke<MessageRecord[]>("get_messages", { convId, limit, offset }),
+  getConvLink: (convId: string) => invoke<LinkState | null>("get_conv_link", { convId }),
   getMessageCount: (convId: string) => invoke<number>("get_message_count", { convId }),
   getConversations: () => invoke<Conversation[]>("get_conversations"),
   ensureConversation: (friendId: string) =>

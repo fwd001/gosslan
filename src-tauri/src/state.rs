@@ -34,6 +34,9 @@ pub struct Peer {
     pub device_id: String,
     pub nickname: String,
     pub avatar: Option<String>,
+    /// 设备类型（"desktop" / "mobile"，空串 = 未知/旧端）。来自 Hello/UserInfo/Presence。
+    #[serde(default)]
+    pub device_type: String,
     pub ip: String,
     pub tcp_port: u16,
     pub last_seen: i64,
@@ -70,6 +73,26 @@ pub struct PendingRequest {
     pub ts: i64,
 }
 
+/// 会话的「当前链路」快照：最近一条消息走的链路 + 中间节点数。
+///
+/// - `path`：`"lan"` / `"routed"` / `"bluetooth"`。直连时是入站连接的真实路径；
+///   桥接时是「最后一段」的路径（发送方第一段链路需信封携带，Phase 后续补齐）。
+/// - `hop`：中间节点数（0 = 直连）。由 Gossip 的 ttl 反推（初始 ttl - 收到 ttl）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct LinkState {
+    pub path: String,
+    pub hop: u8,
+}
+
+impl Default for LinkState {
+    fn default() -> Self {
+        LinkState {
+            path: "lan".to_string(),
+            hop: 0,
+        }
+    }
+}
+
 /// 单条消息记录（与前端一致）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MessageRecord {
@@ -104,6 +127,9 @@ pub struct Friend {
     pub device_id: String,
     pub nickname: String,
     pub avatar: Option<String>,
+    /// 设备类型（"desktop" / "mobile"，空串 = 未知）。从 peers 表现场读取。
+    #[serde(default)]
+    pub device_type: String,
     pub online: bool,
 }
 
@@ -122,6 +148,8 @@ pub struct DeviceInfo {
     pub device_id: String,
     pub nickname: String,
     pub avatar: Option<String>,
+    /// 本机设备类型（"desktop" / "mobile"）。
+    pub device_type: String,
     pub tcp_port: u16,
     pub online: bool,
     /// 本机 X25519 公钥（base64）
@@ -387,6 +415,10 @@ pub struct AppState {
     /// 此处登记失败项，由建链 / Hello / 心跳的 flush_pending_group_keys 重试。
     pub pending_group_keys: Mutex<HashMap<String, std::collections::HashSet<String>>>,
 
+    /// 会话的「当前链路」快照：conv_id -> LinkState（最近一条消息的链路 + 跳数）。
+    /// 收发单聊消息时更新，前端聊天窗口据此显示连接图标（LAN / 桥接 / 蓝牙）。
+    pub conv_link: Mutex<HashMap<String, LinkState>>,
+
     /// 共享目录（本机）
     pub share_dir: Mutex<Option<String>>,
     /// 当前昵称缓存
@@ -558,6 +590,7 @@ impl AppState {
             network: Mutex::new(None),
             pending_reads: Mutex::new(pending_reads_map),
             pending_group_keys: Mutex::new(HashMap::new()),
+            conv_link: Mutex::new(HashMap::new()),
             share_dir: Mutex::new(share_dir),
             nickname: Mutex::new(nickname),
             avatar: Mutex::new(avatar),
