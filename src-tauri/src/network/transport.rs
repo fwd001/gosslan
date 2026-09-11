@@ -206,8 +206,8 @@ pub async fn spawn(
     // 跨子网（Routed）端点拨号：手动配置的端点周期性重试，直到连上。
     //
     // 每次循环都重新读配置 —— 这样运行时新增的端点无需重启即可生效。
-    // 实际是否拨号由 `ensure_link` 的「小 ID 拨号」规则决定（避免双向建链竞态），
-    // 因此对端也需要配置本节点，或由 device_id 较小的一方发起。
+    // 与 LAN 广播发现不同，这里是**配了就拨**（原因见循环内的注释），
+    // 因此只需单侧配置即可建链，不必指望 ID 大小恰好合适的那一边。
     let routed_task = tokio::spawn(async move {
         let state = state_for_routed;
         let mut shutdown = shutdown_for_routed;
@@ -229,7 +229,13 @@ pub async fn spawn(
                         if state.has_endpoint(&ep.device_id, &addr).await {
                             continue; // 该端点已连上
                         }
-                        ensure_link(
+                        // 刻意**不走** `ensure_link`：那条路径带「只有小 device_id 拨号」
+                        // 的规则，用于避免 LAN 广播发现时两端同时拨号。但 Routed 端点
+                        // 是用户显式配置的明确意图，50% 概率会因 ID 大小被静默跳过，
+                        // 表现为「配了却连不上且无任何提示」。这里直接拨号，去重由
+                        // `connect_to_peer` 内部的按端点检查保证。
+                        eprintln!("[routed] 尝试拨号 peer={} ep={addr}", ep.device_id);
+                        connect_to_peer(
                             &state,
                             &ep.device_id,
                             &addr.ip().to_string(),
