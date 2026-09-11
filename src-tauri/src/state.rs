@@ -671,7 +671,9 @@ impl AppState {
                 .unwrap_or_else(|_| "Gosslan 用户".to_string())
         });
         let avatar = db::get_setting(&conn, "avatar");
-        let share_dir = db::get_setting(&conn, "share_dir");
+        // 共享目录：macOS 沙盒里**必须**先解析安全作用域书签（解析即开始访问），
+        // 否则重启后目录还在、权限没了 —— 现象是"共享目录列表变空"，且没有任何报错。
+        let share_dir = crate::share_dir::load(&conn);
 
         // 启动时从 DB 恢复待发已读回执（进程重启后 pending_reads 内存丢失的恢复路径）
         let mut pending_reads_map = HashMap::new();

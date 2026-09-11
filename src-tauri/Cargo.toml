@@ -66,7 +66,9 @@ clipboard-win = "5"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSWindow", "NSView", "objc2-quartz-core"] }
-objc2-foundation = { version = "0.3", features = ["NSString", "NSURL"] }
+# NSData/NSArray/NSError 是 security-scoped bookmark（共享目录跨重启保活）的必需 feature：
+# objc2-foundation 的 feature 就是类名，书签 API 的 cfg 门要求它们同时打开。
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSData", "NSArray", "NSError"] }
 objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
 # macOS 的 BLE **peripheral（GATT server）** 角色：btleplug 只做 central（见 ADR-0015 §3.1），
 # 而「手机与电脑不连同一个 Wi-Fi」要能互连，就必须有一侧当外设。

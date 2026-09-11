@@ -14,6 +14,7 @@ pub mod mesh;
 mod network;
 pub mod protocol;
 mod relay_manager; // 文件切片中继（BitTorrent 式分发），与 `mesh::router` 无关
+mod share_dir;
 mod state;
 mod storage;
 mod transport;
@@ -29,6 +30,9 @@ mod macos_open;
 /// 见 macos_window.rs 注释（与自绘标题栏的取舍）。
 #[cfg(target_os = "macos")]
 mod macos_window;
+/// macOS App Sandbox 的安全作用域书签（共享目录重启后不失访，见该文件注释）。
+#[cfg(target_os = "macos")]
+mod macos_bookmark;
 
 use tauri::Manager;
 

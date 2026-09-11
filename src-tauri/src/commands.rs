@@ -2767,7 +2767,9 @@ pub fn set_share_dir(state: State<'_, Arc<AppState>>, path: String) -> Result<()
     let s = state.inner();
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::set_setting(&dbc, "share_dir", &path).map_err(|e| e.to_string())?;
+        // 路径 +（macOS）安全作用域书签一起落库：沙盒里书签是重启后唯一还带权限的来源。
+        // 书签建不出来不能让这个动作失败（未沙盒构建会失败，而那时路径本来就能用）。
+        crate::share_dir::store(&dbc, &path)?;
     }
     *s.share_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
     Ok(())

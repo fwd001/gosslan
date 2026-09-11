@@ -15,6 +15,12 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-write</key>
 	<true/>
+	<!-- 共享目录要**跨重启**保住访问权，必须能创建 security-scoped bookmark；
+	     沙盒里缺这条 app-scope 权限时 `NSURLBookmarkCreationWithSecurityScope` 会被拒，
+	     而"只存路径"在重启后就失效 —— 现象是共享目录列表变空且没有任何报错。
+	     （document-scope 是给"文档类 App 把书签存进文件"用的，本应用不需要。） -->
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
 	<key>com.apple.security.files.downloads.read-write</key>
 	<true/>
 </dict>
