@@ -171,6 +171,51 @@ const SEND_QUEUE_FULL_TIMEOUT: Duration = Duration::from_millis(500);
 /// （`SEND_QUEUE_FULL_TIMEOUT`），超时即返回 Err，**绝不无限挂起**。
 /// 注意：`Err` 不代表消息丢了 —— 单聊消息在 `send_message` 里已先入 outbox，
 /// 由 Hello/心跳触发 `flush_outbox` 补发（这是既有契约）。
+/// 按给定顺序尝试把消息投进各连接的 mpsc；任一成功即返回。
+///
+/// 抽成独立函数的唯一目的是**可测**：failover（「被选中那条断了 → 下一条仍送达」）
+/// 是 M3-b 的核心承诺，但它埋在 `try_send` 里、要先构造 `AppState` 才能验证。
+/// 这里只依赖「若干对 Sender + 一个顺序」，于是可以用真实 mpsc 信道直接钉死：
+/// 关掉被选中那条的接收端、断言消息落到了下一条。
+///
+/// 两轮策略（复核确认的 High 缺陷的修法）：
+/// ① 第一轮全用**非阻塞** `try_send`：`Closed` / `Full` 都只说明「这一条现在不行」，
+///    立刻换下一条 —— 原实现只有 `Closed` 才换，信道满会**挂起**（并锁死调用方）；
+/// ② 全部为 `Full` 时才对该条做**有界**补试（`SEND_QUEUE_FULL_TIMEOUT`），超时即 `Err`。
+async fn send_over_order(
+    senders: &[(mpsc::Sender<Message>, mpsc::Sender<Message>)],
+    order: &[usize],
+    msg: &Message,
+    bulk: bool,
+) -> Result<(), String> {
+    let mut last_err = "未建立连接".to_string();
+    let mut first_full: Option<&mpsc::Sender<Message>> = None;
+    for &i in order {
+        let Some((bulk_tx, prio_tx)) = senders.get(i) else { continue };
+        let tx = if bulk { bulk_tx } else { prio_tx };
+        match tx.try_send(msg.clone()) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                last_err = "连接已关闭".to_string();
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                if first_full.is_none() {
+                    first_full = Some(tx);
+                }
+            }
+        }
+    }
+    if let Some(tx) = first_full {
+        return match tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone())).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("发送队列已满（对端消费不过来）".to_string()),
+        };
+    }
+    Err(last_err)
+}
+
+/// 尝试通过已建立连接发送消息；无连接则返回 Err。
 pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<(), String> {
     // ① 锁作用域内只做「取 + 克隆」，不 await（锁跨 await 会让一条拥塞链路锁死全表）。
     let links: Vec<crate::state::Link> = {
@@ -193,35 +238,10 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
     // ③ 选路（M3-b）：按**端点**对齐两套链路表后交给 `pick_link`，返回发送顺序。
     let order = route_order(&links, peer_id, &conns, db::now_ms(), health_timeout_ms, max_failures);
 
-    let bulk = is_bulk_message(msg);
-    let mut last_err = "未建立连接".to_string();
-    let mut first_full: Option<&mpsc::Sender<Message>> = None;
-    for &i in &order {
-        let link = &links[i];
-        let tx = if bulk { &link.bulk } else { &link.priority };
-        match tx.try_send(msg.clone()) {
-            Ok(()) => return Ok(()),
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                last_err = "连接已关闭".to_string();
-            }
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                if first_full.is_none() {
-                    first_full = Some(tx);
-                }
-            }
-        }
-    }
-
-    // ④ 第二轮：只有「所有链路都满」才会走到这里。有界补试一条，避免既不 failover
-    // 又永久挂起。
-    if let Some(tx) = first_full {
-        return match tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone())).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err("发送队列已满（对端消费不过来）".to_string()),
-        };
-    }
-    Err(last_err)
+    // ④ 按选路顺序投递（两轮策略见 `send_over_order`）。
+    let senders: Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)> =
+        links.iter().map(|l| (l.bulk.clone(), l.priority.clone())).collect();
+    send_over_order(&senders, &order, msg, is_bulk_message(msg)).await
 }
 
 /// 向所有已连接节点广播一条 Gossip 消息。
@@ -5483,6 +5503,96 @@ mod tests {
         ];
         let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
         assert_eq!(order.len(), 2, "全不健康也要把链路交出去（可用性优先于择优）");
+    }
+
+    // ---- M3-b：真实信道上的 failover（ADR-0014 §8「切断被选中那条 → 消息仍送达」的单元版）----
+
+    fn msg(id: &str) -> Message {
+        Message::Heartbeat { device_id: id.to_string() }
+    }
+
+    /// 造 n 对信道，返回 senders + 各接收端（`None` 表示该条"已断"：接收端被丢弃）。
+    #[allow(clippy::type_complexity)]
+    fn channels(
+        n: usize,
+        closed: &[usize],
+    ) -> (
+        Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)>,
+        Vec<Option<mpsc::Receiver<Message>>>,
+    ) {
+        let mut senders = Vec::new();
+        let mut receivers = Vec::new();
+        for i in 0..n {
+            let (b_tx, b_rx) = mpsc::channel(4);
+            let (p_tx, p_rx) = mpsc::channel(4);
+            senders.push((b_tx, p_tx));
+            if closed.contains(&i) {
+                // 模拟"这条链路已断"：channel 关闭（`try_send` 会返回 Closed）
+                drop(b_rx);
+                drop(p_rx);
+                receivers.push(None);
+            } else {
+                receivers.push(Some(p_rx));
+                drop(b_rx); // 只关心 priority 通道
+            }
+        }
+        (senders, receivers)
+    }
+
+    /// **核心判据**：被选中的那条断了 → 消息必须落到下一条（真 failover，不是"投进死路"）。
+    #[tokio::test]
+    async fn failover_delivers_on_next_link_when_selected_is_closed() {
+        let (senders, mut rx) = channels(2, &[0]); // 下标 0（被选中）已断
+        // 顺序模拟选路结果：先试 0（断），再试 1（活）
+        let order = vec![0usize, 1];
+        let r = send_over_order(&senders, &order, &msg("m1"), false).await;
+        assert!(r.is_ok(), "断一条后必须换下一条送达，实得 {r:?}");
+        let got = rx[1].as_mut().expect("链路 1 应存活").try_recv().expect("应在链路 1 上收到");
+        assert!(matches!(got, Message::Heartbeat { .. }));
+    }
+
+    /// 顺序被尊重：两条都活时只投第一条，**不重复投递**（消息仍然只发出一次）。
+    #[tokio::test]
+    async fn sends_only_on_first_healthy_link_in_order() {
+        let (senders, mut rx) = channels(2, &[]);
+        let order = vec![1usize, 0]; // 选路把下标 1 排前面
+        assert!(send_over_order(&senders, &order, &msg("m2"), false).await.is_ok());
+        assert!(rx[1].as_mut().unwrap().try_recv().is_ok(), "应落在顺序第一的那条");
+        assert!(
+            rx[0].as_mut().unwrap().try_recv().is_err(),
+            "不得同时投到第二条（否则会重复投递）"
+        );
+    }
+
+    /// 全断 → 返回 Err（调用方据此走 outbox 补发，而不是假装成功）。
+    #[tokio::test]
+    async fn all_links_closed_returns_err() {
+        let (senders, _rx) = channels(2, &[0, 1]);
+        let r = send_over_order(&senders, &[0, 1], &msg("m3"), false).await;
+        assert!(r.is_err(), "全断必须报错（Err 由 outbox 兜底补发）");
+    }
+
+    /// 与选路联动的**端到端单元判据**：LAN 不健康 → 顺序把 Routed 排前面
+    /// → 消息真的落在 Routed 那条（而不是仍投给 LAN）。这就是「切一条不中断」的最小复现。
+    #[tokio::test]
+    async fn route_order_plus_send_delivers_on_healthy_link_after_lan_degraded() {
+        let (lan, _b0, _p0) = make_link("192.168.1.20:59992");
+        let (routed, _b1, _p1) = make_link("100.70.10.20:59992");
+        let links = vec![lan, routed];
+        let conns = vec![
+            mesh_conn("peer", "192.168.1.20:59992", Some(0)),      // LAN 读活性过期
+            mesh_conn("peer", "100.70.10.20:59992", Some(60_000)), // Routed 健康
+        ];
+        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        assert_eq!(order[0], 1, "应先试健康的 Routed");
+
+        // 用真实信道复现：LAN 那条已断，Routed 那条活着
+        let (senders, mut rx) = channels(2, &[0]);
+        assert!(send_over_order(&senders, &order, &msg("m4"), false).await.is_ok());
+        assert!(
+            rx[1].as_mut().unwrap().try_recv().is_ok(),
+            "LAN 降级后消息必须从 Routed 送出"
+        );
     }
 
     /// 空链路表 → 空顺序（调用方据此返回「未建立连接」）。
