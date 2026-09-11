@@ -38,13 +38,19 @@ revealMainWindow();
 // 真实数据就绪后由 App.vue 派发 `gosslan:app-ready` → 这里淡出并移除。
 // 兜底定时器：初始化异常/卡住时也必须移除，绝不能把骨架永久挡在界面上。
 const boot = document.getElementById("boot");
+const bootLogs = document.getElementById("boot-logs");
 let bootDismissed = false;
 
 function dismissBoot() {
-  if (bootDismissed || !boot) return;
+  if (bootDismissed) return;
   bootDismissed = true;
-  boot.classList.add("boot-hide");
-  window.setTimeout(() => boot.remove(), 220);
+  // 主窗口骨架（#boot）与日志窗口骨架（#boot-logs）只会有一个实际显示，
+  // 这里统一加淡出类并移除，另一个即便不存在也无害。
+  for (const el of [boot, bootLogs]) {
+    if (!el) continue;
+    el.classList.add("boot-hide");
+    window.setTimeout(() => el.remove(), 220);
+  }
 }
 
 window.addEventListener("gosslan:app-ready", dismissBoot);

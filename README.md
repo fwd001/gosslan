@@ -1,4 +1,6 @@
-# Gosslan · 无服务器 P2P 局域网即时通讯
+# 相闻 Gosslan · 无服务器 P2P 局域网即时通讯
+
+> **相闻**（中文名，zh 环境显示）/ **Gosslan**（英文名，en 环境显示）——同一个应用，安装后按系统语言自动显示对应名称；安装器界面同样跟随系统语言（中文系统中文界面、英文系统英文界面）。
 
 [![GitHub release](https://img.shields.io/github/v/release/fwd001/gosslan?sort=semver)](https://github.com/fwd001/gosslan/releases)
 [![Contributors](https://img.shields.io/github/contributors/fwd001/gosslan)](https://github.com/fwd001/gosslan/graphs/contributors)

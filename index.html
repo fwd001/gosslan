@@ -45,6 +45,14 @@
             }
           }
           el.lang = lang;
+          // 应用显示名本地化：中文「相闻」/ 英文 "Gosslan"（<title> 与骨架 brand 共用）。
+          document.title = lang === "zh-CN" ? "相闻" : "Gosslan";
+          // 日志窗口：渲染「日志页骨架」而非「聊天三栏骨架」（Rust open_log_window 注入）。
+          try {
+            if (window.__GOSSLAN_WINDOW__ === "logs") el.classList.add("boot-logs");
+          } catch (e) {
+            /* 主窗口 / 非 Tauri 环境无此变量，走默认聊天骨架 */
+          }
         } catch (e) {
           /* localStorage / matchMedia 不可用（隐私模式等）→ 按浅色渲染即可，不影响后续 */
         }
@@ -266,6 +274,131 @@
           opacity: 1;
         }
       }
+
+      /* ---- 应用名 brand 按语言切换 ---- */
+      .brand-en {
+        display: none;
+      }
+      html[lang="en-US"] .brand-zh {
+        display: none;
+      }
+      html[lang="en-US"] .brand-en {
+        display: inline;
+      }
+
+      /* ---- 日志窗口骨架（label="logs"，结构照抄「运行日志」页）---- */
+      #boot-logs {
+        display: none;
+      }
+      html.boot-logs #boot {
+        display: none;
+      }
+      html.boot-logs #boot-logs {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        background: var(--boot-app-bg);
+      }
+      #boot-logs.boot-hide {
+        opacity: 0;
+        transition: opacity 0.18s ease-out;
+      }
+      .boot-logs-toolbar {
+        height: 56px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        background: var(--boot-caption);
+        border-bottom: 1px solid var(--boot-line);
+      }
+      .boot-logs-back {
+        width: 32px;
+        height: 32px;
+        border-radius: 6px;
+        flex: none;
+      }
+      .boot-logs-title {
+        width: 96px;
+        height: 14px;
+        border-radius: 4px;
+      }
+      .boot-logs-spacer {
+        flex: 1;
+      }
+      .boot-logs-chip {
+        width: 56px;
+        height: 28px;
+        border-radius: 6px;
+      }
+      .boot-logs-chip.primary {
+        background: var(--boot-primary);
+        opacity: 0.85;
+      }
+      .boot-logs-body {
+        flex: 1;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+      }
+      .boot-log-line {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .boot-log-line i {
+        display: block;
+        height: 12px;
+        border-radius: 4px;
+      }
+      .boot-log-line .t {
+        width: 52px;
+        flex: none;
+      }
+      .boot-log-line .lv {
+        width: 36px;
+        flex: none;
+      }
+      .boot-log-line .lv.warn {
+        background: rgba(255, 149, 0, 0.5);
+      }
+      .boot-log-line .lv.error {
+        background: rgba(255, 59, 48, 0.55);
+      }
+      .boot-log-line .msg {
+        flex: 1;
+      }
+      .boot-log-line .msg.w70 {
+        flex: none;
+        width: 70%;
+      }
+      .boot-log-line .msg.w50 {
+        flex: none;
+        width: 50%;
+      }
+      .boot-log-line .msg.w80 {
+        flex: none;
+        width: 80%;
+      }
+      .boot-log-line .msg.w60 {
+        flex: none;
+        width: 60%;
+      }
+      .boot-log-line .msg.w40 {
+        flex: none;
+        width: 40%;
+      }
+      .boot-logs-back,
+      .boot-logs-title,
+      .boot-logs-chip,
+      .boot-log-line i {
+        background: var(--boot-line);
+        animation: boot-breathe 1.5s ease-in-out infinite;
+      }
       @media (prefers-reduced-motion: reduce) {
         .boot-ava,
         .boot-ico,
@@ -278,6 +411,13 @@
           animation: none;
           opacity: 0.75;
         }
+        .boot-logs-back,
+        .boot-logs-title,
+        .boot-logs-chip,
+        .boot-log-line i {
+          animation: none;
+          opacity: 0.75;
+        }
       }
     </style>
   </head>
@@ -287,7 +427,12 @@
          由 main.ts 在真实数据就绪后加 .boot-hide 淡出并移除；初始化异常时也有兜底定时器。 -->
     <div id="boot" aria-hidden="true">
       <div class="boot-win">
-        <div class="boot-cap"><span class="boot-brand">Gosslan · 正在启动…</span></div>
+        <div class="boot-cap">
+          <span class="boot-brand">
+            <span class="brand-zh">相闻 · 正在启动…</span>
+            <span class="brand-en">Gosslan · Starting…</span>
+          </span>
+        </div>
         <div class="boot-main">
           <div class="boot-rail">
             <div class="boot-ava"></div>
@@ -338,6 +483,26 @@
             <div class="boot-composer"></div>
           </div>
         </div>
+      </div>
+    </div>
+    <!-- 日志窗口骨架：结构照抄「运行日志」页（顶部工具栏 + 日志列表行），
+         只在 label="logs" 的窗口显示（见 Rust open_log_window 注入 __GOSSLAN_WINDOW__）。 -->
+    <div id="boot-logs" aria-hidden="true">
+      <div class="boot-logs-toolbar">
+        <span class="boot-logs-back"></span>
+        <span class="boot-logs-title"></span>
+        <span class="boot-logs-spacer"></span>
+        <span class="boot-logs-chip"></span>
+        <span class="boot-logs-chip"></span>
+        <span class="boot-logs-chip primary"></span>
+      </div>
+      <div class="boot-logs-body">
+        <div class="boot-log-line"><i class="t"></i><i class="lv"></i><i class="msg"></i></div>
+        <div class="boot-log-line"><i class="t"></i><i class="lv warn"></i><i class="msg w70"></i></div>
+        <div class="boot-log-line"><i class="t"></i><i class="lv"></i><i class="msg w50"></i></div>
+        <div class="boot-log-line"><i class="t"></i><i class="lv error"></i><i class="msg w80"></i></div>
+        <div class="boot-log-line"><i class="t"></i><i class="lv"></i><i class="msg w60"></i></div>
+        <div class="boot-log-line"><i class="t"></i><i class="lv warn"></i><i class="msg w40"></i></div>
       </div>
     </div>
     <div id="app"></div>

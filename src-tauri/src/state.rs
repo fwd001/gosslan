@@ -29,6 +29,22 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 系统语言是否为中文（供「跟随系统」语言偏好时判断应用显示名）。
+///
+/// 后端不引入系统 locale 库，用 POSIX 环境变量 `LANG` / `LC_ALL` / `LC_MESSAGES`
+/// 兜底：macOS/Linux 的 `LANG` 通常是 `zh_CN.UTF-8` / `en_US.UTF-8`，能正确判断。
+/// **Windows 边界**：Windows 一般无 `LANG`，这里会回落「英文」——中文 Windows 用户若
+/// 未在设置里显式选中文，后端自行生成的次要文案（托盘提示 / 日志窗口标题）会显示英文。
+/// 影响有限：主界面由前端 `navigator.language` 正确判断；如需彻底对齐，后续可加
+/// Windows API（GetUserDefaultUILanguage）判断系统 UI 语言。
+fn system_lang_is_zh() -> bool {
+    ["LANG", "LC_ALL", "LC_MESSAGES"].iter().any(|k| {
+        std::env::var(k)
+            .map(|v| v.to_lowercase().contains("zh"))
+            .unwrap_or(false)
+    })
+}
+
 /// 局域网在线节点（Peer Table 条目）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Peer {
@@ -623,6 +639,31 @@ impl AppState {
             seen_hello_nonces: Mutex::new(VecDeque::new()),
             key_conflict_warned: Mutex::new(std::collections::HashSet::new()),
         }))
+    }
+
+    /// 当前界面语言是否为中文。语言偏好存 settings.language（三态 system / zh-CN /
+    /// en-US，由前端维护）；「跟随系统」时用 `system_lang_is_zh()` 判系统语言。
+    pub fn is_zh(&self) -> bool {
+        let lang = {
+            let dbc = self.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_setting(&dbc, "language").unwrap_or_else(|| "system".to_string())
+        };
+        match lang.as_str() {
+            "zh-CN" => true,
+            "en-US" => false,
+            _ => system_lang_is_zh(),
+        }
+    }
+
+    /// 应用显示名：中文系统「相闻」、英文系统 "Gosslan"。
+    ///
+    /// 用于托盘提示、日志窗口标题、通知等后端自行生成的用户可见文案。
+    pub fn display_name(&self) -> String {
+        if self.is_zh() {
+            "相闻".to_string()
+        } else {
+            "Gosslan".to_string()
+        }
     }
 
     /// 记录一个 Hello nonce，返回 false 表示该 nonce 近期已出现过（重放）。

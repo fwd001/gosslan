@@ -3250,19 +3250,37 @@ pub fn clear_logs(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> 
 /// （含关闭按钮），关闭即销毁，下次打开再重建 —— 与主窗口的「关闭到托盘」互不影响。
 #[cfg(desktop)]
 #[tauri::command]
-pub fn open_log_window(app: tauri::AppHandle) -> Result<(), String> {
+pub fn open_log_window(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
     if let Some(win) = app.get_webview_window("logs") {
         let _ = win.show();
         let _ = win.set_focus();
         return Ok(());
     }
+    // 背景色跟随主题：暗色主题下打开日志窗口「闪一下白」（与主窗口冷启动白闪同源，
+    // 窗口静态背景色只能浅/深二选一，这里用当前解析结果先设对底色）。
+    let dark = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_setting(&dbc, "dark_mode").map(|v| v == "1").unwrap_or(false)
+    };
+    let bg = if dark {
+        tauri::window::Color(11, 18, 32, 255) // #0b1220
+    } else {
+        tauri::window::Color(237, 241, 246, 255) // #edf1f6
+    };
+    let title = state.display_name();
     let win = WebviewWindowBuilder::new(&app, "logs", WebviewUrl::App("index.html".into()))
-        .title("Gosslan")
+        .title(&title)
         .inner_size(760.0, 560.0)
         .min_inner_size(420.0, 320.0)
+        // 注入窗口标识：index.html 内联骨架据此渲染「日志页骨架」而非「聊天三栏骨架」。
+        .initialization_script("window.__GOSSLAN_WINDOW__ = 'logs';")
         .build()
         .map_err(|e| format!("创建日志窗口失败: {e}"))?;
+    let _ = win.set_background_color(Some(bg));
     let _ = win.show();
     let _ = win.set_focus();
     Ok(())
