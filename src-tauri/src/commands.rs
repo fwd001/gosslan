@@ -1,6 +1,6 @@
 //! Tauri 命令层：前端调用的所有后端入口。
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,7 +53,7 @@ use crate::network::transport::{
     resolve_member_x25519, resolve_nickname, try_send,
 };
 use crate::network::{self, file};
-use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry, FILE_CHUNK};
+use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry, FILE_CHUNK, TCP_PORT};
 use crate::state::{
     AppState, Conversation, DeviceInfo, Friend, Group, GroupFile, InterfaceInfo, MessageRecord,
     Peer, PendingRequest, TopologyInfo, TransferInfo,
@@ -3021,22 +3021,36 @@ fn preview(kind: &str, content: &str) -> String {
 
 // ---------------- 跨子网（Routed）端点配置 ----------------
 
-/// 校验手动配置的 Routed 端点地址。
+/// 校验并**规范化**手动配置的 Routed 端点地址，返回 `ip:port`。
+///
+/// 两种输入都接受：
+/// - `100.64.0.1:60002`（显式端口，对端用了 `--instance` 时需要）
+/// - `100.64.0.1`（省略端口 → 用标准 [`TCP_PORT`]）
+///
+/// 允许省略端口是「少配置」的一部分：端口是内部实现细节，默认单实例场景下用户
+/// 没有理由需要知道它，更不该因为漏写端口而被拒绝。
 ///
 /// 只接受 **IPv4**：TCP 监听侧绑的是 `Ipv4Addr`（`network::transport::spawn`），
 /// IPv6 端点即使拨出去也连不上。在这里当场拒绝，好过「存下来了但永远连不上」
 /// —— 后者对用户完全不可见（配置成功、日志无错、就是没反应）。
-fn validate_routed_address(address: &str) -> Result<SocketAddr, String> {
-    let addr: SocketAddr = address
-        .parse()
-        .map_err(|_| format!("地址格式应为 ip:port，收到：{address}"))?;
+fn normalize_routed_address(input: &str) -> Result<String, String> {
+    // 用户从别处复制地址常带空白
+    let input = input.trim();
+    let addr: SocketAddr = match input.parse::<SocketAddr>() {
+        Ok(a) => a,
+        Err(_) => match input.parse::<IpAddr>() {
+            Ok(ip) => SocketAddr::new(ip, TCP_PORT),
+            Err(_) => return Err(format!("地址格式应为 ip 或 ip:port，收到：{input}")),
+        },
+    };
     if addr.is_ipv6() {
         return Err(
-            "暂不支持 IPv6 地址（当前 TCP 监听仅 IPv4）。请填写 IPv4，例如 100.64.0.1:59992"
+            "暂不支持 IPv6 地址（当前 TCP 监听仅 IPv4）。请填写 IPv4，例如 100.64.0.1"
                 .to_string(),
         );
     }
-    Ok(addr)
+    // 规范化后再存储：add / remove 比较的是同一个字符串，避免「加进去了却删不掉」
+    Ok(addr.to_string())
 }
 
 /// 列出手动配置的跨子网端点（Tailscale / VPN / 跨网段）。
@@ -3050,7 +3064,8 @@ pub fn list_routed_endpoints(state: tauri::State<'_, Arc<AppState>>) -> Vec<Rout
 /// 跨子网拨号时主动方在 Hello 之前无从得知对端身份，而 Hello 分支要求
 /// `device_id == peer_id`，用占位值会让连接被丢弃。
 ///
-/// 地址目前只接受 **IPv4**：TCP 监听侧绑的是 `Ipv4Addr`，IPv6 端点拨出去也连不上。
+/// 地址接受 `ip` 或 `ip:port`（省略端口按标准 [`TCP_PORT`] 补全），目前仅 IPv4：
+/// TCP 监听侧绑的是 `Ipv4Addr`，IPv6 端点拨出去也连不上。
 #[tauri::command]
 pub fn add_routed_endpoint(
     state: tauri::State<'_, Arc<AppState>>,
@@ -3060,7 +3075,7 @@ pub fn add_routed_endpoint(
     if device_id.trim().is_empty() {
         return Err("device_id 不能为空".to_string());
     }
-    validate_routed_address(&address)?;
+    let address = normalize_routed_address(&address)?;
     let candidate = RoutedEndpoint::new(device_id.clone(), address.clone());
 
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -3081,9 +3096,12 @@ pub fn remove_routed_endpoint(
     device_id: String,
     address: String,
 ) -> Result<Vec<RoutedEndpoint>, String> {
+    // 先规范化（与 `add` 存进去的形式一致）再比较：否则用 `100.64.0.1` 添加、
+    // 用 `100.64.0.1:59992` 删除会匹配不上 —— 表现为「列表里删不掉」。
+    let address = normalize_routed_address(&address)?;
+    let target = RoutedEndpoint::new(device_id, address);
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut list = parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
-    let target = RoutedEndpoint::new(device_id.clone(), address.clone());
     let before = list.len();
     list.retain(|e| e != &target);
     if list.len() != before {
@@ -3096,29 +3114,40 @@ pub fn remove_routed_endpoint(
 #[cfg(test)]
 mod tests {
     use super::{
-        check_message_content, decode_outgoing_image, image_extension, validate_routed_address,
-        MAX_MESSAGE_LEN, MAX_OUTGOING_IMAGE_BYTES,
+        check_message_content, decode_outgoing_image, image_extension, normalize_routed_address,
+        MAX_MESSAGE_LEN, MAX_OUTGOING_IMAGE_BYTES, TCP_PORT,
     };
 
-    /// Routed 端点地址校验：只收 IPv4；IPv6 必须**当场明确拒绝**，
-    /// 而不是「存下来了但永远连不上」（后者对用户完全不可见）。
+    /// Routed 端点地址：`ip` 与 `ip:port` 两种写法都收（省略端口补标准 `TCP_PORT`），
+    /// 并在**存储前规范化**——这样 add 与 remove 比较的是同一个字符串，
+    /// 不会出现「加进去了却删不掉」。IPv6 当场明确拒绝。
     #[test]
-    fn routed_endpoint_address_must_be_ipv4() {
-        assert!(validate_routed_address("100.64.0.1:59992").is_ok());
-        assert!(validate_routed_address("192.168.1.5:59992").is_ok());
+    fn routed_endpoint_address_is_normalized_to_ipv4_socket() {
+        // 省略端口 → 补标准端口（端口是内部细节，用户不必知道）
         assert_eq!(
-            validate_routed_address("100.64.0.1:59992").unwrap().port(),
-            59992
+            normalize_routed_address("100.64.0.1").unwrap(),
+            format!("100.64.0.1:{TCP_PORT}")
+        );
+        // 显式端口 → 原样保留（对端用了 --instance 的场景）
+        assert_eq!(
+            normalize_routed_address("100.64.0.1:60002").unwrap(),
+            "100.64.0.1:60002"
+        );
+        // 前后空白容错（从聊天窗口复制地址常带空格）
+        assert_eq!(
+            normalize_routed_address("  192.168.1.5  ").unwrap(),
+            format!("192.168.1.5:{TCP_PORT}")
         );
 
         // 格式错误
-        assert!(validate_routed_address("100.64.0.1").is_err(), "缺端口应拒绝");
-        assert!(validate_routed_address("garbage").is_err());
+        assert!(normalize_routed_address("100.64.0.1:").is_err());
+        assert!(normalize_routed_address("garbage").is_err());
+        assert!(normalize_routed_address("").is_err());
 
         // IPv6：拒绝，且错误信息要能给出可操作的指引
-        let err = validate_routed_address("[fd7a:115c:a1e0::1]:59992").unwrap_err();
+        let err = normalize_routed_address("[fd7a:115c:a1e0::1]:59992").unwrap_err();
         assert!(err.contains("IPv6"), "错误信息应点明 IPv6：{err}");
-        assert!(validate_routed_address("::1:59992").is_err());
+        assert!(normalize_routed_address("fd7a:115c:a1e0::1").is_err());
     }
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
