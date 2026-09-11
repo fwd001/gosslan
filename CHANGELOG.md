@@ -10,6 +10,18 @@
 
 ## [Unreleased]
 
+### Fixed (8 处点按目标 < 44pt 的触屏隐患 + 护栏 ⑧)
+- iOS HIG 的最小点按目标是 **44×44pt**，而项目里图标按钮普遍 24–32px（桌面鼠标没问题，**手指容易点不中甚至误触相邻项**）。项目早有 `.tap-safe`（`:pointer: coarse` 下把热区垂直撑 +16px），但靠自觉使用；本轮实测 35 个小尺寸可交互元素里**仍有 8 处漏网**（`54123e0`）：
+  - `FriendProfile` 移动端**返回键**（32×32，手机上最主要的返回入口）；
+  - `NetworkSection` 删除「跨网段端点」（28×28，破坏性操作且与整行相邻）；
+  - `AppearanceSection` 自定义主题**取色控件**（24×28）；
+  - `LogViewer` 4 个工具按钮 + `SettingsWindow` 折叠项（桌面为主，但 Windows 触屏笔记本属粗指针）。
+- **新增静态护栏 ⑧ `findSmallTapTargets`**：可交互元素（原生可交互标签或带 `@click`）+ `h-5..h-8`/`w-5..w-8` + 无 `tap-safe` → 报出；提示里写清能力边界（`tap-safe` 只补垂直 ±8px ⇒ h-7→44、h-8→48；`h-5`→36 仍不达标，必须调大）。逃生阀 `tap-target-ok`。
+- **非空转验证**：去掉真实移动端返回键的 `tap-safe` → 全库扫描用例 FAIL 并精确指到 `FriendProfile.vue:50`；恢复后全绿。
+- 至此触屏/键盘三件套齐备：⑥ 能点（键盘够得着）+ ⑦ 看得见（焦点环不被静默覆盖）+ ⑧ 点得中（≥44pt）。
+- 验证：`npm test` **291 passed / 0 fail**（284 → 291）；`vue-tsc` 0 错误；`vite build` 通过；后端未改。
+  ⚠️ `.tap-safe` 的实际手感（热区够不够、会不会与相邻按钮重叠）只能在真机触屏上确认。
+
 ### Fixed (7 处输入框的焦点环被 `outline-none` 静默盖掉 + 护栏 ⑦)
 - **全局焦点环其实一条都没生效**：`style.css` 的焦点环写在 `:where(button, a, input, textarea, select, [tabindex], [contenteditable]):focus-visible` 里，而 `:where()` 让整条选择器**特异性变成 0**；Tailwind 的 `.outline-none`（`outline: 2px solid transparent; outline-offset: 2px`）是 0,1,0 ⇒ **只要元素带 `outline-none`，焦点环必定被覆盖**（透明 2px = 看不见）。源码注释里"必须包含 `[contenteditable]`，否则消息输入框看不到焦点"的**本意是对的，但因为特异性加了也不生效**（`754167b`）。
 - **修掉 7 处**（全是 `outline-none` 且无替代指示）：`MessageComposer`（最高频的消息输入框）、`ConversationList` 搜索、`LogViewer` 搜索、`ChatSearchDialog` 搜索、`GroupCreateModal` 群名、`RenameGroupModal` 群名、`AddFriendModal` 搜索 —— 统一**删掉 `outline-none`**，让项目本来就设计好的全局焦点环生效。
