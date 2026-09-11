@@ -153,13 +153,19 @@ const gridTiles = computed(() => {
     </div>
     <!-- 微信式行间细分隔线：从文本列起（头像后缩进），最后一行不显（由容器裁边） -->
     <div class="absolute bottom-0 left-[64px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
-    <!-- 删除聊天记录入口：桌面端悬停行时浮现。
+    <!-- 删除聊天记录入口。
+         桌面端：悬停行时浮现；**选中行则常显** —— 原先写成 `v-if="!active"`，
+         结果是「选中的会话根本删不掉」：选中后按钮整个不渲染，而选中态又不可能
+         同时 hover 到「未选中」的形态。用户 2026-09-12 反馈「选中的聊天框没法删除，
+         自己应该是可以删除的」。
          `hover-reveal`：触屏没有 hover —— 没有它这个按钮在手机上永远不显示，
          等于「桌面能删、手机删不掉」（见 2026-09-10 审计 P0-1）。
-         `tap-safe`：24px 小于 44pt 最小点按目标，触屏下垂直扩命中区（见 style.css）。 -->
+         `tap-safe`：24px 小于 44pt 最小点按目标，触屏下垂直扩命中区（见 style.css）。
+         选中态常显时按钮压在摘要文字上，故给它一个**不透明底色 + 面板描边**，
+         避免与底下文字糊在一起（底色取会话面板色，与选中行浅灰底相邻但可区分）。 -->
     <button
-      v-if="!active"
-      class="hover-reveal tap-safe absolute bottom-1.5 right-1.5 z-10 hidden h-6 w-6 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)] group-hover/conv:flex"
+      class="hover-reveal tap-safe absolute bottom-1.5 right-1.5 z-10 h-6 w-6 items-center justify-center rounded-[var(--gosslan-radius-xs)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
+      :class="active ? 'flex' : 'hidden group-hover/conv:flex'"
       :title="t('conv.delete')"
       :aria-label="t('conv.deleteAria', { name: conv.name })"
       @click="emit('ask-delete', conv, $event)"
