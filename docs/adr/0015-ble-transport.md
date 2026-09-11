@@ -204,3 +204,30 @@ objc2-foundation = { version = "0.3", optional = true, features = ["NSData","NSS
   Unauthorized，**central 也一起失效**（现象是"开着蓝牙却一个设备都扫不到"）；
 - macOS 11+ 同样要求 Info.plist 里有 `NSBluetoothAlwaysUsageDescription` ⇒
   已显式声明 `bundle.macOS.infoPlist`，不再依赖"自动探测同名文件"。
+
+### 7.6 上线前自查补掉的两处**静默**故障（`81606cd`）
+
+外设角色落地后回头自查，抓到两处"读代码看不出来、真机上只觉得'不好用'"的问题，
+都属于本项目最该由机器/日志盯住的那类（**写对了但不起作用，且不留痕迹**）：
+
+1. **蓝牙被关掉 / 权限被撤 ⇒ 订阅状态陈旧**。CoreBluetooth 此时会清空本地 GATT 数据库、
+   断开所有 central，但**不会**回调 `didUnsubscribeFromCharacteristic:`。我们那份"谁订阅了我"
+   因此一直是旧数据：`is_subscribed` 仍为 true，写任务要等 `updateValue` 失败
+   （**最长 8s**）才收尾，日志里也没有任何记录。现在离开 `PoweredOn` 就：
+   作废全部订阅与半截消息 → 唤醒等待中的写任务 → 为每个 central 各发一条 `Unlinked`
+   （网络层**立刻**拆链路）→ 记一条 warn。纯函数 `detach_targets` 守住"离开 PoweredOn
+   必须摘掉全部订阅"这条判据（+1 单测，已做非空转验证）。
+2. **广播失败被静默丢弃**。`peripheralManagerDidStartAdvertising:error:` 的结果原先只在
+   "首次状态回调的 oneshot 还开着"时才上报，而那个 oneshot 在第一次
+   `peripheralManagerDidUpdateState:` 里就被 `take()` 了 ⇒ 之后任何广播失败（例如用户
+   关掉蓝牙再打开、我们重新广播时失败）都不会留下任何日志。现象是"蓝牙开着却没人能发现我们"，
+   而手册排障表恰好写着"看日志"。现在改走常驻的 `events` 通道（新增
+   `PeripheralEvent::{Notice, Warning}` → `logger.info` / `logger.warn`），**每次**都报，
+   并带上可操作建议。
+
+顺带修正的语义：**回到 `PoweredOn` 必须重新 `addService` + `startAdvertising`**
+（CoreBluetooth 在离开 `PoweredOn` 时清空过本地数据库，不重新发布就永远不会再有人连得上我们）；
+以及 `did_unsubscribe` 里把两层锁拆开，不再在持有 `state` 时去拿 `reassemblers`。
+
+⚠️ 仍未验证：真机上"关蓝牙 → 链路立刻消失且日志给出原因"要用户实测（本机无法触发状态切换）；
+"对端走远/掉电"依然**没有**任何回调可用，只能靠写失败或心跳超时收尾 —— 这是外设角色的平台限制。

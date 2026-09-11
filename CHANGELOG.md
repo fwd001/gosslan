@@ -10,6 +10,15 @@
 
 ## [Unreleased]
 
+### Fixed (BLE 外设：蓝牙被关掉/广播失败不再静默)
+- 两处"看代码看不出来"的静默故障（`81606cd`，自查上一轮落地的外设代码时发现）：
+  1. **系统蓝牙被关 / 权限被撤时订阅状态会一直是旧的**：CoreBluetooth 会清空本地 GATT 数据库并断开所有 central，但**不会**回调 `didUnsubscribeFromCharacteristic:` ⇒ `is_subscribed` 仍返回 true，写任务要等 `updateValue` 失败（**最长 8s**）才收尾，而且**日志里一个字都没有**。现在：离开 `PoweredOn` 即作废全部订阅与半截消息、唤醒等待中的写任务，并为每个已订阅的 central 各发一条 `Unlinked`，让网络层**立刻**拆链路。
+  2. **广播启动失败只在首次状态回调时才会被报出来**：那个 oneshot 在第一次 `peripheralManagerDidUpdateState:` 里就被 `take()`，之后（如用户关掉蓝牙再打开、重新广播失败）错误**被静默丢弃** —— 现象正是"蓝牙开着却没人能发现我们"，与手册排障表里"看日志"完全对不上。现在改走常驻的 `events` 通道，**每次**都记 `logger.warn` 并给出可操作建议。
+- 同时：回到 `PoweredOn` 时**重新** `addService` + `startAdvertising`（CoreBluetooth 清过库，不重新发布就再也不会有人能连上我们）；新增纯函数 `state_label`（"蓝牙已关闭" vs "未授权（去系统设置…）"，两者的处理建议完全不同）与 `detach_targets`（离开 `PoweredOn` ⇒ 全部订阅视为失效）；`did_unsubscribe` 拆开两层锁。
+- 验证：`cargo test --lib --features bluetooth` **385 passed / 0 fail / 0 warning**（+2 护栏）；`cargo test --lib` 378 / 0 warning；`cargo check --all-targets` 0 warning；Android `check-mobile.sh --bluetooth` PASS / 0 warning；前端 291 / vue-tsc 0 / vite build 通过。
+- **非空转验证**：把 `detach_targets` 改成永远返回空 ⇒ 新护栏 FAIL；恢复后全绿、无残留标记。
+  ⚠️ 真机上"关蓝牙 → 链路立刻消失且日志里有原因"仍需实测（本机无法触发 CoreBluetooth 状态切换）。
+
 ### Fixed (8 处点按目标 < 44pt 的触屏隐患 + 护栏 ⑧)
 - iOS HIG 的最小点按目标是 **44×44pt**，而项目里图标按钮普遍 24–32px（桌面鼠标没问题，**手指容易点不中甚至误触相邻项**）。项目早有 `.tap-safe`（`:pointer: coarse` 下把热区垂直撑 +16px），但靠自觉使用；本轮实测 35 个小尺寸可交互元素里**仍有 8 处漏网**（`54123e0`）：
   - `FriendProfile` 移动端**返回键**（32×32，手机上最主要的返回入口）；
