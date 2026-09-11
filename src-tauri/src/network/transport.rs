@@ -1133,12 +1133,44 @@ async fn reader_loop(
 ///
 /// 直连时这就是「对方 ↔ 我」的真实路径；桥接时是「中继 ↔ 我」的最后一段。
 pub(crate) async fn inbound_path_kind(state: &AppState, peer_id: &str) -> String {
-    let links = state.links.lock().await;
-    links
-        .get(peer_id)
-        .and_then(|l| l.first())
-        .map(|l| l.path_kind.as_str().to_string())
-        .unwrap_or_else(|| PathKind::Lan.as_str().to_string())
+    // ① 锁作用域内只取快照（与 `try_send` 同规矩：不在锁里 await 别的锁）
+    let links: Vec<crate::state::Link> = {
+        let g = state.links.lock().await;
+        match g.get(peer_id) {
+            Some(l) if !l.is_empty() => l.clone(),
+            _ => return PathKind::Lan.as_str().to_string(),
+        }
+    };
+    // ② 取健康阈值与 mesh 连接，跑**与发送完全相同**的选路
+    let (health_timeout_ms, max_failures) = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        (pm.health_timeout_ms(), pm.max_failures())
+    };
+    let conns: Vec<crate::mesh::Connection> = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        pm.get(peer_id)
+            .map(|p| p.connections().to_vec())
+            .unwrap_or_default()
+    };
+    let order = route_order(&links, peer_id, &conns, db::now_ms(), health_timeout_ms, max_failures);
+    // ③ 徽标显示「实际会走的那条」= 选路结果的第一条（见 `badge_path_kind`）。
+    //
+    // 为什么不能用 `first()`（旧实现）：一个 peer 可能同时有 LAN + Routed(+BLE) 多条连接，
+    // `first()` 是**插入顺序**，与 `pick_link`（LAN > Routed > Bluetooth + 活性过滤）
+    // 可能不一致 ⇒ 界面显示"桥接 N"，消息实际走的是 LAN（用户 2026-09-12 反馈过徽标不符）。
+    // 选路函数返回空只可能发生在"全部候选都不可用"，此时退回首条（与发送时的兜底一致）。
+    badge_path_kind(&links, &order).as_str().to_string()
+}
+
+/// 「当前链路」徽标该显示哪条路径：**选路结果的第一条**。
+///
+/// 抽成纯函数的原因：徽标是用户唯一能直接看见的链路信息，而它的正确性判据是
+/// 「与实际发送选的同一条」—— 那是个下标对应关系，端到端很难复现
+/// （要先制造 LAN + Routed 双路径、再对比徽标与日志），但纯函数可以一次钉死。
+/// `order` 为空（全部候选不可用）时退回首条，与发送路径的兜底一致。
+fn badge_path_kind(links: &[crate::state::Link], order: &[usize]) -> PathKind {
+    let idx = order.first().copied().unwrap_or(0);
+    links.get(idx).map(|l| l.path_kind).unwrap_or(PathKind::Lan)
 }
 
 /// 更新会话的「当前链路」快照（最近一条消息的链路 + 中间节点数）。
@@ -5644,6 +5676,30 @@ mod tests {
             should_dial_for_peer("b", "a", false, &[(ble, PathKind::Bluetooth)], Some(now - 60_000), now),
             "只有 BLE 连接时仍应补 LAN"
         );
+    }
+
+    /// 徽标必须反映**实际选中的那条**，而不是插入顺序的第一条。
+    ///
+    /// 旧实现取 `links.first()`：用户配了 Routed 又同处一个局域网时（LAN 由 announce
+    /// 后补、插在后面），徽标会一直显示"桥接"，消息却走 LAN —— 用户 2026-09-12
+    /// 反馈过徽标与实际不符。
+    #[test]
+    fn badge_follows_selection_not_insertion_order() {
+        let (routed, _b0, _p0) = make_link("100.70.10.20:59992", PathKind::Routed);
+        let (lan, _b1, _p1) = make_link("192.168.1.20:59992", PathKind::Lan);
+        let links = vec![routed, lan];
+        let conns = vec![
+            mesh_conn("peer", "100.70.10.20:59992", Some(1000), PathKind::Routed),
+            mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan),
+        ];
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        assert_eq!(
+            badge_path_kind(&links, &order),
+            PathKind::Lan,
+            "徽标必须跟着选路走（LAN），而不是插入顺序第一条（Routed）"
+        );
+        // 选路为空（全部不可用）⇒ 退回首条，不能 panic
+        assert_eq!(badge_path_kind(&links, &[]), PathKind::Routed);
     }
 
     /// failover 核心：LAN 的读活性过期（半开）而 Routed 健康 → 选 Routed。
