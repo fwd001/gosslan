@@ -1,8 +1,14 @@
 //! TCP 消息传输与协议分发（含 Gossip 广播、中继切片、群密钥、E2EE 解密）。
 //!
 //! 连接建立规则（避免重复建链的竞态）：
-//! - 默认由 **device_id 字典序较大** 的一方主动拨号（dial），较小的一方被动接受；
-//! - 较小的一方在「对端在线却迟迟连不上」（单向可达）时**兜底拨号**（见 ensure_link）。
+//! - **已有连接就不拨**：`ensure_link` 只负责**连通性**（「和这个看得见的 peer 建立联系」），
+//!   只要该 peer 已有任意连接就短路返回 —— 否则被动方会因为端点表示不对称而反向再拨一条，
+//!   形成镜像重复连接（详见 `ensure_link` 的注释）。
+//! - 首次建链：默认由 **device_id 字典序较大** 的一方主动拨号（dial），较小的一方被动接受；
+//! - 较小的一方在「对端在线却迟迟连不上」（单向可达）时**兜底拨号**（见 `should_dial`）。
+//! - **多路径不由本模块负责**：一个 peer 同时持有多条连接（LAN + Routed + BLE）由各
+//!   Transport 自己的驱动产生（Routed 由配置驱动、BLE 由 BLE 发现驱动），它们都不经过
+//!   `ensure_link`。这里保持「连通性」与「多路径」关注点分离。
 //! - 双方各自维护一个出站 mpsc 发送端，读循环负责解析帧并分发。
 
 use std::collections::{HashMap, HashSet};
@@ -976,13 +982,32 @@ enum DialOutcome {
 /// 10s = 2 个 announce 周期（announce 5s 一轮），给大 ID 足够时间先拨通。
 const BACKUP_DIAL_AFTER_MS: i64 = 10_000;
 
-/// 是否该主动拨号（纯函数，便于单测 + 护栏非空转）。
+/// 是否该主动拨这个端点（纯函数，便于单测 + 护栏非空转）。
 ///
-/// - 本机是大 ID（`my_id > peer_id`）：恒拨（对称场景的确定性规则）。
-/// - 本机是小 ID：仅当对端在线（`first_seen` 有值）且「首次发现」已超过
-///   `BACKUP_DIAL_AFTER_MS` 才兜底拨 —— 避免对称场景两端同时拨号产生重复连接，
-///   同时补齐单向可达（大 ID 拨不过来）时的连通性。
-fn should_dial(my_id: &str, peer_id: &str, first_seen: Option<i64>, now_ms: i64) -> bool {
+/// 决策顺序（越靠前越确定、越便宜，命中即短路）：
+/// 1. `has_endpoint`：**这个端点**已经连上了 → 无事可做。
+/// 2. `has_any_link`：已经和这个 peer 有**任意**连接 → 连通性已建立，不拨。
+///    这一条是 P1-2 的修正。接受侧 `handle_incoming` 记录的 `Link.endpoint` 是 TCP
+///    **源地址（临时端口）**，而这里拿到的是 announce 自报的**监听地址** —— 两者永不相等
+///    ⇒ 被动方（小 ID）的第 1 条永远不命中，10s 后兜底拨号会反向再拨一条，同一对节点
+///    稳定停留 **2 条镜像 TCP**（连接与读写任务翻倍、心跳双份，并让「断一条仍在线」的
+///    判据变成假阳性）。注意 `try_send` 只把消息交给 mpsc（返回 Ok 不代表 TCP 写出成功），
+///    所以那条镜像连接**不会**带来任何送达补偿 —— 纯属浪费。
+/// 3. 本机是大 ID（`my_id > peer_id`）：恒拨（对称场景的确定性拨号方）。
+/// 4. 本机是小 ID：仅当对端在线（`first_seen` 有值）且「首次发现」已超过
+///    `BACKUP_DIAL_AFTER_MS` 才兜底拨 —— 给大 ID 足够时间先拨通；单侧不可达
+///    （不对称 NAT / 防火墙）时由小 ID 补齐连通性。
+fn should_dial(
+    my_id: &str,
+    peer_id: &str,
+    has_endpoint: bool,
+    has_any_link: bool,
+    first_seen: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    if has_endpoint || has_any_link {
+        return false;
+    }
     if my_id > peer_id {
         return true;
     }
@@ -996,17 +1021,34 @@ pub async fn ensure_link(
     tcp_port: u16,
     shutdown: watch::Receiver<bool>,
 ) {
-    // 按**端点**去重（而非按 peer）：同一 peer 换了个 IP（如同时有 LAN 与 Tailscale）
-    // 是另一条连接，仍然值得拨。解析失败则放弃本轮（下一轮 announce 会再试）。
+    // 端点解析失败则放弃本轮（下一轮 announce 会再试）。
     let Some(endpoint) = socket_addr_from(ip, tcp_port) else { return };
-    if state.has_endpoint(peer_id, &endpoint).await {
-        return;
-    }
-    // 默认：大 ID 立即拨号，小 ID 等大 ID 拨；小 ID 在「对端在线却迟迟连不上」时兜底。
+    // ① 这个端点已经连上了（典型是「自己拨出去的那条」）→ 本轮无事可做。
+    let has_endpoint = state.has_endpoint(peer_id, &endpoint).await;
+    // ② 已经和这个 peer 有**任意**连接 → 连通性已建立，不再拨。
+    //
+    // 判据必须是「有没有连接」而不是「有没有连到这个端点」：接受侧记录的 `Link.endpoint`
+    // 是 TCP **源地址（临时端口）**，本函数拿到的是 announce 自报的**监听地址**，两者永不
+    // 相等。只按端点判，会让被动方永远认为「没连上」，10s 后兜底拨号反向再拨一条，
+    // 形成镜像重复连接（完整机制见 `should_dial` 的注释）。
+    //
+    // 语义边界（别在这里加多路径逻辑）：本函数只负责**连通性**。多路径由各 Transport 自己
+    // 的驱动产生 —— Routed 由配置驱动直接走 `connect_to_peer`，BLE 由 BLE 发现驱动，
+    // 都不经过这里。将来若要「同一路径的多条连接」（如多网卡冗余），应按**连接健康度**
+    // 收敛，而不是放宽这一条。
+    let has_any_link = has_endpoint || state.has_link(peer_id).await;
+    // 首次建链：大 ID 立即拨号，小 ID 等大 ID 拨；小 ID 在「对端在线却迟迟连不上」时兜底。
     let should = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         let first_seen = peers.get(peer_id).and_then(|p| p.first_seen);
-        should_dial(&state.device_id, peer_id, first_seen, db::now_ms())
+        should_dial(
+            &state.device_id,
+            peer_id,
+            has_endpoint,
+            has_any_link,
+            first_seen,
+            db::now_ms(),
+        )
     };
     if !should {
         return;
@@ -4752,31 +4794,52 @@ mod tests {
     use super::*;
     use crate::gossip_engine::GossipEngine;
 
-    // ---- 小 ID 兜底拨号（M2 双向建链）----
+    // ---- 拨号决策（M2 双向建链 + P1-2 镜像重复连接修正）----
 
     #[test]
-    fn should_dial_larger_id_always_dials() {
-        // 本机是大 ID（my_id > peer_id）：对称场景的确定性拨号方，恒拨。
-        assert!(should_dial("b", "a", None, 0));
-        assert!(should_dial("b", "a", Some(0), 0));
+    fn should_dial_larger_id_dials_when_not_connected() {
+        // 本机是大 ID（my_id > peer_id）：尚无任何连接时，作为对称场景的确定性拨号方，恒拨。
+        assert!(should_dial("b", "a", false, false, None, 0));
+        assert!(should_dial("b", "a", false, false, Some(0), 0));
     }
 
     #[test]
     fn should_dial_smaller_id_waits_within_threshold() {
         // 本机是小 ID：对端在线但「首次发现」未超过 10s，不拨（等大 ID 拨）。
         let now = 1_000_000;
-        assert!(!should_dial("a", "b", Some(now - 9_000), now));
-        assert!(!should_dial("a", "b", Some(now), now));
+        assert!(!should_dial("a", "b", false, false, Some(now - 9_000), now));
+        assert!(!should_dial("a", "b", false, false, Some(now), now));
         // 对端尚未在线（first_seen=None）：不拨。
-        assert!(!should_dial("a", "b", None, now));
+        assert!(!should_dial("a", "b", false, false, None, now));
     }
 
     #[test]
     fn should_dial_smaller_id_backups_after_threshold() {
-        // 本机是小 ID：对端在线却超过 10s 连不上（单向可达），兜底拨。
+        // 本机是小 ID：对端在线却超过 10s 连不上（单侧不可达），兜底拨。
         let now = 1_000_000;
-        assert!(should_dial("a", "b", Some(now - 10_000), now));
-        assert!(should_dial("a", "b", Some(now - 60_000), now));
+        assert!(should_dial("a", "b", false, false, Some(now - 10_000), now));
+        assert!(should_dial("a", "b", false, false, Some(now - 60_000), now));
+    }
+
+    /// P1-2 修正的**核心护栏**。
+    ///
+    /// 被动方（小 ID）已经收到过大 ID 拨来的连接时，绝不能因为「端点表示不对称」
+    /// （接受侧 `Link.endpoint` 记的是 TCP 源**临时端口**，而判据比的是 announce 自报的
+    /// **监听地址**）而反向再拨一条 —— 那会让同一对节点稳定停留 2 条镜像 TCP，
+    /// 连接与读写任务翻倍、心跳双份，并让「断一条仍在线」的判据变成假阳性。
+    ///
+    /// 注意判据是 `has_any_link`，与 `has_endpoint` 无关：这里刻意传
+    /// `has_endpoint=false`（真实场景就是如此）来钉住「只按端点判会误拨」这一点。
+    #[test]
+    fn should_dial_skips_when_any_connection_already_exists() {
+        let now = 1_000_000;
+        // 小 ID + 已有连接 + 早已超过 10s 阈值 —— 旧实现正是在这里误判为「该兜底拨号」。
+        assert!(!should_dial("a", "b", false, true, Some(now - 60_000), now));
+        // 大 ID 同理：已有连接不重复拨。
+        assert!(!should_dial("b", "a", false, true, Some(now - 60_000), now));
+        // 同一端点已连 → 不拨（无论 ID 大小、无论阈值）。
+        assert!(!should_dial("b", "a", true, true, None, now));
+        assert!(!should_dial("a", "b", true, true, Some(now - 60_000), now));
     }
 
     // ---- Hello 握手身份认证（P0 安全修复回归）----

@@ -48,6 +48,11 @@
 - 抽纯函数 `should_dial(my_id, peer_id, first_seen, now)` + 三个单测钉住「大 ID 恒拨 / 小 ID 阈值内等待 / 小 ID 超阈值兜底」，护栏非空转验证（临时禁用兜底 → 测试 FAIL）。
 - `Peer.connected_since` 语义修正重命名为 `first_seen`（其值本就是「首次发现时间」而非「建链时间」，此前从未被读取）；前端 types 同步。
 
+### Fixed (P1-2 镜像重复连接修正)
+- **同一对节点不再稳定停留 2 条镜像 TCP**（`ensure_link`）：拨号判据从「**这个端点**连上了吗」提升为「和这个 peer **有连接吗**」。根因是端点表示不对称 —— 接受侧 `handle_incoming` 记录的 `Link.endpoint` 是 TCP **源地址（临时端口）**，而 `ensure_link` 拿到的是 announce 自报的**监听地址**，两者永不相等 ⇒ 被动方（小 ID）永远认为「没连上」，10s 后兜底拨号反向再拨一条，形成镜像重复连接（连接与读写任务翻倍、心跳双份，并让「断一条仍在线」的多路径判据变成假阳性）。镜像连接**不带来任何送达补偿**：`try_send` 只把消息交给 mpsc（返回 Ok 不代表 TCP 写出成功），所以它纯属浪费。
+- **语义边界明确化**：`ensure_link` 只负责**连通性**（和看得见的 peer 建立联系），不负责**多路径** —— 多路径由各 Transport 自己的驱动产生（Routed 由配置驱动直接走 `connect_to_peer`、BLE 由 BLE 发现驱动，都不经过 `ensure_link`）。将来若需要「同一路径的多条连接」（如多网卡冗余），按**连接健康度**收敛，而不是放宽这一条。
+- 抽纯函数 `should_dial(my_id, peer_id, has_endpoint, has_any_link, first_seen, now)`，决策顺序「已连该端点 → 已有任意连接 → 大 ID 恒拨 → 小 ID 超阈值兜底」。新增单测 `should_dial_skips_when_any_connection_already_exists` 钉住核心场景；**护栏非空转验证**：临时退回旧判据（只按端点）→ 该测试 FAIL（3 passed / 1 failed），证明它精确钉住了 P1-2 行为（marker 已删）。
+
 ## [2.1.2] - 2026-09-11
 
 ### Fixed
