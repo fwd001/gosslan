@@ -254,6 +254,8 @@ pub async fn spawn(
                                 DialOutcome::Connected => {
                                     eprintln!("[routed] 已连上 peer={} ep={addr}", ep.display_id())
                                 }
+                                // 每 10s 一轮的常态：端点已有连接，静默（见 DialOutcome 定义）。
+                                DialOutcome::AlreadyConnected => {}
                                 DialOutcome::Failed(e) => eprintln!(
                                     "[routed] 拨号未成功 peer={} ep={addr}：{e}",
                                     ep.display_id()
@@ -833,7 +835,11 @@ fn socket_addr_from(ip: &str, port: u16) -> Option<SocketAddr> {
 /// `Stopped` 与 `Failed` 分开，是为了在正常停机时不产生误导性的「拨号失败」日志；
 /// LAN 路径的正常失败（对端离线、或该由对端拨号）则完全不打日志，避免刷屏。
 enum DialOutcome {
+    /// 本次真正建链成功（含首次握手学身份）。
     Connected,
+    /// 端点已有一条连接（去重命中）。拨号任务每 10s 一轮，这是**常态**，不打日志
+    /// —— 否则「已连上」会每 10s 重复刷屏，把真正的新连接淹掉。
+    AlreadyConnected,
     /// 拨号被停机信号中断（应用正在退出 / 切换网络）。
     Stopped,
     Failed(String),
@@ -889,7 +895,7 @@ async fn connect_to_peer(
         None => state.has_endpoint_addr(&endpoint).await,
     };
     if already {
-        return DialOutcome::Connected;
+        return DialOutcome::AlreadyConnected;
     }
 
     // connect 与停机信号赛跑：`stop()` 只等后台任务 2s，若 connect 正在等超时，
