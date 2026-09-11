@@ -464,6 +464,15 @@ pub struct AppState {
     /// 群文件离线投递进行中标记：同一 peer 同时最多一个投递任务
     /// （顺序发送其 pending 群文件）；不同 peer 之间并行。
     pub group_file_sending: Mutex<std::collections::HashSet<String>>,
+    /// 群文件「进度条分母」快照：transfer_id -> **发送时在线的** recipient 集合。
+    ///
+    /// 用户口径（2026-09-12 反馈）：进度条只按**当前在线成员**算 —— 所有在线成员都收到
+    /// 即 100%；**离线成员不计入分母**，他上线后的补发也**不回退**进度条。
+    /// 因此分母必须在**发送那一刻冻结**：若用「此刻在线」动态算，后上线的成员会把分母
+    /// 变大、进度条倒退（正是用户明确不要的「补发算进进度条」）。
+    /// 不落库：它只是展示口径，进程重启后丢失不影响投递正确性（此后进度条按
+    /// 「已完成 / 全体」的兜底口径显示）。
+    pub group_file_online_targets: Mutex<HashMap<String, std::collections::HashSet<String>>>,
     /// 一对一文件离线投递进行中标记：同一 peer 同时最多一个投递任务。
     pub file_sending: Mutex<std::collections::HashSet<String>>,
     /// 群文件接收端 `.part` 状态：transfer_id -> 接收状态。
@@ -630,6 +639,7 @@ impl AppState {
             group_file_keys: Mutex::new(HashMap::new()),
             group_file_receivers: Mutex::new(HashMap::new()),
             group_file_sending: Mutex::new(std::collections::HashSet::new()),
+            group_file_online_targets: Mutex::new(HashMap::new()),
             file_sending: Mutex::new(std::collections::HashSet::new()),
             file_receivers: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),

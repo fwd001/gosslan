@@ -2016,6 +2016,14 @@ pub async fn send_group_file(
         }
     }
 
+    // 进度条分母快照：发送那一刻在线的成员（用户口径见 `AppState::group_file_online_targets`）。
+    // 冻结在这里的理由：离线成员之后上线补发时**不得**回退进度条（用户明确要求），
+    // 动态算分母会让他一上线就把进度条往回拉。
+    {
+        let mut snap = s.group_file_online_targets.lock().unwrap_or_else(|e| e.into_inner());
+        snap.insert(transfer_id.clone(), reachable.iter().cloned().collect());
+    }
+
     // 逐可达成员发送 Offer
     for m in &reachable {
         let msg = Message::GroupFileOffer {
@@ -2054,6 +2062,68 @@ pub async fn send_group_file(
     }
 
     Ok(transfer_id)
+}
+
+/// 群文件「已投递到几个成员」的进度聚合 —— **只按发送时在线的成员平均**。
+///
+/// 用户口径（2026-09-12 反馈）：进度条表示「**在线成员**都收到了」，不是「全员都收到了」。
+/// 离线成员不计入分母，他上线后的补发也**不回退**进度条。
+///
+/// 分母取自 `state.group_file_online_targets`（发送那一刻冻结的快照）；快照缺失
+/// （进程重启后内存态丢失）时退回「全体 recipient 平均」—— 仍是单调不减的口径，
+/// 不会出现进度条倒退。
+///
+/// `fallback` 是调用方刚算出的**本条连接**字节进度，用于覆盖 DB 尚未刷新的那一拍。
+///
+/// ⚠️ 本函数**自己取 `state.db` 锁**：调用方必须在**未持有 db 锁**时调用（std Mutex 不可重入）。
+pub(crate) fn group_file_online_progress(
+    state: &AppState,
+    transfer_id: &str,
+    fallback: f64,
+) -> f64 {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let recipients = db::list_group_file_recipients(&dbc, transfer_id).unwrap_or_default();
+    drop(dbc);
+    if recipients.is_empty() {
+        return fallback.clamp(0.0, 1.0);
+    }
+    let snapshot = state
+        .group_file_online_targets
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(transfer_id)
+        .cloned();
+    group_file_progress_from(&recipients, snapshot.as_ref(), fallback)
+}
+
+/// `group_file_online_progress` 的**纯函数内核**（便于单测，不碰锁/DB）。
+///
+/// 口径（用户 2026-09-12）：`online` = 发送那一刻在线的 recipient 集合。
+/// - `online` 为 `None`（快照丢失，如进程重启）→ 分母 = **全体** recipient；
+/// - `online` 为空集（发送时无人在线）→ **0**（没有在线成员可等，进度条不该满格）；
+/// - 否则分母 = 快照内成员，进度 = 其各自进度的**平均**（离线成员不参与）。
+///
+/// `fallback` 是调用方刚算出的本条连接字节进度（DB 可能还没刷新到这一拍），
+/// 最终取 `max(聚合, fallback)` ⇒ **单调不减**，符合「补发不回退进度条」。
+pub(crate) fn group_file_progress_from(
+    recipients: &[crate::state::GroupFileRecipient],
+    online: Option<&std::collections::HashSet<String>>,
+    fallback: f64,
+) -> f64 {
+    let fallback = fallback.clamp(0.0, 1.0);
+    let denom: Vec<&crate::state::GroupFileRecipient> = match online {
+        Some(set) if !set.is_empty() => recipients
+            .iter()
+            .filter(|r| set.contains(&r.recipient_id))
+            .collect(),
+        Some(_) => return 0.0,
+        None => recipients.iter().collect(),
+    };
+    if denom.is_empty() {
+        return fallback;
+    }
+    let sum: f64 = denom.iter().map(|r| r.progress.clamp(0.0, 1.0)).sum();
+    (sum / denom.len() as f64).max(fallback).clamp(0.0, 1.0)
 }
 
 /// 群文件投递失败诊断（emit 给 DevDiag 面板；不打印任何密钥/明文内容）。
@@ -2145,6 +2215,14 @@ async fn dispatch_group_file_to_peer(
             } else {
                 sent as f64 / size as f64
             };
+            // 发送方气泡的进度口径：**只按发送时在线的成员平均**（用户 2026-09-12 反馈）。
+            // 离线成员不计入分母、之后补发也不回退进度条；在线成员全部完成即 100%。
+            //
+            // ⚠️ 先算聚合再取 db 锁：`group_file_online_progress` 内部要读 DB，
+            // 若在持有 db 锁时调用就是同锁重入（std Mutex 不可重入，必死锁）。
+            // 聚合口径取「在线成员各自进度的平均」，因此这里传入的是**本条连接**的
+            // 字节进度，函数内部再与落库值取 max（同一 recipient 的进度单调不减）。
+            let max_progress = group_file_online_progress(state, transfer_id, progress);
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             let _ = db::update_group_file_recipient(
                 &dbc,
@@ -2153,12 +2231,6 @@ async fn dispatch_group_file_to_peer(
                 "sending",
                 progress,
             );
-            // 发送方气泡展示全体 recipient 的最大进度，避免多成员时进度回退。
-            let max_progress = db::list_group_file_recipients(&dbc, transfer_id)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| r.progress)
-                .fold(progress, f64::max);
             let _ = db::upsert_transfer(
                 &dbc,
                 transfer_id,
@@ -3326,9 +3398,77 @@ pub fn close_log_window(app: tauri::AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_message_content, decode_outgoing_image, image_extension, normalize_routed_address,
-        MAX_MESSAGE_LEN, MAX_OUTGOING_IMAGE_BYTES,
+        check_message_content, decode_outgoing_image, group_file_progress_from, image_extension,
+        normalize_routed_address, MAX_MESSAGE_LEN, MAX_OUTGOING_IMAGE_BYTES,
     };
+    use crate::state::GroupFileRecipient;
+    use std::collections::HashSet;
+
+    fn recipient(id: &str, progress: f64) -> GroupFileRecipient {
+        GroupFileRecipient {
+            recipient_id: id.to_string(),
+            status: if progress >= 1.0 { "completed" } else { "sending" }.to_string(),
+            progress,
+            updated_at: 0,
+        }
+    }
+
+    fn online(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// 用户口径：进度条只按**发送时在线的成员**算。
+    /// 复现场景：群 3 人，1 人离线；两个在线成员都收完 ⇒ 进度必须是 **100%**，
+    /// 而不是被离线成员的 0 拖成 50%（这正是 `6e9b96e` 那轮用户反馈的「卡在 50%」）。
+    #[test]
+    fn group_file_progress_ignores_offline_members() {
+        let rs = vec![recipient("a", 1.0), recipient("b", 1.0), recipient("offline", 0.0)];
+        let snap = online(&["a", "b"]);
+        assert_eq!(group_file_progress_from(&rs, Some(&snap), 0.0), 1.0);
+        // 对照组：不传快照（全体口径）时，同一组数据只有 2/3 —— 证明差异来自分母而非巧合。
+        let all = group_file_progress_from(&rs, None, 0.0);
+        assert!((all - 2.0 / 3.0).abs() < 1e-9, "全体口径应为 2/3，实际 {all}");
+    }
+
+    /// 离线成员之后上线补发**不得回退**进度条：分母是冻结快照，与他的进度无关。
+    #[test]
+    fn late_online_member_does_not_regress_progress() {
+        let snap = online(&["a", "b"]);
+        let done = vec![recipient("a", 1.0), recipient("b", 1.0), recipient("offline", 0.0)];
+        assert_eq!(group_file_progress_from(&done, Some(&snap), 0.0), 1.0);
+        // 离线者开始补发（进度 0.5）——仍在快照外，不影响结果
+        let catching_up = vec![recipient("a", 1.0), recipient("b", 1.0), recipient("offline", 0.5)];
+        assert_eq!(group_file_progress_from(&catching_up, Some(&snap), 0.0), 1.0);
+    }
+
+    /// 在线成员未全部完成时，进度是在线成员的平均值（不是 max，也不是全体）。
+    #[test]
+    fn group_file_progress_averages_online_members() {
+        let rs = vec![recipient("a", 1.0), recipient("b", 0.0), recipient("offline", 1.0)];
+        let snap = online(&["a", "b"]);
+        assert_eq!(group_file_progress_from(&rs, Some(&snap), 0.0), 0.5);
+    }
+
+    /// 发送时无人在线 ⇒ 进度恒 0（没有「在线成员都收到了」这件事）。
+    #[test]
+    fn group_file_progress_is_zero_when_nobody_online_at_send() {
+        let rs = vec![recipient("a", 0.0), recipient("b", 0.0)];
+        let empty = HashSet::new();
+        assert_eq!(group_file_progress_from(&rs, Some(&empty), 0.0), 0.0);
+        // 即便调用方传了 fallback（本连接字节进度），空快照也必须压到 0 ——
+        // 否则「发给一个刚好在线的成员」会看起来像全群都完成了。
+        assert_eq!(group_file_progress_from(&rs, Some(&empty), 0.7), 0.0);
+    }
+
+    /// 快照丢失（重启后内存态清空）时退回全体口径；空集合/越界 fallback 都要夹紧。
+    #[test]
+    fn group_file_progress_fallback_and_clamp() {
+        let rs = vec![recipient("a", 0.5), recipient("b", 0.5)];
+        assert_eq!(group_file_progress_from(&rs, None, 0.0), 0.5);
+        assert_eq!(group_file_progress_from(&[], None, 0.3), 0.3, "无 recipient 时用 fallback");
+        assert_eq!(group_file_progress_from(&rs, None, 2.0), 1.0, "fallback 超界要夹到 1");
+        assert_eq!(group_file_progress_from(&rs, None, -1.0), 0.5, "负 fallback 不得把进度拉成负");
+    }
 
     /// Routed 端点地址：`ip` 与 `ip:port` 两种写法都收（省略端口补标准 `TCP_PORT`），
     /// 并在**存储前规范化**——这样 add 与 remove 比较的是同一个字符串，

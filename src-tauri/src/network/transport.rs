@@ -3977,14 +3977,22 @@ async fn handle_group_file_complete_ack(
             };
         }
         let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), bubble).ok();
-        // sender 的 transfer 记录随聚合结果推进（delivered → done/1.0，failed → failed/0）
+        // sender 的 transfer 记录随聚合结果推进。
+        // 状态：delivered → done，否则 failed（保留原有语义）。
+        // 进度：按**在线成员**口径算，而不是「delivered 就写 1.0」——
+        // 否则「在线成员全到了、但离线成员还 pending」时进度条会提前满格，
+        // 与用户口径（离线不计入分母，在线全到才算完）相冲突。
+        // ⚠️ `group_file_online_progress` 内部取 db 锁：必须先 drop 本段持有的锁，
+        // 否则 std Mutex 同锁重入即死锁。
         let tf_status = if bubble == "delivered" { "done" } else { "failed" };
-        let tf_progress = if bubble == "delivered" { 1.0 } else { 0.0 };
         let path = db::list_transfers(&dbc)
             .unwrap_or_default()
             .into_iter()
             .find(|t| t.id == transfer_id)
             .and_then(|t| t.path);
+        drop(dbc);
+        let tf_progress = crate::commands::group_file_online_progress(state, &transfer_id, 0.0);
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             &transfer_id,
@@ -3997,6 +4005,16 @@ async fn handle_group_file_complete_ack(
             tf_progress,
         )
         .ok();
+        // 本 transfer 已到终态（delivered/failed）→ 进度条口径快照用完即弃，
+        // 避免无界增长；注意**不能**只在 `tf_progress >= 1.0` 时清 ——
+        // 「发送时无人在线」的 transfer 进度恒 0，那样就永远清不掉。
+        if bubble == "delivered" || bubble == "failed" {
+            state
+                .group_file_online_targets
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&transfer_id);
+        }
     }
     if bubble == "delivered" {
         let _ = state.app.emit("message-acked", &format!("gfile-{transfer_id}"));
