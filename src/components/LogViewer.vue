@@ -176,6 +176,7 @@ const levelClass = (lv: string) =>
           :class="autoRefresh ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
           :title="t('logs.autoRefresh')"
           :aria-label="t('logs.autoRefresh')"
+          :aria-pressed="autoRefresh"
           @click="autoRefresh = !autoRefresh; syncTimer()"
         >
           <RefreshCw class="h-3.5 w-3.5" :class="autoRefresh ? 'animate-spin' : ''" />
@@ -200,6 +201,11 @@ const levelClass = (lv: string) =>
           <Trash2 class="h-3.5 w-3.5" />
           <span class="hidden sm:inline">{{ confirmClear ? t("logs.clearConfirm") : t("logs.clear") }}</span>
         </button>
+        <!-- 读屏播报：只播「用户动作的结果」（复制成功 / 清空待确认）。
+             日志正文**刻意不加 aria-live**：它是持续追加的，实时区会把读屏刷屏。 -->
+        <span class="sr-only" role="status" aria-live="polite">
+          {{ copied ? t("logs.copied") : confirmClear ? t("logs.clearConfirm") : "" }}
+        </span>
         <button
           class="flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-white transition"
           :class="copied ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-primary)] hover:bg-[var(--gosslan-primary-hover)]'"
