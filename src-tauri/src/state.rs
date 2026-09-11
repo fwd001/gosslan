@@ -630,7 +630,9 @@ impl AppState {
         let logger = Logger::new(app_data.join("logs"), &log_stem);
 
         // 文件接收目录：默认 app_data/downloads，允许用户在设置里改（持久化到 settings）。
-        let downloads_dir = db::get_setting(&conn, "downloads_dir")
+        // 与共享目录同理：用户自选的目录在沙盒里重启后会失访，必须靠书签把权限带回来，
+        // 否则"收到的文件写不进去"（而且同样没有报错弹窗）。
+        let downloads_dir = crate::user_dirs::load(&conn, crate::user_dirs::RECEIVE)
             .map(PathBuf::from)
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(default_downloads);
@@ -673,7 +675,7 @@ impl AppState {
         let avatar = db::get_setting(&conn, "avatar");
         // 共享目录：macOS 沙盒里**必须**先解析安全作用域书签（解析即开始访问），
         // 否则重启后目录还在、权限没了 —— 现象是"共享目录列表变空"，且没有任何报错。
-        let share_dir = crate::share_dir::load(&conn);
+        let share_dir = crate::user_dirs::load(&conn, crate::user_dirs::SHARE);
 
         // 启动时从 DB 恢复待发已读回执（进程重启后 pending_reads 内存丢失的恢复路径）
         let mut pending_reads_map = HashMap::new();

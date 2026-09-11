@@ -1,8 +1,13 @@
-//! 共享目录的持久化：**路径 +（macOS）安全作用域书签**。
+//! **用户选定的目录**的持久化：路径 +（macOS）安全作用域书签。
 //!
-//! 数据库里存两样东西：
-//! - `share_dir`：路径字符串（跨平台通用，非沙盒环境全靠它）；
-//! - `share_dir_bookmark`：**仅 macOS** 的 security-scoped bookmark（base64）——
+//! 目前有两处同构的需求（同一个坑踩两次，所以抽成一份）：
+//! - 共享目录（`share_dir`）—— 对外提供文件列表；
+//! - 文件接收目录（`downloads_dir`）—— 收到的文件写到这里。
+//!
+//! 两者都是"用户在目录选择器里挑的目录"，而沙盒里那次选择的授权**只属于本次进程**。
+//! 所以数据库里对每个目录存两样东西：
+//! - `<name>`：路径字符串（跨平台通用，非沙盒环境全靠它）；
+//! - `<name>_bookmark`：**仅 macOS** 的 security-scoped bookmark（base64）——
 //!   沙盒里它是重启后唯一还带权限的来源（见 `macos_bookmark.rs`）。
 //!
 //! 决策收在一个纯函数 [`pick`] 里，这样"谁优先、坏了怎么办"是**可测**的，
@@ -11,12 +16,28 @@ use rusqlite::Connection;
 
 use crate::db;
 
-/// 数据库键：共享目录路径。
-pub const SETTING_PATH: &str = "share_dir";
-/// 数据库键：共享目录的 security-scoped bookmark（base64，仅 macOS 会写）。
-/// 非 macOS 平台这个键永远不会被读写 —— 显式标注，免得在那些目标上冒出 dead_code 警告。
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub const SETTING_BOOKMARK: &str = "share_dir_bookmark";
+/// 一对数据库键：路径 + 它的书签。
+#[derive(Clone, Copy)]
+pub struct Keys {
+    /// 路径字符串的键（跨平台）。
+    pub path: &'static str,
+    /// 书签的键（base64，仅 macOS 会写）。
+    /// 非 macOS 平台这个键永远不会被读写 —— 显式标注，免得在那些目标上冒出 dead_code 警告。
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub bookmark: &'static str,
+}
+
+/// 共享目录（对外提供文件列表）。
+pub const SHARE: Keys = Keys {
+    path: "share_dir",
+    bookmark: "share_dir_bookmark",
+};
+
+/// 文件接收目录（收到的文件写到这里）。
+pub const RECEIVE: Keys = Keys {
+    path: "downloads_dir",
+    bookmark: "downloads_dir_bookmark",
+};
 
 /// 启动期决策（**纯函数**）。
 ///
@@ -37,25 +58,25 @@ pub fn pick(
     stored
 }
 
-/// 启动时读共享目录。macOS 上会顺带解析书签（解析即开始访问）、
+/// 启动时读该目录。macOS 上会顺带解析书签（**解析即开始访问**）、
 /// 过期则续期写回、失效则清掉（免得每次启动都白试一次）。
-pub fn load(conn: &Connection) -> Option<String> {
-    let stored = db::get_setting(conn, SETTING_PATH);
+pub fn load(conn: &Connection, keys: Keys) -> Option<String> {
+    let stored = db::get_setting(conn, keys.path);
 
     #[cfg(target_os = "macos")]
-    let from_bookmark = db::get_setting(conn, SETTING_BOOKMARK).map(|b64| {
+    let from_bookmark = db::get_setting(conn, keys.bookmark).map(|b64| {
         match crate::macos_bookmark::resolve(&b64) {
             Ok(resolved) => {
                 if let Some(new_bookmark) = &resolved.refreshed {
                     // 续期成功：写回，下次启动不用再续
-                    let _ = db::set_setting(conn, SETTING_BOOKMARK, new_bookmark);
+                    let _ = db::set_setting(conn, keys.bookmark, new_bookmark);
                 }
                 Ok(resolved.path)
             }
             Err(_) => {
                 // 失效/损坏：清掉。否则每次启动都拿一条坏书签去试
-                let _ = db::delete_setting(conn, SETTING_BOOKMARK);
-                Err("共享目录书签已失效".to_string())
+                let _ = db::delete_setting(conn, keys.bookmark);
+                Err("目录书签已失效".to_string())
             }
         }
     });
@@ -67,19 +88,19 @@ pub fn load(conn: &Connection) -> Option<String> {
 
 /// 用户选好目录后落库：先写路径，再（macOS）尽力写书签。
 ///
-/// 书签建不出来**不能**让"设置共享目录"这个动作失败：未沙盒的构建会创建失败，
+/// 书签建不出来**不能**让"设置目录"这个动作失败：未沙盒的构建会创建失败，
 /// 而那时路径本来就能用。失败时清掉旧书签，避免下次启动拿一条与当前目录不匹配的书签
-/// 去解析（那会把共享目录指回**上一个**目录）。
-pub fn store(conn: &Connection, path: &str) -> Result<(), String> {
-    db::set_setting(conn, SETTING_PATH, path).map_err(|e| e.to_string())?;
+/// 去解析（那会把这个目录指回**上一个**目录）。
+pub fn store(conn: &Connection, keys: Keys, path: &str) -> Result<(), String> {
+    db::set_setting(conn, keys.path, path).map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "macos")]
     match crate::macos_bookmark::create(path) {
         Ok(bookmark) => {
-            db::set_setting(conn, SETTING_BOOKMARK, &bookmark).map_err(|e| e.to_string())?;
+            db::set_setting(conn, keys.bookmark, &bookmark).map_err(|e| e.to_string())?;
         }
         Err(_) => {
-            let _ = db::delete_setting(conn, SETTING_BOOKMARK);
+            let _ = db::delete_setting(conn, keys.bookmark);
         }
     }
     Ok(())
@@ -159,26 +180,46 @@ mod tests {
         let dir = std::env::temp_dir();
         let dir = dir.to_string_lossy().trim_end_matches('/').to_string();
 
-        store(&conn, &dir).expect("设置共享目录不该失败");
+        store(&conn, SHARE, &dir).expect("设置共享目录不该失败");
         assert_eq!(
-            db::get_setting(&conn, SETTING_PATH).as_deref(),
+            db::get_setting(&conn, SHARE.path).as_deref(),
             Some(dir.as_str()),
             "路径必须无条件落库（书签只是附加信息）"
         );
-        assert!(same_dir(load(&conn), &dir), "load 必须拿回同一个目录");
+        assert!(same_dir(load(&conn, SHARE), &dir), "load 必须拿回同一个目录");
+    }
+
+    /// 两个目录（共享 / 接收）必须**各存各的**：键写串了会让"改接收目录"
+    /// 顺手把共享目录指到别处 —— 这类串键错误在单目录测试里完全看不出来。
+    #[test]
+    fn the_two_user_directories_do_not_interfere() {
+        let conn = mem();
+        let a = std::env::temp_dir();
+        let a = a.to_string_lossy().trim_end_matches('/').to_string();
+        let b = format!("{a}/gosslan-user-dirs-test");
+        std::fs::create_dir_all(&b).unwrap();
+
+        store(&conn, SHARE, &a).unwrap();
+        store(&conn, RECEIVE, &b).unwrap();
+
+        assert!(same_dir(load(&conn, SHARE), &a), "共享目录不能被接收目录覆盖");
+        assert!(same_dir(load(&conn, RECEIVE), &b), "接收目录必须各自独立");
+        assert_ne!(SHARE.path, RECEIVE.path, "两处路径键必须不同");
+        assert_ne!(SHARE.bookmark, RECEIVE.bookmark, "两处书签键必须不同");
+        let _ = std::fs::remove_dir_all(&b);
     }
 
     /// 坏书签不能让启动拿不到目录：清了书签、退回路径。
     #[test]
     fn corrupted_bookmark_is_cleared_and_path_still_used() {
         let conn = mem();
-        db::set_setting(&conn, SETTING_PATH, "/stored/dir").unwrap();
-        db::set_setting(&conn, SETTING_BOOKMARK, "这不是书签!!").unwrap();
+        db::set_setting(&conn, SHARE.path, "/stored/dir").unwrap();
+        db::set_setting(&conn, SHARE.bookmark, "这不是书签!!").unwrap();
 
-        assert_eq!(load(&conn), Some("/stored/dir".to_string()));
+        assert_eq!(load(&conn, SHARE), Some("/stored/dir".to_string()));
         #[cfg(target_os = "macos")]
         assert_eq!(
-            db::get_setting(&conn, SETTING_BOOKMARK),
+            db::get_setting(&conn, SHARE.bookmark),
             None,
             "坏书签必须被清掉，免得每次启动都白试"
         );
@@ -192,9 +233,9 @@ mod tests {
         let dir = std::env::temp_dir();
         let dir = dir.to_string_lossy().trim_end_matches('/').to_string();
         if let Ok(bookmark) = crate::macos_bookmark::create(&dir) {
-            db::set_setting(&conn, SETTING_PATH, "/somewhere/else").unwrap();
-            db::set_setting(&conn, SETTING_BOOKMARK, &bookmark).unwrap();
-            assert!(same_dir(load(&conn), &dir), "书签指向的目录才是真目录");
+            db::set_setting(&conn, SHARE.path, "/somewhere/else").unwrap();
+            db::set_setting(&conn, SHARE.bookmark, &bookmark).unwrap();
+            assert!(same_dir(load(&conn, SHARE), &dir), "书签指向的目录才是真目录");
         }
     }
 }
