@@ -41,6 +41,11 @@ export const zhCN: MessageDict = {
   "logs.autoRefresh": "自动刷新",
   "logs.close": "关闭",
   "logs.back": "返回",
+  "logs.filter": "过滤日志",
+  "logs.filterPlaceholder": "输入文本过滤…",
+  "logs.filterClear": "清除过滤",
+  "logs.filterCount": "匹配 {n} / {total} 条",
+  "logs.filterEmpty": "没有匹配的日志。",
 
   // ---- 设置页主框架 ----
   "settings.title": "设置",
@@ -547,6 +552,11 @@ export const enUS: MessageDict = {
   "logs.autoRefresh": "Auto refresh",
   "logs.close": "Close",
   "logs.back": "Back",
+  "logs.filter": "Filter logs",
+  "logs.filterPlaceholder": "Type to filter…",
+  "logs.filterClear": "Clear filter",
+  "logs.filterCount": "{n} of {total} matched",
+  "logs.filterEmpty": "No matching logs.",
 
   // ---- Settings shell ----
   "settings.title": "Settings",

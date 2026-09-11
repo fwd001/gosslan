@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { ArrowLeft, Copy, RefreshCw, Trash2, X } from "lucide-vue-next";
+import { ArrowLeft, Copy, RefreshCw, Search, Trash2, X } from "lucide-vue-next";
 import { api } from "@/api";
 import { t } from "@/i18n";
+import { highlightText } from "@/utils/highlight";
+import { LOG_LEVEL_TEXT, filterLogLines } from "@/utils/logFilter";
 import type { LogEntry } from "@/types";
 
 /**
@@ -22,8 +24,6 @@ const copied = ref(false);
 /** 清空两段式确认：第一次点击进入待确认态，再次点击才真正清空。 */
 const confirmClear = ref(false);
 
-const LEVEL_TEXT: Record<string, string> = { info: "INFO", warn: "WARN", error: "ERROR" };
-
 function fmt(ts: number): string {
   const d = new Date(ts);
   const p = (n: number) => String(n).padStart(2, "0");
@@ -31,6 +31,40 @@ function fmt(ts: number): string {
     d.getMinutes(),
   )}:${p(d.getSeconds())}`;
 }
+
+/** 过滤词。字面**包含**匹配（不区分大小写，不做模糊/正则）—— 见 `@/utils/logFilter`。 */
+const filter = ref("");
+const trimmedFilter = computed(() => filter.value.trim());
+
+/**
+ * 展示行（倒序）—— 只补上「已格式化的时间」，匹配判据完全交给 `@/utils/logFilter`。
+ * 判据必须与屏幕上渲染的文本一致（「所见即所匹配」），所以时间取 `HH:MM:SS`，
+ * 不含未显示的日期部分。
+ */
+const lines = computed(() =>
+  displayLogs.value.map((l, i) => ({
+    key: `${l.ts}-${l.target}-${i}`,
+    level: l.level,
+    time: fmt(l.ts).slice(11),
+    target: l.target,
+    message: l.message,
+  })),
+);
+
+/** 命中过滤词的行（保持倒序）。 */
+const matched = computed(() => filterLogLines(lines.value, filter.value));
+
+/** 渲染行：命中处加高亮标记（复用会话搜索同一套 `highlightText`，视觉语言一致）。 */
+const rows = computed(() =>
+  matched.value.map((l) => ({
+    key: l.key,
+    level: l.level,
+    time: highlightText(l.time, trimmedFilter.value),
+    levelText: highlightText(LOG_LEVEL_TEXT[l.level] ?? l.level, trimmedFilter.value),
+    target: highlightText(`[${l.target}]`, trimmedFilter.value),
+    message: highlightText(l.message, trimmedFilter.value),
+  })),
+);
 
 async function load() {
   try {
@@ -62,7 +96,7 @@ onUnmounted(() => {
 /** 一键复制：时间正序（便于按因果排查）。 */
 async function copyAll() {
   const text = logs.value
-    .map((l) => `[${fmt(l.ts)}] [${LEVEL_TEXT[l.level] ?? l.level}] [${l.target}] ${l.message}`)
+    .map((l) => `[${fmt(l.ts)}] [${LOG_LEVEL_TEXT[l.level] ?? l.level}] [${l.target}] ${l.message}`)
     .join("\n");
   try {
     if (navigator.clipboard?.writeText) {
@@ -179,20 +213,53 @@ const levelClass = (lv: string) =>
       </div>
     </div>
 
+    <!-- 过滤条：字面包含匹配，命中处高亮。
+         单独一行而不是塞进工具栏 —— 工具栏已有 4 个按钮，移动端会被挤爆。 -->
+    <div class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3 py-1.5">
+      <Search class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
+      <input
+        v-model="filter"
+        type="text"
+        maxlength="200"
+        enterkeyhint="search"
+        autocapitalize="off"
+        autocorrect="off"
+        spellcheck="false"
+        class="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)]"
+        :placeholder="t('logs.filterPlaceholder')"
+        :aria-label="t('logs.filter')"
+      />
+      <span v-if="trimmedFilter" class="shrink-0 text-xs text-[var(--gosslan-text-2)]">
+        {{ t("logs.filterCount", { n: rows.length, total: logs.length }) }}
+      </span>
+      <button
+        v-if="trimmedFilter"
+        class="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        :title="t('logs.filterClear')"
+        :aria-label="t('logs.filterClear')"
+        @click="filter = ''"
+      >
+        <X class="h-3.5 w-3.5" />
+      </button>
+    </div>
+
     <!-- 日志列表 -->
     <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[13px] leading-relaxed">
       <div v-if="logs.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ t("logs.empty") }}
       </div>
-      <div v-for="(l, i) in displayLogs" :key="i" class="flex gap-2 rounded px-1 py-0.5 hover:bg-[var(--gosslan-hover)]">
-        <span class="shrink-0 select-none text-[var(--gosslan-text-2)]">{{ fmt(l.ts).slice(11) }}</span>
-        <span class="w-12 shrink-0 select-none font-semibold" :class="levelClass(l.level)">
-          {{ LEVEL_TEXT[l.level] ?? l.level }}
-        </span>
-        <span class="min-w-0 break-all">
-          <span class="text-[var(--gosslan-text-2)]">[{{ l.target }}]</span>
-          {{ l.message }}
-        </span>
+      <div v-else-if="rows.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
+        {{ t("logs.filterEmpty") }}
+      </div>
+      <div v-else>
+        <div v-for="r in rows" :key="r.key" class="flex gap-2 rounded px-1 py-0.5 hover:bg-[var(--gosslan-hover)]">
+          <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="r.time"></span>
+          <span class="w-12 shrink-0 select-none font-semibold" :class="levelClass(r.level)" v-html="r.levelText"></span>
+          <span class="min-w-0 break-all">
+            <span class="text-[var(--gosslan-text-2)]" v-html="r.target"></span>
+            <span v-html="r.message"></span>
+          </span>
+        </div>
       </div>
     </div>
   </div>
