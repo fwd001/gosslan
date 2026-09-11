@@ -181,27 +181,25 @@ watch(
       :label="t('settings.storage.retention')"
       :description="t('settings.storage.retention.desc')"
     >
-      <select
-        v-model="retentionDays"
-        class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
-      >
-        <option :value="0">{{ t("settings.storage.retention.forever") }}</option>
-        <option :value="3">{{ t("settings.storage.retention.days", { n: 3 }) }}</option>
-        <option :value="7">{{ t("settings.storage.retention.days", { n: 7 }) }}</option>
-        <option :value="30">{{ t("settings.storage.retention.days", { n: 30 }) }}</option>
-      </select>
+      <span class="gosslan-select-wrap">
+        <select v-model="retentionDays" class="gosslan-select">
+          <option :value="0">{{ t("settings.storage.retention.forever") }}</option>
+          <option :value="3">{{ t("settings.storage.retention.days", { n: 3 }) }}</option>
+          <option :value="7">{{ t("settings.storage.retention.days", { n: 7 }) }}</option>
+          <option :value="30">{{ t("settings.storage.retention.days", { n: 30 }) }}</option>
+        </select>
+      </span>
     </SettingsRow>
 
     <SettingsRow
       :label="t('settings.storage.quota')"
       :description="t('settings.storage.quota.desc')"
     >
-      <select
-        v-model.number="maxQuotaMb"
-        class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
-      >
-        <option v-for="q in quotaOptions" :key="q.value" :value="q.value">{{ t(q.label) }}</option>
-      </select>
+      <span class="gosslan-select-wrap">
+        <select v-model.number="maxQuotaMb" class="gosslan-select">
+          <option v-for="q in quotaOptions" :key="q.value" :value="q.value">{{ t(q.label) }}</option>
+        </select>
+      </span>
     </SettingsRow>
 
     <SettingsRow

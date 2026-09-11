@@ -122,7 +122,12 @@
   /* 版式尺寸：64px 侧栏（图标有呼吸感）+ 250px 列表栏 + 56px 头部 */
   --gosslan-rail-w: 64px;
   --gosslan-list-w: 250px;
-  --gosslan-header-h: 56px;
+  /* 两栏（会话列表 / 聊天头部）共用的头部高度。
+     2026-09-12 按用户反馈「信息列表上面的搜索框和聊天内容区上面的信息框，占的位置太大了，
+     太高了……比较紧凑、精致一点」由 56px 收紧到 52px。
+     ⚠️ 改这个值必须同步 `index.html` 的首屏骨架 `.boot-head`（桌面）与
+     `.boot-logs-toolbar`（日志窗口），否则首屏会跳高 4px —— 这是本项目的既有约定。 */
+  --gosslan-header-h: 52px;
   /* 顶部窗口拖拽条高度：caption 容纳右上三枚窗口按钮 */
   --gosslan-title-h: 38px;
   /* ---------------- 圆角梯度（对齐 iOS HIG / WWDC25「Shape & Concentricity」） ----------------
@@ -491,6 +496,51 @@ button:not(:disabled):active,
   margin: 0 1px;
   background: color-mix(in srgb, currentColor 12%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 35%, transparent);
+}
+
+/* 统一的下拉选择器（跨平台一致性）。
+   用户 2026-09-12 反馈：「下拉选择框的高度在 Mac、Windows 和安卓端也不够一致」。
+   根因是原生 `<select>` 各平台渲染差异很大（macOS 是原生 popup button，高度/内边距
+   与 Windows、Android 都不同），只靠 Tailwind 的 py-1.5 无法收敛。
+   做法：`appearance: none` 去掉原生外观 + **固定高度** + 自绘箭头（border 三角，
+   跟随 currentColor，明暗主题都自适应，且不引任何图片资源）。
+   用法：`<span class="gosslan-select-wrap"><select class="gosslan-select">…`。
+   ⚠️ 箭头由 ::after 画在外壳上，所以外层必须是 position:relative 的那个 span。 */
+.gosslan-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.gosslan-select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 10px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.gosslan-select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 32px;
+  padding: 0 26px 0 10px;
+  border: 1px solid var(--gosslan-border);
+  border-radius: var(--gosslan-radius-md);
+  background: var(--gosslan-bg);
+  color: var(--gosslan-text);
+  font-size: 13px;
+  line-height: 30px;
+  outline: none;
+}
+
+.gosslan-select:focus {
+  border-color: var(--gosslan-primary);
 }
 
 /* 内联图片表情（抖音表情）：正方形副格子 + object-contain 保持原图比例，

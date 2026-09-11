@@ -134,13 +134,15 @@ async function removeEndpoint(address: string) {
     </SettingsRow>
 
     <SettingsRow :label="t('settings.network.interface')">
-      <select
-        v-model="selectedIp"
-        class="max-w-[200px] rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
-        @change="onInterfaceChange"
-      >
-        <option v-for="o in interfaceOptions" :key="o.value" :value="o.value">{{ t(o.label) }}</option>
-      </select>
+      <span class="gosslan-select-wrap max-w-[200px]">
+        <select
+          v-model="selectedIp"
+          class="gosslan-select max-w-[200px]"
+          @change="onInterfaceChange"
+        >
+          <option v-for="o in interfaceOptions" :key="o.value" :value="o.value">{{ t(o.label) }}</option>
+        </select>
+      </span>
     </SettingsRow>
 
     <SettingsRow

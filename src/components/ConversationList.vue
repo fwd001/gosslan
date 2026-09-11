@@ -191,8 +191,10 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
     <!-- 列表头：搜索框（白底+细边，在浅灰栏上清晰）+ 操作按钮。
          高度必须与右栏 ChatHeader 同源（--gosslan-header-h）并同样画下边框：
          两栏从同一个 y 起算，只有高度与底边线都一致，那条分隔线才是**一条连续的线**。
-         之前这里是 px-3 py-2 + h-9 搜索框 = 52px（比右栏 56px 矮 4px）且无底边线，
-         于是左右永远差 4px、右栏那条线在左栏没有对应物。改高度/内边距时留意这条约束。 -->
+         之前这里是 px-3 py-2 + h-9 搜索框 = 52px（比当时右栏的 56px 矮 4px）且无底边线，
+         于是左右永远差 4px、右栏那条线在左栏没有对应物。改高度/内边距时留意这条约束。
+         2026-09-12：整条头部按用户反馈收紧（token 56→52、搜索框 h-9→h-8），
+         两栏仍**同源同一 token**，所以分隔线依旧是一条连续的线。 -->
     <div
       class="flex shrink-0 items-center gap-1.5 border-b border-[var(--gosslan-divider)] px-3"
       :style="{ height: 'var(--gosslan-header-h)' }"
@@ -201,7 +203,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
            暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
            field 在两套主题里都与所在栏拉开一档。 -->
       <div
-        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition focus-within:border-[var(--gosslan-primary)]"
+        class="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition focus-within:border-[var(--gosslan-primary)]"
       >
         <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input

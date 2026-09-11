@@ -86,14 +86,17 @@ const appearanceOptions: { value: AppearanceMode; label: string }[] = [
     </SettingsRow>
 
     <SettingsRow :label="t('settings.appearance.font')" last>
-      <select
-        :aria-label="t('settings.appearance.font.aria')"
-        class="max-w-[180px] rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
-        :value="app.fontFamily"
-        @change="(e) => app.setFontFamily((e.target as HTMLSelectElement).value)"
-      >
-        <option v-for="f in fonts" :key="f.value" :value="f.value">{{ t(f.label) }}</option>
-      </select>
+      <!-- 外壳 + `.gosslan-select`：跨平台高度与箭头一致（见 style.css 说明） -->
+      <span class="gosslan-select-wrap max-w-[180px]">
+        <select
+          :aria-label="t('settings.appearance.font.aria')"
+          class="gosslan-select max-w-[180px]"
+          :value="app.fontFamily"
+          @change="(e) => app.setFontFamily((e.target as HTMLSelectElement).value)"
+        >
+          <option v-for="f in fonts" :key="f.value" :value="f.value">{{ t(f.label) }}</option>
+        </select>
+      </span>
     </SettingsRow>
   </SettingsGroup>
 </template>
