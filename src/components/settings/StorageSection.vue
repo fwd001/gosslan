@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { api } from "@/api";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/stores/useAppStore";
+import BaseModal from "@/components/BaseModal.vue";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import { formatBytes } from "@/utils/format";
@@ -85,19 +86,36 @@ watch([retentionDays, maxQuotaMb], (_nv, ov) => {
   if (retentionDays.value > 0 || maxQuotaMb.value > 0) {
     const keep = retentionDays.value > 0 ? t("settings.storage.confirm.keepDays", { n: retentionDays.value }) : t("settings.storage.confirm.keepForever");
     const cap = maxQuotaMb.value > 0 ? t("settings.storage.confirm.cap", { n: maxQuotaMb.value }) : t("settings.storage.confirm.capUnlimited");
-    const ok = window.confirm(t("settings.storage.confirm.body", { keep, cap }));
-    if (!ok) {
-      // 用户取消：把两个下拉回滚到改动前的值
-      const prev = ov as [number, number];
-      suppressAutoSave = true;
-      retentionDays.value = prev[0];
-      maxQuotaMb.value = prev[1];
-      setTimeout(() => (suppressAutoSave = false), 0);
-      return;
-    }
+    // 用**应用内**弹窗确认（原先 `window.confirm` 是 WebView 的系统对话框，
+    // 在无边框窗口里样式完全脱节 —— 项目其它破坏性操作都早已改成 BaseModal）。
+    pendingPolicy.value = {
+      prev: ov as [number, number],
+      keep,
+      cap,
+    };
+    return; // 等用户确认
   }
   void applyCachePolicy(true);
 });
+
+/** 待确认的缓存策略变更（null = 无弹窗）。 */
+const pendingPolicy = ref<{ prev: [number, number]; keep: string; cap: string } | null>(null);
+
+function confirmPolicyChange() {
+  pendingPolicy.value = null;
+  void applyCachePolicy(true);
+}
+
+function cancelPolicyChange() {
+  const p = pendingPolicy.value;
+  pendingPolicy.value = null;
+  if (!p) return;
+  // 用户取消：把两个下拉回滚到改动前的值
+  suppressAutoSave = true;
+  retentionDays.value = p.prev[0];
+  maxQuotaMb.value = p.prev[1];
+  setTimeout(() => (suppressAutoSave = false), 0);
+}
 
 async function applyCachePolicy(silent = false) {
   await api.setCachePolicy(
@@ -141,7 +159,15 @@ async function exportChat() {
   }
 }
 
+/** 「立即清理」二次确认（HIG：破坏性操作要可恢复）。清理会永久删除历史消息引用到的图片/文件。 */
+const confirmClean = ref(false);
+
+function askCleanNow() {
+  confirmClean.value = true;
+}
+
 async function cleanNow() {
+  confirmClean.value = false;
   cleaning.value = true;
   try {
     const r = await api.cleanCacheNow();
@@ -254,11 +280,55 @@ watch(
         class="flex shrink-0 items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
         :disabled="cleaning"
         :title="t('settings.storage.clean.title')"
-        @click="cleanNow"
+        @click="askCleanNow"
       >
         <Trash2 class="h-3.5 w-3.5" />
         {{ t("settings.storage.clean.btn") }}
       </button>
     </div>
   </SettingsGroup>
+
+  <!-- 自动删除策略：开启前确认（替代 window.confirm，与整体样式一致） -->
+  <BaseModal
+    :open="!!pendingPolicy"
+    :title="t('settings.storage.limit')"
+    @close="cancelPolicyChange"
+  >
+    <div class="space-y-3">
+      <p class="text-sm leading-relaxed text-[var(--gosslan-text)]">
+        {{ t("settings.storage.confirm.body", { keep: pendingPolicy?.keep ?? "", cap: pendingPolicy?.cap ?? "" }) }}
+      </p>
+      <div class="flex justify-end gap-2 pt-2">
+        <button
+          class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+          @click="cancelPolicyChange"
+        >{{ t("common.cancel") }}</button>
+        <button
+          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+          @click="confirmPolicyChange"
+        >{{ t("common.confirm") }}</button>
+      </div>
+    </div>
+  </BaseModal>
+
+  <!-- 立即清理：会永久删除历史消息引用到的图片/文件 → 二次确认 -->
+  <BaseModal
+    :open="confirmClean"
+    :title="t('settings.storage.clean.title')"
+    @close="confirmClean = false"
+  >
+    <div class="space-y-3">
+      <p class="text-sm leading-relaxed text-[var(--gosslan-text)]">{{ t("settings.storage.clean.confirm") }}</p>
+      <div class="flex justify-end gap-2 pt-2">
+        <button
+          class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+          @click="confirmClean = false"
+        >{{ t("common.cancel") }}</button>
+        <button
+          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+          @click="cleanNow"
+        >{{ t("settings.storage.clean.btn") }}</button>
+      </div>
+    </div>
+  </BaseModal>
 </template>

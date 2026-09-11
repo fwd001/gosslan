@@ -20,10 +20,12 @@ const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? 
 const isOwner = computed(() => !!group.value && group.value.creator === myId.value);
 /** 展示「添加成员」面板 */
 const showAdd = ref(false);
-/** 待确认的破坏性操作（转让群主 / 退出群聊）。null = 无弹窗。 */
+/** 待确认的破坏性操作（转让群主 / 移除成员 / 退出群聊）。null = 无弹窗。
+ *  「移除成员」是**对别人生效**的操作，一次点击就执行不合适（HIG：让用户容易从错误中恢复）。 */
 const pendingConfirm = ref<
   | null
   | { kind: "transfer"; targetId: string; name: string }
+  | { kind: "remove"; targetId: string; name: string }
   | { kind: "leave"; name: string }
 >(null);
 
@@ -59,15 +61,9 @@ async function addMember(f: Friend) {
   }
 }
 
-async function removeMember(id: string) {
-  if (!props.groupId) return;
-  const p = memberProfile(id);
-  try {
-    await chat.removeGroupMember(props.groupId, id);
-    app.toast(t("group.toast.removed", { name: p.name }), "success");
-  } catch (e) {
-    app.toastError(e, t("group.toast.removeFail"));
-  }
+/** 移除成员：先弹确认，再由 `confirmAction` 执行（复用本组件既有机制）。 */
+function askRemoveMember(id: string) {
+  pendingConfirm.value = { kind: "remove", targetId: id, name: memberProfile(id).name };
 }
 
 /** 转让群主（仅当前群主）：把管理权交给指定成员，避免换机后群无法管理。 */
@@ -95,6 +91,13 @@ async function confirmAction() {
       app.toast(t("group.toast.transferred", { name: a.name }), "success");
     } catch (e) {
       app.toastError(e, t("group.toast.transferFail"));
+    }
+  } else if (a.kind === "remove") {
+    try {
+      await chat.removeGroupMember(props.groupId, a.targetId);
+      app.toast(t("group.toast.removed", { name: a.name }), "success");
+    } catch (e) {
+      app.toastError(e, t("group.toast.removeFail"));
     }
   } else {
     try {
@@ -155,7 +158,7 @@ async function confirmAction() {
             v-if="isOwner && id !== myId"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
             :title="t('group.removeMember', { name: memberProfile(id).name })" :aria-label="t('group.removeMember', { name: memberProfile(id).name })"
-            @click="removeMember(id)"
+            @click="askRemoveMember(id)"
           >
             <UserMinus class="h-4 w-4" />
           </button>
@@ -231,13 +234,20 @@ async function confirmAction() {
   <!-- 破坏性操作二次确认（替代 window.confirm：应用内弹窗，与整体样式一致） -->
   <BaseModal
     :open="!!pendingConfirm"
-    :title="pendingConfirm?.kind === 'transfer' ? t('group.confirmTransfer.title') : t('group.confirmLeave.title')"
+    :title="pendingConfirm?.kind === 'transfer'
+      ? t('group.confirmTransfer.title')
+      : pendingConfirm?.kind === 'remove'
+        ? t('group.confirmRemove.title')
+        : t('group.confirmLeave.title')"
     @close="pendingConfirm = null"
   >
     <template v-if="pendingConfirm">
       <p class="text-sm leading-relaxed text-[var(--gosslan-text-2)]">
         <template v-if="pendingConfirm.kind === 'transfer'">
           {{ t("group.confirmTransfer.body", { name: pendingConfirm.name }) }}
+        </template>
+        <template v-else-if="pendingConfirm.kind === 'remove'">
+          {{ t("group.confirmRemove.body", { name: pendingConfirm.name }) }}
         </template>
         <template v-else>
           {{ t("group.confirmLeave.body", { name: pendingConfirm.name }) }}

@@ -20,8 +20,17 @@ const emit = defineEmits<{ (e: "restored"): void }>();
 const app = useAppStore();
 const chat = useChatStore();
 
-/** 恢复默认：外观 / 网卡 / 缓存策略回到默认值（不动好友与聊天数据）。 */
+/**
+ * 恢复默认：外观 / 网卡 / 缓存策略回到默认值（不动好友与聊天数据）。
+ *
+ * ⚠️ 走二次确认（HIG：让用户容易从错误中恢复）。它不只是"改外观"：
+ * `resetDefaults()` 还会把**昵称恢复默认、头像清空并广播给已连接的好友**，
+ * 一次点击就执行不合适 —— 旁边的「清除聊天数据」本来就有确认，这里不该更宽松。
+ */
+const confirmRestore = ref(false);
+
 async function restoreDefaults() {
+  confirmRestore.value = false;
   await app.resetDefaults();
   emit("restored");
   app.toast(t("settings.toast.defaultsRestored"), "success");
@@ -50,7 +59,7 @@ async function doClearAllData() {
     <SettingsGroup :title="t('settings.group.reset')">
       <button
         class="flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-        @click="restoreDefaults"
+        @click="confirmRestore = true"
       >
         <RotateCcw class="h-4 w-4" />
         {{ t("settings.reset.restore") }}
@@ -67,6 +76,33 @@ async function doClearAllData() {
     <p class="px-1 text-center text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
       {{ t("settings.reset.footnote") }}
     </p>
+
+    <!-- 恢复默认：会连带重置昵称/头像并广播给好友，必须确认 -->
+    <BaseModal
+      :open="confirmRestore"
+      :title="t('settings.restore.title')"
+      @close="confirmRestore = false"
+    >
+      <div class="space-y-3">
+        <p class="text-sm text-[var(--gosslan-text)]">{{ t("settings.restore.warning") }}</p>
+        <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+          <li>· {{ t("settings.restore.item.profile") }}</li>
+          <li>· {{ t("settings.restore.item.appearance") }}</li>
+          <li>· {{ t("settings.restore.item.network") }}</li>
+        </ul>
+        <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("settings.restore.note") }}</p>
+        <div class="flex justify-end gap-2 pt-2">
+          <button
+            class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+            @click="confirmRestore = false"
+          >{{ t("common.cancel") }}</button>
+          <button
+            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+            @click="restoreDefaults"
+          >{{ t("settings.reset.restore") }}</button>
+        </div>
+      </div>
+    </BaseModal>
 
     <!-- 清除聊天数据：破坏性操作，逐条讲清"删什么 / 不删什么"，再给红色确认键 -->
     <BaseModal :open="clearConfirmOpen" :title="t('settings.clear.title')" @close="clearConfirmOpen = false">

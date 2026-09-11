@@ -73,6 +73,12 @@ export const zhCN: MessageDict = {
 
   "settings.share.folder": "共享文件夹",
 
+  "settings.restore.title": "恢复默认设置",
+  "settings.restore.warning": "这会把以下内容恢复为默认值：",
+  "settings.restore.item.profile": "昵称与头像（会广播给已连接的好友）",
+  "settings.restore.item.appearance": "外观主题、字体、聊天显示样式、通知偏好",
+  "settings.restore.item.network": "网卡绑定与缓存清理策略",
+  "settings.restore.note": "不会删除好友关系、聊天记录与已接收的文件。",
   "settings.reset.restore": "恢复默认设置",
   "settings.reset.clearChat": "清除聊天数据",
   "settings.reset.footnote":
@@ -162,6 +168,7 @@ export const zhCN: MessageDict = {
   "settings.storage.export.title": "导出后可用任意文本编辑器或 Markdown 阅读器打开",
   "settings.storage.export.btn": "导出",
   "settings.storage.export.exporting": "导出中…",
+  "settings.storage.clean.confirm": "立即清理会永久删除历史消息里引用到的图片与文件（聊天文字保留）。确定继续吗？",
   "settings.storage.clean.title": "按上面的设置清理过期/超限的图片与文件（不删除聊天文字）",
   "settings.storage.clean.btn": "立即清理",
   "settings.storage.stats.media": "已接收图片/文件",
@@ -377,6 +384,8 @@ export const zhCN: MessageDict = {
   "group.leave": "退出群聊",
   "group.manageHint": "仅群创建者可管理成员（添加 / 移除 / 转让群主）。",
   "group.leaveHint": "群主如需退出群聊，请先把群主转让给其他成员。",
+  "group.confirmRemove.title": "移除群成员",
+  "group.confirmRemove.body": "确定把「{name}」移出群聊吗？被移除的成员将不再收到群消息，其他成员会看到一条系统提示。",
   "group.confirmTransfer.title": "转让群主",
   "group.confirmLeave.title": "退出群聊",
   "group.confirmTransfer.body": "确定把群主转让给「{name}」吗？转让后你将失去改名、添加与移除成员的权限。",
@@ -597,6 +606,12 @@ export const enUS: MessageDict = {
 
   "settings.share.folder": "Shared Folder",
 
+  "settings.restore.title": "Restore Defaults",
+  "settings.restore.warning": "This will reset the following to their defaults:",
+  "settings.restore.item.profile": "Nickname and avatar (broadcast to connected friends)",
+  "settings.restore.item.appearance": "Appearance, fonts, chat display style, notification preferences",
+  "settings.restore.item.network": "Network interface binding and cache cleanup policy",
+  "settings.restore.note": "Friends, chat history and received files are not deleted.",
   "settings.reset.restore": "Restore Defaults",
   "settings.reset.clearChat": "Clear Chat Data",
   "settings.reset.footnote":
@@ -686,6 +701,7 @@ export const enUS: MessageDict = {
   "settings.storage.export.title": "Open with any text editor or Markdown reader after exporting",
   "settings.storage.export.btn": "Export",
   "settings.storage.export.exporting": "Exporting…",
+  "settings.storage.clean.confirm": "Cleaning now permanently deletes the images and files referenced by your history (chat text is kept). Continue?",
   "settings.storage.clean.title": "Clean up expired/over-limit images and files per the settings above (chat text is not deleted)",
   "settings.storage.clean.btn": "Clean Up Now",
   "settings.storage.stats.media": "Received images/files",
@@ -901,6 +917,8 @@ export const enUS: MessageDict = {
   "group.leave": "Leave Group",
   "group.manageHint": "Only the group creator can manage members (add / remove / transfer).",
   "group.leaveHint": "To leave as the owner, transfer ownership first.",
+  "group.confirmRemove.title": "Remove Member",
+  "group.confirmRemove.body": "Remove “{name}” from this group? They will stop receiving group messages, and other members will see a system notice.",
   "group.confirmTransfer.title": "Transfer Ownership",
   "group.confirmLeave.title": "Leave Group",
   "group.confirmTransfer.body": "Transfer ownership to \"{name}\"? You'll lose the ability to rename and manage members.",
