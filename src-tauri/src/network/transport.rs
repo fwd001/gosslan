@@ -856,19 +856,40 @@ async fn handle_incoming(
     }
     // ⚠️ **入站去重**：验签之后、登记链路之前判（判据见 `should_accept_inbound`）。
     // 放在这里而不是更早：身份要验签通过才有意义；也不能更晚：登记后再拒会留下半条状态。
-    let existing: Vec<(MeshEndpoint, PathKind)> = {
-        let links = state.links.lock().await;
-        links
-            .get(&peer_id)
-            .map(|v| v.iter().map(|l| (l.endpoint.clone(), l.path_kind)).collect())
-            .unwrap_or_default()
+    let existing: Vec<(MeshEndpoint, PathKind, bool)> = {
+        // ① 先取链路快照（锁内只克隆，不 await 别的锁）
+        let list = {
+            let links = state.links.lock().await;
+            links.get(&peer_id).cloned().unwrap_or_default()
+        };
+        // ② 再取健康判据与 mesh 侧连接（health 与选路同一套判据，避免两处各判一次）
+        let (timeout_ms, max_failures, conns) = {
+            let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                pm.health_timeout_ms(),
+                pm.max_failures(),
+                pm.get(&peer_id)
+                    .map(|p| p.connections().to_vec())
+                    .unwrap_or_default(),
+            )
+        };
+        let now = db::now_ms();
+        list.iter()
+            .map(|l| {
+                let healthy = conns
+                    .iter()
+                    .find(|c| c.endpoint == l.endpoint)
+                    // 查不到健康信息时**按健康处理**（保守：优先抑制镜像）。
+                    // 正常情况下 `register_connection` 与链路登记同时发生，查不到属异常；
+                    // 此时宁可少收一条新连接（watchdog 最长 45s 会拆掉死链路），
+                    // 也不要放过镜像 —— 后者会污染多路径验收且永久并存。
+                    .map(|c| c.health.is_healthy(now, timeout_ms, max_failures))
+                    .unwrap_or(true);
+                (l.endpoint.clone(), l.path_kind, healthy)
+            })
+            .collect()
     };
-    if !should_accept_inbound(
-        &state.device_id,
-        &peer_id,
-        PathKind::Lan,
-        &existing,
-    ) {
+    if !should_accept_inbound(&state.device_id, &peer_id, PathKind::Lan, &existing) {
         state.logger.info(
             "transport",
             format!(
@@ -1450,13 +1471,24 @@ fn should_accept_inbound(
     my_id: &str,
     peer_id: &str,
     incoming: PathKind,
-    existing: &[(MeshEndpoint, PathKind)],
+    // (端点, 路径类型, 该连接**当前是否健康**)
+    existing: &[(MeshEndpoint, PathKind, bool)],
 ) -> bool {
     if existing.len() >= MAX_LINKS_PER_PEER {
         return false;
     }
-    // 只有"指定拨号方"才拒绝镜像；小 ID 方始终接受（它本来就不主动拨）
-    if my_id > peer_id && existing.iter().any(|(_, k)| *k == incoming) {
+    // 只有"指定拨号方"才拒绝镜像；小 ID 方始终接受（它本来就不主动拨）。
+    //
+    // ⚠️ 必须再加"那条已有连接**仍然健康**"：若它已经半开/僵死（还没被 watchdog 拆），
+    // 按路径存在就拒收会把对端**刚拨进来的新鲜连接**也挡掉 —— 而本机因为
+    // `has_lan_path` 仍为真也不会重拨（`ensure_link` 以为 LAN 已连通），于是双方
+    // 要等 watchdog（最长 45s）拆掉死链路才能恢复。加了这个条件，新鲜连接立刻接管，
+    // 恢复时间从"最长 45s"变成"这一次握手"。
+    if my_id > peer_id
+        && existing
+            .iter()
+            .any(|(_, k, healthy)| *k == incoming && *healthy)
+    {
         return false;
     }
     true
@@ -5771,26 +5803,32 @@ mod tests {
         // ① 一条都没有 ⇒ **必须接受**（否则彻底断连）
         assert!(should_accept_inbound("b", "a", PathKind::Lan, &[]));
 
-        // ② 大 ID 方（my_id > peer_id）：已有同路径 ⇒ 拒收镜像；不同路径 ⇒ 接受（多路径！）
-        let with_lan = [(lan_ep.clone(), PathKind::Lan)];
+        // ② 大 ID 方（my_id > peer_id）：已有同路径**且健康** ⇒ 拒收镜像；
+        //    不同路径 ⇒ 接受（多路径！）
+        let with_lan = [(lan_ep.clone(), PathKind::Lan, true)];
         assert!(!should_accept_inbound("b", "a", PathKind::Lan, &with_lan));
         assert!(should_accept_inbound("b", "a", PathKind::Routed, &with_lan));
+        // ②b 已有同路径但**已不健康**（半开待拆）⇒ 必须接受对端的新鲜连接，
+        //     否则双方要干等 watchdog（最长 45s）才能恢复
+        let with_dead_lan = [(lan_ep.clone(), PathKind::Lan, false)];
+        assert!(should_accept_inbound("b", "a", PathKind::Lan, &with_dead_lan));
 
         // ③ 小 ID 方（my_id < peer_id）：**始终接受** —— 否则双方互拒，谁也连不上
         assert!(should_accept_inbound("a", "b", PathKind::Lan, &with_lan));
 
         // ④ 链路数到上限 ⇒ 拒收（防无界增长），且与路径是否重复无关
-        let full: Vec<(MeshEndpoint, PathKind)> = (0..MAX_LINKS_PER_PEER)
+        let full: Vec<(MeshEndpoint, PathKind, bool)> = (0..MAX_LINKS_PER_PEER)
             .map(|i| {
                 (
                     format!("10.0.0.{i}:59992").parse::<std::net::SocketAddr>().unwrap().into(),
                     if i % 2 == 0 { PathKind::Lan } else { PathKind::Routed },
+                    true,
                 )
             })
             .collect();
         assert!(!should_accept_inbound("a", "b", PathKind::Bluetooth, &full));
         // 未到上限但已有 Routed ⇒ 接受（③ 的小 ID 方不受 ② 限制）
-        let one_routed = [(routed_ep, PathKind::Routed)];
+        let one_routed = [(routed_ep, PathKind::Routed, true)];
         assert!(should_accept_inbound("a", "b", PathKind::Routed, &one_routed));
     }
 

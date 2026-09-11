@@ -738,6 +738,29 @@ mod tests {
         assert_eq!(MsgKind::Code.as_str(), "code");
     }
 
+    /// **协议事实**（ADR-0017 §2）：`Message` 是 `#[serde(tag = "type")]` 枚举，
+    /// 旧端收到未知 `type` 时反序列化**失败** ⇒ `read_frame` 返回 `InvalidData`
+    /// ⇒ `reader_loop` 视为坏帧并**断开整条连接**（不是"忽略一个包"）。
+    ///
+    /// 这条测试把该事实钉住：将来做 BitChat 中继（Phase 8）新增线格式变体时，
+    /// **必须**能力门控（只在对方声明支持后才发），否则混版本拓扑会直接断链。
+    /// 改这条测试（比如让未知变体被容忍）就等于改变兼容性契约 —— 需要 ADR。
+    #[test]
+    fn unknown_message_type_is_a_hard_parse_error() {
+        let unknown = br#"{"type":"opaque_external","id":"x","ttl":3,"payload":"AA=="}"#;
+        assert!(
+            serde_json::from_slice::<Message>(unknown).is_err(),
+            "未知 type 必须是硬错误：它能被容忍的话，ADR-0017 的能力门控就不必要了"
+        );
+        // 对照：已知变体必须能解析（否则上面那条断言会因为"全都解析失败"而变成空转）。
+        // `Heartbeat` 需要 `device_id`，这里给全字段。
+        let known = br#"{"type":"heartbeat","device_id":"dev-a"}"#;
+        assert!(
+            serde_json::from_slice::<Message>(known).is_ok(),
+            "对照用例必须能解析，否则上面的断言是空转（全都失败也算通过）"
+        );
+    }
+
     #[test]
     fn hello_signing_bytes_sensitive_to_every_field() {
         let base = hello_signing_bytes("dev-a", 59992, "n1", "xk", "ek");
