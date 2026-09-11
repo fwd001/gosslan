@@ -217,7 +217,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
            暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
            field 在两套主题里都与所在栏拉开一档。 -->
       <div
-        class="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition focus-within:border-[var(--gosslan-primary)]"
+        class="flex h-[30px] min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition focus-within:border-[var(--gosslan-primary)]"
       >
         <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
@@ -280,6 +280,9 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
              搜索无结果时不给这些（那是"换个词"的场景，不是"没人"）。 -->
         <div v-if="filtered.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
           <span>{{ keyword.trim() ? t("conv.noMatchConv") : t("conv.noConversation") }}</span>
+          <!-- 空态下一步（用户 2026-09-12 晚）：**有好友 → 发起聊天**；**一个好友都没有 →
+               只有「添加好友」**（原先还并列一个「发现好友」，与本条冲突，已去掉）。
+               两个入口都带一句说明文字：空态只陈述"没有会话"会让人不知所措。 -->
           <template v-if="!keyword.trim()">
             <button
               v-if="chat.friends.length"
@@ -289,11 +292,15 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
               {{ t("conv.startChat") }}
             </button>
             <button
-              class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+              v-else
+              class="rounded-[var(--gosslan-radius-md)] bg-primary px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
               @click="emit('open-add-friend')"
             >
-              {{ t("conv.discoverFriends") }}
+              {{ t("common.addFriend") }}
             </button>
+            <span class="max-w-[220px] text-[11px] leading-relaxed">
+              {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
+            </span>
           </template>
         </div>
       </template>
@@ -367,21 +374,6 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         </div>
       </template>
     </div>
-
-    <!-- 聊天列表常驻「发现好友」入口（用户需求 #8：「有好友的情况下也可以发现，也应该有
-         『发现好友』这个功能，就是在聊天列表」）。
-         放在滚动区**之外**做成固定页脚，而不是混在会话行里：会话一多它就滚走了，
-         等于没有入口。常驻可见，且不干扰会话列表的排序与滚动位置。
-         高度 44px：桌面端与移动端都是可点尺寸（`tap-safe` 再兜一层触屏命中区）。 -->
-    <button
-      v-if="view === 'chats'"
-      class="tap-safe flex h-11 shrink-0 items-center justify-center gap-2 border-t border-[var(--gosslan-divider)] text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)] hover:text-[var(--gosslan-text)]"
-      :title="t('conv.discoverFriends')"
-      @click="emit('open-add-friend')"
-    >
-      <UserPlus class="h-4 w-4" />
-      {{ t("conv.discoverFriends") }}
-    </button>
 
     <FriendContextMenu
       v-if="friendMenu"

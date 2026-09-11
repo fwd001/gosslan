@@ -10,7 +10,7 @@ import { haptic } from "@/utils/haptics";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { classifyPaste } from "@/utils/clipboard";
-import { Box, Folder, Smile, X } from "lucide-vue-next";
+import { Folder, Smile, SquareCode, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 
 const props = defineProps<{
@@ -459,7 +459,7 @@ function fileToDataUrl(f: File): Promise<string> {
          `px-4`（不是 px-3）与工具栏的 `-mx-1` 成对：编辑器的文字左边缘与工具栏第一个
          图标的**点击热区**左边缘取同一个 16px 起点（图标墨迹在其 28px 热区内再内缩 6px，
          与文字字形的光学起点对齐）—— 这是用户反馈「左右两边视觉上不在同一条线上」的修法。 -->
-    <div ref="composerCard" class="relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-4 pb-1.5 pt-2">
+    <div ref="composerCard" class="relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-4 pb-2 pt-2">
       <!-- 群聊 @ 成员选择：输入 @ 后浮出，↑↓ 导航 / Enter 或点击选中 -->
       <div
         v-if="mention && mentionFiltered.length > 0"
@@ -535,7 +535,7 @@ function fileToDataUrl(f: File): Promise<string> {
               发送键同为 28px 高、`px-3`、13px 字号、`rounded-full`。
            发送键改为**实心主按钮**（有草稿才点亮）：微信 4.0 的观感，
            无草稿时是低对比的占位态，不抢视觉。 -->
-      <div class="-mx-1 mt-1.5 flex h-7 items-center gap-1.5">
+      <div class="-mx-1 mt-1.5 flex h-8 items-center gap-1.5">
         <div class="relative">
           <button
             class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
@@ -556,17 +556,13 @@ function fileToDataUrl(f: File): Promise<string> {
           @mousedown.prevent
           @click="codeMode = !codeMode"
         >
-          <!-- 用户 2026-09-12 反馈：「表情、代码、发送文件这 3 个图标一致性不太好……
-               参考这张图重新绘制，让它们看起来像一套，而不是 3 个割裂的图标」。
-               参考图（微信 4.0 输入栏）是：笑脸 / 立体方块 / 文件夹 / 剪刀▾ / 麦克风，
-               同一套细线线性风格。本工具栏对应的三个功能因此取同一套几何：
-               表情 = `Smile`（与参考图一致）、代码 = `Box`（参考图的立体方块）、
-               发送文件 = `Folder`（参考图的文件夹）。三者同为「方/圆几何 + 1.75 线宽 +
-               16px」，与工具栏其余按钮同一规格（尺寸/线宽见上方注释）。
-               语义映射的取舍：`Box` 表「代码模式」是跟随参考图形的**视觉**选择
-               （原先的 `Code2` 是 `</>` 尖括号，与笑脸/文件夹的几何风格割裂）；
-               若更看重语义，把这一处换回 `SquareCode` 即可，尺寸线宽无需改。 -->
-          <Box class="h-4 w-4" :stroke-width="1.75" />
+          <!-- 代码模式图标（用户 2026-09-12 晚二次反馈：「找一个和代码相关的图标，
+               但是又和左右两边的图标是统一风格类型的。现在这个图标不像是发送代码」）。
+               上一版按参考图取了 `Box`（立体方块）—— 几何一致但**语义不对**（看不出是代码）。
+               现改为 `SquareCode`：方形描边外框 + 内部 `</>`，既是代码语义，
+               又与左 `Smile`（圆）、右 `Folder`（方）同属「几何外框 + 内部细节」一套；
+               尺寸 16px / 线宽 1.75 与两侧完全一致（见上方工具栏规格说明）。 -->
+          <SquareCode class="h-4 w-4" :stroke-width="1.75" />
         </button>
         <button
           class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
@@ -576,7 +572,7 @@ function fileToDataUrl(f: File): Promise<string> {
           <Folder class="h-4 w-4" :stroke-width="1.75" />
         </button>
         <button
-          class="ml-auto flex h-7 shrink-0 items-center rounded-full px-3 text-[13px] font-medium transition"
+          class="ml-auto flex h-8 shrink-0 items-center rounded-[6px] px-3.5 text-[13px] font-medium transition"
           :class="hasDraft
             ? 'bg-primary text-white hover:bg-primary-hover'
             : 'cursor-default bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"

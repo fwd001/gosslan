@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { avatarInitial, nameToColor } from "@/utils/color";
-import { Contact, MessageCircle, Moon, ScrollText, Sun } from "lucide-vue-next";
+import { Moon, ScrollText, Sun } from "lucide-vue-next";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { t } from "@/i18n";
 
@@ -45,25 +45,37 @@ const initials = computed(() => avatarInitial(app.device?.nickname));
       ></span>
     </div>
 
-    <!-- 中部：聊天 / 通讯录。
-         选中态（2026-09-12 按用户反馈重做）：原先「只换图标颜色 + 把图标填色」——
-         填色对 MessageCircle 尚可，对 Users 这类双人图标会变成两块墨团，且只靠颜色
-         区分选中，扫视时不确定「现在在哪一栏」。
-         现在改为**图标 + 底色块**双通道：底色块用既有 `--gosslan-rail-active` token
-         （浅色 #cbd5e1 / 深色 #253246，此前定义但未被任何地方使用），选中图标用
-         `--gosslan-rail-text-active`，两者一起表达选中。图标保持**线性不填充**，
-         与底部工具图标同一套描边语言（同 1.9 线宽），上下看才像一整套。 -->
+    <!-- 中部：聊天 / 通讯录（用户 2026-09-12 晚反馈：
+         「整体参考图就是微信最左侧栏里的图标风格。选中态是实心的，而不是框框变颜色。
+           现在上面的『聊天』和『通讯录』这两个图标不好看，参考微信。」）
+         ⇒ 两点改动：
+         ① **选中态改为实心**（图标本身 fill=currentColor + 主题色），不再用底色块；
+         ② 「聊天」「通讯录」改为**自绘 SVG**（微信式造型 + 统一 1.9 线宽 / 22px 视觉盒）：
+            · 聊天 = 带左下小尾巴的圆角气泡；
+            · 通讯录 = 圆角卡片内镂空一个人像（`fill-rule="evenodd"` ⇒ 实心时人像成"洞"，
+              与微信选中态那种"实心方块里透着人形"的观感一致）。
+            自绘而不继续用 lucide：lucide 的线性图标**填充后大多变成墨团**（双人图标尤其），
+            而这套需求要的正是"实心选中态"，所以造型必须自己控制。 -->
     <div class="mt-5 flex flex-col items-center gap-2">
       <button
         class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="view === 'chats'
-          ? 'bg-[var(--gosslan-rail-active)] text-[var(--gosslan-rail-text-active)]'
+          ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
         :title="t('nav.chats')"
         :aria-label="chat.totalUnread > 0 ? t('nav.chats.unread', { n: chat.totalUnread }) : t('nav.chats')"
         @click="emit('update:view', 'chats')"
       >
-        <MessageCircle class="h-[22px] w-[22px]" :stroke-width="1.9" />
+        <svg
+          viewBox="0 0 24 24"
+          class="h-[22px] w-[22px]"
+          :fill="view === 'chats' ? 'currentColor' : 'none'"
+          stroke="currentColor"
+          stroke-width="1.9"
+          stroke-linejoin="round"
+        >
+          <path d="M12 3.4c-4.9 0-8.7 3.1-8.7 7 0 2.2 1.3 4.2 3.3 5.5-.1 1-.5 2.2-1.3 3.3 0 0 2.4-.4 4-1.6.9.2 1.8.3 2.7.3 4.9 0 8.7-3.1 8.7-7s-3.8-7.5-8.7-7.5z" />
+        </svg>
         <UnreadBadge
           v-if="chat.totalUnread > 0"
           :count="chat.totalUnread"
@@ -73,16 +85,30 @@ const initials = computed(() => avatarInitial(app.device?.nickname));
       <button
         class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="view === 'contacts'
-          ? 'bg-[var(--gosslan-rail-active)] text-[var(--gosslan-rail-text-active)]'
+          ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
         :title="t('nav.contacts')"
         :aria-label="chat.pendingRequests.length ? t('nav.contacts.pending', { n: chat.pendingRequests.length }) : t('nav.contacts')"
         @click="emit('update:view', 'contacts')"
       >
-        <!-- `Contact`（通讯录卡片）而不是 `Users`：Users 是「宽而扁」的双人剪影，
-             与近正方形的聊天气泡图标并排时视觉重量、外接框都不一致，正是用户说的
-             「跟上面的聊天图标不像是一整套」。Contact 的卡片外框与气泡同为方形容器。 -->
-        <Contact class="h-[22px] w-[22px]" :stroke-width="1.9" />
+        <!-- 单条 path + evenodd：外框实心时人像自动成为镂空（微信选中态的观感）。
+             未选中时只有描边，人像以线条呈现。 -->
+        <svg
+          viewBox="0 0 24 24"
+          class="h-[22px] w-[22px]"
+          :fill="view === 'contacts' ? 'currentColor' : 'none'"
+          stroke="currentColor"
+          stroke-width="1.9"
+          stroke-linejoin="round"
+          fill-rule="evenodd"
+          clip-rule="evenodd"
+        >
+          <path
+            d="M6 3.2h12A2.8 2.8 0 0 1 20.8 6v12A2.8 2.8 0 0 1 18 20.8H6A2.8 2.8 0 0 1 3.2 18V6A2.8 2.8 0 0 1 6 3.2z
+               M12 7.4a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z
+               M7.6 17.4c0-2.5 2-3.9 4.4-3.9s4.4 1.4 4.4 3.9z"
+          />
+        </svg>
         <UnreadBadge
           v-if="chat.pendingRequests.length"
           :count="chat.pendingRequests.length"
