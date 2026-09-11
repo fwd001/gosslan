@@ -650,8 +650,30 @@ async fn handle_incoming(
 /// 与 `register_connection` 同量级，不构成热点。
 fn mark_conn_seen(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-    pm.mark_connection_seen(peer_id, &MeshEndpoint::Tcp(endpoint), db::now_ms(), None);
+    pm.mark_connection_seen(
+        peer_id,
+        &MeshEndpoint::Tcp(endpoint),
+        db::now_ms(),
+        None,
+        true,
+    );
 }
+
+/// 记录一次**写出成功**（M3-0b：只刷出站活性，**不**参与 `is_healthy`）。
+///
+/// 半开 TCP 上写会持续「成功」，因此它绝不能算成「对端活着」的证据 ——
+/// 否则死链路会永久被判健康，选路一直选中它（ADR-0014 §7）。
+fn mark_conn_write_seen(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.mark_connection_seen(
+        peer_id,
+        &MeshEndpoint::Tcp(endpoint),
+        db::now_ms(),
+        None,
+        false,
+    );
+}
+
 
 /// 把「某条连接失败」喂给 mesh 层（写失败）。读循环退出时链路会被 `unregister_connection`
 /// 整条摘掉，无需再记失败。
@@ -700,9 +722,9 @@ async fn writer_loop(
                     mark_conn_failure(&state, &peer_id, endpoint);
                     break;
                 }
-                // 写成功 = 这条连接此刻确实可用。心跳每 5s 一次 ⇒ 即使没有业务消息，
-                // 每条连接也至少每 5s 刷新一次健康信号（ADR-0014 §3.1）。
-                mark_conn_seen(&state, &peer_id, endpoint);
+                // 写成功只记**出站**活性（诊断口径）。M3-0b 起它**不**参与 is_healthy：
+                // 半开 TCP 上写会一直"成功"，那是本缺陷要被排除的伪证据。
+                mark_conn_write_seen(&state, &peer_id, endpoint);
             }
             None => {
                 // select 无法直接区分是哪个分支关闭，用两个 recv 的 is_closed 兜底。
@@ -876,7 +898,9 @@ fn register_connection(state: &AppState, peer_id: &str, endpoint: std::net::Sock
     // （ADR-0014 §3.1 的硬性注意 ①：漏掉这一步，M3 的选路会把刚建好的连接判为不可用，
     // 进而退化成「按固定顺序挑」，甚至触发反复重拨）。
     let now = db::now_ms();
-    pm.mark_connection_seen(peer_id, &MeshEndpoint::Tcp(endpoint), now, None);
+    // M3-0b：建链播种的是**读**活性（"刚建好就算活"），此后只由 `reader_loop` 刷新。
+    // 若这里改成写活性，半开链路会重新变成永久健康。
+    pm.seed_connection_read_seen(peer_id, &MeshEndpoint::Tcp(endpoint), now);
     // `online` 是 mesh 健康信号**在生产路径**唯一的外部可观测点：`ConnectionHealth` 是内存态，
     // 没有它就只能靠读代码相信「信号接上了」（这正是 M3-0 之前的状态）。
     let online = pm.online_state(peer_id, now) == PeerOnlineState::Online;

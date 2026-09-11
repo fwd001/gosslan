@@ -89,7 +89,7 @@ mod tests {
     /// 造一条「健康」连接（最近成功收发过）。
     fn healthy(peer: &str, port: u16, kind: PathKind) -> Connection {
         let mut c = conn(peer, port, kind);
-        c.health.mark_seen(NOW, None);
+        c.health.mark_read_seen(NOW, None);
         c
     }
 
@@ -163,7 +163,7 @@ mod tests {
     fn stale_connection_is_not_healthy() {
         // 最后一次成功远早于阈值 ⇒ 不健康 ⇒ 让位给健康的 Routed
         let mut stale = conn("p", 1, PathKind::Lan);
-        stale.health.mark_seen(NOW - TIMEOUT - 1, None);
+        stale.health.mark_read_seen(NOW - TIMEOUT - 1, None);
         let c = vec![stale, healthy("p", 2, PathKind::Routed)];
         assert_eq!(pick_link(&c, NOW, TIMEOUT, MAX_FAIL), Some(1));
     }
@@ -172,7 +172,7 @@ mod tests {
     fn too_many_consecutive_failures_is_not_healthy() {
         // 连续失败超过阈值 ⇒ 不健康（MAX_FAIL=3，打 4 次）
         let mut flaky = conn("p", 1, PathKind::Lan);
-        flaky.health.mark_seen(NOW, None);
+        flaky.health.mark_read_seen(NOW, None);
         for _ in 0..=MAX_FAIL {
             flaky.health.mark_failure();
         }
@@ -185,7 +185,7 @@ mod tests {
         // 连续失败 == 阈值仍算健康（与 ConnectionHealth::is_healthy 的语义一致，
         // 边界不能在这里被悄悄改严）
         let mut flaky = conn("p", 1, PathKind::Lan);
-        flaky.health.mark_seen(NOW, None);
+        flaky.health.mark_read_seen(NOW, None);
         for _ in 0..MAX_FAIL {
             flaky.health.mark_failure();
         }

@@ -126,16 +126,35 @@ impl Peer {
         }
     }
 
-    /// 标记某条 Connection 成功收发（返回是否命中）。
+    /// 标记某条 Connection 成功收/发（返回是否命中）。
+    ///
+    /// `inbound` 语义（M3-0b）：`true` = 真的读到了对端的帧 ⇒ 唯一「对端活着」的证据；
+    /// `false` = 只是写出成功 ⇒ 半开 TCP 上也会持续发生，**不**刷新读活性。
     pub fn mark_connection_seen(
         &mut self,
         endpoint: &Endpoint,
         now_ms: i64,
         rtt_ms: Option<u64>,
+        inbound: bool,
     ) -> bool {
         match self.connections.iter_mut().find(|c| c.endpoint == *endpoint) {
             Some(c) => {
-                c.health.mark_seen(now_ms, rtt_ms);
+                if inbound {
+                    c.health.mark_read_seen(now_ms, rtt_ms);
+                } else {
+                    c.health.mark_write_seen(now_ms);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 建链时播种读活性（唯一允许在 reader_loop 之外写读活性的入口）。
+    pub fn seed_connection_read_seen(&mut self, endpoint: &Endpoint, now_ms: i64) -> bool {
+        match self.connections.iter_mut().find(|c| c.endpoint == *endpoint) {
+            Some(c) => {
+                c.health.seed_read_seen(now_ms);
                 true
             }
             None => false,
@@ -264,11 +283,11 @@ mod tests {
         assert_eq!(peer.online_state(0, 10_000, 3), PeerOnlineState::Offline);
 
         // LAN 健康 → Online
-        assert!(peer.mark_connection_seen(&lan_endpoint(), 1000, Some(5)));
+        assert!(peer.mark_connection_seen(&lan_endpoint(), 1000, Some(5), true));
         assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
 
         // LAN 超时但 Routed 健康 → 仍 Online（一条断开不回退）
-        assert!(peer.mark_connection_seen(&routed_endpoint(), 2000, Some(30)));
+        assert!(peer.mark_connection_seen(&routed_endpoint(), 2000, Some(30), true));
         assert_eq!(peer.online_state(12_000, 10_000, 3), PeerOnlineState::Online);
 
         // 两条都超时 → Offline
@@ -288,8 +307,8 @@ mod tests {
         peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan));
         peer.upsert_connection(Connection::new("ABC123", routed_endpoint(), PathKind::Routed));
 
-        peer.mark_connection_seen(&lan_endpoint(), 1000, Some(5));
-        peer.mark_connection_seen(&routed_endpoint(), 1000, Some(5));
+        peer.mark_connection_seen(&lan_endpoint(), 1000, Some(5), true);
+        peer.mark_connection_seen(&routed_endpoint(), 1000, Some(5), true);
         assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
 
         // LAN 连续失败 4 次（> max_failures=3）
@@ -308,7 +327,7 @@ mod tests {
     fn same_endpoint_upsert_preserves_health() {
         let mut peer = Peer::new("ABC123", PeerIdentity::default());
         peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan));
-        peer.mark_connection_seen(&lan_endpoint(), 1000, Some(5));
+        peer.mark_connection_seen(&lan_endpoint(), 1000, Some(5), true);
         assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
 
         // 同一 endpoint 再次 upsert（模拟下一轮 announce）
@@ -316,5 +335,36 @@ mod tests {
 
         assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
         assert_eq!(peer.connections()[0].health.rtt_ms, Some(5));
+    }
+
+    /// M3-0b 核心：**只写不读**的连接不算健康（半开 TCP 不得被当成活链路）。
+    #[test]
+    fn write_only_connection_is_not_healthy() {
+        let mut peer = Peer::new("ABC123", PeerIdentity::default());
+        peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan));
+        // 心跳写了 5 次，但从没读到过对端的帧
+        for t in 1..=5 {
+            assert!(peer.mark_connection_seen(&lan_endpoint(), t * 1000, None, false));
+        }
+        assert_eq!(
+            peer.online_state(5000, 10_000, 3),
+            PeerOnlineState::Offline,
+            "只有写成功的连接不得让 Peer 在线 —— 否则选路会持续选中半开链路"
+        );
+        // 读到一帧后 → Online
+        assert!(peer.mark_connection_seen(&lan_endpoint(), 5000, None, true));
+        assert_eq!(peer.online_state(5000, 10_000, 3), PeerOnlineState::Online);
+    }
+
+    /// 建链播种：刚建好（尚无任何读入）必须 Online，否则会反复重拨。
+    #[test]
+    fn seeded_connection_is_online_immediately() {
+        let mut peer = Peer::new("ABC123", PeerIdentity::default());
+        peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan));
+        assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Offline);
+        assert!(peer.seed_connection_read_seen(&lan_endpoint(), 1000));
+        assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
+        // 播种不是永久豁免：超过阈值同样过期
+        assert_eq!(peer.online_state(12_000, 10_000, 3), PeerOnlineState::Offline);
     }
 }

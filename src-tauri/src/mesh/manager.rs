@@ -106,17 +106,33 @@ impl PeerManager {
         self.max_failures
     }
 
-    /// 标记某 peer 的某条 connection 成功收发（返回是否命中）。
+    /// 标记某 peer 的某条 connection 成功收/发（返回是否命中）。
+    ///
+    /// `inbound`：`true` = 读到了对端的帧（唯一「对端活着」的证据）；
+    /// `false` = 写出成功（半开 TCP 上也会发生，不刷新读活性）。
     pub fn mark_connection_seen(
         &mut self,
         device_id: &str,
         endpoint: &Endpoint,
         now_ms: i64,
         rtt_ms: Option<u64>,
+        inbound: bool,
     ) -> bool {
         self.peers
             .get_mut(device_id)
-            .is_some_and(|p| p.mark_connection_seen(endpoint, now_ms, rtt_ms))
+            .is_some_and(|p| p.mark_connection_seen(endpoint, now_ms, rtt_ms, inbound))
+    }
+
+    /// 建链时播种读活性（唯一允许在 reader_loop 之外写读活性的入口）。
+    pub fn seed_connection_read_seen(
+        &mut self,
+        device_id: &str,
+        endpoint: &Endpoint,
+        now_ms: i64,
+    ) -> bool {
+        self.peers
+            .get_mut(device_id)
+            .is_some_and(|p| p.seed_connection_read_seen(endpoint, now_ms))
     }
 
     /// 标记某 peer 的某条 connection 失败（返回是否命中）。
@@ -213,11 +229,11 @@ mod tests {
         assert_eq!(m.online_state("ABC123", 0), PeerOnlineState::Offline);
 
         // LAN 健康 → Online
-        assert!(m.mark_connection_seen("ABC123", &lan(), 1000, Some(5)));
+        assert!(m.mark_connection_seen("ABC123", &lan(), 1000, Some(5), true));
         assert_eq!(m.online_state("ABC123", 1000), PeerOnlineState::Online);
 
         // LAN 超时，Routed 健康 → 仍 Online
-        assert!(m.mark_connection_seen("ABC123", &routed(), 2000, Some(30)));
+        assert!(m.mark_connection_seen("ABC123", &routed(), 2000, Some(30), true));
         assert_eq!(m.online_state("ABC123", 12_000), PeerOnlineState::Online);
 
         // 全部超时 → Offline
@@ -250,7 +266,7 @@ mod tests {
     fn repeated_merge_preserves_connection_health() {
         let mut m = PeerManager::new(10_000, 3);
         m.merge(cand("ABC123", lan(), PathKind::Lan));
-        assert!(m.mark_connection_seen("ABC123", &lan(), 1000, Some(5)));
+        assert!(m.mark_connection_seen("ABC123", &lan(), 1000, Some(5), true));
         assert_eq!(m.online_state("ABC123", 1000), PeerOnlineState::Online);
 
         // 下一轮 announce：同 endpoint 再 merge 一次
