@@ -633,11 +633,15 @@ async fn reader_loop(
 ///
 /// 私有 / 环回 / 链路本地地址视为 LAN；其余（含 Tailscale 的 100.64/10 CGNAT 段，
 /// 它**不是** RFC1918 私有地址）视为 Routed —— 正好符合「跨子网走 Routed」的预期。
+///
+/// 注意 IPv6 的 ULA（`fc00::/7`，含 Tailscale 的 `fd7a:115c:a1e0::/48`）**故意**留在
+/// Routed：它虽然叫「唯一本地地址」，但实践中主要出现在跨子网隧道里。判定只依赖
+/// 地址属性，不针对任何具体软件（§36：不要把 Clash / Tailscale 写死进网络核心）。
 fn path_kind_for(endpoint: &std::net::SocketAddr) -> PathKind {
     use std::net::IpAddr;
     match endpoint.ip() {
         IpAddr::V4(v4) if v4.is_private() || v4.is_loopback() || v4.is_link_local() => PathKind::Lan,
-        IpAddr::V6(v6) if v6.is_loopback() => PathKind::Lan,
+        IpAddr::V6(v6) if v6.is_loopback() || v6.is_unicast_link_local() => PathKind::Lan,
         _ => PathKind::Routed,
     }
 }
@@ -660,15 +664,11 @@ fn register_connection(state: &AppState, peer_id: &str, endpoint: std::net::Sock
             .unwrap_or_default()
     };
 
-    let candidate = PeerCandidate::new(
-        peer_id,
-        identity,
-        MeshEndpoint::Tcp(endpoint),
-        path_kind_for(&endpoint),
-    );
+    let path = path_kind_for(&endpoint);
+    let candidate =
+        PeerCandidate::new(peer_id, identity, MeshEndpoint::Tcp(endpoint), path.clone());
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     let (_, outcome) = pm.merge(candidate);
-    let path = path_kind_for(&endpoint);
     eprintln!(
         "[mesh] +conn peer={peer_id} ep={endpoint} path={path:?} \
          new_peer={} new_conn={} conns={}",
@@ -697,6 +697,10 @@ mod mesh_sync_tests {
         std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(a, b, c, d)), 59992)
     }
 
+    fn sa6(s: &str) -> std::net::SocketAddr {
+        std::net::SocketAddr::new(s.parse::<IpAddr>().unwrap(), 59992)
+    }
+
     /// 路径分类：RFC1918 / 环回 / 链路本地 = LAN；其余 = Routed。
     ///
     /// 关键用例是 Tailscale 的 100.64/10 —— 它是 CGNAT 段，**不是** RFC1918，
@@ -715,6 +719,20 @@ mod mesh_sync_tests {
             "Tailscale CGNAT 段必须判为 Routed"
         );
         assert_eq!(path_kind_for(&sa(8, 8, 8, 8)), PathKind::Routed);
+    }
+
+    /// IPv6：环回与链路本地（fe80::/10，同一链路）= LAN；
+    /// ULA（含 Tailscale 的 fd7a::）保持 Routed，理由见 `path_kind_for` 注释。
+    #[test]
+    fn path_kind_classifies_ipv6() {
+        assert_eq!(path_kind_for(&sa6("::1")), PathKind::Lan);
+        assert_eq!(path_kind_for(&sa6("fe80::1")), PathKind::Lan);
+        assert_eq!(
+            path_kind_for(&sa6("fd7a:115c:a1e0::1")),
+            PathKind::Routed,
+            "Tailscale IPv6（ULA）应保持 Routed"
+        );
+        assert_eq!(path_kind_for(&sa6("2408:8207::1")), PathKind::Routed);
     }
 }
 
