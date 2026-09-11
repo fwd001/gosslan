@@ -71,6 +71,9 @@ pub enum GossipKind {
     Group,
     /// 好友关系拦截通知（明文 JSON payload，携带 original_sender）
     FriendMessageBlocked,
+    /// 节点通告：周期广播自身身份，跨跳传播让全网节点互相可见（TOFU 语义）。
+    /// 明文（encrypted=false），payload 为 JSON（昵称 / 头像）。
+    Presence,
 }
 
 /// Gossip 广播信封（Epidemic 协议消息体）。

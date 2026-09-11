@@ -123,6 +123,50 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
     }
 }
 
+/// 广播一次 Presence：携带自身昵称/头像，靠 Gossip fan-out 跨跳传播。
+///
+/// 与 announce 的区别：announce 是 UDP 单跳、只覆盖本地网段；Presence 走
+/// Gossip 广播（ttl 衰减 + fan-out 转发），能穿过中继节点让 A→B→C 里 A 也
+/// 「看到」C。这是「去中心化、节点即服务器」发现层的第一块拼图。
+async fn broadcast_presence(state: &Arc<AppState>) {
+    let nickname = state
+        .nickname
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let avatar = state
+        .avatar
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    // payload：明文 JSON（昵称/头像）。身份与双公钥已在 GossipEnvelope 字段里。
+    let payload = serde_json::json!({
+        "nickname": nickname,
+        "avatar": avatar,
+    })
+    .to_string();
+    let payload_b64 = STANDARD.encode(payload.as_bytes());
+
+    let mut env = {
+        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+        gossip.build_envelope(
+            &state.identity,
+            &state.device_id,
+            GossipKind::Presence,
+            None,
+            None,
+            &payload_b64,
+            db::now_ms(),
+            0,
+        )
+    };
+    // Presence 是公开的节点身份通告，明文。`signing_bytes()` 覆盖 `encrypted`，
+    // 改后必须重签（与 FriendMessageBlocked 同模式）。
+    env.encrypted = false;
+    env.sender_sig = state.identity.sign_b64(&env.signing_bytes());
+    broadcast_gossip(state, env).await;
+}
+
 // ---------------- 服务启动 ----------------
 
 /// TCP 监听端口绑定重试次数与间隔（仅用于 `AddrInUse`）。
@@ -167,6 +211,8 @@ pub async fn spawn(
     let shutdown_for_heartbeat = shutdown.clone();
     let state_for_routed = state.clone();
     let shutdown_for_routed = shutdown.clone();
+    let state_for_presence = state.clone();
+    let shutdown_for_presence = shutdown.clone();
     let accept_task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -199,6 +245,27 @@ pub async fn spawn(
                         let _ = link.priority.send(Message::Heartbeat { device_id: state.device_id.clone() }).await;
                     }
                 }
+            }
+        }
+    });
+
+    // 节点通告（Presence）：周期广播自身身份，跨跳传播让全网节点互相可见。
+    //
+    // 这是「去中心化、节点即服务器」的第一块拼图：announce 是 UDP 单跳、只覆盖
+    // 本地网段；Presence 走 Gossip fan-out（ttl 衰减）跨跳扩散，让 A→B→C 链式
+    // 拓扑里 A 也能「看到」C（经 B 转发）。接收侧按 TOFU 记录远端节点（见
+    // handle_gossip 的 Presence 分支）。
+    let presence_task = tokio::spawn(async move {
+        let state = state_for_presence;
+        let mut shutdown = shutdown_for_presence;
+        // 30s 一轮：远低于聊天频率，fan-out 转发冗余可接受；足够快让新节点被发现。
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                _ = tick.tick() => broadcast_presence(&state).await,
             }
         }
     });
@@ -274,7 +341,7 @@ pub async fn spawn(
         }
     });
 
-    Ok(vec![accept_task, heartbeat_task, routed_task])
+    Ok(vec![accept_task, heartbeat_task, routed_task, presence_task])
 }
 
 /// 绑定监听端口，仅在 `AddrInUse` 时做有限退避重试。
@@ -2194,16 +2261,22 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             false
         } else {
             let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-            peers.get(&env.sender_id).is_some_and(|p| {
-                let direct_peer = peer_id == env.sender_id;
-                (p.ed25519_pubkey.as_deref() == Some(env.sender_ed25519.as_str())
-                    || (direct_peer && p.ed25519_pubkey.is_none()))
-                    && (p
-                        .x25519_pubkey
-                        .as_deref()
-                        .is_none_or(|key| key == env.sender_pubkey)
-                        || (direct_peer && p.x25519_pubkey.is_none()))
-            })
+            match peers.get(&env.sender_id) {
+                // 已认识：公钥必须匹配（无论是直连还是跨跳转发），防冒充。
+                Some(p) => {
+                    let direct_peer = peer_id == env.sender_id;
+                    (p.ed25519_pubkey.as_deref() == Some(env.sender_ed25519.as_str())
+                        || (direct_peer && p.ed25519_pubkey.is_none()))
+                        && (p
+                            .x25519_pubkey
+                            .as_deref()
+                            .is_none_or(|key| key == env.sender_pubkey)
+                            || (direct_peer && p.x25519_pubkey.is_none()))
+                }
+                // 未认识：仅 Presence（节点通告）允许 TOFU —— 它存在的目的就是
+                // 让「不认识」的节点被全网看到。其余消息仍拒，避免陌生人直接投递。
+                None => env.kind == GossipKind::Presence,
+            }
         }
     };
     if !sender_trusted {
@@ -2323,6 +2396,10 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 已在 encrypted=false 分支处理，这里不应进入
                 return;
             }
+            GossipKind::Presence => {
+                // Presence 必然是明文；收到 encrypted=true 的是异常，丢弃。
+                return;
+            }
         }
     };
 
@@ -2364,6 +2441,50 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         }
                         // 非本机 → 已在上面 fan-out 转发，不做任何 UI/DB 操作
                     }
+                }
+            }
+        }
+        GossipKind::Presence => {
+            // TOFU 记录远端节点：跨跳转发的 Presence，sender 可能不在 peers 里。
+            // 「去中心化发现」的落地 —— A 经 B 转发看到 C，C 进入 peers 表，
+            // 前端「添加好友」列表即出现 C（即使 A 与 C 无直连）。
+            if let Some(pt) = plaintext {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                    let nickname = v
+                        .get("nickname")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let avatar = v
+                        .get("avatar")
+                        .and_then(|a| a.as_str())
+                        .map(|s| s.to_string());
+                    // 首次学到才留痕：peers 是内存结构、不落库，这行日志是唯一可观测
+                    // 「跨跳发现了谁」的手段（与 [mesh] ±conn、握手学到身份同理）。
+                    let is_new = {
+                        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+                        !peers.contains_key(&env.sender_id)
+                    };
+                    if is_new {
+                        eprintln!(
+                            "[presence] 学到远端节点 peer={} nickname={}",
+                            env.sender_id, nickname
+                        );
+                    }
+                    // ip 空、tcp_port 0：跨跳转发不知道对端真实地址，仅记录身份
+                    // （可被「看到」，但不可直连）。
+                    upsert_peer(
+                        state,
+                        &env.sender_id,
+                        &nickname,
+                        avatar,
+                        "",
+                        0,
+                        Some(env.sender_pubkey.clone()),
+                        Some(env.sender_ed25519.clone()),
+                        None,
+                    )
+                    .await;
                 }
             }
         }
