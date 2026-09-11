@@ -224,6 +224,8 @@ pub async fn spawn(
                             &db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default(),
                         )
                     };
+                    // 并发拨号：一个「黑洞」端点不能把同一轮里的其他端点拖住。
+                    let mut dials = tokio::task::JoinSet::new();
                     for ep in list {
                         let Some(addr) = ep.socket_addr() else { continue };
                         if state.has_endpoint(&ep.device_id, &addr).await {
@@ -234,9 +236,26 @@ pub async fn spawn(
                         // 是用户显式配置的明确意图，50% 概率会因 ID 大小被静默跳过，
                         // 表现为「配了却连不上且无任何提示」。这里直接拨号，去重由
                         // `connect_to_peer` 内部的按端点检查保证。
-                        eprintln!("[routed] 尝试拨号 peer={} ep={addr}", ep.device_id);
-                        connect_to_peer(&state, &ep.device_id, addr, shutdown.clone()).await;
+                        let state = state.clone();
+                        let shutdown = shutdown.clone();
+                        dials.spawn(async move {
+                            match connect_to_peer(&state, &ep.device_id, addr, shutdown).await {
+                                DialOutcome::Connected => {
+                                    eprintln!("[routed] 已连上 peer={} ep={addr}", ep.device_id)
+                                }
+                                DialOutcome::Failed(e) => eprintln!(
+                                    "[routed] 拨号未成功 peer={} ep={addr}：{e}",
+                                    ep.device_id
+                                ),
+                                // 正常停机：不打日志，否则退出时会多出一批误导性的「失败」
+                                DialOutcome::Stopped => {}
+                            }
+                        });
                     }
+                    // **必须排空**：`JoinSet` 被 drop 时会立刻 abort 掉所有未完成任务，
+                    // 不等就永远拨不完。排空也顺带保证「单轮耗时 < tick 间隔」，
+                    // 下一轮才可能对同一端点重拨 —— 按端点去重的前提才成立。
+                    while dials.join_next().await.is_some() {}
                 }
             }
         }
@@ -750,6 +769,19 @@ mod mesh_sync_tests {
 
 // ---------------- 主动建链（小 ID 拨号） ----------------
 
+/// 拨号连接的超时上限。
+///
+/// 存在的理由：`TcpStream::connect` 在「SYN 被静默丢弃」时（对端防火墙 DROP、
+/// VPN / 虚拟网卡路由黑洞）要等操作系统把 SYN 重传耗尽才返回 —— Linux/macOS
+/// 可达 75s 以上，Windows 约 21s。
+///
+/// 而 `ensure_link` 是在 **UDP announce 接收循环里 `.await`** 的，没有上限就意味着
+/// 一个收得到广播、TCP 却被丢弃的对端会把**整个发现循环堵死**（表现为发现假死、
+/// 其他节点迟迟不出现）。Routed 拨号同样受影响。
+///
+/// 5s 远大于正常握手（同链路 <1ms；Tailscale 直连或经中继通常 <2s），只用于截断黑洞。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// 由字符串 IP + 端口构造 `SocketAddr`。
 ///
 /// **刻意不用 `format!("{ip}:{port}").parse()`**：那种写法把地址与端口先拼成字符串，
@@ -759,6 +791,17 @@ mod mesh_sync_tests {
 /// 分开解析 IP 与端口，v4 / v6 都成立，也不需要方括号。
 fn socket_addr_from(ip: &str, port: u16) -> Option<SocketAddr> {
     ip.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, port))
+}
+
+/// 拨号结果。
+///
+/// `Stopped` 与 `Failed` 分开，是为了在正常停机时不产生误导性的「拨号失败」日志；
+/// LAN 路径的正常失败（对端离线、或该由对端拨号）则完全不打日志，避免刷屏。
+enum DialOutcome {
+    Connected,
+    /// 拨号被停机信号中断（应用正在退出 / 切换网络）。
+    Stopped,
+    Failed(String),
 }
 
 pub async fn ensure_link(
@@ -777,7 +820,8 @@ pub async fn ensure_link(
     if state.has_endpoint(peer_id, &endpoint).await {
         return;
     }
-    connect_to_peer(state, peer_id, endpoint, shutdown).await;
+    // LAN 发现路径的拨号失败是常态（对端离线、或本轮该由对端拨），刻意不打日志。
+    let _ = connect_to_peer(state, peer_id, endpoint, shutdown).await;
 }
 
 /// 建立一条到 `endpoint` 的连接。
@@ -788,16 +832,28 @@ async fn connect_to_peer(
     state: &Arc<AppState>,
     peer_id: &str,
     endpoint: SocketAddr,
-    shutdown: watch::Receiver<bool>,
-) {
+    mut shutdown: watch::Receiver<bool>,
+) -> DialOutcome {
     // 按端点去重：与 `ensure_link` 的检查构成双重保险（announce 与 Routed 拨号会并发触发）。
     if state.has_endpoint(peer_id, &endpoint).await {
-        return;
+        return DialOutcome::Connected;
     }
 
-    let stream = match TcpStream::connect(endpoint).await {
-        Ok(s) => s,
-        Err(_) => return,
+    // connect 与停机信号赛跑：`stop()` 只等后台任务 2s，若 connect 正在等超时，
+    // 不中断就会拖慢退出 / `app.restart()`（后者还会与端口释放抢时间）。
+    let stream = tokio::select! {
+        biased;
+        _ = shutdown.changed() => return DialOutcome::Stopped,
+        res = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(endpoint)) => match res {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return DialOutcome::Failed(format!("连接失败: {e}")),
+            Err(_) => {
+                return DialOutcome::Failed(format!(
+                    "连接超时（{}s 内未建立）",
+                    CONNECT_TIMEOUT.as_secs()
+                ))
+            }
+        },
     };
 
     let (raw_r, raw_w) = stream.into_split();
@@ -850,6 +906,7 @@ async fn connect_to_peer(
     flush_pending_group_keys(state, peer_id).await;
     // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
     crate::commands::flush_pending_group_files(state, peer_id).await;
+    DialOutcome::Connected
 }
 
 // ---------------- 消息分发 ----------------
