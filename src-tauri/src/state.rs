@@ -1,7 +1,6 @@
 //! 应用全局状态与前端交互类型。
 
 use std::collections::{HashMap, VecDeque};
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -76,8 +75,10 @@ pub struct Peer {
 /// 也是 6b「同一 Peer 多条 Connection」的判据。
 #[derive(Clone)]
 pub struct Link {
-    /// 该连接对端的端点。
-    pub endpoint: SocketAddr,
+    /// 该连接对端的端点（transport 无关：TCP 地址或 BLE 标识）。
+    ///
+    /// 为什么不是 `SocketAddr`：BLE 端点没有 IP。见 `mesh::Endpoint` 与 ADR-0015。
+    pub endpoint: crate::mesh::Endpoint,
     /// 这条连接**走的是哪条路径**（LAN / Routed / Bluetooth）。
     ///
     /// 为什么必须显式携带、而不是从 `endpoint` 的 IP 段反推（`path_kind_for`）：
@@ -826,7 +827,7 @@ impl AppState {
     ///
     /// 与 `has_link` 的区别：6b 起一个 peer 可有多条连接（LAN + Tailscale），
     /// 判断「要不要再拨号」必须**按端点**，而不是按 peer —— 否则永远只能建一条。
-    pub async fn has_endpoint(&self, peer_id: &str, endpoint: &SocketAddr) -> bool {
+    pub async fn has_endpoint(&self, peer_id: &str, endpoint: &crate::mesh::Endpoint) -> bool {
         self.links
             .lock()
             .await
@@ -842,7 +843,7 @@ impl AppState {
     ///
     /// 方向性说明：主动方记录的 endpoint 是**对端的监听地址**（与配置一致）；
     /// 被动方记录的是对端拨入时的**临时源端口**，不会与配置地址相同，故不会误判。
-    pub async fn has_endpoint_addr(&self, endpoint: &SocketAddr) -> bool {
+    pub async fn has_endpoint_addr(&self, endpoint: &crate::mesh::Endpoint) -> bool {
         self.links
             .lock()
             .await

@@ -32,6 +32,37 @@ pub enum Endpoint {
     Ble(BleEndpoint),
 }
 
+impl std::fmt::Display for Endpoint {
+    /// 日志/诊断用的一行文本。TCP 保持与旧日志完全一致的 `ip:port`
+    /// （运维习惯与既有日志检索都依赖它），BLE 用 `ble:<地址>`。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Endpoint::Tcp(addr) => write!(f, "{addr}"),
+            Endpoint::Ble(b) => write!(f, "ble:{}", b.address),
+        }
+    }
+}
+
+impl From<SocketAddr> for Endpoint {
+    fn from(addr: SocketAddr) -> Self {
+        Endpoint::Tcp(addr)
+    }
+}
+
+impl Endpoint {
+    /// TCP 地址（非 TCP 端点返回 `None`）。
+    ///
+    /// 存在的意义：**只有少数几处真正需要 IP**（TCP 拨号、回填 `peers.ip`、Windows 的
+    /// SO_LINGER）。用它把这些地方显式标记出来，而不是让调用方到处 `match` ——
+    /// 也避免将来有人拿 BLE 端点去 `unwrap`。
+    pub fn as_tcp(&self) -> Option<SocketAddr> {
+        match self {
+            Endpoint::Tcp(addr) => Some(*addr),
+            Endpoint::Ble(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,6 +74,18 @@ mod tests {
         let c = Endpoint::Tcp(SocketAddr::from(([192, 168, 1, 21], 59992)));
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn display_keeps_tcp_format_and_marks_ble() {
+        // TCP 的日志文本必须与改造前逐字一致（既有日志检索/排查习惯依赖它）
+        assert_eq!(Endpoint::Tcp(SocketAddr::from(([10, 0, 0, 5], 60001))).to_string(), "10.0.0.5:60001");
+        assert_eq!(Endpoint::Ble(BleEndpoint::new("node-1")).to_string(), "ble:node-1");
+        assert_eq!(
+            Endpoint::Tcp(SocketAddr::from(([10, 0, 0, 5], 60001))).as_tcp(),
+            Some(SocketAddr::from(([10, 0, 0, 5], 60001)))
+        );
+        assert_eq!(Endpoint::Ble(BleEndpoint::new("node-1")).as_tcp(), None);
     }
 
     #[test]

@@ -109,13 +109,12 @@ fn route_order(
     health_timeout_ms: i64,
     max_failures: u32,
 ) -> Vec<usize> {
-    use crate::mesh::endpoint::Endpoint as MeshEndpoint;
 
     // 与 `links` 同序的候选：能按端点命中就用真实健康信息，否则合成「刚播种」候选。
     let candidates: Vec<crate::mesh::Connection> = links
         .iter()
         .map(|l| {
-            let ep = MeshEndpoint::Tcp(l.endpoint);
+            let ep = l.endpoint.clone();
             if let Some(c) = conns.iter().find(|c| c.endpoint == ep) {
                 c.clone()
             } else {
@@ -462,33 +461,39 @@ pub async fn spawn(
                         pm.stale_connections(db::now_ms(), stale_ms, max_failures)
                     };
                     for (peer, ep) in reaped {
-                        let MeshEndpoint::Tcp(addr) = ep else { continue };
-                        // ① 精确取消这一条连接的读写任务（半开的读只有它能打断）。
-                        let cancel = {
+                        // ⚠️ 不再 `let MeshEndpoint::Tcp(addr) = ep else { continue }`：
+                        // 那样**非 TCP 端点（BLE）永远拆不掉**，死链路会永久占着选路候选。
+                        //
+                        // 身份口径统一到 **channel**（`same_channel`），与 `reader_loop`
+                        // 收尾时一致：按端点定位/删除时，若同一端点存在两条（历史上确实
+                        // 出现过镜像连接），`find` 只取消第一条、`retain` 却删掉两条 ——
+                        // 剩下那条的 socket 与读写任务变成孤儿（既不收 cancel 也不注销）。
+                        let bulk = {
                             let links = state.links.lock().await;
                             links
                                 .get(&peer)
-                                .and_then(|v| v.iter().find(|l| l.endpoint == addr))
-                                .map(|l| l.cancel.clone())
+                                .and_then(|v| v.iter().find(|l| l.endpoint == ep))
+                                .map(|l| (l.bulk.clone(), l.cancel.clone()))
                         };
-                        let Some(cancel) = cancel else { continue };
+                        let Some((bulk, cancel)) = bulk else { continue };
+                        // ① 精确取消这一条连接的读写任务（半开的读只有它能打断）。
                         let _ = cancel.send(true);
                         // ② 从传输链路表移除（空 Vec 连 key 一起删），让 `ensure_link` 能重拨。
                         {
                             let mut links = state.links.lock().await;
                             if let Some(v) = links.get_mut(&peer) {
-                                v.retain(|l| l.endpoint != addr);
+                                v.retain(|l| !l.bulk.same_channel(&bulk));
                                 if v.is_empty() {
                                     links.remove(&peer);
                                 }
                             }
                         }
                         // ③ 同步 mesh 层（读循环收尾时也会做一次，这里是幂等的）。
-                        unregister_connection(&state, &peer, addr);
+                        unregister_connection(&state, &peer, &ep);
                         state.logger.warn(
                             "mesh",
                             format!(
-                                "-conn peer={peer} ep={addr} 读活性超过 {}s 无入站帧 ⇒ 拆除死链路并等待重拨",
+                                "-conn peer={peer} ep={ep} 读活性超过 {}s 无入站帧 ⇒ 拆除死链路并等待重拨",
                                 stale_ms / 1000
                             ),
                         );
@@ -848,7 +853,7 @@ async fn handle_incoming(
         .entry(peer_id.clone())
         .or_default()
         .push(Link {
-            endpoint: peer_addr,
+            endpoint: MeshEndpoint::Tcp(peer_addr),
             // 入站连接只可能来自本机 TCP 监听端口 ⇒ LAN 路径（Routed 都是我们主动拨出）
             path_kind: PathKind::Lan,
             bulk: bulk_tx.clone(),
@@ -857,11 +862,11 @@ async fn handle_incoming(
             cancel: cancel_tx,
         });
     // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
-    register_connection(&state, &peer_id, peer_addr, PathKind::Lan);
+    register_connection(&state, &peer_id, MeshEndpoint::Tcp(peer_addr), PathKind::Lan);
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
-        peer_addr,
+        MeshEndpoint::Tcp(peer_addr),
         w,
         bulk_rx,
         prio_rx,
@@ -904,7 +909,16 @@ async fn handle_incoming(
         }
     }
     state.emit_peers();
-    reader_loop(state, r, peer_id, peer_addr, bulk_tx, shutdown, cancel_rx).await;
+    reader_loop(
+        state,
+        r,
+        peer_id,
+        MeshEndpoint::Tcp(peer_addr),
+        bulk_tx,
+        shutdown,
+        cancel_rx,
+    )
+    .await;
 }
 
 /// 把「某条连接成功收发」喂给 mesh 层的 `ConnectionHealth`（ADR-0014 §3.1）。
@@ -915,11 +929,11 @@ async fn handle_incoming(
 ///
 /// 复杂度：每条连接每 5s 至少一次（心跳），加上真实收发，都是 std 锁上的一次查表 ——
 /// 与 `register_connection` 同量级，不构成热点。
-fn mark_conn_seen(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
+fn mark_conn_seen(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     pm.mark_connection_seen(
         peer_id,
-        &MeshEndpoint::Tcp(endpoint),
+        endpoint,
         db::now_ms(),
         None,
         true,
@@ -930,11 +944,11 @@ fn mark_conn_seen(state: &AppState, peer_id: &str, endpoint: std::net::SocketAdd
 ///
 /// 半开 TCP 上写会持续「成功」，因此它绝不能算成「对端活着」的证据 ——
 /// 否则死链路会永久被判健康，选路一直选中它（ADR-0014 §7）。
-fn mark_conn_write_seen(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
+fn mark_conn_write_seen(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     pm.mark_connection_seen(
         peer_id,
-        &MeshEndpoint::Tcp(endpoint),
+        endpoint,
         db::now_ms(),
         None,
         false,
@@ -944,16 +958,17 @@ fn mark_conn_write_seen(state: &AppState, peer_id: &str, endpoint: std::net::Soc
 
 /// 把「某条连接失败」喂给 mesh 层（写失败）。读循环退出时链路会被 `unregister_connection`
 /// 整条摘掉，无需再记失败。
-fn mark_conn_failure(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
+fn mark_conn_failure(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-    pm.mark_connection_failure(peer_id, &MeshEndpoint::Tcp(endpoint));
+    pm.mark_connection_failure(peer_id, endpoint);
 }
 
 async fn writer_loop(
     state: Arc<AppState>,
     peer_id: String,
     // 本连接的端点：健康信号要按**连接**记，必须能唯一定位到是哪一条。
-    endpoint: std::net::SocketAddr,
+    // 类型是 transport 无关的 `Endpoint`（BLE 也需要它）。
+    endpoint: MeshEndpoint,
     mut w: TcpSender,
     mut bulk_rx: mpsc::Receiver<Message>,
     mut prio_rx: mpsc::Receiver<Message>,
@@ -990,12 +1005,12 @@ async fn writer_loop(
                         *cur = (*cur).max(*last_read_ts);
                     }
                     // 这条连接已经写不出去了 —— 记一次失败，供 M3 的选路与收敛使用。
-                    mark_conn_failure(&state, &peer_id, endpoint);
+                    mark_conn_failure(&state, &peer_id, &endpoint);
                     break;
                 }
                 // 写成功只记**出站**活性（诊断口径）。M3-0b 起它**不**参与 is_healthy：
                 // 半开 TCP 上写会一直"成功"，那是本缺陷要被排除的伪证据。
-                mark_conn_write_seen(&state, &peer_id, endpoint);
+                mark_conn_write_seen(&state, &peer_id, &endpoint);
             }
             None => {
                 // select 无法直接区分是哪个分支关闭，用两个 recv 的 is_closed 兜底。
@@ -1018,7 +1033,7 @@ async fn reader_loop(
     mut r: TcpReceiver,
     peer_id: String,
     // 本连接的端点，用于按连接记健康信号。
-    endpoint: std::net::SocketAddr,
+    endpoint: MeshEndpoint,
     link_tx: mpsc::Sender<Message>,
     mut shutdown: watch::Receiver<bool>,
     // 本连接的取消信号（M3#6）：半开链路上的读会永久阻塞，只有它能打断。
@@ -1035,7 +1050,7 @@ async fn reader_loop(
             Ok(msg) => {
                 // 入站读到帧是比「写成功」**更强**的活性证据：对端确实活着（不只是内核收下了
                 // 我们的字节）。这条信号正是半开 TCP 场景下唯一能区分「真活 / 假活」的东西。
-                mark_conn_seen(&state, &peer_id, endpoint);
+                mark_conn_seen(&state, &peer_id, &endpoint);
                 handle_message(&state, &peer_id, msg).await
             }
             Err(_) => break,
@@ -1066,7 +1081,7 @@ async fn reader_loop(
             links
                 .get(&peer_id)
                 .and_then(|list| list.iter().find(|l| l.bulk.same_channel(&link_tx)))
-                .map(|l| l.endpoint)
+                .map(|l| l.endpoint.clone())
         };
         let mut links = state.links.lock().await;
         let removed = match links.get_mut(&peer_id) {
@@ -1093,7 +1108,7 @@ async fn reader_loop(
         drop(links);
         // 释放 links 锁后再动 mesh 层（避免持锁嵌套）
         if let Some(ep) = removed_endpoint {
-            unregister_connection(&state, &peer_id, ep);
+            unregister_connection(&state, &peer_id, &ep);
         }
         offline
     };
@@ -1154,12 +1169,7 @@ pub(crate) fn update_conv_link(state: &AppState, conv_id: &str, path: &str, hop:
 /// Phase 2 建立的「任一 Connection 健康 ⇒ Online」才有真实连接数据支撑。
 /// 公钥在此刻可能尚未学到（拨号侧），留空即可 —— 收到 Hello / announce 后由
 /// `PeerIdentity::merge_missing` 补齐（只补空、不覆盖）。
-fn register_connection(
-    state: &AppState,
-    peer_id: &str,
-    endpoint: std::net::SocketAddr,
-    path_kind: PathKind,
-) {
+fn register_connection(state: &AppState, peer_id: &str, endpoint: MeshEndpoint, path_kind: PathKind) {
     let identity = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         peers
@@ -1174,8 +1184,7 @@ fn register_connection(
     // 路径类型来自调用方（见 `Link::path_kind` 注释：从 IP 反推会把用户配置的
     // 私有段 Routed 端点误判成 LAN）
     let path = path_kind;
-    let candidate =
-        PeerCandidate::new(peer_id, identity, MeshEndpoint::Tcp(endpoint), path.clone());
+    let candidate = PeerCandidate::new(peer_id, identity, endpoint.clone(), path.clone());
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     let (_, outcome) = pm.merge(candidate);
     // 建链即算一次「成功收发」—— 否则「已建立但还没收发」的连接会被健康判据算作不健康
@@ -1191,7 +1200,7 @@ fn register_connection(
     // 重新"续命"一个完整超时窗口；更糟的是刚播种的 LAN 链路（可能已是半开）
     // 会在该窗口内**压过一条真正健康的 Routed 链路**（选路按 LAN > Routed 排序）。
     if outcome.is_new_connection {
-        pm.seed_connection_read_seen(peer_id, &MeshEndpoint::Tcp(endpoint), now);
+        pm.seed_connection_read_seen(peer_id, &endpoint, now);
     }
     // `online` 是 mesh 健康信号**在生产路径**唯一的外部可观测点：`ConnectionHealth` 是内存态，
     // 没有它就只能靠读代码相信「信号接上了」（这正是 M3-0 之前的状态）。
@@ -1210,9 +1219,9 @@ fn register_connection(
 }
 
 /// 连接断开后：从 mesh 层移除**这一条** Connection（同一 peer 的其他连接保留）。
-fn unregister_connection(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
+fn unregister_connection(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-    pm.remove_connection(peer_id, &MeshEndpoint::Tcp(endpoint));
+    pm.remove_connection(peer_id, endpoint);
     state.logger.info(
         "mesh",
         format!(
@@ -1324,7 +1333,7 @@ const BACKUP_DIAL_AFTER_MS: i64 = 10_000;
 /// 单独抽出来的理由：D5 的回归点正是「把任意连接当成 LAN 已连通」——
 /// 那是**一行布尔表达式**的错误，端到端很难复现（要先 Routed 连上、再等 announce），
 /// 而这里可以逐条钉死：只有 Routed 端点 ⇒ `false`（要继续拨 LAN）。
-fn has_lan_path(links: &[(std::net::SocketAddr, PathKind)]) -> bool {
+fn has_lan_path(links: &[(MeshEndpoint, PathKind)]) -> bool {
     links.iter().any(|(_, kind)| *kind == PathKind::Lan)
 }
 
@@ -1338,7 +1347,7 @@ fn should_dial_for_peer(
     my_id: &str,
     peer_id: &str,
     has_endpoint: bool,
-    existing: &[(std::net::SocketAddr, PathKind)],
+    existing: &[(MeshEndpoint, PathKind)],
     first_seen: Option<i64>,
     now_ms: i64,
 ) -> bool {
@@ -1394,7 +1403,9 @@ pub async fn ensure_link(
     // 端点解析失败则放弃本轮（下一轮 announce 会再试）。
     let Some(endpoint) = socket_addr_from(ip, tcp_port) else { return };
     // ① 这个端点已经连上了（典型是「自己拨出去的那条」）→ 本轮无事可做。
-    let has_endpoint = state.has_endpoint(peer_id, &endpoint).await;
+    let has_endpoint = state
+        .has_endpoint(peer_id, &MeshEndpoint::Tcp(endpoint))
+        .await;
     // ② **LAN 这条路径**已经连通 → 不再拨。
     //
     // 判据是「同路径是否已连通」，不是「有没有任意连接」也不是「有没有连到这个端点」：
@@ -1406,11 +1417,11 @@ pub async fn ensure_link(
     // 现有连接的端点快照（锁内只取数据，决策在锁外做）。
     // 快照里带上**路径类型**：判"LAN 是否已连通"必须看 Link 自己记的路径，
     // 不能按端点 IP 段反推（用户配置的私有段 Routed 端点会被误判成 LAN）。
-    let existing_links: Vec<(std::net::SocketAddr, PathKind)> = {
+    let existing_links: Vec<(MeshEndpoint, PathKind)> = {
         let links = state.links.lock().await;
         links
             .get(peer_id)
-            .map(|v| v.iter().map(|l| (l.endpoint, l.path_kind)).collect())
+            .map(|v| v.iter().map(|l| (l.endpoint.clone(), l.path_kind)).collect())
             .unwrap_or_default()
     };
     // 首次建链：大 ID 立即拨号，小 ID 等大 ID 拨；小 ID 在「对端在线却迟迟连不上」时兜底。
@@ -1461,6 +1472,8 @@ async fn connect_to_peer(
     path_kind: PathKind,
     mut shutdown: watch::Receiver<bool>,
 ) -> DialOutcome {
+    // 传输无关的端点表示（拨号本身仍是 TCP：BLE 走自己的拨号路径，见 ADR-0015）
+    let ep = MeshEndpoint::Tcp(endpoint);
     // ① **在途去重（D6）**：`has_endpoint` 与"登记链路"之间隔着 connect + 握手（最长 10s），
     //    两条并发路径会同时看到"还没连上"从而各拨一条 ⇒ `links[peer]` 出现两条同端点链路。
     //    这里用 RAII 守卫登记"我正在拨"，任何提前返回/panic 都会自动释放。
@@ -1481,8 +1494,8 @@ async fn connect_to_peer(
     // ③ 按端点去重：与 `ensure_link` 的检查构成双重保险（announce 与 Routed 拨号会并发触发）。
     // 身份未知时只能按端点判 —— 否则 10s 重试的每一轮都会重复建链。
     let already = match known_id {
-        Some(id) => state.has_endpoint(id, &endpoint).await,
-        None => state.has_endpoint_addr(&endpoint).await,
+        Some(id) => state.has_endpoint(id, &ep).await,
+        None => state.has_endpoint_addr(&ep).await,
     };
     if already {
         return DialOutcome::AlreadyConnected;
@@ -1601,18 +1614,18 @@ async fn connect_to_peer(
         .entry(peer_id.clone())
         .or_default()
         .push(Link {
-            endpoint,
+            endpoint: MeshEndpoint::Tcp(endpoint),
             path_kind,
             bulk: bulk_tx.clone(),
             priority: prio_tx.clone(),
             cancel: cancel_tx,
         });
     // 同步到 mesh 层（拨号侧同样登记，路径类型由调用方携带）
-    register_connection(state, &peer_id, endpoint, path_kind);
+    register_connection(state, &peer_id, ep.clone(), path_kind);
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
-        endpoint,
+        ep.clone(),
         w,
         bulk_rx,
         prio_rx,
@@ -1639,7 +1652,7 @@ async fn connect_to_peer(
         state.clone(),
         r,
         peer_id.clone(),
-        endpoint,
+        ep.clone(),
         bulk_tx,
         shutdown, cancel_rx,
     ));
@@ -5446,30 +5459,38 @@ mod tests {
     /// 这条测试会在把判据回退成「任意连接」时 FAIL —— 因为它明确区分了两种端点。
     #[test]
     fn only_routed_connection_still_dials_lan_path() {
-        let lan: std::net::SocketAddr = "192.168.1.20:59992".parse().unwrap();
-        let routed: std::net::SocketAddr = "100.70.10.20:59992".parse().unwrap();
+        let lan: MeshEndpoint = "192.168.1.20:59992".parse::<std::net::SocketAddr>().unwrap().into();
+        let routed: MeshEndpoint = "100.70.10.20:59992".parse::<std::net::SocketAddr>().unwrap().into();
 
         // 纯函数内核：只有 Routed 端点 ⇒ 不算 LAN 已连通（⇒ 大 ID 会去补一条 LAN）
-        assert!(!has_lan_path(&[(routed, PathKind::Routed)]));
-        assert!(has_lan_path(&[(lan, PathKind::Lan)]));
-        assert!(has_lan_path(&[(routed, PathKind::Routed), (lan, PathKind::Lan)]));
+        // （`Endpoint` 不是 Copy，测试里 clone 保持可读性）
+        assert!(!has_lan_path(&[(routed.clone(), PathKind::Routed)]));
+        assert!(has_lan_path(&[(lan.clone(), PathKind::Lan)]));
+        assert!(has_lan_path(&[
+            (routed.clone(), PathKind::Routed),
+            (lan.clone(), PathKind::Lan)
+        ]));
         assert!(!has_lan_path(&[]));
         // ⚠️ **关键回归**：端点地址是私有段、但来路是"用户配置的路由端点" ⇒ 仍是 Routed。
         // 此前路径类型是从 IP 段反推的（`path_kind_for`），这条必然被判成 LAN ⇒
         // ① `ensure_link` 以为 LAN 已连通、不再补真正的 LAN 链路（D5 的修复被绕过去）；
         // ② 选路时按最高优先级当成 LAN。把判据改回"按 IP 反推"这条断言立刻 FAIL。
-        let private_but_routed: std::net::SocketAddr = "192.168.1.77:59992".parse().unwrap();
+        let private_but_routed: MeshEndpoint =
+            "192.168.1.77:59992".parse::<std::net::SocketAddr>().unwrap().into();
         assert!(
-            !has_lan_path(&[(private_but_routed, PathKind::Routed)]),
+            !has_lan_path(&[(private_but_routed.clone(), PathKind::Routed)]),
             "用户配置的私有段 Routed 端点不得被当成 LAN"
         );
 
         // 决策层：**只有 Routed 连接**时，大 ID 仍应去补一条 LAN —— 这正是修复点。
         // 若把判据回退成「有任意连接就不拨」，下面这条断言会 FAIL（非空转）。
         let now = 1_000_000;
-        let routed_only = [(routed, PathKind::Routed)];
-        let lan_only = [(lan, PathKind::Lan)];
-        let both = [(routed, PathKind::Routed), (lan, PathKind::Lan)];
+        let routed_only = [(routed.clone(), PathKind::Routed)];
+        let lan_only = [(lan.clone(), PathKind::Lan)];
+        let both = [
+            (routed.clone(), PathKind::Routed),
+            (lan.clone(), PathKind::Lan),
+        ];
         assert!(should_dial_for_peer("b", "a", false, &routed_only, Some(now - 60_000), now));
         // 已有 LAN 连接 ⇒ 不重复拨（避免镜像重复连接，P1-2）。
         assert!(!should_dial_for_peer("b", "a", false, &lan_only, Some(now - 60_000), now));
@@ -5484,7 +5505,7 @@ mod tests {
             "b",
             "a",
             false,
-            &[(private_but_routed, PathKind::Routed)],
+            &[(private_but_routed.clone(), PathKind::Routed)],
             Some(now - 60_000),
             now
         ));
@@ -5501,7 +5522,7 @@ mod tests {
         let (cancel, _cancel_rx) = watch::channel(false);
         (
             crate::state::Link {
-                endpoint: addr.parse().unwrap(),
+                endpoint: MeshEndpoint::Tcp(addr.parse().unwrap()),
                 path_kind: kind,
                 bulk: b_tx,
                 priority: p_tx,
@@ -5510,6 +5531,41 @@ mod tests {
             b_rx,
             p_rx,
         )
+    }
+
+    /// 按任意 `Endpoint` 造一条链路（`make_link` 只接受 TCP 地址字符串，BLE 用这个）。
+    fn make_link_endpoint(
+        endpoint: MeshEndpoint,
+        kind: PathKind,
+    ) -> (crate::state::Link, mpsc::Receiver<Message>, mpsc::Receiver<Message>) {
+        let (b_tx, b_rx) = mpsc::channel(4);
+        let (p_tx, p_rx) = mpsc::channel(4);
+        let (cancel, _cancel_rx) = watch::channel(false);
+        (
+            crate::state::Link {
+                endpoint,
+                path_kind: kind,
+                bulk: b_tx,
+                priority: p_tx,
+                cancel,
+            },
+            b_rx,
+            p_rx,
+        )
+    }
+
+    /// 按任意 `Endpoint` 造一个 mesh 层 `Connection`（同上）。
+    fn mesh_conn_endpoint(
+        peer: &str,
+        endpoint: MeshEndpoint,
+        healthy_at: Option<i64>,
+        kind: PathKind,
+    ) -> crate::mesh::Connection {
+        let mut c = crate::mesh::Connection::new(peer, endpoint, kind);
+        if let Some(t) = healthy_at {
+            c.health.seed_read_seen(t);
+        }
+        c
     }
 
     fn mesh_conn(
@@ -5555,6 +5611,39 @@ mod tests {
         // 不变量：其余链路仍排在后面做 failover，**一条都不能丢**
         assert_eq!(order.len(), 2);
         assert!(order.contains(&0) && order.contains(&1));
+    }
+
+    /// BLE 链路的两个"不该被当成 LAN"判据（ADR-0015 的 7-c）：
+    /// ① 选路：TCP（LAN/Routed）必须排在 BLE 前面 —— 蓝牙带宽/功耗都差一个量级；
+    /// ② 拨号：只有 BLE 连上**不算**「LAN 已连通」，否则 `ensure_link` 不再补 LAN 链路
+    ///    （用户明明在同一局域网，却一直走蓝牙 —— 电量与速度都吃亏）。
+    #[test]
+    fn ble_link_is_neither_lan_nor_preferred_over_tcp() {
+        let ble = MeshEndpoint::Ble(crate::mesh::BleEndpoint::new("node-1"));
+        let lan: MeshEndpoint = "192.168.1.20:59992"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
+
+        // ① 选路：BLE 插在前面也不该被优先选
+        let (ble_link, _b0, _p0) = make_link_endpoint(ble.clone(), PathKind::Bluetooth);
+        let (lan_link, _b1, _p1) = make_link_endpoint(lan.clone(), PathKind::Lan);
+        let links = vec![ble_link, lan_link];
+        let conns = vec![
+            mesh_conn_endpoint("peer", ble.clone(), Some(1000), PathKind::Bluetooth),
+            mesh_conn_endpoint("peer", lan.clone(), Some(1000), PathKind::Lan),
+        ];
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        assert_eq!(order.len(), 2, "BLE 链路同样是 failover 候选，不能丢");
+        assert_eq!(order[0], 1, "LAN 必须优先于 BLE");
+
+        // ② 拨号判据：只有 BLE ⇒ LAN 路径尚未连通 ⇒ 仍要去补一条 LAN
+        assert!(!has_lan_path(&[(ble.clone(), PathKind::Bluetooth)]));
+        let now = 1_000_000;
+        assert!(
+            should_dial_for_peer("b", "a", false, &[(ble, PathKind::Bluetooth)], Some(now - 60_000), now),
+            "只有 BLE 连接时仍应补 LAN"
+        );
     }
 
     /// failover 核心：LAN 的读活性过期（半开）而 Routed 健康 → 选 Routed。
