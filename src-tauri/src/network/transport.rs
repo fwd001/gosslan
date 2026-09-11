@@ -13,7 +13,6 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rusqlite::params;
 use tauri::Emitter;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
@@ -27,6 +26,7 @@ use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, 
 use crate::state::{
     AppState, FileDoneInfo, FileFailedInfo, FileProgress, MessageRecord, Peer, PendingRequest,
 };
+use crate::transport::tcp::{TcpReceiver, TcpSender};
 
 /// 字符串 IP 是否为虚拟地址（用于 peers 表中已存储的 IP 字符串判断）。
 fn is_virtual_ip_str(ip_str: &str) -> bool {
@@ -343,7 +343,10 @@ async fn handle_incoming(
     // Windows：先标记 abortive close，再拆分成读写半（拆分后拿不到 socket 句柄了）。
     #[cfg(windows)]
     set_abortive_close(&stream);
-    let (mut r, w) = stream.into_split();
+    // 读写半包装成 transport 端点：端点只搬字节，分帧由 `transport::tcp` 负责（P-A03）。
+    let (raw_r, raw_w) = stream.into_split();
+    let mut r = TcpReceiver::new(raw_r);
+    let w = TcpSender::new(raw_w);
     let first = match read_frame(&mut r).await {
         Ok(m) => m,
         Err(_) => return,
@@ -420,7 +423,7 @@ async fn handle_incoming(
 async fn writer_loop(
     state: Arc<AppState>,
     peer_id: String,
-    mut w: OwnedWriteHalf,
+    mut w: TcpSender,
     mut bulk_rx: mpsc::Receiver<Message>,
     mut prio_rx: mpsc::Receiver<Message>,
     mut shutdown: watch::Receiver<bool>,
@@ -472,7 +475,7 @@ async fn writer_loop(
 
 async fn reader_loop(
     state: Arc<AppState>,
-    mut r: OwnedReadHalf,
+    mut r: TcpReceiver,
     peer_id: String,
     link_tx: mpsc::Sender<Message>,
     mut shutdown: watch::Receiver<bool>,
@@ -561,7 +564,9 @@ async fn connect_to_peer(
         Err(_) => return,
     };
 
-    let (r, w) = stream.into_split();
+    let (raw_r, raw_w) = stream.into_split();
+    let r = TcpReceiver::new(raw_r);
+    let w = TcpSender::new(raw_w);
     let (bulk_tx, bulk_rx) = mpsc::channel(1024);
     let (prio_tx, prio_rx) = mpsc::channel(1024);
     state

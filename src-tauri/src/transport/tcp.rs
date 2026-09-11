@@ -13,6 +13,9 @@
 
 #![allow(dead_code)] // 旁路阶段：待接线后移除
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
@@ -73,6 +76,78 @@ impl TcpTransport {
 
     pub async fn receive_bytes(&mut self) -> std::io::Result<Vec<u8>> {
         read_bytes(&mut self.read).await
+    }
+
+    /// 拆成独立的接收端 / 发送端。
+    ///
+    /// 必须拆：`writer_loop` 与 `reader_loop` 是两个并发任务，各自只持有一半
+    /// （与既有 `OwnedReadHalf` / `OwnedWriteHalf` 的用法一致）。
+    pub fn into_split(self) -> (TcpReceiver, TcpSender) {
+        (
+            TcpReceiver { read: self.read },
+            TcpSender { write: self.write },
+        )
+    }
+}
+
+/// 一条 TCP 连接的**发送端**：只写字节。
+pub struct TcpSender {
+    write: OwnedWriteHalf,
+}
+
+impl TcpSender {
+    pub fn new(write: OwnedWriteHalf) -> Self {
+        Self { write }
+    }
+
+    pub async fn send_bytes(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        write_bytes(&mut self.write, bytes).await
+    }
+}
+
+/// 委托底层写半：让 `TcpSender` 可直接喂给任何 `W: AsyncWrite` 的通用函数
+/// （例如既有的 `write_frame`），不必为连接端点重写分帧代码。
+impl AsyncWrite for TcpSender {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.write).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.write).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.write).poll_shutdown(cx)
+    }
+}
+
+/// 一条 TCP 连接的**接收端**：只读字节。
+pub struct TcpReceiver {
+    read: OwnedReadHalf,
+}
+
+impl TcpReceiver {
+    pub fn new(read: OwnedReadHalf) -> Self {
+        Self { read }
+    }
+
+    pub async fn receive_bytes(&mut self) -> std::io::Result<Vec<u8>> {
+        read_bytes(&mut self.read).await
+    }
+}
+
+/// 同 `TcpSender`：实现 `AsyncRead` 以直接复用既有的 `read_frame`。
+impl AsyncRead for TcpReceiver {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.read).poll_read(cx, buf)
     }
 }
 
@@ -175,5 +250,70 @@ mod tests {
         assert_eq!(t.receive_bytes().await.unwrap(), b"pong");
 
         assert_eq!(server.await.unwrap(), b"ping");
+    }
+
+    /// 拆半后仍能被既有 `write_frame` / `read_frame` 直接使用
+    /// （因为 `TcpSender: AsyncWrite`、`TcpReceiver: AsyncRead`）。
+    ///
+    /// 这是下一步把 writer_loop / reader_loop 换成端点类型的前提：
+    /// 只换类型、分帧逻辑不动，因此行为等价。
+    #[tokio::test]
+    async fn split_halves_work_with_legacy_frame_helpers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut rx, mut tx) = TcpTransport::new(stream).into_split();
+            let got = crate::network::transport::read_frame(&mut rx).await.unwrap();
+            crate::network::transport::write_frame(
+                &mut tx,
+                &Message::Heartbeat {
+                    device_id: "srv".into(),
+                },
+            )
+            .await
+            .unwrap();
+            got
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (mut rx, mut tx) = TcpTransport::new(stream).into_split();
+        crate::network::transport::write_frame(
+            &mut tx,
+            &Message::Heartbeat {
+                device_id: "cli".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let reply = crate::network::transport::read_frame(&mut rx).await.unwrap();
+
+        assert!(
+            matches!(reply, Message::Heartbeat { ref device_id } if device_id == "srv"),
+            "收到: {reply:?}"
+        );
+        assert!(
+            matches!(server.await.unwrap(), Message::Heartbeat { ref device_id } if device_id == "cli")
+        );
+    }
+
+    /// 拆半后 bytes 层接口（send_bytes / receive_bytes）同样可用。
+    #[tokio::test]
+    async fn split_halves_send_receive_raw_bytes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut rx, _tx) = TcpTransport::new(stream).into_split();
+            rx.receive_bytes().await.unwrap()
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (_rx, mut tx) = TcpTransport::new(stream).into_split();
+        tx.send_bytes(b"raw-bytes").await.unwrap();
+
+        assert_eq!(server.await.unwrap(), b"raw-bytes");
     }
 }
