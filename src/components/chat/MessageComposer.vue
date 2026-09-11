@@ -10,7 +10,7 @@ import { haptic } from "@/utils/haptics";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { classifyPaste } from "@/utils/clipboard";
-import { Code2, FilePlus, Smile, X } from "lucide-vue-next";
+import { Box, Folder, Smile, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 
 const props = defineProps<{
@@ -500,7 +500,11 @@ function fileToDataUrl(f: File): Promise<string> {
           <X class="h-3.5 w-3.5" />
         </button>
       </div>
-      <!-- contenteditable 编辑区：@提及 为内联原子 token（高亮+整删），placeholder 走 :empty::before -->
+      <!-- contenteditable 编辑区：@提及 为内联原子 token（高亮+整删）。
+           ⚠️ **不放 placeholder**：用户 2026-09-12 明确要求「输入框里也不用 placeholder」
+           （参考图是干净的输入区）。原先走 `:data-placeholder` + `:empty::before`，
+           现连同 style.css 里的那条规则与两个 i18n key 一起删除，避免留死代码。
+           `normalizeEmpty` 保留 —— 它现在只服务 `hasDraft`（空壳 div/br 会让"有草稿"误判）。 -->
       <div
         ref="editorRef"
         contenteditable="true"
@@ -513,7 +517,6 @@ function fileToDataUrl(f: File): Promise<string> {
         class="min-h-12 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-relaxed outline-none whitespace-pre-wrap break-words"
         :class="codeMode ? 'font-mono text-[13px]' : ''"
         :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
-        :data-placeholder="codeMode ? t('chat.composer.codePlaceholder') : t('chat.composer.placeholder')"
         @keydown="onKeydown"
         @input="onInput"
         @click="updateMentionState"
@@ -553,14 +556,24 @@ function fileToDataUrl(f: File): Promise<string> {
           @mousedown.prevent
           @click="codeMode = !codeMode"
         >
-          <Code2 class="h-4 w-4" :stroke-width="1.75" />
+          <!-- 用户 2026-09-12 反馈：「表情、代码、发送文件这 3 个图标一致性不太好……
+               参考这张图重新绘制，让它们看起来像一套，而不是 3 个割裂的图标」。
+               参考图（微信 4.0 输入栏）是：笑脸 / 立体方块 / 文件夹 / 剪刀▾ / 麦克风，
+               同一套细线线性风格。本工具栏对应的三个功能因此取同一套几何：
+               表情 = `Smile`（与参考图一致）、代码 = `Box`（参考图的立体方块）、
+               发送文件 = `Folder`（参考图的文件夹）。三者同为「方/圆几何 + 1.75 线宽 +
+               16px」，与工具栏其余按钮同一规格（尺寸/线宽见上方注释）。
+               语义映射的取舍：`Box` 表「代码模式」是跟随参考图形的**视觉**选择
+               （原先的 `Code2` 是 `</>` 尖括号，与笑脸/文件夹的几何风格割裂）；
+               若更看重语义，把这一处换回 `SquareCode` 即可，尺寸线宽无需改。 -->
+          <Box class="h-4 w-4" :stroke-width="1.75" />
         </button>
         <button
           class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('chat.composer.sendFile')" :aria-label="t('chat.composer.sendFile')"
           @click="emit('attach')"
         >
-          <FilePlus class="h-4 w-4" :stroke-width="1.75" />
+          <Folder class="h-4 w-4" :stroke-width="1.75" />
         </button>
         <button
           class="ml-auto flex h-7 shrink-0 items-center rounded-full px-3 text-[13px] font-medium transition"

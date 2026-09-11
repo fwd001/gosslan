@@ -493,14 +493,6 @@ button:not(:disabled):active,
   box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 35%, transparent);
 }
 
-/* contenteditable 输入框的 placeholder（textarea 才有原生 placeholder）：
-   :empty 时显示 data-placeholder；normalizeEmpty 会把空壳规范化成真·空。 */
-[contenteditable][data-placeholder]:empty::before {
-  content: attr(data-placeholder);
-  color: var(--gosslan-text-2);
-  pointer-events: none;
-}
-
 /* 内联图片表情（抖音表情）：正方形副格子 + object-contain 保持原图比例，
    高度随正文字号（em 基准）缩放；vertical-align 对齐文字基线，与原生 Unicode 表情观感一致。
    尺寸 1.3em 的由来：源图多为 96×96、少数 108×96（宽图被 object-contain 内缩），
