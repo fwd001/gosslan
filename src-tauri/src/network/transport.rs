@@ -110,7 +110,6 @@ fn route_order(
     max_failures: u32,
 ) -> Vec<usize> {
     use crate::mesh::endpoint::Endpoint as MeshEndpoint;
-    use crate::mesh::path::PathKind as MeshPathKind;
 
     // 与 `links` 同序的候选：能按端点命中就用真实健康信息，否则合成「刚播种」候选。
     let candidates: Vec<crate::mesh::Connection> = links
@@ -120,7 +119,7 @@ fn route_order(
             if let Some(c) = conns.iter().find(|c| c.endpoint == ep) {
                 c.clone()
             } else {
-                let mut fresh = crate::mesh::Connection::new(peer_id, ep, path_kind_for(&l.endpoint));
+                let mut fresh = crate::mesh::Connection::new(peer_id, ep, l.path_kind);
                 fresh.health.seed_read_seen(now_ms);
                 fresh
             }
@@ -131,7 +130,6 @@ fn route_order(
     else {
         return Vec::new();
     };
-    let _ = MeshPathKind::Lan; // 供上面 path_kind_for 的类型推断（避免未使用告警）
     // 选中的排最前，其余保持插入序做 failover。
     let mut order: Vec<usize> = Vec::with_capacity(candidates.len());
     order.push(best);
@@ -573,8 +571,14 @@ pub async fn spawn(
                         let state = state.clone();
                         let shutdown = shutdown.clone();
                         dials.spawn(async move {
-                            match connect_to_peer(&state, ep.device_id.as_deref(), addr, shutdown)
-                                .await
+                            match connect_to_peer(
+                                &state,
+                                ep.device_id.as_deref(),
+                                addr,
+                                PathKind::Routed,
+                                shutdown,
+                            )
+                            .await
                             {
                                 DialOutcome::Connected => {
                                     state.logger.info(
@@ -845,13 +849,15 @@ async fn handle_incoming(
         .or_default()
         .push(Link {
             endpoint: peer_addr,
+            // 入站连接只可能来自本机 TCP 监听端口 ⇒ LAN 路径（Routed 都是我们主动拨出）
+            path_kind: PathKind::Lan,
             bulk: bulk_tx.clone(),
             // priority 留一个 sender 在作用域内：首帧验签后要回发 Hello（见下）。
             priority: prio_tx.clone(),
             cancel: cancel_tx,
         });
     // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
-    register_connection(&state, &peer_id, peer_addr);
+    register_connection(&state, &peer_id, peer_addr, PathKind::Lan);
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
@@ -1107,14 +1113,6 @@ async fn reader_loop(
 /// 注意 IPv6 的 ULA（`fc00::/7`，含 Tailscale 的 `fd7a:115c:a1e0::/48`）**故意**留在
 /// Routed：它虽然叫「唯一本地地址」，但实践中主要出现在跨子网隧道里。判定只依赖
 /// 地址属性，不针对任何具体软件（§36：不要把 Clash / Tailscale 写死进网络核心）。
-fn path_kind_for(endpoint: &std::net::SocketAddr) -> PathKind {
-    use std::net::IpAddr;
-    match endpoint.ip() {
-        IpAddr::V4(v4) if v4.is_private() || v4.is_loopback() || v4.is_link_local() => PathKind::Lan,
-        IpAddr::V6(v6) if v6.is_loopback() || v6.is_unicast_link_local() => PathKind::Lan,
-        _ => PathKind::Routed,
-    }
-}
 
 /// 某 peer 当前第一条连接（入站视角）的路径类型字符串。
 ///
@@ -1124,7 +1122,7 @@ pub(crate) async fn inbound_path_kind(state: &AppState, peer_id: &str) -> String
     links
         .get(peer_id)
         .and_then(|l| l.first())
-        .map(|l| path_kind_for(&l.endpoint).as_str().to_string())
+        .map(|l| l.path_kind.as_str().to_string())
         .unwrap_or_else(|| PathKind::Lan.as_str().to_string())
 }
 
@@ -1156,7 +1154,12 @@ pub(crate) fn update_conv_link(state: &AppState, conv_id: &str, path: &str, hop:
 /// Phase 2 建立的「任一 Connection 健康 ⇒ Online」才有真实连接数据支撑。
 /// 公钥在此刻可能尚未学到（拨号侧），留空即可 —— 收到 Hello / announce 后由
 /// `PeerIdentity::merge_missing` 补齐（只补空、不覆盖）。
-fn register_connection(state: &AppState, peer_id: &str, endpoint: std::net::SocketAddr) {
+fn register_connection(
+    state: &AppState,
+    peer_id: &str,
+    endpoint: std::net::SocketAddr,
+    path_kind: PathKind,
+) {
     let identity = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         peers
@@ -1168,7 +1171,9 @@ fn register_connection(state: &AppState, peer_id: &str, endpoint: std::net::Sock
             .unwrap_or_default()
     };
 
-    let path = path_kind_for(&endpoint);
+    // 路径类型来自调用方（见 `Link::path_kind` 注释：从 IP 反推会把用户配置的
+    // 私有段 Routed 端点误判成 LAN）
+    let path = path_kind;
     let candidate =
         PeerCandidate::new(peer_id, identity, MeshEndpoint::Tcp(endpoint), path.clone());
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
@@ -1230,39 +1235,7 @@ mod mesh_sync_tests {
         std::net::SocketAddr::new(s.parse::<IpAddr>().unwrap(), 59992)
     }
 
-    /// 路径分类：RFC1918 / 环回 / 链路本地 = LAN；其余 = Routed。
-    ///
-    /// 关键用例是 Tailscale 的 100.64/10 —— 它是 CGNAT 段，**不是** RFC1918，
-    /// 必须判为 Routed，否则跨子网连接会被当成局域网路径处理。
-    #[test]
-    fn path_kind_classifies_endpoints() {
-        assert_eq!(path_kind_for(&sa(192, 168, 1, 20)), PathKind::Lan);
-        assert_eq!(path_kind_for(&sa(10, 0, 0, 5)), PathKind::Lan);
-        assert_eq!(path_kind_for(&sa(172, 16, 0, 1)), PathKind::Lan);
-        assert_eq!(path_kind_for(&sa(127, 0, 0, 1)), PathKind::Lan);
-        assert_eq!(path_kind_for(&sa(169, 254, 1, 1)), PathKind::Lan);
 
-        assert_eq!(
-            path_kind_for(&sa(100, 64, 0, 1)),
-            PathKind::Routed,
-            "Tailscale CGNAT 段必须判为 Routed"
-        );
-        assert_eq!(path_kind_for(&sa(8, 8, 8, 8)), PathKind::Routed);
-    }
-
-    /// IPv6：环回与链路本地（fe80::/10，同一链路）= LAN；
-    /// ULA（含 Tailscale 的 fd7a::）保持 Routed，理由见 `path_kind_for` 注释。
-    #[test]
-    fn path_kind_classifies_ipv6() {
-        assert_eq!(path_kind_for(&sa6("::1")), PathKind::Lan);
-        assert_eq!(path_kind_for(&sa6("fe80::1")), PathKind::Lan);
-        assert_eq!(
-            path_kind_for(&sa6("fd7a:115c:a1e0::1")),
-            PathKind::Routed,
-            "Tailscale IPv6（ULA）应保持 Routed"
-        );
-        assert_eq!(path_kind_for(&sa6("2408:8207::1")), PathKind::Routed);
-    }
 
     /// 地址构造不依赖「拼字符串再解析」，因此 IPv6 **不需要方括号**。
     ///
@@ -1351,8 +1324,8 @@ const BACKUP_DIAL_AFTER_MS: i64 = 10_000;
 /// 单独抽出来的理由：D5 的回归点正是「把任意连接当成 LAN 已连通」——
 /// 那是**一行布尔表达式**的错误，端到端很难复现（要先 Routed 连上、再等 announce），
 /// 而这里可以逐条钉死：只有 Routed 端点 ⇒ `false`（要继续拨 LAN）。
-fn has_lan_path(endpoints: &[std::net::SocketAddr]) -> bool {
-    endpoints.iter().any(|ep| path_kind_for(ep) == PathKind::Lan)
+fn has_lan_path(links: &[(std::net::SocketAddr, PathKind)]) -> bool {
+    links.iter().any(|(_, kind)| *kind == PathKind::Lan)
 }
 
 /// 拨号决策的**可测入口**：把「现有连接 → 是否还要拨 LAN」这一步也收进函数里。
@@ -1365,7 +1338,7 @@ fn should_dial_for_peer(
     my_id: &str,
     peer_id: &str,
     has_endpoint: bool,
-    existing: &[std::net::SocketAddr],
+    existing: &[(std::net::SocketAddr, PathKind)],
     first_seen: Option<i64>,
     now_ms: i64,
 ) -> bool {
@@ -1431,11 +1404,13 @@ pub async fn ensure_link(
     //     ⇒ M3 的「LAN > Routed」优先级永不生效（2026-09-12 复核抓到的多路径硬阻塞）。
     // 本函数只负责**给 LAN 路径补连通性**；Routed 由配置驱动、BLE 由发现驱动，都不经过这里。
     // 现有连接的端点快照（锁内只取数据，决策在锁外做）。
-    let existing_endpoints: Vec<std::net::SocketAddr> = {
+    // 快照里带上**路径类型**：判"LAN 是否已连通"必须看 Link 自己记的路径，
+    // 不能按端点 IP 段反推（用户配置的私有段 Routed 端点会被误判成 LAN）。
+    let existing_links: Vec<(std::net::SocketAddr, PathKind)> = {
         let links = state.links.lock().await;
         links
             .get(peer_id)
-            .map(|v| v.iter().map(|l| l.endpoint).collect())
+            .map(|v| v.iter().map(|l| (l.endpoint, l.path_kind)).collect())
             .unwrap_or_default()
     };
     // 首次建链：大 ID 立即拨号，小 ID 等大 ID 拨；小 ID 在「对端在线却迟迟连不上」时兜底。
@@ -1446,7 +1421,7 @@ pub async fn ensure_link(
             &state.device_id,
             peer_id,
             has_endpoint,
-            &existing_endpoints,
+            &existing_links,
             first_seen,
             db::now_ms(),
         )
@@ -1457,7 +1432,7 @@ pub async fn ensure_link(
     // LAN 发现路径的拨号失败是常态（对端离线、或本轮该由对端拨），刻意不打日志；
     // 但**握手验签失败/身份不符**会在 `connect_to_peer` 内以 warn + 诊断事件留痕
     // （那是「有人冒充」或「配置写错」的信号，不能静默）。
-    let _ = connect_to_peer(state, Some(peer_id), endpoint, shutdown).await;
+    let _ = connect_to_peer(state, Some(peer_id), endpoint, PathKind::Lan, shutdown).await;
 }
 
 /// 建立一条到 `endpoint` 的连接。
@@ -1483,6 +1458,7 @@ async fn connect_to_peer(
     state: &Arc<AppState>,
     known_id: Option<&str>,
     endpoint: SocketAddr,
+    path_kind: PathKind,
     mut shutdown: watch::Receiver<bool>,
 ) -> DialOutcome {
     // ① **在途去重（D6）**：`has_endpoint` 与"登记链路"之间隔着 connect + 握手（最长 10s），
@@ -1626,12 +1602,13 @@ async fn connect_to_peer(
         .or_default()
         .push(Link {
             endpoint,
+            path_kind,
             bulk: bulk_tx.clone(),
             priority: prio_tx.clone(),
             cancel: cancel_tx,
         });
-    // 同步到 mesh 层（拨号侧同样登记，path_kind 由端点地址推断）
-    register_connection(state, &peer_id, endpoint);
+    // 同步到 mesh 层（拨号侧同样登记，路径类型由调用方携带）
+    register_connection(state, &peer_id, endpoint, path_kind);
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
@@ -5473,34 +5450,59 @@ mod tests {
         let routed: std::net::SocketAddr = "100.70.10.20:59992".parse().unwrap();
 
         // 纯函数内核：只有 Routed 端点 ⇒ 不算 LAN 已连通（⇒ 大 ID 会去补一条 LAN）
-        assert!(!has_lan_path(&[routed]));
-        assert!(has_lan_path(&[lan]));
-        assert!(has_lan_path(&[routed, lan]));
+        assert!(!has_lan_path(&[(routed, PathKind::Routed)]));
+        assert!(has_lan_path(&[(lan, PathKind::Lan)]));
+        assert!(has_lan_path(&[(routed, PathKind::Routed), (lan, PathKind::Lan)]));
         assert!(!has_lan_path(&[]));
+        // ⚠️ **关键回归**：端点地址是私有段、但来路是"用户配置的路由端点" ⇒ 仍是 Routed。
+        // 此前路径类型是从 IP 段反推的（`path_kind_for`），这条必然被判成 LAN ⇒
+        // ① `ensure_link` 以为 LAN 已连通、不再补真正的 LAN 链路（D5 的修复被绕过去）；
+        // ② 选路时按最高优先级当成 LAN。把判据改回"按 IP 反推"这条断言立刻 FAIL。
+        let private_but_routed: std::net::SocketAddr = "192.168.1.77:59992".parse().unwrap();
+        assert!(
+            !has_lan_path(&[(private_but_routed, PathKind::Routed)]),
+            "用户配置的私有段 Routed 端点不得被当成 LAN"
+        );
 
         // 决策层：**只有 Routed 连接**时，大 ID 仍应去补一条 LAN —— 这正是修复点。
         // 若把判据回退成「有任意连接就不拨」，下面这条断言会 FAIL（非空转）。
         let now = 1_000_000;
-        assert!(should_dial_for_peer("b", "a", false, &[routed], Some(now - 60_000), now));
+        let routed_only = [(routed, PathKind::Routed)];
+        let lan_only = [(lan, PathKind::Lan)];
+        let both = [(routed, PathKind::Routed), (lan, PathKind::Lan)];
+        assert!(should_dial_for_peer("b", "a", false, &routed_only, Some(now - 60_000), now));
         // 已有 LAN 连接 ⇒ 不重复拨（避免镜像重复连接，P1-2）。
-        assert!(!should_dial_for_peer("b", "a", false, &[lan], Some(now - 60_000), now));
+        assert!(!should_dial_for_peer("b", "a", false, &lan_only, Some(now - 60_000), now));
         // 已有 LAN（含还有一条 Routed 的多路径场景）⇒ 也不拨。
-        assert!(!should_dial_for_peer("b", "a", false, &[routed, lan], Some(now - 60_000), now));
+        assert!(!should_dial_for_peer("b", "a", false, &both, Some(now - 60_000), now));
         // 完全没有连接 ⇒ 拨（原语义不变）。
         assert!(should_dial_for_peer("b", "a", false, &[], Some(now - 60_000), now));
         // 小 ID 兜底：只有 Routed 且超过阈值 ⇒ 也去补 LAN。
-        assert!(should_dial_for_peer("a", "b", false, &[routed], Some(now - 60_000), now));
+        assert!(should_dial_for_peer("a", "b", false, &routed_only, Some(now - 60_000), now));
+        // 私有段地址 + Routed 来路 ⇒ 仍应补 LAN（与上面的关键回归同一件事，走决策层）
+        assert!(should_dial_for_peer(
+            "b",
+            "a",
+            false,
+            &[(private_but_routed, PathKind::Routed)],
+            Some(now - 60_000),
+            now
+        ));
     }
 
     // ---- M3-b：发送顺序（按端点对齐两套链路表 + pick_link 排序）----
 
-    fn make_link(addr: &str) -> (crate::state::Link, mpsc::Receiver<Message>, mpsc::Receiver<Message>) {
+    fn make_link(
+        addr: &str,
+        kind: PathKind,
+    ) -> (crate::state::Link, mpsc::Receiver<Message>, mpsc::Receiver<Message>) {
         let (b_tx, b_rx) = mpsc::channel(4);
         let (p_tx, p_rx) = mpsc::channel(4);
         let (cancel, _cancel_rx) = watch::channel(false);
         (
             crate::state::Link {
                 endpoint: addr.parse().unwrap(),
+                path_kind: kind,
                 bulk: b_tx,
                 priority: p_tx,
                 cancel,
@@ -5510,11 +5512,16 @@ mod tests {
         )
     }
 
-    fn mesh_conn(peer: &str, addr: &str, healthy_at: Option<i64>) -> crate::mesh::Connection {
+    fn mesh_conn(
+        peer: &str,
+        addr: &str,
+        healthy_at: Option<i64>,
+        kind: PathKind,
+    ) -> crate::mesh::Connection {
         let mut c = crate::mesh::Connection::new(
             peer,
             crate::mesh::endpoint::Endpoint::Tcp(addr.parse().unwrap()),
-            path_kind_for(&addr.parse().unwrap()),
+            kind,
         );
         if let Some(t) = healthy_at {
             c.health.seed_read_seen(t);
@@ -5525,9 +5532,9 @@ mod tests {
     /// 单链路：顺序无变化（**行为零变化**，M3-b 的前提）。
     #[test]
     fn route_order_single_link_is_unchanged() {
-        let (l0, _b0, _p0) = make_link("192.168.1.20:59992");
+        let (l0, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
         let links = vec![l0];
-        let conns = vec![mesh_conn("peer", "192.168.1.20:59992", Some(1000))];
+        let conns = vec![mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan)];
         let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
         assert_eq!(order, vec![0]);
     }
@@ -5536,12 +5543,12 @@ mod tests {
     #[test]
     fn route_order_prefers_lan_over_routed_regardless_of_insertion() {
         // 故意把 Routed 放在下标 0（插入在前），LAN 在下标 1
-        let (routed, _b0, _p0) = make_link("100.70.10.20:59992");
-        let (lan, _b1, _p1) = make_link("192.168.1.20:59992");
+        let (routed, _b0, _p0) = make_link("100.70.10.20:59992", PathKind::Routed);
+        let (lan, _b1, _p1) = make_link("192.168.1.20:59992", PathKind::Lan);
         let links = vec![routed, lan];
         let conns = vec![
-            mesh_conn("peer", "100.70.10.20:59992", Some(1000)),
-            mesh_conn("peer", "192.168.1.20:59992", Some(1000)),
+            mesh_conn("peer", "100.70.10.20:59992", Some(1000), PathKind::Routed),
+            mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan),
         ];
         let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
         assert_eq!(order[0], 1, "应优先 LAN（下标 1），而不是插入在前的 Routed");
@@ -5553,14 +5560,14 @@ mod tests {
     /// failover 核心：LAN 的读活性过期（半开）而 Routed 健康 → 选 Routed。
     #[test]
     fn route_order_skips_unhealthy_lan_when_routed_is_healthy() {
-        let (lan, _b0, _p0) = make_link("192.168.1.20:59992");
-        let (routed, _b1, _p1) = make_link("100.70.10.20:59992");
+        let (lan, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
+        let (routed, _b1, _p1) = make_link("100.70.10.20:59992", PathKind::Routed);
         let links = vec![lan, routed];
         let conns = vec![
             // LAN：只有很早的读活性（已过期）
-            mesh_conn("peer", "192.168.1.20:59992", Some(0)),
+            mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan),
             // Routed：刚刚读到过帧
-            mesh_conn("peer", "100.70.10.20:59992", Some(60_000)),
+            mesh_conn("peer", "100.70.10.20:59992", Some(60_000), PathKind::Routed),
         ];
         let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
         assert_eq!(order[0], 1, "LAN 不健康时必须降级到 Routed（真 failover）");
@@ -5570,7 +5577,7 @@ mod tests {
     /// 登记窗口：传输链路存在但 mesh 侧还没登记 → 合成「刚播种」候选，不能因此被判不可用。
     #[test]
     fn route_order_tolerates_missing_mesh_candidate() {
-        let (only, _b0, _p0) = make_link("192.168.1.20:59992");
+        let (only, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
         let links = vec![only];
         let order = route_order(&links, "peer", &[], 1000, 15_000, 3);
         assert_eq!(order, vec![0], "缺候选时不得丢链路（登记窗口是常态）");
@@ -5579,12 +5586,12 @@ mod tests {
     /// 全部不健康：`pick_link` 退回首条（保持可用），且顺序仍是全量排列。
     #[test]
     fn route_order_keeps_all_links_when_none_healthy() {
-        let (lan, _b0, _p0) = make_link("192.168.1.20:59992");
-        let (routed, _b1, _p1) = make_link("100.70.10.20:59992");
+        let (lan, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
+        let (routed, _b1, _p1) = make_link("100.70.10.20:59992", PathKind::Routed);
         let links = vec![lan, routed];
         let conns = vec![
-            mesh_conn("peer", "192.168.1.20:59992", Some(0)),
-            mesh_conn("peer", "100.70.10.20:59992", Some(0)),
+            mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan),
+            mesh_conn("peer", "100.70.10.20:59992", Some(0), PathKind::Routed),
         ];
         let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
         assert_eq!(order.len(), 2, "全不健康也要把链路交出去（可用性优先于择优）");
@@ -5661,12 +5668,12 @@ mod tests {
     /// → 消息真的落在 Routed 那条（而不是仍投给 LAN）。这就是「切一条不中断」的最小复现。
     #[tokio::test]
     async fn route_order_plus_send_delivers_on_healthy_link_after_lan_degraded() {
-        let (lan, _b0, _p0) = make_link("192.168.1.20:59992");
-        let (routed, _b1, _p1) = make_link("100.70.10.20:59992");
+        let (lan, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
+        let (routed, _b1, _p1) = make_link("100.70.10.20:59992", PathKind::Routed);
         let links = vec![lan, routed];
         let conns = vec![
-            mesh_conn("peer", "192.168.1.20:59992", Some(0)),      // LAN 读活性过期
-            mesh_conn("peer", "100.70.10.20:59992", Some(60_000)), // Routed 健康
+            mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan),      // LAN 读活性过期
+            mesh_conn("peer", "100.70.10.20:59992", Some(60_000), PathKind::Routed), // Routed 健康
         ];
         let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
         assert_eq!(order[0], 1, "应先试健康的 Routed");

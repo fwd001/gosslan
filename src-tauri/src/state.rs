@@ -18,6 +18,7 @@ use crate::device::{hardware_fingerprint, hostname_fingerprint};
 use crate::gossip_engine::GossipEngine;
 use crate::logging::Logger;
 use crate::mesh::manager::PeerManager;
+use crate::mesh::path::PathKind;
 use crate::mesh::router::MeshRouter;
 use crate::protocol::{Message, TCP_PORT};
 use crate::relay_manager::RelayManager;
@@ -77,6 +78,14 @@ pub struct Peer {
 pub struct Link {
     /// 该连接对端的端点。
     pub endpoint: SocketAddr,
+    /// 这条连接**走的是哪条路径**（LAN / Routed / Bluetooth）。
+    ///
+    /// 为什么必须显式携带、而不是从 `endpoint` 的 IP 段反推（`path_kind_for`）：
+    /// 用户把**私有网段地址**（10.x / 192.168.x / 172.16.x）填进「路由端点」时，
+    /// 按 IP 反推会判成 LAN ⇒ ① `has_lan_path` 误判为真 ⇒ `ensure_link` 不再拨真正的
+    /// LAN 路径（把 D5 的修复绕过去了）；② 选路时按最高优先级当成 LAN。
+    /// 而 BLE 端点根本没有 IP，更无解。⇒ 路径类型必须由**来路**决定。
+    pub path_kind: PathKind,
     /// bulk 通道：大文件分片等，避免挤占聊天。
     pub bulk: mpsc::Sender<Message>,
     /// priority 通道：聊天 / 控制 / 心跳，避免被大文件分片饿死（INV-P20）。
