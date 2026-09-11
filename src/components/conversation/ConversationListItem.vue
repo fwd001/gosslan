@@ -119,7 +119,13 @@ const gridTiles = computed(() => {
     </div>
     <div class="min-w-0 flex-1 overflow-hidden">
       <div class="flex items-center justify-between gap-2">
-        <span class="truncate text-[13px] leading-5" :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'">
+        <!-- 名字会被截断（`truncate`），必须给 title：否则悬停看不到完整名字。
+             整行的 aria-label 只服务读屏，不产生 tooltip。 -->
+        <span
+          class="truncate text-[13px] leading-5"
+          :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'"
+          :title="conv.name"
+        >
           {{ conv.name }}
         </span>
         <span
@@ -133,6 +139,7 @@ const gridTiles = computed(() => {
         <span
           class="truncate text-[12px] leading-5"
           :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"
+          :title="snippet || conv.last_msg || t('msg.noMessage')"
         >
           <template v-if="snippet">
             <span v-html="highlightText(snippet, keyword.trim())"></span>

@@ -118,7 +118,7 @@ function readerAvatar(id: string): string | null {
           <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
           <span v-else>{{ avatarInitial(readerName(id)) }}</span>
         </span>
-        <span class="max-w-28 truncate">{{ readerName(id) }}</span>
+        <span class="max-w-28 truncate" :title="readerName(id)">{{ readerName(id) }}</span>
       </div>
     </div>
   </div>

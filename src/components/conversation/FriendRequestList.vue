@@ -44,7 +44,7 @@ function initials(name: string) {
           <span v-else class="text-sm font-semibold">{{ initials(r.from_nickname) }}</span>
         </div>
         <div class="min-w-0 flex-1">
-          <div class="truncate text-sm font-medium">{{ r.from_nickname }}</div>
+          <div class="truncate text-sm font-medium" :title="r.from_nickname">{{ r.from_nickname }}</div>
           <div class="text-xs text-[var(--gosslan-text-2)]">{{ t("friend.request.wantsToAdd") }}</div>
         </div>
         <button

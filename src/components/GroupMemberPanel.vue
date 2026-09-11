@@ -134,7 +134,7 @@ async function confirmAction() {
           </div>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-1.5">
-              <span class="truncate text-sm font-medium">{{ memberProfile(id).name }}</span>
+              <span class="truncate text-sm font-medium" :title="memberProfile(id).name">{{ memberProfile(id).name }}</span>
               <Crown v-if="group.creator === id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" :title="t('group.owner')" />
               <span v-if="id === myId" class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>
             </div>
@@ -200,7 +200,7 @@ async function confirmAction() {
                 <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
                 <span v-else class="text-[11px] font-semibold">{{ initials(f.nickname) }}</span>
               </div>
-              <span class="min-w-0 flex-1 truncate text-sm">{{ f.nickname }}</span>
+              <span class="min-w-0 flex-1 truncate text-sm" :title="f.nickname">{{ f.nickname }}</span>
               <Plus class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
             </div>
             <div v-if="addableFriends.length === 0" class="py-3 text-center text-xs text-[var(--gosslan-text-2)]">

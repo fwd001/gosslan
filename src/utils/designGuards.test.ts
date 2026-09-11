@@ -7,6 +7,7 @@ import {
   checkUnreadBadgeComponent,
   findHandWrittenBadges,
   findHoverRevealIssues,
+  findTruncationWithoutTitle,
 } from "./designGuards.ts";
 
 // ---------------- ① 悬停揭示必须有触屏兜底 ----------------
@@ -208,6 +209,60 @@ test("注释里提到类名、真实 class 属性里没有 → 仍要报（防�
   assert.match(issues.map((i) => i.message).join("\n"), /pb-\[1\.5px\]/);
 });
 
+// ---------------- ④ 截断文本必须有 title / aria-label ----------------
+//
+// 真实背景：`truncate` 把名字/地址/文件名截成「…」，完整内容只留在 DOM 里 ——
+// 只有在界面上真去 hover 才会发现「看不到全名」。用户 2026-09-10 审计与
+// 2026-09-12 反馈各报了一次（消息列表名、通讯录名、引用预览条…）。
+// 首段用例照当时的真实写法（截断但无 title）缩写。
+
+test("复现历史缺陷：truncate 但没有 title → 报出并指到那一行", () => {
+  const buggy = `<template>
+  <span class="truncate text-sm">{{ name }}</span>
+</template>`;
+  const issues = findTruncationWithoutTitle(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 2, "应精确指到那一行");
+  assert.match(issues[0].message, /title/);
+});
+
+test("跨行的开标签（class 与内容分行）也要抓到", () => {
+  const multiline = `<template>
+  <span
+    class="truncate text-sm"
+  >{{ name }}</span>
+</template>`;
+  assert.equal(findTruncationWithoutTitle(multiline).length, 1);
+});
+
+test("补了 :title 或 aria-label 之后通过", () => {
+  const fixed = `<template>
+  <span class="truncate text-sm" :title="name">{{ name }}</span>
+  <span class="truncate text-sm" aria-label="x">x</span>
+</template>`;
+  assert.deepEqual(findTruncationWithoutTitle(fixed), []);
+});
+
+test("注释里提到 truncate、真实 class 里没有 → 不误报", () => {
+  const commentOnly = `<!-- 这里不要写 truncate -->
+<template><span class="text-sm">{{ name }}</span></template>`;
+  assert.deepEqual(findTruncationWithoutTitle(commentOnly), []);
+});
+
+test("注释里提到 title、真实元素没有 → 仍要报（防「因为注释而通过」）", () => {
+  const commentOnly = `<!-- 参考写法：truncate + :title -->
+<template>
+  <span class="truncate text-sm">{{ name }}</span>
+</template>`;
+  assert.equal(findTruncationWithoutTitle(commentOnly).length, 1);
+});
+
+test("逃生阀：带 truncate-title-ok 注释的文件整体跳过", () => {
+  const optedOut = `<!-- truncate-title-ok：恒为短文案 -->
+<template><span class="truncate">在线</span></template>`;
+  assert.deepEqual(findTruncationWithoutTitle(optedOut), []);
+});
+
 // ---------------- 全库扫描：真实文件必须干净 ----------------
 
 function collectVueFiles(dir: string, out: string[] = []): string[] {
@@ -230,6 +285,18 @@ test("src 下所有 .vue 的悬停揭示都带了触屏兜底", () => {
     }
   }
   assert.deepEqual(bad, [], `发现缺少触屏兜底的悬停揭示：\n${bad.join("\n")}`);
+});
+
+test("src 下所有 .vue 的截断文本都带了 title / aria-label", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findTruncationWithoutTitle(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `发现被截断却没有 title 的文本：\n${bad.join("\n")}`);
 });
 
 test("真实的 src/style.css 级联顺序正确", () => {

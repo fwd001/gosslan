@@ -66,7 +66,7 @@ const kindLabel = computed(
             <img alt="" v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
             <span v-else>{{ avatarInitial(c.name) }}</span>
           </span>
-          <span class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]">{{ c.name }}</span>
+          <span class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
         </button>
         <div v-if="filtered.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">{{ t("msg.noMatch") }}</div>
       </div>

@@ -182,7 +182,7 @@ const pct = computed(() => Math.round((props.progress ?? 0) * 100));
           <span>{{ humanSize(meta.size) }}</span>
           <template v-if="note">
             <span>·</span>
-            <span class="truncate">{{ note }}</span>
+            <span class="truncate" :title="note">{{ note }}</span>
           </template>
         </div>
       </div>

@@ -68,7 +68,7 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
       >
         <ArrowLeft class="h-5 w-5" />
       </button>
-      <span class="truncate text-[15px] font-medium leading-6">{{ conv?.name || t("chat.header.conversation") }}<template v-if="isGroup && memberCount > 0"> ({{ memberCount }})</template></span>
+      <span class="truncate text-[15px] font-medium leading-6" :title="conv?.name || t('chat.header.conversation')">{{ conv?.name || t("chat.header.conversation") }}<template v-if="isGroup && memberCount > 0"> ({{ memberCount }})</template></span>
       <span
         v-if="!isGroup && deviceType"
         class="inline-flex shrink-0 items-center text-[var(--gosslan-text-2)]"

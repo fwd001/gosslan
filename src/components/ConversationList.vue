@@ -288,8 +288,8 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             />
           </span>
           <span class="min-w-0 flex-1 text-left">
-            <span class="block truncate text-[13px] leading-5 text-[var(--gosslan-text)]">{{ t("conv.newFriends") }}</span>
-            <span class="block truncate text-[12px] leading-5 text-[var(--gosslan-text-2)]">
+            <span class="block truncate text-[13px] leading-5 text-[var(--gosslan-text)]" :title="t('conv.newFriends')">{{ t("conv.newFriends") }}</span>
+            <span class="block truncate text-[12px] leading-5 text-[var(--gosslan-text-2)]" :title="chat.pendingRequests.length ? t('conv.pendingRequests', { n: chat.pendingRequests.length }) : t('friend.request.empty')">
               {{ chat.pendingRequests.length ? t("conv.pendingRequests", { n: chat.pendingRequests.length }) : t("friend.request.empty") }}
             </span>
           </span>

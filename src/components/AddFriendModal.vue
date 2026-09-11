@@ -110,7 +110,7 @@ async function add(peerId: string) {
             <span v-else class="text-sm font-semibold">{{ initials(p.nickname) }}</span>
           </div>
           <div class="min-w-0 flex-1">
-            <div class="truncate text-sm">{{ p.nickname }}</div>
+            <div class="truncate text-sm" :title="p.nickname">{{ p.nickname }}</div>
             <div class="text-xs text-[var(--gosslan-text-2)]">{{ p.ip }}</div>
           </div>
           <span

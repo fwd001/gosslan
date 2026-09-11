@@ -39,7 +39,7 @@ const confirmRemove = ref(false);
       >
         <ArrowLeft class="h-5 w-5" />
       </button>
-      <span class="truncate text-sm font-semibold">{{ friend.nickname }}</span>
+      <span class="truncate text-sm font-semibold" :title="friend.nickname">{{ friend.nickname }}</span>
     </div>
     <div class="flex-1 overflow-y-auto px-6 py-8">
       <div class="mx-auto w-full max-w-[520px]">
@@ -54,7 +54,7 @@ const confirmRemove = ref(false);
             <span v-else>{{ initial }}</span>
           </div>
           <div class="min-w-0">
-            <div class="truncate text-xl font-semibold">{{ friend.nickname }}</div>
+            <div class="truncate text-xl font-semibold" :title="friend.nickname">{{ friend.nickname }}</div>
             <div class="mt-1 flex items-center gap-1.5 text-sm text-[var(--gosslan-text-2)]">
               <span
                 class="h-2 w-2 rounded-full"

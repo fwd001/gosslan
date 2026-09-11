@@ -83,7 +83,7 @@ watch(
         :style="{ paddingLeft: `${12 + depth(e.path) * 16}px`, height: '36px' }"
       >
         <Folder v-if="e.is_dir" class="h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" />
-        <span class="flex-1 truncate text-sm">{{ e.name }}</span>
+        <span class="flex-1 truncate text-sm" :title="e.name">{{ e.name }}</span>
         <span v-if="!e.is_dir" class="text-[11px] text-[var(--gosslan-text-2)]">{{ humanSize(e.size) }}</span>
         <button
           v-if="!e.is_dir"

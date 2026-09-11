@@ -475,7 +475,7 @@ function fileToDataUrl(f: File): Promise<string> {
             class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
             :style="{ backgroundColor: nameToColor(m.name) }"
           >{{ avatarInitial(m.name) }}</span>
-          <span class="min-w-0 flex-1 truncate">{{ m.name }}</span>
+          <span class="min-w-0 flex-1 truncate" :title="m.name">{{ m.name }}</span>
         </button>
       </div>
       <!-- 引用预览条：右键"引用"后出现在输入框上方，可取消 -->
@@ -484,7 +484,11 @@ function fileToDataUrl(f: File): Promise<string> {
         class="mb-1.5 flex items-center gap-2 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-[12px]"
         :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG, color: 'var(--gosslan-text)' }"
       >
-        <span class="min-w-0 flex-1 truncate" :style="QUOTE_TEXT_STYLE">{{ t("common.quote") }} {{ quote.sender }}：{{ quote.snippet }}</span>
+        <span
+          class="min-w-0 flex-1 truncate"
+          :style="QUOTE_TEXT_STYLE"
+          :title="`${t('common.quote')} ${quote.sender}：${quote.snippet}`"
+        >{{ t("common.quote") }} {{ quote.sender }}：{{ quote.snippet }}</span>
         <button
           class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('chat.composer.cancelQuote')" :aria-label="t('chat.composer.cancelQuote')"

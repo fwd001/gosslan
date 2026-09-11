@@ -172,7 +172,7 @@ async function removeEndpoint(address: string) {
       :key="ep.address"
       class="flex items-center gap-2 px-4 py-2.5"
     >
-      <span class="min-w-0 flex-1 truncate font-mono text-[13px] text-[var(--gosslan-text)]">
+      <span class="min-w-0 flex-1 truncate font-mono text-[13px] text-[var(--gosslan-text)]" :title="ep.address">
         {{ ep.address }}
       </span>
       <button

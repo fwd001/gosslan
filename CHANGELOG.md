@@ -10,6 +10,10 @@
 
 ## [Unreleased]
 
+### Fixed (截断文本补齐 hover title)
+- **被 `truncate` 截断的文本补 `title`**（用户反馈「名字显示不下变成 `...`，鼠标悬停看不到完整名字」）：会话列表（名字 + 摘要）、好友列表（名字 + 在线态）、好友申请、群成员面板（成员名 + 可添加好友）、好友资料页（头部 + 大标题）、添加好友搜索结果、分享目录文件名、聊天头部标题、输入框 @候选、转发目标列表、文件气泡备注、已读成员列表、引用预览条、运行日志标题、路由端点地址、诊断面板事件。
+- **新增静态护栏**（`designGuards` ④ `findTruncationWithoutTitle`）：全库扫描「带 `truncate` 类的真实 `class` 属性、同一开标签内既无 `title` / `:title` 也无 `aria-label` / `:aria-label`」的元素，精确报 `文件:行号`。这类缺陷**编译通过、测试全绿、代码看着正常**，只有真去 hover 才发现 —— 属最该由机器盯住的一类。支持跨行开标签；逃生阀为文件内 `truncate-title-ok` 注释（如父级已有整行 `aria-label` 且文案短到不可能截断）。**非空转验证**：截断但无 title → 报出；补 `:title`/`aria-label` → 通过；注释里提到 `title` → 仍报出（与 ③ 同源的假通过陷阱）；跨行 → 抓到；`truncate-title-ok` → 跳过。
+
 ### Fixed (跨网段中继稳定性)
 - **定向 Gossip 帧到达目标后不再转发**：`handle_gossip` 第 4 步转发前新增 `is_target` 判定——`env.target == 本机` 时只消费不转发。此前目标节点会把自己是目标的定向帧（FriendRequest/FriendAccept 等）再洪泛给其他邻居，邻居又按 target 定向转发回来，形成冗余中转与回环，真机表现为「同网段好友申请一直中转、清掉还冒出来」。
 - **单聊送达确认跨跳（`GossipKind::ChatAck`）**：接收方在 `handle_gossip` 单聊分支持久化后回发定向 Gossip 送达确认（明文 `{"msg_id":...}`，`target`=原始发送方）。此前单聊消息走 Gossip 多跳到达，但 Ack 只走 `try_send` 直连，跨 Tailscale 无直连时送达确认永远到不了发送方，消息状态卡在 `sent` 一直转圈。发送方按 `outbox(msg_id, sender)` 命中才接受，防伪造送达。

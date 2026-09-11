@@ -163,7 +163,7 @@ const levelClass = (lv: string) =>
       </button>
 
       <div class="flex min-w-0 items-baseline gap-2">
-        <span class="truncate text-[15px] font-medium">{{ t("logs.title") }}</span>
+        <span class="truncate text-[15px] font-medium" :title="t('logs.title')">{{ t("logs.title") }}</span>
         <span class="shrink-0 text-xs text-[var(--gosslan-text-2)]">
           {{ t("logs.count", { n: logs.length }) }}
         </span>

@@ -85,11 +85,17 @@ onUnmounted(clearPress);
       ></span>
     </div>
     <div class="min-w-0 flex-1">
-      <div class="truncate text-[13px] leading-5" :class="active ? 'font-medium text-[var(--gosslan-text)]' : 'text-[var(--gosslan-text)]'">
+      <!-- 名字同样会被截断，补 title（读屏有整行 aria-label，但悬停要能看全名）。 -->
+      <div
+        class="truncate text-[13px] leading-5"
+        :class="active ? 'font-medium text-[var(--gosslan-text)]' : 'text-[var(--gosslan-text)]'"
+        :title="friend.nickname"
+      >
         {{ friend.nickname }}
       </div>
       <div
         class="truncate text-xs leading-5 text-[var(--gosslan-text-2)]"
+        :title="friend.online ? t('common.online') : t('common.offline')"
       >
         {{ friend.online ? t("common.online") : t("common.offline") }}
       </div>

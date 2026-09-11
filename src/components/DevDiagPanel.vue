@@ -123,8 +123,8 @@ function fmtTs(ts: number) {
           <div class="max-h-48 overflow-y-auto space-y-0.5 font-mono text-[11px]">
             <div v-for="(ev, i) in diag.recent_events" :key="i" class="flex gap-2">
               <span class="shrink-0 opacity-50 w-20">{{ fmtTs(ev.ts) }}</span>
-              <span class="shrink-0 w-28 truncate" :class="ev.kind.includes('error') ? 'text-[var(--gosslan-danger-ink)]' : ''">{{ ev.kind }}</span>
-              <span class="opacity-70 truncate">{{ ev.detail }}</span>
+              <span class="shrink-0 w-28 truncate" :class="ev.kind.includes('error') ? 'text-[var(--gosslan-danger-ink)]' : ''" :title="ev.kind">{{ ev.kind }}</span>
+              <span class="opacity-70 truncate" :title="ev.detail">{{ ev.detail }}</span>
             </div>
           </div>
         </section>

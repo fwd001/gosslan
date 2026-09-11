@@ -162,6 +162,64 @@ export function checkUnreadBadgeComponent(src: string): GuardIssue[] {
   return out;
 }
 
+// ---------------- ④ 被截断的文本必须有可访问名（title / aria-label） ----------------
+
+/** 从 `class="…"` 的匹配位置取回**整个开标签**。 */
+function enclosingTag(src: string, classIndex: number): string {
+  let start = -1;
+  for (let i = classIndex; i >= 0; i--) {
+    if (src[i] === "<") {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return "";
+  const end = src.indexOf(">", classIndex);
+  return end < 0 ? src.slice(start) : src.slice(start, end + 1);
+}
+
+/**
+ * 检查一份 .vue 源码里"会被 `truncate` 截断、却没有 hover title / aria-label"的元素。
+ *
+ * 为什么要机器盯：`truncate`（`overflow:hidden` + `text-overflow:ellipsis`）在**视觉上**
+ * 把名字/地址/文件名截成「…」，而完整内容只存在于 DOM 里 —— 鼠标悬停拿不到、读屏
+ * 也可能拿不到。这类缺陷**编译通过、测试全绿、代码看着也正常**，只有真去 hover 才发现。
+ *
+ * 判据（收紧到能确定的形态）：
+ *   —— 同一个开标签里有 `truncate` 类，且**没有** `title` / `:title` / `aria-label` /
+ *      `:aria-label`（任一即可）→ 报出。
+ *   —— 逃生阀：文件里带 `truncate-title-ok` 注释则整文件跳过（例如父级已有整行
+ *      `aria-label`、且文本短到不可能截断的场合）。
+ *
+ * ⚠️ 与 ③ 同样的教训：只看**真实 class 属性**，不能用 `src.includes("truncate")` 扫全文 ——
+ * 注释里提到 `truncate` 会让护栏「因为注释而通过」。
+ */
+export function findTruncationWithoutTitle(src: string): GuardIssue[] {
+  if (src.includes("truncate-title-ok")) return [];
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(CLASS_ATTR_RE)) {
+    const classes = m[1].split(/\s+/).filter(Boolean);
+    if (!classes.includes("truncate")) continue;
+    // 全角/半角都要认：`:title` 是 v-bind 简写，`v-bind:title` 是完整写法。
+    const tag = enclosingTag(src, m.index ?? 0);
+    const named =
+      /(?:^|\s)(?::|v-bind:)title\s*=/.test(tag) ||
+      /(?:^|\s)title\s*=/.test(tag) ||
+      /(?:^|\s)(?::|v-bind:)aria-label\s*=/.test(tag) ||
+      /(?:^|\s)aria-label\s*=/.test(tag);
+    if (!named) {
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message:
+          "被 `truncate` 截断的文本没有 `title` / `aria-label` —— 截断后完整内容只能靠悬停或读屏获取，" +
+          "两者都拿不到就等于用户永远看不到全名。加 `:title=\"…\"`（纯图标元素用 `aria-label` 也可）。" +
+          "确属不会截断的短文案，可在文件内加 `truncate-title-ok` 注释整文件跳过。",
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
 // ---------------- ② 媒体查询必须排在 style.css 末尾 ----------------
 
 /** 取某选择器**顶级**定义（行首、无缩进）的最后一次出现位置；找不到返回 -1。 */
