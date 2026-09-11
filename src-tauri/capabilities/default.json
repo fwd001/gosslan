@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口默认能力：窗口控制、通知、对话框、文件系统与打开器",
-  "windows": ["main"],
+  "description": "全部应用窗口（主窗口 + 运行期创建的设置/日志窗口）的能力：窗口控制、事件、通知、对话框与打开器。",
+  "windows": ["main", "settings", "logs"],
   "permissions": [
     "core:default",
     "core:window:allow-set-focus",
@@ -16,19 +16,8 @@
     "core:app:default",
     "core:event:default",
     "notification:default",
-    "dialog:default",
-    "fs:default",
-    "fs:allow-read-file",
-    "fs:allow-write-file",
-    "opener:default",
-    {
-      "identifier": "opener:allow-open-path",
-      "description": "允许用系统默认程序打开本机文件：接收文件固定在 downloads 目录（正/反斜杠 glob 双写覆盖 Windows）；发送方源文件由用户自行选择，位置任意，故保留 ** 兜底。仅授「打开」能力，不含读写删除。",
-      "allow": [
-        { "path": "$APPDATA/downloads/**" },
-        { "path": "$APPDATA\\downloads\\**" },
-        { "path": "**" }
-      ]
-    }
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "opener:default"
   ]
 }

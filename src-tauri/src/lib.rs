@@ -32,6 +32,27 @@ mod macos_window;
 
 use tauri::Manager;
 
+/// 运行时会创建的全部窗口标签。
+///
+/// **为什么要有这份清单**：Tauri 的 capability 是按**窗口标签**匹配的（见 tauri 源码
+/// `webview::mod.rs` 里 `resolve_access(cmd, window.label(), webview.label(), origin)`）。
+/// 运行期新建的窗口如果没有被任何 capability 覆盖，它的 `plugin:*` 与 `core:*` 调用会被
+/// ACL 直接拒绝 —— 而本项目没有 app ACL manifest（`src-tauri/permissions/` 不存在），
+/// 本地来源的**自定义命令不受 ACL 校验**，所以窗口看起来"基本能用"，
+/// 只有选目录（dialog）、开链接（opener）、订阅事件（core:event）这些静默失败，很难发现。
+/// 曾经的真实缺陷：capability 只写了 `["main"]`，于是设置窗口里"选择共享目录"必然失败。
+///
+/// 因此：**新建窗口时必须把标签加进这里**，`capability_covers_every_window_label` 测试
+/// 会拿它去核对 `capabilities/default.json`（改错就红）。
+pub const WINDOW_MAIN: &str = "main";
+/// 独立的「设置」窗口（`open_settings_window`）。
+pub const WINDOW_SETTINGS: &str = "settings";
+/// 独立的「运行日志」窗口（`open_log_window`）。
+pub const WINDOW_LOGS: &str = "logs";
+/// 主窗口在 `tray::MAIN_WINDOW_LABEL` 也有一份（那里是 `#[cfg(desktop)]`），
+/// 测试里断言两者一致，避免漂移。
+pub const WINDOW_LABELS: &[&str] = &[WINDOW_MAIN, WINDOW_SETTINGS, WINDOW_LOGS];
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -246,4 +267,70 @@ pub fn run() {
         #[cfg(not(all(desktop, target_os = "macos")))]
         let _ = (app_handle, event);
     });
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// capability 的 `windows` 模式匹配。Tauri 内部用 glob；本项目只需要支持
+    /// 全匹配 / `前缀*` / `*后缀` 三种写法（够用且不引入新依赖）。
+    fn window_pattern_matches(pattern: &str, label: &str) -> bool {
+        if pattern == "*" {
+            return true;
+        }
+        if let Some(prefix) = pattern.strip_suffix('*') {
+            return label.starts_with(prefix);
+        }
+        if let Some(suffix) = pattern.strip_prefix('*') {
+            return label.ends_with(suffix);
+        }
+        pattern == label
+    }
+
+    /// 匹配器本身不许"永远为真"（否则下面的守卫会变成空转）。
+    #[test]
+    fn window_pattern_matcher_is_not_vacuous() {
+        assert!(window_pattern_matches("main", "main"));
+        assert!(!window_pattern_matches("main", "settings"));
+        assert!(window_pattern_matches("*", "settings"));
+        assert!(window_pattern_matches("set*", "settings"));
+        assert!(window_pattern_matches("*ings", "settings"));
+        assert!(!window_pattern_matches("settings", "settings-extra"));
+    }
+
+    /// 每一个会创建窗口的标签都必须被 capability 覆盖 —— 否则那个窗口的
+    /// `plugin:*` / `core:*` 调用会被 ACL 拒绝（本项目没有 app ACL manifest，
+    /// 自定义命令不校验，所以症状是"设��窗口里选目录/开链接/订阅事件静默失败"）。
+    #[test]
+    fn capability_covers_every_window_label() {
+        let raw = include_str!("../capabilities/default.json");
+        let caps: serde_json::Value =
+            serde_json::from_str(raw).expect("capabilities/default.json 必须是合法 JSON");
+        let patterns: Vec<String> = caps
+            .get("windows")
+            .and_then(|v| v.as_array())
+            .expect("capabilities/default.json 缺少 windows 数组")
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .expect("windows 数组项必须是字符串")
+                    .to_string()
+            })
+            .collect();
+        for label in WINDOW_LABELS {
+            assert!(
+                patterns.iter().any(|p| window_pattern_matches(p, label)),
+                "窗口 `{label}` 没有被任何 capability 覆盖（windows = {patterns:?}）"
+            );
+        }
+    }
+
+    /// 主窗口标签在 `tray` 里还有一份（那份是 `#[cfg(desktop)]`），两边不许漂移。
+    #[cfg(desktop)]
+    #[test]
+    fn main_window_label_matches_tray_constant() {
+        assert_eq!(tray::MAIN_WINDOW_LABEL, WINDOW_MAIN);
+    }
 }

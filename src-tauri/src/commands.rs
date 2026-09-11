@@ -3361,7 +3361,7 @@ pub fn open_log_window(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
-    if let Some(win) = app.get_webview_window("logs") {
+    if let Some(win) = app.get_webview_window(crate::WINDOW_LOGS) {
         let _ = win.show();
         let _ = win.set_focus();
         return Ok(());
@@ -3378,7 +3378,7 @@ pub fn open_log_window(
         tauri::window::Color(237, 241, 246, 255) // #edf1f6
     };
     let title = state.display_name();
-    let win = WebviewWindowBuilder::new(&app, "logs", WebviewUrl::App("index.html".into()))
+    let win = WebviewWindowBuilder::new(&app, crate::WINDOW_LOGS, WebviewUrl::App("index.html".into()))
         .title(&title)
         .inner_size(760.0, 560.0)
         .min_inner_size(420.0, 320.0)
@@ -3405,7 +3405,7 @@ pub fn open_settings_window(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
-    if let Some(win) = app.get_webview_window("settings") {
+    if let Some(win) = app.get_webview_window(crate::WINDOW_SETTINGS) {
         let _ = win.show();
         let _ = win.set_focus();
         return Ok(());
@@ -3425,7 +3425,7 @@ pub fn open_settings_window(
     } else {
         format!("{} · Settings", state.display_name())
     };
-    let win = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html".into()))
+    let win = WebviewWindowBuilder::new(&app, crate::WINDOW_SETTINGS, WebviewUrl::App("index.html".into()))
         .title(&title)
         .inner_size(780.0, 600.0)
         .min_inner_size(560.0, 420.0)
@@ -3444,7 +3444,7 @@ pub fn open_settings_window(
 #[cfg(desktop)]
 #[tauri::command]
 pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("settings") {
+    if let Some(win) = app.get_webview_window(crate::WINDOW_SETTINGS) {
         let _ = win.close();
     }
     Ok(())
@@ -3454,7 +3454,7 @@ pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 #[cfg(desktop)]
 #[tauri::command]
 pub fn close_log_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("logs") {
+    if let Some(win) = app.get_webview_window(crate::WINDOW_LOGS) {
         let _ = win.close();
     }
     Ok(())
