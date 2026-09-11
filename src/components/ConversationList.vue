@@ -5,6 +5,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useConversationSearch } from "@/composables/useConversationSearch";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
+import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import ConversationListItem from "@/components/conversation/ConversationListItem.vue";
 import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
@@ -35,6 +36,8 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 const chat = useChatStore();
+/** 回车打开搜索页之前的输入法守卫（见 composable 注释） */
+const ime = useImeEnterGuard();
 
 // `keyword` 绑输入框（立即），`query` 是延迟镜像：过滤/分组/空态/高亮都用它，
 // 免得连发粘贴时每个字符都重渲染整个列表（见 useConversationSearch 注释）。
@@ -144,7 +147,10 @@ function focusSearch() {
  * 回车：用当前关键词打开「搜索聊天记录」结果页。
  * 关键词为空时不动作（没有可搜的内容，弹一个空结果页只会让人困惑）。
  */
-function onSearchEnter() {
+function onSearchEnter(e: KeyboardEvent) {
+  // ⚠️ 先让输入法走：拼音/日文候选里按回车是"选字"，不是"搜索"
+  // （macOS WKWebView 上 compositionend 先于 keydown，只看 isComposing 会误判）
+  if (ime.isIme(e)) return;
   // 只在「消息」页生效：通讯录页的搜索是为了找人，回车弹"聊天记录"结果页会让人困惑
   if (props.view !== "chats") return;
   const kw = keyword.value.trim();
@@ -329,6 +335,8 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           class="w-full bg-transparent text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)]"
           :placeholder="view === 'chats' ? t('common.search') : t('common.searchContacts')"
           @keydown.enter.prevent="onSearchEnter"
+          @compositionstart="ime.onStart"
+          @compositionend="ime.onEnd"
         />
       </div>
       <div class="relative flex shrink-0 items-center">

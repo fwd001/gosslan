@@ -19,6 +19,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { ChevronRight, Search, X } from "lucide-vue-next";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
+import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import BaseModal from "@/components/BaseModal.vue";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import { highlightText } from "@/utils/highlight";
@@ -43,6 +44,8 @@ const emit = defineEmits<{
 }>();
 
 const app = useAppStore();
+/** 输入法守卫：拼音候选里按回车是选字，不该被当成"重新搜索"（与发送键同一套判定） */
+const ime = useImeEnterGuard();
 
 const keyword = ref("");
 const groups = ref<ChatSearchGroup[]>([]);
@@ -106,6 +109,12 @@ async function runSearch(keepSenderOptions = false) {
   } finally {
     if (mine === seq) searching.value = false;
   }
+}
+
+/** 回车：立即按当前关键词重搜（输入时有 150ms 防抖，回车是"我确定，现在就查"）。 */
+function onEnter(e: KeyboardEvent) {
+  if (ime.isIme(e)) return;
+  void runSearch(senderFilter.value === null);
 }
 
 function searchActive() {
@@ -210,7 +219,9 @@ function showSender(group: ChatSearchGroup): boolean {
           :placeholder="t('search.placeholder')"
           :aria-label="t('search.placeholder')"
           class="w-full bg-transparent text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)]"
-          @keydown.enter.prevent="runSearch(senderFilter === null)"
+          @keydown.enter.prevent="onEnter"
+          @compositionstart="ime.onStart"
+          @compositionend="ime.onEnd"
         />
         <button
           v-if="keyword"
