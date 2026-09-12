@@ -81,3 +81,26 @@ export function shouldRunThrottled(now: number, last: number, minIntervalMs: num
   if (last <= 0) return true;
   return now - last >= minIntervalMs;
 }
+
+/**
+ * 「收到 `settings-changed` 时要不要重新拉取设置？」
+ *
+ * 判据只有两条，都是为了**别用数据库里的旧快照盖掉本地更新的状态**：
+ * ① 本地有未落库的改动（`dirty`）⇒ 本地更新，绝不能重拉；
+ * ② 刚写完的 grace 窗口内 ⇒ 我们这个写入自己的事件正在路上，也没必要重拉。
+ *
+ * 真实缺陷（用户实测"点了主题，立刻选进去了，然后又跳回原来那个"）：
+ * 主题色是去抖写库（连续拖动颜色选择器不能每帧写），
+ * "点一下 → 300ms 后才写库"这段时间里，任何其它命令发出的 `settings-changed`
+ * 都会触发重拉 ⇒ 读到的还是旧主题色 ⇒ 界面当场跳回去。
+ */
+export function shouldResyncFromBackend(
+  dirty: boolean,
+  now: number,
+  lastLocalWriteAt: number,
+  graceMs = 500,
+): boolean {
+  if (dirty) return false;
+  if (lastLocalWriteAt > 0 && now - lastLocalWriteAt < graceMs) return false;
+  return true;
+}

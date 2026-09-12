@@ -4,7 +4,7 @@ import { api } from "@/api";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { applyTheme } from "@/utils/color";
 import { reportError } from "@/utils/errors";
-import { debounce } from "@/utils/defer";
+import { debounce, shouldResyncFromBackend } from "@/utils/defer";
 import {
   APPEARANCE_STORAGE_KEY,
   LEGACY_DARK_STORAGE_KEY,
@@ -267,8 +267,20 @@ export const useAppStore = defineStore("app", () => {
   /** 本窗口最后一次**写设置**的时刻（见 `settings-changed` 的处理）。 */
   let lastLocalWriteAt = 0;
 
+  /**
+   * 本窗口是否有**尚未落库**的设置改动。
+   *
+   * 这是"点了主题又跳回去"的根因所在：主题色是**去抖**写入（连续拖动颜色选择器时不能每帧写库），
+   * 于是"点一下 → 300ms 后才写库"这段时间里，**任何其它命令**发出的 `settings-changed`
+   * （另一个窗口的动作、或本窗口别的写）都会触发重拉 ⇒ 读到的还是**旧**主题色 ⇒ 界面当场跳回去。
+   * 之前用"1.5s 内跳过"当护栏，但那个计时是从**上次写完成**算起的，覆盖不了"还没写"的窗口。
+   * 现在只要有脏数据就不同步：本地状态一定比数据库新。
+   */
+  let settingsDirty = false;
+
   async function persistSettings() {
     lastLocalWriteAt = Date.now();
+    settingsDirty = true;
     try {
       await api.saveSettings({
         themeColor: themeColor.value,
@@ -357,12 +369,19 @@ export const useAppStore = defineStore("app", () => {
     });
   }
 
-  function setThemeColor(c: string) {
+  /**
+   * 改主题色。
+   *
+   * `continuous = true` 表示**连续输入**（拖动颜色选择器），此时去抖写库；
+   * 点色板格子是离散操作，**立即写库** —— 这样"点一下"之后数据库马上就是新值，
+   * 任何并发到来的 `settings-changed` 重拉也读不到旧值（配合 `settingsDirty` 双保险）。
+   */
+  function setThemeColor(c: string, continuous = false) {
     themeColor.value = c;
     localStorage.setItem(THEME_KEY, c);
     applyThemeNow();
-    // 颜色选择器是连续输入（拖动/按住不放），持久化必须去抖；本地即时生效不受影响
-    persistSoon();
+    if (continuous) persistSoon();
+    else void persistSettings();
   }
 
   function setFontFamily(f: string) {
@@ -468,10 +487,9 @@ export const useAppStore = defineStore("app", () => {
 
     // 「另一个窗口改了设置」→ 重新拉取并应用（独立设置窗口 ↔ 主窗口必须同步外观/语言/资料）
     settingsUnlisten = await api.onSettingsChanged(() => {
-      // ⚠️ 自己写的设置会**回灌**一个事件。若刚刚本地改过（1.5s 内），跳过重拉：
-      // 那次写入可能还在去抖里没落库，重拉会把 DB 里**稍旧**的字段读回来，
-      // 把用户刚改的值冲掉 —— 表现就是"点了没反应 / 状态又弹回去"。
-      if (Date.now() - lastLocalWriteAt < 1500) return;
+      // 判据抽成纯函数（`utils/defer.ts`，有单测）：本地有脏数据、或刚写完的 grace 窗口内，
+      // 都**不要**重拉 —— 否则数据库里的旧快照会把刚改的值冲掉（"点了又跳回去"）。
+      if (!shouldResyncFromBackend(settingsDirty, Date.now(), lastLocalWriteAt)) return;
       void resyncFromBackend();
     });
 

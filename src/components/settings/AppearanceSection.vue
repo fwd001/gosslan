@@ -80,7 +80,7 @@ const appearanceOptions: { value: AppearanceMode; label: string }[] = [
           class="tap-safe h-6 w-7 cursor-pointer rounded-[var(--gosslan-radius-xs)] border-0 bg-transparent p-0"
           :title="t('settings.appearance.customColor')"
           :aria-label="t('settings.appearance.customColor.aria')"
-          @input="(e) => app.setThemeColor((e.target as HTMLInputElement).value)"
+          @input="(e) => app.setThemeColor((e.target as HTMLInputElement).value, true)"
         />
       </div>
     </SettingsRow>
