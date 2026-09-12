@@ -96,15 +96,17 @@ const filteredPeers = computed(() => {
 const channels = computed(() => app.channels ?? []);
 const channelBusy = ref<string | null>(null);
 
-async function toggleChannel(ch: ChannelStatus) {
+async function toggleChannel(ch: ChannelStatus, next: boolean) {
   if (channelBusy.value) return;
   channelBusy.value = ch.channel;
   try {
-    await app.setChannelEnabled(ch.channel, !ch.enabled);
+    // 用开关给出的**目标值**，不要用 `!ch.enabled` 自己取反：状态可能是上一轮的快照，
+    // 取反会与用户意图相反（同一个开关在设置页被改过时尤其明显）。
+    await app.setChannelEnabled(ch.channel, next);
   } catch (e) {
     // 打开失败：先申请权限（Android「附近的设备」）再重试一次
     let ok = false;
-    if (!ch.enabled) {
+    if (next) {
       try {
         await api.requestBlePermissions();
         await app.setChannelEnabled(ch.channel, true);
@@ -120,6 +122,19 @@ async function toggleChannel(ch: ChannelStatus) {
     if (app.channels.some((c) => c.enabled)) void scan();
   }
 }
+
+/**
+ * 「为什么什么都没发现」的一句话诊断（用户 2026-09-12 安卓实测：
+ * 打开「添加好友」一片空白，无从判断是通道没开、蓝牙没授权、还是附近真没有设备）。
+ * 只说**已知事实**：通道在不在跑 + 哪条通道可能还有希望，不猜。
+ */
+const emptyReason = computed(() => {
+  const lan = channels.value.find((c) => c.channel === "lan");
+  const bt = channels.value.find((c) => c.channel === "bluetooth");
+  if (!lan?.enabled && !bt?.enabled) return t("friend.add.empty.noChannel");
+  if (bt?.enabled) return t("friend.add.empty.bleScanning");
+  return t("friend.add.empty.lanNoPeer");
+});
 
 async function scan() {
   loading.value = true;
@@ -190,6 +205,9 @@ async function add(peerId: string) {
     <div v-else-if="chat.peers.length === 0" class="py-4">
       <div class="text-center text-sm text-[var(--gosslan-text)]">{{ t("friend.add.noPeers") }}</div>
       <p class="mx-auto mt-1.5 max-w-[42ch] text-center text-xs leading-relaxed text-[var(--gosslan-text-2)]">
+        {{ emptyReason }}
+      </p>
+      <p class="mx-auto mt-1 max-w-[42ch] text-center text-xs leading-relaxed text-[var(--gosslan-text-2)] opacity-70">
         {{ t("friend.add.noPeers.hint") }}
       </p>
 
@@ -206,7 +224,8 @@ async function add(peerId: string) {
             </div>
             <div class="text-xs text-[var(--gosslan-text-2)]">
               {{ ch.available
-                ? (ch.enabled ? t("friend.add.channel.on") : t("friend.add.channel.off"))
+                ? (ch.running ? t("friend.add.channel.running")
+                  : ch.enabled ? t("friend.add.channel.on") : t("friend.add.channel.off"))
                 : t("friend.add.channel.unavailable") }}
             </div>
           </div>
@@ -214,7 +233,7 @@ async function add(peerId: string) {
             :model-value="ch.enabled"
             :disabled="!ch.available || channelBusy === ch.channel"
             :label="ch.channel === 'lan' ? t('friend.add.channel.lan') : t('friend.add.channel.bluetooth')"
-            @update:model-value="toggleChannel(ch)"
+            @update:model-value="(v: boolean) => toggleChannel(ch, v)"
           />
         </div>
       </div>
@@ -255,7 +274,11 @@ async function add(peerId: string) {
           </div>
           <div class="min-w-0 flex-1">
             <div class="truncate text-sm" :title="p.nickname">{{ p.nickname }}</div>
-            <div class="text-xs text-[var(--gosslan-text-2)]">{{ p.ip }}</div>
+            <!-- 蓝牙直连的节点没有 IP（它不是从局域网 announce 学到的，而是双向 Hello
+                 验签后登记的链路，见 `network/ble.rs`）——显示"蓝牙直连"而不是留一行空白 -->
+            <div class="text-xs text-[var(--gosslan-text-2)]">
+              {{ p.ip || t("friend.add.viaBluetooth") }}
+            </div>
           </div>
           <span
             v-if="friendIds.has(p.device_id)"

@@ -452,6 +452,13 @@ export const zhCN: MessageDict = {
   "friend.add.channel.unavailable": "本机不支持（当前版本未启用）",
   "friend.add.channel.on": "已开启",
   "friend.add.channel.off": "已关闭",
+  "friend.add.channel.running": "已开启 · 正在运行",
+  "friend.add.empty.noChannel": "两条通道都是关的：先在下面打开任意一条，再重新扫描。",
+  "friend.add.empty.lanNoPeer":
+    "局域网通道在运行，但附近没有 Gosslan 设备：确认对方开着应用、且和你在同一个 Wi-Fi／同一网段（开了 VPN／访客网络常常互相看不见）。",
+  "friend.add.empty.bleScanning":
+    "蓝牙已在扫描附近设备：刚打开时可能要等几秒才会出现（对方需要也开着应用）。这里会自己刷新，不用反复点扫描。",
+  "friend.add.viaBluetooth": "蓝牙直连",
   "friend.add.rescan": "重新扫描",
   "friend.add.channelFailed": "开启失败：{err}",
   "friend.add.searchPlaceholder": "搜索昵称 / IP / 设备 ID",
@@ -1037,6 +1044,13 @@ export const enUS: MessageDict = {
   "friend.add.channel.unavailable": "Not supported in this build",
   "friend.add.channel.on": "On",
   "friend.add.channel.off": "Off",
+  "friend.add.channel.running": "On · running",
+  "friend.add.empty.noChannel": "Both channels are off — turn one on below, then scan again.",
+  "friend.add.empty.lanNoPeer":
+    "The LAN channel is running but no Gosslan device answered. Check that the other device has the app open and is on the same Wi-Fi / subnet (VPNs and guest networks often hide peers from each other).",
+  "friend.add.empty.bleScanning":
+    "Bluetooth is scanning for nearby devices. It can take a few seconds for the first result (the other device must have the app open). This list refreshes by itself — no need to rescan repeatedly.",
+  "friend.add.viaBluetooth": "Bluetooth link",
   "friend.add.rescan": "Scan again",
   "friend.add.channelFailed": "Could not enable: {err}",
   "friend.add.searchPlaceholder": "Search nickname / IP / device ID",

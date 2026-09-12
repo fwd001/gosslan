@@ -386,6 +386,55 @@ CASES: list[Case] = [
         expect_fail_hint="onFocusChanged",
         tags=["frontend", "window"],
     ),
+    # ---------------- 安卓实测缺陷（2026-09-12）：触屏定位 / 通道同步 / 新的朋友 / 蓝牙默认开 ----------------
+    Case(
+        name="触屏定位（tap-safe 不得压掉组件的 absolute）",
+        why="真实缺陷：安卓端「回到最新」按钮写的是 `tap-safe absolute bottom-4 right-5`，"
+        "而 style.css 在 @tailwind utilities 之后、`.tap-safe{position:relative}` 与 `.absolute` "
+        "特异性相同 ⇒ 触屏设备上按钮掉回文档流、不再贴右下角（桌面 pointer:fine 不复现）",
+        file=ROOT / "src" / "style.css",
+        injections=[(":where(.tap-safe) {", ".tap-safe {")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="pointer: coarse",
+        tags=["frontend", "css", "android"],
+    ),
+    Case(
+        name="通道同步（设置页不得用 app.online 当局域网开关值）",
+        why="用户实测：「添加好友里打开局域网，设置里还是关的」—— 同一个概念有两份前端状态"
+        "（channels[lan].enabled 与 app.online），两处 UI 各读一份就必然不同步",
+        file=ROOT / "src" / "components" / "settings" / "NetworkSection.vue",
+        injections=[(':model-value="!!lanStatus?.enabled"', ':model-value="app.online"')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="app.online",
+        tags=["frontend", "android", "channel"],
+    ),
+    Case(
+        name="移动端「新的朋友」必须切主面板",
+        why="用户实测：安卓端收到好友申请后点「新的朋友」没反应 —— 申请页在右侧主面板里，"
+        "而移动端靠 mobileView 平移切换，不切过去就还停在会话列表上",
+        file=ROOT / "src" / "layouts" / "ResponsiveLayout.vue",
+        injections=[(
+            '  if (app.isMobile) app.mobileView = "chat";\n}\n\n/** 收起「新的朋友」页',
+            "}\n\n/** 收起「新的朋友」页",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="mobileView",
+        tags=["frontend", "android", "nav"],
+    ),
+    Case(
+        name="手机蓝牙默认开启（零配置）",
+        why="用户实测要求：手机上蓝牙通道应默认打开、不用去设置里开（参考 BitChat 进去就能连）。"
+        "默认值依赖目标平台，主机单测只能覆盖桌面那一半，所以用源码规则钉住手机那一半",
+        file=TAURI / "src" / "db.rs",
+        injections=[("let default_on = cfg!(mobile);", "let default_on = false;")],
+        cmd=cargo("test", "--lib", "bt_defaults_on_for_mobile_devices"),
+        cwd=TAURI,
+        expect_fail_hint="cfg!(mobile)",
+        tags=["rust", "android", "channel"],
+    ),
 ]
 
 

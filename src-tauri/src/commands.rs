@@ -451,10 +451,32 @@ pub fn get_interface_candidates() -> Vec<crate::state::InterfaceCandidate> {
 
 // ---------------- 双通道与缓存 ----------------
 
-/// 局域网 / 蓝牙通道状态（设置页开关 + 状态监控）。
+/// 局域网 / 蓝牙通道状态（设置页开关 + 「添加好友」页的就地开关共用这一份）。
+///
+/// ⚠️ 蓝牙的 `running` / `peers` 必须取**真实运行时**（`network::ble`），不能采信
+/// `TransportManager` 里那个占位 `BluetoothTransport`（它的 running 恒 false）——
+/// 否则界面永远显示"未运行"，用户点了开关也看不出变化。
+/// 「enabled」也一律以真实运行为准：起不来就是关（这样界面与用户预期一致，
+/// 也能让他再点一次重试，而不是假装已经打开）。
+///
+/// 返回 `Result` 是 Tauri 的硬性要求（async 命令带 `State<'_>` 引用参数时必须返回 Result），
+/// 前端侧不受影响（`invoke` 拿到的是 `Ok` 里的数组，永远不返回 `Err`）。
 #[tauri::command(async)]
-pub fn get_channel_status(state: State<'_, Arc<AppState>>) -> Vec<ChannelStatus> {
-    TransportManager::new(state.inner().clone()).status()
+pub async fn get_channel_status(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<ChannelStatus>, String> {
+    let s = state.inner().clone();
+    let mut list = TransportManager::new(s.clone()).status();
+    #[cfg(feature = "bluetooth")]
+    let (bt_running, bt_peers) = crate::network::ble::runtime_state(&s).await;
+    #[cfg(not(feature = "bluetooth"))]
+    let (bt_running, bt_peers) = (false, 0usize);
+    if let Some(bt) = list.iter_mut().find(|c| c.channel == "bluetooth") {
+        bt.running = bt_running;
+        bt.peers = bt_peers;
+        bt.enabled = bt_running;
+    }
+    Ok(list)
 }
 
 /// 切换通道开关。局域网复用 `network`；蓝牙后端未编译，开启时返回明确错误。
@@ -496,7 +518,7 @@ pub async fn set_channel_enabled(
                 }
             }
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::set_setting(&dbc, "bt_enabled", if enabled { "1" } else { "0" }).ok();
+            db::set_bt_enabled(&dbc, enabled).ok();
             Ok(())
         }
         _ => Err(format!("未知通道: {channel}")),

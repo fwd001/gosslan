@@ -66,6 +66,24 @@ pub struct BleHandle {
     task: JoinHandle<()>,
 }
 
+/// 蓝牙运行时的**真实**状态：`(是否已启动, 已建立 BLE 链路的对端数)`。
+///
+/// 为什么需要它：`TransportManager::status()` 里那个 `BluetoothTransport` 是"尚未接线"的
+/// 占位实现 —— 它的 `running` 恒为 `false`、`peers` 恒为 `0`。界面直接采信它就会永远显示
+/// "蓝牙未运行"，用户点了开关也看不到任何变化（用户 2026-09-12 安卓实测的
+/// 「蓝牙通道打不开」里，有一部分就是这个假状态造成的误导）。
+pub async fn runtime_state(state: &Arc<AppState>) -> (bool, usize) {
+    let running = state.ble.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    let peers = {
+        let links = state.links.lock().await;
+        links
+            .values()
+            .filter(|ls| ls.iter().any(|l| l.path_kind == PathKind::Bluetooth))
+            .count()
+    };
+    (running, peers)
+}
+
 /// 启动蓝牙通道：探测适配器 → 起扫描循环。已在运行时幂等。
 pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     {

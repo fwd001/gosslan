@@ -372,10 +372,18 @@ button:not(:disabled):active,
    （严格说连垂直也可能与上下相邻元素重叠，所以只给确实独立的小按钮加）。
    用法：给小于 44px 的独立小按钮加 class="tap-safe"。 */
 @media (pointer: coarse) {
-  .tap-safe {
+  /* ⚠️ `:where()` 把特异性压到 **0**：`.tap-safe` 只负责"把命中区扩到 44px"，
+     绝不能覆盖组件自己声明的定位。
+     真实缺陷（用户 2026-09-12 安卓实测）：「回到最新」按钮写的是
+     `tap-safe absolute bottom-4 right-5`，而 `.tap-safe { position: relative }` 与
+     Tailwind 的 `.absolute` 都是**单类选择器**、本文件又在 `@tailwind utilities` **之后**
+     ⇒ 触屏设备上 position 被改成 relative，按钮掉回文档流、不再贴在右下角。
+     桌面 `pointer: fine` 不走这条媒体查询，所以只有安卓/触屏复现。
+     用 `:where()` 之后，任何定位工具类（absolute / fixed / sticky）都能正常生效。 */
+  :where(.tap-safe) {
     position: relative;
   }
-  .tap-safe::after {
+  :where(.tap-safe)::after {
     content: "";
     position: absolute;
     inset: -8px 0;

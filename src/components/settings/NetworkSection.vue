@@ -52,19 +52,30 @@ watch(
   { immediate: true },
 );
 
-/** 局域网开关：与「网卡选择」联动，统一以 selectedIp 为绑定地址。 */
+/**
+ * 局域网开关。
+ *
+ * ⚠️ 与「添加好友」页**必须走同一条路径**（`app.setChannelEnabled`），并且**以通道状态为准**
+ * （`lanStatus.enabled`，来自 `get_channel_status`），不再用 `app.online` 当开关值。
+ * 真实缺陷（用户 2026-09-12 安卓实测）：「添加好友里把局域网打开，设置里还是关的」——
+ * 因为添加好友页改的是 `channels[lan].enabled`（后端真实运行状态），
+ * 而设置页显示的是 `app.online`（另一份快照，没人去刷新它）。
+ * 现在 store 的 `setChannelEnabled` 会同时刷新两者，且两处 UI 都读同一份通道状态。
+ *
+ * 「网卡选择」仍需按 IP 启停（`onInterfaceChange`），因为要指定绑定地址；
+ * 那条路径同样以 `loadChannels()` 收尾，所以两个开关不会各说各话。
+ */
 async function toggleLan() {
-  if (app.online) {
-    await app.stopNetwork();
-    app.toast(t("settings.network.toast.lanOff"), "info");
-  } else {
-    try {
-      await app.startNetwork(selectedIp.value);
-      app.toast(t("settings.network.toast.lanOn"), "success");
-      await chat.refreshPeers();
-    } catch (e) {
-      app.toastError(e, t("settings.network.toast.lanFail"));
-    }
+  const target = !(lanStatus.value?.enabled ?? app.online);
+  try {
+    await app.setChannelEnabled("lan", target);
+    app.toast(
+      target ? t("settings.network.toast.lanOn") : t("settings.network.toast.lanOff"),
+      target ? "success" : "info",
+    );
+    if (target) await chat.refreshPeers();
+  } catch (e) {
+    app.toastError(e, t("settings.network.toast.lanFail"));
   }
   await loadChannels();
 }
@@ -160,7 +171,12 @@ async function removeEndpoint(address: string) {
         <span class="text-xs" :class="app.online ? 'text-[var(--gosslan-success-ink)]' : 'text-[var(--gosslan-text-2)]'">
           {{ app.online ? t("settings.network.lan.peers", { n: lanStatus?.peers ?? 0 }) : t("settings.network.lan.off") }}
         </span>
-        <SettingsToggle :label="t('settings.network.lan')" :model-value="app.online" @update:model-value="toggleLan" />
+        <!-- 开关值取通道状态（唯一真相源），与「添加好友」页同一份 -->
+        <SettingsToggle
+          :label="t('settings.network.lan')"
+          :model-value="!!lanStatus?.enabled"
+          @update:model-value="toggleLan"
+        />
       </div>
     </SettingsRow>
 

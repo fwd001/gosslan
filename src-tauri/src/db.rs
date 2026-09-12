@@ -360,6 +360,30 @@ pub fn set_lan_enabled(conn: &Connection, enabled: bool) -> Result<()> {
     set_setting(conn, "lan_enabled", if enabled { "1" } else { "0" })
 }
 
+/// 蓝牙通道开关偏好。
+///
+/// **移动端默认开启**（用户 2026-09-12 安卓实测要求：「如果测到蓝牙是手机的话，蓝牙通道
+/// 应该是默认打开的，并且不用设置」—— 参考 BitChat：进去就能连，不用配对、不用配置、
+/// 不用先去设置里打开开关）。桌面端维持默认关闭：局域网是有线/同网段的快路径，
+/// 蓝牙是可选的低带宽通道，不该在用户没要求时悄悄开射频。
+/// 键不存在时才套用默认值并**立刻持久化**（与 `get_lan_enabled` 同一套语义：
+/// 之后每次启动读到的是明确的 "0"/"1"，而不是依赖隐式默认）。
+pub fn get_bt_enabled(conn: &Connection) -> bool {
+    match get_setting(conn, "bt_enabled") {
+        Some(v) => v == "1",
+        None => {
+            let default_on = cfg!(mobile);
+            set_bt_enabled(conn, default_on).ok();
+            default_on
+        }
+    }
+}
+
+/// 写入蓝牙通道开关偏好（沿用 settings 表，不引入新的配置存储）。
+pub fn set_bt_enabled(conn: &Connection, enabled: bool) -> Result<()> {
+    set_setting(conn, "bt_enabled", if enabled { "1" } else { "0" })
+}
+
 // ---------------- 好友 ----------------
 
 pub fn add_friend(
@@ -2149,6 +2173,23 @@ mod tests {
         // 恢复默认（清键）→ 回到开
         delete_setting(&conn, "lan_enabled").unwrap();
         assert!(get_lan_enabled(&conn), "恢复默认后回到开");
+    }
+
+    /// 蓝牙开关偏好：显式值必须被尊重（默认值只在"键不存在"时生效）。
+    ///
+    /// ⚠️ 默认值本身依赖目标平台（`cfg!(mobile)` ⇒ 手机默认开、桌面默认关），
+    /// 主机单测只能覆盖"桌面 = 关"这一半；手机那一半由 `bt_default_on_for_mobile`
+    /// 那条源码规则护栏盯着（见 `lib.rs` 的测试模块）。
+    #[test]
+    fn bt_enabled_keeps_explicit_value_and_defaults_off_on_desktop() {
+        let conn = mem();
+        assert!(!get_bt_enabled(&conn), "桌面缺省必须是关");
+        assert_eq!(get_setting(&conn, "bt_enabled").as_deref(), Some("0"));
+
+        set_bt_enabled(&conn, true).unwrap();
+        assert!(get_bt_enabled(&conn), "显式打开必须生效");
+        set_bt_enabled(&conn, false).unwrap();
+        assert!(!get_bt_enabled(&conn), "显式关闭必须生效");
     }
 
     // ================================================================

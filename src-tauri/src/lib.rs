@@ -797,6 +797,58 @@ mod tests {
         assert_eq!(tray::MAIN_WINDOW_LABEL, WINDOW_MAIN);
     }
 
+    /// **手机上的蓝牙通道默认开启、零配置**（用户 2026-09-12 安卓实测要求：
+    /// 「如果测到蓝牙是手机的话，蓝牙通道应该是默认打开的，并且不用设置」——
+    /// 参考 BitChat：进去就能连，不用配对/配置/开关）。桌面维持默认关闭
+    /// （局域网是同网段的快路径，蓝牙是可选的低带宽通道，不该悄悄开射频）。
+    ///
+    /// 默认值依赖目标平台：主机单测只能覆盖"桌面 = 关"那一半
+    /// （见 `db.rs` 的 `bt_enabled_keeps_explicit_value_and_defaults_off_on_desktop`），
+    /// 所以"手机 = 开"这半边用源码规则钉住。
+    #[test]
+    fn bt_defaults_on_for_mobile_devices() {
+        let db = include_str!("db.rs");
+        let body = rust_fn_body(db, "pub fn get_bt_enabled(");
+        assert!(
+            body.contains("cfg!(mobile)"),
+            "移动端缺省必须是**开**（`cfg!(mobile)`），否则手机上又得先去设置里打开一次"
+        );
+        assert!(
+            body.contains("set_bt_enabled(conn, default_on)"),
+            "缺省值必须立刻持久化（与 `get_lan_enabled` 同一套语义：之后读到明确的 0/1）"
+        );
+        assert!(
+            !body.contains("default_on = true"),
+            "不能写死 true —— 那会把桌面端的射频也悄悄打开"
+        );
+        // 读取方必须走这个函数（不能有人再去读裸 setting，否则手机默认值会被绕过）
+        let tm = include_str!("transport/mod.rs");
+        assert!(
+            tm.contains("crate::db::get_bt_enabled(&dbc)"),
+            "`TransportManager::new` 必须用 `db::get_bt_enabled`（缺省值才不会在各处漂移）"
+        );
+    }
+
+    /// 通道状态里的蓝牙必须是**真实运行时**状态。
+    ///
+    /// `TransportManager` 里的 `BluetoothTransport` 是"尚未接线"的占位实现：它的
+    /// `running` 恒为 `false`、`peers` 恒为 0。界面直接采信它就会永远显示"蓝牙未运行"，
+    /// 用户点了开关也看不出变化（用户 2026-09-12 安卓实测「蓝牙通道打不开」里，
+    /// 有一部分就是这个假状态造成的误导）。
+    #[test]
+    fn channel_status_reports_real_bluetooth_runtime() {
+        let commands = include_str!("commands.rs");
+        let body = rust_fn_body(commands, "pub async fn get_channel_status(");
+        assert!(
+            body.contains("runtime_state"),
+            "蓝牙 running/peers 必须取自 `network::ble::runtime_state`"
+        );
+        assert!(
+            body.contains("bt.enabled = bt_running"),
+            "起不来就必须显示为关（否则界面假装已开，用户只会觉得「点了没用」）"
+        );
+    }
+
     /// 取一个顶层函数的函数体（从签名起到第 0 列的 `}` 为止）。
     ///
     /// 用它做"接线守卫"：这类性质（窗口走单例 helper、URL 指向自己的入口）

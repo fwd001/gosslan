@@ -654,5 +654,64 @@ export function checkStyleCascade(css: string): GuardIssue[] {
       }
     }
   }
+
+  // ②-3 触屏命中扩展块里**不得直接声明 `position`**
+  // ------------------------------------------------------------------
+  // 真实缺陷（用户 2026-09-12 安卓实测）：「回到最新」按钮写的是
+  // `tap-safe absolute bottom-4 right-5`，而 `@media (pointer: coarse)` 里的
+  // `.tap-safe { position: relative }` 与本文件位置关系是：本文件在 `@tailwind utilities`
+  // **之后**、两者特异性**相同**（都是单类）⇒ 触屏设备上 position 被改成 relative，
+  // 按钮掉回文档流、不再贴右下角。桌面 `pointer: fine` 不走这条媒体查询，所以只有安卓复现。
+  // 判据：该块内任何声明了 `position:` 的选择器都必须是 `:where(...)`（特异性 0），
+  // 这样组件的 `absolute`/`fixed` 工具类才能正常生效。用 `:where()` 也让这条**面向未来**：
+  // 以后往这个块里加任何"只负责扩大命中区"的类，都不会再压掉别人的定位。
+  out.push(...findOverridingPositionInCoarsePointer(css));
   return out.sort((a, b) => a.line - b.line);
+}
+
+/** `@media (pointer: coarse)` 块内直接声明 `position` 的选择器（`:where()` 包裹的除外）。 */
+function findOverridingPositionInCoarsePointer(css: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  let cursor = 0;
+  while (true) {
+    const at = css.indexOf("@media (pointer: coarse)", cursor);
+    if (at < 0) break;
+    const open = css.indexOf("{", at);
+    if (open < 0) break;
+    // 括号配平找块尾
+    let depth = 0;
+    let end = css.length - 1;
+    for (let i = open; i < css.length; i++) {
+      if (css[i] === "{") depth += 1;
+      else if (css[i] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    // 去掉注释（并且**等长替换成空白**，这样 ruleRe 的下标仍能对回原文行号）：
+    // 否则注释会被当成选择器文本（这个块里的注释恰好写了 `:where()` 与类名）。
+    const body = css
+      .slice(open + 1, end)
+      .replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
+    const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+    let m: RegExpExecArray | null;
+    while ((m = ruleRe.exec(body)) !== null) {
+      const selector = m[1].trim();
+      if (!/(^|;)\s*position\s*:/.test(m[2])) continue;
+      if (selector.startsWith(":where(")) continue; // 特异性 0 ⇒ 压不掉工具类
+      out.push({
+        line: lineAt(css, open + 1 + m.index),
+        message:
+          `@media (pointer: coarse) 里的 \`${selector}\` 直接声明了 position：` +
+          "本文件在 @tailwind utilities 之后且特异性相同，会覆盖组件自己的定位" +
+          "（真实缺陷：安卓端「回到最新」按钮从 absolute 变成 relative）。" +
+          "请写成 `:where(…)` 把特异性压到 0。",
+      });
+    }
+    cursor = end + 1;
+  }
+  return out;
 }

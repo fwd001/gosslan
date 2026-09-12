@@ -108,6 +108,10 @@ const showRequests = ref(false);
 function openRequests() {
   showRequests.value = true;
   profileFriend.value = null;
+  // ⚠️ 移动端：申请页渲染在**右侧主面板**里，而移动端靠 `mobileView` 平移切换面板 ——
+  // 不切过去的话用户还停在会话列表上，表现就是「点了『新的朋友』没反应」
+  // （用户 2026-09-12 安卓实测）。与 `openFriendProfile` / `openSearchHistory` 同一处理。
+  if (app.isMobile) app.mobileView = "chat";
 }
 
 /** 收起「新的朋友」页：有会话在聊时切回「聊天」tab，
@@ -115,6 +119,8 @@ function openRequests() {
 function closeRequests() {
   showRequests.value = false;
   if (chat.activeConv) view.value = "chats";
+  // 移动端返回会话列表（iOS push/pop 语义：申请页是从列表推进去的一层）
+  if (app.isMobile) app.mobileView = "list";
 }
 
 async function acceptRequest(r: PendingRequest) {

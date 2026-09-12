@@ -258,10 +258,29 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
-  /** 开关某条通道；成功后刷新状态。**错误交给调用方**去 toast（各处文案不同）。 */
+  /** 重新拉取"局域网是否在跑 / 绑在哪个 IP"（`online` / `boundIp`）。 */
+  async function refreshNetworkStatus() {
+    try {
+      const st = await api.getNetworkStatus();
+      online.value = st.online;
+      boundIp.value = st.bound_ip;
+    } catch {
+      /* 后端暂不可用：保持现状 */
+    }
+  }
+
+  /**
+   * 开关某条通道。**错误交给调用方**去 toast（各处文案不同）。
+   *
+   * ⚠️ 必须同时刷新 **通道状态** 与 **网络状态**：局域网这一件事有两份前端表示
+   * （`channels[lan].enabled` 来自 `get_channel_status`，`online` 来自 `get_network_status`）。
+   * 只刷新前者的话，「添加好友」页把局域网打开后，**设置页的开关仍然是关的**
+   * —— 用户 2026-09-12 安卓实测报告的"两处不同步"就是这个。
+   * 现在两处 UI 都只认这一条路径（设置页也改用通道状态），所以不可能再各说各话。
+   */
   async function setChannelEnabled(channel: "lan" | "bluetooth", enabled: boolean) {
     await api.setChannelEnabled(channel, enabled);
-    await refreshChannels();
+    await Promise.all([refreshChannels(), refreshNetworkStatus()]);
   }
 
   /** 本窗口最后一次**写设置**的时刻（见 `settings-changed` 的处理）。 */
@@ -506,9 +525,27 @@ export const useAppStore = defineStore("app", () => {
     // 权限弹框该在界面已经画出来之后再出现。
     if (isMobile.value) {
       window.setTimeout(() => {
-        void api.requestBlePermissions().catch(() => {
-          /* 非 Android / 未编译蓝牙：空操作或忽略 */
-        });
+        void (async () => {
+          await api.requestBlePermissions().catch(() => {
+            /* 非 Android / 未编译蓝牙：空操作或忽略 */
+          });
+          // 手机上蓝牙通道**默认开启、零配置**（用户 2026-09-12 实测要求：
+          // 「如果测到蓝牙是手机的话，蓝牙通道应该是默认打开的，并且不用设置」——
+          // 参考 BitChat：进去就能连，不用配对/配置/开关）。
+          // 后端 `get_bt_enabled` 已经让"缺省 = 开"，这里再把**运行时**真正拉起来；
+          // 授权弹框要等用户点，所以失败就退避重试一次，仍失败则交给「添加好友」页
+          // 的就地开关（那里有明确的失败原因与权限指引）。
+          for (let attempt = 0; attempt < 2; attempt++) {
+            if (channels.value.find((c) => c.channel === "bluetooth")?.enabled) return;
+            try {
+              await api.setChannelEnabled("bluetooth", true);
+              await refreshChannels();
+              return;
+            } catch {
+              await new Promise((r) => setTimeout(r, 2500));
+            }
+          }
+        })();
       }, 1500);
     }
 
@@ -668,6 +705,7 @@ export const useAppStore = defineStore("app", () => {
     setShareDir,
     refreshInterfaces,
     refreshEnvironment,
+    refreshNetworkStatus,
     setThemeColor,
     setFontFamily,
     setChatStyle,

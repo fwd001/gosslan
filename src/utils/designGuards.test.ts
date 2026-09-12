@@ -675,6 +675,35 @@ test("文本气泡排版与虚拟列表高度度量一致（leading-* ↔ TEXT_L
   assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
 });
 
+test("触屏命中扩展类直接声明 position → 报出（会盖掉组件的 absolute）", () => {
+  // 复现真实缺陷：安卓端「回到最新」按钮是 `tap-safe absolute bottom-4 right-5`，
+  // 而 .tap-safe{position:relative} 与 .absolute 特异性相同、本文件更靠后 ⇒ 定位被覆盖。
+  const buggy = `
+@tailwind utilities;
+@media (pointer: coarse) {
+  .tap-safe { position: relative; }
+  .tap-safe::after { content: ""; position: absolute; inset: -8px 0; }
+}
+`;
+  const issues = checkStyleCascade(buggy);
+  assert.ok(
+    issues.some((i) => i.message.includes("pointer: coarse")),
+    `应当报出触屏块里的 position 覆盖，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("用 :where() 压到 0 特异性 → 通过", () => {
+  const fixed = `
+@tailwind utilities;
+@media (pointer: coarse) {
+  :where(.tap-safe) { position: relative; }
+  :where(.tap-safe)::after { content: ""; position: absolute; inset: -8px 0; }
+}
+`;
+  const issues = checkStyleCascade(fixed).filter((i) => i.message.includes("pointer: coarse"));
+  assert.deepEqual(issues, [], issues.map((i) => i.message).join("\n"));
+});
+
 test("真实的 src/style.css 级联顺序正确", () => {
   const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8");
   const issues = checkStyleCascade(css);
