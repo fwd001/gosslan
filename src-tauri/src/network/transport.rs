@@ -804,6 +804,36 @@ pub fn forget_pending_request(state: &AppState, peer_id: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(peer_id);
+    // 同一条路径也清掉"我方已发出、等对方确认"的登记：对方既然回执了（同意/拒绝），
+    // 就不该再补发（`flush_pending_friend_request` 只对仍未处理的申请生效）。
+    state
+        .pending_out_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(peer_id);
+}
+
+/// **补发"我方已发出、还未被处理"的好友申请**（建链 / Hello 补全时调用）。
+///
+/// 为什么需要（用户 2026-09-12 真机）：「好友已发送，等待对方确认」，但对方**什么都没收到**
+/// —— 好友申请是**没有回执**的定向帧，链路正好在那一刻抖动（BLE 镜像互拨打断链路）时
+/// 它就静默丢了，而发送方界面依然显示"已发送"。现在发出即登记，这里补发一次；
+/// 收到同意/拒绝（走 `forget_pending_request`）后清除，所以不会无限重发。
+pub async fn flush_pending_friend_request(state: &Arc<AppState>, peer_id: &str) {
+    let pending = state
+        .pending_out_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(peer_id);
+    if !pending {
+        return;
+    }
+    // 复用同一条发送路径（含目标定向 + 重签），失败也不清登记 —— 下次建链再试
+    if crate::commands::send_friend_request_via_link(state, peer_id).await.is_ok() {
+        state
+            .logger
+            .info("friend", format!("补发好友申请 peer={peer_id}（此前链路抖动丢过）"));
+    }
 }
 
 /// 构造带签名的 Hello（nonce 每次新生成，签名覆盖连接身份的全部字段）。
@@ -1576,7 +1606,7 @@ fn generation_is_current(captured: u64, current: u64) -> bool {
 /// 单个 peer 允许并存的最大链路数（防御"同 peer 反复建链"的无界增长）。
 ///
 /// 正常拓扑一个 peer 最多 3 条（LAN + Routed + BLE），取 6 留余量（例如换网瞬间新旧并存）。
-const MAX_LINKS_PER_PEER: usize = 6;
+pub(crate) const MAX_LINKS_PER_PEER: usize = 6;
 
 /// **入站去重判据**（D6-2/D6-3 的核心，纯函数便于钉住）。
 ///
@@ -2018,6 +2048,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             flush_pending_group_keys(state, &device_id).await;
             // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
             crate::commands::flush_pending_group_files(state, &device_id).await;
+            // 好友申请没有回执：建链补全时补发一次（用户真机：链路抖动丢过一次，
+            // 对方什么都没收到，而我方界面显示"已发送"）。
+            flush_pending_friend_request(state, &device_id).await;
         }
         // ---- Phase 8（ADR-0017）：外部 mesh（BitChat）的不透明帧，Gosslan 只当中继 ----
         //

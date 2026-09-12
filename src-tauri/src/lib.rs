@@ -778,6 +778,43 @@ mod tests {
         })
     }
 
+    /// **好友申请必须"发出即登记、建链补发"**（用户真机："已发送"但对方什么都没收到）。
+    ///
+    /// 好友申请是**没有回执**的定向帧：链路正好在那一刻抖动（BLE 镜像互拨打断链路）时
+    /// 它会静默丢失，而发送方界面依然显示「已发送，等待对方确认」。
+    /// 现在：命令**先登记再发**；任何传输建链/Hello 补全时补发一次；
+    /// 收到同意或拒绝（`forget_pending_request`）后清除 —— 所以不会无限重发。
+    #[test]
+    fn friend_request_survives_a_dropped_link() {
+        let commands = include_str!("commands.rs");
+        let i = commands
+            .find("pub async fn send_friend_request(")
+            .expect("send_friend_request 必须在");
+        let body = &commands[i..i + 1200];
+        assert!(
+            body.contains("pending_out_requests"),
+            "命令必须**先登记**再发（丢了才知道要补发）"
+        );
+        assert!(
+            body.contains("send_friend_request_via_link"),
+            "发送逻辑要复用同一个实现（补发走的是同一条路径）"
+        );
+        let transport = include_str!("network/transport.rs");
+        assert!(
+            transport.contains("pub async fn flush_pending_friend_request("),
+            "必须有补发入口"
+        );
+        assert!(
+            transport.contains("flush_pending_friend_request(state, &device_id).await;"),
+            "建链/Hello 补全时必须调用补发（所有传输的建链都会走到那里）"
+        );
+        let forget = rust_fn_body(transport, "pub fn forget_pending_request(");
+        assert!(
+            forget.contains("pending_out_requests"),
+            "收到同意/拒绝后必须清掉登记，否则会一直补发"
+        );
+    }
+
     /// **BLE 链路上必须只有一个"指定拨号方"**（大 id 拨、小 id 只接受）。
     ///
     /// 真实缺陷（用户 2026-09-12 真机："点加好友：发送失败，连接已关闭"）：

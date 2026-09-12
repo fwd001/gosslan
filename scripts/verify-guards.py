@@ -388,6 +388,22 @@ CASES: list[Case] = [
         expect_fail_hint="不得在**平台层**", 
         tags=["rust", "ble"],
     ),
+    # ---------------- Rust：好友申请丢了要能补发 ----------------
+    Case(
+        name="好友申请丢了要能补发（『已发送』但对方没收到）",
+        why="用户 2026-09-12 真机：点加好友后对方什么都没收到，而发送方显示「已发送，等待对方确认」"
+        "—— 好友申请是没有回执的定向帧，链路抖动时会静默丢失。现在发出即登记、建链补发、"
+        "收到同意/拒绝后清除",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "    s.pending_out_requests\n        .lock()\n        .unwrap_or_else(|e| e.into_inner())\n        .insert(peer_id.clone());\n",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "friend_request_survives_a_dropped_link"),
+        cwd=TAURI,
+        expect_fail_hint="先登记",
+        tags=["rust", "friend"],
+    ),
     # ---------------- 前端：非聊天页不得判已读（④） ----------------
     Case(
         name="非聊天页不得判已读（④）",

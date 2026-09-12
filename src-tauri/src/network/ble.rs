@@ -215,16 +215,31 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
                     {
                         continue;
                     }
+                    // 失败退避：刚连不上的候选先别急着再试（指数退避到 10 分钟上限）。
+                    // 为什么必须有：BLE 上"连过去被拒"是常态（镜像链路、对端正忙），
+                    // 而**每一次连接尝试都会打扰对端**；不设冷却就会形成
+                    // "每轮扫描都去打扰一次"的抖动（用户真机日志里 13s 一轮）。
+                    {
+                        let now = crate::db::now_ms();
+                        let skip = ble_dial_backoff(&state, &peripheral.id().to_string(), now);
+                        if skip {
+                            continue;
+                        }
+                    }
                     let st = state.clone();
                     let sd = shutdown.clone();
                     // 每个候选一个任务：连接 + 握手最长 10s，串行会把扫描周期拖垮
                     tokio::spawn(async move {
                         let id = peripheral.id().to_string();
                         match dial_and_register(st.clone(), peripheral, sd).await {
-                            Ok(()) => {}
+                            // 成功 ⇒ 清掉这个候选的失败计数（下次断了还能正常重拨）
+                            Ok(()) => clear_ble_dial_failure(&st, &id),
                             // 连接失败是常态（对方正在忙、走远了、不是 Gosslan 端），
                             // 记 info 不记 warn —— 否则日志会被邻居设备刷满
-                            Err(e) => st.logger.info("ble", format!("候选 {id} 未建立链路：{e}")),
+                            Err(e) => {
+                                note_ble_dial_failure(&st, &id);
+                                st.logger.info("ble", format!("候选 {id} 未建立链路：{e}"));
+                            }
                         }
                     });
                 }
@@ -237,6 +252,47 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
             _ = tokio::time::sleep(SCAN_INTERVAL) => {}
         }
     }
+}
+
+/// BLE 候选失败退避的**纯函数内核**：连续失败 `failures` 次后，要等多久才允许再试。
+///
+/// 指数退避：60s → 120s → 240s → 480s → 600s（上限 10 分钟）。
+/// 为什么起点就不小：每一次尝试都会**打扰对端**（连接会替换它 GATT server 上的旧连接），
+/// 而"连过去被拒"在 BLE 上是常态 —— 宁可让它晚点再试，也不要形成 10s 一轮的抖动。
+fn ble_dial_backoff_ms(failures: u32) -> i64 {
+    const BASE_MS: i64 = 60_000;
+    const MAX_MS: i64 = 600_000;
+    let shift = failures.saturating_sub(1).min(4);
+    (BASE_MS << shift).min(MAX_MS)
+}
+
+/// 该候选现在是否处于退避期（true = 跳过）。
+fn ble_dial_backoff(state: &Arc<AppState>, id: &str, now: i64) -> bool {
+    let map = state
+        .ble_dial_failures
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    map.get(id).is_some_and(|(_, next)| now < *next)
+}
+
+/// 记一次失败（连续失败次数 +1，并按指数退避设下次允许时间）。
+fn note_ble_dial_failure(state: &Arc<AppState>, id: &str) {
+    let mut map = state
+        .ble_dial_failures
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let entry = map.entry(id.to_string()).or_insert((0, 0));
+    entry.0 = entry.0.saturating_add(1);
+    entry.1 = crate::db::now_ms() + ble_dial_backoff_ms(entry.0);
+}
+
+/// 连上了就清掉失败计数（下次断了还能正常重拨）。
+fn clear_ble_dial_failure(state: &Arc<AppState>, id: &str) {
+    state
+        .ble_dial_failures
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(id);
 }
 
 /// **BLE 链路谁拨号**：大 id 拨、小 id 只接受（与 TCP 的 `should_dial` 同一条规则）。
@@ -317,6 +373,9 @@ async fn dial_and_register(
                 "对端 {peer_id} 是这条链路的指定拨号方（id 更大）⇒ 记下不再主动拨它，避免镜像链路互扰"
             ),
         );
+        // 显式断开：只 return 的话这条连接会挂着，继续占着对端 GATT server 的那个连接槽
+        //（对端每次收到我们的新连接都会替换旧连接 ⇒ 正好打断它拨过来的好链路）。
+        let _ = peripheral.disconnect().await;
         return Ok(());
     }
 
@@ -794,15 +853,27 @@ async fn try_accept_handshake(
     // 否则这个 central 会永远撞在 `should_accept_inbound_public` 上、彻底连不进来。
     detach_by_endpoint(state, &ep).await;
 
-    // ---- 3. 与 TCP 入站**同一个**去重判据（不要在这里复制第二份规则）----
+    // ---- 3. 链路数上限仍然要守（防无界增长），但**同路径的镜像链路要放行** ----
+    //
+    // 为什么不能像 TCP 那样"按同路径去重直接拒"（4.2.6 的教训，用户真机日志）：
+    // BLE 上两端都跑 central+peripheral，小 id 那一侧（Mac）会不停来拨我们；
+    // 如果我们**在回 Hello 之前**就拒掉，它就**永远学不到对端 device_id** ⇒
+    // 也就永远进不了它自己的"不要再拨"名单 ⇒ 每 13s 重拨一次，
+    // 而**每次连接都会打断我们拨过去的那条好链路**（Android GATT server 对同一 central
+    // 的新连接会替换旧的）⇒ 好链路 45s 收不到帧被看门狗拆掉 ⇒ 加好友时"连接已关闭"。
+    // 所以：**让它握手成功**，它拿到 device_id 后会自己判"我比你小 ⇒ 该你拨我"并把这条
+    // 镜像链路收掉（`dial_and_register` 里的 `should_dial_ble`）。一次性打扰，换来永久安静。
     let existing = link_snapshot(state, &peer_id).await;
-    if !should_accept_inbound_public(
-        &state.device_id,
-        &peer_id,
-        PathKind::Bluetooth,
-        &existing,
-    ) {
-        return Err("已有蓝牙链路（或该 peer 链路数已满），不重复建链".to_string());
+    if !should_accept_inbound_public(&state.device_id, &peer_id, PathKind::Bluetooth, &existing)
+        && existing.len() >= crate::network::transport::MAX_LINKS_PER_PEER
+    {
+        return Err("该 peer 链路数已满，不重复建链".to_string());
+    }
+    if existing.iter().any(|(_, k, healthy)| *k == PathKind::Bluetooth && *healthy) {
+        state.logger.info(
+            "ble",
+            format!("对端 {peer_id} 已有蓝牙链路，这条是镜像入站 —— 仍然完成握手，好让它自己退让"),
+        );
     }
 
     // ---- 4. 路由先就位，再回 Hello ----

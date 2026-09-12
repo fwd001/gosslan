@@ -600,6 +600,14 @@ pub struct AppState {
     /// 清空时机：蓝牙通道停止时（下次开启重新学一遍）。
     #[cfg(feature = "bluetooth")]
     pub ble_no_dial: Mutex<std::collections::HashSet<String>>,
+    /// BLE 候选的**失败退避**：外设标识 → (连续失败次数, 下次允许尝试的时间)。
+    ///
+    /// 为什么需要：BLE 上"连过去被拒"是常态，而**每次连接尝试都会打扰对端**
+    /// （Android 的 GATT server 对同一 central 的新连接会替换旧连接）。
+    /// 不冷却就会变成"每轮扫描都去打扰一次"的抖动 —— 用户真机日志里正是 13s 一轮、
+    /// 把手机拨过来的那条好链路反复打断。
+    #[cfg(feature = "bluetooth")]
+    pub ble_dial_failures: Mutex<std::collections::HashMap<String, (u32, i64)>>,
     /// 中继授权配置（P2 / M4）：策略 + 白名单。
     ///
     /// 为什么缓存在内存：转发热路径上 gossip 可能每秒几十条，为了一个策略字段去锁
@@ -656,6 +664,15 @@ pub struct AppState {
     /// 时发送会失败，此前被静默丢弃导致成员永久拿不到群密钥。
     /// 此处登记失败项，由建链 / Hello / 心跳的 flush_pending_group_keys 重试。
     pub pending_group_keys: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+
+    /// **已发出、还没被同意/拒绝的好友申请**（peer_id 集合）。
+    ///
+    /// 为什么必须登记（用户 2026-09-12 真机）：「好友已发送，等待对方确认」，但对方
+    /// **什么都没收到** —— 好友申请是一条**没有回执**的定向帧，链路正好在那一刻抖动
+    /// （BLE 镜像互拨把链路打断）时它就**静默丢了**，而发送方界面依然显示"已发送"。
+    /// 现在：发出即登记；对端建链/Hello 补全时重发一次（`flush_pending_friend_request`）；
+    /// 收到同意（`FriendAccept`）或拒绝（`FriendReject`）后清除。
+    pub pending_out_requests: Mutex<std::collections::HashSet<String>>,
 
     /// 会话的「当前链路」快照：conv_id -> LinkState（最近一条消息的链路 + 跳数）。
     /// 收发单聊消息时更新，前端聊天窗口据此显示连接图标（LAN / 桥接 / 蓝牙）。
@@ -892,9 +909,12 @@ impl AppState {
             ble: Mutex::new(None),
             #[cfg(feature = "bluetooth")]
             ble_no_dial: Mutex::new(std::collections::HashSet::new()),
+            #[cfg(feature = "bluetooth")]
+            ble_dial_failures: Mutex::new(std::collections::HashMap::new()),
             dialing: Mutex::new(std::collections::HashSet::new()),
             dial_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)),
             inbound_permits: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_CONNECTIONS)),
+            pending_out_requests: Mutex::new(std::collections::HashSet::new()),
             group_keys: Mutex::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),
             links: tokio::sync::Mutex::new(HashMap::new()),

@@ -1313,28 +1313,23 @@ pub(crate) fn is_actionable_request(
     !friend_ids.contains(&req.from)
 }
 
-#[tauri::command(async)]
-pub async fn send_friend_request(
-    state: State<'_, Arc<AppState>>,
-    peer_id: String,
+/// **把好友申请真正发出去**（构造定向 Gossip 信封 → 直连就精确发、否则洪泛）。
+///
+/// 抽出来的原因：它有两个调用方 —— 用户点「加好友」（命令），以及**建链后补发**
+/// （`flush_pending_friend_request`，用户真机遇到"已发送但对方没收到"之后加的）。
+pub(crate) async fn send_friend_request_via_link(
+    s: &Arc<AppState>,
+    peer_id: &str,
 ) -> Result<(), String> {
-    let s = state.inner();
-    if peer_id.is_empty() || peer_id == s.device_id {
-        return Err("不能向自己发送好友申请".to_string());
-    }
     // 目标必须在 peers 表（announce / Presence 学到），且需有 X25519 公钥才能 E2EE 加密。
     let target_pubkey = {
         let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers.get(&peer_id).and_then(|p| p.x25519_pubkey.clone())
+        peers.get(peer_id).and_then(|p| p.x25519_pubkey.clone())
     };
     let Some(target_pubkey) = target_pubkey else {
         return Err("未找到该节点或缺少其公钥，请先重新扫描".to_string());
     };
-    let nickname = s
-        .nickname
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
+    let nickname = s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let avatar = s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone();
     // E2EE 加密好友申请内容（昵称/头像）；from/to 已在信封 sender_id / target 里。
     let payload =
@@ -1357,15 +1352,34 @@ pub async fn send_friend_request(
         )
     };
     // 定向目标 + 重签（target 参与 signing_bytes）。
-    env.target = Some(peer_id.clone());
+    env.target = Some(peer_id.to_string());
     env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
     // 目标直连 → 只发它（精确）；否则广播，靠中间节点按 target 定向转发（跨跳）。
-    if s.has_link(&peer_id).await {
-        try_send(s, &peer_id, &Message::Gossip { envelope: env }).await?;
+    if s.has_link(peer_id).await {
+        try_send(s, peer_id, &Message::Gossip { envelope: env }).await?;
     } else {
         broadcast_gossip(s, env).await;
     }
     Ok(())
+}
+
+#[tauri::command(async)]
+pub async fn send_friend_request(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+) -> Result<(), String> {
+    let s = state.inner();
+    if peer_id.is_empty() || peer_id == s.device_id {
+        return Err("不能向自己发送好友申请".to_string());
+    }
+    // **先登记再发**：好友申请没有回执，链路抖动时它会静默丢失，而界面照样显示"已发送"
+    //（用户 2026-09-12 真机：对方什么都没收到）。登记后由建链/Hello 补全时重发，
+    // 收到同意/拒绝再清除（见 `forget_pending_request`）。
+    s.pending_out_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(peer_id.clone());
+    send_friend_request_via_link(s, &peer_id).await
 }
 
 /// **同意好友申请**这条路径的**唯一**实现：落库（好友 + 会话 + 公钥）→ 回执（Gossip 定向加密）
