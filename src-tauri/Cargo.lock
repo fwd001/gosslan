@@ -1677,6 +1677,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-window-state",
  "tokio",
+ "url",
  "uuid",
  "x25519-dalek",
 ]

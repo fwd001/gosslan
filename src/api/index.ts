@@ -169,6 +169,15 @@ export const api = {
   /** 桌面端：打开独立日志窗口；移动端不要调用（用页面跳转）。 */
   openLogWindow: () => invoke<void>("open_log_window"),
   closeLogWindow: () => invoke<void>("close_log_window"),
+  /**
+   * 把「文件选择器」给的东西落地成**真实可读的文件路径**。
+   *
+   * Android 的系统选择器返回 `content://` URI（不是路径），Rust 侧的文件发送用 `std::fs`
+   * 打不开它 —— 用户 2026-09-12 实测的「文字能发、附件/图片发不出去」就是这个。
+   * 这个命令在 Android 上把它复制进应用缓存并返回真实路径；桌面端原样返回。
+   */
+  importPickedFile: (path: string, suggestedName?: string) =>
+    invoke<string>("import_picked_file", { path, suggestedName: suggestedName ?? null }),
   openSettingsWindow: () => invoke<void>("open_settings_window"),
   closeSettingsWindow: () => invoke<void>("close_settings_window"),
 };

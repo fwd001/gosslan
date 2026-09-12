@@ -381,7 +381,10 @@ async function attachFile() {
   if (!isGroup.value && !isPeerFriend.value) return;
   const picked = await openDialog({ multiple: false });
   if (typeof picked !== "string") return;
-  await sendOneFile(convId, picked);
+  // ⚠️ 必须先"落地"：Android 的选择器给的是 `content://` URI，直接丢给后端发送必然失败
+  //（`std::fs` 打不开 URI）—— 这个命令在安卓上把它复制进缓存并返回真实路径，桌面端原样返回。
+  const local = await api.importPickedFile(picked);
+  await sendOneFile(convId, local);
 }
 
 // ---------------- 拖拽文件发送 ----------------

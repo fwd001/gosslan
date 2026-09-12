@@ -198,6 +198,7 @@ pub fn run() {
             commands::clean_cache_now,
             commands::get_settings,
             commands::log_frontend_error,
+            commands::import_picked_file,
             commands::request_ble_permissions,
             commands::set_ui_language,
             commands::search_chat_history,

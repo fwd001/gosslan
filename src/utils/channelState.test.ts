@@ -87,3 +87,13 @@ test("移动端「新的朋友」必须切到主面板（否则点了像没反�
   );
   assert.match(close, /if \(app\.isMobile\) app\.mobileView = "list"/, "关闭时返回会话列表");
 });
+
+test("安卓文件选择：选择器的返回值必须先落地成真实路径再发送", () => {
+  const chat = read("components/ChatWindow.vue");
+  assert.match(
+    chat,
+    /const local = await api\.importPickedFile\(picked\);/,
+    "`content://` URI 直接交给后端发送必然失败（std::fs 打不开 URI）—— 必须经 importPickedFile 落地",
+  );
+  assert.match(read("api/index.ts"), /importPickedFile:/, "api 层要暴露这个命令");
+});
