@@ -10,6 +10,49 @@
 
 ## [Unreleased]
 
+## [4.1.13] - 2026-09-12
+
+### Changed / Fixed (① 设置事件带补丁 + 不回发发起窗口：消灭"每个窗口全量重拉"与事件乒乓)
+用户批准的三项窗口架构改造，这是**第①项**（②运行状态单一快照、③窗口架构 ADR 在本条之后）。
+
+**旧实现**：`emit(EVENT_SETTINGS_CHANGED, ())` —— 无载荷、广播给所有窗口。三个后果都真实发生过：
+1. **白拉**：改一次主题，每个窗口都要 `get_settings + get_device_info + get_share_dir` 三连重拉；
+2. **回灌**：发起窗口会收到**自己**的事件，读到的却是写入前的旧快照 ⇒ "点了主题又跳回去"
+   （为此额外养了 `settingsDirty` / grace 窗口一整套守卫）；
+3. **事件乒乓**：重拉路径末尾会 `pushUiLanguage()` → `set_ui_language()`，而那条命令当时**也发**
+   `settings-changed` ⇒ 两个窗口互相触发，形成高频 IPC 环（"界面响应速度高于一切"最怕的东西）。
+
+**现在**（`SettingsPatch`）：
+- 载荷是 `{changed, origin, settings}`：`changed` 说明变了哪些键，`settings` 只带**这些键的新值**
+  ⇒ 接收方**零 IPC** 直接应用（`applySettingsPatch` + `applySettingsSnapshot(..., {partial:true})`）；
+- 后端用 **`emit_filter`** 按窗口标签过滤，**发起窗口收不到**这个事件 ⇒ 回灌与乒乓一起消失；
+- `shouldResyncFromBackend` / `settingsDirty` / `lastLocalWriteAt` **整套删除**（连同它们的单测）——
+  少一套需要长期维护的状态机；
+- `applySettingsSnapshot` 支持 `partial`：缺的键一律**不动**（以前 `preferredIp.value = s.bindIp`
+  会把"选中的网卡"清掉），样式副作用也只在与它相关的键真的变了时才跑；
+- `set_ui_language` **不再发**设置事件（它只负责重建 macOS 菜单栏）—— 这是打断乒乓的关键一刀。
+- 唯一保留的"全量重拉"是 `changed: ["*"]`（「恢复默认」把键整体删掉了，逐键送 patch 容易漏）；
+  资料/目录（`nickname`/`avatar`/`shareDir`）只做一次**定向**补拉。
+
+### Fixed (Mac 4.1.10：清了缓存/目录/聊天记录，主界面毫无反应)
+**根因**：`clear_all_data` **不发任何事件**，而「清除聊天数据」按钮在独立设置窗口里，
+它调的是**那个窗口**的 `chat.clearAllData()` + `refreshFriends()`；主窗口是另一个 WebView，
+手里的会话列表/消息一条都没变 —— 看起来就像"没清掉"。
+**修法**：新增 `data-cleared` 事件（同样不回发发起窗口），主窗口收到后
+`resetAfterDataCleared()`：先清空本地视图（消息/会话/群/待处理申请/传输单），再重拉还在的那些。
+好友**不清**（清数据不等于断交，`clear_all_data` 也不动好友表）。
+
+**护栏**（都已在 `verify-guards.py` 里证明"改坏即 FAIL、恢复即 PASS"）：
+- 设置事件必须 `emit_filter` + 过滤掉发起窗口；载荷必须带 `changed` 与 `settings`；
+- **每个**改设置的后端命令都必须传 `origin`（写成 `None` 就报错）；
+- `clear_all_data` 必须广播 `data-cleared`，且前端必须监听它；
+- `settingsDirty` 那套守卫不得复活（防止有人无意中把回灌问题带回来）；
+- Rust 单测 `settings_patch_carries_only_changed_keys_with_camel_case_names`：键名必须是 camelCase、
+  只带被点名的键、`dark_mode` 要转布尔、通知两项缺省是"开"、资料/目录不进 patch。
+
+门禁：`cargo test --lib` 400/0；`npm test` 345/0；`vue-tsc` 0；`vite build` 通过；
+`verify-guards.py` 新增 3 条用例（+ 既有 36 条用例的注入锚点全部复核为唯一）。
+
 ## [4.1.12] - 2026-09-12
 
 ### Fixed (安卓「打开文件」失败的真因：应用私有文件不能以 `file://` 交给别的应用)

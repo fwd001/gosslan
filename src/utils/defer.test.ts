@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { debounce, shouldResyncFromBackend, shouldRunThrottled } from "./defer.ts";
+import { debounce, shouldRunThrottled } from "./defer.ts";
 
 const srcDir = join(import.meta.dirname, "..");
 
@@ -212,21 +212,4 @@ test("距上次不足间隔就不执行，够间隔才执行", () => {
   assert.equal(shouldRunThrottled(1999, 1000, 1000), false, "差 999ms 仍被节流");
   assert.equal(shouldRunThrottled(2000, 1000, 1000), true, "差 1000ms 放行");
   assert.equal(shouldRunThrottled(9999, 1000, 1000), true, "差得越多越放行");
-});
-
-// ---------------- `shouldResyncFromBackend`（别用旧快照盖掉新状态） ----------------
-
-test("本地有未落库的改动 ⇒ 绝不重拉（这就是「点了又跳回去」的根因）", () => {
-  assert.equal(shouldResyncFromBackend(true, 10_000, 0), false, "脏数据时必须拒绝重拉");
-  assert.equal(shouldResyncFromBackend(true, 10_000, 9_999), false, "刚写完也一样");
-});
-
-test("刚写完的 grace 窗口内不重拉，过去了才允许", () => {
-  assert.equal(shouldResyncFromBackend(false, 1_000, 900, 500), false, "距上次写 100ms：跳过");
-  assert.equal(shouldResyncFromBackend(false, 1_399, 900, 500), false, "距上次写 499ms：仍跳过");
-  assert.equal(shouldResyncFromBackend(false, 1_400, 900, 500), true, "距上次写 500ms：放行");
-});
-
-test("没写过（lastLocalWriteAt = 0）且不脏 ⇒ 应该重拉（首次收到别人改动）", () => {
-  assert.equal(shouldResyncFromBackend(false, 5_000, 0), true);
 });

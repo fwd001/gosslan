@@ -350,6 +350,34 @@ export const useChatStore = defineStore("chat", () => {
     groupReads.value = next;
   }
 
+  /**
+   * 「另一个窗口清空了聊天数据」→ 本窗口先**清空本地视图**，再把"还在的东西"重拉一遍。
+   *
+   * 为什么不能只重拉：会话/群/转移单来自后端（重拉就会变空），但 `messages`、
+   * `rawPendingRequests`、`activeConv` 是**本地态** —— 不清的话主界面仍然挂着
+   * 已被删除的会话内容与已经处理完的申请。用户实测（Mac 4.1.10）：在设置里清了
+   * 「缓存 / 目录 / 聊天记录」，主界面一点反应都没有，看起来像没清掉。
+   *
+   * 好友**不清**：`clear_all_data` 不动好友表（重置数据不等于断交），所以这里同样保留。
+   */
+  async function resetAfterDataCleared() {
+    messages.value = {};
+    conversations.value = [];
+    groups.value = [];
+    groupReads.value = {};
+    rawPendingRequests.value = [];
+    transfers.value = [];
+    activeConv.value = null;
+    pending = [];  // 后台滞留待冲刷的消息批次（`let pending`，见上）
+    await Promise.all([
+      refreshConversations(),
+      refreshGroups(),
+      refreshTransfers(),
+      refreshPending(),
+      refreshFriends(),
+    ]);
+  }
+
   function groupReaderIds(groupId: string, messageTs: number): string[] {
     const myId = app.device?.device_id;
     const members = new Set(groups.value.find((group) => group.id === groupId)?.members ?? []);
@@ -1103,6 +1131,9 @@ export const useChatStore = defineStore("chat", () => {
         // 被移出群：后端已删本地群，前端关闭会话 + 刷新
         void handleSelfRemovedFromGroup(groupId);
       },
+      onDataCleared: () => {
+        void resetAfterDataCleared();
+      },
     });
     // 移动端注册通知动作类别（「标记已读」按钮）。桌面端无此能力（Web Notification 不支持按钮），
     // 命令也不存在，故只对移动端调用。语言切换后按钮文案不随动（原生注册一次），可接受。
@@ -1204,6 +1235,7 @@ export const useChatStore = defineStore("chat", () => {
     refreshPending,
     refreshConversations,
     refreshGroups,
+    resetAfterDataCleared,
     refreshTransfers,
     refreshTopology,
     openConversation,

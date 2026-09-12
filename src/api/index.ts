@@ -8,12 +8,22 @@ export const api = {
   /**
    * 监听"**另一个窗口**改了设置"（外观 / 语言 / 资料 / 目录 / 缓存策略）。
    *
-   * 独立「设置」窗口与主窗口是两个 WebView、各有自己的 store —— 没有这个事件时，
-   * 在设置窗口改语言/主题后主窗口不会变（用户实测反馈）。两个窗口都监听，返回取消函数。
+   * 载荷是 `{changed, origin, settings}`（见 `SettingsPatch`）：
+   * · `settings` 只含**变了的键**的值 ⇒ 接收方零 IPC 直接应用，不必再整份重拉；
+   * · **发起窗口收不到这个事件**（后端 emit_filter 按标签过滤）⇒ 它不需要
+   *   "别被自己的旧快照回灌"那套守卫（原先的 `settingsDirty` 已删）。
    */
-  onSettingsChanged: (cb: () => void) => listen("settings-changed", () => cb()),
+  onSettingsChanged: (cb: (patch: SettingsChanged) => void) =>
+    listen<SettingsChanged>("settings-changed", (e) => cb(e.payload)),
   /** 运行状态（通道/在线/绑定 IP）变化：任何一处开关后，所有窗口/页面重拉同一份状态。 */
   onRuntimeChanged: (cb: () => void) => listen("runtime-changed", () => cb()),
+  /**
+   * 「数据被清空了」（另一个窗口执行了"清除聊天数据"）。
+   *
+   * 真实缺陷（用户 Mac 4.1.10 实测）：在设置里清了聊天记录，**主界面毫无反应** ——
+   * 清除只发生在设置窗口的 store 里，主窗口是另一个 WebView，它的会话列表一条都没变。
+   */
+  onDataCleared: (cb: () => void) => listen("data-cleared", () => cb()),
   getDeviceInfo: () => invoke<DeviceInfo>("get_device_info"),
   updateProfile: (nickname: string, avatar: string | null) =>
     invoke<DeviceInfo>("update_profile", { nickname, avatar }),
@@ -187,6 +197,19 @@ export const api = {
 
 // ---------------- 事件监听 ----------------
 
+/**
+ * `settings-changed` 的载荷（与 Rust 侧 `SettingsPatch` 逐字对应）。
+ *
+ * · `changed`：哪些键变了（camelCase；`"*"` = 全量都变了 ⇒ 做一次完整重拉）
+ * · `origin`：发起窗口的标签（诊断用；发起窗口自己收不到这个事件）
+ * · `settings`：只含变了的键的那一小块快照，可直接交给 `applySettingsSnapshot`
+ */
+export interface SettingsChanged {
+  changed: string[];
+  origin?: string | null;
+  settings?: Partial<AppSettings> | null;
+}
+
 export interface PeerStyleUpdate {
   device_id: string;
   style: string;
@@ -211,6 +234,8 @@ export type EventHandlers = {
   onGroupsUpdated: (groupId: string) => void;
   /** 自己被移出群（group_id） */
   onGroupMemberRemoved: (groupId: string) => void;
+  /** 另一个窗口清空了聊天数据（本窗口必须重建本地视图） */
+  onDataCleared: () => void;
 };
 
 /** 注册所有后端事件监听，返回取消函数集合。 */
@@ -235,6 +260,8 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
     listen<string>("group-member-removed", (e) => h.onGroupMemberRemoved(e.payload)),
+    // 「另一个窗口清了数据」：后端在 clear_all_data 末尾广播（见 state::EVENT_DATA_CLEARED）
+    listen("data-cleared", () => h.onDataCleared()),
   ]);
   return unlisteners;
 }

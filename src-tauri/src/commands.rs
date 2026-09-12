@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -116,6 +117,7 @@ fn avatar_decoded_len(data_url: &str) -> usize {
 #[tauri::command]
 pub async fn update_profile(
     state: State<'_, Arc<AppState>>,
+    window: tauri::WebviewWindow,
     nickname: String,
     avatar: Option<String>,
 ) -> Result<DeviceInfo, String> {
@@ -150,7 +152,10 @@ pub async fn update_profile(
     }
     drop(links);
 
-    state.notify_settings_changed(); // 昵称/头像变更：另一个窗口的资料区要跟着刷新
+    // 昵称/头像变更：另一个窗口的资料区要跟着刷新。
+    // 这两个键不在 `Settings` 形状里（它们是"资料"），所以 patch 里不放值 ——
+    // 接收方看到键名会自己定向重拉一次 device_info（见前端 applySettingsPatch）。
+    state.notify_settings_changed(&["nickname", "avatar"], Some(window.label()), json!({}));
     Ok(DeviceInfo {
         device_id: s.device_id.clone(),
         nickname: s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
@@ -658,6 +663,7 @@ pub fn get_cache_info(state: State<'_, Arc<AppState>>) -> CacheInfo {
 #[tauri::command(async)]
 pub fn set_cache_policy(
     state: State<'_, Arc<AppState>>,
+    window: tauri::WebviewWindow,
     retention_days: Option<u32>,
     max_bytes: Option<u64>,
 ) -> Result<(), String> {
@@ -667,7 +673,11 @@ pub fn set_cache_policy(
     db::set_setting(&dbc, RETENTION_KEY, &d.to_string()).map_err(|e| e.to_string())?;
     let m = max_bytes.unwrap_or(0);
     db::set_setting(&dbc, MAX_BYTES_KEY, &m.to_string()).map_err(|e| e.to_string())?;
-    state.notify_settings_changed();
+    // patch 在**持锁时**读好（见 settings_patch_values 的调用约定），再放锁、再广播
+    let changed = ["retentionDays", "maxBytes"];
+    let patch = settings_patch_values(&dbc, &changed);
+    drop(dbc);
+    state.notify_settings_changed(&changed, Some(window.label()), patch);
     Ok(())
 }
 
@@ -736,6 +746,84 @@ const SETTINGS_KEYS: [&str; 13] = [
     "relay_allowlist",
 ];
 
+/// 把「变了的键」读成前端可以直接应用的一小块快照（键名与 `Settings` 的 camelCase 一致）。
+///
+/// 为什么要有它：`settings-changed` 以前是无载荷事件，接收方只能整份重拉
+/// （`get_settings` + `get_device_info` + `get_share_dir`）。带上这一小块之后，
+/// 另一个窗口**零 IPC** 就能把界面改对 —— 用户要求"界面响应速度高于一切"，
+/// 跨窗口这条路径同样适用。
+///
+/// **调用约定**：请在**持有 db 锁时**调用，把结果交给
+/// `AppState::notify_settings_changed(changed, origin, values)` —— 那里刻意不再自己加锁
+/// （std Mutex 不可重入，否则与持锁调用点死锁）。
+///
+/// 只处理"值能放进 `Settings` 形状里"的键；`nickname`/`avatar`/`shareDir`/`downloadsDir`
+/// 不在 `Settings` 里（它们是资料/目录），前端看到这些键会各自做一次**定向**重拉。
+pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for key in changed {
+        match *key {
+            "themeColor" => {
+                map.insert(key.to_string(), json!(db::get_setting(db, "theme_color")));
+            }
+            "fontFamily" => {
+                map.insert(key.to_string(), json!(db::get_setting(db, "font_family")));
+            }
+            "darkMode" => {
+                map.insert(
+                    key.to_string(),
+                    json!(db::get_setting(db, "dark_mode").map(|v| v == "1")),
+                );
+            }
+            "appearanceMode" => {
+                map.insert(key.to_string(), json!(db::get_setting(db, "appearance_mode")));
+            }
+            // 通知两项的缺省是**开**（与 `get_settings` 同口径），否则"没设置过"会被应用成关闭
+            "notifyEnabled" => {
+                map.insert(
+                    key.to_string(),
+                    json!(db::get_setting(db, "notify_enabled").map(|v| v != "0").unwrap_or(true)),
+                );
+            }
+            "notifyShowContent" => {
+                map.insert(
+                    key.to_string(),
+                    json!(db::get_setting(db, "notify_show_content")
+                        .map(|v| v != "0")
+                        .unwrap_or(true)),
+                );
+            }
+            "language" => {
+                map.insert(key.to_string(), json!(db::get_setting(db, "language")));
+            }
+            "bindIp" => {
+                map.insert(key.to_string(), json!(db::get_setting(db, "bind_ip")));
+            }
+            "chatStyle" => {
+                map.insert(key.to_string(), json!(db::get_setting(db, "chat_style")));
+            }
+            "peerStyles" => {
+                map.insert(key.to_string(), json!(db::get_setting(db, "chat_peer_styles")));
+            }
+            "relayPolicy" => {
+                map.insert(key.to_string(), json!(db::get_setting(db, "relay_policy")));
+            }
+            "relayAllowlist" => {
+                map.insert(key.to_string(), json!(db::get_setting(db, "relay_allowlist")));
+            }
+            "retentionDays" => {
+                map.insert(key.to_string(), json!(db::get_setting(db, RETENTION_KEY)));
+            }
+            "maxBytes" => {
+                map.insert(key.to_string(), json!(db::get_setting(db, MAX_BYTES_KEY)));
+            }
+            // nickname/avatar/shareDir/downloadsDir：不在 `Settings` 形状里，前端定向重拉。
+            _ => {}
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
 /// appearance_mode 的合法取值：脏值一律忽略（宁可回落"跟随系统"，也不要写进库）。
 const APPEARANCE_MODES: [&str; 3] = ["system", "light", "dark"];
 
@@ -763,9 +851,14 @@ pub fn set_ui_language(app: tauri::AppHandle, lang: String) -> Result<(), String
     {
         let _ = (&app, &lang);
     }
-    // 语言是**两个窗口都要立刻生效**的东西（用户实测：设置窗口改语言后主窗口没变）。
-    // 这条命令只拿得到 AppHandle（没有 State），所以直接广播事件 —— 效果一样，都是发给所有窗口。
-    let _ = app.emit(crate::state::EVENT_SETTINGS_CHANGED, ());
+    // ⚠️ 这里**刻意不发** `settings-changed`。
+    //
+    // 以前它发（无载荷、广播），于是形成过一个**事件乒乓**：另一个窗口收到 → 重拉设置 →
+    // `applySettingsSnapshot` 结尾无条件 `pushUiLanguage()` → 又调回这条命令 → 再发一次
+    // ⇒ 两个窗口互相触发，高频 IPC 环（"界面响应速度高于一切"最怕这个）。
+    // 语言变更的**事实来源**是 `save_settings`（前端每次切语言都会调它，patch 里带
+    // language 的值），所以这条命令只负责重建 macOS 原生菜单栏。
+    let _ = &app;
     Ok(())
 }
 
@@ -823,43 +916,59 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
 }
 
 #[tauri::command(async)]
-pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<(), String> {
+pub fn save_settings(
+    state: State<'_, Arc<AppState>>,
+    window: tauri::WebviewWindow,
+    settings: Settings,
+) -> Result<(), String> {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+    // 一边写一边记"哪些键真的被这次调用写了" —— 事件只带这一小块（见 `SettingsPatch`）。
+    let mut changed: Vec<&str> = Vec::new();
     if let Some(v) = settings.theme_color {
         db::set_setting(&dbc, "theme_color", &v).map_err(|e| e.to_string())?;
+        changed.push("themeColor");
     }
     if let Some(v) = settings.font_family {
         db::set_setting(&dbc, "font_family", &v).map_err(|e| e.to_string())?;
+        changed.push("fontFamily");
     }
     if let Some(v) = settings.dark_mode {
         db::set_setting(&dbc, "dark_mode", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
+        changed.push("darkMode");
     }
     if let Some(v) = settings.appearance_mode {
         if APPEARANCE_MODES.contains(&v.as_str()) {
             db::set_setting(&dbc, "appearance_mode", &v).map_err(|e| e.to_string())?;
+            changed.push("appearanceMode");
         }
     }
     if let Some(v) = settings.notify_enabled {
         db::set_setting(&dbc, "notify_enabled", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
+        changed.push("notifyEnabled");
     }
     if let Some(v) = settings.notify_show_content {
         db::set_setting(&dbc, "notify_show_content", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
+        changed.push("notifyShowContent");
     }
     if let Some(v) = settings.language {
         if LANGUAGES.contains(&v.as_str()) {
             db::set_setting(&dbc, "language", &v).map_err(|e| e.to_string())?;
+            changed.push("language");
         }
     }
     if let Some(v) = settings.bind_ip {
         db::set_setting(&dbc, "bind_ip", &v).map_err(|e| e.to_string())?;
+        changed.push("bindIp");
     }
     if let Some(v) = settings.chat_style {
         db::set_setting(&dbc, "chat_style", &v).map_err(|e| e.to_string())?;
+        changed.push("chatStyle");
     }
     // 中继授权：脏值一律忽略（宁可维持现状，也不要写进库让传播语义变得不可预期）
     if let Some(v) = settings.relay_policy.as_deref() {
         if RELAY_POLICIES.contains(&v) {
             db::set_setting(&dbc, "relay_policy", v).map_err(|e| e.to_string())?;
+            changed.push("relayPolicy");
         }
     }
     if let Some(v) = settings.relay_allowlist.as_deref() {
@@ -867,8 +976,12 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
         // 用户会看到"白名单明明填了却不生效"。
         if serde_json::from_str::<Vec<String>>(v).is_ok() {
             db::set_setting(&dbc, "relay_allowlist", v).map_err(|e| e.to_string())?;
+            changed.push("relayAllowlist");
         }
     }
+    // patch 在**持锁时**读好（见 settings_patch_values 的调用约定：那边不再自己加锁，
+    // 否则与这里仍持有的锁死锁）。
+    let patch = settings_patch_values(&dbc, &changed);
     // 回读一遍写进内存缓存（转发路径热读，不能每次去锁 SQLite）。
     // ⚠️ 先放掉 DB 锁再更新缓存：避免与转发路径形成锁顺序纠缠。
     let relay = crate::mesh::relay_policy::RelayConfig::parse(
@@ -877,15 +990,18 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     );
     drop(dbc);
     state.set_relay_policy_config(relay);
-    // 让**另一个窗口**（独立设置窗口 / 主窗口）也立刻应用新外观与文案
-    state.notify_settings_changed();
+    // 只把**变了的键**发给**另一个窗口**（发起窗口自己已经应用过了，不回发）。
+    state.notify_settings_changed(&changed, Some(window.label()), patch);
     Ok(())
 }
 
 /// 恢复默认设置：清除所有用户可配置设置（外观、昵称、头像、网卡、缓存策略等）。
 /// 保留 device_id、x25519_secret、ed25519_secret、好友列表、聊天记录。
 #[tauri::command(async)]
-pub fn reset_settings(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+pub fn reset_settings(
+    state: State<'_, Arc<AppState>>,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     for key in SETTINGS_KEYS.iter().chain([
         &RETENTION_KEY,
@@ -901,7 +1017,9 @@ pub fn reset_settings(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     // 否则用户点了恢复默认、行为却还是旧的限制策略（要重启才生效）。
     drop(dbc);
     state.set_relay_policy_config(crate::mesh::relay_policy::RelayConfig::default());
-    state.notify_settings_changed();
+    // 「恢复默认」把大部分键**删掉**了（不是写成某个值），逐一送 patch 反而容易漏；
+    // 用 `"*"` 明确表示"全量都变了" —— 接收方做一次完整重拉（一次性动作，不心疼）。
+    state.notify_settings_changed(&["*"], Some(window.label()), json!({}));
     Ok(())
 }
 
@@ -3051,7 +3169,11 @@ pub fn get_transfers(state: State<'_, Arc<AppState>>) -> Vec<TransferInfo> {
 // ---------------- 共享目录 ----------------
 
 #[tauri::command(async)]
-pub fn set_share_dir(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
+pub fn set_share_dir(
+    state: State<'_, Arc<AppState>>,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<(), String> {
     if !PathBuf::from(&path).is_dir() {
         return Err("目录不存在".to_string());
     }
@@ -3063,7 +3185,8 @@ pub fn set_share_dir(state: State<'_, Arc<AppState>>, path: String) -> Result<()
         crate::user_dirs::store(&dbc, crate::user_dirs::SHARE, &path)?;
     }
     *s.share_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
-    state.notify_settings_changed();
+    // 目录是"解析后的路径"，不是 `Settings` 里的值 ⇒ patch 不带值，接收方定向重拉一次。
+    state.notify_settings_changed(&["shareDir"], Some(window.label()), json!({}));
     Ok(())
 }
 
@@ -3086,7 +3209,11 @@ pub fn get_downloads_dir(state: State<'_, Arc<AppState>>) -> String {
 
 /// 修改文件接收目录：校验目录存在后持久化，后续新接收的文件落到新目录。
 #[tauri::command(async)]
-pub fn set_downloads_dir(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
+pub fn set_downloads_dir(
+    state: State<'_, Arc<AppState>>,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<(), String> {
     let p = PathBuf::from(&path);
     if !p.is_dir() {
         return Err("目录不存在".to_string());
@@ -3098,7 +3225,7 @@ pub fn set_downloads_dir(state: State<'_, Arc<AppState>>, path: String) -> Resul
         crate::user_dirs::store(&dbc, crate::user_dirs::RECEIVE, &path)?;
     }
     *s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()) = p;
-    state.notify_settings_changed();
+    state.notify_settings_changed(&["downloadsDir"], Some(window.label()), json!({}));
     Ok(())
 }
 
@@ -3470,7 +3597,10 @@ async fn clear_table_batched(s: &Arc<AppState>, table: &str) -> Result<u64, Stri
 }
 
 #[tauri::command]
-pub async fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+pub async fn clear_all_data(
+    state: State<'_, Arc<AppState>>,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
     let s = state.inner();
 
     // 1. SQLite 删除（**分批**，见 `clear_table_batched`）。
@@ -3573,6 +3703,12 @@ pub async fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), Strin
             }
         }
     }
+
+    // 破坏性操作必须**广播**：用户实测（Mac 4.1.10）"在设置里清了缓存、目录和聊天记录，
+    // 但主界面没反应" —— 因为清除只发生在设置窗口自己的 store 里，主窗口是另一个 WebView，
+    // 它手里的会话列表/消息一条都没变（看起来像"没清掉"）。
+    // 注意：即使有文件没删掉，**数据库记录已经清了** ⇒ 也要广播（否则界面同样显示旧数据）。
+    s.notify_data_cleared(Some(window.label()));
 
     if fs_errors.is_empty() {
         Ok(())
@@ -4389,6 +4525,39 @@ mod tests {
         let err = decode_outgoing_image(&url).unwrap_err();
         assert!(err.contains("过大"));
         assert!(err.contains(&MAX_OUTGOING_IMAGE_BYTES.to_string()));
+    }
+
+    /// **设置变更的补丁必须"只带变了的键、且键名与前端 camelCase 一致"**。
+    ///
+    /// 这是 `settings-changed` 从"无载荷 + 全量重拉"改成"带补丁 + 零 IPC"的地基：
+    /// 键名写错（例如 `theme_color` 而不是 `themeColor`）不会报错，只会让另一个窗口
+    /// **静默地不更新**（用户看到的就是"设置里改了、主界面没变"那类幽灵问题）。
+    #[test]
+    fn settings_patch_carries_only_changed_keys_with_camel_case_names() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        crate::db::set_setting(&conn, "theme_color", "#123456").unwrap();
+        crate::db::set_setting(&conn, "language", "en-US").unwrap();
+        crate::db::set_setting(&conn, "dark_mode", "1").unwrap();
+
+        let patch = super::settings_patch_values(&conn, &["themeColor", "language", "darkMode"]);
+        let obj = patch.as_object().expect("补丁必须是 JSON 对象");
+        assert_eq!(obj.len(), 3, "只应包含被点名的键");
+        assert_eq!(obj["themeColor"], serde_json::json!("#123456"));
+        assert_eq!(obj["language"], serde_json::json!("en-US"));
+        assert_eq!(obj["darkMode"], serde_json::json!(true), "dark_mode 要转成布尔");
+        assert!(obj.get("theme_color").is_none(), "键名必须是 camelCase");
+        assert!(obj.get("fontFamily").is_none(), "没变的键不得出现");
+
+        // 通知两项的缺省是"开"（与 get_settings 同口径）：没设置过也必须给 true，
+        // 否则另一个窗口会把"通知已开启"应用成关闭。
+        let patch = super::settings_patch_values(&conn, &["notifyEnabled", "notifyShowContent"]);
+        assert_eq!(patch["notifyEnabled"], serde_json::json!(true));
+        assert_eq!(patch["notifyShowContent"], serde_json::json!(true));
+
+        // 资料/目录不在 Settings 形状里 ⇒ 不放进补丁（接收方看到键名会定向重拉）
+        let patch = super::settings_patch_values(&conn, &["nickname", "avatar", "shareDir"]);
+        assert_eq!(patch.as_object().unwrap().len(), 0);
     }
 
     /// **清空必须是"分批 + 批间放锁"** —— 这是"点清除数据不再卡死"的机制本身。

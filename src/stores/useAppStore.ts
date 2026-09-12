@@ -1,10 +1,10 @@
 import { acceptHMRUpdate, defineStore } from "pinia";
 import { computed, ref } from "vue";
-import { api } from "@/api";
+import { api, type SettingsChanged } from "@/api";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { applyTheme } from "@/utils/color";
 import { reportError } from "@/utils/errors";
-import { debounce, shouldResyncFromBackend } from "@/utils/defer";
+import { debounce } from "@/utils/defer";
 import {
   APPEARANCE_STORAGE_KEY,
   LEGACY_DARK_STORAGE_KEY,
@@ -312,23 +312,13 @@ export const useAppStore = defineStore("app", () => {
     await Promise.all([refreshChannels(), refreshNetworkStatus()]);
   }
 
-  /** 本窗口最后一次**写设置**的时刻（见 `settings-changed` 的处理）。 */
-  let lastLocalWriteAt = 0;
-
   /**
-   * 本窗口是否有**尚未落库**的设置改动。
-   *
-   * 这是"点了主题又跳回去"的根因所在：主题色是**去抖**写入（连续拖动颜色选择器时不能每帧写库），
-   * 于是"点一下 → 300ms 后才写库"这段时间里，**任何其它命令**发出的 `settings-changed`
-   * （另一个窗口的动作、或本窗口别的写）都会触发重拉 ⇒ 读到的还是**旧**主题色 ⇒ 界面当场跳回去。
-   * 之前用"1.5s 内跳过"当护栏，但那个计时是从**上次写完成**算起的，覆盖不了"还没写"的窗口。
-   * 现在只要有脏数据就不同步：本地状态一定比数据库新。
+   * ⚠️ 这里**以前**有一套 `settingsDirty` / `lastLocalWriteAt` / grace 窗口守卫，专门用来
+   * 防"本窗口写完设置后又被自己发出的 `settings-changed` 事件回灌旧快照"（症状：点了主题又跳回去）。
+   * 现在不需要了：后端用 `emit_filter` **不把事件回发给发起窗口**，本窗口永远收不到自己写的那次变更
+   * （见 `state::notify_settings_changed` / `SettingsPatch`）。少一套需要长期维护的状态机。
    */
-  let settingsDirty = false;
-
   async function persistSettings() {
-    lastLocalWriteAt = Date.now();
-    settingsDirty = true;
     try {
       await api.saveSettings({
         themeColor: themeColor.value,
@@ -461,7 +451,15 @@ export const useAppStore = defineStore("app", () => {
    * 抽出来是为了让「启动时应用」与「另一个窗口改了设置后重新应用」走**同一段代码** ——
    * 两处各写一份必然漂移（真实缺陷：在设置窗口改语言/主题，主窗口一点不变）。
    */
-  function applySettingsSnapshot(s: AppSettings) {
+  /**
+   * 应用一份设置快照。
+   *
+   * `partial = true` 表示这是 `settings-changed` 带来的**补丁**：只含变了的键，
+   * 因此**缺的键一律不能动**（不能拿 undefined 去覆盖本地值）。默认 `false` = 完整快照，
+   * 与历史行为逐字一致。
+   */
+  function applySettingsSnapshot(s: AppSettings, opts: { partial?: boolean } = {}) {
+    const has = (k: keyof AppSettings) => !opts.partial || k in s;
     // 防御：快照可能为 null/undefined（IPC 边界、窗口正在销毁、旧 store 实例被调用）。
     // 真实缺陷（用户 2026-09-12 Mac 4.1.5 实测）：设置窗口日志里出现
     // `[前端 rejection] null is not an object (evaluating 'g.themeColor')` ——
@@ -471,10 +469,10 @@ export const useAppStore = defineStore("app", () => {
       if (s.themeColor) themeColor.value = s.themeColor;
       if (s.fontFamily != null) fontFamily.value = s.fontFamily;
       // 外观：优先用「用户意图」(appearanceMode)；旧记录只有布尔 darkMode → 视为一次显式选择。
-      if (isAppearanceMode(s.appearanceMode)) {
+      if (has("appearanceMode") && isAppearanceMode(s.appearanceMode)) {
         appearance.value = s.appearanceMode;
         localStorage.setItem(APPEARANCE_STORAGE_KEY, s.appearanceMode);
-      } else if (s.darkMode != null) {
+      } else if (has("darkMode") && s.darkMode != null) {
         appearance.value = s.darkMode ? "dark" : "light";
         localStorage.setItem(APPEARANCE_STORAGE_KEY, appearance.value);
       }
@@ -482,7 +480,7 @@ export const useAppStore = defineStore("app", () => {
       if (s.notifyEnabled != null) notifyEnabled.value = s.notifyEnabled;
       if (s.notifyShowContent != null) notifyShowContent.value = s.notifyShowContent;
       // 语言（null/脏值 = 默认跟随系统）
-      if (isLanguagePreference(s.language)) applyPreference(s.language);
+      if (has("language") && isLanguagePreference(s.language)) applyPreference(s.language);
       // 中继授权（脏值一律回落默认 all —— 与后端 RelayConfig::parse 同口径）
       if (s.relayPolicy === "off" || s.relayPolicy === "friends" || s.relayPolicy === "allowlist" || s.relayPolicy === "all") {
         relayPolicy.value = s.relayPolicy;
@@ -495,10 +493,17 @@ export const useAppStore = defineStore("app", () => {
           relayAllowlist.value = [];
         }
       }
-      language.value = currentPreference();
-      pushUiLanguage();
-      preferredIp.value = s.bindIp;
-      if (s.chatStyle) chatStyle.value = parsePeerStyle(s.chatStyle);
+      // ⚠️ 只有"这份快照确实带了 language"时才回推原生菜单栏。
+      // 以前无条件调用 ⇒ 每次收到设置事件都会走 `set_ui_language()`，而那条命令当时也会
+      // 再发一次 `settings-changed` ⇒ 两个窗口互相触发，形成高频 IPC 环（事件乒乓）。
+      if (has("language")) {
+        language.value = currentPreference();
+        pushUiLanguage();
+      }
+      // `bindIp` 必须判"键在不在"：局部补丁里没有它时，把 preferredIp 写成 undefined
+      // 会让"选中的网卡"当场消失。
+      if (has("bindIp")) preferredIp.value = s.bindIp;
+      if (has("chatStyle") && s.chatStyle) chatStyle.value = parsePeerStyle(s.chatStyle);
       if (s.peerStyles) {
         try {
           peerStyles.value = JSON.parse(s.peerStyles) as Record<string, string>;
@@ -506,16 +511,20 @@ export const useAppStore = defineStore("app", () => {
           peerStyles.value = {};
         }
       }
-      applyThemeNow();
-      applyDarkNow();
-      applyChatStyleNow();
+      // 副作用（改 CSS 变量 / 类名）只在相关键真的变了时跑：补丁路径下这是常态，
+      // 每次设置事件都全量重刷一遍样式纯属浪费。
+      if (!opts.partial || has("themeColor") || has("fontFamily") || has("darkMode") || has("appearanceMode")) {
+        applyThemeNow();
+        applyDarkNow();
+      }
+      if (!opts.partial || has("chatStyle") || has("peerStyles")) applyChatStyleNow();
   }
 
   /** `settings-changed` 的取消函数（init 可能被调用多次，避免重复绑定）。 */
   let settingsUnlisten: (() => void) | null = null;
   let runtimeUnlisten: (() => void) | null = null;
 
-  /** 「另一个窗口改了设置」→ 重新拉取并应用（两个窗口都监听）。 */
+  /** 「另一个窗口改了设置」→ 完整重拉一次（只用于"恢复默认"这类**全量**变更）。 */
   async function resyncFromBackend() {
     const [st, dev, share] = await Promise.allSettled([
       api.getSettings(),
@@ -525,6 +534,38 @@ export const useAppStore = defineStore("app", () => {
     if (st.status === "fulfilled") applySettingsSnapshot(st.value);
     if (dev.status === "fulfilled") device.value = dev.value;
     if (share.status === "fulfilled") shareDir.value = share.value;
+  }
+
+  /**
+   * 应用「另一个窗口改了设置」的补丁。
+   *
+   * 设计要点（对应 `SettingsPatch`）：
+   * · **默认零 IPC**：`patch.settings` 里已经带了所有能直接应用的键值，
+   *   以前每次事件都要 `get_settings + get_device_info + get_share_dir` 三连拉，现在不再需要；
+   * · **只有"不在 Settings 形状里"的键**才做定向重拉（资料 / 目录，出现频率极低）；
+   * · `changed` 含 `"*"` 表示"恢复默认"（值被整体删掉了，逐键送 patch 容易漏）⇒ 完整重拉一次。
+   */
+  async function applySettingsPatch(patch: SettingsChanged | null | undefined) {
+    if (!patch || !Array.isArray(patch.changed) || patch.changed.length === 0) return;
+    if (patch.changed.includes("*")) {
+      await resyncFromBackend();
+      return;
+    }
+    if (patch.settings) applySettingsSnapshot(patch.settings as AppSettings, { partial: true });
+    if (patch.changed.includes("nickname") || patch.changed.includes("avatar")) {
+      try {
+        device.value = await api.getDeviceInfo();
+      } catch {
+        /* 定向重拉失败不致命：下次任何一次刷新都会纠正 */
+      }
+    }
+    if (patch.changed.includes("shareDir")) {
+      try {
+        shareDir.value = await api.getShareDir();
+      } catch {
+        /* 同上 */
+      }
+    }
   }
 
   async function init() {
@@ -540,11 +581,8 @@ export const useAppStore = defineStore("app", () => {
     applySettingsSnapshot(s);
 
     // 「另一个窗口改了设置」→ 重新拉取并应用（独立设置窗口 ↔ 主窗口必须同步外观/语言/资料）
-    settingsUnlisten = await api.onSettingsChanged(() => {
-      // 判据抽成纯函数（`utils/defer.ts`，有单测）：本地有脏数据、或刚写完的 grace 窗口内，
-      // 都**不要**重拉 —— 否则数据库里的旧快照会把刚改的值冲掉（"点了又跳回去"）。
-      if (!shouldResyncFromBackend(settingsDirty, Date.now(), lastLocalWriteAt)) return;
-      void resyncFromBackend();
+    settingsUnlisten = await api.onSettingsChanged((patch) => {
+      void applySettingsPatch(patch);
     });
 
     // 「运行状态变了」（任何一处开了/关了通道）⇒ 重拉通道状态与在线状态。

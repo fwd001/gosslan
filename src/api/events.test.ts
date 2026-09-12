@@ -116,6 +116,66 @@ test("前端监听的事件必须真的有人发（避免死监听/拼错事件�
   );
 });
 
+test("设置变更必须带补丁 + 不回发给发起窗口（否则每窗口全量重拉 + 事件乒乓）", () => {
+  const state = readFileSync(join(RUST_SRC, "state.rs"), "utf8");
+  // ① 必须是"按窗口过滤"的发送：emit_filter 才能排除发起窗口
+  assert.match(
+    state,
+    /emit_filter\(\s*EVENT_SETTINGS_CHANGED/,
+    "settings-changed 必须用 emit_filter 发送（emit 是无差别广播，会把事件回发给发起窗口）",
+  );
+  assert.match(
+    state,
+    /event_target_label\(target\)\s*!=\s*origin/,
+    "过滤条件必须是『目标窗口 ≠ 发起窗口』（否则发起窗口会被自己的旧快照回灌）",
+  );
+  // ② 载荷必须带"变了哪些键 + 那些键的新值"
+  assert.match(state, /pub struct SettingsPatch/, "必须有带载荷的 SettingsPatch");
+  assert.match(state, /pub changed: Vec<String>/, "载荷必须说明变了哪些键");
+  assert.match(state, /pub settings: serde_json::Value/, "载荷必须带上新值（否则接收方还是要全量重拉）");
+});
+
+test("每个改设置的后端命令都必须传 origin（否则发起窗口收到自己的事件）", () => {
+  const calls: string[] = [];
+  for (const f of collectRustFiles(RUST_SRC)) {
+    const src = readFileSync(f, "utf8");
+    // 只认 `state.notify_settings_changed(...)` 这种真实调用（注释里的 `AppState::…` 不算）
+    for (const m of src.matchAll(/state\.notify_settings_changed\(([^;]*?)\);/gs)) calls.push(m[1]);
+  }
+  assert.ok(calls.length >= 6, `应至少找到 6 个调用点，实际 ${calls.length} —— 解析器失效了？`);
+  const bad = calls.filter((c) => !/Some\(/.test(c));
+  assert.deepEqual(
+    bad,
+    [],
+    `以下调用没传 origin（会把 settings-changed 回发给发起窗口）：${bad.join(" | ")}`,
+  );
+});
+
+test("清空数据必须广播（回归：设置里清了聊天记录，主界面毫无反应）", () => {
+  const src = readFileSync(join(RUST_SRC, "commands.rs"), "utf8");
+  const at = src.indexOf("pub async fn clear_all_data");
+  assert.ok(at > 0, "找不到 clear_all_data");
+  assert.match(
+    src.slice(at),
+    /notify_data_cleared\(/,
+    "clear_all_data 末尾必须广播 data-cleared（否则另一个窗口的主界面不会变）",
+  );
+  assert.ok(
+    frontendListenedEvents().has("data-cleared"),
+    "前端必须监听 data-cleared（主窗口据此重建会话/消息/申请列表）",
+  );
+});
+
+test("settingsDirty 那套回灌守卫不得复活（发起窗口已收不到自己的事件）", () => {
+  const store = readFileSync(join(ROOT, "src", "stores", "useAppStore.ts"), "utf8");
+  // 只认"真的用了"（赋值/调用），注释里提到名字不算 —— 说明为什么删掉的那段注释本身也有价值
+  assert.ok(
+    !/\bsettingsDirty\s*=/.test(store) && !store.includes("shouldResyncFromBackend"),
+    "发起窗口不再收到自己的设置事件 ⇒ settingsDirty/shouldResyncFromBackend 应保持删除状态；" +
+      "若确实要复活，必须先解释为什么 emit_filter 的排除不够用",
+  );
+});
+
 test("设置变更事件两端都在（回归：改语言/主题后另一个窗口不刷新）", () => {
   const emitted = rustEmittedEvents();
   const listened = frontendListenedEvents();

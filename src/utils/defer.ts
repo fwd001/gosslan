@@ -83,24 +83,11 @@ export function shouldRunThrottled(now: number, last: number, minIntervalMs: num
 }
 
 /**
- * 「收到 `settings-changed` 时要不要重新拉取设置？」
+ * ⚠️ 这里**删掉**了 `shouldResyncFromBackend`（"收到设置事件要不要重拉"的守卫）。
  *
- * 判据只有两条，都是为了**别用数据库里的旧快照盖掉本地更新的状态**：
- * ① 本地有未落库的改动（`dirty`）⇒ 本地更新，绝不能重拉；
- * ② 刚写完的 grace 窗口内 ⇒ 我们这个写入自己的事件正在路上，也没必要重拉。
- *
- * 真实缺陷（用户实测"点了主题，立刻选进去了，然后又跳回原来那个"）：
- * 主题色是去抖写库（连续拖动颜色选择器不能每帧写），
- * "点一下 → 300ms 后才写库"这段时间里，任何其它命令发出的 `settings-changed`
- * 都会触发重拉 ⇒ 读到的还是旧主题色 ⇒ 界面当场跳回去。
+ * 它存在的唯一理由是：`settings-changed` 以前无载荷、且会**回发给发起窗口**，
+ * 于是本窗口刚写进去的值会被自己事件触发的重拉用**旧快照**盖掉（症状："点了主题又跳回去"）。
+ * 现在后端 `emit_filter` 按窗口标签过滤、不把事件回发给发起窗口，
+ * 加上事件本身带了"变了哪些键 + 那些键的新值"，这个守卫连同它的状态（`settingsDirty`）
+ * 一起没有了存在意义 —— 少一套需要长期维护的状态机。
  */
-export function shouldResyncFromBackend(
-  dirty: boolean,
-  now: number,
-  lastLocalWriteAt: number,
-  graceMs = 500,
-): boolean {
-  if (dirty) return false;
-  if (lastLocalWriteAt > 0 && now - lastLocalWriteAt < graceMs) return false;
-  return true;
-}

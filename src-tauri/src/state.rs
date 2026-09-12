@@ -47,10 +47,57 @@ fn system_lang_is_zh() -> bool {
 
 /// 「设置已变更」事件名：设置窗口与主窗口靠它同步（见 `notify_settings_changed`）。
 pub const EVENT_SETTINGS_CHANGED: &str = "settings-changed";
+/// 「数据被清空」事件名（清除聊天数据 / 清缓存后的破坏性操作）。
+///
+/// 用户实测（Mac 4.1.10）：在设置里清了缓存、目录和聊天记录，**主界面毫无反应** ——
+/// 因为"清除"只发生在设置窗口自己的 store 里（`ResetSection` 调的是那个窗口的
+/// `chat.clearAllData()` + `refreshFriends()`），主窗口是**另一个 WebView**，
+/// 它手里的会话列表/消息一条都没变。破坏性操作必须广播，否则用户会以为没清掉。
+pub const EVENT_DATA_CLEARED: &str = "data-cleared";
 /// 运行状态（通道/在线/绑定 IP）发生变化 —— 让**所有**窗口与页面立刻刷新同一份状态。
 /// 用户实测「外面把局域网打开、里面还是关的」就是缺这条推送：两处 UI 各自持一份快照，
 /// 谁都不知道对方改了。现在任何一次通道开关都会广播，前端统一重拉（唯一真相源在后端）。
 pub const EVENT_RUNTIME_CHANGED: &str = "runtime-changed";
+
+/// 「设置已变更」的载荷：**带补丁、且不回发给发起窗口**。
+///
+/// 旧实现是 `emit(EVENT_SETTINGS_CHANGED, ())` —— 无载荷、广播给所有人，于是每个窗口
+/// （包括刚写完的那个）都要 `get_settings + get_device_info + get_share_dir` 全量重拉一遍。
+/// 三个后果，用户都实测到了：
+/// 1. **白拉**：改一次主题，两个窗口都重拉三份数据；
+/// 2. **回灌**：发起窗口读到的是**写入前**的旧快照（去抖写入期间尤其明显）——
+///    这正是"点了主题又跳回去"的根因，为此额外养了 `settingsDirty`/grace 一整套守卫；
+/// 3. **事件乒乓**：重拉会走到 `pushUiLanguage()`，它又调 `set_ui_language()`，
+///    后者再发一次 `settings-changed` ⇒ 两个窗口互相触发，形成高频 IPC 环。
+///
+/// 现在：`changed` 说明"哪些键变了"、`settings` 只带**变了的那些键的值**（接收方零 IPC 应用）、
+/// `origin` 说明"谁改的"，而**发起窗口根本收不到**这个事件 ⇒ 上面三条一起消失。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsPatch {
+    /// 变了的键（与 `Settings` 的 camelCase 序列化名一致）。
+    /// 特殊值 `"*"` 表示"全量都变了"（恢复默认）⇒ 接收方做一次完整重拉。
+    pub changed: Vec<String>,
+    /// 发起窗口的标签（诊断用；发起窗口本身不会收到本事件）。
+    pub origin: Option<String>,
+    /// 只含 `changed` 里那些键的一小块快照，直接可被前端 `applySettingsSnapshot` 应用。
+    pub settings: serde_json::Value,
+}
+
+/// 取出事件目标（监听方）的窗口标签。
+///
+/// 前端每个窗口的 `listen()` 在 Tauri 里注册为 `EventTarget::AnyLabel { label }`
+/// （见 tauri 的 `filter_target`），其余变体是 Rust 侧监听时用的 —— 四种都取标签，
+/// 才能保证"发起窗口收不到自己的事件"这件事对两种监听方式都成立。
+fn event_target_label(target: &tauri::EventTarget) -> Option<&str> {
+    match target {
+        tauri::EventTarget::AnyLabel { label }
+        | tauri::EventTarget::Window { label }
+        | tauri::EventTarget::Webview { label }
+        | tauri::EventTarget::WebviewWindow { label } => Some(label.as_str()),
+        _ => None,
+    }
+}
 
 /// 局域网在线节点（Peer Table 条目）
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -912,13 +959,44 @@ impl AppState {
             .any(|l| l.endpoint == *endpoint)
     }
 
-    /// 广播"设置已变更"给**所有窗口**。
+    /// 广播"设置已变更"给**除发起窗口外**的所有窗口（见 [`SettingsPatch`]）。
     ///
-    /// 为什么必须有它：独立「设置」窗口是**另一个 WebView**，它改了主题/语言/气泡样式后，
-    /// 主窗口的 store 并不知道 —— 用户实测"在设置界面设置语言之后，主界面的内容好像没有变化"。
-    /// 所有会改动偏好/资料的命令在写完之后都调它，两个窗口各自重新拉取并应用。
-    pub fn notify_settings_changed(&self) {
-        let _ = self.app.emit(EVENT_SETTINGS_CHANGED, ());
+    /// `changed` 是"哪些键变了"（camelCase），`values` 是这些小键的**当前值**（由调用方在
+    /// **持有 db 锁时**用 [`crate::commands::settings_patch_values`] 读好）—— 刻意不在这里
+    /// 自己加锁：本函数被多个命令在"刚写完库"的位置调用，若内部再锁一次 `db`，
+    /// 与那些仍持有锁的调用点会**直接死锁**（std Mutex 不可重入）。所以锁的边界留在调用方。
+    pub fn notify_settings_changed(
+        &self,
+        changed: &[&str],
+        origin: Option<&str>,
+        values: serde_json::Value,
+    ) {
+        if changed.is_empty() {
+            return;
+        }
+        let patch = SettingsPatch {
+            changed: changed.iter().map(|k| (*k).to_string()).collect(),
+            origin: origin.map(str::to_string),
+            settings: values,
+        };
+        let origin = origin.map(str::to_string);
+        let _ = self
+            .app
+            .emit_filter(EVENT_SETTINGS_CHANGED, patch, move |target| {
+                // 发起窗口已经自己应用过了（而且它手里的值比库里更新）—— 绝不回发。
+                event_target_label(target) != origin.as_deref()
+            });
+    }
+
+    /// 广播"数据被清空了"：**除发起窗口外**的窗口要重建自己的列表（会话/消息/好友申请）。
+    pub fn notify_data_cleared(&self, origin: Option<&str>) {
+        let payload = serde_json::json!({ "origin": origin });
+        let origin = origin.map(str::to_string);
+        let _ = self
+            .app
+            .emit_filter(EVENT_DATA_CLEARED, payload, move |target| {
+                event_target_label(target) != origin.as_deref()
+            });
     }
 
     /// 广播"运行状态（通道/在线/绑定 IP）变了" —— 所有窗口与页面据此重拉同一份后端状态。

@@ -286,13 +286,59 @@ CASES: list[Case] = [
         expect_fail_hint="缺少 `openWith`",
         tags=["rust", "android", "release"],
     ),
+    # ---------------- 前端：设置事件必须"带补丁 + 不回发起窗口" ----------------
+    Case(
+        name="设置事件不得回发给发起窗口（emit_filter vs emit）",
+        why="无载荷广播的话，每个窗口（含刚写完的那个）都要全量重拉三份数据，而且发起窗口会被"
+        "自己的旧快照回灌（『点了主题又跳回去』）。真实事故：重拉还会走到 pushUiLanguage → "
+        "set_ui_language → 再发一次事件，两个窗口形成高频 IPC 环",
+        file=TAURI / "src" / "state.rs",
+        injections=[(
+            "emit_filter(EVENT_SETTINGS_CHANGED, patch, move |target| {",
+            "emit(EVENT_SETTINGS_CHANGED, patch); #[allow(unreachable_code)] let _ = move |target: &tauri::EventTarget| {",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="emit_filter",
+        tags=["frontend", "ipc"],
+    ),
+    Case(
+        name="改设置的后端命令必须传 origin（否则发起窗口收到自己的事件）",
+        why="同上：只要有一个命令把 origin 写成 None，发起窗口就会被自己的事件回灌 —— "
+        "而且它只在『改了设置的那个窗口刚好也在监听』时才现形，很难靠手测发现",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "// 只把**变了的键**发给**另一个窗口**（发起窗口自己已经应用过了，不回发）。\n"
+            "    state.notify_settings_changed(&changed, Some(window.label()), patch);",
+            "// （注入用例：把 origin 写成 None）\n"
+            "    state.notify_settings_changed(&changed, None, patch);",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="没传 origin",
+        tags=["frontend", "ipc"],
+    ),
+    Case(
+        name="清空数据必须广播（否则主界面毫无反应）",
+        why="用户实测（Mac 4.1.10）：在设置里清了缓存、目录和聊天记录，主界面一点变化都没有 —— "
+        "清除只发生在设置窗口自己的 store 里，主窗口是另一个 WebView",
+        file=TAURI / "src" / "commands.rs",
+        injections=[("    s.notify_data_cleared(Some(window.label()));\n", "")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="data-cleared",
+        tags=["frontend", "ipc"],
+    ),
     # ---------------- 前端：IPC 事件契约 ----------------
     Case(
         name="IPC 事件契约（Rust 发的必须有人听）",
         why="真实缺陷：设置窗口改语言/主题后主窗口不刷新 —— 因为根本没有 settings-changed 事件。"
         "同一类还有 group-message-acked 一直没人接",
         file=ROOT / "src" / "api" / "index.ts",
-        injections=[('listen("settings-changed"', 'listen("settings-changed-typo"')],
+        injections=[(
+            'listen<SettingsChanged>("settings-changed"',
+            'listen<SettingsChanged>("settings-changed-typo"',
+        )],
         cmd=npm("test"),
         cwd=ROOT,
         expect_fail_hint="settings-changed",
