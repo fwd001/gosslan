@@ -388,6 +388,22 @@ CASES: list[Case] = [
         expect_fail_hint="不得在**平台层**", 
         tags=["rust", "ble"],
     ),
+    # ---------------- Rust：BLE 端点身份必须忽略大小写 ----------------
+    Case(
+        name="BLE 端点身份忽略大小写（否则每轮扫描都重拨、反复打断好链路）",
+        why="同一台对端在 macOS 外设角色下是大写 UUID、在 btleplug central 下是小写 ⇒ "
+        "去重比较永远不命中 ⇒ 每 13s 重拨一次、每次都替换对端 GATT server 的旧连接 ⇒ "
+        "把对端拨来的好链路打断（用户真机：加好友报连接已关闭 / 对面没反应）",
+        file=TAURI / "src" / "mesh" / "endpoint.rs",
+        injections=[(
+            "        self.address.eq_ignore_ascii_case(&other.address)",
+            "        self.address == other.address",
+        )],
+        cmd=cargo("test", "--lib", "ble_endpoint_equality_ignores_case"),
+        cwd=TAURI,
+        expect_fail_hint="大小写不同的同一地址必须相等",
+        tags=["rust", "ble"],
+    ),
     # ---------------- Rust：好友申请丢了要能补发 ----------------
     Case(
         name="好友申请丢了要能补发（『已发送』但对方没收到）",
