@@ -7,7 +7,12 @@ import { Moon, ScrollText, Sun } from "lucide-vue-next";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { t } from "@/i18n";
 
-defineProps<{ view: "chats" | "contacts" }>();
+defineProps<{
+  view: "chats" | "contacts";
+  /** 正在打开独立窗口时的忙碌态（单飞/防抖状态在 `useWindowLauncher` 里，见该文件）。 */
+  settingsOpening?: boolean;
+  logsOpening?: boolean;
+}>();
 const emit = defineEmits<{
   (e: "update:view", v: "chats" | "contacts"): void;
   (e: "open-settings"): void;
@@ -30,6 +35,8 @@ const initials = computed(() => avatarInitial(app.device?.nickname));
     <div class="relative shrink-0">
       <button
         class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition hover:opacity-90"
+        :class="settingsOpening ? 'opacity-60' : ''"
+        :aria-busy="settingsOpening"
         :style="{ backgroundColor: nameToColor(app.device?.nickname ?? '') }"
         :title="app.online ? t('nav.me.online') : t('nav.me.offline')"
         :aria-label="t('nav.me.openSettings', { status: app.online ? t('nav.me.online') : t('nav.me.offline') })"
@@ -129,6 +136,8 @@ const initials = computed(() => avatarInitial(app.device?.nickname));
       </button>
       <button
         class="flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
+        :class="settingsOpening ? 'opacity-60' : ''"
+        :aria-busy="settingsOpening"
         :title="t('nav.settings')" :aria-label="t('nav.settings')"
         @click="emit('open-settings')"
       >
@@ -139,6 +148,8 @@ const initials = computed(() => avatarInitial(app.device?.nickname));
       </button>
       <button
         class="flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
+        :class="logsOpening ? 'opacity-60' : ''"
+        :aria-busy="logsOpening"
         :title="t('nav.logs')" :aria-label="t('nav.logs')"
         @click="emit('open-logs')"
       >

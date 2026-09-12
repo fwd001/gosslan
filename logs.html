@@ -1,0 +1,37 @@
+<!doctype html>
+<!-- 独立「运行日志」窗口（桌面端，label="logs"）。与设置窗口同理：自己的文档 +
+     自己的入口，只加载日志页需要的代码（不再把聊天三栏挂起来再换掉）。 -->
+<html lang="zh-CN" class="boot-logs" data-title-zh="相闻 · 运行日志" data-title-en="Gosslan · Logs">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Logs</title>
+    <!-- 主题首帧 + 骨架样式：与主窗口共用同一份（见 index.html 的说明与 vite 插件）。 -->
+    <!-- GOSSLAN_THEME_BOOT -->
+    <!-- GOSSLAN_SKELETON_CSS -->
+  </head>
+  <body>
+    <!-- 日志窗口骨架：结构照抄「运行日志」页（顶部工具栏 + 日志列表行）。
+         由 src/entries/logs.ts 在首帧数据到位后撤掉。 -->
+    <div id="boot-logs" aria-hidden="true">
+      <div class="boot-logs-toolbar">
+        <span class="boot-logs-back"></span>
+        <span class="boot-logs-title"></span>
+        <span class="boot-logs-spacer"></span>
+        <span class="boot-logs-chip"></span>
+        <span class="boot-logs-chip"></span>
+        <span class="boot-logs-chip primary"></span>
+      </div>
+      <div class="boot-logs-body">
+        <div class="boot-log-line"><i class="t"></i><i class="lv"></i><i class="msg"></i></div>
+        <div class="boot-log-line"><i class="t"></i><i class="lv warn"></i><i class="msg w70"></i></div>
+        <div class="boot-log-line"><i class="t"></i><i class="lv"></i><i class="msg w50"></i></div>
+        <div class="boot-log-line"><i class="t"></i><i class="lv error"></i><i class="msg w80"></i></div>
+        <div class="boot-log-line"><i class="t"></i><i class="lv"></i><i class="msg w60"></i></div>
+        <div class="boot-log-line"><i class="t"></i><i class="lv warn"></i><i class="msg w40"></i></div>
+      </div>
+    </div>
+    <div id="app"></div>
+    <script type="module" src="/src/entries/logs.ts"></script>
+  </body>
+</html>

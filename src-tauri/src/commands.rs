@@ -3663,10 +3663,89 @@ pub fn clear_logs(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> 
     Ok(())
 }
 
+/// 独立窗口（设置 / 日志）关闭时**隐藏而不是销毁**。
+///
+/// 为什么：`WebviewWindow` 的创建 + 前端加载 + `app.init()` 是"点一下要等很久"的全部成本；
+/// 销毁后每次打开都要重付一遍。改成常驻之后，第二次起是 `show()` —— 用户要的"点一下立马就开"。
+/// 代价是两个窗口的后台内存常驻。要换回"关闭即销毁"，把这里改成 `false` 即可
+/// （`install_hide_on_close` 会跳过 prevent_close，关闭仍走系统默认销毁）。
+#[cfg(desktop)]
+const AUX_WINDOWS_RESIDENT: bool = true;
+
+/// 串行化"创建独立窗口"这一步 —— 并发打开同一个窗口是有真实竞态的。
+///
+/// `WebviewWindowBuilder::build()` 的重复 label 检查在 `prepare_window` 里做
+/// （`tauri/src/manager/window.rs`），而窗口被真正登记进 manager 是在主线程创建**完成之后**；
+/// 两个并发调用会**双双通过检查**，后者还会覆盖 manager 里的记录（留下一个前台看不见、
+/// 也没人管得住的窗口）。用户"连点两下设置"正好会撞上：表现为第二个设置窗口闪一下、
+/// 甚至先显示成主聊天界面（前端还没切到设置页的窗口期）。
+#[cfg(desktop)]
+static AUX_WINDOW_CREATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 已存在就显示并聚焦（`true` = 处理完了，不需要新建）。
+///
+/// 这就是"它已经打开了，我再点一下，还是它，不会开出第二个"：
+/// 命令层与按钮层都不再需要自己去记"开没开过"。
+#[cfg(desktop)]
+fn show_existing_aux_window(app: &tauri::AppHandle, label: &str) -> bool {
+    if let Some(win) = app.get_webview_window(label) {
+        // `unminimize`：窗口被最小化过的话，只 show 不会把它拉回前台。
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        return true;
+    }
+    false
+}
+
+/// 关闭 → 隐藏（配合 [`AUX_WINDOWS_RESIDENT`]），让下一次打开是瞬时的。
+#[cfg(desktop)]
+fn install_hide_on_close(win: &tauri::WebviewWindow) {
+    let w = win.clone();
+    win.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = w.hide();
+        }
+    });
+}
+
+/// 打开（或聚焦）一个独立窗口：**单例 + 串行创建**。
+///
+/// 所有独立窗口都走这里，别在各自的命令里各写一遍 —— 单例与并发安全是"每个窗口都要有"的
+/// 性质，散着写就一定会漏（这正是用户 2026-09-12 报的"连点会出怪事"的来源）。
+#[cfg(desktop)]
+fn ensure_aux_window<F>(app: &tauri::AppHandle, label: &str, build: F) -> Result<(), String>
+where
+    F: FnOnce() -> Result<tauri::WebviewWindow, tauri::Error>,
+{
+    // 快路径：已经建过（包括"上次关掉只是隐藏了"）⇒ 显示 + 聚焦。
+    if show_existing_aux_window(app, label) {
+        return Ok(());
+    }
+    // 慢路径：同一时刻只允许一个创建者。等锁期间别人可能已经建好了 ⇒ 拿到锁后**再查一次**。
+    let _guard = AUX_WINDOW_CREATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if show_existing_aux_window(app, label) {
+        return Ok(());
+    }
+    let win = build().map_err(|e| format!("创建 {label} 窗口失败: {e}"))?;
+    if AUX_WINDOWS_RESIDENT {
+        install_hide_on_close(&win);
+    }
+    let _ = win.show();
+    let _ = win.set_focus();
+    Ok(())
+}
+
 /// 桌面端：打开独立的「运行日志」窗口（已存在则聚焦）。
 ///
-/// 日志窗口加载同一个前端，由前端按窗口 label（`logs`）渲染日志页；窗口用系统标题栏
-/// （含关闭按钮），关闭即销毁，下次打开再重建 —— 与主窗口的「关闭到托盘」互不影响。
+/// 窗口加载 `logs.html`（它自己的文档与入口，见 `src/entries/logs.ts`）—— 只加载日志页
+/// 需要的代码，不会把聊天界面挂起来再换掉。窗口用系统标题栏（含关闭按钮）；关闭默认
+/// **隐藏**而非销毁（见 [`AUX_WINDOWS_RESIDENT`]），所以再次打开是瞬时的。
+/// 窗口标题由 `logs.html` 的 `data-title-*` + 前端按语言设置 `document.title`
+/// （Tauri 会把 document title 同步到窗口标题），Rust 侧不再维护第二份标题文案。
 #[cfg(desktop)]
 #[tauri::command(async)]
 pub fn open_log_window(
@@ -3674,35 +3753,28 @@ pub fn open_log_window(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
-    if let Some(win) = app.get_webview_window(crate::WINDOW_LOGS) {
-        let _ = win.show();
-        let _ = win.set_focus();
-        return Ok(());
-    }
-    // 背景色跟随主题：暗色主题下打开日志窗口「闪一下白」（与主窗口冷启动白闪同源，
-    // 窗口静态背景色只能浅/深二选一，这里用当前解析结果先设对底色）。
-    let dark = {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_setting(&dbc, "dark_mode").map(|v| v == "1").unwrap_or(false)
-    };
-    let bg = if dark {
-        tauri::window::Color(11, 18, 32, 255) // #0b1220
-    } else {
-        tauri::window::Color(237, 241, 246, 255) // #edf1f6
-    };
+    let bg = aux_window_background(&state);
+    // 初始标题：文档标题（`logs.html` 的 data-title-* + 前端按语言）加载完成后会被 Tauri
+    // 自动同步过去，所以这里只需要一个"还没加载完时不至于空着"的占位。
     let title = state.display_name();
-    let win = WebviewWindowBuilder::new(&app, crate::WINDOW_LOGS, WebviewUrl::App("index.html".into()))
-        .title(&title)
+    // 克隆一份给闭包：`ensure_aux_window` 同时借用 `app` 做存在性检查，
+    // 闭包再 move 走同一个 handle 会借不过（且闭包必须 `'static` 才能交给 Tauri 创建）。
+    let build_app = app.clone();
+    ensure_aux_window(&app, crate::WINDOW_LOGS, move || {
+        WebviewWindowBuilder::new(
+            &build_app,
+            crate::WINDOW_LOGS,
+            WebviewUrl::App("logs.html".into()),
+        )
+        .title(title)
         .inner_size(760.0, 560.0)
         .min_inner_size(420.0, 320.0)
-        // 注入窗口标识：index.html 内联骨架据此渲染「日志页骨架」而非「聊天三栏骨架」。
-        .initialization_script("window.__GOSSLAN_WINDOW__ = 'logs';")
+        // 背景色跟随主题：窗口的静态背景色只能是浅/深之一，暗色主题下不先设对就会"闪一下白"
+        // （与主窗口冷启动白闪同源）。放在 builder 上（而不是 build 之后再 set），
+        // 少一帧错色。
+        .background_color(bg)
         .build()
-        .map_err(|e| format!("创建日志窗口失败: {e}"))?;
-    let _ = win.set_background_color(Some(bg));
-    let _ = win.show();
-    let _ = win.set_focus();
-    Ok(())
+    })
 }
 
 /// 移动端桩：移动端的日志是**整页**（`LogViewer` 的全屏分支），没有独立窗口。
@@ -3715,10 +3787,9 @@ pub fn open_log_window(_app: tauri::AppHandle) -> Result<(), String> {
 
 /// 桌面端：打开独立的「设置」窗口（已存在则聚焦）。
 ///
-/// 与日志窗口同一范式：加载同一个前端，由前端按窗口 label（`settings`）渲染设置页。
-/// 用户 2026-09-12 反馈：「PC 端的设置页面可以按照这种布局，弹一个单独的窗口」——
-/// 参考图是「左侧窄导航 + 右侧内容」的设置窗口，而不是盖在聊天上的居中弹窗。
-/// 窗口用系统标题栏（含关闭按钮），关闭即销毁，下次打开再重建。
+/// 与日志窗口同一范式（同一个 [`ensure_aux_window`]）：加载 `settings.html`（自己的入口），
+/// 由前端按窗口自己的文档渲染设置页。用户 2026-09-12 反馈：「PC 端的设置页面可以按照这种
+/// 布局，弹一个单独的窗口」——参考图是「左侧窄导航 + 右侧内容」的设置窗口，不是盖在聊天上的弹窗。
 #[cfg(desktop)]
 #[tauri::command(async)]
 pub fn open_settings_window(
@@ -3726,39 +3797,35 @@ pub fn open_settings_window(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
-    if let Some(win) = app.get_webview_window(crate::WINDOW_SETTINGS) {
-        let _ = win.show();
-        let _ = win.set_focus();
-        return Ok(());
-    }
-    // 背景色跟随主题：与日志窗口同源（暗色下打开时"闪一下白"的根因见 open_log_window）。
+    let bg = aux_window_background(&state);
+    let title = state.display_name(); // 同 open_log_window：占位标题，文档加载后被接管
+    let build_app = app.clone(); // 同 open_log_window：闭包要 `'static`，不能再借 `app`
+    ensure_aux_window(&app, crate::WINDOW_SETTINGS, move || {
+        WebviewWindowBuilder::new(
+            &build_app,
+            crate::WINDOW_SETTINGS,
+            WebviewUrl::App("settings.html".into()),
+        )
+        .title(title)
+        .inner_size(780.0, 600.0)
+        .min_inner_size(560.0, 420.0)
+        .background_color(bg)
+        .build()
+    })
+}
+
+/// 独立窗口的初始背景色：跟随当前亮暗主题（暗色下打开时不"闪一下白"）。
+#[cfg(desktop)]
+fn aux_window_background(state: &tauri::State<'_, Arc<AppState>>) -> tauri::window::Color {
     let dark = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_setting(&dbc, "dark_mode").map(|v| v == "1").unwrap_or(false)
     };
-    let bg = if dark {
+    if dark {
         tauri::window::Color(11, 18, 32, 255) // #0b1220
     } else {
         tauri::window::Color(237, 241, 246, 255) // #edf1f6
-    };
-    let title = if state.is_zh() {
-        format!("{} · 设置", state.display_name())
-    } else {
-        format!("{} · Settings", state.display_name())
-    };
-    let win = WebviewWindowBuilder::new(&app, crate::WINDOW_SETTINGS, WebviewUrl::App("index.html".into()))
-        .title(&title)
-        .inner_size(780.0, 600.0)
-        .min_inner_size(560.0, 420.0)
-        // 注入窗口标识：index.html 内联骨架据此渲染「设置页骨架」，
-        // 而不是聊天三栏骨架或日志骨架。
-        .initialization_script("window.__GOSSLAN_WINDOW__ = 'settings';")
-        .build()
-        .map_err(|e| format!("创建设置窗口失败: {e}"))?;
-    let _ = win.set_background_color(Some(bg));
-    let _ = win.show();
-    let _ = win.set_focus();
-    Ok(())
+    }
 }
 
 /// 移动端桩：独立的设置窗口是**桌面**概念（`decorations:false` 自绘标题栏 + 多窗口），
@@ -3775,6 +3842,10 @@ pub fn open_settings_window(_app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// 桌面端：关闭独立的「设置」窗口。
+///
+/// 常驻模式下 `close()` 会被 `install_hide_on_close` 拦成"隐藏"（与系统标题栏的 × 同一条路），
+/// 这样设置窗口的状态在下一次打开时还在、打开也是瞬时的；真要销毁，把
+/// [`AUX_WINDOWS_RESIDENT`] 改成 `false` 即可，这里不用动。
 #[cfg(desktop)]
 #[tauri::command]
 pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), String> {
@@ -3792,7 +3863,7 @@ pub fn close_settings_window(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 桌面端：关闭独立的「运行日志」窗口。
+/// 桌面端：关闭独立的「运行日志」窗口（常驻模式下同样是"隐藏"，见 `close_settings_window`）。
 #[cfg(desktop)]
 #[tauri::command]
 pub fn close_log_window(app: tauri::AppHandle) -> Result<(), String> {

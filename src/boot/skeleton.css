@@ -1,0 +1,472 @@
+      /* ===================================================================
+         首屏骨架的内联关键样式。
+         为什么内联：src/style.css 由 main.ts import，要等 JS 下载+执行后才生效；
+         在那之前 WebView 只有一张白纸 —— 这就是用户反馈的"启动白屏"。
+         这里只放首屏骨架必需的最小集合（底色 + 三栏骨架 + 微光动画），
+         真实样式仍由 src/style.css 提供，不重复维护。
+         色值取自 style.css 的 :root / .dark（改主题色请同步这两处）。
+         =================================================================== */
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+      /* 与 style.css 的 `* { box-sizing: border-box }` 保持一致：
+         否则骨架里的 width + padding 会按 content-box 计算，列宽比真实布局胖一圈，
+         骨架切到真界面时会有可见跳动。 */
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        --boot-app-bg: #edf1f6;
+        --boot-caption: #e2e8f0;
+        --boot-rail: #e2e8f0;
+        --boot-list: #f1f5f9;
+        --boot-chat: #fafafa;
+        --boot-line: #dbe3ed;
+        --boot-ink: #64748b;
+        --boot-primary: #3b82f6;
+        --boot-ring: rgba(15, 23, 42, 0.08);
+      }
+      html.dark {
+        --boot-app-bg: #0b1220;
+        --boot-caption: #16202f;
+        --boot-rail: #16202f;
+        --boot-list: #1e293b;
+        --boot-chat: #0f172a;
+        /* = 深色 --gosslan-border（骨架块也用它当填充，故跟随 border 而非 divider） */
+        --boot-line: #3a4a66;
+        --boot-ink: #94a3b8;
+        --boot-ring: rgba(248, 250, 252, 0.09);
+      }
+      body {
+        background: var(--boot-app-bg);
+        color: var(--boot-ink);
+        font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        -webkit-font-smoothing: antialiased;
+        overflow: hidden;
+      }
+      /* ⚠️ 骨架屏的圆角/底色必须与 src/style.css 的设计 token 同步（改 token 时同步这里）。
+         窗口外框**不要画圆角**：窗口形状由系统提供（Windows DWM / macOS 系统圆角，最大化时系统不圆角），
+         骨架画了圆角、真界面没有，启动瞬间就会看到"角落跳一下"，窗口角也会露出 body 底色。
+         其余圆角取 token 值：xs=4 / sm=6 / md=8 / lg=12 / xl=16（详见 docs/design-guidelines.md）。 */
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: var(--boot-app-bg);
+      }
+      #boot.boot-hide {
+        opacity: 0;
+        transition: opacity 0.18s ease-out;
+      }
+      .boot-win {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        background: var(--boot-caption);
+        overflow: hidden;
+        box-shadow: inset 0 0 0 1px var(--boot-ring);
+      }
+      .boot-cap {
+        height: 38px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        padding: 0 14px;
+      }
+      .boot-brand {
+        font-size: 12px;
+        letter-spacing: 0.3px;
+        color: var(--boot-ink);
+      }
+      .boot-main {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+      }
+      .boot-rail {
+        width: 64px;
+        flex: none;
+        background: var(--boot-rail);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        padding-top: 14px;
+      }
+      .boot-list {
+        width: 250px;
+        flex: none;
+        background: var(--boot-list);
+        border-top-left-radius: 12px;
+        padding: 12px 10px;
+      }
+      .boot-chat {
+        flex: 1;
+        min-width: 0;
+        background: var(--boot-chat);
+        display: flex;
+        flex-direction: column;
+      }
+      /* 移动端首屏骨架：整屏只有列表栏（与移动端抽屉布局一致）。
+         此前不分平台都画桌面三栏 —— 手机上 64px rail + 250px 列表把聊天列压到
+         几十像素宽，第一眼就是个"错版的桌面截图"，比不画骨架还糟。
+         `env(safe-area-inset-top)` 让标题行不被刘海/状态栏压住（与真实界面同口径）。 */
+      @media (max-width: 767px) {
+        .boot-rail,
+        .boot-chat {
+          display: none;
+        }
+        .boot-list {
+          width: 100%;
+          border-top-left-radius: 0;
+        }
+        .boot-cap {
+          height: calc(38px + env(safe-area-inset-top));
+          padding-top: env(safe-area-inset-top);
+        }
+      }
+      .boot-head {
+        height: 48px;
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 7px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--boot-line);
+      }
+      .boot-msgs {
+        flex: 1;
+        min-height: 0;
+        padding: 18px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .boot-composer {
+        flex: none;
+        margin: 0 16px 14px;
+        height: 76px;
+        border-radius: 8px; /* = token md，与真实输入框一致 */
+      }
+      /* macOS 骨架的标题栏与原生 28px 对齐（与 style.css 的 .platform-mac 覆盖一致） */
+      html.is-mac .boot-cap {
+        height: 28px;
+      }
+      .boot-ava {
+        width: 40px;
+        height: 40px;
+        border-radius: 6px;
+        flex: none;
+      }
+      .boot-ico {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+      }
+      .boot-search {
+        height: 28px;
+        border-radius: 8px;
+        margin-bottom: 14px;
+      }
+      .boot-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .boot-lines {
+        flex: 1;
+        min-width: 0;
+      }
+      .boot-bubble {
+        height: 38px;
+        width: 38%;
+        border-radius: 6px;
+      }
+      .boot-bubble.right {
+        align-self: flex-end;
+        background: var(--boot-primary);
+        opacity: 0.22;
+      }
+      .boot-bubble.short {
+        width: 22%;
+      }
+      /* 所有占位块共用底色 + 微光呼吸：传达"正在加载"，而不是"卡住了" */
+      .boot-ava,
+      .boot-ico,
+      .boot-search,
+      .boot-bubble,
+      .boot-composer,
+      .boot-lines i,
+      .boot-title-line,
+      .boot-sub-line {
+        background: var(--boot-line);
+        animation: boot-breathe 1.5s ease-in-out infinite;
+      }
+      .boot-lines i {
+        display: block;
+        height: 11px;
+        border-radius: 4px;
+      }
+      .boot-lines i + i {
+        margin-top: 8px;
+        width: 46%;
+      }
+      .boot-title-line {
+        width: 92px;
+        height: 12px;
+        border-radius: 4px;
+      }
+      .boot-sub-line {
+        width: 54px;
+        height: 9px;
+        border-radius: 4px;
+      }
+      @keyframes boot-breathe {
+        0%,
+        100% {
+          opacity: 0.5;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+
+      /* ---- 应用名 brand 按语言切换 ---- */
+      .brand-en {
+        display: none;
+      }
+      html[lang="en-US"] .brand-zh {
+        display: none;
+      }
+      html[lang="en-US"] .brand-en {
+        display: inline;
+      }
+
+      /* ---- 日志窗口骨架（label="logs"，结构照抄「运行日志」页）---- */
+      /* ---- 设置窗口骨架（label="settings"）----
+         结构照抄设置窗口：左侧窄导航（图标+文字行）+ 右侧「分组标题 + 设置行」。
+         用户 2026-09-12 明确提到「它的骨架图也需要单独配置」——所以这里给它一套
+         与聊天/日志都不同的骨架，而不是复用聊天三栏。 */
+      #boot-settings {
+        display: none;
+      }
+      html.boot-settings #boot {
+        display: none;
+      }
+      html.boot-settings #boot-logs {
+        display: none;
+      }
+      html.boot-settings #boot-settings {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        background: var(--boot-app-bg);
+      }
+      #boot-settings.boot-hide {
+        opacity: 0;
+        transition: opacity 0.18s ease-out;
+      }
+      .boot-set-nav {
+        width: 176px;
+        flex: none;
+        padding: 14px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        background: var(--boot-caption);
+        border-right: 1px solid var(--boot-line);
+      }
+      .boot-set-nav i {
+        display: block;
+        height: 32px;
+        border-radius: 6px;
+      }
+      .boot-set-nav i.active {
+        background: var(--boot-primary);
+        opacity: 0.85;
+      }
+      .boot-set-body {
+        flex: 1;
+        min-width: 0;
+        padding: 18px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .boot-set-group {
+        height: 12px;
+        width: 84px;
+        border-radius: 4px;
+        margin-top: 4px;
+      }
+      .boot-set-card {
+        border-radius: 10px;
+        border: 1px solid var(--boot-line);
+        background: var(--boot-caption);
+        overflow: hidden;
+      }
+      .boot-set-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+      }
+      .boot-set-row + .boot-set-row {
+        border-top: 1px solid var(--boot-line);
+      }
+      .boot-set-row .lbl {
+        height: 13px;
+        border-radius: 4px;
+        flex: 1;
+      }
+      .boot-set-row .ctl {
+        width: 44px;
+        height: 22px;
+        border-radius: 11px;
+        flex: none;
+      }
+      .boot-set-row .ctl.pill {
+        width: 74px;
+        border-radius: 6px;
+      }
+      #boot-settings .blk {
+        background: color-mix(in srgb, currentColor 12%, transparent);
+      }
+      #boot-logs {
+        display: none;
+      }
+      html.boot-logs #boot {
+        display: none;
+      }
+      html.boot-logs #boot-logs {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        background: var(--boot-app-bg);
+      }
+      #boot-logs.boot-hide {
+        opacity: 0;
+        transition: opacity 0.18s ease-out;
+      }
+      .boot-logs-toolbar {
+        height: 48px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        background: var(--boot-caption);
+        border-bottom: 1px solid var(--boot-line);
+      }
+      .boot-logs-back {
+        width: 32px;
+        height: 32px;
+        border-radius: 6px;
+        flex: none;
+      }
+      .boot-logs-title {
+        width: 96px;
+        height: 14px;
+        border-radius: 4px;
+      }
+      .boot-logs-spacer {
+        flex: 1;
+      }
+      .boot-logs-chip {
+        width: 56px;
+        height: 28px;
+        border-radius: 6px;
+      }
+      .boot-logs-chip.primary {
+        background: var(--boot-primary);
+        opacity: 0.85;
+      }
+      .boot-logs-body {
+        flex: 1;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+      }
+      .boot-log-line {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .boot-log-line i {
+        display: block;
+        height: 12px;
+        border-radius: 4px;
+      }
+      .boot-log-line .t {
+        width: 52px;
+        flex: none;
+      }
+      .boot-log-line .lv {
+        width: 36px;
+        flex: none;
+      }
+      .boot-log-line .lv.warn {
+        background: rgba(255, 149, 0, 0.5);
+      }
+      .boot-log-line .lv.error {
+        background: rgba(255, 59, 48, 0.55);
+      }
+      .boot-log-line .msg {
+        flex: 1;
+      }
+      .boot-log-line .msg.w70 {
+        flex: none;
+        width: 70%;
+      }
+      .boot-log-line .msg.w50 {
+        flex: none;
+        width: 50%;
+      }
+      .boot-log-line .msg.w80 {
+        flex: none;
+        width: 80%;
+      }
+      .boot-log-line .msg.w60 {
+        flex: none;
+        width: 60%;
+      }
+      .boot-log-line .msg.w40 {
+        flex: none;
+        width: 40%;
+      }
+      .boot-logs-back,
+      .boot-logs-title,
+      .boot-logs-chip,
+      .boot-log-line i {
+        background: var(--boot-line);
+        animation: boot-breathe 1.5s ease-in-out infinite;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-ava,
+        .boot-ico,
+        .boot-search,
+        .boot-bubble,
+        .boot-composer,
+        .boot-lines i,
+        .boot-title-line,
+        .boot-sub-line {
+          animation: none;
+          opacity: 0.75;
+        }
+        .boot-logs-back,
+        .boot-logs-title,
+        .boot-logs-chip,
+        .boot-log-line i {
+          animation: none;
+          opacity: 0.75;
+        }
+      }

@@ -4,6 +4,7 @@ import { ref, onMounted, onUnmounted, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api, APP_ACTION, bindMenuEvents } from "@/api";
+import { launchAuxWindow, useWindowOpening } from "@/composables/useWindowLauncher";
 import { useShortcuts } from "@/composables/useShortcuts";
 import { useBackLayer } from "@/composables/useBackLayer";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -51,7 +52,10 @@ function openSettings() {
     settingsOpen.value = true;
     return;
   }
-  void api.openSettingsWindow().catch(() => {
+  // 独立窗口：单飞 + 连点防抖（`useWindowLauncher`）。窗口实例唯一性由后端保证。
+  void launchAuxWindow("settings", () => api.openSettingsWindow()).catch(() => {
+    // 独立窗口开不出来（能力缺失 / 创建失败）时回退到应用内设置页：
+    // 「设置」在任何环境下都必须打得开，宁可退化成弹窗也不能点了没反应。
     settingsOpen.value = true;
   });
 }
@@ -60,10 +64,16 @@ function openSettings() {
 function openLogs() {
   if (app.isMobile) {
     logsOpen.value = true;
-  } else {
-    void api.openLogWindow().catch((e) => app.toastError(e, t("common.operationFail")));
+    return;
   }
+  void launchAuxWindow("logs", () => api.openLogWindow()).catch((e) =>
+    app.toastError(e, t("common.operationFail")),
+  );
 }
+
+/** 按钮 pending 反馈：正在打开时按钮显示忙碌态（冷启动那一下用户能立刻看到"点到了"）。 */
+const settingsOpening = useWindowOpening("settings");
+const logsOpening = useWindowOpening("logs");
 
 /** 搜索聊天记录结果页的开关与初始关键词（由会话列表搜索框回车触发）。 */
 const searchOpen = ref(false);
@@ -277,7 +287,14 @@ function onResizeEnd() {
     <!-- 桌面：rail（左）| 列表（中）| 聊天（右）三列；移动端按 mobileView 抽屉切换 -->
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
     <!-- 左侧导航栏：顶格到 caption 之下，浅灰与 caption 一体 -->
-    <NavRail :view="view" @update:view="view = $event" @open-settings="openSettings" @open-logs="openLogs" />
+    <NavRail
+      :view="view"
+      :settings-opening="settingsOpening"
+      :logs-opening="logsOpening"
+      @update:view="view = $event"
+      @open-settings="openSettings"
+      @open-logs="openLogs"
+    />
 
     <!-- 会话列表：桌面宽度可拖拽调（默认250px，持久化）；移动端整屏抽屉，靠 translate 滑动切换 -->
     <aside
@@ -431,14 +448,18 @@ function onResizeEnd() {
         <span class="text-[11px]">{{ t("nav.contacts") }}</span>
       </button>
       <button
-        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)]"
+        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)] transition-opacity"
+        :class="settingsOpening ? 'opacity-50' : ''"
+        :aria-busy="settingsOpening"
         @click="openSettings"
       >
         <Settings class="h-5 w-5" />
         <span class="text-[11px]">{{ t("nav.settings") }}</span>
       </button>
       <button
-        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)]"
+        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)] transition-opacity"
+        :class="logsOpening ? 'opacity-50' : ''"
+        :aria-busy="logsOpening"
         @click="openLogs"
       >
         <ScrollText class="h-5 w-5" />

@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- 独立「设置」窗口（桌面端，label="settings"）。
+     为什么单独一个 HTML：以前三个窗口共用 index.html + 一个 Vue 应用，由 App.vue 按窗口
+     label 决定渲染哪一屏 —— 结果是**设置窗口会先把聊天三栏挂载出来**（App.vue 的 v-else
+     就是主界面），用户看到"窗口先变成主聊天窗口、再变成设置"，而且白等一整棵聊天组件树的
+     加载与渲染。现在每个窗口有自己的文档与入口，设置窗口**从第一帧到结束都不会碰到聊天代码**。 -->
+<html lang="zh-CN" class="boot-settings" data-title-zh="相闻 · 设置" data-title-en="Gosslan · Settings">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Settings</title>
+    <!-- 主题首帧 + 骨架样式：与主窗口共用同一份（见 index.html 的说明与 vite 插件）。 -->
+    <!-- GOSSLAN_THEME_BOOT -->
+    <!-- GOSSLAN_SKELETON_CSS -->
+  </head>
+  <body>
+    <!-- 设置窗口骨架：左侧窄导航 + 右侧分组卡片（结构照抄真实设置页）。
+         用户 2026-09-12 明确要求「它的骨架图也需要单独配置」——所以它是独立的一套，
+         不是聊天三栏，也不是日志页。由 src/entries/settings.ts 在数据就绪后撤掉。 -->
+    <div id="boot-settings" aria-hidden="true">
+      <div class="boot-set-nav">
+        <i class="blk active"></i>
+        <i class="blk"></i>
+        <i class="blk"></i>
+        <i class="blk"></i>
+        <i class="blk"></i>
+        <i class="blk"></i>
+      </div>
+      <div class="boot-set-body">
+        <div class="boot-set-group blk"></div>
+        <div class="boot-set-card">
+          <div class="boot-set-row"><span class="lbl blk"></span><span class="ctl pill blk"></span></div>
+          <div class="boot-set-row"><span class="lbl blk"></span><span class="ctl blk"></span></div>
+          <div class="boot-set-row"><span class="lbl blk"></span><span class="ctl blk"></span></div>
+        </div>
+        <div class="boot-set-group blk"></div>
+        <div class="boot-set-card">
+          <div class="boot-set-row"><span class="lbl blk"></span><span class="ctl blk"></span></div>
+          <div class="boot-set-row"><span class="lbl blk"></span><span class="ctl blk"></span></div>
+        </div>
+      </div>
+    </div>
+    <div id="app"></div>
+    <script type="module" src="/src/entries/settings.ts"></script>
+  </body>
+</html>

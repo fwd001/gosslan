@@ -312,6 +312,62 @@ CASES: list[Case] = [
         expect_fail_hint="缺少 `send`",
         tags=["rust", "android", "release"],
     ),
+    # ---------------- 窗口架构：三个窗口各自一个文档 + 一个入口 ----------------
+    Case(
+        name="窗口入口（独立窗口不得再共用主窗口的 HTML）",
+        why="用户实测：「第二次打开设置，窗口先刷成主聊天窗口、又立马变成设置界面」「点一下要等很久」"
+        "—— 根因就是设置/日志窗口加载的是主窗口的 index.html，前端再把聊天三栏挂起来换成设置页",
+        file=TAURI / "src" / "commands.rs",
+        injections=[('WebviewUrl::App("settings.html".into())', 'WebviewUrl::App("index.html".into())')],
+        cmd=cargo("test", "--lib", "aux_windows_open_their_own_document"),
+        cwd=TAURI,
+        expect_fail_hint="index.html",
+        tags=["rust", "window"],
+    ),
+    Case(
+        name="窗口单例（打开命令不得自己查窗口存在性）",
+        why="连点两下会开出第二个窗口：`build()` 的重复 label 检查在 prepare 阶段，而窗口登记进 manager "
+        "是主线程创建完成之后 —— 并发调用会双双通过。必须统一走 ensure_aux_window（单例 + 串行）",
+        file=TAURI / "src" / "commands.rs",
+        injections=[
+            (
+                "    ensure_aux_window(&app, crate::WINDOW_SETTINGS, move || {",
+                "    let _ = app.get_webview_window(crate::WINDOW_SETTINGS);\n"
+                "    ensure_aux_window(&app, crate::WINDOW_SETTINGS, move || {",
+            )
+        ],
+        cmd=cargo("test", "--lib", "aux_window_open_is_singleton_serialized_and_resident"),
+        cwd=TAURI,
+        expect_fail_hint="不该自己查窗口存在性",
+        tags=["rust", "window"],
+    ),
+    Case(
+        name="窗口骨架（设置窗口必须带自己的骨架类）",
+        why="三个窗口共用一份骨架 CSS，靠 `<html class=\"boot-settings\">` 决定显示哪一套；"
+        "类名漏了那个窗口就只剩白屏骨架（功能正常、但启动那一下很难看）",
+        file=ROOT / "settings.html",
+        injections=[('<html lang="zh-CN" class="boot-settings" ', '<html lang="zh-CN" ')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="boot-settings",
+        tags=["frontend", "window"],
+    ),
+    Case(
+        name="开窗接线（按钮必须走单飞入口）",
+        why="三处入口（窄导航头像 / 移动端底栏 / 原生菜单）必须共用同一份单飞+防抖状态；"
+        "退回成按钮里直接 invoke 就是用户报的「连点会开出第二个窗口」",
+        file=ROOT / "src" / "layouts" / "ResponsiveLayout.vue",
+        injections=[
+            (
+                'void launchAuxWindow("settings", () => api.openSettingsWindow())',
+                "void api.openSettingsWindow()",
+            )
+        ],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="launchAuxWindow",
+        tags=["frontend", "window"],
+    ),
 ]
 
 

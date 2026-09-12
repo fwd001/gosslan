@@ -67,21 +67,21 @@ test("存储值非法（脏数据）→ 退回旧布尔值，再退回跟随系�
   );
 });
 
-// ---------------- 与 index.html 首屏脚本交叉验证 ----------------
+// ---------------- 与首屏脚本（src/boot/theme-boot.js）交叉验证 ----------------
 //
 // 这是**本轮新增的关键护栏**。外观规则有两份实现：
 //   ① useAppStore（本模块）；
-//   ② index.html 的内联脚本 —— 它必须先于 bundle 执行（否则启动会"闪一下白"），
-//      因此无法 import 本模块。
+//   ② 首屏脚本 —— 它必须先于 bundle 执行（否则启动会"闪一下白"），因此无法 import 本模块。
 // 两份漂移的症状是"骨架与真界面外观不一致"，只在启动瞬间出现、极难自测发现。
 // 与其在注释里写"两处必须一致"，不如**把那段脚本真跑一遍**来对照。
+//
+// ⚠️ 脚本从 `index.html` 内联搬到了 `src/boot/theme-boot.js`（三个窗口共用一份，
+//    由 vite 插件内联回各自的 HTML）—— 因为"主/设置/日志三个窗口各抄一份主题逻辑"
+//    迟早会漂移。本护栏直接读那份**事实来源**，比读某个 HTML 里的拷贝更准。
 
-/** 从 index.html 里取出第一段内联 <script> 的代码。 */
+/** 取出首屏主题脚本（三窗口共用的事实来源）。 */
 function readBootScript(): string {
-  const html = readFileSync(join(import.meta.dirname, "..", "..", "index.html"), "utf8");
-  const m = /<script>([\s\S]*?)<\/script>/.exec(html);
-  assert.ok(m, "index.html 里应有一段内联首屏脚本");
-  return m![1];
+  return readFileSync(join(import.meta.dirname, "..", "boot", "theme-boot.js"), "utf8");
 }
 
 /** 在替身环境里执行首屏脚本，返回它最终是否加了 dark 类。 */
@@ -116,7 +116,7 @@ function runBootScript(env: {
   return added.has("dark");
 }
 
-test("index.html 首屏脚本与 utils/appearance 的解析结果**逐例一致**", () => {
+test("首屏脚本（src/boot/theme-boot.js）与 utils/appearance 的解析结果**逐例一致**", () => {
   const cases = [
     { appearance: "system", legacyDark: null, systemDark: true },
     { appearance: "system", legacyDark: null, systemDark: false },

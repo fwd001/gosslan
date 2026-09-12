@@ -796,4 +796,121 @@ mod tests {
     fn main_window_label_matches_tray_constant() {
         assert_eq!(tray::MAIN_WINDOW_LABEL, WINDOW_MAIN);
     }
+
+    /// 取一个顶层函数的函数体（从签名起到第 0 列的 `}` 为止）。
+    ///
+    /// 用它做"接线守卫"：这类性质（窗口走单例 helper、URL 指向自己的入口）
+    /// 编译器管不着，而退化后**功能看起来仍然正常**，只有连点/开窗慢才暴露。
+    fn rust_fn_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("源码里找不到 `{signature}` —— 护栏需要同步更新"));
+        let rest = &src[start..];
+        let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// **独立窗口必须各自一个前端文档与入口**，不许再共用主窗口的 `index.html`。
+    ///
+    /// 为什么（用户 2026-09-12 实测）：「第二次打开设置，窗口会先刷成主聊天窗口、
+    /// 然后立马变成设置界面」+「点一下要等很久」—— 根因就是设置/日志窗口加载的是主窗口的
+    /// HTML，前端再按窗口 label 把聊天三栏挂起来换成设置页。窗口 URL 与前端文档的对应关系
+    /// 只有这条护栏盯着（前端测试看得到 HTML，看不到 Rust 的 URL）。
+    #[cfg(desktop)]
+    #[test]
+    fn aux_windows_open_their_own_document() {
+        let commands = include_str!("commands.rs");
+
+        let mut urls: Vec<String> = Vec::new();
+        for part in commands.split("WebviewUrl::App(").skip(1) {
+            let rest = part.trim_start().trim_start_matches('"');
+            let end = rest
+                .find('"')
+                .unwrap_or_else(|| panic!("WebviewUrl::App 里的字符串没有闭合"));
+            urls.push(rest[..end].to_string());
+        }
+        assert!(
+            urls.len() >= 2,
+            "应当能找到设置与日志两个窗口的 URL，实际 {}",
+            urls.len()
+        );
+        assert!(
+            !urls.iter().any(|u| u == "index.html"),
+            "独立窗口不得再共用主窗口的 index.html（那会让它先把聊天三栏挂起来）：{urls:?}"
+        );
+
+        // 每个 URL 都必须真的存在，且它引用的入口也必须存在 —— 这是"改了文件名忘改另一处"
+        // 的唯一防线（前端构建不会因为 Rust 里的字符串写错而失败）。
+        for (url, entry) in [
+            ("settings.html", "src/entries/settings.ts"),
+            ("logs.html", "src/entries/logs.ts"),
+        ] {
+            assert!(urls.iter().any(|u| u == url), "Rust 侧应当打开 {url}：{urls:?}");
+            let html = match url {
+                "settings.html" => include_str!("../../settings.html").to_string(),
+                _ => include_str!("../../logs.html").to_string(),
+            };
+            assert!(
+                html.contains(&format!("/{entry}")),
+                "{url} 必须加载自己的入口 /{entry}（窗口差异由文档承担，而不是在一个入口里 if/else）"
+            );
+            // 入口文件真的存在（`include_str!` 让"文件被删/改名"在编译期就报错）
+            match entry {
+                "src/entries/settings.ts" => {
+                    let _ = include_str!("../../src/entries/settings.ts");
+                }
+                _ => {
+                    let _ = include_str!("../../src/entries/logs.ts");
+                }
+            }
+        }
+    }
+
+    /// **独立窗口的打开必须是"单例 + 串行创建 + 关闭即隐藏"**。
+    ///
+    /// 为什么（用户 2026-09-12 实测）：
+    ///   - 连点两下会**开出第二个窗口**：`WebviewWindowBuilder::build()` 的重复 label 检查在
+    ///     `prepare_window` 里做，而窗口被登记进 manager 是在主线程创建完成之后 ——
+    ///     两个并发调用会双双通过检查（后者还会覆盖 manager 的记录）。
+    ///   - 关闭即销毁 ⇒ 每次打开都要重建 WebView + 重新加载前端 + 重新 `app.init()`，
+    ///     这正是"点一下要等很久"。
+    #[cfg(desktop)]
+    #[test]
+    fn aux_window_open_is_singleton_serialized_and_resident() {
+        let commands = include_str!("commands.rs");
+
+        for signature in [
+            "pub fn open_settings_window(",
+            "pub fn open_log_window(",
+        ] {
+            let body = rust_fn_body(commands, signature);
+            assert!(
+                body.contains("ensure_aux_window("),
+                "{signature}…）必须走 `ensure_aux_window`（单例 + 串行创建）——                  自己写 `if let Some(win) = get_webview_window(..)` 会在并发时开出第二个窗口"
+            );
+            assert!(
+                !body.contains("get_webview_window("),
+                "{signature}…）不该自己查窗口存在性：那是 `ensure_aux_window` 的职责"
+            );
+        }
+
+        let helper = rust_fn_body(commands, "fn ensure_aux_window<F>(");
+        assert!(
+            helper.contains("AUX_WINDOW_CREATE_LOCK"),
+            "`ensure_aux_window` 必须用创建锁串行化（否则并发会开出第二个窗口）"
+        );
+        assert!(
+            helper.matches("show_existing_aux_window(app, label)").count() >= 2,
+            "`ensure_aux_window` 必须做双重检查（拿锁前后各查一次），实际只有一次"
+        );
+        assert!(
+            helper.contains("AUX_WINDOWS_RESIDENT") && helper.contains("install_hide_on_close(&win)"),
+            "`ensure_aux_window` 里必须接上「关闭即隐藏」（常驻）——              否则每次打开都要重新加载 WebView + 前端，用户要等（`AUX_WINDOWS_RESIDENT` 只是开关）"
+        );
+        let hide = rust_fn_body(commands, "fn install_hide_on_close(");
+        assert!(
+            hide.contains("prevent_close()") && hide.contains("hide()"),
+            "`install_hide_on_close` 必须是 prevent_close + hide（关闭即隐藏）"
+        );
+    }
 }
