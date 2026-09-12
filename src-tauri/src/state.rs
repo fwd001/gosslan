@@ -68,6 +68,14 @@ pub struct RuntimeSnapshot {
     pub ble: BleRuntimeFacts,
     /// 当前在线节点数（不是完整列表）
     pub peer_count: usize,
+    /// **我自己的在线状态**（用户 2026-09-12 定的规则）：
+    /// 只要**任一通道在跑**（局域网 或 蓝牙）就算在线；**两个都关了才是离线**。
+    ///
+    /// 为什么单独给一个字段、而不是继续用 `online`（= 局域网在跑）：
+    /// 手机端蓝牙是自动开启的（用户规则「有蓝牙就默认开」），此时即使没连 Wi-Fi，
+    /// 用户也应该显示"在线"——用 `online` 会在这种场景下把用户标成离线。
+    /// `online` 仍然保留（它是"局域网在跑"，界面里"局域网：N 个节点"那类 LAN 专属文案要用）。
+    pub present: bool,
 }
 
 /// 蓝牙运行时事实（`ChannelStatus` 表达不了的部分）。
@@ -556,6 +564,21 @@ pub struct AppState {
     /// 默认 `None`，且只有用户在设置里打开「蓝牙」才会启动 —— 局域网不受影响。
     #[cfg(feature = "bluetooth")]
     pub ble: Mutex<Option<crate::network::ble::BleHandle>>,
+    /// **不要再主动拨的 BLE 外设标识**（central 侧）。
+    ///
+    /// 为什么需要（用户 2026-09-12 实测的"点加好友：发送失败，连接已关闭"）：
+    /// 两端都同时跑 central + peripheral，于是**互相拨号**，形成两条镜像 BLE 链路：
+    ///   · 手机（大 id）拨 Mac（小 id）→ 成功建链 A；
+    ///   · Mac（小 id）也在扫手机 → 每轮扫描都去拨一次 → 被手机按"镜像链路"规则拒掉
+    ///     （不回 Hello）——**拒是拒了，但每次连接本身都会打断手机那条 GATT server 连接**，
+    ///     于是链路 A 45s 收不到一帧、被看门狗拆掉、再重来。
+    /// 规则与 TCP 的 `should_dial` 一致：**大 id 是这台链路上的指定拨号方，小 id 只接受**。
+    /// 小 id 在握手验签后就知道"对端比我大 ⇒ 该它拨我"，把该外设标识记进这里，
+    /// 之后扫描直接跳过它 —— 不再去打扰那条好的链路。
+    ///
+    /// 清空时机：蓝牙通道停止时（下次开启重新学一遍）。
+    #[cfg(feature = "bluetooth")]
+    pub ble_no_dial: Mutex<std::collections::HashSet<String>>,
     /// 中继授权配置（P2 / M4）：策略 + 白名单。
     ///
     /// 为什么缓存在内存：转发热路径上 gossip 可能每秒几十条，为了一个策略字段去锁
@@ -846,6 +869,8 @@ impl AppState {
             relay_policy: Mutex::new(relay_policy),
             #[cfg(feature = "bluetooth")]
             ble: Mutex::new(None),
+            #[cfg(feature = "bluetooth")]
+            ble_no_dial: Mutex::new(std::collections::HashSet::new()),
             dialing: Mutex::new(std::collections::HashSet::new()),
             dial_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)),
             inbound_permits: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_CONNECTIONS)),

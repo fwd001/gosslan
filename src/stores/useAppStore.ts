@@ -46,6 +46,13 @@ export const useAppStore = defineStore("app", () => {
   const device = ref<DeviceInfo | null>(null);
   const interfaces = ref<InterfaceInfo[]>([]);
   const online = ref(false);
+  /**
+   * **我自己的在线状态**：任一通道在跑 = 在线；两个都关才是离线（用户 2026-09-12 定的规则）。
+   *
+   * 与 `online` 的区别：`online` 只表示"局域网在跑"，而手机端蓝牙是自动开启的
+   * —— 没连 Wi-Fi 但蓝牙在跑时，用户也应该显示"在线"。
+   */
+  const present = ref(false);
   const boundIp = ref<string | null>(null);
   /** 上次选择的网卡（持久化偏好；离线时作为设置页默认项）。 */
   const preferredIp = ref<string | null>(null);
@@ -262,6 +269,7 @@ export const useAppStore = defineStore("app", () => {
     if (!snap) return;
     if (Array.isArray(snap.channels)) channels.value = snap.channels;
     online.value = !!snap.online;
+    present.value = !!snap.present;
     boundIp.value = snap.boundIp ?? null;
     runtime.value = snap;
   }
@@ -738,6 +746,7 @@ export const useAppStore = defineStore("app", () => {
     device,
     interfaces,
     online,
+    present,
     boundIp,
     preferredIp,
     shareDir,

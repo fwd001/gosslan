@@ -151,6 +151,32 @@ test("每个改设置的后端命令都必须传 origin（否则发起窗口收�
   );
 });
 
+test("我的在线状态 = 任一通道在跑（两个都关才是离线，用户规则）", () => {
+  const commands = readFileSync(join(RUST_SRC, "commands.rs"), "utf8");
+  assert.match(
+    commands,
+    /let present = list\.iter\(\)\.any\(\|c\| c\.running\)/,
+    "present 必须由『任一通道在跑』算出（用 running 而不是 enabled —— 开关开了但起不来不该算在线）",
+  );
+  const state = readFileSync(join(RUST_SRC, "state.rs"), "utf8");
+  assert.match(state, /pub present: bool/, "运行状态快照必须带 present");
+  const profile = readFileSync(
+    join(ROOT, "src", "components", "settings", "ProfileSection.vue"),
+    "utf8",
+  );
+  assert.ok(profile.includes("app.present"), "设置里『我的状态』必须读 present（不是 online）");
+  const rail = readFileSync(join(ROOT, "src", "components", "NavRail.vue"), "utf8");
+  assert.ok(rail.includes("app.present"), "侧栏头像的状态点必须读 present");
+  const net = readFileSync(
+    join(ROOT, "src", "components", "settings", "NetworkSection.vue"),
+    "utf8",
+  );
+  assert.ok(
+    net.includes("app.online"),
+    "局域网节点数那类 LAN 专属文案仍应读 online（它是『局域网在跑』，两件事不能混）",
+  );
+});
+
 test("运行状态只能有一个快照 + 一个带载荷的事件（②）", () => {
   const state = readFileSync(join(RUST_SRC, "state.rs"), "utf8");
   assert.match(

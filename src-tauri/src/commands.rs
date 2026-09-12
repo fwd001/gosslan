@@ -501,7 +501,11 @@ pub async fn build_runtime_snapshot(s: &Arc<AppState>) -> RuntimeSnapshot {
         (net.is_some(), net.as_ref().map(|n| n.bound_ip.clone()))
     };
     let peer_count = s.peers.lock().unwrap_or_else(|e| e.into_inner()).len();
+    // 我的在线状态 = **任一通道在跑**（用户规则：两个都关才是离线）。
+    // 注意用 `running` 而不是 `enabled`：开关打开但起不来（如权限被拒）不该算在线。
+    let present = list.iter().any(|c| c.running);
     RuntimeSnapshot {
+        present,
         channels: list,
         online,
         bound_ip,

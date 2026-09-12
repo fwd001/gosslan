@@ -166,6 +166,8 @@ export interface RuntimeSnapshot {
   ble: { featureCompiled: boolean };
   /** 在线节点数（完整列表仍走 `peers-updated`，避免每次开关都搬全表） */
   peerCount: number;
+  /** **我自己的在线状态**：任一通道在跑 = 在线；两个都关才是离线（用户 2026-09-12 定的规则） */
+  present: boolean;
 }
 
 export interface ChannelStatus {

@@ -38,8 +38,8 @@ const initials = computed(() => avatarInitial(app.device?.nickname));
         :class="settingsOpening ? 'opacity-60' : ''"
         :aria-busy="settingsOpening"
         :style="{ backgroundColor: nameToColor(app.device?.nickname ?? '') }"
-        :title="app.online ? t('nav.me.online') : t('nav.me.offline')"
-        :aria-label="t('nav.me.openSettings', { status: app.online ? t('nav.me.online') : t('nav.me.offline') })"
+        :title="app.present ? t('nav.me.online') : t('nav.me.offline')"
+        :aria-label="t('nav.me.openSettings', { status: app.present ? t('nav.me.online') : t('nav.me.offline') })"
         @click="emit('open-settings')"
       >
         <img alt="" v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
@@ -48,7 +48,7 @@ const initials = computed(() => avatarInitial(app.device?.nickname));
       <!-- 本人在线状态点 -->
       <span
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-rail)]"
-        :class="app.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
+        :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
       ></span>
     </div>
 

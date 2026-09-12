@@ -153,8 +153,8 @@ function processAvatar(file: File): Promise<string> {
             {{ t("settings.profile.changeAvatar") }}
           </button>
           <span class="flex items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
-            <span class="h-2 w-2 rounded-full" :class="app.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>
-            {{ app.online ? t("settings.profile.online") : t("settings.profile.offline") }}
+            <span class="h-2 w-2 rounded-full" :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>
+            {{ app.present ? t("settings.profile.online") : t("settings.profile.offline") }}
           </span>
         </div>
       </div>

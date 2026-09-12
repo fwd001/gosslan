@@ -778,6 +778,35 @@ mod tests {
         })
     }
 
+    /// **BLE 链路上必须只有一个"指定拨号方"**（大 id 拨、小 id 只接受）。
+    ///
+    /// 真实缺陷（用户 2026-09-12 真机："点加好友：发送失败，连接已关闭"）：
+    /// 两端都同时跑 central + peripheral ⇒ **互相拨号**，形成两条镜像 BLE 链路；
+    /// 小 id 那一侧拨过去的连接会被对端按镜像规则拒掉（不回 Hello），但**每次连接本身
+    /// 都会打断对端拨过来的那条好链路** ⇒ 好链路 45s 收不到帧被看门狗拆掉 ⇒ 再重来。
+    /// 修法：小 id 在握手验签后**记住"不要再拨这个外设"**并主动放弃该镜像链路。
+    #[test]
+    fn ble_link_has_a_designated_dialer() {
+        let ble = include_str!("network/ble.rs");
+        let body = rust_fn_body(ble, "fn should_dial_ble(");
+        assert!(
+            body.contains("my_id > peer_id"),
+            "判据必须与 TCP 的 `should_dial` 同一条：**大 id 拨、小 id 只接受**"
+        );
+        assert!(
+            ble.contains("if !should_dial_ble(&state.device_id, &peer_id)"),
+            "central 侧握手后必须用它决定要不要放弃镜像链路"
+        );
+        assert!(
+            ble.contains("ble_no_dial"),
+            "必须记住『不要再拨』的名单 —— 否则每轮扫描还会去拨它、反复打断好的那条链路"
+        );
+        assert!(
+            ble.contains("contains(&peripheral.id().to_string())"),
+            "扫描循环必须跳过名单里的外设"
+        );
+    }
+
     /// **扫描结果不得再用 `Peripheral::services()` 二次过滤**（真机踩过，症状极隐蔽）。
     ///
     /// `start_scan(ScanFilter{services})` 已在平台层过滤；而 `services()` 在 **Android 上

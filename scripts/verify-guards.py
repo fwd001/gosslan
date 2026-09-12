@@ -388,6 +388,33 @@ CASES: list[Case] = [
         expect_fail_hint="不得在**平台层**", 
         tags=["rust", "ble"],
     ),
+    # ---------------- Rust：BLE 指定拨号方（两端互拨会互相打断） ----------------
+    Case(
+        name="BLE 指定拨号方：大 id 拨、小 id 只接受（否则镜像链路互扰）",
+        why="用户 2026-09-12 真机「点加好友：发送失败，连接已关闭」：两端都跑 central+peripheral ⇒ "
+        "互相拨号形成镜像链路，小 id 拨过去的连接会打断对端拨来的好链路 ⇒ 45s 无帧被看门狗拆掉",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[("    my_id > peer_id\n}", "    true\n}")],
+        cmd=cargo("test", "--lib", "ble_link_has_a_designated_dialer"),
+        cwd=TAURI,
+        expect_fail_hint="大 id 拨、小 id 只接受",
+        tags=["rust", "ble"],
+    ),
+    # ---------------- 前端：我的在线状态 = 任一通道在跑 ----------------
+    Case(
+        name="在线语义：任一通道在跑 = 在线（两个都关才离线）",
+        why="用户 2026-09-12 明确规则：手机蓝牙自动开启，此时即使没连 Wi-Fi 也该显示在线；"
+        "两个通道都关了才是离线。用 online（只管局域网）会把这种用户标成离线",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "    let present = list.iter().any(|c| c.running);",
+            "    let present = online;",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="任一通道在跑",
+        tags=["frontend", "ipc"],
+    ),
     # ---------------- 前端：运行状态必须"一个快照 + 一个事件"（②） ----------------
     Case(
         name="运行状态事件必须带快照、且不回发发起窗口（②）",

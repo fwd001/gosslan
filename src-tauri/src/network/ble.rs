@@ -123,6 +123,12 @@ pub async fn stop(state: &Arc<AppState>) {
         }
     }
     detach_all_ble_links(state).await;
+    // "不要再拨"的名单只对本次运行有效：下次开启允许重新学（对端可能换了角色/设备）
+    state
+        .ble_no_dial
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     state.logger.info("ble", "蓝牙通道已停止");
 }
 
@@ -198,6 +204,17 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
                     if *shutdown.borrow() {
                         return;
                     }
+                    // 对端是这条链路上的**指定拨号方**（它比我大）⇒ 别去拨它：
+                    // 我们拨过去只会被它按镜像规则拒掉，而每次连接都会打断它拨过来的那条
+                    // 好链路（真机症状：45s 收不到帧 → 看门狗拆链 → "加好友时连接已关闭"）。
+                    if state
+                        .ble_no_dial
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .contains(&peripheral.id().to_string())
+                    {
+                        continue;
+                    }
                     let st = state.clone();
                     let sd = shutdown.clone();
                     // 每个候选一个任务：连接 + 握手最长 10s，串行会把扫描周期拖垮
@@ -220,6 +237,16 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
             _ = tokio::time::sleep(SCAN_INTERVAL) => {}
         }
     }
+}
+
+/// **BLE 链路谁拨号**：大 id 拨、小 id 只接受（与 TCP 的 `should_dial` 同一条规则）。
+///
+/// 抽成纯函数的理由：它是"两端都跑 central+peripheral 时不互相拨号"的**唯一判据**，
+/// 而这类缺陷在真机上表现成"链路时好时坏、点加好友说连接已关闭"（镜像链路互相打断），
+/// 极难复现；纯函数可以一次钉死，并让护栏在有人把它改成"总是拨"时立刻 FAIL。
+#[cfg(any(target_os = "macos", target_os = "android"))]
+fn should_dial_ble(my_id: &str, peer_id: &str) -> bool {
+    my_id > peer_id
 }
 
 /// 连接一个候选 → 双向 Hello 验签 → 登记链路 → 起收发循环。
@@ -270,6 +297,28 @@ async fn dial_and_register(
         sig,
     )?;
     let peer_id = device_id.clone();
+
+    // ---- 指定拨号方判据（与 TCP 的 `should_dial` 同一条规则：**大 id 拨，小 id 只接受**）----
+    //
+    // 两端都同时跑 central + peripheral ⇒ 会互相拨号。若对端 id 比我大，说明它也会拨我：
+    // 我拨过去建成的是一条**镜像链路**，它会把这条拒掉（不回 Hello），而这条连接的建立
+    // 过程会打断它拨给我的那条好链路 —— 于是好链路 45s 收不到帧被看门狗拆掉、再重来
+    // （用户 2026-09-12 实测：「点加好友：发送失败，连接已关闭」）。
+    // 所以：记进"不要再拨"，并主动放弃这一条。
+    if !should_dial_ble(&state.device_id, &peer_id) {
+        state
+            .ble_no_dial
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(ble_id.clone());
+        state.logger.info(
+            "ble",
+            format!(
+                "对端 {peer_id} 是这条链路的指定拨号方（id 更大）⇒ 记下不再主动拨它，避免镜像链路互扰"
+            ),
+        );
+        return Ok(());
+    }
 
     // ---- 去重：与 TCP 入站**同一个判据**（不要在这里复制第二份"有没有同路径连接"）----
     let existing = link_snapshot(&state, &peer_id).await;
