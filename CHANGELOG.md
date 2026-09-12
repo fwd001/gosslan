@@ -10,6 +10,14 @@
 
 ## [Unreleased]
 
+### Changed (打包策略：按架构分别出包，不再打 universal)
+- **Android 按 ABI 出两份包**（GitHub 发布就挂这两份）：`arm64-v8a` 给现代手机、`armeabi-v7a` 给老设备。新增 `scripts/build-android-releases.sh`（`npm run android:build:test` / `android:build:release`），对每个 ABI 各跑一次 `tauri android build --target <abi>`，产物按 ABI 改名落到 `dist/android/`。
+  - universal 包把两/四份 `.so` 拼在一起，而真机只用到一份（实测 universal debug **423MB**）；单 ABI 包体积约为其 1/3。
+  - ⚠️ **不用** Gradle 的 `splits.abi`：Tauri 的 Android 插件会给每个 ABI 设 `ndk.abiFilters`，AGP 禁止两者并存，配置阶段直接失败（`Conflicting configuration … in ndk abiFilters cannot be present when splits abi filters are set`）。
+- **macOS 分架构出包**：`npm run dist:mac`（`aarch64-apple-darwin`，Apple 芯片 —— 日常开发/自测/打包都用它）与 `npm run dist:mac:intel`（`x86_64-apple-darwin`，发布给老 Intel Mac 时才需要）。**不打 universal**（会把两份二进制拼起来，体积翻倍）。
+- **Windows 不需要拆**：`npm run dist:win`（NSIS，x86_64）本来就小，维持现状。
+- 测试口径：**一律用最新版本，不为旧版本做任何兼容**。
+
 ### Fixed (Android：关掉蓝牙开关后手机仍在广播 —— JNI 签名写错)
 - **真实缺陷**（本轮 code review 抓到，`d2fad5e`）：Kotlin 的 `fun stop()` 是 **Unit** 方法（JNI 描述符 `()V`），Rust 侧却按 `()Z` 调用。**JNI 不做任何编译期检查** —— 这只会在运行期抛 `NoSuchMethodError`，且只有真机才现形：用户关掉「蓝牙通道」后手机**仍在广播**（耗电 + 隐私），日志里一个字都没有。
 - 修法：`stop()` 改走 `()V` 的 void 调用，失败时**主动上报 Warning**（"停止 BLE 外设失败（可能仍在广播）"）；引入 `kotlin_method!("名字", "描述符")` 登记宏把两者写在一处；顺带修正一条**永远发不出来的日志**（桥就绪的 Notice 原先在 `bootstrap` 里发，而那时 events 通道还没建立，现改在 `start()` 里发）。

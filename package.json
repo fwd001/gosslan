@@ -16,15 +16,19 @@
     "version:minor": "node scripts/version.mjs minor",
     "version:major": "node scripts/version.mjs major",
     "dist:win": "tauri build --bundles nsis",
+    "dist:mac": "tauri build --features bluetooth --target aarch64-apple-darwin",
+    "dist:mac:intel": "tauri build --features bluetooth --target x86_64-apple-darwin",
     "dist:win:msi": "tauri build --bundles nsis,msi",
     "dist:win:portable": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-portable.ps1",
     "android:init": "tauri android init",
     "android:dev": "tauri android dev",
     "android:build": "node scripts/inject-android-signing.mjs && tauri android build --apk",
     "android:build:debug": "tauri android build --debug --apk",
+    "android:build:release": "bash scripts/build-android-releases.sh",
     "env:check": "powershell -ExecutionPolicy Bypass -File scripts/check-env.ps1",
     "env:install": "powershell -ExecutionPolicy Bypass -File scripts/install-env.ps1",
-    "multi:run": "powershell -ExecutionPolicy Bypass -File scripts/run-multi-instance.ps1"
+    "multi:run": "powershell -ExecutionPolicy Bypass -File scripts/run-multi-instance.ps1",
+    "android:build:test": "bash scripts/build-android-releases.sh --debug"
   },
   "dependencies": {
     "@headlessui/vue": "^1.7.23",

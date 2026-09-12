@@ -28,3 +28,6 @@ src-tauri/gen/schemas
 
 # Agent 工作目录（运行产物 / 记忆，不入库）
 .workbuddy/
+
+# 打包产物（按架构出的 APK / DMG 等，不入库）
+/release-artifacts/
