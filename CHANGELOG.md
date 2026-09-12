@@ -10,6 +10,37 @@
 
 ## [Unreleased]
 
+### Fixed (好友申请：双方互加后，那条申请还挂在「新朋友」里)
+用户 2026-09-12 真机实测：「如果两个人已经互相加上好友了（可能双方都给对方发送了加好友申请），
+其中一个人点了确定，另一个人点进『新朋友』列表……如果该好友已在好友列表的话，那条好友申请
+就应该自动清除掉」。
+
+**根因**：同一件事（同意好友 ⇒ 忘掉这条申请）在**两条路径**上行为不一致 ——
+跨跳路径 `GossipKind::FriendAccept` 清了 `pending_requests`，而**直连路径
+`Message::FriendAccept` 只加了好友、忘了清**。于是"有时候会清、有时候不清"，
+全看这条回执走的是哪条路（同一局域网内直连时必现）。
+
+**修法（三层，缺一层都可能再漏）**：
+1. **路径统一**：抽出 `transport::forget_pending_request(state, peer)`，直连 / 跨跳 /
+   `respond_friend_request` 的同意路径**全部**走它（同一个助手，不可能再各写一遍）。
+2. **兜底判据**：`get_pending_requests` 按 friends 表过滤并顺手收敛内存态
+   （`is_actionable_request`：人已经是好友 ⇒ 申请不再"待处理"）。判据抽成**纯函数并有单测** ——
+   它原先散落在各条路径里，正是漏清的原因。
+3. **前端按事实过滤**：`chat.pendingRequests` 改为 computed，用新的纯函数
+   `actionableRequests(原始列表, 好友 id 集合)` 过滤。这样**四个读它的地方**
+   （会话列表红点、通讯录「新的朋友」、窄导航徽标、添加好友页的「同意/拒绝」行）一处生效，
+   而且无论这条申请是"我同意的 / 对方同意的 / 重启后重新拉取的 / 对方走别的消息把我加上的"，
+   只要 `friends` 里有这个人，那一行就立刻消失 —— 不依赖某条回执有没有送达。
+
+**护栏（都做过非空转验证，`verify-guards.py` 现 **27** 条）**：
+新增 `src/utils/friendRequests.test.ts`（纯函数 4 例 + "store 必须走它"的接线守卫）、
+`commands::tests::pending_request_from_an_existing_friend_is_not_actionable`、
+Rust 源码规则 `every_friend_accept_path_forgets_the_pending_request`（两条路径各一次，少一条即 FAIL）
+与 `pending_requests_exclude_existing_friends`。
+
+验证：`cargo test --lib` **389 / 0**；`npm test` **334 / 0**；`vue-tsc` 0；`vite build` 通过；
+`cargo check --all-targets` 0 warning；`check-mobile.sh` PASS / 0 warning。
+
 ### Fixed (安卓真机实测四处：触屏定位 / 通道不同步 / 新的朋友点不开 / 蓝牙要手动开)
 用户 2026-09-12 安卓实测报告：①「回到最新」按钮不在右下角；② 添加好友里的局域网开关与设置页的
 不同步；③ 收到好友申请后点「新的朋友」打不开界面；④ 蓝牙通道打不开、且希望手机上默认就开着
