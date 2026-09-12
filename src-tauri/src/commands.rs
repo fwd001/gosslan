@@ -531,12 +531,38 @@ pub async fn set_channel_enabled(
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .is_some();
-                if running != enabled {
+                // **抖动冷却**：3 秒内不允许再次"启停切换"。
+                // 用户 Mac 日志里那种每秒一次的 `启动→停止→启动` 循环，不管调用方是谁，
+                // 都会把 CoreBluetooth 的 GATT server + 广播反复拆建、把 CPU 与蓝牙栈打满
+                // （现象：设置窗口顿卡、连局域网消息都变慢）。这里直接拒绝高频切换：
+                // 状态已是目标值就跳过；否则若距上次真实切换不足 3s，也只记一条日志。
+                static LAST_BT_TRANSITION_MS: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let now = db::now_ms().max(0) as u64;
+                let last = LAST_BT_TRANSITION_MS.load(std::sync::atomic::Ordering::Relaxed);
+                let in_cooldown = last > 0 && now.saturating_sub(last) < 3_000;
+                if running != enabled && !in_cooldown {
+                    LAST_BT_TRANSITION_MS.store(now, std::sync::atomic::Ordering::Relaxed);
+                    s.logger.info(
+                        "ble",
+                        format!(
+                            "蓝牙通道切换：{} → {}",
+                            if running { "运行中" } else { "已停止" },
+                            if enabled { "开启" } else { "关闭" }
+                        ),
+                    );
                     if enabled {
                         crate::network::ble::start(s.clone()).await?;
                     } else {
                         crate::network::ble::stop(s).await;
                     }
+                } else if running != enabled {
+                    s.logger.warn(
+                        "ble",
+                        format!(
+                            "忽略高频蓝牙通道切换请求（3s 冷却内）：运行中={running}，请求={enabled}"
+                        ),
+                    );
                 } else {
                     s.logger.info(
                         "ble",
