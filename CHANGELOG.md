@@ -10,6 +10,15 @@
 
 ## [Unreleased]
 
+### Added (Android 外设角色的 Rust↔Kotlin 桥 —— 7-f 完成，手机也能"被连"了)
+- **Rust 侧 JNI 桥**（`transport/ble_android.rs`）：缓存 `JavaVM` 与 Kotlin 类的全局引用、把 Kotlin 回调上来的**分片**重组成整帧（复用 `ble_framing`，与 macOS 同一份实现）、把网络层要发的帧按 MTU 分片后调 Kotlin 的 `send`。
+  - **`bootstrap` 的鸡生蛋问题**：JNI 的 `FindClass` 依赖"调用方的类加载器"，从 tokio 线程里找不到 App 的类 ⇒ `MainActivity.onCreate` 调一次 `BlePeripheral.bootstrap(context)`，由它在 App 代码还在栈上时把 `JavaVM` + 类引用交给 Rust。
+  - **符号 + 注册双保险**：`native_method!` 的 `extern` 直接导出 JNI 符号（`bootstrap` 靠名字解析），其余四个再 `register_native_methods` 显式注册 —— 签名写错会**当场**以 `NoSuchMethodError` 暴露，而不是真机收发时静默失效。
+  - **没开 feature 必须安全**：Kotlin 用 `try/catch UnsatisfiedLinkError` 包住 `nativeBootstrap()`，否则默认构建会在启动路径崩溃。
+- **接口同形**：`ble_android.rs` 的 `start/stop/PeripheralServer/PeripheralWriter/PeripheralEvent` 与 macOS 版逐一对应 ⇒ `network/ble.rs` 的事件循环/握手/路由/读写循环**两平台共用一份**，只有 import 按平台切换。依赖只加了 `jni = "0.22"`（optional，Android 专属；btleplug 的 droidplug 本来就用同一个版本，**没有引入新的第三方 crate**）。
+- 验证：`cargo test --lib` 378 / 0 warning；`cargo check --all-targets` 0 warning；**Android target `--features bluetooth` 0 warning**；`--features bluetooth` 的完整 APK 构建通过（JNI 符号链接进 `.so`、Kotlin 一并编译）。
+- ⚠️ **仍未验证**：真机上的广播/连接/GATT 读写（需用户设备）；iOS 侧同类实现（`CBPeripheralManager`，与 macOS 同款代码）尚未接；Windows 做外设（WinRT `GattServiceProvider`）未做。
+
 ### Fixed (🔴 卡死：61 个命令仍在 macOS 主线程上跑 —— 清除数据/恢复/添加好友时整个应用冻住)
 - **用户反馈**：「点设置里的清除数据或恢复，整个设置窗口就卡死；点加号 → 添加好友，主窗口卡死」，并重申**渲染与响应速度高于一切**（`6324d05`）。
 - **根因（读上游源码确认）**：`tauri-macros` 的 `body_blocking` 把**同步**命令**内联调用**在 IPC 处理器里，只有 `ExecutionContext::Async` 才走 `respond_async_serialized` → `async_runtime::spawn`；而 wry 的 IPC 回调跑在 **AppKit 消息循环（macOS 主线程）**。所以同步命令 = 在 UI 主线程执行，**卡的是整个进程、所有窗口**。而「清除数据」是一次长事务（全表 `DELETE`，可能数秒）并一直握着 `db` 互斥锁 ⇒ **长事务持锁 → 同步读在主线程等锁 → 全部窗口冻住**。`clear_all_data` 本身早就是 async，但它的**读者不是**（`get_settings`/`get_friends`/`get_pending_requests`/`get_transfers`/`get_logs`/`list_interfaces`/`reset_settings`/`open_settings_window`…）。

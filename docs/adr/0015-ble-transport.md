@@ -116,7 +116,7 @@ BLE 的价值正在这里：它**不依赖 IP 网段**，天然满足"零配置�
 → 收发喂 `handle_message`），macOS 侧另补了 **peripheral（GATT server）角色**（见 §7）。
 `cargo test --lib --features bluetooth` = **371 passed / 0 warning**，Android target 同样 0 warning。
 剩：**三平台真机**。 |
-| 7-f | 移动端/Windows 的 peripheral 角色 | 🚧 **Android Kotlin 侧已完成**（`e66fd8b`，真实 APK 构建验证；Rust JNI 桥接待做）。手机做 peripheral（Android `BluetoothLeAdvertiser` + `BluetoothGattServer` 经 JNI；iOS 与 macOS **同款 `CBPeripheralManager` 代码**）后，Windows/手机之间才能不经 Mac 直连；Windows 仍需 `GattServiceProvider`（WinRT）。 |
+| 7-f | 移动端/Windows 的 peripheral 角色 | 🚧 **Android 整体完成**（Kotlin `e66fd8b` + Rust JNI 桥；真实 APK 构建验证；仅剩真机）。手机做 peripheral（Android `BluetoothLeAdvertiser` + `BluetoothGattServer` 经 JNI；iOS 与 macOS **同款 `CBPeripheralManager` 代码**）后，Windows/手机之间才能不经 Mac 直连；Windows 仍需 `GattServiceProvider`（WinRT）。 |
 
 ---
 
@@ -262,3 +262,35 @@ ANDROID_USER_HOME=$PWD/target/android-home npm run android:build:debug
 # 注意：**不要**设 ANDROID_SDK_HOME —— AGP 8 会把它当成 SDK 路径，直接加载不了插件
 aapt2 dump permissions app-universal-debug.apk | grep -i bluetooth   # 复核权限真的进了包
 ```
+
+### 7.8 Android 外设的 Rust↔Kotlin 桥（7-f 第二步）
+
+Kotlin 侧拿不到 Rust 的网络层，Rust 侧也写不出 `BluetoothGattServerCallback`（回调必须是
+Java 对象），所以两侧必须通过 JNI 对接。要点：
+
+1. **依赖**：`jni = "0.22"`（Android 目标、optional，随 `bluetooth` feature 打开）。
+   btleplug 的 droidplug 后端**本来就依赖同一个 `jni 0.22`**（Android 非 optional），
+   所以这里没有引入任何新的第三方 crate。
+2. **`bootstrap` 的鸡生蛋问题**：JNI 的 `FindClass` 用的是"调用它的 native 方法的类的类加载器"，
+   从普通 tokio 线程里 `FindClass("com/gosslan/app/BlePeripheral")` 会走**系统类加载器**、
+   找不到 App 的类。因此 `MainActivity.onCreate` 里调一次 `BlePeripheral.bootstrap(context)`，
+   它在 App 代码还在栈上时调 `nativeBootstrap()`；Rust 在那次调用里缓存 `JavaVM` 与
+   **类的全局引用**（`env.get_object_class(&this)` → `new_global_ref`），之后任何线程都能用。
+3. **符号 vs 注册**：`native_method!` 的 `extern` 会**直接导出 JNI 符号名**
+   （`Java_com_gosslan_app_BlePeripheral_nativeBootstrap`…）⇒ `bootstrap` 靠名字就能解析；
+   其余四个在 `nativeBootstrap` 里用 `register_native_methods` **再显式注册一次** ——
+   签名写错会当场以 `NoSuchMethodError` 报出来，而不是等到真机收发时静默失效。
+4. **没开 `bluetooth` feature 时必须安全**：Rust 里没有 `nativeBootstrap` 实现，
+   Kotlin 侧用 `try { nativeBootstrap() } catch (e: UnsatisfiedLinkError)` 吞掉 ——
+   否则**默认构建会在启动路径上崩溃**。
+5. **职责边界**：Kotlin 只做"平台 API + 原样转发分片"，**分片重组仍在 Rust**
+   （复用 `ble_framing::BleReassembler`，与 macOS 完全同一份实现），
+   于是"帧"这个概念在三端只有一个定义。
+6. **接口同形**：`ble_android.rs` 暴露的 `start/stop/PeripheralServer/PeripheralWriter/
+   PeripheralEvent` 与 `bluetooth_peripheral.rs`（macOS）**逐一对应**，
+   所以 `network/ble.rs` 里的事件循环、握手、路由、读写循环**两个平台共用一份**
+   （只有 import 按平台切换，其余零改动）。
+7. **方法名映射**：`native_method!` 会把 Rust 的 snake_case 方法名转成 lowerCamelCase
+   （`native_on_frame` → `nativeOnFrame`），数组类型写作 `jbyte[]`；
+   而 `call_static_method` 的签名要用**原始 JNI 描述符**
+   （`jni_sig!("(Ljava/lang/String;[B)Z")` —— 写成 `(java.lang.String) -> boolean` 会被当成字段签名）。
