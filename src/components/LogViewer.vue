@@ -85,6 +85,9 @@ const rows = computed(() =>
 );
 
 async function load() {
+  // 窗口被隐藏/最小化时不必每 2s 拉一次：`get_logs` 会快照整份日志（几千条时是可观的
+  // 克隆 + 序列化开销），而用户根本看不到。重新可见时下面的 visibilitychange 会立刻补一次。
+  if (typeof document !== "undefined" && document.hidden) return;
   try {
     logs.value = await api.getLogs();
   } catch {
@@ -106,8 +109,14 @@ function syncTimer() {
 onMounted(() => {
   void load();
   syncTimer();
+  // 窗口重新可见时立刻补一次（否则要等下一个 2s 周期，看到的是过期日志）
+  document.addEventListener("visibilitychange", onVisibility);
 });
+function onVisibility() {
+  if (!document.hidden) void load();
+}
 onUnmounted(() => {
+  document.removeEventListener("visibilitychange", onVisibility);
   if (timer) clearInterval(timer);
 });
 
