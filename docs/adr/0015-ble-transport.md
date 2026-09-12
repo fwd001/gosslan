@@ -116,7 +116,7 @@ BLE 的价值正在这里：它**不依赖 IP 网段**，天然满足"零配置�
 → 收发喂 `handle_message`），macOS 侧另补了 **peripheral（GATT server）角色**（见 §7）。
 `cargo test --lib --features bluetooth` = **371 passed / 0 warning**，Android target 同样 0 warning。
 剩：**三平台真机**。 |
-| 7-f | 移动端/Windows 的 peripheral 角色 | ⬜ 待做。手机做 peripheral（Android `BluetoothLeAdvertiser` + `BluetoothGattServer` 经 JNI；iOS 与 macOS **同款 `CBPeripheralManager` 代码**）后，Windows/手机之间才能不经 Mac 直连；Windows 仍需 `GattServiceProvider`（WinRT）。 |
+| 7-f | 移动端/Windows 的 peripheral 角色 | 🚧 **Android Kotlin 侧已完成**（`e66fd8b`，真实 APK 构建验证；Rust JNI 桥接待做）。手机做 peripheral（Android `BluetoothLeAdvertiser` + `BluetoothGattServer` 经 JNI；iOS 与 macOS **同款 `CBPeripheralManager` 代码**）后，Windows/手机之间才能不经 Mac 直连；Windows 仍需 `GattServiceProvider`（WinRT）。 |
 
 ---
 
@@ -231,3 +231,34 @@ objc2-foundation = { version = "0.3", optional = true, features = ["NSData","NSS
 
 ⚠️ 仍未验证：真机上"关蓝牙 → 链路立刻消失且日志给出原因"要用户实测（本机无法触发状态切换）；
 "对端走远/掉电"依然**没有**任何回调可用，只能靠写失败或心跳超时收尾 —— 这是外设角色的平台限制。
+
+### 7.7 Android 外设角色的实现要点（7-f 第一步，`e66fd8b`）
+
+平台 API 与 macOS 完全不同，但**行为契约必须一致**（同一套 UUID、同样的广播内容、
+同样的写/通知语义、同样的四类 native 回调）。要点与坑：
+
+1. **广播里只放服务 UUID**：理由与 macOS 侧逐字相同（legacy 广播 31 字节，128 位 UUID 占 18），
+   `AdvertiseData.Builder().setIncludeDeviceName(false)`；`ADVERTISE_FAILED_DATA_TOO_LARGE`
+   要给出可读提示。
+2. 🔴 **`BLUETOOTH_ADVERTISE` 是独立运行时权限**（Android 12+）。缺它时 `startAdvertising`
+   直接抛 `SecurityException`，现象是"手机能扫别人、别人永远发现不了手机"。
+   三个权限（SCAN / CONNECT / ADVERTISE）缺一不可。
+3. **CCCD 必须显式挂**：客户端要开通知就要写 `00002902-…` 描述符，Android 不会替我们加
+   （CoreBluetooth 会隐式处理）—— 这是两侧结构上唯一的差异。`onDescriptorWriteRequest`
+   里也必须 `sendResponse`。
+4. **`onCharacteristicWriteRequest` 必须先 `sendResponse` 再处理数据**，否则对端每次写都等到超时；
+   写请求的 response value 会被忽略，传 `null` 即可。
+5. **API 33 的 `notifyCharacteristicChanged(device, char, false, value)` 返回状态码 `Int`**，
+   而旧重载返回 `Boolean` —— 两个分支写在一起会**编译不过**（本项目已真实踩到）。
+   ≤32 仍需"先 `setValue` 再 notify"（`setValue` 在 33+ 已废弃）。
+6. **回调线程**：系统在主线程投递回调，因此回调里只做"拷字节 + 查表 + 调 native"，
+   重活（分片重组、验签、落库）全在 Rust/tokio —— 与 macOS 侧同一条"不阻断 UI"的红线。
+7. **Android 会回调断开**（`onConnectionStateChange`），比 CoreBluetooth 强：
+   可以立刻发 `unlinked`，不用等写失败。
+
+**本机构建/验证方法**（沙盒或 CI 里 `~/.android` 不可写时）：
+```bash
+ANDROID_USER_HOME=$PWD/target/android-home npm run android:build:debug
+# 注意：**不要**设 ANDROID_SDK_HOME —— AGP 8 会把它当成 SDK 路径，直接加载不了插件
+aapt2 dump permissions app-universal-debug.apk | grep -i bluetooth   # 复核权限真的进了包
+```

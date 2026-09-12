@@ -10,6 +10,13 @@
 
 ## [Unreleased]
 
+### Added (Android 外设角色的 Kotlin 侧 —— 手机也能"被连"了，7-f 第一步)
+- **新增 `BlePeripheral.kt`**（`gen/android/app/src/main/java/com/gosslan/app/`）：`BluetoothLeAdvertiser` + `BluetoothGattServer` 的完整实现（`e66fd8b`）。只做 central 的手机**永远不可能被发现**（btleplug 只能主动连，ADR-0015 §3.1）；手机做了外设之后 `Windows(central) ──BLE──▶ 手机(peripheral)` 才成立，手机与 Windows 之间不必再经 Mac 中转。
+- 与 macOS 实现（`bluetooth_peripheral.rs`）**行为契约一致**：同一套 UUID、同样"广播里只放服务 UUID"、同样的写/通知语义与 native 回调（frame / unlinked / notice / warning）。两处**有意的差异**：① Android 的 `onConnectionStateChange` 会**真的**告诉我们对端断开（CoreBluetooth 外设角色没有这个回调）；② 必须显式给 TX 挂 **CCCD 描述符**，客户端才能开启通知（CoreBluetooth 隐式处理）。
+- 🔴 **补 `BLUETOOTH_ADVERTISE` 权限**（真实缺口）：Android 12+ 把蓝牙拆成 SCAN / CONNECT / **ADVERTISE** 三个运行时权限，缺 ADVERTISE 时 `startAdvertising` 直接抛 `SecurityException` —— 现象正是"手机能扫别人、别人永远发现不了手机"。Kotlin 侧在用户打开「蓝牙通道」时申请并给出可操作提示。
+- **本机真的把 APK 建出来了**（不只 `cargo check`）：`ANDROID_USER_HOME=<workspace>/target/android-home npm run android:build:debug`（沙盒不能写 `~/.android`，重定向后 Gradle 8.14 + AGP 出包）。第一次构建**抓到一处 Kotlin 编译错误**（API 33 的 `notifyCharacteristicChanged` 返回状态码 `Int`，与旧重载的 `Boolean` 不同 → 两分支类型不一致），已修；`aapt2 dump permissions` 确认最终 APK 含 `BLUETOOTH_ADVERTISE` / `SCAN` / `CONNECT`。
+- ⚠️ **现状**：Kotlin 侧就绪并通过编译，**Rust 侧 JNI 桥接尚未实现**（注册 native 回调 + 调用 `start`/`send`），因此本类在真机上还不会被触发；真机广播/连接/GATT 读写与 iOS 侧同类实现均待做。
+
 ### Fixed (BLE 外设：蓝牙被关掉/广播失败不再静默)
 - 两处"看代码看不出来"的静默故障（`81606cd`，自查上一轮落地的外设代码时发现）：
   1. **系统蓝牙被关 / 权限被撤时订阅状态会一直是旧的**：CoreBluetooth 会清空本地 GATT 数据库并断开所有 central，但**不会**回调 `didUnsubscribeFromCharacteristic:` ⇒ `is_subscribed` 仍返回 true，写任务要等 `updateValue` 失败（**最长 8s**）才收尾，而且**日志里一个字都没有**。现在：离开 `PoweredOn` 即作废全部订阅与半截消息、唤醒等待中的写任务，并为每个已订阅的 central 各发一条 `Unlinked`，让网络层**立刻**拆链路。
