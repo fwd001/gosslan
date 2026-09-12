@@ -148,6 +148,32 @@ for ABI in aarch64 armv7; do
   # ③ 校验和（发给别人/自己核对"装的是不是这一版"）
   (cd "$OUT" && shasum -a 256 "$(basename "$DST")" >"$(basename "$DST").sha256")
 
+  # ④ 体积异常自检（**只警告、不失败**）：Gradle 增量打包偶尔会在 APK 里留下**未被中央
+  #    目录引用**的旧数据。实测踩过：debug 包 226MB → **444MB**，多出来的 218MB 正是上一版
+  #    `.so` 的残骸（packaging 复用了旧输出文件），删掉 `build/outputs` 后重打即恢复。
+  #    这种包**能装**，但白多一倍体积（传手机很肉疼），必须显式提醒而不是静默产出。
+  SIZE_WARN="$(python3 - "$DST" <<'GOSSLAN_ORPHAN_CHECK'
+import sys, zipfile, pathlib
+
+p = pathlib.Path(sys.argv[1])
+z = zipfile.ZipFile(p)
+prev = 0
+orphan = 0
+for i in sorted(z.infolist(), key=lambda i: i.header_offset):
+    if i.header_offset > prev:
+        orphan += i.header_offset - prev
+    prev = i.header_offset + 30 + len(i.filename) + len(i.extra) + i.compress_size
+if orphan > 5_000_000:
+    print(
+        f"APK 里有约 {orphan / 1e6:.0f}MB 未被中央目录引用的残留数据（当前 {p.stat().st_size / 1e6:.0f}MB）——"
+        "删掉 src-tauri/gen/android/app/build/outputs/apk 后重打即可瘦回去"
+    )
+GOSSLAN_ORPHAN_CHECK
+)"
+  if [ -n "$SIZE_WARN" ]; then
+    echo "    ⚠️  $SIZE_WARN"
+  fi
+
   # 体积用 du 算（不依赖 bc —— 本机没装 bc，之前那版会打印 0 MB）
   printf '    ✅ %s（%s） sha256=%s\n' \
     "$(basename "$DST")" \
