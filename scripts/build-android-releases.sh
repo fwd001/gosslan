@@ -104,9 +104,19 @@ for ABI in aarch64 armv7; do
     continue
   fi
 
+  # 本次构建**新产出**的 APK；没有就退回复用已有的那一个。
+  # 为什么允许复用：Gradle 对"输入内容没变"的构建会跳过打包（实测：只改了前端压缩配置、
+  # 打出来的 .so 内容与上一版完全一致时，`packageUniversalRelease` 判 UP-TO-DATE，
+  # APK 的 mtime 不变）。这种情况下复用已有产物是**正确**的，但必须校验
+  # "包里的前端就是当前 dist 那一份"（见下面的 ⓪）—— 否则就可能悄悄发出旧前端。
   SRC="$(find "$APK_DIR" -name '*.apk' -newer "$MARKER" -print -quit 2>/dev/null)"
+  REUSED=0
+  if [ -z "$SRC" ]; then
+    SRC="$(find "$APK_DIR" -name '*.apk' -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1)"
+    REUSED=1
+  fi
   if [ -z "$SRC" ] || [ ! -f "$SRC" ]; then
-    echo "    ❌ 本次构建没有新产出 APK（日志尾部）："
+    echo "    ❌ 没找到任何 APK（日志尾部）："
     tail -8 "$LOG"
     FAIL=1
     continue
@@ -114,6 +124,43 @@ for ABI in aarch64 armv7; do
 
   DST="$OUT/gosslan-$VERSION-$TAG-$MODE.apk"
   cp "$SRC" "$DST"
+
+  # ⓪ 包里的前端必须是**当前 dist** 的那一份（文件名就是内容哈希）。
+  # 前端资源是被嵌进 Rust 二进制（`libgosslan_lib.so`）的，所以"前端改了但 Rust 没重编"
+  # 在产物层面完全看不出来 —— 必须显式核对，否则会发出一个"功能是旧的"的包。
+  DIST_JS="$(basename "$(ls "$ROOT"/dist/assets/main-*.js 2>/dev/null | head -1)")"
+  if [ -n "$DIST_JS" ]; then
+    if ! python3 - "$DST" "$DIST_JS" <<'GOSSLAN_EMBED_CHECK'
+import sys, zipfile, pathlib
+
+apk, want = pathlib.Path(sys.argv[1]), sys.argv[2].encode()
+z = zipfile.ZipFile(apk)
+needle = want
+for info in z.infolist():
+    if not info.filename.endswith(".so"):
+        continue
+    # 分块搜索：debug 的 .so 有 200MB+，不要一次性读进内存
+    tail = b""
+    with z.open(info.filename) as f:
+        while True:
+            chunk = f.read(8 << 20)
+            if not chunk:
+                break
+            buf = tail + chunk
+            if needle in buf:
+                sys.exit(0)
+            tail = buf[-len(needle) :]
+sys.exit(1)
+GOSSLAN_EMBED_CHECK
+    then
+      echo "    ❌ 包里的前端不是当前 dist（应含 ${DIST_JS}）—— 前端改了但 Rust 二进制没重编，包里会是旧界面"
+      FAIL=1
+      continue
+    fi
+  fi
+  if [ "$REUSED" = "1" ]; then
+    echo "    ℹ️  Gradle 判定无需重打（输入内容未变），复用已有产物；已校验包内前端 = 当前 dist（${DIST_JS}）"
+  fi
 
   # ① 签名：未签名的 APK 在真机上是 "应用未安装"，必须在这里拦住。
   if [ -n "$APKSIGNER" ]; then

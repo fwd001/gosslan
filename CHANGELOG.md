@@ -156,6 +156,16 @@ Rust 源码规则 `every_friend_accept_path_forgets_the_pending_request`（两�
   装的是哪一份；实测 release **12MB** vs debug **216MB**），并在旁边生成同名 `.sha256`。
 - 只认**本次构建新产出**的 APK（marker 时间戳 + `find -print -quit`），不再 `ls -t | head -1` 去赌
   构建目录里没有残留的 universal / 另一个 ABI 的旧包。
+- 新增三条产物校验（都在出包脚本里，失败即整条构建红掉）：
+  - **包内前端 = 当前 `dist`**：前端资源是被嵌进 `libgosslan_lib.so` 的，所以"前端改了但 Rust
+    没重编"在产物层面完全看不出来 —— 用 bundle 的内容哈希文件名在 `.so` 里搜一遍（分块搜，debug
+    的 `.so` 有 200MB+），对不上就报"包里会是旧界面"。
+  - Gradle 判定"输入内容未变"而跳过打包时**允许复用**已有产物，但会打印一行说明并照常做上面的校验
+    （实测：只改前端压缩配置、`.so` 内容一致时 `packageRelease` 是 UP-TO-DATE，APK 的 mtime 不变；
+    旧写法会误报"本次构建没有新产出 APK"）。
+  - **体积异常自检**：Gradle 增量打包偶尔在 APK 里留下**未被中央目录引用**的旧数据
+    （实测 debug 包 226MB → **444MB**，多出的 218MB 是上一版 `.so` 残骸，能装但白胖一倍）→ 超过
+    5MB 就警告并给出处置办法（删 `build/outputs/apk` 后重打）。
 - 支持只出单个 ABI：`bash scripts/build-android-releases.sh --abi arm64-v8a`
   （或 `npm run android:build:test -- --abi arm64-v8a`）。
 - 构建会**改脏工作区**的问题一并解决：`MainActivity.kt`（运行时权限申请）、`AndroidManifest.xml`
