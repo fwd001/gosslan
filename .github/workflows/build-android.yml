@@ -44,7 +44,9 @@ jobs:
       - name: Setup Rust (Android targets)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,x86_64-linux-android,armv7-linux-androideabi,i686-linux-android
+          # 只编要发布的两个 ABI：**最新** arm64-v8a + **稍老** armeabi-v7a。
+          # x86/x86_64 只对模拟器有意义，不发布（也省一半 CI 时间）。
+          targets: aarch64-linux-android,armv7-linux-androideabi
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -69,18 +71,21 @@ jobs:
               m.write_text(s, encoding='utf-8')
           PY
 
-      - name: Build release APK
-        run: npm run android:build
+      - name: Build release APK（按 ABI 各出一份）
+        # 用仓库脚本而不是 Gradle 的 splits：Tauri 会给每个 ABI 设 ndk.abiFilters，
+        # AGP 禁止它与 splits.abi 并存（见脚本头部注释）。脚本对每个 ABI 各构建一次，
+        # 天然只有那一个 ABI 的 .so 进包，并落到 release-artifacts/android/。
+        run: bash scripts/build-android-releases.sh
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gosslan-android-apk
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          name: gosslan-android-abis
+          path: release-artifacts/android/*.apk
 
       - name: Create GitHub Release (tag 触发)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          files: release-artifacts/android/*.apk
           generate_release_notes: true

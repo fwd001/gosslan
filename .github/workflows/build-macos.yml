@@ -1,4 +1,4 @@
-name: Build macOS (Universal)
+name: Build macOS (arm64 + x86_64)
 
 on:
   push:
@@ -11,6 +11,16 @@ permissions:
 
 jobs:
   build-macos:
+    # **分架构出两份**，不打 universal：universal 把两份二进制拼进一个 .app，体积翻倍，
+    # 而用户只可能用到其中一份（Apple 芯片 / Intel 二选一）。
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            label: arm64
+          - target: x86_64-apple-darwin
+            label: x86_64
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -25,7 +35,7 @@ jobs:
       - name: Setup Rust (Intel + Apple Silicon)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-apple-darwin,aarch64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -35,19 +45,19 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build universal .app + .dmg (x86_64 + arm64)
-        run: npm run tauri -- build --target universal-apple-darwin
+      - name: Build .app + .dmg (${{ matrix.label }})
+        run: npm run tauri -- build --target ${{ matrix.target }} --features bluetooth
 
       - name: Upload .dmg artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gosslan-macos-universal
-          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          name: gosslan-macos-${{ matrix.label }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
       - name: Create GitHub Release (tag 触发)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          files: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           generate_release_notes: true
