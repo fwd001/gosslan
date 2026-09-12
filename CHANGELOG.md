@@ -10,6 +10,20 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 卡死：61 个命令仍在 macOS 主线程上跑 —— 清除数据/恢复/添加好友时整个应用冻住)
+- **用户反馈**：「点设置里的清除数据或恢复，整个设置窗口就卡死；点加号 → 添加好友，主窗口卡死」，并重申**渲染与响应速度高于一切**（`6324d05`）。
+- **根因（读上游源码确认）**：`tauri-macros` 的 `body_blocking` 把**同步**命令**内联调用**在 IPC 处理器里，只有 `ExecutionContext::Async` 才走 `respond_async_serialized` → `async_runtime::spawn`；而 wry 的 IPC 回调跑在 **AppKit 消息循环（macOS 主线程）**。所以同步命令 = 在 UI 主线程执行，**卡的是整个进程、所有窗口**。而「清除数据」是一次长事务（全表 `DELETE`，可能数秒）并一直握着 `db` 互斥锁 ⇒ **长事务持锁 → 同步读在主线程等锁 → 全部窗口冻住**。`clear_all_data` 本身早就是 async，但它的**读者不是**（`get_settings`/`get_friends`/`get_pending_requests`/`get_transfers`/`get_logs`/`list_interfaces`/`reset_settings`/`open_settings_window`…）。
+- **修法**：把所有会碰重资源的命令改成 `#[tauri::command(async)]` / `async fn`，共 **61 个**（数据库、文件系统、日志、剪贴板、网卡枚举、阻塞睡眠）；只保留纯窗口操作（minimize/maximize/fullscreen/close/圆角）同步。其中 19 个（`send_message`/`mark_read`/`send_file`/`respond_friend_request`/`start_network`/`stop_network`/`set_channel_enabled`…）是**被新守卫逼出来的**，全是高频路径。
+- **守卫从"名字清单"改成"规则"**：上一轮的 `heavy_commands_run_off_the_main_thread` 是名字清单，只能盯住写清单时的 12 个 —— 正因为如此这 61 个才漏了过去。新增 `blocking_commands_run_off_the_main_thread` 直接解析 `commands.rs`，逐个命令取函数体（手写扫描跳过字符串/注释/生命周期，避免 `format!("{}")` 造成花括号错配），碰标记即要求 off-main-thread，**一次报出全部违规并附原因**。
+- **非空转验证**：去掉真实命令 `get_settings` 的 `(async)` → 守卫 FAIL 并点名；恢复后全绿、无残留。
+- 验证：`cargo test --lib` 378 / 0 warning；`--features bluetooth` 385 / 0 warning；`cargo check --all-targets` 0 warning；Android `check-mobile.sh --bluetooth` PASS / 0 warning。前端无需改动（命令名与返回类型未变，async 对 `invoke` 透明）。
+  ⚠️ 说明：清除大量数据时**读操作会排在长事务后面**（界面保持可交互，数据在操作完成后刷新）—— 这是刻意的原子性取舍（全清或全不清），不是卡顿。
+
+### Fixed (设置窗口的头像与名字显示空白/默认值)
+- **根因是挂载与取数的顺序**（`9d4d055`）：子组件在 `setup` 阶段就把 store 的值**快照**进 ref（`ProfileSection` 的 `watch(..., { immediate: true })` 读 `app.device`），而 `app.init()` 是在 `App.vue` 的 `onMounted` 里才 `await` 的 —— **先挂载、后拿数据**。主窗口看不出问题（设置分区打开时才挂载），独立设置窗口一开场就把**空昵称 / null 头像**写进了 ref，数据到位后没人再同步，于是头像与名字一直是空白/默认。
+- 修法两处互补：① `App.vue` 新增 `settingsReady`，独立设置窗口的内容**等 `app.init()` 完成后再挂载**（这一处同时修掉外观/语言/网络/存储等分区的同类问题；等待期间显示窗口自己的首屏骨架）；② `ProfileSection` 补对 `app.device.nickname/avatar` 的 watch，覆盖**运行中**的变更（「恢复默认」会把昵称恢复默认、头像清空并广播）。用户正在输入时 `device` 不变，故不会覆盖未保存的编辑。
+- 验证：`npm test` 291 / 0 fail；`vue-tsc` 0 错误；`vite build` 通过。
+
 ### Added (Android 外设角色的 Kotlin 侧 —— 手机也能"被连"了，7-f 第一步)
 - **新增 `BlePeripheral.kt`**（`gen/android/app/src/main/java/com/gosslan/app/`）：`BluetoothLeAdvertiser` + `BluetoothGattServer` 的完整实现（`e66fd8b`）。只做 central 的手机**永远不可能被发现**（btleplug 只能主动连，ADR-0015 §3.1）；手机做了外设之后 `Windows(central) ──BLE──▶ 手机(peripheral)` 才成立，手机与 Windows 之间不必再经 Mac 中转。
 - 与 macOS 实现（`bluetooth_peripheral.rs`）**行为契约一致**：同一套 UUID、同样"广播里只放服务 UUID"、同样的写/通知语义与 native 回调（frame / unlinked / notice / warning）。两处**有意的差异**：① Android 的 `onConnectionStateChange` 会**真的**告诉我们对端断开（CoreBluetooth 外设角色没有这个回调）；② 必须显式给 TX 挂 **CCCD 描述符**，客户端才能开启通知（CoreBluetooth 隐式处理）。
