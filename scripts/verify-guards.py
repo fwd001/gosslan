@@ -470,6 +470,17 @@ CASES: list[Case] = [
         tags=["rust", "friend"],
     ),
     Case(
+        name="版本号规则（feat 必须算中档，否则台账与门禁一起失效）",
+        why="版本分类是发布台账与 `version:check` 的唯一依据；把 feat 降成 patch 会让\"中功能\""
+        "永远不提升中位，历史台账与门禁同时失真（这类退化不报错、也不影响功能）",
+        file=ROOT / "scripts" / "semver.mjs",
+        injections=[('feat: "minor",', 'feat: "patch",')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="minor",
+        tags=["frontend", "version"],
+    ),
+    Case(
         name="打包配置（release 前端必须压缩）",
         why="TAURI_ENV_DEBUG 是字符串（release 为 \"false\"），`!process.env.TAURI_ENV_DEBUG` "
         "把 release 当成 debug ⇒ 前端不压缩还带 sourcemap（实测 310KB → 500KB + 735KB .map）。"

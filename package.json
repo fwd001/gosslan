@@ -1,14 +1,14 @@
 {
   "name": "gosslan",
   "private": true,
-  "version": "2.1.2",
+  "version": "3.0.0",
   "type": "module",
   "description": "Gosslan — 无服务器 P2P 局域网即时通讯（Tauri v2 + Vue 3 + TypeScript）",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning src/utils/messages.test.ts src/utils/color.test.ts src/utils/chatStyle.test.ts src/utils/cn.test.ts src/utils/linkify.test.ts src/utils/highlight.test.ts src/utils/nameGroup.test.ts src/utils/ime.test.ts src/utils/defer.test.ts src/utils/backStack.test.ts src/utils/settingsStructure.test.ts src/utils/chatSearch.test.ts src/utils/lightboxGestures.test.ts src/utils/logFilter.test.ts src/utils/clipboard.test.ts src/utils/popupRegistry.test.ts src/utils/haptics.test.ts src/utils/mediaAvailability.test.ts src/utils/templateBranches.test.ts src/utils/tokenContrast.test.ts src/utils/errors.test.ts src/utils/a11yLabels.test.ts src/utils/appearance.test.ts src/utils/designGuards.test.ts src/utils/platform.test.ts src/utils/shortcuts.test.ts src/utils/notifications.test.ts src/i18n/index.test.ts src/data/emojis.test.ts src/api/events.test.ts src/utils/storeContract.test.ts src/utils/windowLaunch.test.ts src/utils/windowEntries.test.ts src/utils/channelState.test.ts src/utils/friendRequests.test.ts src/utils/buildConfig.test.ts",
+    "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning src/utils/messages.test.ts src/utils/color.test.ts src/utils/chatStyle.test.ts src/utils/cn.test.ts src/utils/linkify.test.ts src/utils/highlight.test.ts src/utils/nameGroup.test.ts src/utils/ime.test.ts src/utils/defer.test.ts src/utils/backStack.test.ts src/utils/settingsStructure.test.ts src/utils/chatSearch.test.ts src/utils/lightboxGestures.test.ts src/utils/logFilter.test.ts src/utils/clipboard.test.ts src/utils/popupRegistry.test.ts src/utils/haptics.test.ts src/utils/mediaAvailability.test.ts src/utils/templateBranches.test.ts src/utils/tokenContrast.test.ts src/utils/errors.test.ts src/utils/a11yLabels.test.ts src/utils/appearance.test.ts src/utils/designGuards.test.ts src/utils/platform.test.ts src/utils/shortcuts.test.ts src/utils/notifications.test.ts src/i18n/index.test.ts src/data/emojis.test.ts src/api/events.test.ts src/utils/storeContract.test.ts src/utils/windowLaunch.test.ts src/utils/windowEntries.test.ts src/utils/channelState.test.ts src/utils/friendRequests.test.ts src/utils/buildConfig.test.ts src/utils/versioning.test.ts",
     "tauri": "tauri",
     "icon": "tauri icon src-tauri/icons/icon.png",
     "version:show": "node scripts/version.mjs show",
@@ -29,7 +29,11 @@
     "env:check": "powershell -ExecutionPolicy Bypass -File scripts/check-env.ps1",
     "env:install": "powershell -ExecutionPolicy Bypass -File scripts/install-env.ps1",
     "multi:run": "powershell -ExecutionPolicy Bypass -File scripts/run-multi-instance.ps1",
-    "android:build:test": "bash scripts/build-android-releases.sh --debug"
+    "android:build:test": "bash scripts/build-android-releases.sh --debug",
+    "version:check": "node scripts/semver.mjs check",
+    "version:classify": "node scripts/semver.mjs classify",
+    "version:ledger": "node scripts/semver.mjs ledger --since main > docs/version-ledger.md",
+    "version:release": "node scripts/semver.mjs release"
   },
   "dependencies": {
     "@headlessui/vue": "^1.7.23",
