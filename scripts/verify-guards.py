@@ -368,6 +368,24 @@ CASES: list[Case] = [
         expect_fail_hint="launchAuxWindow",
         tags=["frontend", "window"],
     ),
+    Case(
+        name="常驻窗口（设置窗口重新显示必须刷新环境数据）",
+        why="独立设置窗口改成常驻（关闭=隐藏）之后不再重新加载；若只在首次加载时取一次数据，"
+        "用户切了 Wi-Fi/换了共享目录再打开设置会看到旧快照 —— 这是'常驻'引入的新退化面",
+        file=ROOT / "src" / "entries" / "settings.ts",
+        injections=[
+            (
+                "  void getCurrentWindow().onFocusChanged(({ payload: focused }) => {\n"
+                "    if (focused) void useAppStore().refreshEnvironment();\n"
+                "  });",
+                "  // （非空转验证：这一块被临时移除）",
+            )
+        ],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="onFocusChanged",
+        tags=["frontend", "window"],
+    ),
 ]
 
 

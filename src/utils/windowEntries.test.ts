@@ -114,6 +114,18 @@ test("辅助窗口的入口不得把聊天那一套拉进来（这是「设置�
   assert.match(read("src/App.vue"), /ResponsiveLayout/, "主窗口根组件要渲染聊天布局");
 });
 
+test("常驻的设置窗口必须在重新获得焦点时刷新环境数据（否则关了再开会看到旧快照）", () => {
+  // 独立设置窗口现在是常驻的（关闭 = 隐藏，不重新加载），所以"只加载一次"就会把
+  // 网卡/IP、共享目录、在线状态停在旧值上：用户切了 Wi-Fi 再打开设置，看到的还是上次的。
+  const entry = read("src/entries/settings.ts");
+  assert.match(entry, /onFocusChanged/, "设置窗口要监听重新获得焦点");
+  assert.match(entry, /refreshEnvironment\(\)/, "获得焦点时刷新环境数据");
+
+  const store = read("src/stores/useAppStore.ts");
+  assert.match(store, /async function refreshEnvironment\(/, "store 要有 refreshEnvironment");
+  assert.match(store, /^\s+refreshEnvironment,\s*$/m, "refreshEnvironment 必须从 store 导出");
+});
+
 test("App.vue 不得再按窗口 label 分支渲染（分支回来 = 老问题复现）", () => {
   // ⚠️ 变量别叫 `app`：`storeContract` 守卫会把 `app.*` 当成"界面用到的 store 成员"来核对，
   //    在测试文件里叫 `app` 会被它误判成用了不存在的 store 成员（真踩过）。

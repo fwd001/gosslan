@@ -500,23 +500,7 @@ export const useAppStore = defineStore("app", () => {
     mq.addEventListener("change", (e) => (isMobile.value = e.matches));
     watchKeyboard();
 
-    // 这四项互不依赖 ⇒ **并行**拉取（原先串行 await，启动要多等 3 个 IPC 往返；
-    // 用户 2026-09-12 要求「不要有任何阻断渲染的操作」）。
-    // 用 `allSettled` 而不是 `all`：任一项失败（例如网卡枚举在权限受限时抛错）
-    // 不该把设备信息 / 共享目录一起弄丢 —— 逐项取成功值、失败保持默认。
-    const [dev, ifaces, share, st] = await Promise.allSettled([
-      api.getDeviceInfo(),
-      api.listInterfaces(),
-      api.getShareDir(),
-      api.getNetworkStatus(),
-    ]);
-    if (dev.status === "fulfilled") device.value = dev.value;
-    if (ifaces.status === "fulfilled") interfaces.value = ifaces.value;
-    if (share.status === "fulfilled") shareDir.value = share.value;
-    if (st.status === "fulfilled") {
-      online.value = st.value.online;
-      boundIp.value = st.value.bound_ip;
-    }
+    await refreshEnvironment();
     // Android 首次启动申请「附近的设备」等运行时权限（系统弹框）。
     // ⚠️ 延迟到首帧之后且不 await：用户红线是"不能有任何阻断渲染的操作" ——
     // 权限弹框该在界面已经画出来之后再出现。
@@ -610,6 +594,35 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
+  /**
+   * 刷新**会变的环境数据**：设备信息 / 网卡与 IP / 共享目录 / 在线状态。
+   *
+   * 为什么单独抽出来：独立「设置」窗口现在是**常驻**的（关闭只是隐藏，见
+   * `commands.rs` 的 `AUX_WINDOWS_RESIDENT`），窗口不会重新加载 ⇒ 用户切了 Wi-Fi、
+   * 换了共享目录之后再打开设置，看到的会是**上次的快照**。所以设置窗口在重新获得焦点时
+   * 调一次这里（偏好类数据不在此列 —— 那是 `settings-changed` 事件负责同步的）。
+   *
+   * 四项互不依赖 ⇒ **并行**拉取（原先串行 await，启动要多等 3 个 IPC 往返；
+   * 用户 2026-09-12 要求「不要有任何阻断渲染的操作」）。
+   * 用 `allSettled` 而不是 `all`：任一项失败（例如网卡枚举在权限受限时抛错）
+   * 不该把设备信息 / 共享目录一起弄丢 —— 逐项取成功值、失败保持默认。
+   */
+  async function refreshEnvironment() {
+    const [dev, ifaces, share, st] = await Promise.allSettled([
+      api.getDeviceInfo(),
+      api.listInterfaces(),
+      api.getShareDir(),
+      api.getNetworkStatus(),
+    ]);
+    if (dev.status === "fulfilled") device.value = dev.value;
+    if (ifaces.status === "fulfilled") interfaces.value = ifaces.value;
+    if (share.status === "fulfilled") shareDir.value = share.value;
+    if (st.status === "fulfilled") {
+      online.value = st.value.online;
+      boundIp.value = st.value.bound_ip;
+    }
+  }
+
   async function refreshInterfaces() {
     interfaces.value = await api.listInterfaces();
   }
@@ -654,6 +667,7 @@ export const useAppStore = defineStore("app", () => {
     stopNetwork,
     setShareDir,
     refreshInterfaces,
+    refreshEnvironment,
     setThemeColor,
     setFontFamily,
     setChatStyle,
