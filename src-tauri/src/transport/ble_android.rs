@@ -144,6 +144,18 @@ fn with_env<T>(
     vm.attach_current_thread(f).map_err(|e| format!("JNI 调用失败：{e}"))
 }
 
+/// btleplug 的 Android 后端是否已成功初始化。
+///
+/// 为什么要记这个标志：`Manager::new()` 内部一旦发现未初始化就**在 crate 里 panic**，
+/// 而安卓 release 强制 `panic = "abort"` ⇒ 进程直接消失（用户实测的闪退）。
+/// 所以我们在碰 btleplug 之前先查这个标志，**没就绪就直接返回 Err**（UI 显示"蓝牙不可用"），
+/// 把"崩溃"降级成"功能不可用"。
+pub fn droidplug_ready() -> bool {
+    DROIDPLUG_READY.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+static DROIDPLUG_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn kotlin_class() -> Result<&'static Global<JClass<'static>>, String> {
     KOTLIN_CLASS
         .get()
@@ -347,11 +359,23 @@ fn native_bootstrap<'local>(
     // （JNI 的 FindClass 依赖调用方的类加载器），而且 `Env` 就在这里 —— droidplug 需要
     // 一个已 attach 的线程来种下 JavaVM 单例与 Adapter 类。
     // 失败不致命：只记一条 warning，蓝牙通道之后会以明确的错误返回（绝不 panic）。
-    if let Err(e) = btleplug::platform::init(env) {
-        // 失败不致命：蓝牙通道之后会以明确的错误返回（`network::ble::start` 会把
-        // `driver::adapter()` 的 Err 冒给前端并标成"不可用"），**绝不 panic**。
-        // 这里留一条 stderr（debug 构建可见；release 由 logcat 里的 panic hook/日志兜底）。
-        eprintln!("[gosslan][ble] btleplug droidplug 初始化失败：{e}");
+    match btleplug::platform::init(env) {
+        Ok(()) => {
+            DROIDPLUG_READY.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        Err(e) => {
+            DROIDPLUG_READY.store(false, std::sync::atomic::Ordering::SeqCst);
+            // 失败必须**看得见**：一条 stderr + 一条 logcat（`adb logcat -s gosslan`）。
+            // 真实原因通常只有一个：R8 把 btleplug 的 Kotlin 类改名/删了
+            //（见 scripts/android/proguard-gosslan.pro 里的 keep 规则）。
+            let msg = format!("btleplug droidplug 初始化失败（蓝牙通道将不可用）：{e}");
+            eprintln!("[gosslan][ble] {msg}");
+            let _ = std::process::Command::new("log")
+                .args(["-t", "gosslan", &format!("[error] [ble] {msg}")])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
     }
     // 用类的全局引用注册三个回调：签名写错会立刻以 NoSuchMethodError 暴露（比静默失效好）
     if let Some(class) = KOTLIN_CLASS.get() {

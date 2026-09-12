@@ -20,6 +20,17 @@
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
 
+
+# btleplug 的 Android 后端（droidplug）用**类名**找自己的 Kotlin 实现
+# （`find_class("com/nonpolynomial/btleplug/android/impl/Adapter")`）。
+# R8 在 release 下会把这些类改名/删掉 —— 实测（dexdump 反查 4.1.9 的 release APK）：
+# 整个 `com.nonpolynomial.btleplug.android.impl.*` **一个都不在** ⇒ 初始化失败 ⇒
+# 随后 `Manager::new()` 走到 `global_adapter()` 直接 panic ⇒ 安卓 release 包
+# "点添加好友/设置就闪退"（logcat 里就是那句 Droidplug has not been initialized）。
+# 这是**只有 release 才会现形**的坑（debug 不混淆），所以必须显式 keep。
+-keep class com.nonpolynomial.btleplug.** { *; }
+-dontwarn com.nonpolynomial.btleplug.**
+
 # GOSSLAN_JNI_BEGIN
 # Rust 用 JNI「名字 + 签名」直接调这些 Kotlin 方法（见 src-tauri/src/transport/ble_android.rs
 # 里的 `kotlin_method!`）。release 构建会开 R8（`build.gradle.kts` 的 `isMinifyEnabled = true`），
@@ -37,4 +48,18 @@
     public boolean hasRequiredPermissions();
     native <methods>;
 }
+# btleplug 的 Android 后端（droidplug）用**类名**找自己的 Kotlin 实现
+# （`find_class("com/nonpolynomial/btleplug/android/impl/Adapter")`）。
+# R8 在 release 下会把这些类改名/删掉 —— 实测（dexdump 反查 4.1.9 的 release APK）：
+# 整个 `com.nonpolynomial.btleplug.android.impl.*` **一个都不在** ⇒ 初始化失败 ⇒
+# 随后 `Manager::new()` 走到 `global_adapter()` 直接 panic ⇒ 安卓 release 包
+# "点添加好友/设置就闪退"（logcat 里就是那句 Droidplug has not been initialized）。
+# 这是**只有 release 才会现形**的坑（debug 不混淆），所以必须显式 keep。
+# 规则抄自 btleplug 官方 README（Android 一节）：它的 Java 代码**只被 native 代码按名字调用**，
+# R8 会当成死代码整包删掉 —— 实测（dexdump 反查 release APK）确实一个类都不剩，
+# 于是 `platform::init()` 的 find_class 失败 ⇒ 之后 `Manager::new()` panic ⇒ 闪退。
+-keep class com.nonpolynomial.** { *; }
+-keep class io.github.gedgygeddy.** { *; }
+-dontwarn com.nonpolynomial.**
+-dontwarn io.github.gedgygeddy.**
 # GOSSLAN_JNI_END

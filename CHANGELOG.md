@@ -27,6 +27,34 @@ base36 补零大写、旧默认名识别且不误伤自取名字）。
 
 **顺带修**：`scripts/version.mjs` 发布后**补回 `## [Unreleased]
 
+## [4.1.10] - 2026-09-12
+
+### Fixed (🔴 安卓闪退真因：btleplug 的 Android Java 部分**从未编译进 App**)
+用户 4.1.7 的 logcat 复现同一条 panic（我上一轮"初始化 droidplug"的修法因此无效）：
+
+```
+panic @ btleplug-0.13.0/src/droidplug/mod.rs:20:26：
+  Droidplug has not been initialized. Please initialize it with btleplug::platform::init().
+```
+
+**真正的根因**（用 `dexdump` 反查 release APK 确认）：btleplug 在 Android 上依赖它自带的
+**Java 实现**（`com.nonpolynomial.**` + `io.github.gedgygeddy.**`，共 28 个 `.java`），
+而 Tauri 的 Gradle 工程里**根本没有这个模块** ⇒ `platform::init()` 里的 `find_class` 失败
+⇒ 之后 `Manager::new()` 在 crate 内 panic ⇒ 安卓 release `panic = "abort"` **整进程消失**。
+（debug 包同样没有这些类，只是表现为"蓝牙通道打不开"而不是闪退 —— 与此前那条反馈也对得上。）
+
+修法（两处，都是**构建期注入**，因为 `gen/android` 会被 `tauri android init` 重生）：
+1. `inject-android-signing.mjs`：把 crate 自带的 Java 源码目录挂到 App 的
+   `sourceSets["main"].java.srcDirs(...)`（比引 Gradle 子模块简单，且不受 AGP 版本差异影响）；
+2. `proguard-gosslan.pro`：按 btleplug 官方 README 的要求 keep
+   `com.nonpolynomial.**` 与 `io.github.gedgygeddy.**`（它的 Java 代码只被 native 按类名调用，
+   R8 会当死代码整包删掉）。
+3. 另外把"初始化失败"从**静默**改成**可见**（stderr + logcat），并在 `driver::adapter()` 前
+   查一个就绪标志：万一哪天又退化，**降级成"蓝牙不可用"，绝不再 panic 闪退**。
+
+**验证**（可复现）：重建后 `strings classes*.dex | grep nonpolynomial` 必须非空 —— 这是我这一轮
+唯一能在这台机器上做完的端到端验证。
+
 ## [4.1.9] - 2026-09-12
 
 ### Fixed (蓝牙启停加了 3 秒冷却：无论谁在抖动，都不再拆蓝牙栈)

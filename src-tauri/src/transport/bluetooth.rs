@@ -97,6 +97,17 @@ pub mod driver {
     /// 取第一个可用的蓝牙适配器。没有适配器（或系统未授权）时返回 Err，
     /// 上层据此把蓝牙通道标为不可用 —— **绝不能因此影响局域网**。
     pub async fn adapter() -> Result<Adapter, String> {
+        // Android：btleplug 需要先 `platform::init()`（由 `BlePeripheral.bootstrap` 经 JNI 触发）。
+        // 未就绪时**绝不能**往下走 —— `Manager::new()` 会在 crate 内 panic，而安卓 release 是
+        // `panic = "abort"`（整进程消失，用户实测的闪退）。这里提前返回 Err，UI 顶多显示"蓝牙不可用"。
+        #[cfg(target_os = "android")]
+        if !crate::transport::ble_android::droidplug_ready() {
+            return Err(
+                "Android 蓝牙后端尚未就绪（btleplug droidplug 未初始化）—— \
+                 若是 release 包，检查 proguard 是否保留了 com.nonpolynomial.btleplug.**"
+                    .to_string(),
+            );
+        }
         let manager = Manager::new()
             .await
             .map_err(|e| format!("蓝牙管理器初始化失败：{e}"))?;

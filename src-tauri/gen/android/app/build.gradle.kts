@@ -14,6 +14,10 @@ val tauriProperties = Properties().apply {
 }
 
 android {
+    // GOSSLAN_BTLEPLUG_JAVA_BEGIN
+    // btleplug 的 Android Java 实现（只被 native 代码按类名调用，必须编译进 App）
+    sourceSets["main"].java.srcDirs("/Users/wendongfu/Documents/code/gosslan/target/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/btleplug-0.13.0/src/droidplug/java/src/main/java")
+    // GOSSLAN_BTLEPLUG_JAVA_END
     compileSdk = 36
     namespace = "com.gosslan.app"
     defaultConfig {
