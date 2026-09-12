@@ -19,6 +19,11 @@
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- 外设角色（手机被电脑连）需要**广播**权限：Android 12+ 把它拆成了独立运行时权限
+         `BLUETOOTH_ADVERTISE`，只有 SCAN/CONNECT 时 `startAdvertising` 会直接抛
+         SecurityException（现象：手机能扫别人、别人永远发现不了手机）。
+         与 SCAN/CONNECT 一样由 Kotlin 侧在用户打开「蓝牙通道」时申请。 -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
