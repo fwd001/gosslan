@@ -234,6 +234,33 @@ CASES: list[Case] = [
         expect_fail_hint="描述符不一致",
         tags=["rust", "ble", "android"],
     ),
+    # ---------------- 前端：IPC 事件契约 ----------------
+    Case(
+        name="IPC 事件契约（Rust 发的必须有人听）",
+        why="真实缺陷：设置窗口改语言/主题后主窗口不刷新 —— 因为根本没有 settings-changed 事件。"
+        "同一类还有 group-message-acked 一直没人接",
+        file=ROOT / "src" / "api" / "index.ts",
+        injections=[('listen("settings-changed"', 'listen("settings-changed-typo"')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="settings-changed",
+        tags=["frontend", "ipc"],
+    ),
+    # ---------------- Rust：分批清空（点清除数据不卡死的机制） ----------------
+    Case(
+        name="清空数据必须分批（单次只删一批，批间放锁）",
+        why="用户实测：点「清除数据」设置窗口卡死 —— 原实现一个大事务握住 db 锁数秒，"
+        "所有读命令都在等锁。改回大事务就会静默退化",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} LIMIT {CLEAR_BATCH_ROWS})",
+            "DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} LIMIT 999999999)",
+        )],
+        cmd=cargo("test", "--lib", "clear_is_batched"),
+        cwd=TAURI,
+        expect_fail_hint="单次调用",
+        tags=["rust", "perf"],
+    ),
 ]
 
 

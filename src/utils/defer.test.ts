@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { debounce } from "./defer.ts";
+import { debounce, shouldRunThrottled } from "./defer.ts";
 
 const srcDir = join(import.meta.dirname, "..");
 
@@ -196,4 +196,20 @@ test("高频写入的设置项不每次都落库（IPC 风暴守卫）", () => {
     setter.slice(0, 400).includes("persistSoon"),
     "setThemeColor 由颜色选择器连续触发，必须走去抖持久化而不是每次都 persistSettings()",
   );
+});
+
+// ---------------- `shouldRunThrottled`（事件驱动的刷新节流） ----------------
+//
+// 用途：`peers-updated` 最多 3/s，而它触发的拓扑刷新变化很慢。每个事件都发一次 IPC
+// 就是白白的 IPC 风暴（每次都要跨进程、过主线程消息循环），攒起来就是"顿"。
+
+test("从未执行过（last = 0）一律放行", () => {
+  assert.equal(shouldRunThrottled(1000, 0, 1000), true);
+});
+
+test("距上次不足间隔就不执行，够间隔才执行", () => {
+  assert.equal(shouldRunThrottled(1500, 1000, 1000), false, "差 500ms 应被节流");
+  assert.equal(shouldRunThrottled(1999, 1000, 1000), false, "差 999ms 仍被节流");
+  assert.equal(shouldRunThrottled(2000, 1000, 1000), true, "差 1000ms 放行");
+  assert.equal(shouldRunThrottled(9999, 1000, 1000), true, "差得越多越放行");
 });

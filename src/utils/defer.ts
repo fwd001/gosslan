@@ -69,3 +69,15 @@ export function debounce<A extends unknown[]>(fn: (...args: A) => void, ms: numb
 
   return debounced;
 }
+
+/**
+ * 节流判据（纯函数，便于单测）：距上次执行不足 `minIntervalMs` 就不必再执行。
+ *
+ * 用途：`peers-updated` 这类事件最多 3/s，而由它触发的拓扑刷新（一次 IPC 往返）变化很慢，
+ * 每次都发就是白白的 IPC 风暴 —— 每次 IPC 都要跨进程、进主线程消息循环，攒起来就是"顿"。
+ * `last === 0`（从未执行过）一律放行。
+ */
+export function shouldRunThrottled(now: number, last: number, minIntervalMs: number): boolean {
+  if (last <= 0) return true;
+  return now - last >= minIntervalMs;
+}

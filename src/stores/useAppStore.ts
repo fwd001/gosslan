@@ -23,7 +23,7 @@ import {
   type LanguagePreference,
 } from "@/i18n";
 import { isMac } from "@/utils/platform";
-import type { DeviceInfo, InterfaceInfo, RelayPolicy } from "@/types";
+import type { AppSettings, DeviceInfo, InterfaceInfo, RelayPolicy } from "@/types";
 
 export type { AppearanceMode };
 
@@ -359,54 +359,89 @@ export const useAppStore = defineStore("app", () => {
     peerStyles.value = { ...peerStyles.value, [deviceId]: styleJson };
   }
 
+  /**
+   * 把一份「设置快照」应用到本窗口（主题 / 外观 / 语言 / 通知 / 中继 / 气泡样式 / 网卡）。
+   *
+   * 抽出来是为了让「启动时应用」与「另一个窗口改了设置后重新应用」走**同一段代码** ——
+   * 两处各写一份必然漂移（真实缺陷：在设置窗口改语言/主题，主窗口一点不变）。
+   */
+  function applySettingsSnapshot(s: AppSettings) {
+      if (s.themeColor) themeColor.value = s.themeColor;
+      if (s.themeColor) themeColor.value = s.themeColor;
+      if (s.fontFamily != null) fontFamily.value = s.fontFamily;
+      // 外观：优先用「用户意图」(appearanceMode)；旧记录只有布尔 darkMode → 视为一次显式选择。
+      if (isAppearanceMode(s.appearanceMode)) {
+        appearance.value = s.appearanceMode;
+        localStorage.setItem(APPEARANCE_STORAGE_KEY, s.appearanceMode);
+      } else if (s.darkMode != null) {
+        appearance.value = s.darkMode ? "dark" : "light";
+        localStorage.setItem(APPEARANCE_STORAGE_KEY, appearance.value);
+      }
+      // 通知偏好（null = 未设置，按默认 true 处理）
+      if (s.notifyEnabled != null) notifyEnabled.value = s.notifyEnabled;
+      if (s.notifyShowContent != null) notifyShowContent.value = s.notifyShowContent;
+      // 语言（null/脏值 = 默认跟随系统）
+      if (isLanguagePreference(s.language)) applyPreference(s.language);
+      // 中继授权（脏值一律回落默认 all —— 与后端 RelayConfig::parse 同口径）
+      if (s.relayPolicy === "off" || s.relayPolicy === "friends" || s.relayPolicy === "allowlist" || s.relayPolicy === "all") {
+        relayPolicy.value = s.relayPolicy;
+      }
+      if (s.relayAllowlist) {
+        try {
+          const list = JSON.parse(s.relayAllowlist) as unknown;
+          if (Array.isArray(list)) relayAllowlist.value = list.filter((x): x is string => typeof x === "string");
+        } catch {
+          relayAllowlist.value = [];
+        }
+      }
+      language.value = currentPreference();
+      pushUiLanguage();
+      preferredIp.value = s.bindIp;
+      if (s.chatStyle) chatStyle.value = parsePeerStyle(s.chatStyle);
+      if (s.peerStyles) {
+        try {
+          peerStyles.value = JSON.parse(s.peerStyles) as Record<string, string>;
+        } catch {
+          peerStyles.value = {};
+        }
+      }
+      applyThemeNow();
+      applyDarkNow();
+      applyChatStyleNow();
+  }
+
+  /** `settings-changed` 的取消函数（init 可能被调用多次，避免重复绑定）。 */
+  let settingsUnlisten: (() => void) | null = null;
+
+  /** 「另一个窗口改了设置」→ 重新拉取并应用（两个窗口都监听）。 */
+  async function resyncFromBackend() {
+    const [st, dev, share] = await Promise.allSettled([
+      api.getSettings(),
+      api.getDeviceInfo(),
+      api.getShareDir(),
+    ]);
+    if (st.status === "fulfilled") applySettingsSnapshot(st.value);
+    if (dev.status === "fulfilled") device.value = dev.value;
+    if (share.status === "fulfilled") shareDir.value = share.value;
+  }
+
   async function init() {
+    // init 可能被调用多次：先解绑上一次的设置事件监听，避免重复触发
+    settingsUnlisten?.();
+    settingsUnlisten = null;
     // 平台标记：供 CSS 按平台差异化（如 macOS 恢复系统 overlay 滚动条）
     if (typeof document !== "undefined") {
       document.documentElement.classList.toggle("platform-mac", isMac);
     }
     // 从后端恢复持久化偏好（外观 / 网卡 / 聊天样式），优先于 localStorage
     const s = await api.getSettings();
-    if (s.themeColor) themeColor.value = s.themeColor;
-    if (s.fontFamily != null) fontFamily.value = s.fontFamily;
-    // 外观：优先用「用户意图」(appearanceMode)；旧记录只有布尔 darkMode → 视为一次显式选择。
-    if (isAppearanceMode(s.appearanceMode)) {
-      appearance.value = s.appearanceMode;
-      localStorage.setItem(APPEARANCE_STORAGE_KEY, s.appearanceMode);
-    } else if (s.darkMode != null) {
-      appearance.value = s.darkMode ? "dark" : "light";
-      localStorage.setItem(APPEARANCE_STORAGE_KEY, appearance.value);
-    }
-    // 通知偏好（null = 未设置，按默认 true 处理）
-    if (s.notifyEnabled != null) notifyEnabled.value = s.notifyEnabled;
-    if (s.notifyShowContent != null) notifyShowContent.value = s.notifyShowContent;
-    // 语言（null/脏值 = 默认跟随系统）
-    if (isLanguagePreference(s.language)) applyPreference(s.language);
-    // 中继授权（脏值一律回落默认 all —— 与后端 RelayConfig::parse 同口径）
-    if (s.relayPolicy === "off" || s.relayPolicy === "friends" || s.relayPolicy === "allowlist" || s.relayPolicy === "all") {
-      relayPolicy.value = s.relayPolicy;
-    }
-    if (s.relayAllowlist) {
-      try {
-        const list = JSON.parse(s.relayAllowlist) as unknown;
-        if (Array.isArray(list)) relayAllowlist.value = list.filter((x): x is string => typeof x === "string");
-      } catch {
-        relayAllowlist.value = [];
-      }
-    }
-    language.value = currentPreference();
-    pushUiLanguage();
-    preferredIp.value = s.bindIp;
-    if (s.chatStyle) chatStyle.value = parsePeerStyle(s.chatStyle);
-    if (s.peerStyles) {
-      try {
-        peerStyles.value = JSON.parse(s.peerStyles) as Record<string, string>;
-      } catch {
-        peerStyles.value = {};
-      }
-    }
-    applyThemeNow();
-    applyDarkNow();
-    applyChatStyleNow();
+    applySettingsSnapshot(s);
+
+    // 「另一个窗口改了设置」→ 重新拉取并应用（独立设置窗口 ↔ 主窗口必须同步外观/语言/资料）
+    settingsUnlisten = await api.onSettingsChanged(() => {
+      void resyncFromBackend();
+    });
+
     // 注册系统外观监听（跟随系统模式下，用户在系统设置里切换要即时生效，不必重启）
     watchSystemAppearance();
     const mq = window.matchMedia("(max-width: 767px)");

@@ -45,6 +45,9 @@ fn system_lang_is_zh() -> bool {
     })
 }
 
+/// 「设置已变更」事件名：设置窗口与主窗口靠它同步（见 `notify_settings_changed`）。
+pub const EVENT_SETTINGS_CHANGED: &str = "settings-changed";
+
 /// 局域网在线节点（Peer Table 条目）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Peer {
@@ -883,6 +886,15 @@ impl AppState {
             .values()
             .flatten()
             .any(|l| l.endpoint == *endpoint)
+    }
+
+    /// 广播"设置已变更"给**所有窗口**。
+    ///
+    /// 为什么必须有它：独立「设置」窗口是**另一个 WebView**，它改了主题/语言/气泡样式后，
+    /// 主窗口的 store 并不知道 —— 用户实测"在设置界面设置语言之后，主界面的内容好像没有变化"。
+    /// 所有会改动偏好/资料的命令在写完之后都调它，两个窗口各自重新拉取并应用。
+    pub fn notify_settings_changed(&self) {
+        let _ = self.app.emit(EVENT_SETTINGS_CHANGED, ());
     }
 
     /// 标记节点表已变更，并唤醒节流推送任务。

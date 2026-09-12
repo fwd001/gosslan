@@ -5,6 +5,13 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppSettings, CacheInfo, ChannelStatus, ChatSearchGroup, CleanupReport, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, NetworkStatus, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 
 export const api = {
+  /**
+   * 监听"**另一个窗口**改了设置"（外观 / 语言 / 资料 / 目录 / 缓存策略）。
+   *
+   * 独立「设置」窗口与主窗口是两个 WebView、各有自己的 store —— 没有这个事件时，
+   * 在设置窗口改语言/主题后主窗口不会变（用户实测反馈）。两个窗口都监听，返回取消函数。
+   */
+  onSettingsChanged: (cb: () => void) => listen("settings-changed", () => cb()),
   getDeviceInfo: () => invoke<DeviceInfo>("get_device_info"),
   updateProfile: (nickname: string, avatar: string | null) =>
     invoke<DeviceInfo>("update_profile", { nickname, avatar }),
@@ -197,6 +204,9 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<string>("friend-message-blocked", (e) => h.onFriendMessageBlocked(e.payload)),
     listen<MessageRecord>("message-received", (e) => h.onMessage(e.payload)),
     listen<string>("message-acked", (e) => h.onMessageAcked(e.payload)),
+    // 群消息的送达确认走**独立事件**（载荷 `{group_id, msg_id}`）；此前前端没接，
+    // 群消息气泡的"已送达"只能等其它刷新才更新。
+    listen<{ msg_id: string }>("group-message-acked", (e) => h.onMessageAcked(e.payload.msg_id)),
     listen<PeerReadInfo>("peer-read", (e) => h.onPeerRead(e.payload)),
     listen<GroupReadInfo>("group-read", (e) => h.onGroupRead(e.payload)),
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),

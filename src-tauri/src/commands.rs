@@ -150,6 +150,7 @@ pub async fn update_profile(
     }
     drop(links);
 
+    state.notify_settings_changed(); // 昵称/头像变更：另一个窗口的资料区要跟着刷新
     Ok(DeviceInfo {
         device_id: s.device_id.clone(),
         nickname: s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
@@ -570,6 +571,7 @@ pub fn set_cache_policy(
     db::set_setting(&dbc, RETENTION_KEY, &d.to_string()).map_err(|e| e.to_string())?;
     let m = max_bytes.unwrap_or(0);
     db::set_setting(&dbc, MAX_BYTES_KEY, &m.to_string()).map_err(|e| e.to_string())?;
+    state.notify_settings_changed();
     Ok(())
 }
 
@@ -665,7 +667,24 @@ pub fn set_ui_language(app: tauri::AppHandle, lang: String) -> Result<(), String
     {
         let _ = (&app, &lang);
     }
+    // 语言是**两个窗口都要立刻生效**的东西（用户实测：设置窗口改语言后主窗口没变）。
+    // 这条命令只拿得到 AppHandle（没有 State），所以直接广播事件 —— 效果一样，都是发给所有窗口。
+    let _ = app.emit(crate::state::EVENT_SETTINGS_CHANGED, ());
     Ok(())
+}
+
+/// 前端把 JS 异常 / 未处理的 Promise 拒绝送到后端日志。
+///
+/// 为什么需要它：界面上"点了没反应"最常见的原因就是**一次 JS 异常**
+/// （在渲染或事件处理里抛出后，整个交互看起来就死了），而前端异常此前**不留任何痕迹** ——
+/// 用户只能描述成"卡住了"，我们无从下手。现在它会出现在「运行日志」里，可以复制给我们。
+#[tauri::command(async)]
+pub fn log_frontend_error(state: State<'_, Arc<AppState>>, kind: String, text: String) {
+    let text: String = text.chars().take(2000).collect();
+    state
+        .inner()
+        .logger
+        .warn("ui", format!("[前端 {kind}] {text}"));
 }
 
 #[tauri::command(async)]
@@ -743,6 +762,8 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     );
     drop(dbc);
     state.set_relay_policy_config(relay);
+    // 让**另一个窗口**（独立设置窗口 / 主窗口）也立刻应用新外观与文案
+    state.notify_settings_changed();
     Ok(())
 }
 
@@ -765,6 +786,7 @@ pub fn reset_settings(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     // 否则用户点了恢复默认、行为却还是旧的限制策略（要重启才生效）。
     drop(dbc);
     state.set_relay_policy_config(crate::mesh::relay_policy::RelayConfig::default());
+    state.notify_settings_changed();
     Ok(())
 }
 
@@ -2772,6 +2794,7 @@ pub fn set_share_dir(state: State<'_, Arc<AppState>>, path: String) -> Result<()
         crate::user_dirs::store(&dbc, crate::user_dirs::SHARE, &path)?;
     }
     *s.share_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+    state.notify_settings_changed();
     Ok(())
 }
 
@@ -2806,6 +2829,7 @@ pub fn set_downloads_dir(state: State<'_, Arc<AppState>>, path: String) -> Resul
         crate::user_dirs::store(&dbc, crate::user_dirs::RECEIVE, &path)?;
     }
     *s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    state.notify_settings_changed();
     Ok(())
 }
 
@@ -3133,53 +3157,91 @@ pub fn export_chat_text(
 /// 清除所有聊天数据（保留好友、身份、设置）。
 /// SQLite 删除使用 transaction，任一失败则 rollback。
 /// 文件系统清理在 DB commit 成功后执行；文件删除失败不影响 DB 结果。
-#[tauri::command(async)]
-pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+/// 每批删除的行数。
+///
+/// 为什么是 2000：要把 `db` 互斥锁的**单次持有时长**压到毫秒级。用户实测的
+/// "点「清除数据」设置窗口卡死"就是长事务握锁数秒导致的 —— 期间每个读命令都要等锁，
+/// 等锁的 async 任务会占住工作线程，新的 IPC 排不上队，界面看起来就是死的。
+const CLEAR_BATCH_ROWS: usize = 2000;
+
+/// 删**一批**（同步核心，便于单测）：一批一个短事务，返回删除行数。
+///
+/// 表名只来自本文件里的字面量列表，不存在注入面。
+fn clear_one_batch(db: &std::sync::Mutex<rusqlite::Connection>, table: &str) -> Result<u64, String> {
+    let dbc = db.lock().unwrap_or_else(|e| e.into_inner());
+    let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
+    let n = tx
+        .execute(
+            &format!(
+                "DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} LIMIT {CLEAR_BATCH_ROWS})"
+            ),
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(n as u64)
+}
+
+/// 分批清空一张表：**每批一个短事务**，批与批之间释放 `db` 锁并让出调度，
+/// 让同一进程里的读命令（会话列表、设置回读…）能插进来。
+///
+/// ⚠️ 「批间放锁」这件事有单测盯着（`clear_is_batched_so_the_db_lock_is_held_only_briefly`）：
+/// 它是"点清除数据不再卡死"的**唯一**机制，改回一个大事务会静默退化。
+async fn clear_table_batched(s: &Arc<AppState>, table: &str) -> Result<u64, String> {
+    let mut total: u64 = 0;
+    loop {
+        let deleted = clear_one_batch(&s.db, table)?; // 锁在函数返回时释放
+        total += deleted;
+        if deleted == 0 {
+            return Ok(total);
+        }
+        // 让出调度：给等锁的命令一个真正拿到锁的机会
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tauri::command]
+pub async fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let s = state.inner();
 
-    // 1. SQLite 删除（transaction 保护）。
-    //    语义：彻底清除 = 删除本机消息/会话/文件/群记录，**并退出所有群聊**——
-    //    否则「清除聊天数据」后群还留在列表里（重新安装后还会被群主/成员的
-    //    群密钥分发重新拉回）。
-    {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM messages", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM conversations", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM outbox", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM group_outbox", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM file_outbox", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM file_transfers", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM pending_reads", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM pending_group_reads", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM group_reads", [])
-            .map_err(|e| e.to_string())?;
-        // 群文件投递数据同属聊天数据（残留会导致 transfer 记录悬挂）
-        tx.execute("DELETE FROM group_files", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM group_file_recipients", [])
-            .map_err(|e| e.to_string())?;
-        // 彻底清除 = 也退出所有群聊：删群成员/群记录/群密钥/群时钟，
-        // 否则「清除聊天数据」后群还留在列表里（重新安装后还会被群主/成员
-        // 的群密钥分发重新拉回）。
-        tx.execute("DELETE FROM group_members", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM groups", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM conversation_clocks WHERE conv_id LIKE 'group:%'", [])
-            .map_err(|e| e.to_string())?;
-        tx.commit().map_err(|e| e.to_string())?;
+    // 1. SQLite 删除（**分批**，见 `clear_table_batched`）。
+    //    ⚠️ 这里不再用一个横跨所有表的大事务：那会把 `db` 互斥锁握住数秒，
+    //    期间所有读命令都在等锁 —— 用户实测"点「清除数据」→ 设置窗口卡死、点不动"。
+    //    代价：中途失败会留下**部分删除**（"清除数据"本身是破坏性操作，可接受），
+    //    换来的是界面全程可用。
+    let mut cleared: u64 = 0;
+    for table in [
+        "messages",
+        "conversations",
+        "outbox",
+        "group_outbox",
+        "file_outbox",
+        "file_transfers",
+        "pending_reads",
+        "pending_group_reads",
+        "group_reads",
+        "group_files",
+        "group_file_recipients",
+        "group_members",
+        "groups",
+    ] {
+        cleared += clear_table_batched(s, table).await?;
     }
+    {
+        // 这两条量级很小（键值 + 群时钟），一次删完即可
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        dbc.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", [])
+            .map_err(|e| e.to_string())?;
+        dbc.execute(
+            "DELETE FROM conversation_clocks WHERE conv_id LIKE 'group:%'",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    s.logger.info(
+        "db",
+        format!("清除聊天数据：共删除 {cleared} 行（分批执行，界面全程可响应）"),
+    );
 
     // 2. Runtime state 清理：群密钥内存缓存一并清空（彻底退出群聊）。
     s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -3988,6 +4050,68 @@ mod tests {
         assert!(err.contains("过大"));
         assert!(err.contains(&MAX_OUTGOING_IMAGE_BYTES.to_string()));
     }
+
+    /// **清空必须是"分批 + 批间放锁"** —— 这是"点清除数据不再卡死"的机制本身。
+    ///
+    /// 用户实测：点「清除数据」时设置窗口整个卡死、点不动。根因是原实现用一个横跨所有表的
+    /// 大事务，把 `db` 互斥锁握住数秒；期间每个读命令都在等锁，等锁的 async 任务占住工作线程，
+    /// 新 IPC 排不上队。修法是分批 —— 本用例**确定性地**证明"单次只删一批"：
+    /// 若有人把它改回"一个大事务"，第一次调用就会把表删光，下面的断言立刻失败。
+    #[test]
+    fn clear_is_batched_so_the_db_lock_is_held_only_briefly() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        let rows = super::CLEAR_BATCH_ROWS * 2 + 10;
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            for i in 0..rows {
+                tx.execute(
+                    "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, status)
+                     VALUES(?1, 'c1', 'me', 'peer', 'text', 'x', ?2, 'sent')",
+                    rusqlite::params![format!("m{i}"), i as i64],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let db = std::sync::Mutex::new(conn);
+
+        // ① 单次调用只允许删一批
+        let first = super::clear_one_batch(&db, "messages").unwrap();
+        assert_eq!(
+            first, super::CLEAR_BATCH_ROWS as u64,
+            "单次调用必须只删一批（一次 2000 行）；删更多说明事务又变大了"
+        );
+        let left_after_first: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            left_after_first,
+            rows as i64 - super::CLEAR_BATCH_ROWS as i64,
+            "第一次调用只该删掉一批（剩 {} 行）—— 若这里是 0，说明又回到\"一个大事务握住锁\"了",
+            rows - super::CLEAR_BATCH_ROWS
+        );
+
+        // ② 循环删干净
+        let mut total = first;
+        loop {
+            let n = super::clear_one_batch(&db, "messages").unwrap();
+            total += n;
+            if n == 0 {
+                break;
+            }
+        }
+        assert_eq!(total, rows as u64, "必须把行删干净");
+        let left: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0, "表必须清空");
+    }
+
 
     #[test]
     fn decode_respects_exact_byte_limit() {

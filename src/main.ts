@@ -5,6 +5,32 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./style.css";
 import App from "./App.vue";
 
+// ---------------- 前端异常上报（必须在挂载之前注册） ----------------
+// 为什么需要它：界面上"点了没反应"最常见的原因就是**一次 JS 异常** —— 渲染或事件处理里
+// 抛出之后，整个交互看起来就死了；而前端异常此前**不留任何痕迹**，用户只能描述成"卡住了"。
+// 现在它会进「运行日志」（logger.warn channel=ui），可以复制给我们定位。
+// 去重 + 上限：同一个异常只报一次，整场最多 50 条，避免自己把日志刷爆。
+const reportedErrorKeys = new Set<string>();
+let reportedErrorCount = 0;
+function reportFrontendError(kind: string, detail: string) {
+  const key = `${kind}:${detail.slice(0, 200)}`;
+  if (reportedErrorKeys.has(key) || reportedErrorCount >= 50) return;
+  reportedErrorKeys.add(key);
+  reportedErrorCount += 1;
+  void invoke("log_frontend_error", { kind, text: detail }).catch(() => {});
+}
+window.addEventListener("error", (e) => {
+  const where = e.filename ? `${e.filename}:${e.lineno}:${e.colno}` : "(位置未知)";
+  const stack = e.error instanceof Error && e.error.stack ? `\n${e.error.stack}` : "";
+  reportFrontendError("error", `${e.message} @ ${where}${stack}`);
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const r: unknown = e.reason;
+  const text =
+    r instanceof Error ? (r.stack ?? r.message) : typeof r === "string" ? r : JSON.stringify(r);
+  reportFrontendError("rejection", text);
+});
+
 const app = createApp(App);
 app.use(createPinia());
 app.mount("#app");

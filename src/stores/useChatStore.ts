@@ -15,6 +15,7 @@ import {
 import { useAppStore } from "@/stores/useAppStore";
 import { notificationBody } from "@/utils/notifications";
 import { t } from "@/i18n";
+import { shouldRunThrottled } from "@/utils/defer";
 import {
   onAction,
   registerActionTypes,
@@ -339,6 +340,17 @@ export const useChatStore = defineStore("chat", () => {
   async function refreshTransfers() {
     transfers.value = await api.getTransfers();
   }
+  /** 上一次真正拉取拓扑的时间（`refreshTopologyThrottled` 用）。 */
+  let lastTopologyAt = 0;
+
+  /** 由高频事件触发的拓扑刷新：最多 1s 一次（判据是纯函数，见 `utils/defer`）。 */
+  function refreshTopologyThrottled() {
+    const now = Date.now();
+    if (!shouldRunThrottled(now, lastTopologyAt, 1000)) return;
+    lastTopologyAt = now;
+    void refreshTopology();
+  }
+
   async function refreshTopology() {
     topology.value = await api.getTopology();
   }
@@ -979,7 +991,10 @@ export const useChatStore = defineStore("chat", () => {
         friends.value.forEach((f) => (f.online = onlineIds.has(f.device_id)));
         // 同步好友/单聊会话的昵称/头像（对方改名后立即生效）
         syncProfileFromPeers(friends.value, conversations.value, p);
-        void refreshTopology();
+        // 拓扑（节点数/中继数/平均 RTT/在线）变化很慢，而 peers-updated 最多 3/s；
+        // 每个事件都发一次 IPC 纯属浪费（每次 IPC 都要跨进程 + 过主线程消息循环，
+        // 攒起来就是"顿"）。这里节流到最多 1s 一次，另有 5s 定时器兜底。
+        refreshTopologyThrottled();
       },
       onFriendRequest: (req) => {
         // 去重：同一设备多次申请只保留最新一条（过滤历史重复申请）
