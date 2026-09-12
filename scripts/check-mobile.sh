@@ -51,6 +51,14 @@ export CC_aarch64_linux_android="$CLANG"
 export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG"
 
+# 仓库内已有一份 CARGO_HOME（target/ 已被 gitignore）时优先用它：
+# 受管沙箱 / 部分 CI 里 `~/.cargo` 是**不可写**的，否则会以
+# "failed to open ~/.cargo/registry/cache/….crate: Operation not permitted" 这种
+# 与代码无关的形态失败（`scripts/verify-guards.py` 里也是同一个处理）。
+if [ -z "${CARGO_HOME:-}" ] && [ -d "$ROOT/target/cargo-home" ]; then
+  export CARGO_HOME="$ROOT/target/cargo-home"
+fi
+
 run_check() {
   local label="$1"; shift
   echo "==> $label"

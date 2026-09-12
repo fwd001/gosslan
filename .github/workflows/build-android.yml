@@ -22,24 +22,27 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Setup JDK 17
+      - name: Setup JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install SDK platform + build-tools + NDK
+        # 版本必须跟 `tauri android init` 生成的工程对得上：那份 build.gradle.kts 里是
+        # `compileSdk = 36`（Tauri v2 当前模板），所以必须装 platform 36 —— 只装 34 会直接
+        # 停在 "Failed to find target with hash string 'android-36'"。NDK 取本机验证过的 27.1。
         run: |
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264"
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
 
       - name: Set NDK env
         run: |
-          echo "NDK_HOME=${ANDROID_HOME}/ndk/26.3.11579264" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/26.3.11579264" >> "$GITHUB_ENV"
+          echo "NDK_HOME=${ANDROID_HOME}/ndk/27.1.12297006" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.1.12297006" >> "$GITHUB_ENV"
 
       - name: Setup Rust (Android targets)
         uses: dtolnay/rust-toolchain@stable
@@ -59,33 +62,31 @@ jobs:
       - name: Init Android project
         run: npm run android:init
 
-      - name: Inject network/bluetooth permissions
-        run: |
-          python3 - <<'PY'
-          import pathlib
-          perms = pathlib.Path('scripts/android/permissions.xml').read_text(encoding='utf-8')
-          m = pathlib.Path('src-tauri/gen/android/app/src/main/AndroidManifest.xml')
-          s = m.read_text(encoding='utf-8')
-          if 'CHANGE_WIFI_MULTICAST_STATE' not in s:
-              s = s.replace('<application', perms + '\n    <application', 1)
-              m.write_text(s, encoding='utf-8')
-          PY
+      # 权限清单 / 竖屏锁定 / release 签名（无 keystore 时回退 debug 签名，保证能安装）
+      # 都由 `scripts/inject-android-signing.mjs` 在构建前统一注入 —— 这里不再单独写一份
+      # python 注入逻辑，避免两处规则各说各话。
+      # `android:init` 会重新生成 gen/android，所以这一步必须在 init 之后、build 之前。
 
       - name: Build release APK（按 ABI 各出一份）
         # 用仓库脚本而不是 Gradle 的 splits：Tauri 会给每个 ABI 设 ndk.abiFilters，
         # AGP 禁止它与 splits.abi 并存（见脚本头部注释）。脚本对每个 ABI 各构建一次，
         # 天然只有那一个 ABI 的 .so 进包，并落到 release-artifacts/android/。
+        # 脚本还会校验签名与 ABI（未签名的 APK 手机上装不上，宁可在 CI 里红掉）。
         run: bash scripts/build-android-releases.sh
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: gosslan-android-abis
-          path: release-artifacts/android/*.apk
+          path: |
+            release-artifacts/android/*.apk
+            release-artifacts/android/*.sha256
 
       - name: Create GitHub Release (tag 触发)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: release-artifacts/android/*.apk
+          files: |
+            release-artifacts/android/*.apk
+            release-artifacts/android/*.sha256
           generate_release_notes: true
