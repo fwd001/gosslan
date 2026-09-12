@@ -71,16 +71,23 @@ if (existsSync(lockPath)) {
 const changelogPath = "CHANGELOG.md";
 if (existsSync(changelogPath)) {
   let ch = readFileSync(changelogPath, "utf8");
-  if (!ch.includes("## [Unreleased]")) {
+  // ⚠️ 必须**按行锚定**地找标题，不能用 `ch.includes("## [Unreleased]")`：
+  // 真实事故——某条更新日志的正文里写了「补回 `## [Unreleased]` 小节」这句话，
+  // 于是 includes 命中正文、replace 也替换正文里的那一处，把 4.1.0 小节从句子中间劈开
+  // 并吞掉了真正的标题（结果：文件里再也没有 [Unreleased] 小节）。
+  const HEADING = /^## \[Unreleased\][^\n]*$/m;
+  const headingMatch = HEADING.exec(ch);
+  if (!headingMatch) {
     const placeholder = `## [Unreleased]\n### Changed\n- 版本发布 v${next}（本次未预先填写更新说明，明细见 tag v${cur}...v${next} 的提交记录）\n`;
-    const firstSection = ch.indexOf("\n## [");
+    const firstSection = ch.search(/^## \[/m);
     const insertAt = firstSection === -1 ? ch.length : firstSection;
-    ch = ch.slice(0, insertAt) + "\n" + placeholder + ch.slice(insertAt);
+    ch = ch.slice(0, insertAt) + placeholder + "\n" + ch.slice(insertAt);
   }
   // 用**本地日期**（toISOString 是 UTC，凌晨发版会日期错一天，如 GMT+8 的 00:25 落成前一天）。
   const now = new Date();
   const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  ch = ch.replace("## [Unreleased]", `## [Unreleased]\n\n## [${next}] - ${localDate}`);
+  // 只替换那一行标题（`$&` 是匹配到的标题本身），正文里同名的引用不会被碰。
+  ch = ch.replace(HEADING, `$&\n\n## [${next}] - ${localDate}`);
   writeFileSync(changelogPath, ch);
 }
 

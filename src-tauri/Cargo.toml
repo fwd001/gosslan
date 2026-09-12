@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "4.1.11"
+version = "4.1.12"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -76,11 +76,16 @@ objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
 # optional ⇒ 只有 `--features bluetooth` 的 macOS 构建才引入（默认构建零新增依赖，与今天一致）。
 objc2-core-bluetooth = { version = "0.3", optional = true }
 
-# Android 的 BLE **外设角色**要用 JNI 调 Kotlin 侧实现（见 ADR-0015 §7.7）：
+# Android 的 BLE **外设角色**要用 JNI 调 Kotlin 侧实现（见 ADR-0015 §7.7）；
+# 「用系统里的其它应用打开收到的文件」也走 JNI（见 src-tauri/src/android_open.rs）。
 # btleplug 的 droidplug 后端本身已经依赖 `jni = "0.22"`（Android 目标、非 optional），
 # 所以这里**没有引入任何新的第三方 crate**，只是让我们自己也能用它。
+#
+# ⚠️ **不能 optional**：打开文件与蓝牙无关 —— 若把它挂在 `bluetooth` feature 上，
+# 没开该 feature 的构建就打不开文件（而 Android 上除了 JNI 没有别的办法把私有目录文件
+# 交给别的应用，见 OpenWith.kt）。非 Android 目标不会编译本依赖。
 [target.'cfg(target_os = "android")'.dependencies]
-jni = { version = "0.22", optional = true }
+jni = { version = "0.22" }
 
 [features]
 # 默认启用自定义协议；可扩展为自定义 deep-link 唤醒
@@ -89,7 +94,7 @@ custom-protocol = ["tauri/custom-protocol"]
 # BLE 传输（P3 / Phase 7）：**默认关闭** —— 不开 feature 时依赖不下载、代码不编译，
 # 产物与行为与今天逐字节一致（ADR-0015 §2 的硬性约定）。
 # 引入前必须先读 docs/adr/0015-ble-transport.md（项目规矩：新依赖必须 ADR）。
-bluetooth = ["dep:btleplug", "dep:futures", "dep:objc2-core-bluetooth", "dep:jni"]
+bluetooth = ["dep:btleplug", "dep:futures", "dep:objc2-core-bluetooth"]
 
 [profile.release]
 # 安卓上必须是 `panic = "abort"`：Tauri 的 `mobile_entry_point` 宏用 `stop_unwind` 包住入口，

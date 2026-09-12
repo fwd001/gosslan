@@ -35,20 +35,8 @@ use jni::vm::JavaVM;
 use jni::{jni_sig, jni_str, native_method, Env, JValue, NativeMethod};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::jni_method::kotlin_method;
 use crate::transport::ble_framing::{self, BleReassembler, PushOutcome};
-
-/// 登记一个 Kotlin 方法：`方法名 + JNI 描述符`。
-///
-/// 为什么把两者写在一起：JNI 调用**不做任何签名检查**（写错就是运行期
-/// `NoSuchMethodError`，而它只在真机上才现形）。集中登记后，`lib.rs` 里的护栏可以直接
-/// 拿 Kotlin 源码里解析出来的描述符逐字比对 —— 真实缺陷：`stop()` 是 Kotlin 的 Unit 方法
-/// （`()V`），此前却用 `()Z` 调用 ⇒ 关掉蓝牙开关后手机**仍在广播**（耗电 + 隐私），
-/// 而且日志里什么都没有。
-macro_rules! kotlin_method {
-    ($name:literal, $sig:literal) => {
-        (jni_str!($name), jni_sig!($sig))
-    };
-}
 
 /// 发一帧的重试上限（对端还没订阅/通知队列满时等一等）。
 const WRITE_DEADLINE: Duration = Duration::from_secs(8);

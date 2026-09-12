@@ -11,6 +11,7 @@
 // 为什么不用 ① 定版本：184 个提交里有 23 个大功能，逐条累加会得到 25.1.2 这种数字，
 // 它既不表达"这次发布有多大"，也和后端/前端/安装包的版本语义脱节。
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 export const LEVEL_RANK = { patch: 1, minor: 2, major: 3 };
 export const BUMP_TRAILER = "Version-Bump";
@@ -164,6 +165,53 @@ function lastVersionBump() {
   return latestTag();
 }
 
+/**
+ * `CHANGELOG.md` 的**结构**问题（返回空数组 = 结构正常）。
+ *
+ * 为什么需要这条检查：发布脚本按行首的 `## [Unreleased]` 锚点插入新小节。真实事故 ——
+ * 它以前用 `includes("## [Unreleased]")` + 字符串 `replace` 找锚点，而某条更新日志的正文里
+ * 恰好写了「补回 `## [Unreleased]` 小节」这句话，于是锚点被误命中：4.1.1~4.1.11 全被插进
+ * 4.1.0 小节的半句话里，真正的 `## [Unreleased]` 标题被吞掉。这类破坏**不报错、不影响功能**，
+ * 只有结构检查能拦住。
+ */
+export function changelogProblems(path = "CHANGELOG.md") {
+  const problems = [];
+  let text;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return [`读不到 ${path}`];
+  }
+  const headings = text
+    .split("\n")
+    .map((line, i) => ({ line, no: i + 1 }))
+    .filter((h) => h.line.startsWith("## ["));
+  const unreleased = headings.filter((h) => /^## \[Unreleased\]\s*$/.test(h.line));
+  if (unreleased.length !== 1) {
+    problems.push(
+      `${path} 里应有且仅有一个**行首**的 \`## [Unreleased]\` 小节（发布脚本的插入锚点），实际 ${unreleased.length} 个`,
+    );
+  }
+  const versions = [];
+  for (const h of headings) {
+    if (/^## \[Unreleased\]\s*$/.test(h.line)) continue;
+    const m = h.line.match(/^## \[(\d+\.\d+\.\d+)\] - \d{4}-\d{2}-\d{2}$/);
+    if (!m) {
+      problems.push(`${path}:${h.no} 版本小节标题格式不对（应为 \`## [x.y.z] - YYYY-MM-DD\`）：${h.line}`);
+      continue;
+    }
+    versions.push({ v: m[1], no: h.no });
+  }
+  for (let i = 1; i < versions.length; i += 1) {
+    if (compareVersion(versions[i - 1].v, versions[i].v) < 0) {
+      problems.push(
+        `${path}:${versions[i].no} 版本小节顺序不对：${versions[i].v} 排在 ${versions[i - 1].v} 之后（应为"新在前"的降序）`,
+      );
+    }
+  }
+  return problems;
+}
+
 function main() {
   const [cmd = "check", ...flags] = process.argv.slice(2);
   const sinceFlag = flags.indexOf("--since");
@@ -219,6 +267,8 @@ function main() {
         wrong.slice(0, 8).map((r) => `  ${r.short} 期望 ${r.level} 实际 ${parseBumpTrailer(r.message) ?? "(无)"}  ${r.subject}`).join("\n"),
     );
   }
+  // ③ CHANGELOG 结构（锚点存在 + 标题格式 + 新在前的降序）。
+  problems.push(...changelogProblems());
   if (problems.length) {
     console.error(`版本号规则检查未通过（自 ${since || "首个提交"}）：\n- ${problems.join("\n- ")}`);
     process.exit(1);

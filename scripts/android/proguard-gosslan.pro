@@ -15,6 +15,20 @@
     public boolean hasRequiredPermissions();
     native <methods>;
 }
+# 「用系统里的其它应用打开收到的文件」的桥（见 gen/android/.../OpenWith.kt）。
+# 两个名字都**只被 native 代码按名字**使用，R8 会把它们当成死代码改名/删掉：
+#   · `OpenWith.openWith`  ← Rust 侧 JNI `call_static_method`（src-tauri/src/android_open.rs）；
+#   · `OpenWithKt.nativeAttachOpenWith` ← Kotlin 调进 Rust 的 native 方法，JVM 是**按当前
+#     方法名**去查符号的（`Java_com_gosslan_app_OpenWithKt_nativeAttachOpenWith`），
+#     改名即 UnsatisfiedLinkError。
+# 症状同样是"只有 release 真机包才现形"：点开文件 → NoSuchMethodError / UnsatisfiedLinkError。
+# `native <methods>;` 里的 `<` 名字由护栏跳过（不需要在 Rust 侧有 kotlin_method! 登记）。
+-keep class com.gosslan.app.OpenWith {
+    public static java.lang.String openWith(java.lang.String, java.lang.String);
+}
+-keep class com.gosslan.app.OpenWithKt {
+    native <methods>;
+}
 # btleplug 的 Android 后端（droidplug）用**类名**找自己的 Kotlin 实现
 # （`find_class("com/nonpolynomial/btleplug/android/impl/Adapter")`）。
 # R8 在 release 下会把这些类改名/删掉 —— 实测（dexdump 反查 4.1.9 的 release APK）：

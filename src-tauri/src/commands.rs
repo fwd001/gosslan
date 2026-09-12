@@ -2797,10 +2797,11 @@ pub fn delete_file(path: String) -> Result<(), String> {
 }
 
 /// 用系统默认应用打开本地文件。
-/// macOS 走 NSWorkspace（沙盒下 /usr/bin/open 被拦），Windows/Linux 走 opener。
+/// macOS 走 NSWorkspace（沙盒下 /usr/bin/open 被拦）；Android 走 FileProvider + ACTION_VIEW
+/// （私有目录的文件不能以 file:// 交给别的应用，见 android_open.rs）；Windows/Linux 走 opener。
 #[tauri::command(async)]
 pub fn open_file_native(path: String) -> Result<(), String> {
-    crate::macos_open::open_path_native(std::path::Path::new(&path))
+    crate::open_path::open_path_native(std::path::Path::new(&path))
 }
 
 /// macOS 窗口圆角：WebView 加载完成后（前端 onMounted 触发）设背景色跟随主题 +

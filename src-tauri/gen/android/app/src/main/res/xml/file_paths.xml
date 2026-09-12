@@ -2,4 +2,10 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
   <external-path name="my_images" path="." />
   <cache-path name="my_cache_images" path="." />
+  <!-- 用户实测「点开收到的文件 → 文件打开失败」的根因（见 OpenWith.kt）：
+       应用私有目录里的文件必须以 content:// 交给别的应用。Tauri 在 Android 上的 data 目录
+       是 `Context.getDataDir()` 本身，收到的文件写在 `dataDir/downloads`，
+       而上面两条根（cache / external）都覆盖不到它 —— getUriForFile 会直接抛
+       IllegalArgumentException。这里补一条 data 目录根（放在最后，cache 仍然优先命中）。 -->
+  <root-path name="app_data" path="." />
 </paths>

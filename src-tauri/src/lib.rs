@@ -24,8 +24,16 @@ mod tray;
 /// 只在 macOS 建：Windows / Linux 用自绘标题栏，加系统菜单条会顶在标题栏之上破坏布局。
 #[cfg(target_os = "macos")]
 mod menu;
-/// 打开本地文件：macOS 用 NSWorkspace（沙盒下 /usr/bin/open 被拦），Windows/Linux 走 opener。
-mod macos_open;
+/// 打开本地文件的平台实现：macOS 用 NSWorkspace（沙盒下 /usr/bin/open 被拦）、
+/// Android 用 FileProvider + ACTION_VIEW（opener 只发 file:// 会被系统拒绝）、
+/// Windows/Linux 走 opener。
+mod open_path;
+/// Android 的「打开文件」JNI 桥（FileProvider：私有目录文件必须以 content:// 交出去）。
+#[cfg(target_os = "android")]
+mod android_open;
+/// JNI 方法登记宏（Android 的两条桥共用，见该文件注释）。
+#[cfg(target_os = "android")]
+mod jni_method;
 /// macOS 窗口外观：运行时加 squircle 圆角 + 关掉与圆角不兼容的系统阴影。
 /// 见 macos_window.rs 注释（与自绘标题栏的取舍）。
 #[cfg(target_os = "macos")]
@@ -578,8 +586,13 @@ mod tests {
     fn android_jni_signatures_match_kotlin() {
         let kotlin = include_str!("../gen/android/app/src/main/java/com/gosslan/app/BlePeripheral.kt");
         let rust = include_str!("transport/ble_android.rs");
+        // 第二条 JNI 桥：「用系统里的其它应用打开文件」（FileProvider）。同一个坑，
+        // 所以必须同一条护栏盯着 —— 新桥单独立一份检查只会漂移。
+        let kotlin_open = include_str!("../gen/android/app/src/main/java/com/gosslan/app/OpenWith.kt");
+        let rust_open = include_str!("android_open.rs");
 
         let kotlin_fns = parse_kotlin_funs(kotlin);
+        let open_fns = parse_kotlin_funs(kotlin_open);
         for expected in [
             "start",
             "stop",
@@ -597,6 +610,16 @@ mod tests {
                 "没在 BlePeripheral.kt 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
             );
         }
+        // 打开文件的桥：Rust 调 `openWith`，Kotlin 调 `nativeAttachOpenWith`
+        for (file, fns, expected) in [
+            ("OpenWith.kt", &open_fns, "openWith"),
+            ("OpenWith.kt", &open_fns, "nativeAttachOpenWith"),
+        ] {
+            assert!(
+                fns.iter().any(|(n, _, _)| n == expected),
+                "没在 {file} 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
+            );
+        }
 
         // ① Rust 登记的每个 Kotlin 方法，描述符必须与 Kotlin 源码推出的**逐字相同**
         let registered = parse_kotlin_method_registrations(rust);
@@ -605,9 +628,18 @@ mod tests {
             "Rust 侧至少应登记 5 个 Kotlin 方法，实际 {}",
             registered.len()
         );
-        for (name, desc) in &registered {
+        let open_registered = parse_kotlin_method_registrations(rust_open);
+        assert_eq!(
+            open_registered.len(),
+            1,
+            "android_open.rs 应恰好登记 1 个 Kotlin 方法（openWith），实际 {} —— \
+             解析器失效或有人漏登记",
+            open_registered.len()
+        );
+        for (name, desc) in registered.iter().chain(open_registered.iter()) {
             let (_, kotlin_desc, _) = kotlin_fns
                 .iter()
+                .chain(open_fns.iter())
                 .find(|(n, _, _)| n == name)
                 .unwrap_or_else(|| panic!("Rust 登记了 Kotlin 里不存在的 `{name}`"));
             assert_eq!(
@@ -618,10 +650,14 @@ mod tests {
         }
 
         // ② Rust 导出的 native 回调（snake_case → lowerCamelCase）必须在 Kotlin 里是 external fun
-        for snake in parse_extern_fn_names(rust) {
+        for snake in parse_extern_fn_names(rust)
+            .into_iter()
+            .chain(parse_extern_fn_names(rust_open))
+        {
             let camel = snake_to_lower_camel(&snake);
             let found = kotlin_fns
                 .iter()
+                .chain(open_fns.iter())
                 .find(|(n, _, _)| n == &camel)
                 .unwrap_or_else(|| {
                     panic!(
@@ -668,6 +704,17 @@ mod tests {
             registered.len() >= 5,
             "Rust 侧至少应登记 5 个 Kotlin 方法，实际 {}",
             registered.len()
+        );
+        // 打开文件的桥（android_open.rs）同样只被 JNI 按名字调用 ⇒ 必须一起 keep。
+        // 两条桥放在一起查，避免"新加的桥忘了写 keep 规则"这种只在 release 真机上现形的漏。
+        let registered: Vec<(String, String)> = registered
+            .into_iter()
+            .chain(parse_kotlin_method_registrations(include_str!("android_open.rs")))
+            .collect();
+        assert!(
+            registered.iter().any(|(n, _)| n == "openWith"),
+            "没在 android_open.rs 里解析出 `openWith` 的 JNI 登记 —— 解析器失效了，\
+             这条护栏会静默变成空转"
         );
         let kept = proguard_kept_method_names(&source_block);
         assert!(
@@ -844,8 +891,12 @@ mod tests {
     ///
     /// `Context`/`BluetoothGattServer` 这类只出现在 Kotlin 内部方法的形参里，
     /// Rust 从不调用它们，因此不需要（也不该）在这里维护映射。
+    ///
+    /// 可空标记 `?` 对 JNI 描述符**没有影响**（`String?` 与 `String` 都是
+    /// `Ljava/lang/String;`）—— 这里显式去掉再匹配，否则 `OpenWith.openWith` 这种
+    /// "返回 String? 表示成功/失败原因" 的方法会被整条跳过，护栏就静默失效了。
     fn jni_type(kotlin: &str) -> Option<String> {
-        Some(match kotlin.trim() {
+        Some(match kotlin.trim().trim_end_matches('?') {
             "String" => "Ljava/lang/String;".to_string(),
             "ByteArray" => "[B".to_string(),
             "Boolean" => "Z".to_string(),

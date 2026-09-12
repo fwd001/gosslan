@@ -237,6 +237,55 @@ CASES: list[Case] = [
         expect_fail_hint="描述符不一致",
         tags=["rust", "ble", "android"],
     ),
+    Case(
+        name="Android JNI 签名与 Kotlin 对齐（打开文件桥 openWith）",
+        why="同一条铁律的第二座桥：Rust 按 (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String; "
+        "调 OpenWith.openWith。Kotlin 侧少写 `: String?`（返回 Unit）时真机只抛 NoSuchMethodError —— "
+        "用户看到「点开文件没反应」，日志里什么都没有",
+        file=TAURI
+        / "gen"
+        / "android"
+        / "app"
+        / "src"
+        / "main"
+        / "java"
+        / "com"
+        / "gosslan"
+        / "app"
+        / "OpenWith.kt",
+        injections=[(
+            "fun openWith(path: String, mime: String?): String? {",
+            "fun openWith(path: String, mime: String?) {",
+        )],
+        cmd=cargo("test", "--lib", "android_jni_signatures_match_kotlin"),
+        cwd=TAURI,
+        expect_fail_hint="描述符不一致",
+        tags=["rust", "android"],
+    ),
+    # ---------------- Android release 包：打开文件桥的 R8 keep ----------------
+    Case(
+        name="R8 keep（打开文件桥漏 keep 必须报出来）",
+        why="OpenWith.openWith 只被 Rust 的 JNI 按名字调用，R8 会把它当死代码改名/删掉 ⇒ "
+        "release 真机包「点开文件」NoSuchMethodError（debug 不混淆，开发期完全看不见）",
+        # 与蓝牙那条同理：事实来源与注入副本必须**同时**改坏，否则先以"两处漂移"失败，
+        # 证明不了"漏 keep 也会被抓到"。
+        file=ROOT / "scripts" / "android" / "proguard-gosslan.pro",
+        injections=[(
+            "    public static java.lang.String openWith(java.lang.String, java.lang.String);\n",
+            "",
+        )],
+        extra_injections=[
+            (
+                TAURI / "gen" / "android" / "app" / "proguard-rules.pro",
+                "    public static java.lang.String openWith(java.lang.String, java.lang.String);\n",
+                "",
+            )
+        ],
+        cmd=cargo("test", "--lib", "release_keeps_every_kotlin_method_called_from_rust"),
+        cwd=TAURI,
+        expect_fail_hint="缺少 `openWith`",
+        tags=["rust", "android", "release"],
+    ),
     # ---------------- 前端：IPC 事件契约 ----------------
     Case(
         name="IPC 事件契约（Rust 发的必须有人听）",
@@ -490,6 +539,18 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="minor",
         tags=["frontend", "version"],
+    ),
+    Case(
+        name="CHANGELOG 结构（[Unreleased] 锚点缺失/顺序错乱必须报出）",
+        why="发布脚本按行首 `## [Unreleased]` 插入新小节。真实事故：它以前用 includes+replace "
+        "找锚点，正文里出现同样文字就被误命中 ⇒ 4.1.1~4.1.11 全被插进 4.1.0 小节的半句话里、"
+        "真正的锚点被吞掉（不报错、不影响功能，只有结构检查能拦住）",
+        file=ROOT / "CHANGELOG.md",
+        injections=[("## [Unreleased]\n", "## [unreleased]\n")],
+        cmd=npm("run", "version:check"),
+        cwd=ROOT,
+        expect_fail_hint="[Unreleased]",
+        tags=["frontend", "version", "docs"],
     ),
     Case(
         name="打包配置（release 前端必须压缩）",

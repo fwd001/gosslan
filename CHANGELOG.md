@@ -8,24 +8,50 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
-## [4.1.0] - 2026-09-12
-### Changed (默认昵称：不再用设备用户名，改为「形容词 + 动物 + 设备短码」的英文名)
-用户要求：「默认用户名可以不用设备的用户名吗？用一串英文，可以加设备识别号的前几位或后几位；
-长度合适，让用户不改也好看，也有想改的欲望。」
+## [Unreleased]
 
-- **规则**：`<Adjective> <Animal> <3 位 base36>`，例如 `Lively Puma W1U`。由 `device_id` 的 SHA-256
-  **确定性派生**：同一台设备每次启动同名（随机数会让重启后名字变化，好友列表就认不出谁是谁）；
-  短码来自设备标识的哈希，**不含设备信息**（旧规则直接拿 hostname 当昵称：既不好看，也把设备名写了出去）。
-- **长度**：词表只用 ≤6 字母的词 ⇒ 总长 ≤17 字符，列表里不会被截断成省略号。
-- **一次性迁移**：仅当已存名字是"旧默认的产物"（空串 / "Gosslan 用户" / "Gosslan User" /
-  恰好等于本机 hostname）才替换；**用户自取的名字一律不动**。
-- **"恢复默认"走同一条规则**：新增命令 `default_nickname`，前端不再写死 i18n 文案
-  （否则"恢复默认"与首次安装得到的名字会不一致）；顺带删掉两处写死的默认名。
+## [4.1.12] - 2026-09-12
 
-**护栏**：`nickname.rs` 4 条单测（确定性 + 三段式/纯 ASCII/长度上限并断言词表无长词、不同设备短码不同、
-base36 补零大写、旧默认名识别且不误伤自取名字）。
+### Fixed (安卓「打开文件」失败的真因：应用私有文件不能以 `file://` 交给别的应用)
+用户实测 4.1.9：点已收到的文件 → 「文件打开失败，系统或者网络暂不可用」。
 
-**顺带修**：`scripts/version.mjs` 发布后**补回 `## [Unreleased]
+**真因**（读上游源码确认）：`tauri-plugin-opener` 在 Android 上只有一句
+`Intent(ACTION_VIEW, url.toUri())`（`OpenerPlugin.kt`），而我们交给它的是
+`file:///data/user/0/com.gosslan.app/downloads/…` —— **Android 7.0+ 禁止把应用私有文件以
+`file://` 暴露给别的应用**，`startActivity` 当场抛 `FileUriExposedException`，
+前端只能显示一句笼统的失败。桌面端不存在这个限制，所以它只会在真机上现形。
+
+**修法**：改走 FileProvider —— 把私有文件映射成 `content://com.gosslan.app.fileprovider/…`
+再交给用户选中的应用，intent 上带 `FLAG_GRANT_READ_URI_PERMISSION`（只授这一个 URI 的临时
+读权限：不申请任何存储权限，也不暴露目录）。
+- Kotlin 侧新增 `OpenWith.kt`：`FileProvider.getUriForFile` + `ACTION_VIEW`，MIME 交给系统
+  `MimeTypeMap` 推断；**所有异常都翻译成能行动的中文原因**（文件不存在 / 没有能打开它的应用 /
+  具体异常类型），并且与 `BlePeripheral` 一样**跳回主线程**执行（非主线程的 Java 未捕获异常
+  会直接杀进程，连 panic hook 都抓不到）。
+- `res/xml/file_paths.xml` 补一条 `root-path`：Tauri 在 Android 上的 data 目录是
+  `Context.getDataDir()` **本身**，收到的文件在 `dataDir/downloads`，模板原有的
+  `cache-path` / `external-path` 覆盖不到它（不补的话 `getUriForFile` 直接抛
+  `IllegalArgumentException`）。
+- Rust 侧新增 `android_open.rs`（JNI 桥：JavaVM 与类引用由 `MainActivity` →
+  `OpenWith.bootstrap` 带进来，与 BLE 同套路）；`open_file_native` 在 Android 上走它，
+  macOS / Windows / Linux 行为不变。
+- **`jni` 依赖从 `bluetooth` feature 里摘出来**（改成 Android 目标必带）：打开文件与蓝牙无关，
+  挂在 feature 上等于"没开蓝牙就开不了文件"。
+- `macos_open.rs` → `open_path.rs`：它现在管四个平台（macOS / Android / Windows / Linux），
+  存在性检查也收进同一个入口。
+
+**顺带修**（记账脚本把 CHANGELOG 劈坏了）：`scripts/version.mjs` 用
+`includes("## [Unreleased]")` + 字符串 `replace` 找发布锚点，正文里出现同样文字就会被误命中 ——
+真实后果是 4.1.1~4.1.11 全被插进 4.1.0 小节的半句话里、`## [Unreleased]` 锚点被吞掉。现已改成
+**按行锚定**的正则，并修复了受影响的 CHANGELOG（补回锚点、还原被劈开的句子、把 4.1.0 移回
+正确的"新在前"位置）。`npm run version:check` 同时新增 **CHANGELOG 结构检查**（锚点唯一 +
+标题格式 + 版本小节严格降序），这类破坏从此会在门禁里被拦住。
+
+**护栏**：JNI 签名护栏与 R8 keep 护栏各自扩展到第二座桥（`OpenWith.openWith` /
+`nativeAttachOpenWith`），JNI 类型映射支持可空标记（`String?` 与 `String` 描述符相同）；
+`scripts/verify-guards.py` 新增 3 条非空转用例 —— Kotlin 少写 `: String?` ⇒ 必须报
+「描述符不一致」；keep 规则漏 `openWith` ⇒ 必须报「缺少 `openWith`」；CHANGELOG 丢了
+`[Unreleased]` 锚点 ⇒ `version:check` 必须失败。
 
 ## [4.1.11] - 2026-09-12
 
@@ -188,7 +214,31 @@ APK 构建通过（Kotlin 编译是该改动的实际验证）。
 
 ## [4.1.2] - 2026-09-12
 
-## [4.1.1] - 2026-09-12`**（此前发布一次就把这一节吃掉，
+## [4.1.1] - 2026-09-12
+
+### Fixed
+- 安卓闪退修复（启动路径不再碰蓝牙）；通道状态单一真相源；手机端蓝牙不给手动开关（有蓝牙即默认开）；
+  设置项按端裁剪。**本节原本的内容被发布脚本吞掉**（见 4.1.0 小节的说明），明细见
+  tag `v4.1.0...v4.1.1` 的提交记录（`4f3eb93`）。
+
+## [4.1.0] - 2026-09-12
+### Changed (默认昵称：不再用设备用户名，改为「形容词 + 动物 + 设备短码」的英文名)
+用户要求：「默认用户名可以不用设备的用户名吗？用一串英文，可以加设备识别号的前几位或后几位；
+长度合适，让用户不改也好看，也有想改的欲望。」
+
+- **规则**：`<Adjective> <Animal> <3 位 base36>`，例如 `Lively Puma W1U`。由 `device_id` 的 SHA-256
+  **确定性派生**：同一台设备每次启动同名（随机数会让重启后名字变化，好友列表就认不出谁是谁）；
+  短码来自设备标识的哈希，**不含设备信息**（旧规则直接拿 hostname 当昵称：既不好看，也把设备名写了出去）。
+- **长度**：词表只用 ≤6 字母的词 ⇒ 总长 ≤17 字符，列表里不会被截断成省略号。
+- **一次性迁移**：仅当已存名字是"旧默认的产物"（空串 / "Gosslan 用户" / "Gosslan User" /
+  恰好等于本机 hostname）才替换；**用户自取的名字一律不动**。
+- **"恢复默认"走同一条规则**：新增命令 `default_nickname`，前端不再写死 i18n 文案
+  （否则"恢复默认"与首次安装得到的名字会不一致）；顺带删掉两处写死的默认名。
+
+**护栏**：`nickname.rs` 4 条单测（确定性 + 三段式/纯 ASCII/长度上限并断言词表无长词、不同设备短码不同、
+base36 补零大写、旧默认名识别且不误伤自取名字）。
+
+**顺带修**：`scripts/version.mjs` 发布后**补回 `## [Unreleased]`**（此前发布一次就把这一节吃掉，
 下一次记账无处可写 —— 这个坑本轮咬了我两次）。
 
 ## [4.0.0] - 2026-09-12
