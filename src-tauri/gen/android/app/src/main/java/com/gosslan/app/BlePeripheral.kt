@@ -129,7 +129,64 @@ object BlePeripheral {
 
     /** 打开 GATT server 并开始广播。返回是否已成功启动（失败原因经 nativeOnWarning 上报）。 */
     @JvmStatic
-    fun start(): Boolean {
+    /**
+     * 把 Android 框架调用放到**主线程**执行（同步等待结果，最多 `timeoutMs`）。
+     *
+     * 为什么必须（用户 2026-09-12 安卓实测：「点『添加好友』或进『设置』就立刻闪退，
+     * 不点按钮就不闪」）：Rust 命令跑在 **tokio 工作线程**上，而
+     * `ActivityCompat.requestPermissions` / `openGattServer` / `startAdvertising`
+     * 这类框架 API 只有在**有 Looper 的线程**（主线程）上才安全 ——
+     * 从没有 Looper 的线程调用会抛 Java 异常，而 Java 层的未捕获异常会**直接杀掉进程**
+     * （它不是 Rust panic，所以连我们新加的 panic hook 都抓不到、日志里什么都没有）。
+     * 这里统一跳主线程 + try/catch：平台调用失败最多是"通道没开"，绝不能让应用消失。
+     */
+    private fun <T> onMainSync(timeoutMs: Long = 3000, block: () -> T): T? {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            return try {
+                block()
+            } catch (t: Throwable) {
+                warnMain(t)
+                null
+            }
+        }
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var result: T? = null
+        val posted = mainHandler.post {
+            try {
+                result = block()
+            } catch (t: Throwable) {
+                warnMain(t)
+            } finally {
+                latch.countDown()
+            }
+        }
+        if (!posted) return null
+        return if (latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) result else null
+    }
+
+    /** 异步 post 到主线程（无返回值）。 */
+    private fun onMain(block: () -> Unit) {
+        mainHandler.post {
+            try {
+                block()
+            } catch (t: Throwable) {
+                warnMain(t)
+            }
+        }
+    }
+
+    private fun warnMain(t: Throwable) {
+        android.util.Log.w("GosslanBLE", "主线程调用失败：$t")
+        runCatching { nativeOnWarning("蓝牙操作失败：${t.message ?: t.javaClass.simpleName}") }
+    }
+
+    val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    fun start(): Boolean = startOnMain()
+
+    private fun startOnMain(): Boolean = onMainSync { startInner() } ?: false
+
+    private fun startInner(): Boolean {
         if (gattServer != null) return true // 幂等
         val context = appContext
         if (context == null) {
@@ -197,6 +254,10 @@ object BlePeripheral {
     /** 停止广播并撤掉 GATT server（幂等）。 */
     @JvmStatic
     fun stop() {
+        onMain { stopInner() }
+    }
+
+    private fun stopInner() {
         try {
             advertiser?.stopAdvertising(advertiseCallback)
         } catch (_: Exception) {
@@ -460,16 +521,21 @@ object BlePeripheral {
      */
     @JvmStatic
     fun requestAllPermissions() {
-        val activity = activityRef
-        if (activity == null) {
-            android.util.Log.w("GosslanBLE", "没有 Activity，无法弹权限框（请在系统设置里手动打开「附近的设备」）")
-            return
+        // ⚠️ 必须回到主线程再弹框：这个方法由 Rust 从 tokio 线程经 JNI 调用，
+        // 而 `ActivityCompat.requestPermissions` 只能在主线程上用（错误线程会抛 Java 异常
+        // ⇒ 由系统未捕获异常处理器直接杀掉进程：表现就是"点添加好友/设置立刻闪退"）。
+        onMain {
+            val activity = activityRef
+            if (activity == null) {
+                android.util.Log.w("GosslanBLE", "没有 Activity，无法弹权限框（请在系统设置里手动打开「附近的设备」）")
+                return@onMain
+            }
+            if (hasRequiredPermissions()) return@onMain
+            ActivityCompat.requestPermissions(
+                activity,
+                requiredPermissions().toTypedArray(),
+                REQUEST_BLE_PERMISSIONS,
+            )
         }
-        if (hasRequiredPermissions()) return
-        ActivityCompat.requestPermissions(
-            activity,
-            requiredPermissions().toTypedArray(),
-            REQUEST_BLE_PERMISSIONS,
-        )
     }
 }

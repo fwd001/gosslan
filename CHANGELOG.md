@@ -27,6 +27,29 @@ base36 补零大写、旧默认名识别且不误伤自取名字）。
 
 **顺带修**：`scripts/version.mjs` 发布后**补回 `## [Unreleased]
 
+## [4.1.5] - 2026-09-12
+
+### Fixed (安卓「点『添加好友』/『设置』立刻闪退」—— Android 框架 API 被从非主线程调用)
+用户实测 4.1.3：**打开应用不闪，一进「添加好友」或「设置」立刻闪退**。
+
+两个入口的唯一共同新代码是 `ensureBluetoothOn()`（打开这些界面时按需申请「附近的设备」权限）。
+根因形态：Rust 命令跑在 **tokio 工作线程**上，JNI 直接调进 Kotlin 后，
+`ActivityCompat.requestPermissions` / `openGattServer` / `startAdvertising` 这些
+**Android 框架 API 只能在主线程（有 Looper 的线程）调用**；从工作线程调用会抛 Java 异常，
+而 Java 层的未捕获异常由系统处理器**直接杀掉进程** —— 它不是 Rust panic，
+所以 panic hook 也抓不到、日志里什么都没有（与"什么都拿不到"的现象完全吻合）。
+
+修法（Kotlin 侧，`BlePeripheral.kt`）：新增主线程跳板
+- `onMainSync { }`（带返回值、最多等 3s）用于 `start()`，保留它原来的 `Boolean` 契约；
+- `onMain { }`（异步 post）用于 `requestAllPermissions()`、`stop()`；
+- 全部 try/catch 兜底并 `nativeOnWarning(...)` ⇒ 平台调用失败**最多是"通道没开"，绝不让应用消失**。
+
+教训（写进注释）：**任何触碰 Android 框架/Activity 的 JNI 入口都必须回到主线程**。
+顺带把"日志进 logcat + 启动路标"（上一提交）保留，下次即使还有别的崩点也能自己浮出来。
+
+门禁：`npm test` 344/0；`vue-tsc` 0；`check-mobile.sh --bluetooth` PASS / 0 warning；
+APK 构建通过（Kotlin 编译是该改动的实际验证）。
+
 ## [4.1.4] - 2026-09-12
 
 ### Added / Changed (安卓崩溃可诊断：日志进 logcat + 启动路标；启动路径彻底不申请权限)
