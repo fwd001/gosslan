@@ -10,8 +10,41 @@
 
 ## [Unreleased]
 
+### Fixed (Android **release** 包：三个"只有 release 才现形"的问题 —— 之前那份包是装不上 / 蓝牙会废的)
+- **① R8 把 Rust 按名字调用的 Kotlin 方法改名了**：`isMinifyEnabled = true` 时，`BlePeripheral` 的
+  `stop/start/send/isConnected/payloadMtu/requestAllPermissions/hasRequiredPermissions` 全被改名成
+  `a/b/c/d/e`（`dexdump` 实测），而 JNI 只按「名字 + 签名」查找 ⇒ release 真机包上**蓝牙外设整条
+  路径会在运行期 `NoSuchMethodError`**；debug 包不混淆，所以开发期完全看不见。
+  修法：新增 `scripts/android/proguard-gosslan.pro`（版本库里的单一事实来源），构建前由
+  `inject-android-signing.mjs` 注入 `app/proguard-rules.pro`；**新增主机可跑护栏
+  `release_keeps_every_kotlin_method_called_from_rust`** —— 规则漏方法 / 多留废弃方法 / 两处规则漂移
+  三种漂移都会 FAIL，且已逐条做非空转验证（删 `send` 行 → FAIL 并指名；塞 `legacyMethodGone` → FAIL；
+  恢复 → PASS）。修完实测 `dexdump`：7 个名字全部保留。
+- **② release 包根本没有签名**（真机上是"应用未安装"）：`app/build.gradle.kts` 里没有任何
+  signingConfig，AGP 对 release 产出的就是未签名 APK —— 而发布脚本此前**没有**跑
+  `inject-android-signing.mjs`（只有旧的 `android:build` 跑了）。修法：脚本在构建前强制注入
+  （有 `ANDROID_KEYSTORE_BASE64` 用真 keystore，否则回退 debug 签名保证内测可装），并在打包后
+  **硬校验** `apksigner verify` + 包里只有目标 ABI 的 `.so`，不通过就整条构建红掉。
+- **③ GitHub Actions 会把上面的坑原样发出去**：CI 只装 `platforms;android-34`，而 `tauri android init`
+  生成的工程是 `compileSdk = 36`（必然失败）；且 CI 走同一个发布脚本（同样没注入签名/清单）。
+  修法：CI 装 `platforms;android-36` + `build-tools;36.0.0` + `ndk;27.1.12297006`（与本机验证过的一致）、
+  JDK 升 21、删掉重复的 python 权限注入（统一由注入脚本负责）、产物连 `.sha256` 一起上传/发布。
+
+### Changed (Android 出包链路：产物位置、命名、校验)
+- 产物从 `dist/android/` 改到 **`release-artifacts/android/`**：安卓构建会先跑 `vite build`，而它会
+  **清空 `dist/`**（第一版就踩过：`mkdir` 完紧接着被删，`cp` 报 "No such file or directory"）。
+- 文件名带构建类型：`gosslan-<版本>-<abi>-<release|debug>.apk`（此前 release/debug 同名，分不清手上
+  装的是哪一份；实测 release **12MB** vs debug **216MB**），并在旁边生成同名 `.sha256`。
+- 只认**本次构建新产出**的 APK（marker 时间戳 + `find -print -quit`），不再 `ls -t | head -1` 去赌
+  构建目录里没有残留的 universal / 另一个 ABI 的旧包。
+- 支持只出单个 ABI：`bash scripts/build-android-releases.sh --abi arm64-v8a`
+  （或 `npm run android:build:test -- --abi arm64-v8a`）。
+- 构建会**改脏工作区**的问题一并解决：`MainActivity.kt`（运行时权限申请）、`AndroidManifest.xml`
+  （竖屏 + 权限清单）、`build.gradle.kts`（release 签名）与 `proguard-rules.pro`（R8 keep）的注入结果
+  都落到版本库；注入脚本保持幂等，专门兜底 `tauri android init` 重生工程之后的 CI / 新机器。
+
 ### Changed (打包策略：按架构分别出包，不再打 universal)
-- **Android 按 ABI 出两份包**（GitHub 发布就挂这两份）：`arm64-v8a` 给现代手机、`armeabi-v7a` 给老设备。新增 `scripts/build-android-releases.sh`（`npm run android:build:test` / `android:build:release`），对每个 ABI 各跑一次 `tauri android build --target <abi>`，产物按 ABI 改名落到 `dist/android/`。
+- **Android 按 ABI 出两份包**（GitHub 发布就挂这两份）：`arm64-v8a` 给现代手机、`armeabi-v7a` 给老设备。新增 `scripts/build-android-releases.sh`（`npm run android:build:test` / `android:build:release`），对每个 ABI 各跑一次 `tauri android build --target <abi>`，产物按 ABI 改名落到 `release-artifacts/android/`。
   - universal 包把两/四份 `.so` 拼在一起，而真机只用到一份（实测 universal debug **423MB**）；单 ABI 包体积约为其 1/3。
   - ⚠️ **不用** Gradle 的 `splits.abi`：Tauri 的 Android 插件会给每个 ABI 设 `ndk.abiFilters`，AGP 禁止两者并存，配置阶段直接失败（`Conflicting configuration … in ndk abiFilters cannot be present when splits abi filters are set`）。
 - **macOS 分架构出包**：`npm run dist:mac`（`aarch64-apple-darwin`，Apple 芯片 —— 日常开发/自测/打包都用它）与 `npm run dist:mac:intel`（`x86_64-apple-darwin`，发布给老 Intel Mac 时才需要）。**不打 universal**（会把两份二进制拼起来，体积翻倍）。
