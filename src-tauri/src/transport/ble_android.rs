@@ -334,6 +334,25 @@ fn native_bootstrap<'local>(
         let global = env.new_global_ref(class)?;
         let _ = KOTLIN_CLASS.set(global);
     }
+    // ⚠️ **必须在这里初始化 btleplug 的 Android 后端（droidplug）**，而且只能在有 JNIEnv 的地方做。
+    //
+    // 真实崩溃（用户 2026-09-12 真机 logcat 抓到的原始 panic）：
+    //   panic @ btleplug-0.13.0/src/droidplug/mod.rs:20:26：
+    //   "Droidplug has not been initialized. Please initialize it with btleplug::platform::init()."
+    // 我们此前从没调用过它 —— 于是 `Manager::new()` 一走到 `global_adapter()` 就 panic，
+    // 而安卓 release 强制 `panic = "abort"` ⇒ **进程直接消失**（点「添加好友」/「设置」时
+    // 按需拉起蓝牙通道，正好走到这里）。
+    //
+    // 为什么放在 bootstrap：它由 `MainActivity.onCreate` 同步调用，此刻 App 代码在栈上
+    // （JNI 的 FindClass 依赖调用方的类加载器），而且 `Env` 就在这里 —— droidplug 需要
+    // 一个已 attach 的线程来种下 JavaVM 单例与 Adapter 类。
+    // 失败不致命：只记一条 warning，蓝牙通道之后会以明确的错误返回（绝不 panic）。
+    if let Err(e) = btleplug::platform::init(env) {
+        // 失败不致命：蓝牙通道之后会以明确的错误返回（`network::ble::start` 会把
+        // `driver::adapter()` 的 Err 冒给前端并标成"不可用"），**绝不 panic**。
+        // 这里留一条 stderr（debug 构建可见；release 由 logcat 里的 panic hook/日志兜底）。
+        eprintln!("[gosslan][ble] btleplug droidplug 初始化失败：{e}");
+    }
     // 用类的全局引用注册三个回调：签名写错会立刻以 NoSuchMethodError 暴露（比静默失效好）
     if let Some(class) = KOTLIN_CLASS.get() {
         // SAFETY: 三个函数的签名与 Kotlin 声明逐一对齐（见本文件与 BlePeripheral.kt），

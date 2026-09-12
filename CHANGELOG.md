@@ -27,6 +27,27 @@ base36 补零大写、旧默认名识别且不误伤自取名字）。
 
 **顺带修**：`scripts/version.mjs` 发布后**补回 `## [Unreleased]
 
+## [4.1.7] - 2026-09-12
+
+### Fixed (安卓闪退真凶：btleplug 的 droidplug 后端从未初始化 —— 由真机 logcat 定位)
+用户按提示跑出 logcat，拿到**原始 panic**：
+
+```
+panic @ btleplug-0.13.0/src/droidplug/mod.rs:20:26：
+  Droidplug has not been initialized. Please initialize it with btleplug::platform::init().
+```
+
+即：Android 上 `Manager::new()` → `global_adapter()` 时发现 droidplug 没初始化 ⇒ panic；
+而安卓 release 强制 `panic = "abort"` ⇒ **进程直接消失**（进「添加好友」/「设置」时按需拉起
+蓝牙通道，正好走到这里）。此前我们**从没调用过** `btleplug::platform::init()`。
+
+修法：在 `nativeBootstrap`（由 `MainActivity.onCreate` 同步调用、手上有 `Env`）里做一次
+`btleplug::platform::init(env)` —— droidplug 需要一个已 attach 的线程来种下 JavaVM 单例与
+Adapter 类。失败不致命：只打一条 stderr，蓝牙通道随后以明确错误返回（绝不 panic）。
+
+顺带印证了两件事：① 上一提交加的**日志进 logcat** 让这次定位成为可能（panic 直接出现在
+`adb logcat -s gosslan` 里）；② panic hook 在 abort 之前确实执行了（那条 `[panic]` 就是它写的）。
+
 ### Changed (出一个 Mac 生产包也纳入常规流程；并加一条只打 .app 的脚本)
 用户要求：「后面每次打完安卓的包，再打一个 Mac 的生产包，我本地测试」。
 
