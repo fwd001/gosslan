@@ -1982,6 +1982,74 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
             crate::commands::flush_pending_group_files(state, &device_id).await;
         }
+        // ---- Phase 8（ADR-0017）：外部 mesh（BitChat）的不透明帧，Gosslan 只当中继 ----
+        //
+        // 三个行为，别的什么都不做：**收得到 · 去得掉重 · TTL 递减后转发**。
+        // 不解密、不落库、不建 BitChat 用户/channel；载荷对 Gosslan 永远是不透明字节。
+        Message::OpaqueExternal { id, ttl, payload } => {
+            // 健壮性底线（ADR-0017 决策更新里保留的那条）：畸形/超限帧**只丢这一帧**，
+            // 绝不断链 —— 记一条日志就返回，连接的读循环继续跑。
+            let bytes = match crate::protocol::validate_opaque_external(&id, ttl, &payload) {
+                Ok(b) => b,
+                Err(why) => {
+                    state
+                        .logger
+                        .warn("mesh", format!("丢弃不透明外部帧（{why}）from={peer_id}"));
+                    return;
+                }
+            };
+            // 去重 + TTL 递减：与业务帧**同一条流水线**（MeshRouter 不解析载荷，P-A03）。
+            let decision = {
+                let mut router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
+                router.on_receive(
+                    MeshFrame {
+                        frame_id: id.clone(),
+                        source_node_id: peer_id.to_string(),
+                        destination: MeshDestination::Broadcast,
+                        ttl,
+                        kind: MeshFrameKind::OpaqueExternal,
+                        // 载荷交给路由器只为"同样的流水线"，它不解析、不落库
+                        payload: bytes,
+                    },
+                    &state.device_id,
+                )
+            };
+            let ForwardDecision::Forward { frame, .. } = decision else {
+                // 重复帧或 TTL 耗尽 —— 这正是"去得掉重"的落点
+                state
+                    .logger
+                    .info("mesh", format!("不透明外部帧未转发（重复或 TTL 耗尽）id={id}"));
+                return;
+            };
+            // 转发用路由器给出的 ttl（**已经递减**），fan-out 选邻居并排除来源节点
+            let fwd = Message::OpaqueExternal {
+                id: frame.frame_id.clone(),
+                ttl: frame.ttl,
+                payload,
+            };
+            let targets: Vec<String> = {
+                let peers: Vec<String> = state
+                    .peers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .keys()
+                    .cloned()
+                    .collect();
+                let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                gossip.choose_fanout(&peers, peer_id)
+            };
+            if targets.is_empty() {
+                return;
+            }
+            // 与业务转发同一纪律：**不阻塞本连接的读循环**，用一个任务串行发完
+            let st = state.clone();
+            let msg = fwd;
+            tokio::spawn(async move {
+                for t in targets {
+                    let _ = try_send(&st, &t, &msg).await;
+                }
+            });
+        }
         Message::Heartbeat { device_id } => {
             if device_id != peer_id {
                 return;

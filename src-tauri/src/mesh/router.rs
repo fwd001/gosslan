@@ -519,4 +519,38 @@ mod tests {
             other => panic!("期望 Forward，实际 {other:?}"),
         }
     }
+
+    /// **Phase 8 的验收三条**（ADR-0017）：收得到 · 去得掉重 · TTL 递减后转发。
+    /// 这条测试把三条都钉在一次调用序列里（线格式入口在 `handle_message`，
+    /// 但它做的事就是把帧喂给这里 —— 所以流水线的行为就是验收标准）。
+    #[test]
+    fn phase8_acceptance_receive_dedup_and_ttl_forward() {
+        let mut r = router();
+        let mut f = frame("ext-1", "A", MeshDestination::Broadcast, 3);
+        f.kind = MeshFrameKind::OpaqueExternal;
+        f.payload = b"bit".to_vec();
+
+        // ① 收得到 + ③ TTL 递减后转发：ttl 3 -> 2
+        match r.on_receive(f.clone(), "me") {
+            ForwardDecision::Forward { frame, .. } => {
+                assert_eq!(frame.ttl, 2, "转发出去的那一份 TTL 必须已递减");
+                assert_eq!(frame.kind, MeshFrameKind::OpaqueExternal);
+            }
+            other => panic!("期望 Forward，实际 {other:?}"),
+        }
+
+        // ② 去得掉重：同一个外部 id 再来一次必须被丢弃
+        match r.on_receive(f.clone(), "me") {
+            ForwardDecision::Drop(reason) => assert_eq!(reason, DropReason::Duplicate),
+            other => panic!("期望 Drop(Duplicate)，实际 {other:?}"),
+        }
+
+        // ③ TTL 到 0 就不再转发（广播帧此时只本机消费）
+        let mut last = frame("ext-2", "A", MeshDestination::Broadcast, 1);
+        last.kind = MeshFrameKind::OpaqueExternal;
+        match r.on_receive(last, "me") {
+            ForwardDecision::Deliver => {}
+            other => panic!("TTL=1 时应当只消费、不再转发，实际 {other:?}"),
+        }
+    }
 }

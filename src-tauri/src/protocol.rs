@@ -491,6 +491,59 @@ pub enum Message {
         sealed_file_key: String,
         file_sha256: String,
     },
+    // ---- Phase 8（ADR-0017）：外部 mesh（BitChat）的不透明帧 ----
+    /// 外部 mesh 的包：Gosslan **只当中继** —— 收得到 / 去得掉重 / TTL 递减后转发，
+    /// 不解密、不落库、不建用户/channel。`payload` 是原样字节的 base64。
+    ///
+    /// ⚠️ 决策更新（ADR-0017，用户裁定）：本版**不考虑旧版兼容**，
+    /// 所以不需要能力门控/双读窗口；但保留健壮性底线 —— 畸形/超限帧**只丢这一帧、不断链**
+    /// （见 [`validate_opaque_external`]）。
+    OpaqueExternal {
+        /// 外部帧的自有 id（仅用于去重；不进 Gosslan 的 message_id 体系）
+        id: String,
+        /// 剩余跳数（路由器会按自己的上限再裁剪一次）
+        ttl: u8,
+        /// 原样载荷（base64）
+        payload: String,
+    },
+}
+
+/// 单个不透明外部帧的载荷上限（解码后字节）。取 256 KiB：足够装下 BitChat 的典型包
+/// （其 MTU 是几十~几百字节），又远小于 `MAX_FRAME`，不会成为内存放大入口。
+pub const MAX_OPAQUE_PAYLOAD: usize = 256 * 1024;
+/// 外部帧允许声明的最大 TTL（路由器另有自己的 `max_ttl` 再裁剪一层）。
+pub const MAX_OPAQUE_TTL: u8 = 16;
+/// 外部帧 id 的长度上限。
+pub const MAX_OPAQUE_ID: usize = 128;
+
+/// 校验不透明外部帧（**纯函数，主机可单测**）。
+///
+/// 返回解码后的原样字节；任何不合规都返回 `Err(原因)`，调用方**只丢这一帧**并记日志
+/// （这是 ADR-0017 决策更新里保留的那条底线：健壮性，不是兼容性）。
+pub fn validate_opaque_external(id: &str, ttl: u8, payload_b64: &str) -> Result<Vec<u8>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    if id.is_empty() || id.len() > MAX_OPAQUE_ID {
+        return Err(format!("id 长度非法（{}）", id.len()));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+    {
+        return Err("id 含非法字符".to_string());
+    }
+    if ttl == 0 || ttl > MAX_OPAQUE_TTL {
+        return Err(format!("ttl 非法（{ttl}）"));
+    }
+    let bytes = STANDARD
+        .decode(payload_b64)
+        .map_err(|e| format!("payload 不是合法 base64：{e}"))?;
+    if bytes.is_empty() {
+        return Err("payload 为空".to_string());
+    }
+    if bytes.len() > MAX_OPAQUE_PAYLOAD {
+        return Err(format!("payload 过大（{} 字节）", bytes.len()));
+    }
+    Ok(bytes)
 }
 
 /// Hello 帧的签名材料（版本前缀 + 全部连接身份字段）。
@@ -532,6 +585,48 @@ pub struct UdpPacket {
 
 #[cfg(test)]
 mod tests {
+    /// Phase 8（ADR-0017）：不透明外部帧的边界校验 —— **畸形/超限只丢该帧，不断链**。
+    #[test]
+    fn opaque_external_validation_bounds() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let ok = STANDARD.encode(b"bitchat-packet");
+        assert_eq!(
+            super::validate_opaque_external("pkt-1", 3, &ok).unwrap(),
+            b"bitchat-packet"
+        );
+        assert!(super::validate_opaque_external("pkt-1", 0, &ok).is_err());
+        assert!(super::validate_opaque_external("pkt-1", super::MAX_OPAQUE_TTL + 1, &ok).is_err());
+        assert!(super::validate_opaque_external("", 3, &ok).is_err());
+        assert!(super::validate_opaque_external(&"x".repeat(super::MAX_OPAQUE_ID + 1), 3, &ok).is_err());
+        assert!(super::validate_opaque_external("bad id!", 3, &ok).is_err());
+        assert!(super::validate_opaque_external("pkt-1", 3, "not base64!!").is_err());
+        assert!(super::validate_opaque_external("pkt-1", 3, "").is_err());
+        let huge = STANDARD.encode(vec![0u8; super::MAX_OPAQUE_PAYLOAD + 1]);
+        assert!(super::validate_opaque_external("pkt-1", 3, &huge).is_err());
+    }
+
+    /// 线格式必须能原样往返（Gosslan 不解码载荷，只透传）。
+    #[test]
+    fn opaque_external_round_trips_through_wire_format() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let payload = STANDARD.encode(vec![0u8, 1, 2, 250, 255]);
+        let msg = super::Message::OpaqueExternal {
+            id: "pkt-9".to_string(),
+            ttl: 5,
+            payload: payload.clone(),
+        };
+        let json = serde_json::to_vec(&msg).unwrap();
+        let back: super::Message = serde_json::from_slice(&json).unwrap();
+        match back {
+            super::Message::OpaqueExternal { id, ttl, payload: p } => {
+                assert_eq!(id, "pkt-9");
+                assert_eq!(ttl, 5);
+                assert_eq!(p, payload);
+            }
+            other => panic!("往返后类型变了：{other:?}"),
+        }
+    }
+
     use super::*;
 
     fn env() -> GossipEnvelope {
@@ -747,10 +842,16 @@ mod tests {
     /// 改这条测试（比如让未知变体被容忍）就等于改变兼容性契约 —— 需要 ADR。
     #[test]
     fn unknown_message_type_is_a_hard_parse_error() {
-        let unknown = br#"{"type":"opaque_external","id":"x","ttl":3,"payload":"AA=="}"#;
+        // ⚠️ 这里原先用 `opaque_external` 当"未知类型"的例子（当时它还没实现）。
+        // Phase 8 落地后它**已经是已知变体**，例子必须换成一个真正不存在的类型，
+        // 否则这条断言会因为"帧能解析成功"而失败 —— 顺手也说明：
+        // ADR-0017 的决策更新（本版不做旧版兼容）改变的是"要不要容忍未知类型"的**立场**，
+        // 没有改变**行为**：未知 type 依旧是硬解析错误，于是混版本拓扑会断链
+        // ⇒ 升级说明里必须写"所有设备一起升级"。
+        let unknown = br#"{"type":"some_future_kind","id":"x"}"#;
         assert!(
             serde_json::from_slice::<Message>(unknown).is_err(),
-            "未知 type 必须是硬错误：它能被容忍的话，ADR-0017 的能力门控就不必要了"
+            "未知 type 必须是硬错误（混版本会断链，所以升级必须整批进行）"
         );
         // 对照：已知变体必须能解析（否则上面那条断言会因为"全都解析失败"而变成空转）。
         // `Heartbeat` 需要 `device_id`，这里给全字段。
