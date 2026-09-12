@@ -1314,6 +1314,81 @@ pub async fn send_friend_request(
     Ok(())
 }
 
+/// **同意好友申请**这条路径的**唯一**实现：落库（好友 + 会话 + 公钥）→ 回执（Gossip 定向加密）
+/// → 清 pending → 通知 UI。
+///
+/// 为什么必须抽出来：现在有**两个**入口会"同意"——
+///   ① 用户在「新朋友」里点同意（`respond_friend_request`）；
+///   ② 收到一个**已经是我的好友**的人发来的申请时自动同意（`transport::auto_accept_if_already_friend`）。
+/// 两者只要有一处漏了落库或漏了回执，就会造出"我这儿有他、他那儿没我"的**单边好友关系**，
+/// 而那种状态在界面上表现为"对方加不上我"（用户 2026-09-12 实测的那个 bug）。
+pub(crate) async fn accept_friend_request(
+    s: &Arc<AppState>,
+    peer_id: &str,
+) -> Result<(), String> {
+    let name = resolve_nickname(s, &peer_id);
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::add_friend(&dbc, &peer_id, &name, None).ok();
+        db::ensure_conversation(&dbc, &peer_id, "single", &name, None).ok();
+    }
+    // 补写 peers 表已有的公钥到 friends 表：accept 路径此前不写公钥，
+    // 而建链（Hello）早于加好友、公钥不变时 key_changed 不触发补写，
+    // 导致 friends 公钥永久缺失 → 群密钥分发被静默跳过。
+    // 与 transport.rs 中 FriendAccept 接收路径的补写行为一致。
+    maybe_update_friend(s, &peer_id, &name, None);
+    // FriendAccept 改走 Gossip 定向：跨跳场景下 try_send 直连发不出去。
+    // 对方公钥优先从 peers 表读（接收 FriendRequest 时已 upsert_peer 记录），
+    // friends 表兜底（maybe_update_friend 可能已持久化）。
+    let target_pubkey = {
+        let from_peers = {
+            let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+            peers.get(peer_id).and_then(|p| p.x25519_pubkey.clone())
+        };
+        let from_friends = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_friend_x25519(&dbc, &peer_id)
+        };
+        from_peers.or(from_friends)
+    };
+    if let Some(target_pubkey) = target_pubkey {
+        let shared = crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey)
+            .ok_or("密钥交换失败")?;
+        let sealed = crypto::seal(&shared, b"{}").ok_or("加密失败")?;
+        let payload_b64 = STANDARD.encode(&sealed);
+        let mut env = {
+            let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
+            gossip.build_envelope(
+                &s.identity,
+                &s.device_id,
+                GossipKind::FriendAccept,
+                None,
+                None,
+                &payload_b64,
+                db::now_ms(),
+                0,
+            )
+        };
+        env.target = Some(peer_id.to_string());
+        env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
+        if s.has_link(&peer_id).await {
+            try_send(s, &peer_id, &Message::Gossip { envelope: env }).await?;
+        } else {
+            broadcast_gossip(s, env).await;
+        }
+    } else {
+        // 缺对端公钥时**绝不静默**：本地已加好友，但回执发不出去会导致好友关系
+        // 单边成立。打日志留痕（对方 Presence 尚未到达 / 已被 sweep 清理）。
+        s.logger.warn(
+            "friend",
+            format!("同意好友但缺对端公钥，FriendAccept 未发送 peer={peer_id}"),
+        );
+    }
+    crate::network::transport::forget_pending_request(s, &peer_id);
+    let _ = s.app.emit("friend-accepted", &peer_id);
+    Ok(())
+}
+
 #[tauri::command(async)]
 pub async fn respond_friend_request(
     state: State<'_, Arc<AppState>>,
@@ -1325,66 +1400,7 @@ pub async fn respond_friend_request(
         return Err("好友申请不存在或已处理".to_string());
     }
     if accept {
-        let name = resolve_nickname(s, &peer_id);
-        {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::add_friend(&dbc, &peer_id, &name, None).ok();
-            db::ensure_conversation(&dbc, &peer_id, "single", &name, None).ok();
-        }
-        // 补写 peers 表已有的公钥到 friends 表：accept 路径此前不写公钥，
-        // 而建链（Hello）早于加好友、公钥不变时 key_changed 不触发补写，
-        // 导致 friends 公钥永久缺失 → 群密钥分发被静默跳过。
-        // 与 transport.rs 中 FriendAccept 接收路径的补写行为一致。
-        maybe_update_friend(s, &peer_id, &name, None);
-        // FriendAccept 改走 Gossip 定向：跨跳场景下 try_send 直连发不出去。
-        // 对方公钥优先从 peers 表读（接收 FriendRequest 时已 upsert_peer 记录），
-        // friends 表兜底（maybe_update_friend 可能已持久化）。
-        let target_pubkey = {
-            let from_peers = {
-                let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-                peers.get(&peer_id).and_then(|p| p.x25519_pubkey.clone())
-            };
-            let from_friends = {
-                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::get_friend_x25519(&dbc, &peer_id)
-            };
-            from_peers.or(from_friends)
-        };
-        if let Some(target_pubkey) = target_pubkey {
-            let shared = crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey)
-                .ok_or("密钥交换失败")?;
-            let sealed = crypto::seal(&shared, b"{}").ok_or("加密失败")?;
-            let payload_b64 = STANDARD.encode(&sealed);
-            let mut env = {
-                let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                gossip.build_envelope(
-                    &s.identity,
-                    &s.device_id,
-                    GossipKind::FriendAccept,
-                    None,
-                    None,
-                    &payload_b64,
-                    db::now_ms(),
-                    0,
-                )
-            };
-            env.target = Some(peer_id.clone());
-            env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
-            if s.has_link(&peer_id).await {
-                try_send(s, &peer_id, &Message::Gossip { envelope: env }).await?;
-            } else {
-                broadcast_gossip(s, env).await;
-            }
-        } else {
-            // 缺对端公钥时**绝不静默**：本地已加好友，但回执发不出去会导致好友关系
-            // 单边成立。打日志留痕（对方 Presence 尚未到达 / 已被 sweep 清理）。
-            s.logger.warn(
-                "friend",
-                format!("同意好友但缺对端公钥，FriendAccept 未发送 peer={peer_id}"),
-            );
-        }
-        crate::network::transport::forget_pending_request(s, &peer_id);
-        let _ = s.app.emit("friend-accepted", &peer_id);
+        return accept_friend_request(s, &peer_id).await;
     } else {
         // 拒绝回执：跨跳（无直连）时 try_send 会失败，但**绝不因此阻塞本地清理**——
         // 否则「拒绝」发不出去会导致 pending 不被删除、申请「清掉又冒出来」。

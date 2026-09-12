@@ -944,6 +944,36 @@ mod tests {
         );
     }
 
+    /// **"申请人已经是我的好友"时，这条申请必须被自动同意**（双方关系必须收敛）。
+    ///
+    /// 真实缺陷（用户 2026-09-12 真机实测）：B 的好友列表里已经有 A，而 A 是**重置过的账号**、
+    /// 列表里没有 B。A 发申请 → 旧实现只在 B 侧插一条 pending，而 `get_pending_requests`
+    /// 又会把「申请人已是好友」的条目过滤掉（那是为了修「已经是好友了、申请还挂着」）
+    /// ⇒ **两边都看不到、谁也加不上**；用户只能先把 B 里的 A 删掉再加回来。
+    ///
+    /// 用户给的规则：既然 B 那边已经把 A 当好友，就等于 B 已经同意了 —— 直接走完整的同意路径。
+    #[test]
+    fn friend_request_from_existing_friend_auto_accepts() {
+        let transport = include_str!("network/transport.rs");
+        let helper = rust_fn_body(transport, "async fn auto_accept_if_already_friend(");
+        assert!(
+            helper.contains("db::get_friend") && helper.contains("accept_friend_request"),
+            "自动同意必须：① 真的判『他是不是已经是我的好友』；② 走**同一个** accept 实现（别各写一遍）"
+        );
+        let calls = transport.matches("auto_accept_if_already_friend(state, ").count();
+        assert_eq!(
+            calls, 2,
+            "两条 FriendRequest 路径（直连 `Message::FriendRequest` + 跨跳 `GossipKind::FriendRequest`）\
+             都必须先做自动同意 —— 只修一条就会『同一件事两种行为』（这正是上一条缺陷的成因）"
+        );
+        let commands = include_str!("commands.rs");
+        assert_eq!(
+            commands.matches("pub(crate) async fn accept_friend_request(").count(),
+            1,
+            "『同意好友』只能有一份实现：两套路径不一致正是『单边好友关系』这类缺陷的温床"
+        );
+    }
+
     /// **`get_pending_requests` 必须按好友关系过滤**（用户明确要求的兜底规则）。
     #[test]
     fn pending_requests_exclude_existing_friends() {

@@ -761,6 +761,43 @@ pub(crate) fn verify_hello(
 /// 而跨跳路径（`GossipKind::FriendAccept`）清了。同一件事两条路径行为不一致，
 /// 于是"有时候会清、有时候不清"。现在两条路径 + `respond_friend_request` 都走这一个助手，
 /// 前端再用 `pendingRequests`（按好友列表过滤）兜一层，不会再出现"已经是好友还挂在申请里"。
+/// 收到好友申请时的统一前置判断：**对方已经是我的好友就直接同意**。
+///
+/// 返回 `true` 表示"已经自动处理掉了，不要再往 pending 里插"。
+///
+/// ## 为什么必须有（用户 2026-09-12 真机实测的 bug）
+/// B 的好友列表里已经有 A，而 A 是**重置过的账号**、列表里没有 B：
+///   · A 发申请 → 旧实现只在 B 侧插一条 pending；
+///   · 而 `get_pending_requests` 又会把"申请人是已是好友"的条目**过滤掉**
+///     （那是为了修"已经是好友了、申请还挂着"）；
+///   ⇒ 两边都看不到、谁也加不上。用户只能先**删掉** B 里的 A、再加回来。
+///
+/// 正确语义（用户给的规则）：**"他已经是我的好友"就等于我已经同意了这件事** ——
+/// 收到这种申请时直接走完整的"同意"路径（落库 + 回执 + 清 pending + 通知 UI），
+/// 双方关系立刻收敛，不需要任何人工动作。
+///
+/// 为什么放在两条 FriendRequest 路径**都**调：直连（`Message::FriendRequest`）与跨跳
+/// （`GossipKind::FriendRequest`）是两套独立的入口，只在一条上修就会"同一件事两种行为"。
+async fn auto_accept_if_already_friend(state: &Arc<AppState>, peer_id: &str) -> bool {
+    let already_friend = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_friend(&dbc, peer_id).is_some()
+    };
+    if !already_friend {
+        return false;
+    }
+    state.logger.info(
+        "friend",
+        format!("收到已是好友的申请：自动同意 peer={peer_id}（双方关系收敛）"),
+    );
+    if let Err(e) = crate::commands::accept_friend_request(state, peer_id).await {
+        state
+            .logger
+            .warn("friend", format!("自动同意失败 peer={peer_id}：{e}"));
+    }
+    true
+}
+
 pub fn forget_pending_request(state: &AppState, peer_id: &str) {
     state
         .pending_requests
@@ -2136,6 +2173,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if to != state.device_id {
                 return;
             }
+            // 他已经是我的好友 ⇒ 直接同意（别插 pending，见 auto_accept_if_already_friend）
+            if auto_accept_if_already_friend(state, &from).await {
+                return;
+            }
             let req = PendingRequest {
                 from: from.clone(),
                 from_nickname: from_nickname.clone(),
@@ -3468,6 +3509,10 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             None,
                         )
                         .await;
+                        // 他已经是我的好友 ⇒ 直接同意（公钥刚从信封里记下，回执发得出去）
+                        if auto_accept_if_already_friend(state, &env.sender_id).await {
+                            return;
+                        }
                         let req = PendingRequest {
                             from: env.sender_id.clone(),
                             from_nickname,

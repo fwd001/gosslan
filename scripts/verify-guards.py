@@ -565,6 +565,21 @@ CASES: list[Case] = [
         tags=["rust", "friend"],
     ),
     Case(
+        name="已是好友的申请必须自动同意（否则双方永远加不上）",
+        why="用户实测：B 的好友列表里有 A，而 A 是重置过的账号、列表里没有 B。A 发申请只在 B 侧插"
+        "一条 pending，而 UI 又会把『申请人已是好友』的条目过滤掉（那是为了修『申请还挂着』）"
+        "⇒ 两边都看不到、谁也加不上，只能先把 B 里的 A 删掉再加回来",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "            if auto_accept_if_already_friend(state, &from).await {",
+            "            if false {",
+        )],
+        cmd=cargo("test", "--lib", "friend_request_from_existing_friend_auto_accepts"),
+        cwd=TAURI,
+        expect_fail_hint="两条 FriendRequest 路径",
+        tags=["rust", "friend"],
+    ),
+    Case(
         name="应用样式（三个窗口都必须加载 style.css）",
         why="真实缺陷：一窗一入口重构时漏掉了 `import \"./style.css\"`，dev 起来整个界面\"像没有 CSS\"，"
         "而且不报错、不影响任何测试 —— 只有这条守卫能拦住",
