@@ -92,7 +92,7 @@ pub struct GroupReadInfo {
 
 // ---------------- 本机信息与配置 ----------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_device_info(state: State<'_, Arc<AppState>>) -> DeviceInfo {
     let s = state.inner();
     DeviceInfo {
@@ -176,7 +176,7 @@ pub fn is_virtual_ip(ip: &Ipv4Addr) -> bool {
     || (o[0] == 169 && o[1] == 254)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_interfaces() -> Vec<InterfaceInfo> {
     let mut out = Vec::new();
     if let Ok(ifs) = if_addrs::get_if_addrs() {
@@ -208,7 +208,7 @@ pub fn list_interfaces() -> Vec<InterfaceInfo> {
 
 // ---------------- 网络控制 ----------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn start_network(state: State<'_, Arc<AppState>>, bind_ip: String) -> Result<(), String> {
     let arc = state.inner().clone();
     network::start(arc, bind_ip).await?;
@@ -217,7 +217,7 @@ pub async fn start_network(state: State<'_, Arc<AppState>>, bind_ip: String) -> 
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn stop_network(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     network::stop(state.inner()).await;
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -225,7 +225,7 @@ pub async fn stop_network(state: State<'_, Arc<AppState>>) -> Result<(), String>
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_network_status(state: State<'_, Arc<AppState>>) -> NetworkStatus {
     let s = state.inner();
     let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
@@ -235,7 +235,7 @@ pub fn get_network_status(state: State<'_, Arc<AppState>>) -> NetworkStatus {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_peers(state: State<'_, Arc<AppState>>) -> Vec<Peer> {
     let mut peers: Vec<Peer> = state
         .inner()
@@ -273,7 +273,7 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
 
 /// 从后台唤起并聚焦主窗口（冷启动首显 / 点击系统通知 / 消息点击唤起）。
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let Some(win) = app.get_webview_window("main") else {
         return Err("主窗口不存在".to_string());
@@ -307,7 +307,7 @@ pub fn focus_window(_app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// 网络拓扑摘要：节点数、中继数、平均时延。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_topology(state: State<'_, Arc<AppState>>) -> TopologyInfo {
     let s = state.inner();
     let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
@@ -331,7 +331,7 @@ pub fn get_topology(state: State<'_, Arc<AppState>>) -> TopologyInfo {
 // ---------------- 开发者诊断（隐藏面板用，只读不改网络行为） ----------------
 
 /// 获取 Discovery 运行时诊断状态（供隐藏开发者面板展示）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::DiscoveryDiag {
     let s = state.inner();
     let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
@@ -361,7 +361,7 @@ pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::Disc
 }
 
 /// 获取候选网卡列表（含评分），供诊断面板展示 Discovery 自动选择逻辑的实际数据。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_interface_candidates() -> Vec<crate::state::InterfaceCandidate> {
     use std::net::Ipv4Addr;
 
@@ -451,13 +451,13 @@ pub fn get_interface_candidates() -> Vec<crate::state::InterfaceCandidate> {
 // ---------------- 双通道与缓存 ----------------
 
 /// 局域网 / 蓝牙通道状态（设置页开关 + 状态监控）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_channel_status(state: State<'_, Arc<AppState>>) -> Vec<ChannelStatus> {
     TransportManager::new(state.inner().clone()).status()
 }
 
 /// 切换通道开关。局域网复用 `network`；蓝牙后端未编译，开启时返回明确错误。
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn set_channel_enabled(
     state: State<'_, Arc<AppState>>,
     channel: String,
@@ -558,7 +558,7 @@ pub fn get_cache_info(state: State<'_, Arc<AppState>>) -> CacheInfo {
 }
 
 /// 设置缓存清理策略（保留时长 / 磁盘配额；`None` 或 `0` 表示不限制）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_cache_policy(
     state: State<'_, Arc<AppState>>,
     retention_days: Option<u32>,
@@ -655,7 +655,7 @@ const RELAY_POLICIES: [&str; 4] = ["off", "friends", "allowlist", "all"];
 ///
 /// 非 macOS 平台下这个模块整体不编译，所以这里必须 cfg 掉函数体（保留命令本身，
 /// 让前端调用在其它平台也能拿到 Ok —— 前端不需要按平台分支）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_ui_language(app: tauri::AppHandle, lang: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -668,7 +668,7 @@ pub fn set_ui_language(app: tauri::AppHandle, lang: String) -> Result<(), String
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     Settings {
@@ -688,7 +688,7 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<(), String> {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(v) = settings.theme_color {
@@ -748,7 +748,7 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
 
 /// 恢复默认设置：清除所有用户可配置设置（外观、昵称、头像、网卡、缓存策略等）。
 /// 保留 device_id、x25519_secret、ed25519_secret、好友列表、聊天记录。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reset_settings(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     for key in SETTINGS_KEYS.iter().chain([
@@ -789,7 +789,7 @@ pub async fn broadcast_chat_style(
 
 // ---------------- 好友 ----------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
     let s = state.inner();
     let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
@@ -821,7 +821,7 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
 }
 
 /// 删除好友（保留聊天记录；对方仍会出现在扫描列表，可重新添加）。
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> Result<(), String> {
     let s = state.inner();
     {
@@ -839,7 +839,7 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_pending_requests(state: State<'_, Arc<AppState>>) -> Vec<PendingRequest> {
     state
         .inner()
@@ -851,7 +851,7 @@ pub fn get_pending_requests(state: State<'_, Arc<AppState>>) -> Vec<PendingReque
         .collect()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn send_friend_request(
     state: State<'_, Arc<AppState>>,
     peer_id: String,
@@ -906,7 +906,7 @@ pub async fn send_friend_request(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn respond_friend_request(
     state: State<'_, Arc<AppState>>,
     peer_id: String,
@@ -993,7 +993,7 @@ pub async fn respond_friend_request(
 
 // ---------------- 单聊（Gossip + E2EE） ----------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn send_message(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
@@ -1163,7 +1163,7 @@ pub async fn send_message(
 
 /// 读取会话的「当前链路」快照（最近一条消息的链路 + 中间节点数）。
 /// 前端聊天窗口据此显示连接图标（LAN / 桥接 / 蓝牙 + 节点数）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_conv_link(
     state: State<'_, Arc<AppState>>,
     conv_id: String,
@@ -1190,7 +1190,7 @@ pub fn get_messages(
     db::get_messages(&dbc, &conv_id, safe_limit, safe_offset).unwrap_or_default()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_message_count(state: State<'_, Arc<AppState>>, conv_id: String) -> i64 {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::count_messages(&dbc, &conv_id)
@@ -1204,7 +1204,7 @@ pub fn get_conversations(state: State<'_, Arc<AppState>>) -> Vec<Conversation> {
 
 /// 打开与好友的会话时确保会话行存在（新加好友尚未发过消息时，
 /// 会话列表无对应项 → 左侧无法高亮选中态）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ensure_conversation(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
@@ -1232,7 +1232,7 @@ pub fn ensure_conversation(
 }
 
 /// 标记会话已读；单聊时向对方发送已读回执（触发对方界面的「已读绿勾」）。
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Result<(), String> {
     let s = state.inner();
     {
@@ -1306,7 +1306,7 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
 /// 删除本地会话与全部消息（聊天记录清理）。
 /// 仅删本地：不影响对方、不广播；前端负责二次确认弹窗。
 /// 群聊同样支持（删除 group:xxx 会话及全部消息）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_conversation(state: State<'_, Arc<AppState>>, conv_id: String) -> Result<(), String> {
     let s = state.inner();
     // 群会话删除时写删除边界：其他成员保留的历史重放不得回灌本机。
@@ -1322,7 +1322,7 @@ pub fn delete_conversation(state: State<'_, Arc<AppState>>, conv_id: String) -> 
 
 // ---------------- 群聊（群密钥 + Gossip） ----------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_group(
     state: State<'_, Arc<AppState>>,
     name: String,
@@ -1398,7 +1398,7 @@ pub fn create_group(
 
 /// 向群成员分发群密钥（用各成员公钥 ECDH 加密）。
 /// 同时携带群名与成员列表：成员端据此建本地群记录，否则群名会兜底成「群聊 g-xxxx」。
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn distribute_group_key(
     state: State<'_, Arc<AppState>>,
     group_id: String,
@@ -1451,13 +1451,13 @@ pub async fn distribute_group_key(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_groups(state: State<'_, Arc<AppState>>) -> Vec<Group> {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_groups(&dbc).unwrap_or_default()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_group_reads(state: State<'_, Arc<AppState>>, group_id: String) -> Vec<GroupReadInfo> {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_group_reads(&dbc, &group_id)
@@ -1471,7 +1471,7 @@ pub fn get_group_reads(state: State<'_, Arc<AppState>>, group_id: String) -> Vec
 }
 
 /// 重命名群：仅创建者可操作。本地改名 + 同步会话标题后，广播给全部成员。
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn rename_group(
     state: State<'_, Arc<AppState>>,
     group_id: String,
@@ -1561,7 +1561,7 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
 ///   所以一旦轮换，新密钥就只存在于群主本机。群主一旦离线，其他成员永远拿不到，
 ///   整群消息都无法解密。不轮换则密钥始终是全体成员都持有的那一个，与群主是否在线无关。
 /// - 轮换只在「移除成员」时做（撤销被移除者的解密能力），那个时机群主必然在线。
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn group_add_member(
     state: State<'_, Arc<AppState>>,
     group_id: String,
@@ -1604,7 +1604,7 @@ pub async fn group_add_member(
 }
 
 /// 移人出群：仅创建者。轮换群密钥发给剩余成员，并向被移除者发 GroupMemberRemoved。
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn group_remove_member(
     state: State<'_, Arc<AppState>>,
     group_id: String,
@@ -1674,7 +1674,7 @@ pub async fn group_remove_member(
 /// 转让群主：仅**当前**群主可发起，目标必须是群成员。
 /// 本地更新创建者后广播 `GroupCreatorChanged` 给全体成员（含新群主本人）。
 /// 用于群主更换设备/卸载前移交管理权，避免群永久失去改名/加人/踢人能力。
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn transfer_group_creator(
     state: State<'_, Arc<AppState>>,
     group_id: String,
@@ -1716,7 +1716,7 @@ pub async fn transfer_group_creator(
 /// 退出群聊：群主须先转让（否则该群会永久失去管理权）。
 /// 退群后清理本地群记录 / 会话 / 群密钥，并广播 `GroupMemberLeft` 让其余成员更新成员表。
 /// 复用与「被移出群」同一套本地清理路径（`db::delete_group`）。
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn leave_group(state: State<'_, Arc<AppState>>, group_id: String) -> Result<(), String> {
     let s = state.inner();
     let group = {
@@ -1835,7 +1835,7 @@ pub fn window_close(app: tauri::AppHandle) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn send_group_message(
     state: State<'_, Arc<AppState>>,
     group_id: String,
@@ -1952,7 +1952,7 @@ pub async fn send_group_message(
 /// 存内存 → 对可达成员发送 GroupFileOffer（群密钥封装 file_key）→
 /// 流式读取文件、逐 256KB 分片 AEAD 加密后向全部可达 recipient 发送
 /// GroupFileChunk（seq 从 0 严格递增）。不可达成员保持 pending。
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn send_group_file(
     state: State<'_, Arc<AppState>>,
     group_id: String,
@@ -2501,14 +2501,14 @@ pub fn save_outgoing_image(
 }
 
 /// 删除本地文件（用于图片发送初始化失败后清理孤儿文件）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_file(path: String) -> Result<(), String> {
     std::fs::remove_file(&path).map_err(|e| e.to_string())
 }
 
 /// 用系统默认应用打开本地文件。
 /// macOS 走 NSWorkspace（沙盒下 /usr/bin/open 被拦），Windows/Linux 走 opener。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_file_native(path: String) -> Result<(), String> {
     crate::macos_open::open_path_native(std::path::Path::new(&path))
 }
@@ -2530,7 +2530,7 @@ pub fn apply_macos_window_shape(
 }
 
 /// 群文件投递摘要（气泡成员状态文案用）：总数/completed/failed/待投递。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_group_file_delivery_summary(
     state: State<'_, Arc<AppState>>,
     transfer_id: String,
@@ -2654,7 +2654,7 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
     });
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn send_file(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
@@ -2751,7 +2751,7 @@ pub async fn send_file_relay(
     send_file(state, friend_id, path).await
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_transfers(state: State<'_, Arc<AppState>>) -> Vec<TransferInfo> {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_transfers(&dbc).unwrap_or_default()
@@ -2759,7 +2759,7 @@ pub fn get_transfers(state: State<'_, Arc<AppState>>) -> Vec<TransferInfo> {
 
 // ---------------- 共享目录 ----------------
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_share_dir(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
     if !PathBuf::from(&path).is_dir() {
         return Err("目录不存在".to_string());
@@ -2775,13 +2775,13 @@ pub fn set_share_dir(state: State<'_, Arc<AppState>>, path: String) -> Result<()
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_share_dir(state: State<'_, Arc<AppState>>) -> Option<String> {
     state.inner().share_dir.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// 文件接收目录（接收的文件/图片落盘于此，可改、可在资源管理器打开）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_downloads_dir(state: State<'_, Arc<AppState>>) -> String {
     state
         .inner()
@@ -2793,7 +2793,7 @@ pub fn get_downloads_dir(state: State<'_, Arc<AppState>>) -> String {
 }
 
 /// 修改文件接收目录：校验目录存在后持久化，后续新接收的文件落到新目录。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_downloads_dir(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
     if !p.is_dir() {
@@ -2810,7 +2810,7 @@ pub fn set_downloads_dir(state: State<'_, Arc<AppState>>, path: String) -> Resul
 }
 
 /// 在系统资源管理器中打开文件接收目录。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_downloads_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let p = state.inner().downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
     std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
@@ -2848,7 +2848,7 @@ fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn request_share_tree(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
@@ -2886,7 +2886,7 @@ pub async fn request_share_tree(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub async fn download_shared_file(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
@@ -2953,7 +2953,7 @@ pub fn copy_file(source: String, destination: String) -> Result<(), String> {
 
 /// 把文件本体写入系统剪贴板（Windows CF_HDROP）。
 /// 之后既可在资源管理器 / 桌面 Ctrl+V 粘贴出文件，也可粘贴回聊天框直接发送（微信式）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn copy_file_to_clipboard(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -2976,7 +2976,7 @@ pub fn copy_file_to_clipboard(path: String) -> Result<(), String> {
 
 /// 读取剪贴板里的文件路径列表（CF_HDROP）。空列表表示剪贴板里没有真实文件
 /// （截图 / 网页图片是位图数据，不是文件）。供输入框粘贴时区分「粘贴文件」与「粘贴图片」。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_clipboard_file_paths() -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
@@ -3056,7 +3056,7 @@ fn resolve_media_path(s: &AppState, msg_id: &str) -> MediaPath {
 /// 前端据此把"已被清理"的消息渲染成明确提示，而不是一个空白/裂开的图片框——后者
 /// 会让人误以为是对端发来的文件本身有问题。只有能确定「文件已被删除」时才返回 `false`；
 /// 查不到消息（例如尚未落库的乐观消息）一律按"存在"处理，绝不能把在途消息误标成已清理。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn media_present(state: State<'_, Arc<AppState>>, msg_id: String) -> Result<bool, String> {
     let s = state.inner();
     Ok(!matches!(resolve_media_path(s, &msg_id), MediaPath::Gone))
@@ -3496,7 +3496,7 @@ fn normalize_routed_address(input: &str) -> Result<String, String> {
 }
 
 /// 列出手动配置的跨子网端点（Tailscale / VPN / 跨网段）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_routed_endpoints(state: tauri::State<'_, Arc<AppState>>) -> Vec<RoutedEndpoint> {
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default())
@@ -3511,7 +3511,7 @@ pub fn list_routed_endpoints(state: tauri::State<'_, Arc<AppState>>) -> Vec<Rout
 ///
 /// 地址接受 `ip` 或 `ip:port`（省略端口按标准 [`TCP_PORT`] 补全），目前仅 IPv4：
 /// TCP 监听侧绑的是 `Ipv4Addr`，IPv6 端点拨出去也连不上。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_routed_endpoint(
     state: tauri::State<'_, Arc<AppState>>,
     device_id: Option<String>,
@@ -3544,7 +3544,7 @@ pub fn add_routed_endpoint(
 /// 写 SQLite 没经过 `add` 的裸 IP 无端口），否则会出现「列表里看得见但删不掉」——
 /// 用户的真实反馈：UI 看着有 `100.101.221.60`，删的时候 normalize 成
 /// `100.101.221.60:59992`，而库里存的就是裸 `100.101.221.60`，字符串不相等。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remove_routed_endpoint(
     state: tauri::State<'_, Arc<AppState>>,
     address: String,
@@ -3570,13 +3570,13 @@ pub fn remove_routed_endpoint(
 // ---------------- 运行日志 ----------------
 
 /// 读取内存中的全部运行日志（时间正序：旧 → 新）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_logs(state: tauri::State<'_, Arc<AppState>>) -> Vec<LogEntry> {
     state.logger.snapshot()
 }
 
 /// 清空运行日志（内存 + 落盘文件）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_logs(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
     state.logger.clear();
     Ok(())
@@ -3587,7 +3587,7 @@ pub fn clear_logs(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> 
 /// 日志窗口加载同一个前端，由前端按窗口 label（`logs`）渲染日志页；窗口用系统标题栏
 /// （含关闭按钮），关闭即销毁，下次打开再重建 —— 与主窗口的「关闭到托盘」互不影响。
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_log_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
@@ -3639,7 +3639,7 @@ pub fn open_log_window(_app: tauri::AppHandle) -> Result<(), String> {
 /// 参考图是「左侧窄导航 + 右侧内容」的设置窗口，而不是盖在聊天上的居中弹窗。
 /// 窗口用系统标题栏（含关闭按钮），关闭即销毁，下次打开再重建。
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_settings_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,

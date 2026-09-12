@@ -345,41 +345,153 @@ mod tests {
         }
     }
 
-    /// 会阻塞主线程的"重"命令必须声明 `#[tauri::command(async)]`。
+    /// **规则式**守卫：任何会碰重资源（数据库 / 文件系统 / 日志 / 剪贴板 / 网卡枚举 / 阻塞睡眠）
+    /// 的命令，都必须声明 `#[tauri::command(async)]`。
     ///
     /// 依据（读过上游源码，不是猜的）：
     /// - `tauri-macros` 的 `body_blocking` 把命令函数**内联调用**在 IPC 处理器里；
-    ///   只有 `ExecutionContext::Async` 才走 `respond_async_serialized`（异步运行时线程）。
+    ///   只有 `ExecutionContext::Async` 才走 `respond_async_serialized`
+    ///   → `crate::async_runtime::spawn(...)`（异步运行时线程）。
     /// - wry 的 `WKScriptMessageHandler::did_receive` 在 AppKit 消息循环里同步回调
     ///   （`wry-*/src/wkwebview/class/wry_web_view_delegate.rs`），即 **macOS 主线程**。
     ///
-    /// 于是同步命令 = 在 UI 主线程上跑：读大文件、遍历目录、删文件、`VACUUM`
-    /// （`clean_cache_now`）、全量导出/搜索都会把整个应用卡住（不只是那一个窗口）。
-    /// 这条守门测试盯住已知的重命令，别让 `(async)` 在后续重构里被去掉。
+    /// 于是同步命令 = 在 UI 主线程上跑：**整个进程**（所有窗口）都会卡住，不只是发起调用的那个窗口。
+    ///
+    /// 为什么从"名字清单"改成"规则"：清单只能盯住写清单时想到的那几个。
+    /// 真实事故（2026-09-12 用户反馈"点清除数据/恢复，设置窗口直接卡死；点添加好友主窗口卡死"）：
+    /// 清单里 12 个命令是 async，但**另外 42 个**（`get_settings`/`get_friends`/`get_transfers`/
+    /// `get_logs`/`list_interfaces`/`reset_settings`/`open_settings_window` …）仍是同步命令。
+    /// 它们本身很快，但 `clear_all_data` 那种长事务会把 `db` 互斥锁握住数秒，
+    /// 于是这些同步读**在主线程上等锁** ⇒ 两个窗口一起冻住。
+    /// 规则式守卫能覆盖"以后新加的命令"，名字清单不能。
     #[test]
-    fn heavy_commands_run_off_the_main_thread() {
+    fn blocking_commands_run_off_the_main_thread() {
         let src = include_str!("commands.rs");
-        // 名字 -> 为什么重（写在这里，改列表时顺手交代理由）
-        for name in [
-            "read_file_preview",   // 读磁盘（图片/文件预览，热路径）
-            "get_messages",        // 分页读库（每次切会话）
-            "get_conversations",   // 列表 + 解密最后一条
-            "search_messages",     // 全表扫描 + 解密
-            "search_chat_history", // 全表 LIKE 扫描（结果页）
-            "get_cache_info",      // 目录遍历统计
-            "clean_cache_now",     // 删文件 + VACUUM（可能数秒）
-            "export_chat_text",    // 渲染 + 写盘
-            "clear_all_data",      // 递归删除
-            "save_data_file",      // base64 解码 + 写盘
-            "save_outgoing_image", // 写图片
-            "copy_file",           // 文件复制
-        ] {
-            let want = format!("#[tauri::command(async)]\npub fn {name}(");
-            assert!(
-                src.contains(&want),
-                "重命令 `{name}` 必须写成 `#[tauri::command(async)]`：同步命令会在 macOS 主线程上                 执行（wry 的 IPC 回调在 AppKit 消息循环里），读盘/遍历/删除会卡住整个应用"
-            );
+        // 例外必须写在这里并交代理由（当前为空：纯窗口操作天然不含下列标记）
+        const ALLOWED: [&str; 0] = [];
+
+        // 重资源标记 → 人类可读的原因
+        let markers: [(&str, &str); 9] = [
+            (".db", "访问 SQLite（可能等锁数秒）"),
+            ("db::", "访问 SQLite"),
+            ("std::fs", "文件系统 IO"),
+            ("logger.", "日志（含整份快照）"),
+            ("Clipboard", "系统剪贴板（可能被别的程序占着）"),
+            ("list_interfaces", "枚举网卡"),
+            ("if_addrs", "枚举网卡"),
+            ("thread::sleep", "阻塞睡眠"),
+            ("block_on", "阻塞等待异步任务"),
+        ];
+
+        let mut offenders: Vec<String> = Vec::new();
+        for (name, is_async, body) in command_bodies(src) {
+            if is_async || ALLOWED.contains(&name.as_str()) {
+                continue;
+            }
+            let hit: Vec<&str> = markers
+                .iter()
+                .filter(|(m, _)| body.contains(m))
+                .map(|(_, why)| *why)
+                .collect();
+            if !hit.is_empty() {
+                offenders.push(format!("  {name}: {}", hit.join("、")));
+            }
         }
+        assert!(
+            offenders.is_empty(),
+            "以下命令会阻塞 macOS 主线程（同步命令在 wry 的 IPC 回调里内联执行），\
+             必须加 `#[tauri::command(async)]` —— 否则长事务/读盘期间**所有窗口**一起卡死：\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// 拆出 `commands.rs` 里每个 `#[tauri::command…]` 的 `(名字, 是否 async, 函数体)`。
+    ///
+    /// 手写扫描而不是上 syn：本测试只做文本判据，不引入新依赖；字符串/注释/生命周期都跳过，
+    /// 否则函数体里的花括号（`format!("{}")` 之类）会让配对错位。
+    fn command_bodies(src: &str) -> Vec<(String, bool, String)> {
+        let bytes = src.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while let Some(pos) = src[i..].find("#[tauri::command") {
+            let attr_start = i + pos;
+            let attr_end = match src[attr_start..].find(']') {
+                Some(e) => attr_start + e,
+                None => break,
+            };
+            // 两条路都算"off main thread"：属性 `#[tauri::command(async)]`（同步函数被 spawn），
+            // 或函数本身是 `async fn`（宏直接走 respond_async_serialized）。
+            let attr_async = src[attr_start..attr_end].contains("async");
+            // 从属性之后找 `fn 名字(`
+            let after = &src[attr_end..];
+            let fn_pos = match after.find("fn ") {
+                Some(p) => attr_end + p,
+                None => {
+                    i = attr_end;
+                    continue;
+                }
+            };
+            let name: String = src[fn_pos + 3..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let is_async =
+                attr_async || src[attr_end..fn_pos].contains("async");
+            // 花括号配对取函数体（跳过字符串/字符/注释）
+            let mut depth = 0i32;
+            let mut j = fn_pos;
+            let mut in_str = false;
+            let mut in_line_comment = false;
+            let mut in_block_comment = false;
+            let mut body = String::new();
+            while j < bytes.len() {
+                let c = bytes[j] as char;
+                let next = bytes.get(j + 1).map(|b| *b as char);
+                if in_line_comment {
+                    if c == '\n' {
+                        in_line_comment = false;
+                    }
+                } else if in_block_comment {
+                    if c == '*' && next == Some('/') {
+                        in_block_comment = false;
+                        j += 1;
+                    }
+                } else if in_str {
+                    if c == '\\' {
+                        j += 1;
+                    } else if c == '"' {
+                        in_str = false;
+                    }
+                } else if c == '/' && next == Some('/') {
+                    in_line_comment = true;
+                    j += 1;
+                } else if c == '/' && next == Some('*') {
+                    in_block_comment = true;
+                    j += 1;
+                } else if c == '"' {
+                    in_str = true;
+                } else if c == '\'' {
+                    // 生命周期（`'_` / `'a`）不是字符字面量：只有 `'x'` 形式才算
+                    if next == Some('\\') || bytes.get(j + 2).map(|b| *b as char) == Some('\'') {
+                        j += 2;
+                    }
+                } else if c == '{' {
+                    depth += 1;
+                } else if c == '}' {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                if depth > 0 {
+                    body.push(c);
+                }
+                j += 1;
+            }
+            out.push((name, is_async, body));
+            i = j.max(attr_end + 1);
+        }
+        out
     }
 
     /// 主窗口标签在 `tray` 里还有一份（那份是 `#[cfg(desktop)]`），两边不许漂移。
