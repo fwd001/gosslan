@@ -570,10 +570,12 @@ CASES: list[Case] = [
         why="用户实测：给 store 新增 channels/refreshChannels 后，dev 里旧 store 实例没有这些成员 ⇒ "
         "设置页渲染抛错 ⇒ 整页卡死（点设置卡、过一会儿弹好几个设置、主题延迟切换）",
         file=TAURI / ".." / "src" / "stores" / "useAppStore.ts",
-        injections=[("    refreshChannels,\n", "    refreshChannelsRenamed,\n")],
+        # ⚠️ 注入的名字必须是**界面真的在用**的那个导出（当前是 `refreshRuntime`，
+        #    用在 `NetworkSection.vue` / `AddFriendModal.vue`）。改成没人用的名字护栏会空转。
+        injections=[("    refreshRuntime,\n", "    refreshRuntimeRenamed,\n")],
         cmd=npm("test"),
         cwd=ROOT,
-        expect_fail_hint="refreshChannels",
+        expect_fail_hint="refreshRuntime",
         tags=["frontend", "store"],
     ),
     # ---------------- Android release 包：R8 不得改掉 Rust 按名字调用的 Kotlin 方法 ----------------
@@ -585,11 +587,11 @@ CASES: list[Case] = [
         # ⚠️ 两个文件必须**同时**改坏：只改一个的话护栏会先以"事实来源与注入副本漂移"失败，
         #    那就证明不了"漏掉某个方法也会被抓到"。
         file=ROOT / "scripts" / "android" / "proguard-gosslan.pro",
-        injections=[("    public boolean send(java.lang.String, byte[]);\n", "")],
+        injections=[("    public static boolean send(java.lang.String, byte[]);\n", "")],
         extra_injections=[
             (
                 TAURI / "gen" / "android" / "app" / "proguard-rules.pro",
-                "    public boolean send(java.lang.String, byte[]);\n",
+                "    public static boolean send(java.lang.String, byte[]);\n",
                 "",
             )
         ],

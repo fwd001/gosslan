@@ -10,6 +10,46 @@
 
 ## [Unreleased]
 
+## [4.2.10] - 2026-09-12
+
+### Docs (⑨ 社区实现对照：BitChat 的 mesh 与我们的差距)
+
+新增 `docs/notes/bitchat-comparison.md`：拿用户手机上已装的 `com.bitchat.droid` **1.7.4**
+（`classes.dex` 字符串 + `AndroidManifest.xml`）与上游 `permissionlesstech/bitchat-android`
+（HEAD = 2.0.2）源码，逐条对照「传输层 / BLE 身份 / 包格式 / 分片 / TTL / 去重 / 离线暂存」，
+每条都标了证据来源（APK 实测 vs 源码常量）。
+
+**结论**（对应用户裁定「可以参考 bitchat 协议，最终结果可以帮 bitchat 做中间节点，但不用兼容它的消息协议」）：
+
+1. 我们**已经**具备当中继的全部语义 —— `Message::OpaqueExternal` 去重 + TTL 递减 + fan-out，
+   且不解析载荷；
+2. 但**现在收不到任何 BitChat 帧**：BLE 层互相看不见（它只认 `F47B5E2D-…` / `A1B2C3D4-…`，
+   我们广播 `6b1a7e60-…`）。要真当中继需做**双栈 BLE 外设**（同时注册两套 GATT 服务 +
+   扫描同时匹配两个 UUID + 广播兼容），**不是改协议**；代价是复杂度/功耗/身份合规，
+   建议默认关闭、设置里显式打开 ⇒ 本轮**不实现**（等用户决定）；
+3. 可抄且**直接命中当前 BLE 痛点**的一条：BitChat 把 **peerID 放进广播的服务数据**，
+   扫描方不连接就知道"对面是谁"，可用来做去重键（BLE 地址会轮换）并在广播层决定拨不拨
+   —— 我们广播里只有 UUID（`bluetooth_peripheral.rs:17,588`），身份要连上后 Hello 才拿到；
+4. 另一条加固：BitChat 的分片有**跨消息全局字节上限**（4MiB 全局/1MiB 每条/256 片/64 组），
+   我们只有 `MAX_INFLIGHT_MESSAGES = 8` + 单条 512KiB ⇒ 峰值仍可达 MiB 级；
+5. 纠正一个印象：BitChat **不是纯 BLE**（1.7.4 就有 Wi‑Fi Aware + Nostr + 可选 Tor），
+   我们是 LAN + BLE —— 方向同类，通道组合不同。
+
+本轮**只改文档、护栏脚本与版本号，不动产品代码**，故 4.2.9 的两台产物在功能上与 4.2.10 等价。
+
+### Fixed (`verify-guards.py` 两条护栏的注入锚点失效 ⇒ 门禁假绿)
+
+`store 契约` 与 `R8 keep (JNI)` 两条护栏的注入锚点在 4.2.x 重构后**匹配 0 次**，
+脚本以"验证过程出错"报 FAIL（不是静默跳过，这点是对的），但会让整轮门禁红：
+- `store 契约` 锚点 `refreshChannels` 已改名 `refreshRuntime`（用在 `NetworkSection.vue` /
+  `AddFriendModal.vue`）⇒ 改用新名字，并加注释说明**注入的必须是界面真在用的导出**；
+- `R8 keep` 锚点还是实例方法 `public boolean send(...)`，而 4.2.7 之后 keep 规则
+  **必须是 `public static`**（Kotlin `@JvmStatic` 的静态桥，见 proguard 文件里的说明）⇒ 同步锚点。
+
+两条都已重新做非空转验证（改坏即 FAIL、恢复即 PASS）。
+
+## [4.2.9] - 2026-09-12
+
 ### Fixed (🔴 BLE「每 13s 重拨一次」的真因：端点身份比较**大小写敏感**)
 用户 4.2.6 真机：两端能互相搜到 ✓、但点「加好友」对面没反应；Mac 关掉局域网只留蓝牙后
 手机能搜到 Mac、**Mac 搜不到手机**。手机 logcat 显示 Mac 每 ~13s 重订阅一次通知，
@@ -29,8 +69,6 @@ Android 侧还要拿它去查 Kotlin 的连接表）。一处修改覆盖所有�
 
 **护栏**：`ble_endpoint_equality_ignores_case`（大小写不同的同一地址必须相等、哈希一致、
 原始字符串不变）+ `verify-guards.py` 对应非空转用例。
-
-## [4.2.9] - 2026-09-12
 
 ### Fixed (BLE 镜像互拨：4.2.6 的修复没生效 —— 被拒的那一侧永远学不到对端 id)
 用户 4.2.6 复测：两端能互相搜到了 ✓，但「点加好友对面没反应」；Mac 关掉局域网、只留蓝牙后
