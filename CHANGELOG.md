@@ -10,6 +10,54 @@
 
 ## [Unreleased]
 
+### Fixed (桌面独立窗口：慢、会闪成聊天界面、连点会开出第二个 —— 架构上把三个窗口彻底分开)
+用户实测三连：「点设置/日志，窗口出来得很慢，像卡了一下」「第二次打开设置，窗口会先刷成主聊天
+窗口、再立马变成设置界面」「按钮没防抖，连点几下不该开出第二个，它应该还是那一个」。
+
+**根因（读代码确认，不是一个 bug 而是三个叠在一起）**：
+1. **三个窗口共用一个 `index.html` + 一个 Vue 应用**，由 `App.vue` 按窗口 label 决定渲染哪一屏。
+   它的模板是 `…v-else-if="isSettingsWindow && settingsReady"` / `v-else` ⇒ 设置窗口在
+   "数据就绪之前"的窗口期**落到了 `v-else`，也就是把整棵聊天三栏布局挂了起来** ——
+   这就是"先闪成主聊天窗口"。而且每次打开都要白等一整棵聊天组件树（dev 下是几百个模块请求）。
+2. **窗口关闭即销毁**：每次打开都要重建 WebView + 重新加载前端 + 重跑 `app.init()`。
+3. **并发打开没有串行**：`WebviewWindowBuilder::build()` 的重复 label 检查在
+   `tauri/src/manager/window.rs::prepare_window` 里做，而窗口被登记进 manager 是在主线程创建
+   **完成之后** —— 两个并发调用（连点）会双双通过检查，后者还会覆盖 manager 的记录。
+   前端也只有 `void api.openSettingsWindow()`，没有单飞/防抖。
+
+**修法（一次做干净，不留分支与拷贝）**：
+- **一个窗口一个文档 + 一个入口**：`index.html` → `src/entries/main.ts`（聊天）、
+  `settings.html` → `src/entries/settings.ts`、`logs.html` → `src/entries/logs.ts`。
+  设置/日志窗口**从第一帧到结束都不会碰到聊天代码**（构建产物实测：`settings.html`
+  不再引用 `assets/main-*.js`）。Rust 侧 `WebviewUrl::App("settings.html"|"logs.html")`，
+  不再注入 `__GOSSLAN_WINDOW__`。
+  实测收益：主入口 bundle **458KB → 310KB**，设置窗口只额外加载 3.25KB 的入口 chunk。
+- **共用启动逻辑抽成一份**：`src/boot/boot.ts`（错误上报、骨架撤除、标题、装配、挂载顺序）
+  + `src/boot/theme-boot.js`（首帧主题/语言/平台）+ `src/boot/skeleton.css`（骨架样式），
+  后两者由 `vite.config.ts` 的 `gosslan:inline-boot` 插件内联进三个 HTML —— **三份拷贝变一份事实来源**。
+  每个窗口的骨架写在各自的 HTML 里（设置窗口只有设置骨架），标题由各自的
+  `data-title-zh/en` 声明（Tauri 会把 document title 同步到窗口标题，Rust 不再维护第二份文案）。
+- **`App.vue` 只服务主窗口**：窗口 label 分支、`settingsReady` 占位 hack 全部删除 ——
+  "设置窗口渲染成聊天界面"这个 bug 在结构上不可能再发生。
+- **后端单例 + 串行创建**：新增 `ensure_aux_window`（快路径 show+focus；慢路径拿
+  `AUX_WINDOW_CREATE_LOCK` 后**再查一次**才 build），所有独立窗口都必须走它。
+- **关闭即隐藏（常驻）**：`install_hide_on_close` 把标题栏 × 与 `close_*_window` 都拦成
+  `hide()` ⇒ 第二次起打开是 `show()`，也就是用户要的"点一下立马就开"。
+  开关是 `commands.rs` 里的 `AUX_WINDOWS_RESIDENT`（改成 `false` 即回到关闭销毁）。
+- **前端单飞 + 防抖 + pending 反馈**：新增 `src/utils/windowLaunch.ts`（纯判据）
+  与 `src/composables/useWindowLauncher.ts`（模块级单例状态，窄导航 / 移动端底栏 / 原生菜单
+  三处共用）；按钮在打开期间显示 `aria-busy` + 半透明，冷启动那一下用户能立刻看到"点到了"。
+
+**护栏（都是主机可跑，且逐条做过非空转验证）**：
+- `aux_windows_open_their_own_document`：Rust 里每个 `WebviewUrl::App(...)` 目标文件必须存在、
+  必须指向自己的入口，且**独立窗口不得再共用 `index.html`**；
+- `aux_window_open_is_singleton_serialized_and_resident`：打开命令必须走 `ensure_aux_window`、
+  不得自己查窗口存在性，helper 必须双重检查 + 接上 hide-on-close；
+- 前端 `windowEntries.test.ts`：三个 HTML ↔ 三个入口 ↔ 三套骨架一一对应（设置/日志不得带
+  聊天骨架、不得 import 聊天代码），`App.vue` 不得再有 label 分支；
+- 前端 `windowLaunch.test.ts`：单飞/防抖判据 + "两个开窗按钮必须走 `launchAuxWindow`"接线守卫。
+- `scripts/verify-guards.py`：`--only window` 4 条新用例（现共 **19 条**）。
+
 ### Fixed (Android **release** 包：三个"只有 release 才现形"的问题 —— 之前那份包是装不上 / 蓝牙会废的)
 - **① R8 把 Rust 按名字调用的 Kotlin 方法改名了**：`isMinifyEnabled = true` 时，`BlePeripheral` 的
   `stop/start/send/isConnected/payloadMtu/requestAllPermissions/hasRequiredPermissions` 全被改名成
