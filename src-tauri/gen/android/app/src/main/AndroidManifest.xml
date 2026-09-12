@@ -28,6 +28,16 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
 
+    <!-- 局域网发现用到**组播**（239.255.42.99）与广播（255.255.255.255）。
+         ⚠️ Android 的 WiFi 驱动默认**过滤组播帧**，必须持有 `WifiManager.MulticastLock`
+         才能稳定收到（这是"两台设备在同一 WiFi 却互相搜不到"最常见的原因，
+         而且它不是用户能在权限列表里点开的开关 —— 得由应用自己申请并持有）。
+         Android 13+ 另需 NEARBY_WIFI_DEVICES（带 neverForLocation，不做位置推断）。 -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="tiramisu" />
+
     <!-- BLE 只是"可选增强"：设备没有蓝牙（或用户拒绝授权）时应用必须照常走局域网/中继。
          声明 required=false，避免 Play 商店把无蓝牙设备过滤掉。 -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
