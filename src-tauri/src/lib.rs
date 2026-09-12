@@ -65,6 +65,25 @@ pub const WINDOW_LABELS: &[&str] = &[WINDOW_MAIN, WINDOW_SETTINGS, WINDOW_LOGS];
 /// 而 `[profile.release] panic = "abort"` 时进程直接消失 ⇒ 用户和我都无从下手。
 /// 现在 panic 会以 `channel="panic"` 落进「运行日志」页，adbd 下也能从 logcat 捞到。
 /// ⚠️ 这个 hook 必须在**任何可能 panic 的代码之前**装好（`run()` 的第一行）。
+/// 启动路标：此刻 logger 可能还没就绪，所以只打 logcat（`log -t gosslan`）——
+/// 用户「打开就闪退」时，这一步能告诉我们崩在 init 之前还是之后。
+fn state_mark(target: &str, message: &str) {
+    #[cfg(target_os = "android")]
+    {
+        use std::process::{Command, Stdio};
+        let line = format!("[info] [{target}] {message}");
+        let _ = Command::new("log")
+            .args(["-t", "gosslan", &line])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (target, message);
+    }
+}
+
 fn install_panic_hook(app: Option<tauri::AppHandle>) {
     std::panic::set_hook(Box::new(move |info| {
         let location = info
@@ -124,15 +143,23 @@ pub fn run() {
 
     let app = builder
         .setup(|app| {
+            state_mark("boot", "AppState::init 之前");
             let state = state::AppState::init(app.handle().clone())?;
+            state.logger.info("boot", "AppState::init 完成（设置/目录/局域网就绪）");
             // 拿到 AppHandle 之后**重装** panic hook：这次的 hook 会把 panic 同时写进
             // 「运行日志」页（安卓上这是唯一能拿到的诊断路径，见 `install_panic_hook`）。
             install_panic_hook(Some(app.handle().clone()));
             state::AppState::spawn_peer_emitter(&state);
             app.manage(state.clone());
             // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
+            // ⚠️ 三条语句必须一起包进 `#[cfg(desktop)]` 块：属性只作用于**紧跟其后的那一条**，
+            //    拆开写会让 `tray::setup(...)` 掉出 cfg ⇒ 移动端编不过（E0433，真踩过）。
             #[cfg(desktop)]
-            tray::setup(app.handle())?;
+            {
+                state.logger.info("boot", "开始 tray::setup");
+                tray::setup(app.handle())?;
+                state.logger.info("boot", "tray::setup 完成");
+            }
             // macOS 菜单栏：⌘Q / ⌘, / ⌘W / ⌘M 与标准「编辑」项。
             // 属"锦上添花"——初始化失败**不阻断启动**（与托盘不同：托盘失败会改行为，
             // 菜单失败只是没有菜单，快捷键还有前端兜底）。

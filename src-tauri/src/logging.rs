@@ -122,6 +122,26 @@ impl Logger {
         #[cfg(debug_assertions)]
         eprintln!("[{}] [{}] {}", level.as_str(), target, message);
 
+        // 2b) **Android：同时写 logcat**（用户实测"闪退、拿不到日志"的唯一可行动诊断路径）。
+        //     release 包既不能 `run-as`（不可调试），Rust 的 stdout/stderr 也不进 logcat，
+        //     所以这里直接调系统的 `log` 命令打一条 —— 于是
+        //     `adb logcat -s gosslan` 就能看到我们的启动路标与 panic。
+        //     开销控制：warn/error 一律打；info 只打 `boot` 通道（启动路标），其余 info 走文件。
+        #[cfg(target_os = "android")]
+        {
+            let want = matches!(level, Level::Warn | Level::Error) || target == "boot";
+            if want {
+                use std::process::{Command, Stdio};
+                let line = format!("[{}] [{}] {}", level.as_str(), target, message);
+                // 不阻塞主流程：失败就算了（日志不能反过来拖垮应用）
+                let _ = Command::new("log")
+                    .args(["-t", "gosslan", &line])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn();
+            }
+        }
+
         // 3) 落盘（追加写，超限轮转）。失败静默：日志本身不能反过来拖垮主流程。
         self.append_file(ts, level, target, &message);
     }

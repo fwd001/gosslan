@@ -27,6 +27,28 @@ base36 补零大写、旧默认名识别且不误伤自取名字）。
 
 **顺带修**：`scripts/version.mjs` 发布后**补回 `## [Unreleased]
 
+## [4.1.4] - 2026-09-12
+
+### Added / Changed (安卓崩溃可诊断：日志进 logcat + 启动路标；启动路径彻底不申请权限)
+用户实测 v4.1.2「打开还是闪退，连日志都拿不到」。在拿到 logcat 之前，先把"能自己缩小范围"的
+两件事做掉：
+
+- **日志同时写 logcat**（`log -t gosslan ...`）：release 包既不能 `run-as`、Rust 的 stdout/stderr
+  也不进 logcat，此前崩溃现场对用户和我们都是黑的。现在 `adb logcat -s gosslan` 就能看到
+  应用自己的日志（含 panic hook 那条 `panic @ 文件:行:列：消息`）。
+  开销控制：warn/error 一律打，info 只打 `boot` 通道（启动路标）。
+- **启动路标**：`AppState::init` 前后、`tray::setup` 前后各打一行 `boot` 日志 ——
+  下次"打开就闪退"时，最后一条路标直接告诉我们崩在哪一步。
+- **移动端启动路径彻底不申请权限**（上一轮已把蓝牙运行时改成按需，这一轮连权限申请也改成按需）：
+  打开「添加好友」或网络设置时才申请。启动路径至此**不含任何平台专有调用**。
+
+顺带修一处**只有安卓会现形**的编译问题：给 `tray::setup` 加路标时把 `#[cfg(desktop)]`
+拆开了（属性只作用于紧跟其后的**一条**语句），导致 `tray::setup` 掉出 cfg ⇒ 移动端 E0433。
+已改成整块包 `#[cfg(desktop)]`。`check-mobile.sh --bluetooth` 正是为这类问题存在的门禁。
+
+门禁：`cargo test --lib` 399/0；`npm test` 344/0；`vue-tsc` 0；`vite build` 通过；
+`check-mobile.sh --bluetooth` **PASS / 0 warning**。
+
 ## [4.1.3] - 2026-09-12
 
 ## [4.1.2] - 2026-09-12
