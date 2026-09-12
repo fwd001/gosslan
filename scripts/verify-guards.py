@@ -14,9 +14,15 @@
 最后逐条打印结果，并保证无论如何都恢复现场（`try/finally` + 内容级恢复）。
 
 ## 用法
-    python3 scripts/verify-guards.py            # 全部用例
-    python3 scripts/verify-guards.py --only mtu # 只跑名字里含 mtu 的用例
-    python3 scripts/verify-guards.py --list     # 只列出用例
+    python3 scripts/verify-guards.py                # 全部用例（**约 10 分钟以上**：Rust 用例要重编译）
+    python3 scripts/verify-guards.py --only rust    # 只跑 Rust 用例（慢，但覆盖最关键的几条）
+    python3 scripts/verify-guards.py --only frontend  # 只跑前端用例（十几秒）
+    python3 scripts/verify-guards.py --only ble
+    python3 scripts/verify-guards.py --list         # 只列出用例
+
+## 被中断也安全
+`SIGTERM`/`SIGINT`（Ctrl-C）会**先把当前注入的文件恢复**再退出，
+`atexit` 再兜一层 —— 否则一次误杀会留下一个"被改坏"的工作区（这个坑真踩过）。
 
 退出码：0 = 全部符合预期；1 = 有护栏"改坏了也不报"或"恢复后仍失败"。
 """
@@ -24,8 +30,10 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -33,6 +41,32 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TAURI = ROOT / "src-tauri"
+
+#: 当前正在被注入的文件与它的原始内容 —— 被 Ctrl-C / kill 打断时也要能恢复。
+_CURRENT: tuple[Path, str] | None = None
+
+
+def restore_now() -> None:
+    """把"当前注入现场"恢复回原始内容（幂等）。"""
+    global _CURRENT
+    if _CURRENT is not None:
+        path, original = _CURRENT
+        path.write_text(original)
+        _CURRENT = None
+
+
+def _on_signal(signum: int, _frame: object) -> None:
+    """被中断时先把源码恢复再退出 —— 否则会留下一个"被改坏"的工作区。"""
+    path = _CURRENT[0] if _CURRENT else None
+    restore_now()
+    where = f"（已恢复 {path}）" if path else ""
+    print(f"\n[中断] 收到信号 {signum}{where}，退出", file=sys.stderr)
+    sys.exit(130)
+
+
+signal.signal(signal.SIGTERM, _on_signal)
+signal.signal(signal.SIGINT, _on_signal)
+atexit.register(restore_now)
 
 
 @dataclass
@@ -226,6 +260,7 @@ def verify(case: Case) -> tuple[bool, str]:
                 f"源码可能已改动，请更新 verify-guards.py"
             )
             case.file.write_text(original.replace(old, new, 1))
+        _CURRENT = (case.file, original)  # 登记现场：被信号打断时可恢复
 
         code, out = run(case.cmd, case.cwd)
         if code == 0:
@@ -234,6 +269,7 @@ def verify(case: Case) -> tuple[bool, str]:
             detail = f"（失败输出里没看到 `{case.expect_fail_hint}`，请确认是这条判据报的）"
 
         case.file.write_text(original)  # 先恢复，再验证恢复后确实通过
+        _CURRENT = None
         code2, out2 = run(case.cmd, case.cwd)
         if code2 != 0:
             return False, f"恢复源码之后测试**仍然失败** ⇒ 源码或环境已被破坏：\n{out2[-800:]}"
@@ -242,6 +278,7 @@ def verify(case: Case) -> tuple[bool, str]:
         # 无论上面发生什么（断言失败/超时/异常），内容级恢复现场
         if case.file.read_text() != original:
             case.file.write_text(original)
+        _CURRENT = None
 
 
 def main() -> int:
