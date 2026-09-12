@@ -23,6 +23,15 @@ function syncFromDevice() {
 watch(() => [props.active, props.reloadToken], () => {
   if (props.active) syncFromDevice();
 }, { immediate: true });
+/**
+ * 设备信息是**异步**到位的（`app.init()` / `updateProfile()` / 「恢复默认」都会改它），
+ * 只在 active/reloadToken 变化时同步会漏掉这些时刻 —— 独立设置窗口一开场
+ * 就会把空昵称、null 头像写进 ref，之后再不更新（用户看到"名字和头像不对劲"）。
+ * 用户**正在输入**时 device 不会变（保存后才变），因此这里不会覆盖未保存的编辑。
+ */
+watch(() => [app.device?.nickname, app.device?.avatar], () => {
+  if (props.active) syncFromDevice();
+});
 
 /** 昵称：失焦或回车即保存（即点即存，无「保存」按钮）。 */
 async function saveProfileNow() {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, watch } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -41,6 +41,22 @@ const isSettingsWindow = (() => {
 /** 独立窗口（日志 / 设置）只渲染各自页面，不参与主窗口的圆角与托盘逻辑。 */
 const isStandaloneWindow = isLogsWindow || isSettingsWindow;
 
+/**
+ * 设置窗口的内容必须**等 `app.init()` 完成后再挂载**。
+ *
+ * 为什么（真实缺陷，2026-09-12 用户反馈「设置窗口的头像和名字好像有问题」）：
+ * 子组件在 setup 阶段就会把 store 里的值**快照**进自己的 ref（例如
+ * `ProfileSection` 的 `watch(..., { immediate: true })` 读 `app.device`），
+ * 而 `app.init()` 是在 `onMounted` 里才 await 的 —— 也就是"先挂载、后拿数据"。
+ * 主窗口不受影响（`ResponsiveLayout` 有自己的加载态、设置分区也是打开时才挂载），
+ * 但独立设置窗口一开场就把**空昵称/null 头像**（以及默认外观等）写进了各分区的 ref，
+ * 数据到位后没人再同步 ⇒ 头像和名字一直显示成空白/默认值。
+ *
+ * 挂载前先挡住：设置窗口本来就有首屏骨架（index.html 的 `#boot-settings`，
+ * 由 `gosslan:app-ready` 撤掉），所以挡住这段时间用户看到的是骨架而不是空白。
+ */
+const settingsReady = ref(!isSettingsWindow);
+
 /** macOS 窗口圆角：必须在 WebView 加载完成后设（wry 此时才用 parent_view 替换 contentView，
  *  setup 阶段设会被替换丢失），并让窗口背景色跟随主题（消除暗色下圆角外露浅色的"白角"）。
  *  仅主窗口需要；日志窗口用系统标题栏，不画自绘圆角。 */
@@ -68,6 +84,8 @@ onMounted(async () => {
     // 在设置窗口重复初始化会注册第二份监听、并可能重复触发后端动作。
     if (!isSettingsWindow) await chat.init();
   } finally {
+    // 设置窗口的分区到这里才允许挂载（见 `settingsReady` 的注释）
+    settingsReady.value = true;
     // 真实数据就绪 → 让 main.ts 撤掉首屏骨架（index.html 内联）。
     // 放在 finally：init 失败也要撤，否则骨架会一直挡在界面上。
     window.dispatchEvent(new Event("gosslan:app-ready"));
@@ -82,6 +100,6 @@ watch(() => app.dark, () => void applyWindowShape());
 
 <template>
   <LogViewer v-if="isLogsWindow" standalone />
-  <SettingsWindow v-else-if="isSettingsWindow" />
+  <SettingsWindow v-else-if="isSettingsWindow && settingsReady" />
   <ResponsiveLayout v-else />
 </template>
