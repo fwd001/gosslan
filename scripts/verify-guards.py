@@ -373,15 +373,19 @@ CASES: list[Case] = [
     ),
     # ---------------- Rust：BLE 扫描结果不得按未连接的 services() 过滤 ----------------
     Case(
-        name="BLE 扫描结果不得二次过滤（否则双方永远搜不到）",
-        why="用户 2026-09-12 实测：手机与 Mac 蓝牙都开着、都在广播、系统层扫描也命中，"
-        "但一个候选都不去连 —— 因为代码拿 Peripheral::services() 复核，而它在 Android 上"
-        "只有连接并 discover_services() 之后才有值，未连接恒为空 ⇒ 候选全被丢掉",
+        name="BLE 发现：不平台级过滤、不按未连接的服务过滤",
+        why="用户 2026-09-12 实测两台设备永远搜不到彼此：① 平台层用服务 UUID 过滤时，macOS 把 128 位 "
+        "UUID 放在扫描响应里、Android 硬件过滤只匹配主广播包 ⇒ 永远收不到 Mac 的广播；"
+        "② 拿 Peripheral::services() 复核时，它在 Android 上只有连接并 discover_services() 之后才有值，"
+        "未连接恒为空 ⇒ 候选全被丢掉",
         file=TAURI / "src" / "transport" / "bluetooth.rs",
-        injections=[("        Ok(all)\n    }", "        let svc = uuid(SERVICE_UUID);\n        Ok(all.into_iter().filter(|p| p.services().iter().any(|s| s.uuid == svc)).collect())\n    }")],
+        injections=[(
+            "            .start_scan(ScanFilter::default())",
+            "            .start_scan(ScanFilter { services: vec![uuid(SERVICE_UUID)] })",
+        )],
         cmd=cargo("test", "--lib", "scan_results_are_not_filtered_by_unconnected_services"),
         cwd=TAURI,
-        expect_fail_hint="原样返回",
+        expect_fail_hint="不得在**平台层**", 
         tags=["rust", "ble"],
     ),
     # ---------------- 前端：运行状态必须"一个快照 + 一个事件"（②） ----------------

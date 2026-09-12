@@ -10,6 +10,32 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 蓝牙「互相搜不到」第二层原因：平台级服务过滤 + 只看连接后的服务)
+接上一条（`services()` 复核）之后真机复测**仍然搜不到**，于是把两件事分开测：
+`4.2.3/4.2.4` 的日志给出了决定性数据 —— 手机每 13s 扫一次，但
+**`BLE 扫描到 0 个候选`**（Mac 那边却一直能连上手机）。
+
+**根因（两条，都是"过滤条件用错了地方"）**：
+1. **平台级用服务 UUID 过滤**：`start_scan(ScanFilter{services})` 在 Android 上走的是
+   **硬件/固件过滤，只匹配主广播包**；而 macOS 的 `CBAdvertisementDataServiceUUIDsKey`
+   会把 128 位 UUID 放进**扫描响应（scan response）** ⇒ 手机**永远收不到 Mac 的广播**。
+   （反向没问题：Android 的广播把 UUID 放在主包里，所以 Mac 能找到手机 —— 这个不对称
+   正是"一边能发现、一边不能"的原因。）
+2. `Peripheral::services()` 在 Android 上**只有连接并 `discover_services()` 之后**才有值，
+   未连接时恒为空 —— 上一条已修，但当时没意识到第 ① 条，所以仍然收不到任何东西。
+
+**修法**：`scan_peers()` 改为**扫全部设备**（`ScanFilter::default()`），
+再在 Rust 侧按**广播内容**判定（`peripheral.properties().services` —— 这是 btleplug 从
+广播/扫描响应里解析出来的，两端都可靠）；"对方不是 Gosslan 端"由 `connect()` 的特征校验兜住。
+
+**诊断日志**（以后这类问题一眼可见）：每次扫描都打
+`BLE 扫描：收到 N 个广播，其中 M 个是本应用服务` ——
+`N=0` 是扫描/权限/硬件问题，`N>0 且 M=0` 是对端没在广播或广播里没有我们的 UUID。
+
+## [4.2.5] - 2026-09-12
+
+## [4.2.4] - 2026-09-12
+
 ### Changed (蓝牙日志上 logcat：`ble` 通道的 info 也镜像出去)
 真机排查 BLE 时，缺的正是 info 级那几条（"扫描到几个候选 / 哪个候选没连上、为什么"）——
 它们以前只写应用内日志文件，而 release 包既不能 `run-as`、logcat 里也看不到，

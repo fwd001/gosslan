@@ -182,14 +182,18 @@ async fn teardown_link(state: &Arc<AppState>, peer_id: &str, ep: &MeshEndpoint) 
 async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::Receiver<bool>) {
     loop {
         match driver::scan_peers(&adapter, SCAN_WINDOW).await {
-            Ok(peers) => {
-                // 扫到候选要留痕：真机上"扫描有结果但没去连/连不上"是排查的关键一步
-                // （用户 2026-09-12 的"互相搜不到"就卡在这里，而当时日志里什么都没有）。
-                if !peers.is_empty() {
-                    state
-                        .logger
-                        .info("ble", format!("BLE 扫描到 {} 个候选，开始逐个连接", peers.len()));
-                }
+            Ok((peers, total)) => {
+                // 每次扫描都要留痕（**包括 0 个**）：真机上这两个数字是排查的关键 ——
+                // "收到 0 个广播"= 扫描/权限/硬件问题；"收到 N 个但 0 个是本服务"= 对端没在广播
+                // 或广播里没有我们的服务 UUID。用户 2026-09-12 的"互相搜不到"当时日志里
+                // 什么都没有，只能靠猜。
+                state.logger.info(
+                    "ble",
+                    format!(
+                        "BLE 扫描：收到 {total} 个广播，其中 {} 个是本应用服务",
+                        peers.len()
+                    ),
+                );
                 for peripheral in peers {
                     if *shutdown.borrow() {
                         return;

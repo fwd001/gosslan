@@ -794,8 +794,13 @@ mod tests {
              （未连接时它恒为空集合）"
         );
         assert!(
-            body.contains("Ok(all)"),
-            "应当直接把平台层已经过滤好的结果返回"
+            body.contains("ScanFilter::default()"),
+            "不得在**平台层**用服务 UUID 过滤：macOS 把 128 位 UUID 放进扫描响应，\
+             Android 的硬件过滤只匹配主广播包 ⇒ 会永远收不到 Mac 的广播（真机实测）"
+        );
+        assert!(
+            body.contains("properties()"),
+            "必须按**广播内容**（`properties().services`）判定，而不是按连接后才发现的服务"
         );
         assert!(
             body.contains("discover_services()") || body.contains("连接"),
@@ -804,8 +809,9 @@ mod tests {
         // 扫到候选必须留痕（否则这类缺陷在日志里完全不可见）
         let ble = include_str!("network/ble.rs");
         assert!(
-            ble.contains("BLE 扫描到"),
-            "扫到候选要打一条日志：真机排查时这是『到底有没有发现对端』的唯一线索"
+            ble.contains("BLE 扫描：收到"),
+            "每次扫描都要打日志（收到的广播总数 + 其中本服务的个数）：真机上这是区分\
+             『扫描收不到广播』与『收到了但都不是本服务』的唯一线索"
         );
     }
 

@@ -123,19 +123,26 @@ pub mod driver {
 
     /// 扫描支持 Gosslan 服务的对端（**只发现、不建连** —— 与 P-A04 一致）。
     ///
-    /// ⚠️ **不要再用 `Peripheral::services()` 二次过滤**（真机踩过，症状极隐蔽）：
-    /// `start_scan(ScanFilter { services })` 已经在**平台层**过滤过 —— 系统只上报广播里带
-    /// 这个服务 UUID 的设备（`dumpsys bluetooth_manager` 的 GATT Scanner Map 里能直接看到
-    /// 每次扫描的命中数）。而 `Peripheral::services()` 在 **Android 上只有
-    /// `discover_services()`（即**连接**）之后才有值**，未连接时恒为空集合 ⇒
-    /// 拿它过滤会把**所有**候选全部丢掉：表现是"扫描明明有结果、却一个候选都不去连，
-    /// 两台设备永远发现不了彼此"（用户 2026-09-12 实测：手机与 Mac 蓝牙都开着、都搜不到）。
-    /// 对方不是 Gosslan 端的情况由 `connect()` 里的**特征校验**兜住 —— 那一步本来就要连上。
-    pub async fn scan_peers(adapter: &Adapter, scan_for: Duration) -> Result<Vec<Peripheral>, String> {
+    /// 返回 `(命中本服务的候选, 本次一共收到多少个广播)` —— 后者只用于诊断日志
+    /// （区分"扫描根本收不到广播"和"收到了但都不是本服务"，真机排查时这两件事完全不同）。
+    ///
+    /// ## ⚠️ 两条真机踩出来的铁律，都别再改回去
+    /// 1. **不在平台层用服务 UUID 过滤**：macOS 的 `CBAdvertisementDataServiceUUIDsKey` 会把
+    ///    128 位 UUID 放进**扫描响应（scan response）**，而 Android 的硬件过滤只匹配
+    ///    **主广播包** ⇒ 用 `ScanFilter{services}` 会**永远收不到 Mac 的广播**。
+    ///    真机症状（用户 2026-09-12）：Mac（central）能找到手机，手机（central）却
+    ///    "扫描到 0 个候选"，两台设备永远发现不了彼此。
+    ///    所以这里扫**全部**设备，再在 Rust 侧按广播内容判定 —— `properties().services`
+    ///    正是 btleplug 从**广播/扫描响应**里解析出来的，两端都可靠。
+    /// 2. **不要用 `Peripheral::services()` 判定**：它在 Android 上只有 `discover_services()`
+    ///    （= 连接）之后才有值，未连接时恒为空集合 ⇒ 会把所有候选丢掉。
+    ///    "对方不是 Gosslan 端"由 `connect()` 里的**特征校验**兜住 —— 那一步本来就要连上。
+    pub async fn scan_peers(
+        adapter: &Adapter,
+        scan_for: Duration,
+    ) -> Result<(Vec<Peripheral>, usize), String> {
         adapter
-            .start_scan(ScanFilter {
-                services: vec![uuid(SERVICE_UUID)],
-            })
+            .start_scan(ScanFilter::default())
             .await
             .map_err(|e| format!("启动扫描失败：{e}"))?;
         // 扫描是"持续到显式停止"的：这里给一个观察窗口再收结果
@@ -146,9 +153,18 @@ pub mod driver {
             .map_err(|e| format!("读取扫描结果失败：{e}"))?;
         // 停止扫描失败不影响结果（下次 start 会覆盖）
         let _ = adapter.stop_scan().await;
-        // 平台层已经按服务 UUID 过滤过 ⇒ 这里**原样返回**（见上面的长注释：
-        // 再按 `services()` 过滤 = 在 Android 上把候选全丢掉）
-        Ok(all)
+        let svc = uuid(SERVICE_UUID);
+        let total = all.len();
+        // `properties()` 是 **async**（读的是内存里的广播属性），所以这里用 async 过滤
+        let mut hits = Vec::new();
+        for p in all {
+            if let Ok(Some(props)) = p.properties().await {
+                if props.services.contains(&svc) {
+                    hits.push(p);
+                }
+            }
+        }
+        Ok((hits, total))
     }
 
     /// 一条已建立的 BLE 链路：对端句柄 + 收发特征 + 通知流 + 重组器。
