@@ -293,7 +293,13 @@ function showSender(group: ChatSearchGroup): boolean {
         <p v-if="!keyword.trim()" class="px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
           {{ t("search.hint") }}
         </p>
-        <p v-else-if="!groups.length && !searching" class="px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
+        <!-- 搜索中：用户反馈「感觉显示得比较慢、当前状态没有提示」——
+             以前只有"有没有结果"两种静态文案，请求在途时界面看起来像卡住了。 -->
+        <p v-else-if="searching" class="flex items-center justify-center gap-2 px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
+          <span class="h-3 w-3 animate-spin rounded-full border-2 border-[var(--gosslan-border)] border-t-[var(--gosslan-primary)]"></span>
+          {{ t("search.searching") }}
+        </p>
+        <p v-else-if="!groups.length" class="px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
           {{ t("search.empty") }}
         </p>
         <button

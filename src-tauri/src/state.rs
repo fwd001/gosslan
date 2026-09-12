@@ -141,6 +141,21 @@ fn event_target_label(target: &tauri::EventTarget) -> Option<&str> {
     }
 }
 
+/// 对端当前"**实际会走**"的链路类型（与 `pick_link` 的优先级一致：LAN > Routed > Bluetooth）。
+///
+/// 为什么要它：界面上的「蓝牙直连」以前是**反推**出来的（`p.ip || 蓝牙直连`），
+/// 于是同一 Tailscale 网段（`Routed`）的设备也会被标成"蓝牙直连"（用户 2026-09-12 实测）。
+/// 链路类型只有后端知道（`Link::path_kind` 由**来路**决定，不能从 IP 段反推），所以在这里判。
+pub fn best_link_kind(kinds: &[crate::mesh::PathKind]) -> Option<crate::mesh::PathKind> {
+    use crate::mesh::PathKind::*;
+    for want in [Lan, Routed, Bluetooth] {
+        if kinds.contains(&want) {
+            return Some(want);
+        }
+    }
+    None
+}
+
 /// 局域网在线节点（Peer Table 条目）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Peer {
@@ -163,6 +178,12 @@ pub struct Peer {
     /// 判断「对端在线却迟迟连不上」（单向可达）——语义是**发现时间**，不是建链时间。
     #[serde(default)]
     pub first_seen: Option<i64>,
+    /// 当前与它的**实际链路类型**：`"lan"` / `"routed"` / `"bluetooth"`（无链路则 None）。
+    ///
+    /// 由命令层（`get_peers` / `search_nearby_peers`）在读取时从 `links` 填上 —— 事件推送的
+    /// peer 表不带它（那里是同步上下文，拿不到异步的 links 锁），界面以"字段缺失"为准不猜。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 /// 一条已建立的 TCP 连接。

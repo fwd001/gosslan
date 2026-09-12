@@ -244,7 +244,7 @@ pub async fn stop_network(
 }
 
 #[tauri::command(async)]
-pub fn get_peers(state: State<'_, Arc<AppState>>) -> Vec<Peer> {
+pub async fn get_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<Peer>, String> {
     let mut peers: Vec<Peer> = state
         .inner()
         .peers
@@ -254,7 +254,31 @@ pub fn get_peers(state: State<'_, Arc<AppState>>) -> Vec<Peer> {
         .cloned()
         .collect();
     peers.sort_by(|a, b| a.device_id.cmp(&b.device_id));
-    peers
+    fill_peer_links(state.inner(), &mut peers).await;
+    Ok(peers)
+}
+
+/// 给 peer 列表补上**实际链路类型**（`Peer::link`）。
+///
+/// 为什么在命令里补、而不是让事件也带：`links` 是**异步锁**（tokio::Mutex），
+/// 而节点表推送（`peers-updated`）是同步上下文 —— 那里的 `Peer::link` 恒为 None。
+/// 界面只把"字段存在且是 bluetooth"当作**真的蓝牙直连**；
+/// 以前用 `ip || 蓝牙直连` 反推，会把同一 Tailscale 网段（Routed）的设备也标成蓝牙直连
+/// （用户 2026-09-12 实测）。
+async fn fill_peer_links(s: &Arc<AppState>, peers: &mut [Peer]) {
+    let kinds: std::collections::HashMap<String, Vec<crate::mesh::PathKind>> = {
+        let links = s.links.lock().await;
+        links
+            .iter()
+            .map(|(id, ls)| (id.clone(), ls.iter().map(|l| l.path_kind).collect()))
+            .collect()
+    };
+    for p in peers.iter_mut() {
+        p.link = kinds
+            .get(&p.device_id)
+            .and_then(|k| crate::state::best_link_kind(k))
+            .map(|k| k.as_str().to_string());
+    }
 }
 
 /// 按需探测周围在线节点：群发一次 `who_has`，等待约 1.5s 收集单播回复后返回当前节点表。
@@ -276,6 +300,7 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
     }
     let mut peers: Vec<Peer> = s.peers.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
     peers.sort_by(|a, b| a.device_id.cmp(&b.device_id));
+    fill_peer_links(s, &mut peers).await;
     Ok(peers)
 }
 

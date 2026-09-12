@@ -1025,7 +1025,10 @@ export const useChatStore = defineStore("chat", () => {
       if (markReadTimer) clearTimeout(markReadTimer);
       markReadTimer = setTimeout(() => {
         markReadTimer = null;
-        if (activeConv.value !== convId || document.hidden) return;
+        // ⚠️ 三个条件缺一不可：得是这个会话、应用在前台、**而且聊天视图真的可见**
+        // （移动端可能正盖着设置/新的朋友等整页浮层 —— 那时用户根本没看到这条消息，
+        //  判已读等于替用户撒谎、还会把回执发回去。用户 2026-09-12 实测报告）。
+        if (activeConv.value !== convId || document.hidden || !app.chatVisible) return;
         void api.markRead(convId).then(() => {
           const conv = conversations.value.find((c) => c.id === convId);
           if (conv) conv.unread = 0;
@@ -1199,7 +1202,8 @@ export const useChatStore = defineStore("chat", () => {
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) return;
       if (pending.length) scheduleFlush();
-      if (activeConv.value) {
+      // 同 `debounceMarkRead`：回到前台也要确认"聊天视图真的可见"才补发已读回执
+      if (activeConv.value && app.chatVisible) {
         void api.markRead(activeConv.value).then(() => {
           const conv = conversations.value.find((c) => c.id === activeConv.value);
           if (conv) conv.unread = 0;

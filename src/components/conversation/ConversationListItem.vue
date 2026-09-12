@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { fmtConversationTime } from "@/utils/time";
-import { highlightText } from "@/utils/highlight";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { computed, onUnmounted } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
@@ -16,8 +15,6 @@ const props = defineProps<{
   /** 单聊查好友表；群聊无在线概念，传 null 表示不显示状态点。 */
   online: boolean | null;
   /** 搜索命中摘要（null 时显示最后一条消息）。 */
-  snippet: string | null;
-  keyword: string;
 }>();
 const emit = defineEmits<{
   (e: "open", conv: Conversation): void;
@@ -217,15 +214,10 @@ const gridTiles = computed(() => {
         <span
           class="truncate text-[12px] leading-5"
           :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"
-          :title="snippet || conv.last_msg || t('msg.noMessage')"
+          :title="conv.last_msg || t('msg.noMessage')"
         >
-          <template v-if="snippet">
-            <span v-html="highlightText(snippet, keyword.trim())"></span>
-          </template>
-          <template v-else>
-            <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger-ink)]">{{ t("msg.mentioned") }}</span
-            >{{ conv.last_msg || t("msg.noMessage") }}
-          </template>
+          <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger-ink)]">{{ t("msg.mentioned") }}</span
+          >{{ conv.last_msg || t("msg.noMessage") }}
         </span>
       </div>
     </div>

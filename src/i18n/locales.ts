@@ -54,6 +54,7 @@ export const zhCN: MessageDict = {
   "search.placeholder": "搜索",
   "search.clear": "清空",
   "search.hint": "输入关键词搜索聊天记录",
+  "search.searching": "正在搜索…",
   "search.empty": "没有找到相关聊天记录",
   "search.fail": "搜索失败",
   "search.sender": "发送人",
@@ -461,6 +462,8 @@ export const zhCN: MessageDict = {
   "friend.add.empty.bleScanning":
     "蓝牙已在扫描附近设备：刚打开时可能要等几秒才会出现（对方需要也开着应用）。这里会自己刷新，不用反复点扫描。",
   "friend.add.viaBluetooth": "蓝牙直连",
+  "friend.add.viaRouted": "跨网段/VPN",
+  "friend.add.discovered": "已发现（未建链）",
   "friend.add.rescan": "重新扫描",
   "friend.add.channelFailed": "开启失败：{err}",
   "friend.add.searchPlaceholder": "搜索昵称 / IP / 设备 ID",
@@ -643,6 +646,7 @@ export const enUS: MessageDict = {
   "search.clear": "Clear",
   "search.hint": "Type a keyword to search chat history",
   "search.empty": "No matching messages",
+  "search.searching": "Searching…",
   "search.fail": "Search failed",
   "search.sender": "Sender",
   "search.sender.all": "All senders",
@@ -1054,6 +1058,8 @@ export const enUS: MessageDict = {
   "friend.add.empty.bleScanning":
     "Bluetooth is scanning for nearby devices. It can take a few seconds for the first result (the other device must have the app open). This list refreshes by itself — no need to rescan repeatedly.",
   "friend.add.viaBluetooth": "Bluetooth link",
+  "friend.add.viaRouted": "Routed / VPN",
+  "friend.add.discovered": "Discovered (no link yet)",
   "friend.add.rescan": "Scan again",
   "friend.add.channelFailed": "Could not enable: {err}",
   "friend.add.searchPlaceholder": "Search nickname / IP / device ID",

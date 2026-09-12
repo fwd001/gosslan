@@ -3,7 +3,7 @@ import { t } from "@/i18n";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { useConversationSearch } from "@/composables/useConversationSearch";
+import { useSearchKeyword } from "@/composables/useSearchKeyword";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import ConversationListItem from "@/components/conversation/ConversationListItem.vue";
@@ -39,11 +39,16 @@ const chat = useChatStore();
 /** 回车打开搜索页之前的输入法守卫（见 composable 注释） */
 const ime = useImeEnterGuard();
 
-// `keyword` 绑输入框（立即），`query` 是延迟镜像：过滤/分组/空态/高亮都用它，
-// 免得连发粘贴时每个字符都重渲染整个列表（见 useConversationSearch 注释）。
-const { keyword, query, results, filtered, snippet, hitMsgId } = useConversationSearch(
-  computed(() => chat.conversations),
-);
+// 输入框只当"搜索入口"：打字**不改列表**、不查消息（用户 2026-09-12 明确要求），
+// 回车才打开「搜索聊天记录」弹窗。`query` 是延迟镜像，给联系人页做姓名过滤用。
+const { keyword, query } = useSearchKeyword();
+/**
+ * 会话列表**恒为全量**（不再随输入变化）。
+ *
+ * 这一行就是用户那条要求本身：「在上面输入，列表就不要有变化了」——
+ * 把它抽成命名 computed 而不是内联，是为了让护栏能一眼钉住"这里没有过滤"。
+ */
+const listConversations = computed(() => chat.conversations);
 
 const filteredFriends = computed(() => {
   const kw = query.value.trim().toLowerCase();
@@ -167,19 +172,14 @@ function isOnline(id: string): boolean | null {
 }
 
 /**
- * 打开会话。若会话列表正处于**搜索结果**态，且命中里有具体消息 → 直接跳到那一条。
- * 只把用户丢进会话、让他自己翻，搜索就只完成了一半（HIG：搜索的价值是"降低定位成本"）。
- * 定位失败时按**原因**分别告知，不静默、也不说错原因。
+ * 打开会话。
+ *
+ * 列表里已不存在"列表自身的搜索结果态"（搜索全在「搜索聊天记录」弹窗里做，
+ * 见 `useSearchKeyword` 注释）——所以这里就是纯粹地打开会话；
+ * 从搜索结果跳转那一步由弹窗自己带着 msgId 调 `chat.locateMessageInConv`。
  */
 async function openConv(conv: Conversation) {
   if (app.isMobile) app.mobileView = "chat";
-  const hit = hitMsgId(conv.id);
-  if (hit) {
-    const outcome = await chat.locateMessageInConv(conv.id, hit);
-    if (outcome === "not-found") app.toast(t("conv.toast.locateNotFound"), "info");
-    else if (outcome === "error") app.toast(t("conv.toast.locateError"), "error");
-    return;
-  }
   chat.openConversation(conv.id);
 }
 /** 通讯录点击好友 → 打开资料页（发消息由资料页按钮触发，不再直接开会话） */
@@ -384,14 +384,12 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
     >
       <template v-if="view === 'chats'">
         <ConversationListItem
-          v-for="c in filtered"
+          v-for="c in listConversations"
           :key="c.id"
-          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), query, results.length, chat.friends.length, chat.groups.length]"
+          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), chat.friends.length, chat.groups.length]"
           :conv="c"
           :active="chat.activeConv === c.id"
           :online="isOnline(c.id)"
-          :snippet="snippet(c.id)"
-          :keyword="query"
           @open="openConv"
           @context="onConvContext"
         />
@@ -400,8 +398,8 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
              ⇒ 有好友时主行动 = 发起聊天（切到通讯录选人），另有次行动 = 发现好友；
                 一个好友都没有时主行动 = 发现好友（去搜索添加）。
              搜索无结果时不给这些（那是"换个词"的场景，不是"没人"）。 -->
-        <div v-if="filtered.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
-          <span>{{ query.trim() ? t("conv.noMatchConv") : t("conv.noConversation") }}</span>
+        <div v-if="listConversations.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
+          <span>{{ t("conv.noConversation") }}</span>
           <!-- 空态下一步（用户 2026-09-12 晚）：**有好友 → 发起聊天**；**一个好友都没有 →
                只有「添加好友」**（原先还并列一个「发现好友」，与本条冲突，已去掉）。
                两个入口都带一句说明文字：空态只陈述"没有会话"会让人不知所措。 -->

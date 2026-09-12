@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { ref, onMounted, onUnmounted, watch } from "vue";
+import { ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api, APP_ACTION, bindMenuEvents } from "@/api";
@@ -220,6 +220,20 @@ useBackLayer(
 );
 
 let unlistenMenu: UnlistenFn[] | null = null;
+
+// 这些"整页内容"里的任何一个盖上来，聊天就不再可见 ⇒ 同步给 store（判已读/发回执要用）。
+// 为什么放在这里、且必须是 watchEffect：它立即执行一次，所以**必须**在所有浮层 ref 声明之后
+// （放在前面会撞上 const 的 TDZ）。只有布局层知道这些浮层开没开，store 只保留一个布尔。
+watchEffect(() => {
+  app.setMobileChatObscured(
+    app.isMobile &&
+      (settingsOpen.value ||
+        logsOpen.value ||
+        showRequests.value ||
+        profileFriend.value !== null ||
+        shareOpen.value),
+  );
+});
 
 onMounted(() => {
   window.addEventListener("navigate-to-contacts", onNavigateToContacts);

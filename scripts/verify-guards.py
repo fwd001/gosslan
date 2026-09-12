@@ -388,6 +388,50 @@ CASES: list[Case] = [
         expect_fail_hint="不得在**平台层**", 
         tags=["rust", "ble"],
     ),
+    # ---------------- 前端：非聊天页不得判已读（④） ----------------
+    Case(
+        name="非聊天页不得判已读（④）",
+        why="用户 2026-09-12 实测：在聊天界面点进设置页（整页浮层），对方发来的消息自己没看到，"
+        "却被判成已读并把回执发了回去",
+        file=ROOT / "src" / "stores" / "useChatStore.ts",
+        injections=[(
+            "if (activeConv.value !== convId || document.hidden || !app.chatVisible) return;",
+            "if (activeConv.value !== convId || document.hidden) return;",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="聊天视图可见",
+        tags=["frontend", "mobile"],
+    ),
+    # ---------------- 前端：链路标签必须由后端判定（⑤） ----------------
+    Case(
+        name="「蓝牙直连」不得用『没有 IP』反推（⑤）",
+        why="用户 2026-09-12 实测：与 Mac 同一 Tailscale 网段的设备也被标成「蓝牙直连」——"
+        "因为界面写的是 `p.ip || 蓝牙直连`；链路类型只有后端知道（Link::path_kind 由来路决定）",
+        file=ROOT / "src" / "components" / "AddFriendModal.vue",
+        injections=[(
+            '  if (p.link === "bluetooth") return t("friend.add.viaBluetooth");',
+            '  if (p.ip || true) return t("friend.add.viaBluetooth");',
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="只有后端说 bluetooth",
+        tags=["frontend", "friend"],
+    ),
+    # ---------------- 前端：会话列表不随输入变化（⑥） ----------------
+    Case(
+        name="会话列表不随输入变化（⑥）",
+        why="用户 2026-09-12 要求：「在上面输入，列表就不要有变化了。回车弹窗之后，在弹窗里面搜就行」",
+        file=ROOT / "src" / "components" / "ConversationList.vue",
+        injections=[(
+            "const listConversations = computed(() => chat.conversations);",
+            "const listConversations = computed(() => chat.conversations.filter((c) => c.name.includes(query.value)));",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="列表必须是全量",
+        tags=["frontend", "search"],
+    ),
     # ---------------- Rust：BLE 指定拨号方（两端互拨会互相打断） ----------------
     Case(
         name="BLE 指定拨号方：大 id 拨、小 id 只接受（否则镜像链路互扰）",

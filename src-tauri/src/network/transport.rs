@@ -5106,6 +5106,9 @@ pub async fn upsert_peer(
                         x25519_pubkey: x25519.clone(),
                         ed25519_pubkey: ed25519.clone(),
                         first_seen: Some(ts),
+                        // 事件推送里的 peer 不带链路类型（同步上下文拿不到 links 锁）；
+                        // 界面读的是命令返回的那份（那里会填），见 `Peer::link` 注释。
+                        link: None,
                     },
                 );
                 (true, true, false)

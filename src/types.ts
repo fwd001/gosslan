@@ -24,6 +24,8 @@ export interface Peer {
   ed25519_pubkey: string | null;
   /** 首次发现该节点的时间戳 */
   first_seen: number | null;
+  /** 当前实际链路类型：`lan` / `routed` / `bluetooth`（无链路时缺省） */
+  link?: string | null;
 }
 
 export interface Friend {

@@ -204,6 +204,28 @@ export const useAppStore = defineStore("app", () => {
   // 响应式布局状态
   const isMobile = ref(false);
   const mobileView = ref<"list" | "chat">("list");
+  /**
+   * 移动端此刻是否有"整页内容盖住了聊天"（设置页 / 运行日志 / 新的朋友 / 好友资料 / 分享面板）。
+   *
+   * 由 `ResponsiveLayout` 统一维护（它才知道这些浮层开没开）。**判"已读"必须看它**：
+   * 用户实测（2026-09-12）：在聊天界面点进了「设置」（整页浮层），此时对方发来消息，
+   * 自己根本没看到，却已经判成已读、把回执发回去了。
+   */
+  const mobileChatObscured = ref(false);
+  /** `ResponsiveLayout` 用：把"聊天被整页浮层盖住"这件事同步给 store。 */
+  function setMobileChatObscured(v: boolean) {
+    mobileChatObscured.value = v;
+  }
+  /**
+   * **聊天视图此刻是否真的可见** —— 判已读/发已读回执的唯一判据。
+   *
+   * 桌面端恒 `true`（聊天气泡就在主窗口里，没有页层级概念）；
+   * 移动端要求：当前页是聊天 **且** 没有整页浮层盖在上面。
+   * 注意：`document.hidden`（应用切到后台）由调用方另行判断 —— 它不进 computed（不是响应式）。
+   */
+  const chatVisible = computed(
+    () => !isMobile.value || (mobileView.value === "chat" && !mobileChatObscured.value),
+  );
   /** 移动端软键盘是否弹出（视口被压缩超过阈值即认为弹出）：用于收起底部导航，避免浮在键盘上方。 */
   const keyboardOpen = ref(false);
   /**
@@ -771,6 +793,9 @@ export const useAppStore = defineStore("app", () => {
     peerStyles,
     isMobile,
     mobileView,
+    mobileChatObscured,
+    setMobileChatObscured,
+    chatVisible,
     keyboardOpen,
     keyboardInset,
     init,

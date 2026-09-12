@@ -103,3 +103,41 @@ test("安卓文件选择：选择器的返回值必须先落地成真实路径�
   );
   assert.match(read("api/index.ts"), /importPickedFile:/, "api 层要暴露这个命令");
 });
+
+test("已读回执只在「聊天视图真的可见」时才发（用户 2026-09-12 实测）", () => {
+  const store = read("stores/useChatStore.ts");
+  // 判据必须同时看：是这个会话 + 应用在前台 + **聊天视图可见**
+  assert.match(
+    store,
+    /activeConv\.value !== convId \|\| document\.hidden \|\| !app\.chatVisible/,
+    "去抖标记已读必须同时判「聊天视图可见」——否则用户在设置页/新的朋友页时收到消息也会被标已读",
+  );
+  assert.match(
+    store,
+    /if \(activeConv\.value && app\.chatVisible\)/,
+    "回到前台补发已读回执同样要判可见性",
+  );
+  const app = read("stores/useAppStore.ts");
+  assert.match(app, /const chatVisible = computed\(/, "可见性判据必须在 store 里唯一实现");
+  assert.match(app, /mobileChatObscured/, "必须有『移动端被整页浮层盖住』这个状态");
+  const layout = read("layouts/ResponsiveLayout.vue");
+  assert.match(
+    layout,
+    /app\.setMobileChatObscured\(/,
+    "只有布局层知道设置/日志/新的朋友/资料页开没开 ⇒ 必须由它同步给 store",
+  );
+});
+
+test("「蓝牙直连」只能由后端链路类型判定（不许用『没有 IP』反推）", () => {
+  const modal = read("components/AddFriendModal.vue");
+  assert.ok(
+    !/p\.ip \|\| t\("friend\.add\.viaBluetooth"\)/.test(modal),
+    "不得再用 `p.ip || 蓝牙直连` 反推 —— Tailscale 同网段（Routed）的设备会被误标（用户实测）",
+  );
+  assert.match(modal, /p\.link === "bluetooth"/, "只有后端说 bluetooth 才显示「蓝牙直连」");
+  assert.match(modal, /function peerAddress\(/, "地址/链路文案必须收在一个函数里判定");
+  // 后端：命令返回时必须把链路类型填上（事件推送里没有它）
+  const commands = readFileSync(join(srcDir, "..", "src-tauri", "src", "commands.rs"), "utf8");
+  assert.match(commands, /async fn fill_peer_links\(/, "必须有唯一的『补链路类型』实现");
+  assert.match(commands, /best_link_kind/, "链路类型按 LAN > Routed > Bluetooth 的优先级取");
+});

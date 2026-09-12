@@ -155,19 +155,42 @@ test("过滤型输入框都接了延迟镜像（连发粘贴不卡）", () => {
   assertDeferredInput("components/LogViewer.vue", "filter");
 });
 
-test("会话列表搜索：输入框绑原值，延迟镜像在 composable 里、派生读它", () => {
+test("会话列表：输入不改列表，回车才搜索（用户 2026-09-12 明确要求）", () => {
   const list = read("components/ConversationList.vue");
   assert.match(list, /v-model="keyword"/, "搜索框绑原值");
-  const composable = read("composables/useConversationSearch.ts");
+  // ① 输入不再驱动会话列表过滤：列表恒为全量
+  assert.match(
+    list,
+    /const listConversations = computed\(\(\) => chat\.conversations\)/,
+    "会话列表必须是全量、不随输入变化（用户：『在上面输入，列表就不要有变化了』）",
+  );
+  assert.ok(!list.includes('v-for="c in filtered"'), "不得再用过滤结果渲染会话列表");
+  assert.ok(!list.includes("api.searchMessages"), "列表不再查消息内容（搜消息全在弹窗里做）");
+  assert.match(list, /@keydown\.enter\.prevent="onSearchEnter"/, "回车仍然要打开搜索弹窗");
+  // ② 联系人页的姓名过滤仍走延迟镜像（连发粘贴不卡）
+  assert.match(list, /const \{ keyword, query \} = useSearchKeyword\(\)/, "输入状态来自 useSearchKeyword");
+  const composable = read("composables/useSearchKeyword.ts");
   assert.match(
     composable,
     /useDeferredRef\(\s*keyword\b/,
-    "useConversationSearch 必须为 keyword 建延迟镜像（filtered 一变整列重渲染）",
+    "仍要为联系人姓名过滤建延迟镜像（否则粘贴时整列重渲染）",
   );
-  assert.match(composable, /return \{[^}]*\bquery\b/, "必须把延迟值暴露出来");
-  // 列表项高亮/v-memo/空态判断都要跟延迟值，否则会出现"文案没结果、列表还是旧的"
-  assert.match(list, /:keyword="query"/, "列表项高亮必须用延迟关键词");
-  assert.match(list, /v-memo="\[[^"]*\bquery\b/, "v-memo 依赖里必须是延迟关键词");
+  assert.match(composable, /return \{ keyword, query \}/, "必须把延迟值暴露出来");
+});
+
+test("搜索弹窗：有 loading 态；清空关键词回到初始空态", () => {
+  const dlg = read("components/search/ChatSearchDialog.vue");
+  assert.match(
+    dlg,
+    /v-(?:else-)?if="searching"/,
+    "搜索在途必须有可见的 loading（用户：『感觉显示得比较慢，当前状态没有提示』）",
+  );
+  assert.match(
+    dlg,
+    /v-if="!keyword\.trim\(\)"/,
+    "关键词为空时要回到初始空态（而不是留着上一次的结果）",
+  );
+  assert.match(dlg, /useImeEnterGuard/, "回车要过输入法守卫（拼音候选里回车是选字）");
 });
 
 test("日志过滤的派生渲染读延迟值，不读原值", () => {

@@ -4,7 +4,7 @@ import { computed, ref, watch } from "vue";
 import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import type { ChannelStatus } from "@/types";
+import type { ChannelStatus, Peer } from "@/types";
 import { api } from "@/api";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
@@ -93,6 +93,22 @@ const filteredPeers = computed(() => {
  * 并写清"为什么没发现"，让用户就地解决。
  */
 // 通道状态来自 store（与设置页**同一份**，两处不可能再不一致）
+/**
+ * 对端那一行显示的地址/链路文案。
+ *
+ * 规则（用户 2026-09-12 实测反馈"Tailscale 同网段的设备也被标成蓝牙直连"）：
+ * · 后端说这条链路是 **bluetooth** ⇒ 才显示「蓝牙直连」；
+ * · 否则有 IP 就显示 IP（LAN / 跨网段都真实可核对）；
+ * · 跨网段（routed）且没有 IP 时显示「跨网段/VPN」；
+ * · 只是"发现过、还没建链"就显示「已发现（未建链）」——不许猜。
+ */
+function peerAddress(p: Peer): string {
+  if (p.link === "bluetooth") return t("friend.add.viaBluetooth");
+  if (p.ip) return p.ip;
+  if (p.link === "routed") return t("friend.add.viaRouted");
+  return t("friend.add.discovered");
+}
+
 const channels = computed(() => app.channels ?? []);
 const channelBusy = ref<string | null>(null);
 
@@ -278,10 +294,11 @@ async function add(peerId: string) {
           </div>
           <div class="min-w-0 flex-1">
             <div class="truncate text-sm" :title="p.nickname">{{ p.nickname }}</div>
-            <!-- 蓝牙直连的节点没有 IP（它不是从局域网 announce 学到的，而是双向 Hello
-                 验签后登记的链路，见 `network/ble.rs`）——显示"蓝牙直连"而不是留一行空白 -->
+            <!-- 链路类型**必须由后端给**（`peer.link`）：以前用 `p.ip || 蓝牙直连` 反推，
+                 于是同一 Tailscale 网段（Routed）的设备也被标成"蓝牙直连"（用户 2026-09-12
+                 实测反馈）。现在只有后端确认是 BLE 链路（`link === "bluetooth"`）才这么写。 -->
             <div class="text-xs text-[var(--gosslan-text-2)]">
-              {{ p.ip || t("friend.add.viaBluetooth") }}
+              {{ peerAddress(p) }}
             </div>
           </div>
           <span
