@@ -44,6 +44,8 @@ watch(
   () => [props.active, props.reloadToken],
   async () => {
     if (!props.active) return;
+    // 手机端：打开网络设置时才按需拉起蓝牙通道（同上）
+    void app.ensureBluetoothOn();
     selectedIp.value = app.boundIp ?? app.preferredIp ?? "0.0.0.0";
     await app.refreshInterfaces();
     await loadChannels();

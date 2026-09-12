@@ -258,6 +258,35 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
+  /**
+   * 手机上按需拉起蓝牙通道（幂等、绝不抛错）。
+   *
+   * 「像 BitChat 一样默认就开」在**体验**上仍然成立：用户不需要任何设置；区别只是
+   * **启动时不碰 BLE**，等用户真正打开「添加好友」/网络设置时才拉起 —— 这样即使 BLE 启动
+   * 路径里还有崩溃点，也不会表现为"打开应用就闪退"（安卓的入口强制 panic=abort，
+   * 一旦 panic 就是整进程消失、连日志都难拿）。
+   */
+  let bluetoothEnsureTried = false;
+  async function ensureBluetoothOn() {
+    if (!isMobile.value || bluetoothEnsureTried) return;
+    bluetoothEnsureTried = true;
+    try {
+      await api.requestBlePermissions().catch(() => {});
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (channels.value.find((c) => c.channel === "bluetooth")?.enabled) return;
+        try {
+          await api.setChannelEnabled("bluetooth", true);
+          await refreshChannels();
+          return;
+        } catch {
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+    } catch {
+      /* 失败就保持关闭：界面会显示"已关闭"，用户可手动再试 */
+    }
+  }
+
   /** 重新拉取"局域网是否在跑 / 绑在哪个 IP"（`online` / `boundIp`）。 */
   async function refreshNetworkStatus() {
     try {
@@ -533,28 +562,14 @@ export const useAppStore = defineStore("app", () => {
     // ⚠️ 延迟到首帧之后且不 await：用户红线是"不能有任何阻断渲染的操作" ——
     // 权限弹框该在界面已经画出来之后再出现。
     if (isMobile.value) {
+      // 只申请「附近的设备」权限；**蓝牙运行时改为按需启动**（见 ensureBluetoothOn）。
+      // 为什么不在启动时自动拉起：v3.0.1 的安卓包"打开 3 秒后闪退"就发生在这一步
+      // （Tauri 的安卓入口要求 panic = "abort" ⇒ 启动路径里任何 panic 都是整进程消失）。
+      // 现在启动路径完全不碰 BLE，用户打开「添加好友」或网络设置时再拉起，失败也只是记日志。
       window.setTimeout(() => {
-        void (async () => {
-          await api.requestBlePermissions().catch(() => {
-            /* 非 Android / 未编译蓝牙：空操作或忽略 */
-          });
-          // 手机上蓝牙通道**默认开启、零配置**（用户 2026-09-12 实测要求：
-          // 「如果测到蓝牙是手机的话，蓝牙通道应该是默认打开的，并且不用设置」——
-          // 参考 BitChat：进去就能连，不用配对/配置/开关）。
-          // 后端 `get_bt_enabled` 已经让"缺省 = 开"，这里再把**运行时**真正拉起来；
-          // 授权弹框要等用户点，所以失败就退避重试一次，仍失败则交给「添加好友」页
-          // 的就地开关（那里有明确的失败原因与权限指引）。
-          for (let attempt = 0; attempt < 2; attempt++) {
-            if (channels.value.find((c) => c.channel === "bluetooth")?.enabled) return;
-            try {
-              await api.setChannelEnabled("bluetooth", true);
-              await refreshChannels();
-              return;
-            } catch {
-              await new Promise((r) => setTimeout(r, 2500));
-            }
-          }
-        })();
+        void api.requestBlePermissions().catch(() => {
+          /* 非 Android / 未编译蓝牙：空操作或忽略 */
+        });
       }, 1500);
     }
 
@@ -679,6 +694,7 @@ export const useAppStore = defineStore("app", () => {
   return {
     channels,
     refreshChannels,
+    ensureBluetoothOn,
     setChannelEnabled,
     device,
     interfaces,

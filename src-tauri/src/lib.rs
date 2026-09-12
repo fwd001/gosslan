@@ -58,7 +58,6 @@ pub const WINDOW_LOGS: &str = "logs";
 /// 测试里断言两者一致，避免漂移。
 pub const WINDOW_LABELS: &[&str] = &[WINDOW_MAIN, WINDOW_SETTINGS, WINDOW_LOGS];
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// 安装 panic hook：把 panic（位置 + 消息）写进应用日志文件，并打到 stderr。
 ///
 /// 为什么必须装（用户 2026-09-12 安卓实测「点进去 3 秒闪退，拿不到任何日志」）：
@@ -92,6 +91,7 @@ fn install_panic_hook(app: Option<tauri::AppHandle>) {
     }));
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 先装 hook（此刻还没有 state，先只打 stderr；setup 里拿到 logger 后再装一次带上文件日志）
     install_panic_hook(None);

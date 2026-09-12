@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "4.1.1"
+version = "4.1.2"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -92,13 +92,14 @@ custom-protocol = ["tauri/custom-protocol"]
 bluetooth = ["dep:btleplug", "dep:futures", "dep:objc2-core-bluetooth", "dep:jni"]
 
 [profile.release]
-# ⚠️ **不要**改回 `panic = "abort"`（Tauri 模板默认如此，为了省体积）。
-# 用户 2026-09-12 安卓实测：「点进去 3 秒后闪退，清了数据也一样，连日志都拿不到」——
-# 这正是 abort 的形态：**任何** panic（包括依赖里、JNI 调用里、后台任务里）都会立刻杀掉整个进程，
-# 既不留日志也没法降级。改用 unwind 之后：
-#   · 后台任务/命令里的 panic 只终止那一处，应用继续跑（配合 `lib.rs` 里的 panic hook 落日志）；
-#   · 代价是体积略增（几百 KB）—— 为了"稳定"这个第一优先级，这笔账划算。
-panic = "unwind"
+# 安卓上必须是 `panic = "abort"`：Tauri 的 `mobile_entry_point` 宏用 `stop_unwind` 包住入口，
+# 换成 unwind 会直接编译失败（实测 E0593: required by this bound in `stop_unwind`）。
+# 因此"别让 panic 杀掉应用"不能靠 unwind，只能靠**不在启动路径上 panic**：
+#   · panic hook 在 abort 之前仍会被调用 ⇒ panic 位置与消息会落进「运行日志」文件（重启后仍在，
+#     用户可以直接把那条 `channel="panic"` 发给我们）；
+#   · 蓝牙运行时的自动启动**从"应用启动时"改成"用户打开相关界面时"**（见 useAppStore.ensureBluetoothOn），
+#     这样即使 BLE 启动路径里还有 panic，也不会表现为"打开应用就闪退"。
+panic = "abort"
 codegen-units = 1
 lto = true
 opt-level = "s"
