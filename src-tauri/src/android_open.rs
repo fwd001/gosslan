@@ -25,7 +25,7 @@
 
 use std::sync::OnceLock;
 
-use jni::objects::{Global, JClass, JObject, JString};
+use jni::objects::{Global, JClass, JString};
 use jni::vm::JavaVM;
 use jni::{jni_sig, jni_str, native_method, Env, JValue, NativeMethod};
 
@@ -37,9 +37,17 @@ static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
 static KOTLIN_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
 
 /// 由 Kotlin 的 `OpenWith.bootstrap` 调用（`extern` ⇒ 宏直接导出 JNI 符号名）。
+///
+/// ⚠️ **必须是 `static`**：Kotlin 侧 `nativeAttachOpenWith()` 是 **文件级（顶层）函数** ——
+/// 编译成 `OpenWithKt` 的 **static** 方法。宏如果按"实例方法"注册（没有 `static` 关键字），
+/// ART 会当场判定不一致并 **abort 整个进程**（真机实测的启动闪退）：
+///   `Native method '"nativeAttachOpenWith"' was registered as instance but called as static method`
+/// 对照：`BlePeripheral` 里的 `external fun nativeBootstrap()` 在 object 内部 ⇒ 实例方法 ⇒
+/// 那边的宏**不加** `static`（见 `transport/ble_android.rs`）。护栏
+/// `jni_static_matches_kotlin_toplevel` 盯着这条对应关系。
 const NATIVE_ATTACH: NativeMethod = native_method! {
     java_type = "com.gosslan.app.OpenWithKt",
-    extern fn native_attach_open_with() -> (),
+    static extern fn native_attach_open_with() -> (),
     fn = native_attach,
 };
 
@@ -54,9 +62,11 @@ pub fn ready() -> bool {
 }
 
 /// `OpenWith.bootstrap()`：缓存 VM 与类引用。
+///
+/// static 方法拿到的第二个参数就是**类引用本身**（`JClass`），不需要 `get_object_class`。
 fn native_attach<'local>(
     env: &mut Env<'local>,
-    this: JObject<'local>,
+    class: JClass<'local>,
 ) -> jni::errors::Result<()> {
     if JAVA_VM.get().is_none() {
         if let Ok(vm) = env.get_java_vm() {
@@ -64,7 +74,6 @@ fn native_attach<'local>(
         }
     }
     if KOTLIN_CLASS.get().is_none() {
-        let class = env.get_object_class(&this)?;
         let global = env.new_global_ref(class)?;
         let _ = KOTLIN_CLASS.set(global);
     }

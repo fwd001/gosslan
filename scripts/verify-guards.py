@@ -262,6 +262,48 @@ CASES: list[Case] = [
         expect_fail_hint="描述符不一致",
         tags=["rust", "android"],
     ),
+    # ---------------- Android JNI：object 成员必须有 @JvmStatic（否则没有静态桥） ----------------
+    Case(
+        name="Rust 调的 Kotlin 成员必须带 @JvmStatic（否则 Method not found）",
+        why="真机实测：BlePeripheral.start() 漏了 @JvmStatic（它旁边 6 个兄弟都有）⇒ object 里不生成"
+        "静态桥 ⇒ Rust 的 call_static_method 报 `Method not found: start ()Z`，蓝牙外设起不来，"
+        "而 central 扫描照常 ⇒ 从日志上很容易误判成'权限问题'",
+        file=TAURI
+        / "gen"
+        / "android"
+        / "app"
+        / "src"
+        / "main"
+        / "java"
+        / "com"
+        / "gosslan"
+        / "app"
+        / "BlePeripheral.kt",
+        injections=[(
+            "    @JvmStatic\n    fun start(): Boolean = startOnMain()",
+            "    fun start(): Boolean = startOnMain()",
+        )],
+        cmd=cargo("test", "--lib", "android_jni_signatures_match_kotlin"),
+        cwd=TAURI,
+        expect_fail_hint="必须在它上面加 `@JvmStatic`",
+        tags=["rust", "jni", "android"],
+    ),
+    # ---------------- Android JNI：static 形态必须与 Kotlin 一致（真机启动闪退） ----------------
+    Case(
+        name="JNI static 形态与 Kotlin 顶层/成员一致（少了 static 就闪退）",
+        why="真实缺陷：OpenWith.kt 的 nativeAttachOpenWith 是**文件级函数**（=static），而 Rust 侧 "
+        "native_method! 少了 static ⇒ 按实例方法注册 ⇒ ART 在第一次调用时直接 abort 整个进程"
+        "（'registered as instance but called as static method'）。编译/单测/构建全绿，只在真机启动时现形",
+        file=TAURI / "src" / "android_open.rs",
+        injections=[(
+            "    static extern fn native_attach_open_with() -> (),",
+            "    extern fn native_attach_open_with() -> (),",
+        )],
+        cmd=cargo("test", "--lib", "jni_static_matches_kotlin_toplevel"),
+        cwd=TAURI,
+        expect_fail_hint="static 形态与 Kotlin 不一致",
+        tags=["rust", "jni", "android"],
+    ),
     # ---------------- Android release 包：打开文件桥的 R8 keep ----------------
     Case(
         name="R8 keep（打开文件桥漏 keep 必须报出来）",
@@ -563,6 +605,26 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="必须按好友关系过滤",
         tags=["rust", "friend"],
+    ),
+    Case(
+        name="JNI keep 必须是 public static（否则静态桥被 R8 删掉 ⇒ Method not found）",
+        why="真机实测：Rust 用 call_static_method 调 BlePeripheral.start()，而 Kotlin 的 @JvmStatic "
+        "在 object 里生成『实例方法 + 静态桥』两个条目；keep 规则只写 public boolean start(); 时 "
+        "R8 把静态桥当死代码删掉 ⇒ `JNI 调用失败：Method not found: start ()Z`（蓝牙外设起不来）",
+        # 事实来源与注入副本必须同时改坏（同既有 keep 用例的理由）
+        file=ROOT / "scripts" / "android" / "proguard-gosslan.pro",
+        injections=[("    public static boolean start();", "    public boolean start();")],
+        extra_injections=[
+            (
+                TAURI / "gen" / "android" / "app" / "proguard-rules.pro",
+                "    public static boolean start();",
+                "    public boolean start();",
+            )
+        ],
+        cmd=cargo("test", "--lib", "release_keeps_every_kotlin_method_called_from_rust"),
+        cwd=TAURI,
+        expect_fail_hint="必须写成 `public static",
+        tags=["rust", "jni", "android"],
     ),
     Case(
         name="已是好友的申请必须自动同意（否则双方永远加不上）",

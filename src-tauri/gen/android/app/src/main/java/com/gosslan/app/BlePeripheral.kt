@@ -127,8 +127,6 @@ object BlePeripheral {
         }
     }
 
-    /** 打开 GATT server 并开始广播。返回是否已成功启动（失败原因经 nativeOnWarning 上报）。 */
-    @JvmStatic
     /**
      * 把 Android 框架调用放到**主线程**执行（同步等待结果，最多 `timeoutMs`）。
      *
@@ -182,6 +180,15 @@ object BlePeripheral {
 
     val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
+    /** 打开 GATT server 并开始广播。返回是否已成功启动（失败原因经 nativeOnWarning 上报）。
+     *
+     * ⚠️ **`@JvmStatic` 不能少**：Rust 侧用 `call_static_method("start", "()Z")` 调它
+     * （见 `transport/ble_android.rs`）。`object` 里的成员函数只有加了 `@JvmStatic` 才会
+     * 生成静态桥；少了它真机日志就是 `JNI 调用失败：Method not found: start ()Z`
+     * —— 蓝牙外设起不来，而 central（扫描）不受影响，症状很隐蔽。
+     * 护栏 `android_jni_signatures_match_kotlin` 会检查"Rust 调的每个成员函数都带 @JvmStatic"。
+     */
+    @JvmStatic
     fun start(): Boolean = startOnMain()
 
     private fun startOnMain(): Boolean = onMainSync { startInner() } ?: false

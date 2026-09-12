@@ -10,6 +10,63 @@
 
 ## [Unreleased]
 
+## [4.1.17] - 2026-09-12
+
+### Fixed (安卓蓝牙外设起不来：`BlePeripheral.start()` 漏了 `@JvmStatic` + keep 规则只 keep 了实例方法)
+真机日志（4.1.16 装上后崩溃已消失、btleplug 也初始化成功，接着暴露出来的两条）：
+```
+[warn] [ble] 蓝牙外设角色不可用（central 角色不受影响）：JNI 调用失败：Method not found: start ()Z
+[warn] [ble] 扫描失败：启动扫描失败：Runtime Error: Need android.permission.BLUETOOTH_SCAN permission
+```
+
+**根因（两处，都是"Rust 按静态方法调、Kotlin/keep 只给了实例方法"）**：
+1. `BlePeripheral.kt` 里 `fun start(): Boolean` **漏了 `@JvmStatic`**（它旁边 6 个兄弟都有）。
+   `object` 里的成员只有加了 `@JvmStatic` 才生成**静态桥**；Rust 侧用的是
+   `call_static_method("start", "()Z")` ⇒ 没有静态桥就是 `Method not found`。
+2. proguard 的 keep 规则写的是 `public boolean start();`（没有 `static`）⇒ R8 只保住了
+   **实例方法**（dex 里 `PUBLIC FINAL start()Z`），静态桥被当死代码删掉。
+   实测把规则改成 `public static boolean start();` 后，dex 里 `send/stop/isConnected/payloadMtu`
+   立刻变成 `PUBLIC STATIC FINAL` —— 只剩 `start` 还是实例形态，于是顺着它查到了 ①。
+
+**修法**：给 `start()` 补 `@JvmStatic`；keep 规则里所有 JNI 方法都改成 `public static …`；
+顺手把一处**误挂在 `onMainSync` 上的 `@JvmStatic`** 和 `start` 的 KDoc 归位。
+
+**护栏（两条，都是被这次真机日志证明必需的）**：
+- `android_jni_signatures_match_kotlin` 扩展：Rust 用 `call_static_method` 调的每个
+  Kotlin **成员**函数，声明上方必须有 `@JvmStatic`（顶层函数天然 static，不要求）；
+- `release_keeps_every_kotlin_method_called_from_rust` 扩展：keep 块里每个方法都必须是
+  `public static …`（只 keep 实例方法 = 静态桥被删 = `Method not found`）；
+- `verify-guards.py` 各加一条非空转用例（去掉 `@JvmStatic` / 去掉 `static` ⇒ 必须 FAIL）。
+
+> 说明：`BLUETOOTH_SCAN` 那条是**权限没授予**（设备上此前被拒/未授），不是代码缺陷；
+> 前端已有"去系统设置打开附近设备权限"的提示路径，本次未改。
+
+## [4.1.16] - 2026-09-12
+
+### Fixed (🔴 安卓启动闪退的真因：`nativeAttachOpenWith` 被按"实例方法"注册，ART 直接 abort)
+真机 logcat（4.1.15 实测，终于抓到崩溃栈，而不是只有一行 `gosslan` 日志）：
+```
+Abort message: 'Native method '"nativeAttachOpenWith"' was registered as instance
+                 but called as static method'
+  #12 … (Java_com_gosslan_app_OpenWithKt_nativeAttachOpenWith__+24)
+  #15 … com.gosslan.app.MainActivity.onCreate+492
+```
+
+**根因**（4.1.12 引入 FileProvider 时我没注意的一处细节）：`OpenWith.kt` 里的
+`nativeAttachOpenWith()` 是**文件级（顶层）函数** ⇒ Kotlin 把它编译成 `OpenWithKt` 的
+**static** 方法；而 Rust 侧的 `native_method!` 少了 `static` 关键字 ⇒ 宏按**实例方法**注册。
+ART 在第一次调用时判定不一致，**直接 abort 整个进程**（SIGABRT）。
+对照：`BlePeripheral` 里的 `external fun nativeBootstrap()` 在 **object 内部** ⇒ 实例方法 ⇒
+那边的宏**不加** `static`（一直是对的）。
+
+**修法**：`static extern fn native_attach_open_with()` + 形参由 `JObject this` 改为
+`JClass class`（static 方法拿到的第二个参数就是类引用本身，不再需要 `get_object_class`）。
+
+**护栏**（这条正是被这次闪退证明必需的 —— 它编译、单测、构建全绿，只在真机启动时炸）：
+`jni_static_matches_kotlin_toplevel`：解析 Rust 每个 `native_method!` 是否带 `static`，
+与 Kotlin 侧同名 `fun` 的**缩进**对照（顶格 = 顶层 = static；缩进在 `object`/`class` 里 = 实例），
+两者必须一致；`verify-guards.py` 增加对应非空转用例（删掉 `static` ⇒ 必须 FAIL）。
+
 ## [4.1.15] - 2026-09-12
 
 ### Fixed (安卓蓝牙起不来的真因：btleplug 的 `io.github.gedgygedgy.**` 从未进过包)

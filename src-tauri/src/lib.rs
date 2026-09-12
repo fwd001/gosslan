@@ -636,6 +636,7 @@ mod tests {
              解析器失效或有人漏登记",
             open_registered.len()
         );
+        let mut static_checked = 0usize;
         for (name, desc) in registered.iter().chain(open_registered.iter()) {
             let (_, kotlin_desc, _) = kotlin_fns
                 .iter()
@@ -647,7 +648,38 @@ mod tests {
                 "`{name}` 的 JNI 描述符不一致：Kotlin 是 `{kotlin_desc}`，Rust 却按 `{desc}` 调用 \
                  —— JNI 不做任何编译期检查，这只会在真机上抛 NoSuchMethodError"
             );
+
+            // ③ Rust 用 `call_static_method` 调它 ⇒ Kotlin 侧必须有**静态桥**。
+            //    顶层函数天然是 static；`object`/`class` 的成员**必须带 `@JvmStatic`** ——
+            //    少了它真机日志是 `JNI 调用失败：Method not found: start ()Z`
+            //    （蓝牙外设整条路径失效，而 central 扫描不受影响 ⇒ 症状极其隐蔽）。
+            let (file, kt) = if kotlin_fns.iter().any(|(n, _, _)| n == name) {
+                ("BlePeripheral.kt", kotlin)
+            } else {
+                ("OpenWith.kt", kotlin_open)
+            };
+            let (idx, decl) = kt
+                .lines()
+                .enumerate()
+                .find(|(_, l)| l.contains(&format!("fun {name}(")))
+                .unwrap_or_else(|| panic!("在 {file} 里找不到 `fun {name}(` 的声明行"));
+            let indented = decl.starts_with(' ') || decl.starts_with('\t');
+            if indented {
+                let lines: Vec<&str> = kt.lines().collect();
+                let from = idx.saturating_sub(12);
+                let annotated = lines[from..idx].iter().any(|l| l.trim() == "@JvmStatic");
+                assert!(
+                    annotated,
+                    "`{name}` 是 {file} 里 object/class 的成员，而 Rust 用 call_static_method 调它 \
+                     ⇒ 必须在它上面加 `@JvmStatic`（否则没有静态桥：真机 `Method not found: {name}`）"
+                );
+            }
+            static_checked += 1;
         }
+        assert!(
+            static_checked >= 7,
+            "应检查 ≥7 个 Kotlin 方法（openWith + BlePeripheral 6 个），实际 {static_checked} —— 护栏失效了"
+        );
 
         // ② Rust 导出的 native 回调（snake_case → lowerCamelCase）必须在 Kotlin 里是 external fun
         for snake in parse_extern_fn_names(rust)
@@ -670,6 +702,81 @@ mod tests {
                 "Kotlin 的 `{camel}` 不是 `external` 声明，JVM 不会去查 native 实现"
             );
         }
+    }
+
+    /// **JNI 的 static / 实例形态必须与 Kotlin 声明的形态一致**。
+    ///
+    /// 真实缺陷（2026-09-12 真机实测的**启动闪退**，而且编译、单测、构建全绿）：
+    /// `OpenWith.kt` 里 `nativeAttachOpenWith()` 是**文件级（顶层）函数** ⇒ 编译成
+    /// `OpenWithKt` 的 **static** 方法；而 Rust 侧的 `native_method!` 少了 `static` 关键字
+    /// ⇒ 宏把它按**实例方法**注册。ART 在第一次调用时判定不一致并**直接 abort 整个进程**：
+    ///   `Native method '"nativeAttachOpenWith"' was registered as instance but called as static method`
+    /// （崩溃栈落在 `MainActivity.onCreate` → `OpenWith.bootstrap`）。
+    ///
+    /// 判据（Kotlin 的一行声明就足够）：**顶格声明的 `external fun` = 顶层 = static**；
+    /// 缩进在 `object`/`class` 里的 = 成员 = 实例。两者与 Rust 的 `static` 关键字必须一一对应。
+    /// 对照：`BlePeripheral` 的 `nativeBootstrap()` 在 object 内 ⇒ 实例 ⇒ 宏不加 `static`。
+    #[test]
+    fn jni_static_matches_kotlin_toplevel() {
+        let ble_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/BlePeripheral.kt");
+        let open_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/OpenWith.kt");
+        let cases = [
+            (include_str!("transport/ble_android.rs"), ble_kt),
+            (include_str!("android_open.rs"), open_kt),
+        ];
+        let mut checked = 0usize;
+        for (rust, kotlin) in cases {
+            for (snake, is_static) in rust_native_methods(rust) {
+                let camel = snake_to_lower_camel(&snake);
+                let toplevel = kotlin_fun_is_toplevel(kotlin, &camel).unwrap_or_else(|| {
+                    panic!("Kotlin 里找不到 native 方法 `{camel}` —— 护栏需要同步更新")
+                });
+                assert_eq!(
+                    is_static, toplevel,
+                    "`{camel}` 的 static 形态与 Kotlin 不一致：Rust 注册为{}，Kotlin 却是{}函数 ——                      真机第一次调用时 ART 会直接 abort（进程消失、连日志都来不及写全）",
+                    if is_static { "static" } else { "实例" },
+                    if toplevel { "顶层（=static）" } else { "成员（=实例）" },
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 5,
+            "应至少检查 5 个 native 方法（BlePeripheral 5 个 + OpenWith 1 个），实际 {checked} —— 解析器失效了"
+        );
+    }
+
+    /// 解析 Rust 侧 `native_method! { … extern fn <名字> … }` → (snake 名, 是否 static)。
+    fn rust_native_methods(src: &str) -> Vec<(String, bool)> {
+        let mut out = Vec::new();
+        let mut rest = src;
+        while let Some(i) = rest.find("native_method! {") {
+            rest = &rest[i + "native_method! {".len()..];
+            let head = match rest.find("fn =") {
+                Some(e) => &rest[..e],
+                None => continue,
+            };
+            if let Some(p) = head.find("extern fn ") {
+                let after = &head[p + "extern fn ".len()..];
+                let name: String = after
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !name.is_empty() {
+                    out.push((name, head[..p].contains("static")));
+                }
+            }
+        }
+        out
+    }
+
+    /// Kotlin 里 `fun <camel>(` 这一行是否**顶格**（顶格 = 顶层函数 = JNI static）。
+    fn kotlin_fun_is_toplevel(src: &str, camel: &str) -> Option<bool> {
+        let needle = format!("fun {camel}(");
+        src.lines().find(|l| l.contains(&needle)).map(|l| {
+            let mut chars = l.chars();
+            !matches!(chars.next(), Some(' ') | Some('\t'))
+        })
     }
 
     /// **release 包必须 keep 住 Rust 按名字调用的 Kotlin 方法**。
@@ -734,6 +841,24 @@ mod tests {
             assert!(
                 registered.iter().any(|(n, _)| n == name),
                 "keep 规则里的 `{name}` 在 Rust 侧已经没有调用登记了（陈旧规则），删掉它"
+            );
+            // ⚠️ 还必须是 **static**：Rust 用 `env.call_static_method(...)` 调它们，而 Kotlin 的
+            // `@JvmStatic fun x()` 在 object 里生成"实例方法 + 静态桥"两个条目 —— 只 keep 实例方法
+            // 时 R8 会把静态桥当死代码删掉，真机日志：`JNI 调用失败：Method not found: start ()Z`
+            // （蓝牙外设整条路径失效，central 角色不受影响，所以症状很隐蔽）。
+            // 只看真正的规则行（`public …;`），别把说明注释里引用的同一句当成规则
+            let line = source_block
+                .lines()
+                .map(str::trim)
+                .find(|l| {
+                    l.starts_with("public ") && l.ends_with(';') && l.contains(&format!(" {name}("))
+                })
+                .unwrap_or_else(|| panic!("keep 块里找不到 `{name}` 的规则行"));
+            assert!(
+                line.trim_start().starts_with("public static"),
+                "keep 规则里的 `{name}` 必须写成 `public static …`（实际：`{}`）—— \
+                 Rust 是按**静态**方法调它的，只 keep 实例方法会让真机报 `Method not found: {name}`",
+                line.trim()
             );
         }
     }

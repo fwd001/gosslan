@@ -38,14 +38,21 @@
 # release 真机包上以 NoSuchMethodError 现形（蓝牙外设这条路径整个失效，日志里也没有线索）。
 # 新增 JNI 方法时必须在这里补一行；护栏测试
 # `release_keeps_every_kotlin_method_called_from_rust` 会盯着这件事。
+# ⚠️ **必须是 `public static`**：Rust 侧用 `env.call_static_method(...)` 调它们
+# （见 `transport/ble_android.rs` 的 `kotlin_method!` + `call_static_method`），
+# 而 Kotlin 的 `@JvmStatic fun x()` 在 object 里会生成**两个**方法：带函数体的实例方法 +
+# 一个**静态桥**。JNI 只认那个静态桥 —— 只写 `public boolean start();` 的话 R8 会认为
+# 桥没人用（Kotlin 内部调用走实例方法）而**把它删掉**，真机日志是：
+#   `JNI 调用失败：Method not found: start ()Z`（蓝牙外设起不来，central 不受影响）。
+# 实例方法（`public final start()Z`）在 dex 里是**另一个**条目，JNI 找不到它。
 -keep class com.gosslan.app.BlePeripheral {
-    public void stop();
-    public boolean start();
-    public boolean isConnected(java.lang.String);
-    public int payloadMtu(java.lang.String);
-    public boolean send(java.lang.String, byte[]);
-    public void requestAllPermissions();
-    public boolean hasRequiredPermissions();
+    public static void stop();
+    public static boolean start();
+    public static boolean isConnected(java.lang.String);
+    public static int payloadMtu(java.lang.String);
+    public static boolean send(java.lang.String, byte[]);
+    public static void requestAllPermissions();
+    public static boolean hasRequiredPermissions();
     native <methods>;
 }
 # 「用系统里的其它应用打开收到的文件」的桥（见 gen/android/.../OpenWith.kt）。
