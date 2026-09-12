@@ -8,6 +8,25 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
+## [4.0.0] - 2026-09-12
+
+### Added (Phase 8：BitChat 中继 —— 外部 mesh 的不透明帧，Gosslan 只当中继)
+依据 ADR-0017（用户裁定：本版不做旧版兼容 ⇒ 不需要能力门控/双读），验收只有三条：
+**收得到 · 去得掉重 · TTL 递减后转发**。
+
+- **线格式**新增 `Message::OpaqueExternal { id, ttl, payload }`（原样字节 base64），
+  去重用它自己的 `id`，**不进** Gosslan 的 `message_id` 体系。
+- **收到即喂同一条流水线**：`handle_message` 新分支 → `MeshRouter::on_receive`
+  （全局去重 + TTL 递减 + 源节点排除，与业务帧同一套；路由器不解析载荷，P-A03）
+  → `Forward{frame}` 时用**路由器给出的 ttl**（已递减）按 fan-out 发给邻居（排除来源）。
+- **不做的事**（照 ADR 写死）：不解密、不落库、不建 BitChat 用户/channel、不进 gossip 引擎。
+- **健壮性底线**：新增纯函数 `validate_opaque_external`（id ≤128 且字符安全、ttl ∈ 1..=16、
+  payload 合法 base64 且解码后 1..=256 KiB）—— 畸形/超限帧**只丢这一帧、不断链**。
+
+**护栏**：`phase8_acceptance_receive_dedup_and_ttl_forward`（验收三条一次跑通）、
+`opaque_external_validation_bounds`、`opaque_external_round_trips_through_wire_format`。
+验证：`cargo test --lib` **395 / 0**；`npm test` **344 / 0**；`vue-tsc` 0；`vite build` 通过。
+
 ## [3.0.1] - 2026-09-12
 ### Changed
 - 版本发布 v3.0.1（本次未预先填写更新说明，明细见 tag v3.0.0...v3.0.1 的提交记录）
