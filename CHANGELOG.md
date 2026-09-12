@@ -10,6 +10,16 @@
 
 ## [Unreleased]
 
+### Changed (蓝牙日志上 logcat：`ble` 通道的 info 也镜像出去)
+真机排查 BLE 时，缺的正是 info 级那几条（"扫描到几个候选 / 哪个候选没连上、为什么"）——
+它们以前只写应用内日志文件，而 release 包既不能 `run-as`、logcat 里也看不到，
+于是用户能贴给我们的只有 warn/error，"互相搜不到"只能靠猜（这一轮的根因就是被 `services()`
+过滤掉，日志里**一个字都没有**）。
+现在 Android 上 `ble` 通道的 info 与 `boot` 一样镜像到 logcat
+（`adb logcat -s gosslan`），频率很低（每 10s 最多几行），不会刷屏。
+
+## [4.2.3] - 2026-09-12
+
 ## [4.2.2] - 2026-09-12
 
 ### Fixed (🔴 蓝牙「互相搜不到」的真因：扫描结果被未连接的 `services()` 复核掉了)

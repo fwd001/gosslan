@@ -126,10 +126,19 @@ impl Logger {
         //     release 包既不能 `run-as`（不可调试），Rust 的 stdout/stderr 也不进 logcat，
         //     所以这里直接调系统的 `log` 命令打一条 —— 于是
         //     `adb logcat -s gosslan` 就能看到我们的启动路标与 panic。
-        //     开销控制：warn/error 一律打；info 只打 `boot` 通道（启动路标），其余 info 走文件。
+        //     开销控制：warn/error 一律打；info 只打 `boot`（启动路标）与 `ble`（蓝牙）两个通道。
+        //
+        //     为什么把 `ble` 的 info 也镜像出来（用户 2026-09-12 实测的教训）：
+        //       · 蓝牙是**唯一没法在桌面上自测**的链路，真机日志是唯一证据来源；
+        //       · 而"扫描到几个候选 / 哪个候选没连上、为什么"恰好都是 **info** 级 ——
+        //         之前它们只写文件，用户能贴的 logcat 里什么都没有，于是"互相搜不到"
+        //         只能靠猜（那次真正的根因是扫描结果被 `services()` 过滤掉，日志里一个字都没有）。
+        //     频率很低（每个扫描周期最多几行，10s 一次），不会把 logcat 刷满。
         #[cfg(target_os = "android")]
         {
-            let want = matches!(level, Level::Warn | Level::Error) || target == "boot";
+            let want = matches!(level, Level::Warn | Level::Error)
+                || target == "boot"
+                || target == "ble";
             if want {
                 use std::process::{Command, Stdio};
                 let line = format!("[{}] [{}] {}", level.as_str(), target, message);
