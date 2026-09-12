@@ -27,6 +27,19 @@ base36 补零大写、旧默认名识别且不误伤自取名字）。
 
 **顺带修**：`scripts/version.mjs` 发布后**补回 `## [Unreleased]
 
+### Changed (出一个 Mac 生产包也纳入常规流程；并加一条只打 .app 的脚本)
+用户要求：「后面每次打完安卓的包，再打一个 Mac 的生产包，我本地测试」。
+
+- 新增 `npm run dist:mac:app`：只出 `.app`（`--bundles app`）。
+  为什么要这条：`npm run dist:mac` 会继续打 `.dmg`，而 dmg 那步要跑 `hdiutil` + AppleScript
+  设置窗口布局 —— 在受管沙箱里会失败（本轮实测：`bundle_dmg.sh` 退出码非 0），
+  虽然 `.app` 其实已经产出成功。以后本机自测用 `dist:mac:app`，要发布 dmg 时在**自己的终端**里跑
+  `npm run dist:mac`。
+- 产物：`src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Gosslan.app`
+  （release + `bluetooth` feature；`open` 或拖进 /Applications 即可测）。
+
+## [4.1.6] - 2026-09-12
+
 ## [4.1.5] - 2026-09-12
 
 ### Fixed (安卓「点『添加好友』/『设置』立刻闪退」—— Android 框架 API 被从非主线程调用)

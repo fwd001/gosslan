@@ -1,7 +1,7 @@
 {
   "name": "gosslan",
   "private": true,
-  "version": "4.1.5",
+  "version": "4.1.6",
   "type": "module",
   "description": "Gosslan — 无服务器 P2P 局域网即时通讯（Tauri v2 + Vue 3 + TypeScript）",
   "scripts": {
@@ -33,7 +33,8 @@
     "version:check": "node scripts/semver.mjs check",
     "version:classify": "node scripts/semver.mjs classify",
     "version:ledger": "node scripts/semver.mjs ledger --since main > docs/version-ledger.md",
-    "version:release": "node scripts/semver.mjs release"
+    "version:release": "node scripts/semver.mjs release",
+    "dist:mac:app": "tauri build --features bluetooth --bundles app --target aarch64-apple-darwin"
   },
   "dependencies": {
     "@headlessui/vue": "^1.7.23",
