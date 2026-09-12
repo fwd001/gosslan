@@ -259,7 +259,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         @wheel="onWheel"
       >
         <!-- 右上操作区：保存 + 关闭（与其它弹窗一致的样式） -->
-        <div class="absolute right-4 top-4 z-10 flex items-center gap-1">
+        <!-- 移动端让开状态栏/挖孔（`safe-area-inset-top`）：用户 2026-09-12 实测
+             「安卓端图片预览右上角的保存和叉叉与状态栏重叠」。桌面端 env() 为 0，视觉不变。 -->
+        <div
+          class="absolute right-4 z-10 flex items-center gap-1"
+          :style="{ top: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }"
+        >
           <button
             class="flex h-9 items-center gap-1.5 rounded-full px-3 text-[13px] text-white/85 transition hover:bg-white/15"
             :title="t('common.saveImage')"
@@ -323,7 +328,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         </div>
 
         <!-- 底部提示：计数 + 操作说明 -->
-        <div class="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1 text-xs text-white/85">
+        <div
+          class="absolute left-1/2 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1 text-xs text-white/85"
+          :style="{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 1.25rem)' }"
+        >
           <template v-if="hasMultiple">{{ t("msg.lightbox.multiHint", { i: index + 1, n: images.length }) }}</template>
           <template v-else>{{ t("msg.lightbox.singleHint") }}</template>
         </div>

@@ -551,11 +551,20 @@ pub async fn set_channel_enabled(
                             if enabled { "开启" } else { "关闭" }
                         ),
                     );
-                    if enabled {
-                        crate::network::ble::start(s.clone()).await?;
+                    let result = if enabled {
+                        crate::network::ble::start(s.clone()).await
                     } else {
                         crate::network::ble::stop(s).await;
+                        Ok(())
+                    };
+                    if result.is_err() {
+                        // ⚠️ **失败要放行重试**：冷却的用途是挡住"成功之后又被反复切换"的抖动，
+                        // 不是挡住用户/前端的重试。真实缺陷（用户 4.1.9 实测）：
+                        // 第一次 `已停止 → 开启` 失败（当时安卓还缺 btleplug 的 Java 类），
+                        // 前端的自动重试落进 3s 冷却被丢掉 ⇒ 表现为"蓝牙没有默认开启"。
+                        LAST_BT_TRANSITION_MS.store(0, std::sync::atomic::Ordering::Relaxed);
                     }
+                    result?;
                 } else if running != enabled {
                     s.logger.warn(
                         "ble",
