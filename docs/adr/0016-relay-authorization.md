@@ -1,6 +1,7 @@
 # ADR-0016: Relay Authorization（P2 / M4）
 
-- Status: Proposed（**待用户审核**；默认值与今天一致，接线已落地）
+- Status: **Accepted**（2026-09-12 用户审核通过）。实现 `0081cb8` `f7fc045`；
+  默认 `all` 与既有行为逐字节一致
 - Date: 2026-09-12
 - Owners: Gosslan
 - Related:

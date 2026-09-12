@@ -1,6 +1,8 @@
 # ADR-0015: BLE Transport（Phase 7 / P3）
 
-- Status: Proposed（**待用户审核**；实现按 feature 门推进，默认关闭）
+- Status: **Accepted**（2026-09-12 用户审核通过）。实现已落地：central `cc273b5`/`c2124ef`、
+  macOS 外设 `b317c27`、Android 外设（Kotlin + JNI）`e66fd8b`/`badd668`；
+  默认关闭由 feature 门 + 设置开关双重保证。iOS 外设与 Windows 外设**明确不做**（用户 2026-09-12 决定）
 - 进度：7-a/7-b/7-c 完成；7-e **central + macOS peripheral 两侧接线均已完成**（编译/单测验证），真机待做；7-d 待设计；7-f（移动端做 peripheral）待做
 - Date: 2026-09-12
 - Owners: Gosslan

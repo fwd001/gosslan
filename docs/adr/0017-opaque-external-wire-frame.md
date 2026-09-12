@@ -1,6 +1,8 @@
 # ADR-0017: BitChat 中继的线格式（OpaqueExternal 帧变体）
 
-- Status: **Proposed（待用户裁决；本文只做决策，不含实现）**
+- Status: **Accepted**（2026-09-12 用户裁决：**本版不考虑旧版本兼容**，直接按最优设计做）。
+  因此本文原设计的"能力门控 + 版本化双读"**不再需要**（见文末「决策更新」）；
+  实现（Phase 8）待做，验收只三件事：收得到、去得掉重、TTL 递减后转发
 - Date: 2026-09-12
 - Owners: Gosslan
 - Related:
