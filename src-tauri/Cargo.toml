@@ -92,7 +92,13 @@ custom-protocol = ["tauri/custom-protocol"]
 bluetooth = ["dep:btleplug", "dep:futures", "dep:objc2-core-bluetooth", "dep:jni"]
 
 [profile.release]
-panic = "abort"
+# ⚠️ **不要**改回 `panic = "abort"`（Tauri 模板默认如此，为了省体积）。
+# 用户 2026-09-12 安卓实测：「点进去 3 秒后闪退，清了数据也一样，连日志都拿不到」——
+# 这正是 abort 的形态：**任何** panic（包括依赖里、JNI 调用里、后台任务里）都会立刻杀掉整个进程，
+# 既不留日志也没法降级。改用 unwind 之后：
+#   · 后台任务/命令里的 panic 只终止那一处，应用继续跑（配合 `lib.rs` 里的 panic hook 落日志）；
+#   · 代价是体积略增（几百 KB）—— 为了"稳定"这个第一优先级，这笔账划算。
+panic = "unwind"
 codegen-units = 1
 lto = true
 opt-level = "s"

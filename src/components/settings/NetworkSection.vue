@@ -194,14 +194,20 @@ async function removeEndpoint(address: string) {
 
     <SettingsRow
       :label="t('settings.network.bluetooth')"
-      :description="btStatus?.available ? undefined : t('settings.network.bluetooth.unavailable')"
+      :description="app.isMobile
+        ? t('settings.network.bluetooth.alwaysOn')
+        : (btStatus?.available ? undefined : t('settings.network.bluetooth.unavailable'))"
       last
     >
       <div class="flex items-center gap-2">
         <span class="text-xs text-[var(--gosslan-text-2)]">
           {{ btStatus?.available ? (btStatus.enabled ? t("settings.network.bluetooth.on") : t("settings.network.bluetooth.off")) : t("settings.network.bluetooth.na") }}
         </span>
+        <!-- 手机端**不给开关**（用户 2026-09-12 要求：像 BitChat 那样默认就开、不用设置）：
+             只要应用在跑，它就是 mesh 的一个中继节点；被系统回收就自然停止。
+             桌面端保留开关（有线/局域网是主路径，蓝牙是可选通道）。 -->
         <SettingsToggle
+          v-if="!app.isMobile"
           :label="t('settings.network.bluetooth')"
           :model-value="!!btStatus?.enabled"
           :disabled="!btStatus?.available"

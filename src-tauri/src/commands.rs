@@ -506,6 +506,10 @@ pub async fn set_channel_enabled(
             }
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             db::set_lan_enabled(&dbc, enabled).ok();
+            drop(dbc);
+            // 广播"运行状态变了"：所有窗口/页面（添加好友、设置页、桌面独立设置窗口）
+            // 都重拉同一份后端状态 ⇒ 不可能再出现"外面开了、里面是关的"
+            s.notify_runtime_changed();
             Ok(())
         }
         "bluetooth" => {
@@ -528,6 +532,8 @@ pub async fn set_channel_enabled(
             }
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             db::set_bt_enabled(&dbc, enabled).ok();
+            drop(dbc);
+            s.notify_runtime_changed();
             Ok(())
         }
         _ => Err(format!("未知通道: {channel}")),

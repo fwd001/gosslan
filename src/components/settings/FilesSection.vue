@@ -80,7 +80,14 @@ watch(
   <div class="space-y-5">
     <!-- 接收文件目录 -->
     <SettingsGroup :title="t('settings.group.files')" :footer="t('settings.group.files.footer')">
-      <SettingsRow :label="t('settings.storage.dir')" :description="t('settings.storage.dir.desc')">
+      <!-- 移动端**隐藏**"文件保存目录"：iOS/Android 都跑在系统沙盒里，用户不能任选目录
+           （iOS 更是根本不存在这个能力）—— 摆一个点了没反应的按钮比不摆更糟。
+           接收到的文件仍然会落到应用沙盒内，并在文件列表里可直接打开/分享。 -->
+      <SettingsRow
+        v-if="!app.isMobile"
+        :label="t('settings.storage.dir')"
+        :description="t('settings.storage.dir.desc')"
+      >
         <div class="flex min-w-0 flex-col items-end gap-1">
           <span
             class="max-w-[240px] truncate text-[11px] text-[var(--gosslan-text-2)]"

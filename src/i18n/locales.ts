@@ -227,6 +227,8 @@ export const zhCN: MessageDict = {
   "settings.network.bluetooth.unavailable": "蓝牙后端尚未编译（当前版本暂不支持），将在后续版本提供",
   "settings.network.bluetooth.on": "已开启",
   "settings.network.bluetooth.off": "已关闭",
+  "settings.network.bluetooth.alwaysOn":
+    "手机上默认开启、无需设置：只要应用在运行，这台设备就是蓝牙 mesh 的一个中继节点；应用被系统回收后自动停止。",
   "settings.network.bluetooth.na": "暂不可用",
   "settings.network.toast.btPermissionHint":
     "若仍无法开启：请到「系统设置 → 应用 → 相闻 → 权限」里允许「附近的设备」，然后重试。",
@@ -819,6 +821,8 @@ export const enUS: MessageDict = {
   "settings.network.bluetooth.on": "On",
   "settings.network.bluetooth.off": "Off",
   "settings.network.bluetooth.na": "Unavailable",
+  "settings.network.bluetooth.alwaysOn":
+    "On by default on phones — no setup needed. While the app runs, this device acts as a Bluetooth mesh relay; it stops when the system reclaims the app.",
   "settings.network.toast.btPermissionHint":
     "If it still fails: allow \"Nearby devices\" in System Settings → Apps → Gosslan → Permissions, then retry.",
   "settings.network.routed": "Cross-subnet",

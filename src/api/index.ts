@@ -12,6 +12,8 @@ export const api = {
    * 在设置窗口改语言/主题后主窗口不会变（用户实测反馈）。两个窗口都监听，返回取消函数。
    */
   onSettingsChanged: (cb: () => void) => listen("settings-changed", () => cb()),
+  /** 运行状态（通道/在线/绑定 IP）变化：任何一处开关后，所有窗口/页面重拉同一份状态。 */
+  onRuntimeChanged: (cb: () => void) => listen("runtime-changed", () => cb()),
   getDeviceInfo: () => invoke<DeviceInfo>("get_device_info"),
   updateProfile: (nickname: string, avatar: string | null) =>
     invoke<DeviceInfo>("update_profile", { nickname, avatar }),

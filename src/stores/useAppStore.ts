@@ -479,6 +479,7 @@ export const useAppStore = defineStore("app", () => {
 
   /** `settings-changed` 的取消函数（init 可能被调用多次，避免重复绑定）。 */
   let settingsUnlisten: (() => void) | null = null;
+  let runtimeUnlisten: (() => void) | null = null;
 
   /** 「另一个窗口改了设置」→ 重新拉取并应用（两个窗口都监听）。 */
   async function resyncFromBackend() {
@@ -510,6 +511,14 @@ export const useAppStore = defineStore("app", () => {
       // 都**不要**重拉 —— 否则数据库里的旧快照会把刚改的值冲掉（"点了又跳回去"）。
       if (!shouldResyncFromBackend(settingsDirty, Date.now(), lastLocalWriteAt)) return;
       void resyncFromBackend();
+    });
+
+    // 「运行状态变了」（任何一处开了/关了通道）⇒ 重拉通道状态与在线状态。
+    // 这一步是"外面开了、里面还是关的"的正解：两处 UI 都只读后端这一份真相。
+    runtimeUnlisten?.();
+    runtimeUnlisten = await api.onRuntimeChanged(() => {
+      void refreshChannels();
+      void refreshNetworkStatus();
     });
 
     // 注册系统外观监听（跟随系统模式下，用户在系统设置里切换要即时生效，不必重启）

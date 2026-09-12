@@ -47,6 +47,10 @@ fn system_lang_is_zh() -> bool {
 
 /// 「设置已变更」事件名：设置窗口与主窗口靠它同步（见 `notify_settings_changed`）。
 pub const EVENT_SETTINGS_CHANGED: &str = "settings-changed";
+/// 运行状态（通道/在线/绑定 IP）发生变化 —— 让**所有**窗口与页面立刻刷新同一份状态。
+/// 用户实测「外面把局域网打开、里面还是关的」就是缺这条推送：两处 UI 各自持一份快照，
+/// 谁都不知道对方改了。现在任何一次通道开关都会广播，前端统一重拉（唯一真相源在后端）。
+pub const EVENT_RUNTIME_CHANGED: &str = "runtime-changed";
 
 /// 局域网在线节点（Peer Table 条目）
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -915,6 +919,11 @@ impl AppState {
     /// 所有会改动偏好/资料的命令在写完之后都调它，两个窗口各自重新拉取并应用。
     pub fn notify_settings_changed(&self) {
         let _ = self.app.emit(EVENT_SETTINGS_CHANGED, ());
+    }
+
+    /// 广播"运行状态（通道/在线/绑定 IP）变了" —— 所有窗口与页面据此重拉同一份后端状态。
+    pub fn notify_runtime_changed(&self) {
+        let _ = self.app.emit(EVENT_RUNTIME_CHANGED, ());
     }
 
     /// 标记节点表已变更，并唤醒节流推送任务。

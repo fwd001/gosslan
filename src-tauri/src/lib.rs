@@ -59,7 +59,42 @@ pub const WINDOW_LOGS: &str = "logs";
 pub const WINDOW_LABELS: &[&str] = &[WINDOW_MAIN, WINDOW_SETTINGS, WINDOW_LOGS];
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 安装 panic hook：把 panic（位置 + 消息）写进应用日志文件，并打到 stderr。
+///
+/// 为什么必须装（用户 2026-09-12 安卓实测「点进去 3 秒闪退，拿不到任何日志」）：
+/// 默认的 panic 输出在安卓上**看不到**（stdout/stderr 不进文件、Release 也没人读），
+/// 而 `[profile.release] panic = "abort"` 时进程直接消失 ⇒ 用户和我都无从下手。
+/// 现在 panic 会以 `channel="panic"` 落进「运行日志」页，adbd 下也能从 logcat 捞到。
+/// ⚠️ 这个 hook 必须在**任何可能 panic 的代码之前**装好（`run()` 的第一行）。
+fn install_panic_hook(app: Option<tauri::AppHandle>) {
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "(未知位置)".to_string());
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "(无消息)".to_string());
+        let text = format!("panic @ {location}：{payload}");
+        // ① 文件日志（应用内「运行日志」页能看到）——
+        //    通过 AppHandle 取 `Arc<AppState>` 的 logger，避免给 Logger 加 Clone
+        if let Some(handle) = &app {
+            use tauri::Manager as _;
+            if let Some(st) = handle.try_state::<std::sync::Arc<crate::state::AppState>>() {
+                st.logger.error("panic", text.clone());
+            }
+        }
+        // ② stderr：android logcat / 终端都能捞到（`adb logcat | grep -i panic`）
+        eprintln!("[gosslan]{text}");
+    }));
+}
+
 pub fn run() {
+    // 先装 hook（此刻还没有 state，先只打 stderr；setup 里拿到 logger 后再装一次带上文件日志）
+    install_panic_hook(None);
     // 移动端没有那段"桌面才加插件"的 `builder = builder.plugin(...)`（见下面的 #[cfg(desktop)]），
     // 于是 `mut` 在移动端是多余的 —— 显式标注而不是去掉 `mut`（桌面端确实要改）。
     #[cfg_attr(mobile, allow(unused_mut))]
@@ -90,6 +125,9 @@ pub fn run() {
     let app = builder
         .setup(|app| {
             let state = state::AppState::init(app.handle().clone())?;
+            // 拿到 AppHandle 之后**重装** panic hook：这次的 hook 会把 panic 同时写进
+            // 「运行日志」页（安卓上这是唯一能拿到的诊断路径，见 `install_panic_hook`）。
+            install_panic_hook(Some(app.handle().clone()));
             state::AppState::spawn_peer_emitter(&state);
             app.manage(state.clone());
             // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单

@@ -229,7 +229,9 @@ async function add(peerId: string) {
                 : t("friend.add.channel.unavailable") }}
             </div>
           </div>
+          <!-- 手机端蓝牙通道默认常开、不给开关（与设置页同一口径，见 NetworkSection 的说明） -->
           <SettingsToggle
+            v-if="!(app.isMobile && ch.channel === 'bluetooth')"
             :model-value="ch.enabled"
             :disabled="!ch.available || channelBusy === ch.channel"
             :label="ch.channel === 'lan' ? t('friend.add.channel.lan') : t('friend.add.channel.bluetooth')"
