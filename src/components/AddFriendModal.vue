@@ -4,6 +4,8 @@ import { computed, ref, watch } from "vue";
 import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import { api } from "@/api";
+import type { ChannelStatus } from "@/types";
 import BaseModal from "@/components/BaseModal.vue";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { Check, UserPlus, X } from "lucide-vue-next";
@@ -81,11 +83,57 @@ const filteredPeers = computed(() => {
   return { total: pool.length, list: pool.slice(0, MAX_RENDER) };
 });
 
+/**
+ * 通道快捷开关（移动端"未发现节点"时最有用）。
+ *
+ * 用户实测：手机端进「添加好友」什么都没发现 —— 因为**局域网/蓝牙通道默认是关的**，
+ * 而且蓝牙通道在 Android 上还会因为缺运行时权限打不开。原来用户得先退出去、
+ * 进设置 → 网络与连接 才能开，很不直观。这里把两个开关**放到发现失败的现场**，
+ * 并写清"为什么没发现"，让用户就地解决。
+ */
+const channels = ref<ChannelStatus[]>([]);
+const channelBusy = ref<string | null>(null);
+
+async function loadChannels() {
+  try {
+    channels.value = await api.getChannelStatus();
+  } catch {
+    channels.value = [];
+  }
+}
+
+async function toggleChannel(ch: ChannelStatus) {
+  if (channelBusy.value) return;
+  channelBusy.value = ch.channel;
+  try {
+    await api.setChannelEnabled(ch.channel, !ch.enabled);
+  } catch (e) {
+    app.toastError(e, t("friend.add.channelFailed", { err: "" }));
+  } finally {
+    channelBusy.value = null;
+    await loadChannels();
+    // 打开通道后自动重扫一次 —— 否则用户还得再点一下「重新扫描」
+    if (channels.value.some((c) => c.enabled)) void scan();
+  }
+}
+
+async function scan() {
+  loading.value = true;
+  try {
+    await chat.searchNearbyPeers(); // 按需 who_has 群发探测
+  } catch (e) {
+    app.toastError(e, t("friend.add.scanFail"));
+  } finally {
+    loading.value = false;
+  }
+}
+
 watch(
   () => props.open,
   async (v) => {
     if (v) {
       keyword.value = "";
+      void loadChannels(); // 与扫描并发，别让开关状态拖慢"正在扫描"
       loading.value = true;
       try {
         await chat.searchNearbyPeers(); // 按需 who_has 群发探测
@@ -135,8 +183,52 @@ async function add(peerId: string) {
       {{ t("friend.add.scanning") }}
     </div>
 
-    <div v-else-if="chat.peers.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
-      {{ t("friend.add.noPeers") }}
+    <div v-else-if="chat.peers.length === 0" class="py-4">
+      <div class="text-center text-sm text-[var(--gosslan-text)]">{{ t("friend.add.noPeers") }}</div>
+      <p class="mx-auto mt-1.5 max-w-[42ch] text-center text-xs leading-relaxed text-[var(--gosslan-text-2)]">
+        {{ t("friend.add.noPeers.hint") }}
+      </p>
+
+      <!-- 就地开关：把"发现不到节点"的**头号原因**（通道没开）直接摆在失败现场 -->
+      <div class="mt-3 space-y-2">
+        <div
+          v-for="ch in channels"
+          :key="ch.channel"
+          class="flex items-center justify-between gap-3 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2"
+        >
+          <div class="min-w-0">
+            <div class="text-sm text-[var(--gosslan-text)]">
+              {{ ch.channel === "lan" ? t("friend.add.channel.lan") : t("friend.add.channel.bluetooth") }}
+            </div>
+            <div class="text-xs text-[var(--gosslan-text-2)]">
+              {{ ch.available
+                ? (ch.enabled ? t("friend.add.channel.on") : t("friend.add.channel.off"))
+                : t("friend.add.channel.unavailable") }}
+            </div>
+          </div>
+          <button
+            type="button"
+            class="tap-safe shrink-0 rounded-full px-3 py-1 text-xs font-medium transition disabled:opacity-50"
+            :class="ch.enabled
+              ? 'bg-[var(--gosslan-accent-soft)] text-[var(--gosslan-accent-ink)]'
+              : 'bg-[var(--gosslan-hover)] text-[var(--gosslan-text)]'"
+            :disabled="!ch.available || channelBusy === ch.channel"
+            :aria-pressed="ch.enabled"
+            @click="toggleChannel(ch)"
+          >
+            {{ ch.enabled ? t("friend.add.channel.on") : t("friend.add.channel.off") }}
+          </button>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        class="tap-safe mt-3 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] py-2 text-sm text-[var(--gosslan-text)] transition"
+        :disabled="loading"
+        @click="scan"
+      >
+        {{ t("friend.add.rescan") }}
+      </button>
     </div>
 
     <template v-else>

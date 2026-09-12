@@ -1,7 +1,19 @@
 <script setup lang="ts">
 import { Dialog, DialogPanel, DialogTitle, TransitionChild, TransitionRoot } from "@headlessui/vue";
 import { useBackLayer } from "@/composables/useBackLayer";
+import { useAppStore } from "@/stores/useAppStore";
 import { t } from "@/i18n";
+
+/**
+ * 移动端软键盘适配：弹窗内容要给键盘**让位**。
+ *
+ * 用户实测：「弹出创建群聊界面时，默认点击输入框创建群名，输入框会遮挡部分创建群聊的面板」。
+ * 原因是键盘补偿（`app.keyboardInset`）此前只加在聊天页的滚动容器上，**弹窗没有**。
+ * 这里统一给弹窗的滚动容器加同样的下内边距 —— 弹窗里聚焦输入框时，
+ * 浏览器会把输入框滚进可视区，而可视区高度已经扣掉了键盘，于是输入框不会再被挡住。
+ * 放在 `BaseModal` 一处，所有弹窗（创建群聊/改名/转发/加好友/搜索…）一起生效。
+ */
+const app = useAppStore();
 
 const props = withDefaults(
   defineProps<{
@@ -46,7 +58,12 @@ useBackLayer(
       >
         <div class="glass fixed inset-0 bg-black/40" aria-hidden="true" />
       </TransitionChild>
-      <div class="fixed inset-0 overflow-y-auto">
+      <div
+        class="fixed inset-0 overflow-y-auto"
+        :style="app.isMobile && app.keyboardInset > 0
+          ? { paddingBottom: `${app.keyboardInset + 12}px` }
+          : undefined"
+      >
         <div
           :class="fullscreen
             ? 'flex min-h-full items-stretch justify-center'

@@ -239,7 +239,11 @@ export const useAppStore = defineStore("app", () => {
   }
 
   /** 持久化全部偏好到后端 SQLite（重启后恢复，不依赖 WebView localStorage）。 */
+  /** 本窗口最后一次**写设置**的时刻（见 `settings-changed` 的处理）。 */
+  let lastLocalWriteAt = 0;
+
   async function persistSettings() {
+    lastLocalWriteAt = Date.now();
     try {
       await api.saveSettings({
         themeColor: themeColor.value,
@@ -439,6 +443,10 @@ export const useAppStore = defineStore("app", () => {
 
     // 「另一个窗口改了设置」→ 重新拉取并应用（独立设置窗口 ↔ 主窗口必须同步外观/语言/资料）
     settingsUnlisten = await api.onSettingsChanged(() => {
+      // ⚠️ 自己写的设置会**回灌**一个事件。若刚刚本地改过（1.5s 内），跳过重拉：
+      // 那次写入可能还在去抖里没落库，重拉会把 DB 里**稍旧**的字段读回来，
+      // 把用户刚改的值冲掉 —— 表现就是"点了没反应 / 状态又弹回去"。
+      if (Date.now() - lastLocalWriteAt < 1500) return;
       void resyncFromBackend();
     });
 
