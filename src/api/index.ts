@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChannelStatus, ChatSearchGroup, CleanupReport, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, NetworkStatus, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 
 export const api = {
   /**
@@ -16,7 +16,14 @@ export const api = {
   onSettingsChanged: (cb: (patch: SettingsChanged) => void) =>
     listen<SettingsChanged>("settings-changed", (e) => cb(e.payload)),
   /** 运行状态（通道/在线/绑定 IP）变化：任何一处开关后，所有窗口/页面重拉同一份状态。 */
-  onRuntimeChanged: (cb: () => void) => listen("runtime-changed", () => cb()),
+  /**
+   * 运行状态（通道/在线/绑定 IP/节点数）变化：**事件自带完整快照**。
+   *
+   * 与 ① 同一个模式：载荷就是 `RuntimeSnapshot`，接收方**零 IPC** 应用；
+   * 发起窗口收不到（它从命令返回值里拿），所以不需要"防回灌"。
+   */
+  onRuntimeChanged: (cb: (snapshot: RuntimeSnapshot) => void) =>
+    listen<RuntimeSnapshot>("runtime-changed", (e) => cb(e.payload)),
   /**
    * 「数据被清空了」（另一个窗口执行了"清除聊天数据"）。
    *
@@ -28,9 +35,11 @@ export const api = {
   updateProfile: (nickname: string, avatar: string | null) =>
     invoke<DeviceInfo>("update_profile", { nickname, avatar }),
   listInterfaces: () => invoke<InterfaceInfo[]>("list_interfaces"),
-  startNetwork: (bindIp: string) => invoke<void>("start_network", { bindIp }),
-  stopNetwork: () => invoke<void>("stop_network"),
-  getNetworkStatus: () => invoke<NetworkStatus>("get_network_status"),
+  /** 起/停局域网：返回**新的运行状态快照**（发起窗口零额外 IPC）。 */
+  startNetwork: (bindIp: string) => invoke<RuntimeSnapshot>("start_network", { bindIp }),
+  stopNetwork: () => invoke<RuntimeSnapshot>("stop_network"),
+  /** 取运行状态快照（唯一真相源；旧 `get_channel_status`/`get_network_status` 已删除）。 */
+  getRuntimeSnapshot: () => invoke<RuntimeSnapshot>("get_runtime_snapshot"),
   getTopology: () => invoke<TopologyInfo>("get_topology"),
 
   getPeers: () => invoke<Peer[]>("get_peers"),
@@ -124,9 +133,8 @@ export const api = {
    * 通道打开失败时也会再调一次并重试。非 Android 平台是空操作。
    */
   requestBlePermissions: () => invoke<void>("request_ble_permissions"),
-  getChannelStatus: () => invoke<ChannelStatus[]>("get_channel_status"),
   setChannelEnabled: (channel: string, enabled: boolean) =>
-    invoke<void>("set_channel_enabled", { channel, enabled }),
+    invoke<RuntimeSnapshot>("set_channel_enabled", { channel, enabled }),
   /** 跨子网（Routed）端点：列表 / 添加 / 移除。添加只填地址即可（device_id 由握手学）。 */
   listRoutedEndpoints: () => invoke<RoutedEndpoint[]>("list_routed_endpoints"),
   addRoutedEndpoint: (address: string) =>

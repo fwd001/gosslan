@@ -10,6 +10,42 @@
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-09-12
+
+
+### Changed (② 运行状态合并成「一个快照 + 一个带载荷的事件」)
+用户批准的三项窗口架构改造的第 ② 项（① 已在 4.1.13 交付，③ 窗口架构 ADR 随后）。
+
+**旧状态**：同一件事（局域网到底开着没有）在前端有**两份**表示 ——
+`channels[lan].enabled`（来自 `get_channel_status`）与 `online`（来自 `get_network_status`），
+由两个命令 + 两个事件各自维护；`runtime-changed` 还是**无载荷**广播，每个窗口收到后都要
+自己重拉一半状态。用户实测过它的必然结果：「添加好友里把局域网打开，设置里还是关的」。
+
+**新状态**：
+- 后端只有**一个采集点** `build_runtime_snapshot()`：通道（lan/bluetooth 的
+  enabled/available/running/peers）、局域网是否在线 + 绑定地址、蓝牙事实
+  （本次构建是否编译了蓝牙特性）、在线节点数，一次读全；
+- 只有**一个命令** `get_runtime_snapshot`，只有**一个事件** `runtime-changed`，
+  且事件**带完整快照**、用 `emit_filter` **不回发发起窗口**（发起窗口从命令返回值里拿）；
+- `set_channel_enabled` / `start_network` / `stop_network` 都**返回新快照** ⇒
+  发起的窗口零额外 IPC、也没有"拉回来的是旧值"的竞态；
+- 前端只保留**一个写入入口** `applyRuntimeSnapshot()`；`refreshChannels` /
+  `refreshNetworkStatus` 与其"两半各自刷新"的写法**删除**；
+- `get_channel_status` / `get_network_status` 两个命令与 `NetworkStatus` 结构**删除**
+  （它们的全部信息都已在快照里）。
+
+`peers` 仍然走 `peers-updated`（它最多 3/s、只在脏时推，见 `emit_peers`）：把完整节点列表塞进
+快照会让每次通道开关都搬一遍全表；快照里只带 `peerCount`（空态文案要用）。
+
+**护栏**（都已在 `verify-guards.py` 证明"改坏即 FAIL、恢复即 PASS"）：
+- Rust `runtime_state_has_a_single_source`：旧的两个"半份状态"命令必须不存在、
+  必须有唯一采集点、事件必须带 `RuntimeSnapshot` 且用 `emit_filter` 排除发起窗口；
+- 前端 `events.test.ts` 同名契约检查（含"前端不得再调那两个半份命令"）；
+- `channelState.test.ts` 的旧契约（"必须同时刷新两半"）改写成"只应用返回的快照"。
+
+门禁：`cargo test --lib` 403/0；`npm test` 346/0；`vue-tsc` 0；`vite build` 通过；
+`verify-guards.py --only ipc` 6/6 非空转通过。
+
 ## [4.1.17] - 2026-09-12
 
 ### Fixed (安卓蓝牙外设起不来：`BlePeripheral.start()` 漏了 `@JvmStatic` + keep 规则只 keep 了实例方法)

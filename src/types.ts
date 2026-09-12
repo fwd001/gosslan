@@ -130,11 +130,6 @@ export interface FileFailedInfo {
   reason: string;
 }
 
-export interface NetworkStatus {
-  online: boolean;
-  bound_ip: string | null;
-}
-
 /** 对方已读回执（peer-read 事件载荷） */
 export interface PeerReadInfo {
   peer_id: string;
@@ -156,6 +151,23 @@ export interface TopologyInfo {
 }
 
 /** 传输通道状态（局域网 / 蓝牙） */
+/**
+ * 运行状态的**唯一快照**（与 Rust 的 `RuntimeSnapshot` 逐字对应，用户要求的第 ② 项）。
+ *
+ * 以前"局域网开着没有"有**两份**前端状态（`channels[lan].enabled` 与 `online`），
+ * 各自被不同命令+事件维护 ⇒ 必然出现"外面开了、里面还是关的"。
+ * 现在前端只认这一份：`api.getRuntimeSnapshot()` / `runtime-changed` 事件载荷。
+ */
+export interface RuntimeSnapshot {
+  channels: ChannelStatus[];
+  online: boolean;
+  boundIp: string | null;
+  /** 蓝牙里"通道状态装不下"的事实（例如本次构建是否编译了蓝牙特性） */
+  ble: { featureCompiled: boolean };
+  /** 在线节点数（完整列表仍走 `peers-updated`，避免每次开关都搬全表） */
+  peerCount: number;
+}
+
 export interface ChannelStatus {
   channel: "lan" | "bluetooth";
   enabled: boolean;

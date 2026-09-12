@@ -152,7 +152,7 @@ watch(
   async (v) => {
     if (v) {
       keyword.value = "";
-      void app.refreshChannels(); // 与扫描并发，别让开关状态拖慢"正在扫描"
+      void app.refreshRuntime(); // 与扫描并发，别让开关状态拖慢"正在扫描"
       // 手机端：打开本页时才按需拉起蓝牙通道（启动路径不碰 BLE，见 useAppStore.ensureBluetoothOn）
       void app.ensureBluetoothOn();
       loading.value = true;

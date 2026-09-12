@@ -34,7 +34,7 @@ const policyDescription = computed(() => t(`settings.relay.policy.${app.relayPol
 
 async function loadChannels() {
   try {
-    await app.refreshChannels?.();
+    await app.refreshRuntime?.();
   } catch {
     /* 通道状态取不到不影响本页其它设置渲染 */
   }

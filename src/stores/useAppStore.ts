@@ -23,7 +23,7 @@ import {
   type LanguagePreference,
 } from "@/i18n";
 import { isMac } from "@/utils/platform";
-import type { AppSettings, ChannelStatus, DeviceInfo, InterfaceInfo, RelayPolicy } from "@/types";
+import type { AppSettings, ChannelStatus, DeviceInfo, InterfaceInfo, RelayPolicy, RuntimeSnapshot } from "@/types";
 
 export type { AppearanceMode };
 
@@ -243,16 +243,33 @@ export const useAppStore = defineStore("app", () => {
    * 通道状态（局域网/蓝牙）**唯一真相源**。
    *
    * 用户实测的 bug：在「添加好友」页打开局域网通道，回到设置里却显示"已关闭" ——
-   * 因为两处各自持有一份 `getChannelStatus()` 的快照，而移动端设置页会**一直挂载**，
+   * 因为两处各自持有一份通道状态快照，而移动端设置页会**一直挂载**，
    * `active` 不变就不再重新拉取，于是显示过期状态。放进 store 后，
    * 任何一处开关都更新同一份状态，两边不可能再不一致。
    */
   const channels = ref<ChannelStatus[]>([]);
+  /** 最近一次运行状态快照（`ble`/`peerCount` 这类只有快照才有的字段从这里读）。 */
+  const runtime = ref<RuntimeSnapshot | null>(null);
 
-  /** 重新拉取通道状态（失败保持现状，不要把列表清空）。 */
-  async function refreshChannels() {
+  /**
+   * 应用一份运行状态快照（**唯一入口**）。
+   *
+   * `channels` / `online` / `boundIp` 三份 UI 状态以前由两个命令 + 两个事件分别维护，
+   * 于是"同一件事两份状态"必然不同步（用户实测：添加好友里开了局域网、设置里还显示关）。
+   * 现在它们**只能**从这一份 `RuntimeSnapshot` 写入 —— 想改状态就必须先改后端。
+   */
+  function applyRuntimeSnapshot(snap: RuntimeSnapshot | null | undefined) {
+    if (!snap) return;
+    if (Array.isArray(snap.channels)) channels.value = snap.channels;
+    online.value = !!snap.online;
+    boundIp.value = snap.boundIp ?? null;
+    runtime.value = snap;
+  }
+
+  /** 拉一次运行状态（窗口初始化 / 手动刷新）。失败保持现状，不清空界面。 */
+  async function refreshRuntime() {
     try {
-      channels.value = await api.getChannelStatus();
+      applyRuntimeSnapshot(await api.getRuntimeSnapshot());
     } catch {
       /* 后端暂不可用：保持现状 */
     }
@@ -275,8 +292,7 @@ export const useAppStore = defineStore("app", () => {
       for (let attempt = 0; attempt < 2; attempt++) {
         if (channels.value.find((c) => c.channel === "bluetooth")?.enabled) return;
         try {
-          await api.setChannelEnabled("bluetooth", true);
-          await refreshChannels();
+          applyRuntimeSnapshot(await api.setChannelEnabled("bluetooth", true));
           return;
         } catch {
           await new Promise((r) => setTimeout(r, 2000));
@@ -284,17 +300,6 @@ export const useAppStore = defineStore("app", () => {
       }
     } catch {
       /* 失败就保持关闭：界面会显示"已关闭"，用户可手动再试 */
-    }
-  }
-
-  /** 重新拉取"局域网是否在跑 / 绑在哪个 IP"（`online` / `boundIp`）。 */
-  async function refreshNetworkStatus() {
-    try {
-      const st = await api.getNetworkStatus();
-      online.value = st.online;
-      boundIp.value = st.bound_ip;
-    } catch {
-      /* 后端暂不可用：保持现状 */
     }
   }
 
@@ -308,8 +313,9 @@ export const useAppStore = defineStore("app", () => {
    * 现在两处 UI 都只认这一条路径（设置页也改用通道状态），所以不可能再各说各话。
    */
   async function setChannelEnabled(channel: "lan" | "bluetooth", enabled: boolean) {
-    await api.setChannelEnabled(channel, enabled);
-    await Promise.all([refreshChannels(), refreshNetworkStatus()]);
+    // 后端把"切换后的运行状态"作为**返回值**给发起窗口（其它窗口走 runtime-changed 事件）——
+    // 所以这里**不需要**再拉一次，也就不存在"拉回来的是旧值"的竞态。
+    applyRuntimeSnapshot(await api.setChannelEnabled(channel, enabled));
   }
 
   /**
@@ -588,9 +594,8 @@ export const useAppStore = defineStore("app", () => {
     // 「运行状态变了」（任何一处开了/关了通道）⇒ 重拉通道状态与在线状态。
     // 这一步是"外面开了、里面还是关的"的正解：两处 UI 都只读后端这一份真相。
     runtimeUnlisten?.();
-    runtimeUnlisten = await api.onRuntimeChanged(() => {
-      void refreshChannels();
-      void refreshNetworkStatus();
+    runtimeUnlisten = await api.onRuntimeChanged((snap) => {
+      applyRuntimeSnapshot(snap);
     });
 
     // 注册系统外观监听（跟随系统模式下，用户在系统设置里切换要即时生效，不必重启）
@@ -617,13 +622,7 @@ export const useAppStore = defineStore("app", () => {
 
     // 自动启动在后台异步执行：init 读取时可能尚未完成，导致 online=false
     // 而实际网络已经在运行。延迟刷新一次以修正 UI 状态。
-    setTimeout(async () => {
-      const st2 = await api.getNetworkStatus();
-      if (st2.online !== online.value) {
-        online.value = st2.online;
-        boundIp.value = st2.bound_ip;
-      }
-    }, 500);
+    setTimeout(() => void refreshRuntime(), 500);
   }
 
   /** 恢复默认：后端清除偏好键，前端回落默认值（默认蓝色主题 / 系统字体 / **跟随系统** / 自动网卡）。 */
@@ -714,19 +713,16 @@ export const useAppStore = defineStore("app", () => {
    * 不该把设备信息 / 共享目录一起弄丢 —— 逐项取成功值、失败保持默认。
    */
   async function refreshEnvironment() {
-    const [dev, ifaces, share, st] = await Promise.allSettled([
+    const [dev, ifaces, share, snap] = await Promise.allSettled([
       api.getDeviceInfo(),
       api.listInterfaces(),
       api.getShareDir(),
-      api.getNetworkStatus(),
+      api.getRuntimeSnapshot(),
     ]);
     if (dev.status === "fulfilled") device.value = dev.value;
     if (ifaces.status === "fulfilled") interfaces.value = ifaces.value;
     if (share.status === "fulfilled") shareDir.value = share.value;
-    if (st.status === "fulfilled") {
-      online.value = st.value.online;
-      boundIp.value = st.value.bound_ip;
-    }
+    if (snap.status === "fulfilled") applyRuntimeSnapshot(snap.value);
   }
 
   async function refreshInterfaces() {
@@ -735,7 +731,8 @@ export const useAppStore = defineStore("app", () => {
 
   return {
     channels,
-    refreshChannels,
+    runtime,
+    refreshRuntime,
     ensureBluetoothOn,
     setChannelEnabled,
     device,
@@ -775,7 +772,6 @@ export const useAppStore = defineStore("app", () => {
     setShareDir,
     refreshInterfaces,
     refreshEnvironment,
-    refreshNetworkStatus,
     setThemeColor,
     setFontFamily,
     setChatStyle,
@@ -791,8 +787,8 @@ export const useAppStore = defineStore("app", () => {
 //
 // 踩坑（用户实测"点设置卡、过一会儿弹出好几个设置、主题延迟切换"）：Pinia 的 store 是
 // 缓存过的单例，**不接 HMR 就一直是旧实例** —— 我这一轮给 store 新增了 `channels` /
-// `refreshChannels`，而用户长时间运行的 dev 会话里还是旧 store ⇒ 设置页里
-// `app.refreshChannels is not a function`、`channels.value.find` 抛错 ⇒ **整页渲染卡死**
+// `channels`/`setChannelEnabled`，而用户长时间运行的 dev 会话里还是旧 store ⇒ 设置页里
+// `app.setChannelEnabled is not a function`、`channels.value.find` 抛错 ⇒ **整页渲染卡死**
 // （一个分区渲染抛错，Vue 之后再也 patch 不动这个页面）。加上这一行之后，
 // 以后改 store 都不必重启 dev。
 if (import.meta.hot) import.meta.hot.accept(acceptHMRUpdate(useAppStore, import.meta.hot));

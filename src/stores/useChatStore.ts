@@ -1266,8 +1266,8 @@ export const useChatStore = defineStore("chat", () => {
 //
 // 踩坑（用户实测"点设置卡、过一会儿弹出好几个设置、主题延迟切换"）：Pinia 的 store 是
 // 缓存过的单例，**不接 HMR 就一直是旧实例** —— 我这一轮给 store 新增了 `channels` /
-// `refreshChannels`，而用户长时间运行的 dev 会话里还是旧 store ⇒ 设置页里
-// `app.refreshChannels is not a function`、`channels.value.find` 抛错 ⇒ **整页渲染卡死**
+// `channels`/`setChannelEnabled`，而用户长时间运行的 dev 会话里还是旧 store ⇒ 设置页里
+// `app.setChannelEnabled is not a function`、`channels.value.find` 抛错 ⇒ **整页渲染卡死**
 // （一个分区渲染抛错，Vue 之后再也 patch 不动这个页面）。加上这一行之后，
 // 以后改 store 都不必重启 dev。
 if (import.meta.hot) import.meta.hot.accept(acceptHMRUpdate(useChatStore, import.meta.hot));

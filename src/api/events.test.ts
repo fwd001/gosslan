@@ -151,6 +151,39 @@ test("每个改设置的后端命令都必须传 origin（否则发起窗口收�
   );
 });
 
+test("运行状态只能有一个快照 + 一个带载荷的事件（②）", () => {
+  const state = readFileSync(join(RUST_SRC, "state.rs"), "utf8");
+  assert.match(
+    state,
+    /emit_filter\(\s*EVENT_RUNTIME_CHANGED/,
+    "runtime-changed 必须用 emit_filter 排除发起窗口（它从命令返回值里已经拿到了快照）",
+  );
+  assert.match(state, /pub struct RuntimeSnapshot/, "必须有唯一的运行状态快照结构");
+  assert.match(
+    state,
+    /snapshot: RuntimeSnapshot/,
+    "事件必须**带快照**：无载荷的话接收方只能再全量重拉一遍（就是『两份状态』的温床）",
+  );
+  const commands = readFileSync(join(RUST_SRC, "commands.rs"), "utf8");
+  assert.ok(
+    !commands.includes("pub async fn get_channel_status(") &&
+      !commands.includes("pub fn get_network_status("),
+    "半份状态的命令（get_channel_status / get_network_status）必须已删除",
+  );
+  assert.match(commands, /pub async fn build_runtime_snapshot\(/, "必须有唯一的采集点");
+  const apiSrc = readFileSync(API_FILE, "utf8");
+  // 只认"真的在 invoke 它们"（注释里提旧名字是为了说明为什么删，不算调用）
+  assert.ok(
+    !apiSrc.includes('"get_channel_status"') && !apiSrc.includes('"get_network_status"'),
+    "前端不得再调那两个半份命令",
+  );
+  assert.match(
+    apiSrc,
+    /listen<RuntimeSnapshot>\("runtime-changed"/,
+    "前端必须按快照载荷监听 runtime-changed",
+  );
+});
+
 test("清空数据必须广播（回归：设置里清了聊天记录，主界面毫无反应）", () => {
   const src = readFileSync(join(RUST_SRC, "commands.rs"), "utf8");
   const at = src.indexOf("pub async fn clear_all_data");

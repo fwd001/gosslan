@@ -45,6 +45,40 @@ fn system_lang_is_zh() -> bool {
     })
 }
 
+/// **运行状态的唯一快照**（用户要求的第 ② 项）。
+///
+/// 为什么必须合并：以前"局域网到底开着没有"在前端有**两份**表示 ——
+/// `channels[lan].enabled`（来自 `get_channel_status`）与 `online`（来自 `get_network_status`），
+/// 由两个命令 + 两个事件各自维护 ⇒ 必然出现"外面开了、里面还是关的"（用户实测过）。
+/// 现在只有**一条路径**：`get_runtime_snapshot` 命令与 `runtime-changed` 事件（**带载荷**），
+/// 前端只认这一份。
+///
+/// 注意 `peers`：完整节点列表仍走 `peers-updated`（它最多 3/s、只在脏时推，见 `emit_peers`），
+/// 放进快照会让每次通道开关都搬一遍全表；这里只带**节点数**（空态文案要用）。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSnapshot {
+    /// 各通道状态（lan / bluetooth）：enabled / available / running / peers
+    pub channels: Vec<crate::transport::ChannelStatus>,
+    /// 局域网运行时是否在跑
+    pub online: bool,
+    /// 局域网绑定的本机地址（未运行时为 None）
+    pub bound_ip: Option<String>,
+    /// 蓝牙里"通道状态装不下"的那部分事实
+    pub ble: BleRuntimeFacts,
+    /// 当前在线节点数（不是完整列表）
+    pub peer_count: usize,
+}
+
+/// 蓝牙运行时事实（`ChannelStatus` 表达不了的部分）。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BleRuntimeFacts {
+    /// 本次构建是否编译了 `bluetooth` feature（没编译时界面该说"此版本不含蓝牙"，
+    /// 而不是含糊的"已关闭"）
+    pub feature_compiled: bool,
+}
+
 /// 「设置已变更」事件名：设置窗口与主窗口靠它同步（见 `notify_settings_changed`）。
 pub const EVENT_SETTINGS_CHANGED: &str = "settings-changed";
 /// 「数据被清空」事件名（清除聊天数据 / 清缓存后的破坏性操作）。
@@ -999,9 +1033,18 @@ impl AppState {
             });
     }
 
-    /// 广播"运行状态（通道/在线/绑定 IP）变了" —— 所有窗口与页面据此重拉同一份后端状态。
-    pub fn notify_runtime_changed(&self) {
-        let _ = self.app.emit(EVENT_RUNTIME_CHANGED, ());
+    /// 广播"运行状态变了"——**带上完整快照**，且**不回发给发起窗口**（它在命令返回值里已经拿到了）。
+    ///
+    /// 与 ①（`settings-changed` 带补丁）同一个模式：快照由调用方用
+    /// `commands::build_runtime_snapshot` 采好（那里同时要读 peers/network/transport 三种状态，
+    /// 不适合塞进 `AppState` 自己），这里只负责"发给谁"。
+    pub fn notify_runtime_changed(&self, snapshot: RuntimeSnapshot, origin: Option<&str>) {
+        let origin = origin.map(str::to_string);
+        let _ = self
+            .app
+            .emit_filter(EVENT_RUNTIME_CHANGED, snapshot, move |target| {
+                event_target_label(target) != origin.as_deref()
+            });
     }
 
     /// 标记节点表已变更，并唤醒节流推送任务。

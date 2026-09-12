@@ -19,22 +19,28 @@ import { test } from "node:test";
 const srcDir = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(srcDir, p), "utf8");
 
-test("store 的通道开关必须同时刷新「通道状态」与「网络状态」", () => {
+test("通道开关只走「一个快照 + 一个事件」（不再两份状态各自刷新）", () => {
   const store = read("stores/useAppStore.ts");
-  const body = store.slice(
-    store.indexOf("async function setChannelEnabled"),
-    store.indexOf("async function setChannelEnabled") + 700,
-  );
+  const at = store.indexOf("async function setChannelEnabled");
+  const body = store.slice(at, at + 700);
   assert.match(body, /await api\.setChannelEnabled\(channel, enabled\)/, "必须真的调后端");
   assert.match(
     body,
-    /refreshChannels\(\)/,
-    "必须刷新通道状态（添加好友页 / 设置页都读它）",
+    /applyRuntimeSnapshot\(await api\.setChannelEnabled/,
+    "必须直接应用后端返回的快照：命令返回值就是切换后的运行状态，再拉一次既有竞态又是多余 IPC",
+  );
+  assert.ok(
+    !/refreshChannels\(\)|refreshNetworkStatus\(\)/.test(store),
+    "『通道状态』与『网络状态』两半各自刷新的写法必须已经删除 —— 那正是同一件事两份状态",
+  );
+  assert.ok(
+    !store.includes("getChannelStatus(") && !store.includes("getNetworkStatus("),
+    "前端不得再调那两个半份命令（后端也已删除，只剩 getRuntimeSnapshot）",
   );
   assert.match(
-    body,
-    /refreshNetworkStatus\(\)/,
-    "必须同时刷新网络状态（`online`/`boundIp`）—— 只刷一半就是用户报的「两处不同步」",
+    store,
+    /function applyRuntimeSnapshot/,
+    "通道状态 / 在线 / 绑定 IP 必须只有这一个写入入口",
   );
 });
 

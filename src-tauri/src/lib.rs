@@ -258,14 +258,13 @@ pub fn run() {
             commands::get_device_info,
             commands::update_profile,
             commands::list_interfaces,
-            commands::get_network_status,
+            commands::get_runtime_snapshot,
             commands::start_network,
             commands::stop_network,
             commands::get_peers,
             commands::search_nearby_peers,
             commands::focus_window,
             commands::get_topology,
-            commands::get_channel_status,
             commands::set_channel_enabled,
             commands::get_cache_info,
             commands::set_cache_policy,
@@ -1146,9 +1145,9 @@ mod tests {
     /// 用户点了开关也看不出变化（用户 2026-09-12 安卓实测「蓝牙通道打不开」里，
     /// 有一部分就是这个假状态造成的误导）。
     #[test]
-    fn channel_status_reports_real_bluetooth_runtime() {
+    fn runtime_snapshot_reports_real_bluetooth_runtime() {
         let commands = include_str!("commands.rs");
-        let body = rust_fn_body(commands, "pub async fn get_channel_status(");
+        let body = rust_fn_body(commands, "pub async fn build_runtime_snapshot(");
         assert!(
             body.contains("runtime_state"),
             "蓝牙 running/peers 必须取自 `network::ble::runtime_state`"
@@ -1156,6 +1155,41 @@ mod tests {
         assert!(
             body.contains("bt.enabled = bt_running"),
             "起不来就必须显示为关（否则界面假装已开，用户只会觉得「点了没用」）"
+        );
+    }
+
+    /// **运行状态只能有"一个快照 + 一个事件"**（用户要求的 ②）。
+    ///
+    /// 真实缺陷：`channels[lan].enabled`（`get_channel_status`）与 `online`（`get_network_status`）
+    /// 是同一件事的两份前端状态，各自被不同事件更新 ⇒ 必然"外面开了、里面还是关的"。
+    /// 现在旧的"半份状态"命令必须**不存在**，且事件必须**带载荷**（`RuntimeSnapshot`）。
+    #[test]
+    fn runtime_state_has_a_single_source() {
+        let commands = include_str!("commands.rs");
+        for gone in ["pub async fn get_channel_status(", "pub fn get_network_status("] {
+            assert!(
+                !commands.contains(gone),
+                "`{gone}` 应当已经被 `get_runtime_snapshot` + `build_runtime_snapshot` 取代 —— \
+                 留着它就等于给同一件事留了第二份状态"
+            );
+        }
+        assert!(
+            commands.contains("pub async fn build_runtime_snapshot("),
+            "必须有唯一的采集点"
+        );
+        let state = include_str!("state.rs");
+        let body = rust_fn_body(state, "pub fn notify_runtime_changed(");
+        assert!(
+            body.contains("snapshot: RuntimeSnapshot"),
+            "`runtime-changed` 必须**带快照**（无载荷的话接收方只能再全量重拉一遍）"
+        );
+        assert!(
+            body.contains("emit_filter(EVENT_RUNTIME_CHANGED"),
+            "必须用 emit_filter 排除发起窗口（发起窗口从命令返回值里已经拿到了）"
+        );
+        assert!(
+            body.contains("event_target_label(target) != origin.as_deref()"),
+            "过滤条件必须是『目标窗口 ≠ 发起窗口』"
         );
     }
 

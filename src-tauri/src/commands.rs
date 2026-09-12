@@ -57,17 +57,11 @@ use crate::network::transport::{
 use crate::network::{self, file};
 use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry, FILE_CHUNK};
 use crate::state::{
-    AppState, Conversation, DeviceInfo, Friend, Group, GroupFile, InterfaceInfo, MessageRecord,
+    AppState, BleRuntimeFacts, RuntimeSnapshot, Conversation, DeviceInfo, Friend, Group, GroupFile, InterfaceInfo, MessageRecord,
     Peer, PendingRequest, TopologyInfo, TransferInfo,
 };
 use crate::storage::cache_cleaner::{self, CachePolicy, CleanupReport};
-use crate::transport::{ChannelStatus, TransportManager};
-
-#[derive(Serialize)]
-pub struct NetworkStatus {
-    online: bool,
-    bound_ip: Option<String>,
-}
+use crate::transport::TransportManager;
 
 /// 存储占用与清理策略（设置页「存储与缓存」展示）。
 ///
@@ -215,30 +209,38 @@ pub fn list_interfaces() -> Vec<InterfaceInfo> {
 // ---------------- 网络控制 ----------------
 
 #[tauri::command(async)]
-pub async fn start_network(state: State<'_, Arc<AppState>>, bind_ip: String) -> Result<(), String> {
+pub async fn start_network(
+    state: State<'_, Arc<AppState>>,
+    window: tauri::WebviewWindow,
+    bind_ip: String,
+) -> Result<RuntimeSnapshot, String> {
     let arc = state.inner().clone();
-    network::start(arc, bind_ip).await?;
-    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    db::set_lan_enabled(&dbc, true).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command(async)]
-pub async fn stop_network(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    network::stop(state.inner()).await;
-    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    db::set_lan_enabled(&dbc, false).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command(async)]
-pub fn get_network_status(state: State<'_, Arc<AppState>>) -> NetworkStatus {
-    let s = state.inner();
-    let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
-    NetworkStatus {
-        online: net.is_some(),
-        bound_ip: net.as_ref().map(|n| n.bound_ip.clone()),
+    network::start(arc.clone(), bind_ip).await?;
+    {
+        // 作用域块：MutexGuard 在 await 之前就结束（否则 async 命令的 future 不是 Send）
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::set_lan_enabled(&dbc, true).map_err(|e| e.to_string())?;
     }
+    // 起网络也是一次"运行状态变了"：返回快照给发起窗口，同时广播给其它窗口
+    let snap = build_runtime_snapshot(&arc).await;
+    arc.notify_runtime_changed(snap.clone(), Some(window.label()));
+    Ok(snap)
+}
+
+#[tauri::command(async)]
+pub async fn stop_network(
+    state: State<'_, Arc<AppState>>,
+    window: tauri::WebviewWindow,
+) -> Result<RuntimeSnapshot, String> {
+    let arc = state.inner().clone();
+    network::stop(&arc).await;
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::set_lan_enabled(&dbc, false).map_err(|e| e.to_string())?;
+    }
+    let snap = build_runtime_snapshot(&arc).await;
+    arc.notify_runtime_changed(snap.clone(), Some(window.label()));
+    Ok(snap)
 }
 
 #[tauri::command(async)]
@@ -475,14 +477,18 @@ pub fn default_nickname(state: State<'_, Arc<AppState>>) -> String {
     crate::nickname::default_nickname(&state.inner().device_id)
 }
 
-#[tauri::command(async)]
-pub async fn get_channel_status(
-    state: State<'_, Arc<AppState>>,
-) -> Result<Vec<ChannelStatus>, String> {
-    let s = state.inner().clone();
+/// **运行状态的唯一采集点**（用户要求的第 ② 项）。
+///
+/// 把所有"运行状态"一次读全：通道（lan/bluetooth 的 enabled/available/running/peers）、
+/// 局域网是否在跑 + 绑定地址、蓝牙事实、在线节点数。任何"运行状态变了"的地方
+/// （通道开关 / 起停网络）都调它一次，然后：
+///   · 命令把它**作为返回值**给发起窗口（发起窗口零额外 IPC）；
+///   · `notify_runtime_changed` 把它**作为事件载荷**发给其它窗口。
+/// 于是一件事只有一份前端状态（`RuntimeSnapshot`），不可能再各说各话。
+pub async fn build_runtime_snapshot(s: &Arc<AppState>) -> RuntimeSnapshot {
     let mut list = TransportManager::new(s.clone()).status();
     #[cfg(feature = "bluetooth")]
-    let (bt_running, bt_peers) = crate::network::ble::runtime_state(&s).await;
+    let (bt_running, bt_peers) = crate::network::ble::runtime_state(s).await;
     #[cfg(not(feature = "bluetooth"))]
     let (bt_running, bt_peers) = (false, 0usize);
     if let Some(bt) = list.iter_mut().find(|c| c.channel == "bluetooth") {
@@ -490,16 +496,38 @@ pub async fn get_channel_status(
         bt.peers = bt_peers;
         bt.enabled = bt_running;
     }
-    Ok(list)
+    let (online, bound_ip) = {
+        let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
+        (net.is_some(), net.as_ref().map(|n| n.bound_ip.clone()))
+    };
+    let peer_count = s.peers.lock().unwrap_or_else(|e| e.into_inner()).len();
+    RuntimeSnapshot {
+        channels: list,
+        online,
+        bound_ip,
+        ble: BleRuntimeFacts {
+            feature_compiled: cfg!(feature = "bluetooth"),
+        },
+        peer_count,
+    }
+}
+
+/// 取当前运行状态快照（窗口初始化 / 手动刷新用）。
+#[tauri::command(async)]
+pub async fn get_runtime_snapshot(
+    state: State<'_, Arc<AppState>>,
+) -> Result<RuntimeSnapshot, String> {
+    Ok(build_runtime_snapshot(state.inner()).await)
 }
 
 /// 切换通道开关。局域网复用 `network`；蓝牙后端未编译，开启时返回明确错误。
 #[tauri::command(async)]
 pub async fn set_channel_enabled(
     state: State<'_, Arc<AppState>>,
+    window: tauri::WebviewWindow,
     channel: String,
     enabled: bool,
-) -> Result<(), String> {
+) -> Result<RuntimeSnapshot, String> {
     let s = state.inner();
     match channel.as_str() {
         "lan" => {
@@ -511,11 +539,6 @@ pub async fn set_channel_enabled(
             }
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             db::set_lan_enabled(&dbc, enabled).ok();
-            drop(dbc);
-            // 广播"运行状态变了"：所有窗口/页面（添加好友、设置页、桌面独立设置窗口）
-            // 都重拉同一份后端状态 ⇒ 不可能再出现"外面开了、里面是关的"
-            s.notify_runtime_changed();
-            Ok(())
         }
         "bluetooth" => {
             // 开了 feature 才真正启动 BLE 运行时；没开 feature 时与今天一致：
@@ -596,12 +619,14 @@ pub async fn set_channel_enabled(
             }
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             db::set_bt_enabled(&dbc, enabled).ok();
-            drop(dbc);
-            s.notify_runtime_changed();
-            Ok(())
         }
-        _ => Err(format!("未知通道: {channel}")),
+        _ => return Err(format!("未知通道: {channel}")),
     }
+    // 运行状态只在这里"变"：采一次快照 —— 发起窗口拿返回值（零额外 IPC），
+    // 其余窗口拿事件载荷（`runtime-changed` 带快照）。两边拿到的是**同一份结构**。
+    let snap = build_runtime_snapshot(s).await;
+    s.notify_runtime_changed(snap.clone(), Some(window.label()));
+    Ok(snap)
 }
 
 const RETENTION_KEY: &str = "cache_retention_days";

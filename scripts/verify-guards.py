@@ -371,6 +371,35 @@ CASES: list[Case] = [
         expect_fail_hint="data-cleared",
         tags=["frontend", "ipc"],
     ),
+    # ---------------- 前端：运行状态必须"一个快照 + 一个事件"（②） ----------------
+    Case(
+        name="运行状态事件必须带快照、且不回发发起窗口（②）",
+        why="以前 runtime-changed 是无载荷广播，每个窗口收到后都要自己重拉一半状态；"
+        "而『局域网开没开』这件事在前端有两份表示（channels[lan].enabled 与 online）⇒ "
+        "必然出现『外面开了、里面还是关的』。改成带 RuntimeSnapshot 的 emit_filter 之后没有了",
+        file=TAURI / "src" / "state.rs",
+        injections=[("emit_filter(EVENT_RUNTIME_CHANGED, snapshot, move |target| {",
+                     "emit(EVENT_RUNTIME_CHANGED, snapshot); #[allow(unreachable_code)] let _ = move |target: &tauri::EventTarget| {")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="emit_filter",
+        tags=["frontend", "ipc"],
+    ),
+    Case(
+        name="前端不得再调『半份状态』的两个旧命令（②）",
+        why="get_channel_status / get_network_status 是同一件事的两份来源；只要前端还能调到其中一个，"
+        "就又有可能出现『两处不同步』（用户实测过：添加好友里开了局域网、设置里还显示关）",
+        file=ROOT / "src" / "api" / "index.ts",
+        injections=[(
+            '  getRuntimeSnapshot: () => invoke<RuntimeSnapshot>("get_runtime_snapshot"),',
+            '  getRuntimeSnapshot: () => invoke<RuntimeSnapshot>("get_runtime_snapshot"),\n'
+            '  getChannelStatus: () => invoke<never[]>("get_channel_status"),',
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="半份命令",
+        tags=["frontend", "ipc"],
+    ),
     # ---------------- 前端：IPC 事件契约 ----------------
     Case(
         name="IPC 事件契约（Rust 发的必须有人听）",
