@@ -10,6 +10,14 @@
 
 ## [Unreleased]
 
+### Fixed (Android：关掉蓝牙开关后手机仍在广播 —— JNI 签名写错)
+- **真实缺陷**（本轮 code review 抓到，`d2fad5e`）：Kotlin 的 `fun stop()` 是 **Unit** 方法（JNI 描述符 `()V`），Rust 侧却按 `()Z` 调用。**JNI 不做任何编译期检查** —— 这只会在运行期抛 `NoSuchMethodError`，且只有真机才现形：用户关掉「蓝牙通道」后手机**仍在广播**（耗电 + 隐私），日志里一个字都没有。
+- 修法：`stop()` 改走 `()V` 的 void 调用，失败时**主动上报 Warning**（"停止 BLE 外设失败（可能仍在广播）"）；引入 `kotlin_method!("名字", "描述符")` 登记宏把两者写在一处；顺带修正一条**永远发不出来的日志**（桥就绪的 Notice 原先在 `bootstrap` 里发，而那时 events 通道还没建立，现改在 `start()` 里发）。
+- **新增主机可跑护栏 `android_jni_signatures_match_kotlin`**：解析 `BlePeripheral.kt` 里 `fun` 的形参/返回类型推出 JNI 描述符，与 Rust 侧登记**逐字比对**；并检查每个 `extern fn` 在 Kotlin 里确有同名 `external fun`（否则 JVM 会 `UnsatisfiedLinkError`）。
+- **非空转验证**：把 `stop` 改回 `()Z` → 护栏 FAIL 并给出具体差异；恢复 → 全绿。已加入 `scripts/verify-guards.py`（现覆盖 **10 条**护栏，一条命令全跑）。
+- 验证：`cargo test --lib` **379 passed / 0 fail / 0 warning**；`cargo check --all-targets` 0 warning；Android `check-mobile.sh --bluetooth` PASS / 0 warning。
+- ⚠️ 仍未验证：真机射频行为（需你的设备）。另外本轮确认了 E2E 两个前置能编出来（`cargo build` + `build --example e2e_peer`），但**没有替你跑 `scripts/e2e-dev.sh`** —— 它会真的启动 GUI 实例（在你桌面上弹窗口），该由你决定何时跑（手册 §0.5）。
+
 ### Added (Android 外设角色的 Rust↔Kotlin 桥 —— 7-f 完成，手机也能"被连"了)
 - **Rust 侧 JNI 桥**（`transport/ble_android.rs`）：缓存 `JavaVM` 与 Kotlin 类的全局引用、把 Kotlin 回调上来的**分片**重组成整帧（复用 `ble_framing`，与 macOS 同一份实现）、把网络层要发的帧按 MTU 分片后调 Kotlin 的 `send`。
   - **`bootstrap` 的鸡生蛋问题**：JNI 的 `FindClass` 依赖"调用方的类加载器"，从 tokio 线程里找不到 App 的类 ⇒ `MainActivity.onCreate` 调一次 `BlePeripheral.bootstrap(context)`，由它在 App 代码还在栈上时把 `JavaVM` + 类引用交给 Rust。
