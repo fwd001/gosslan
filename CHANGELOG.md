@@ -10,6 +10,25 @@
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-09-12
+
+### Docs (③ 窗口架构 ADR-0018：把「一窗一入口 / 后端真相源 / 事件带载荷」定下来)
+用户要求的第 ③ 项：这三条是本轮 ① ② 的根据，写进 ADR 以免以后被改回去。
+
+`docs/adr/0018-window-architecture.md` 记录：
+- **一窗一入口**：每个窗口自己的 HTML + 入口（共享的只有 `boot.ts` 与 `style.css`），
+  禁止"一个文档 + 前端按 label 换布局"；
+- **后端是唯一真相源**：跨窗口可见的事实只能存后端一份；同一事实只有一个读命令、
+  前端只有一个写入入口（举证：`get_channel_status`/`get_network_status`/`NetworkStatus` 已被删除）；
+- **常驻单例窗口**：懒创建、只隐藏不销毁；代价是常驻窗口必须自己刷新（焦点时
+  `refreshEnvironment()` 并行拉取）；
+- **事件带载荷 + 定向发送**：`settings-changed`（补丁）/ `runtime-changed`（快照）/
+  `data-cleared`（破坏性操作）都带载荷、都用 `emit_filter` 排除发起窗口，发起窗口改用**命令返回值**；
+  由此删除了 `settingsDirty` 一整套防回灌状态机；
+- **为什么不用 BroadcastChannel**（5 条理由：绕过后端⇒第二真相源、无法与后端原子、
+  到不了原生侧、没有目标过滤与类型约束、不解决首帧），并对照 `clash-verge-rev` 说明了
+  我们采纳什么、在哪一点上刻意做得不同。
+
 ## [4.2.0] - 2026-09-12
 
 
