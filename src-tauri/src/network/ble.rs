@@ -17,7 +17,7 @@
 //! 本模块整体 `#[cfg(feature = "bluetooth")]`，且即使用 feature 构建，
 //! 也要用户在设置里打开「蓝牙」（`bt_enabled`，默认关闭）才会启动 ——
 //! 局域网路径在任何情况下都不受影响。
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,10 +36,17 @@ use crate::network::transport::{
 use crate::protocol::Message;
 use crate::state::{AppState, Link};
 use crate::transport::bluetooth::driver::{self, BleReader, BleWriter};
+// 外设角色的驱动按平台切换：macOS 用 CoreBluetooth（objc2），Android 用 JNI 调 Kotlin。
+// 两者对外接口**完全同形**（`start` / `PeripheralServer` / `PeripheralWriter` / `PeripheralEvent`），
+// 因此下面所有外设逻辑（事件循环、握手、路由、读写循环）两个平台共用一份。
 #[cfg(target_os = "macos")]
-use crate::transport::bluetooth_peripheral::{
-    self as peripheral, PeripheralEvent, PeripheralWriter,
-};
+use crate::transport::bluetooth_peripheral as peripheral;
+#[cfg(target_os = "android")]
+use crate::transport::ble_android as peripheral;
+#[cfg(target_os = "macos")]
+use crate::transport::bluetooth_peripheral::{PeripheralEvent, PeripheralWriter};
+#[cfg(target_os = "android")]
+use crate::transport::ble_android::{PeripheralEvent, PeripheralWriter};
 
 /// 每轮扫描的观察窗口（`btleplug` 的扫描是"持续到显式停止"，给一个窗口再收结果）。
 const SCAN_WINDOW: Duration = Duration::from_secs(3);
@@ -77,7 +84,7 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     // 外设角色（GATT server）：只做 central 的话，手机**永远连不上** Mac
     // （btleplug 只能主动连，不能被连 —— ADR-0015 §3.1）。这里独立启动、
     // 独立失败：外设起不来只影响"别人连我们"，不该把整个蓝牙开关判死。
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "android"))]
     start_peripheral(state.clone(), shutdown_tx.subscribe()).await;
 
     *state.ble.lock().unwrap_or_else(|e| e.into_inner()) = Some(BleHandle {
@@ -346,13 +353,13 @@ impl FrameSink for BleWriter {
 }
 
 /// 外设侧的一条链路 = 「发通知的句柄 + 对端 central 标识」。
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 struct PeripheralSink {
     writer: PeripheralWriter,
     central: String,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 #[async_trait::async_trait]
 impl FrameSink for PeripheralSink {
     async fn send_frame(&mut self, payload: &[u8]) -> Result<usize, String> {
@@ -381,12 +388,12 @@ impl FrameSource for BleReader {
 }
 
 /// 外设侧的读方向：帧已经重组好，直接从通道拿。
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 struct ChannelSource {
     rx: mpsc::Receiver<Vec<u8>>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 #[async_trait::async_trait]
 impl FrameSource for ChannelSource {
     async fn next_frame(&mut self, _wait: Duration) -> Result<Option<Vec<u8>>, String> {
@@ -504,7 +511,7 @@ async fn ble_reader_loop<S: FrameSource + 'static>(
 // 因此下面没有第二套身份/信任判断 —— 身份**只能**由双向 Hello 验签建立。
 
 /// 外设事件循环收到的路由控制消息（握手成功后把"往这个 central 投帧"的管道交给循环）。
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 enum RouteCtl {
     Add {
         central: String,
@@ -514,7 +521,7 @@ enum RouteCtl {
 
 /// 启动外设角色。失败只记日志：能扫别人但别人连不上我们，属于**降级**而不是故障，
 /// 不该把整个蓝牙开关判为不可用（LAN 更不受影响）。
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 async fn start_peripheral(state: Arc<AppState>, shutdown: watch::Receiver<bool>) {
     let startup = match peripheral::start() {
         Ok(startup) => startup,
@@ -554,7 +561,7 @@ async fn start_peripheral(state: Arc<AppState>, shutdown: watch::Receiver<bool>)
 }
 
 /// 外设侧的总循环：把每个 central 的帧分派给它的链路任务，首帧走握手。
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 async fn peripheral_accept_loop(
     state: Arc<AppState>,
     mut server: peripheral::PeripheralServer,
@@ -632,7 +639,7 @@ async fn peripheral_accept_loop(
 }
 
 /// 按 BLE 端点摘链路（外设侧只知道 central 标识，peer_id 要反查）。
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 async fn detach_by_endpoint(state: &Arc<AppState>, ep: &MeshEndpoint) {
     let peer = {
         let links = state.links.lock().await;
@@ -647,7 +654,7 @@ async fn detach_by_endpoint(state: &Arc<AppState>, ep: &MeshEndpoint) {
 }
 
 /// 外设侧握手的外壳：失败一律**只记日志**（对端可能只是路过、或者根本不是 Gosslan 端）。
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 async fn accept_handshake(
     state: Arc<AppState>,
     writer: PeripheralWriter,
@@ -666,7 +673,7 @@ async fn accept_handshake(
 }
 
 /// 真身：验签对端 Hello → 回我们的 Hello → 登记链路 → 起收发。
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "android"))]
 async fn try_accept_handshake(
     state: &Arc<AppState>,
     writer: PeripheralWriter,

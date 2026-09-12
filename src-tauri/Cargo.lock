@@ -1656,6 +1656,7 @@ dependencies = [
  "futures",
  "hostname",
  "if-addrs",
+ "jni 0.22.4",
  "machine-uid",
  "objc2",
  "objc2-app-kit",

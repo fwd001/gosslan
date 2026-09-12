@@ -65,6 +65,9 @@ object BlePeripheral {
 
     private const val REQUEST_BLE_PERMISSIONS = 0x6201
 
+    /** 由 `MainActivity.onCreate` 传入的应用 Context（申请权限 / 取系统服务都靠它）。 */
+    private var appContext: Context? = null
+
     private var manager: BluetoothManager? = null
     private var gattServer: BluetoothGattServer? = null
     private var advertiser: BluetoothLeAdvertiser? = null
@@ -79,11 +82,14 @@ object BlePeripheral {
     // 由 Rust 注册的 native 回调（见 transport/ble_android.rs）
     // ------------------------------------------------------------------
 
-    /** 收到一条**完整帧**（分片重组在 Rust 侧完成，与 macOS 共用同一套 `ble_framing`）。 */
+    /** 收到**一片** ATT 写入（原样转发；分片重组在 Rust 侧，与 macOS 共用 `ble_framing`）。 */
     private external fun nativeOnFrame(address: String, value: ByteArray)
 
     /** 对端断开（Android 会给这个回调，比 CoreBluetooth 强）。 */
     private external fun nativeOnUnlinked(address: String)
+
+    /** 引导：把 `JavaVM` 与类引用交给 Rust（见 `bootstrap` 的注释）。 */
+    private external fun nativeBootstrap()
 
     /** 诊断信息（Rust 侧记 info）。 */
     private external fun nativeOnNotice(text: String)
@@ -95,10 +101,36 @@ object BlePeripheral {
     // 生命周期
     // ------------------------------------------------------------------
 
+    /**
+     * **必须**在 `MainActivity.onCreate` 里调一次。
+     *
+     * 为什么需要它：JNI 的 `FindClass` 用的是"调用它的那个 native 方法的类的类加载器"，
+     * 从普通后台线程里找不到 App 自己的类。所以趁 App 代码还在栈上时，
+     * 把 `JavaVM` 与 `BlePeripheral` 类的全局引用交给 Rust（见 `transport/ble_android.rs`）。
+     *
+     * `UnsatisfiedLinkError` 是**预期**的：没开 `bluetooth` feature 的构建里
+     * Rust 不实现 `nativeBootstrap`，此时只记一行日志、照常运行（绝不能崩在启动路径上）。
+     */
+    @JvmStatic
+    fun bootstrap(context: Context) {
+        appContext = context.applicationContext
+        try {
+            nativeBootstrap()
+        } catch (e: UnsatisfiedLinkError) {
+            // 未编译蓝牙特性：外设角色不可用，但 central（btleplug）与局域网都照常
+            android.util.Log.i("GosslanBLE", "未编译蓝牙外设支持（nativeBootstrap 缺失）：${e.message}")
+        }
+    }
+
     /** 打开 GATT server 并开始广播。返回是否已成功启动（失败原因经 nativeOnWarning 上报）。 */
     @JvmStatic
-    fun start(context: Context): Boolean {
+    fun start(): Boolean {
         if (gattServer != null) return true // 幂等
+        val context = appContext
+        if (context == null) {
+            nativeOnWarning("蓝牙外设尚未初始化（MainActivity 未调用 BlePeripheral.bootstrap）")
+            return false
+        }
 
         val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
         val adapter: BluetoothAdapter? = mgr?.adapter

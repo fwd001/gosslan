@@ -14,6 +14,9 @@ pub mod bluetooth;
 // BLE 外设（GATT server）角色：只有 macOS + `--features bluetooth` 才编译。
 #[cfg(all(feature = "bluetooth", target_os = "macos"))]
 pub mod bluetooth_peripheral;
+// Android 外设角色的 Rust 侧（JNI 桥，见该文件注释与 ADR-0015 §7.7）。
+#[cfg(all(feature = "bluetooth", target_os = "android"))]
+pub mod ble_android;
 pub mod lan;
 pub mod tcp;
 

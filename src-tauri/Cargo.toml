@@ -75,6 +75,12 @@ objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
 # optional ⇒ 只有 `--features bluetooth` 的 macOS 构建才引入（默认构建零新增依赖，与今天一致）。
 objc2-core-bluetooth = { version = "0.3", optional = true }
 
+# Android 的 BLE **外设角色**要用 JNI 调 Kotlin 侧实现（见 ADR-0015 §7.7）：
+# btleplug 的 droidplug 后端本身已经依赖 `jni = "0.22"`（Android 目标、非 optional），
+# 所以这里**没有引入任何新的第三方 crate**，只是让我们自己也能用它。
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.22", optional = true }
+
 [features]
 # 默认启用自定义协议；可扩展为自定义 deep-link 唤醒
 default = ["custom-protocol"]
@@ -82,7 +88,7 @@ custom-protocol = ["tauri/custom-protocol"]
 # BLE 传输（P3 / Phase 7）：**默认关闭** —— 不开 feature 时依赖不下载、代码不编译，
 # 产物与行为与今天逐字节一致（ADR-0015 §2 的硬性约定）。
 # 引入前必须先读 docs/adr/0015-ble-transport.md（项目规矩：新依赖必须 ADR）。
-bluetooth = ["dep:btleplug", "dep:futures", "dep:objc2-core-bluetooth"]
+bluetooth = ["dep:btleplug", "dep:futures", "dep:objc2-core-bluetooth", "dep:jni"]
 
 [profile.release]
 panic = "abort"

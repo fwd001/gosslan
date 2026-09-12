@@ -7,5 +7,9 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // BLE 外设角色（手机被电脑连）需要把 JavaVM 与类引用交给 Rust 侧：
+    // 必须在 App 代码还在栈上时做（JNI 的 FindClass 依赖调用方的类加载器）。
+    // 没开 bluetooth feature 时这行是安全的空操作（内部捕获 UnsatisfiedLinkError）。
+    BlePeripheral.bootstrap(applicationContext)
   }
 }
