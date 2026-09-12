@@ -52,6 +52,11 @@ useBackLayer(
             ? 'flex min-h-full items-stretch justify-center'
             : 'flex min-h-full items-center justify-center p-4'"
         >
+          <!-- 整页形态：铺满 + 自带标题栏（含左上返回/关闭）与安全区；
+               卡片形态：保持原有的居中卡片。
+               ⚠️ 这条注释**必须在 `<TransitionChild>` 之外**：dev 构建会保留 HTML 注释，
+               而 `as="template"` 的插槽里多出一个注释节点就会让 Headless UI 抛
+               "Passing props on template!"（Vue 渲染直接炸 ⇒ 整个窗口卡死）。 -->
           <TransitionChild
             as="template"
             enter="duration-200 ease-out"
@@ -61,8 +66,6 @@ useBackLayer(
             leave-from="opacity-100 scale-100"
             leave-to="opacity-0 scale-95"
           >
-            <!-- 整页形态：铺满 + 自带标题栏（含左上返回/关闭）与安全区；
-                 卡片形态：保持原有的居中卡片。 -->
             <DialogPanel
               v-if="fullscreen"
               class="flex h-full w-full flex-col bg-[var(--gosslan-app-bg)] pt-[env(safe-area-inset-top)] text-left text-[var(--gosslan-text)]"

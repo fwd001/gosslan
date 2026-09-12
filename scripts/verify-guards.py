@@ -261,6 +261,20 @@ CASES: list[Case] = [
         expect_fail_hint="单次调用",
         tags=["rust", "perf"],
     ),
+    # ---------------- 前端：Headless UI 模板插槽 ----------------
+    Case(
+        name="as=template 插槽不得有注释（dev 保留注释 ⇒ 渲染抛错 ⇒ 窗口卡死）",
+        why="用户实测：点「+ → 添加好友」整个窗口卡死的真因 —— BaseModal 在 TransitionChild 插槽里放了注释",
+        file=ROOT / "src" / "components" / "BaseModal.vue",
+        injections=[(
+            '<TransitionChild\n            as="template"',
+            '<TransitionChild\n            as="template"\n          >\n            <!-- 注入的注释 -->',
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="HTML 注释",
+        tags=["frontend", "render"],
+    ),
 ]
 
 

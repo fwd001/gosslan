@@ -11,6 +11,12 @@
  *      踩坑：`.glass` / `.frost` 的定义在文件更靠后处，同优先级下"后定义者胜"，
  *      降级规则写在前面被**完整覆盖**（写了日志、加了注释，但实测才发现无效）。
  *
+ *   ⑨ Headless UI 的 `as="template"` 插槽里不得有 HTML 注释/多个顶层节点
+ *      踩坑（用户实测"点加好友整个窗口卡死"的真因）：dev 构建**保留 HTML 注释**，
+ *      于是 `as="template"` 的插槽里多出一个注释节点，Headless UI 的 render 直接抛
+ *      "Passing props on template!"，Vue 渲染抛错 ⇒ 整个界面再也 patch 不动（看起来就是卡死）。
+ *      生产构建会剥掉注释，所以这类缺陷**只在 dev 出现**，最容易把人带偏。
+ *
  *   ⑧ 小尺寸可交互元素必须有 `tap-safe`（触屏点按目标 ≥44pt，HIG）
  *      踩坑：iOS HIG 的最小点按目标是 44×44pt，而项目里大量图标按钮是 28–32px
  *      （桌面鼠标没问题，**手指容易点不中甚至误触相邻项**）。项目已有 `.tap-safe`
@@ -386,6 +392,110 @@ export function findSmallTapTargets(src: string): GuardIssue[] {
         "`h-5`（20px）即便加了也只有 36px，请改用 `h-7` 以上。" +
         "确属不需要触屏撑大的场合可加 `tap-target-ok` 注释整文件跳过。",
     });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- ⑨ `as="template"` 插槽不得有注释/多根节点 ----------------
+
+/** 需要"单子节点"约束的第三方组件属性（Headless UI 的模板渲染）。 */
+const TEMPLATE_ATTR_RE = /<([A-Z][\w]*)\b[^>]*\bas="template"[^>]*>/g;
+
+/**
+ * 检查一份 .vue 源码里 `as="template"` 的**直接插槽内容**是否安全。
+ *
+ * 判据（只报能确定的）：
+ *   ① 直接内容里出现 HTML 注释 ⇒ 报（dev 构建把注释编译成节点，Headless UI 会抛错）；
+ *   ② 直接子节点里的**顶层元素多于一个** ⇒ 报（同样会抛错）。
+ * 嵌套元素内部的内容不参与判定（先按标签配对把子树跳过）。
+ */
+export function findTemplateSlotIssues(src: string): GuardIssue[] {
+  if (src.includes("template-slot-ok")) return [];
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(TEMPLATE_ATTR_RE)) {
+    const tag = m[1];
+    const openEnd = (m.index ?? 0) + m[0].length;
+    // 是否为自闭合（`<Foo as="template" />` 没有插槽，跳过）
+    if (m[0].trimEnd().endsWith("/>")) continue;
+
+    // 扫描到配对结束标签，同时统计「顶层」元素与注释
+    const closeTag = `</${tag}>`;
+    let i = openEnd;
+    let depth = 0;
+    let topLevel = 0;
+    let comments = 0;
+    while (i < src.length) {
+      if (src.startsWith(closeTag, i) && depth === 0) break;
+      if (src.startsWith(`<${tag}`, i)) {
+        depth += 1;
+        i += tag.length + 1;
+        continue;
+      }
+      if (src.startsWith(closeTag, i)) {
+        depth -= 1;
+        i += closeTag.length;
+        continue;
+      }
+      if (src.startsWith("<!--", i)) {
+        if (depth === 0) comments += 1;
+        const end = src.indexOf("-->", i);
+        i = end < 0 ? src.length : end + 3;
+        continue;
+      }
+      // 跳过注释/字符串之外的普通标签：遇到元素开标签且 depth=0 就计一个顶层节点，
+      // 并把它的子树整体跳过（避免把子元素算成兄弟）。
+      if (src[i] === "<" && /[A-Za-z]/.test(src[i + 1] ?? "")) {
+        let j = i;
+        const nameMatch = /^<([A-Za-z][\w-]*)/.exec(src.slice(i));
+        const name = nameMatch ? nameMatch[1] : "";
+        const tagText = src.slice(i, src.indexOf(">", i) + 1);
+        const selfClosing = /\/>/.test(tagText);
+        // `v-if` / `v-else-if` / `v-else` 是一条链：运行时**只渲染一个**节点，
+        // 所以后续的 `v-else*` 分支不再单独计数（否则会误报，第一次跑这条护栏就误报了
+        // BaseModal 的 DialogPanel v-if/v-else 两个分支）。
+        const isElseBranch = /\bv-else(-if)?\b/.test(tagText);
+        if (depth === 0 && !isElseBranch) topLevel += 1;
+        if (selfClosing || !name) {
+          i = src.indexOf(">", i) + 1;
+          continue;
+        }
+        // 跳过整棵子树
+        j = i;
+        while (j < src.length) {
+          if (src.startsWith(`</${name}>`, j)) {
+            j += name.length + 3;
+            break;
+          }
+          if (src.startsWith("<" + name, j) || (src[j] === "<" && /[A-Za-z]/.test(src[j + 1] ?? ""))) {
+            j = src.indexOf(">", j) + 1;
+            continue;
+          }
+          j += 1;
+        }
+        i = j;
+        continue;
+      }
+      i += 1;
+    }
+
+    if (comments > 0) {
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message:
+          `\`<${tag} as="template">\` 的插槽里有 HTML 注释 —— dev 构建**保留注释**，` +
+          "它会变成一个额外的节点，Headless UI 随即抛 \"Passing props on template!\"，" +
+          "Vue 渲染抛错后整个界面都 patch 不动（现象就是\"窗口卡死\"）。" +
+          "把注释放到该组件**外面**（或挪进 <script>）。",
+      });
+    } else if (topLevel > 1) {
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message:
+          `\`<${tag} as="template">\` 的插槽里有 ${topLevel} 个顶层节点 —— Headless UI 的` +
+          "模板渲染要求**恰好一个**，多根会抛 \"Passing props on template!\"。" +
+          "请用一层真实元素包起来，或改用 `as=\"div\"`。",
+      });
+    }
   }
   return out.sort((a, b) => a.line - b.line);
 }

@@ -26,8 +26,15 @@ window.addEventListener("error", (e) => {
 });
 window.addEventListener("unhandledrejection", (e) => {
   const r: unknown = e.reason;
+  // ⚠️ 必须**显式带上 message**：WebKit(Safari/WKWebView) 的 `error.stack` **不含消息行**，
+  // 只打 stack 会把最关键的信息（例如 Headless UI 那句 "Passing props on template!" 里
+  // 的组件名与属性清单）丢掉 —— 这是真踩过的坑。
   const text =
-    r instanceof Error ? (r.stack ?? r.message) : typeof r === "string" ? r : JSON.stringify(r);
+    r instanceof Error
+      ? `${r.message}\n${r.stack ?? ""}`
+      : typeof r === "string"
+        ? r
+        : JSON.stringify(r);
   reportFrontendError("rejection", text);
 });
 

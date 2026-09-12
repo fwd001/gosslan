@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   checkBubbleMetricsCoupling,
+  findTemplateSlotIssues,
   checkStyleCascade,
   checkUnreadBadgeComponent,
   findHandWrittenBadges,
@@ -489,6 +490,95 @@ test("tap-target-ok 逃生阀：整文件跳过", () => {
   assert.deepEqual(findSmallTapTargets(withEscape), []);
 });
 
+// ---------------- ⑨ as="template" 插槽不得有注释/多根节点 ----------------
+//
+// 真实事故（2026-09-12 用户实测）：点「+ → 添加好友」整个窗口卡死。根因是
+// `BaseModal.vue` 在 `<TransitionChild as="template">` 的插槽里放了一条 HTML 注释：
+// **dev 构建保留注释** ⇒ 插槽多出一个节点 ⇒ Headless UI 抛 "Passing props on template!"
+// ⇒ Vue 渲染抛错后整个界面再也 patch 不动。生产构建会剥掉注释，所以只在 dev 复现。
+
+test("复现真实缺陷：as=template 的插槽里有 HTML 注释 → 报出", () => {
+  const buggy = `<template>
+<TransitionRoot :show="open" as="template">
+  <Dialog as="div">
+    <TransitionChild as="template">
+      <!-- 说明文字 -->
+      <DialogPanel v-if="fullscreen">A</DialogPanel>
+      <DialogPanel v-else>B</DialogPanel>
+    </TransitionChild>
+  </Dialog>
+</TransitionRoot>
+</template>`;
+  const issues = findTemplateSlotIssues(buggy);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].message, /HTML 注释/);
+  assert.match(issues[0].message, /卡死/);
+});
+
+test("注释移到组件外面就通过", () => {
+  const ok = `<template>
+<!-- 说明文字放在外面 -->
+<TransitionRoot :show="open" as="template">
+  <Dialog as="div"><TransitionChild as="template"><div /></TransitionChild></Dialog>
+</TransitionRoot>
+</template>`;
+  assert.deepEqual(findTemplateSlotIssues(ok), []);
+});
+
+test("插槽里多个顶层节点 → 报出（同样会抛 template 错误）", () => {
+  const buggy = `<template>
+<Foo as="template">
+  <div>A</div>
+  <div>B</div>
+</Foo>
+</template>`;
+  const issues = findTemplateSlotIssues(buggy);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].message, /顶层节点/);
+});
+
+test("单节点、嵌套里有注释都不算（只看直接插槽）", () => {
+  const ok = `<template>
+<Foo as="template">
+  <div>
+    <!-- 子元素内部的注释无妨 -->
+    <span>x</span>
+  </div>
+</Foo>
+</template>`;
+  assert.deepEqual(findTemplateSlotIssues(ok), []);
+});
+
+test("v-if / v-else 链只算一个节点", () => {
+  const ok = `<template>
+<Foo as="template">
+  <DialogPanel v-if="fullscreen">A</DialogPanel>
+  <DialogPanel v-else>B</DialogPanel>
+</Foo>
+</template>`;
+  assert.deepEqual(findTemplateSlotIssues(ok), []);
+});
+
+test("两个**独立**元素（没有 v-else 关系）仍然报出", () => {
+  const buggy = `<template>
+<Foo as="template">
+  <div v-if="a">A</div>
+  <div>B</div>
+</Foo>
+</template>`;
+  assert.equal(findTemplateSlotIssues(buggy).length, 1);
+});
+
+test("普通组件（没有 as=template）里有注释不报", () => {
+  const ok = `<template>
+<div>
+  <!-- 随便注释 -->
+  <span>x</span>
+</div>
+</template>`;
+  assert.deepEqual(findTemplateSlotIssues(ok), []);
+});
+
 // ---------------- 全库扫描：真实文件必须干净 ----------------
 
 function collectVueFiles(dir: string, out: string[] = []): string[] {
@@ -511,6 +601,19 @@ test("src 下所有小尺寸可交互元素都带 tap-safe", () => {
     }
   }
   assert.deepEqual(bad, [], `以下元素点按目标过小：\n${bad.join("\n")}`);
+});
+
+test("src 下所有 as=template 的插槽都干净（无注释、单节点）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findTemplateSlotIssues(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下 as="template" 插槽有问题：\n${bad.join("\n")}`);
 });
 
 test("src 下所有 outline-none 都自带焦点指示", () => {
