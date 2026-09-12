@@ -424,6 +424,51 @@ CASES: list[Case] = [
         expect_fail_hint="mobileView",
         tags=["frontend", "android", "nav"],
     ),
+    # ---------------- 好友申请：已是好友的申请必须自动消失（2026-09-12 用户实测） ----------------
+    Case(
+        name="好友申请（已是好友的申请必须从「新朋友」消失）",
+        why="用户实测：双方互发过申请、一方点同意后，另一方点进「新朋友」那条申请还在。"
+        "根因是「同意」各条路径行为不一致；前端再用「人已经是好友」这个事实兜一层",
+        file=ROOT / "src" / "stores" / "useChatStore.ts",
+        injections=[
+            (
+                "const pendingRequests = computed(() =>\n    actionableRequests(",
+                "const pendingRequests = computed(() =>\n    ((x: unknown) => x)(",
+            )
+        ],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="按好友过滤",
+        tags=["frontend", "friend"],
+    ),
+    Case(
+        name="好友同意（两条 FriendAccept 路径都必须清 pending）",
+        why="用户实测根因：直连 `Message::FriendAccept` 只加好友、忘了清 pending，"
+        "跨跳 `GossipKind::FriendAccept` 清了 ⇒ 「有时候会清、有时候不清」",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[
+            (
+                "            // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）\n"
+                "            forget_pending_request(state, &from);",
+                "            // （非空转验证：这一行被临时移除）",
+            )
+        ],
+        cmd=cargo("test", "--lib", "every_friend_accept_path_forgets_the_pending_request"),
+        cwd=TAURI,
+        expect_fail_hint="两条 FriendAccept 路径",
+        tags=["rust", "friend"],
+    ),
+    Case(
+        name="好友申请兜底（get_pending_requests 必须按好友关系过滤）",
+        why="用户明确要求：已在好友列表的人，其申请应当自动清除。主修在各条同意路径，"
+        "这里是不依赖「哪条消息到了」的兜底判据",
+        file=TAURI / "src" / "commands.rs",
+        injections=[("map.retain(|_, req| is_actionable_request(req, &friend_ids));", "map.retain(|_, _| true);")],
+        cmd=cargo("test", "--lib", "pending_requests_exclude_existing_friends"),
+        cwd=TAURI,
+        expect_fail_hint="必须按好友关系过滤",
+        tags=["rust", "friend"],
+    ),
     Case(
         name="手机蓝牙默认开启（零配置）",
         why="用户实测要求：手机上蓝牙通道应默认打开、不用去设置里开（参考 BitChat 进去就能连）。"

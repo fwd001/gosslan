@@ -797,6 +797,50 @@ mod tests {
         assert_eq!(tray::MAIN_WINDOW_LABEL, WINDOW_MAIN);
     }
 
+    /// **每一条"同意好友"的路径都必须清掉那条申请**。
+    ///
+    /// 真实缺陷（用户 2026-09-12 真机实测）：双方互发过申请时，A 点了同意，B 的「新朋友」里
+    /// 那条申请**还在** —— 直连路径（`Message::FriendAccept`）只加了好友、忘了清 pending，
+    /// 而跨跳路径（`GossipKind::FriendAccept`）清了。同一件事两条路径行为不一致，
+    /// 表现成"有时候会清、有时候不清"。这里把"两条路径都要清"钉死。
+    #[test]
+    fn every_friend_accept_path_forgets_the_pending_request() {
+        let transport = include_str!("network/transport.rs");
+        assert_eq!(
+            transport.matches("forget_pending_request(state, &from)").count(),
+            2,
+            "两条 FriendAccept 路径（直连 `Message::FriendAccept` + 跨跳 `GossipKind::FriendAccept`）\
+             都必须清掉 pending —— 少一条就会让「已经是好友了，申请还挂着」复现"
+        );
+        let commands = include_str!("commands.rs");
+        assert_eq!(
+            commands.matches("forget_pending_request(s, &peer_id)").count(),
+            1,
+            "`respond_friend_request` 的同意路径也要走同一个助手（别各写一遍）"
+        );
+        let helper = rust_fn_body(transport, "pub fn forget_pending_request(");
+        assert!(
+            helper.contains("remove(peer_id)"),
+            "助手必须真的把内存态的 pending 删掉"
+        );
+    }
+
+    /// **`get_pending_requests` 必须按好友关系过滤**（用户明确要求的兜底规则）。
+    #[test]
+    fn pending_requests_exclude_existing_friends() {
+        let commands = include_str!("commands.rs");
+        let body = rust_fn_body(commands, "pub fn get_pending_requests(");
+        assert!(
+            body.contains("is_actionable_request"),
+            "列表必须按好友关系过滤 —— 否则「已经是好友了申请还挂着」只能靠每条路径都记得清"
+        );
+        let pred = rust_fn_body(commands, "pub(crate) fn is_actionable_request(");
+        assert!(
+            pred.contains("!friend_ids.contains"),
+            "判据必须是「不是好友才算待处理」"
+        );
+    }
+
     /// **手机上的蓝牙通道默认开启、零配置**（用户 2026-09-12 安卓实测要求：
     /// 「如果测到蓝牙是手机的话，蓝牙通道应该是默认打开的，并且不用设置」——
     /// 参考 BitChat：进去就能连，不用配对/配置/开关）。桌面维持默认关闭

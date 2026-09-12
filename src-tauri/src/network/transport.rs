@@ -754,6 +754,21 @@ pub(crate) fn verify_hello(
     )
 }
 
+/// 同意好友之后**忘掉这条申请**（内存态 `pending_requests` 里的那一行）。
+///
+/// 真实缺陷（用户 2026-09-12 真机实测）：双方互发过申请时，A 点了同意，B 的「新朋友」里
+/// 那条申请**还在** —— 因为直连路径（`Message::FriendAccept`）只加了好友、没有清 pending，
+/// 而跨跳路径（`GossipKind::FriendAccept`）清了。同一件事两条路径行为不一致，
+/// 于是"有时候会清、有时候不清"。现在两条路径 + `respond_friend_request` 都走这一个助手，
+/// 前端再用 `pendingRequests`（按好友列表过滤）兜一层，不会再出现"已经是好友还挂在申请里"。
+pub fn forget_pending_request(state: &AppState, peer_id: &str) {
+    state
+        .pending_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(peer_id);
+}
+
 /// 构造带签名的 Hello（nonce 每次新生成，签名覆盖连接身份的全部字段）。
 pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
     let device_id = state.device_id.clone();
@@ -2097,6 +2112,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     db::update_friend_pubkeys(&dbc, &from, x.as_deref(), e.as_deref()).ok();
                 }
             }
+            // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）
+            forget_pending_request(state, &from);
             let _ = state.app.emit("friend-accepted", &from);
             notify(
                 &state.app,
@@ -3436,11 +3453,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         db::update_friend_pubkeys(&dbc, &from, x.as_deref(), e.as_deref()).ok();
                     }
                 }
-                state
-                    .pending_requests
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&from);
+                forget_pending_request(state, &from);
                 let _ = state.app.emit("friend-accepted", &from);
                 // 留痕：跨跳好友同意是落库（friends 表）+ 内存态，日志便于 headless 观测。
                 state.logger.info("friend", format!("收到跨跳好友同意 peer={from}"));

@@ -902,16 +902,39 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
     Ok(())
 }
 
+/// 待处理的好友申请。
+///
+/// **规则（用户 2026-09-12 真机实测要求）**：已经在好友列表里的人，其申请不该再出现
+/// ——「如果该好友已在好友列表的话，列表里的那个好友申请就应该自动清除掉」。
+/// 主修在各条"同意"路径上清 `pending_requests`（见 `transport::forget_pending_request`），
+/// 这里按 friends 表再过滤一遍并**顺手把内存态收敛掉**：万一哪条路径漏了（或对方是走
+/// 别的消息把我加上的），「新朋友」里也不会留着一条永远处理不掉的过期申请。
 #[tauri::command(async)]
 pub fn get_pending_requests(state: State<'_, Arc<AppState>>) -> Vec<PendingRequest> {
-    state
-        .inner()
-        .pending_requests
-        .lock()
-        .unwrap()
-        .values()
-        .cloned()
-        .collect()
+    let s = state.inner();
+    let friend_ids: std::collections::HashSet<String> = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_friends(&dbc)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| f.device_id)
+            .collect()
+    };
+    let mut map = s.pending_requests.lock().unwrap_or_else(|e| e.into_inner());
+    map.retain(|_, req| is_actionable_request(req, &friend_ids));
+    map.values().cloned().collect()
+}
+
+/// 这条好友申请该不该出现在「新朋友」里？
+///
+/// 判据只有一条：**人已经是好友了 ⇒ 申请不该再出现**（用户 2026-09-12 明确要求）。
+/// 抽成纯函数是为了能在主机上直接单测这条规则 —— 它原先散落在"同意"的各条路径里，
+/// 直连路径漏了清、跨跳路径清了，表现成"有时候会清、有时候不清，全看对方怎么被加上"。
+pub(crate) fn is_actionable_request(
+    req: &PendingRequest,
+    friend_ids: &std::collections::HashSet<String>,
+) -> bool {
+    !friend_ids.contains(&req.from)
 }
 
 #[tauri::command(async)]
@@ -1038,7 +1061,7 @@ pub async fn respond_friend_request(
                 format!("同意好友但缺对端公钥，FriendAccept 未发送 peer={peer_id}"),
             );
         }
-        s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer_id);
+        crate::network::transport::forget_pending_request(s, &peer_id);
         let _ = s.app.emit("friend-accepted", &peer_id);
     } else {
         // 拒绝回执：跨跳（无直连）时 try_send 会失败，但**绝不因此阻塞本地清理**——
@@ -4231,5 +4254,29 @@ mod tests {
         let url = data_url("image/png", &exact);
         let (_, bytes) = decode_outgoing_image(&url).unwrap();
         assert_eq!(bytes.len() as u64, MAX_OUTGOING_IMAGE_BYTES);
+    }
+
+    /// **已经是好友的人，其好友申请不该再出现在「新朋友」里**（用户 2026-09-12 真机实测要求）。
+    fn pending(from: &str) -> super::PendingRequest {
+        super::PendingRequest {
+            from: from.to_string(),
+            from_nickname: from.to_string(),
+            from_avatar: None,
+            ts: 1,
+        }
+    }
+
+    fn ids(list: &[&str]) -> std::collections::HashSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn pending_request_from_an_existing_friend_is_not_actionable() {
+        // 不是好友 → 该显示
+        assert!(super::is_actionable_request(&pending("A"), &ids(&[])));
+        assert!(super::is_actionable_request(&pending("A"), &ids(&["B"])));
+        // 已是好友 → 不显示（这正是用户报的"点了同意，对方那边申请还挂着"）
+        assert!(!super::is_actionable_request(&pending("A"), &ids(&["A"])));
+        assert!(!super::is_actionable_request(&pending("A"), &ids(&["A", "B"])));
     }
 }

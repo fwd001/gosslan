@@ -13,6 +13,7 @@ import {
   syncProfileFromPeers,
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
+import { actionableRequests } from "@/utils/friendRequests";
 import { notificationBody } from "@/utils/notifications";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
@@ -42,7 +43,26 @@ const LAST_CONV_KEY = "gosslan.lastConv";
 export const useChatStore = defineStore("chat", () => {
   const peers = ref<Peer[]>([]);
   const friends = ref<Friend[]>([]);
-  const pendingRequests = ref<PendingRequest[]>([]);
+  /** 后端给的**原始**好友申请列表（可能含已经过期的：对方已同意 / 我已把他加上了）。 */
+  const rawPendingRequests = ref<PendingRequest[]>([]);
+  /**
+   * 展示用的好友申请列表：**已经在好友列表里的申请自动消失**。
+   *
+   * 用户 2026-09-12 真机实测的规则：「如果双方已经互相是好友了，另一个人点进『新朋友』列表，
+   * 那条好友申请就应该自动清除掉」。
+   *
+   * 做成 computed 而不是在各处手动删，有两个原因：
+   *   ① 四个地方都读 `chat.pendingRequests`（会话列表红点、通讯录「新的朋友」、
+   *      窄导航徽标、添加好友页的「同意/拒绝」行）—— 一处过滤，四处同时生效；
+   *   ② 无论这条申请是**怎么**被解决的（我同意、对方同意、重启后重新拉取），
+   *      只要 `friends` 里有这个人，那一行就立刻消失，不依赖某条回执消息有没有送达。
+   */
+  const pendingRequests = computed(() =>
+    actionableRequests(
+      rawPendingRequests.value,
+      friends.value.map((f) => f.device_id),
+    ),
+  );
   const conversations = ref<Conversation[]>([]);
   const groups = ref<Group[]>([]);
   const transfers = ref<TransferInfo[]>([]);
@@ -313,7 +333,7 @@ export const useChatStore = defineStore("chat", () => {
     friends.value = await api.getFriends();
   }
   async function refreshPending() {
-    pendingRequests.value = await api.getPendingRequests();
+    rawPendingRequests.value = await api.getPendingRequests();
   }
   async function refreshConversations() {
     conversations.value = await api.getConversations();
@@ -634,12 +654,12 @@ export const useChatStore = defineStore("chat", () => {
   }
   /** 乐观交互：立即移出申请列表，失败回滚（调用方负责 toast）。 */
   async function respondRequest(peerId: string, accept: boolean) {
-    const prev = pendingRequests.value;
-    pendingRequests.value = prev.filter((r) => r.from !== peerId);
+    const prev = rawPendingRequests.value;
+    rawPendingRequests.value = prev.filter((r) => r.from !== peerId);
     try {
       await api.respondFriendRequest(peerId, accept);
     } catch (e) {
-      pendingRequests.value = prev; // 回滚
+      rawPendingRequests.value = prev; // 回滚
       throw e;
     }
     if (accept) {
@@ -998,9 +1018,9 @@ export const useChatStore = defineStore("chat", () => {
       },
       onFriendRequest: (req) => {
         // 去重：同一设备多次申请只保留最新一条（过滤历史重复申请）
-        pendingRequests.value = [
+        rawPendingRequests.value = [
           req,
-          ...pendingRequests.value.filter((r) => r.from !== req.from),
+          ...rawPendingRequests.value.filter((r) => r.from !== req.from),
         ];
       },
       onFriendAccepted: async () => {
