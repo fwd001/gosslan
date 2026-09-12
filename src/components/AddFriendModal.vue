@@ -92,7 +92,7 @@ const filteredPeers = computed(() => {
  * 并写清"为什么没发现"，让用户就地解决。
  */
 // 通道状态来自 store（与设置页**同一份**，两处不可能再不一致）
-const channels = computed(() => app.channels);
+const channels = computed(() => app.channels ?? []);
 const channelBusy = ref<string | null>(null);
 
 async function toggleChannel(ch: ChannelStatus) {

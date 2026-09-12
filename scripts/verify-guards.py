@@ -275,6 +275,18 @@ CASES: list[Case] = [
         expect_fail_hint="HTML 注释",
         tags=["frontend", "render"],
     ),
+    # ---------------- 前端：store 契约 ----------------
+    Case(
+        name="store 契约（界面用到的成员必须在 store 里导出）",
+        why="用户实测：给 store 新增 channels/refreshChannels 后，dev 里旧 store 实例没有这些成员 ⇒ "
+        "设置页渲染抛错 ⇒ 整页卡死（点设置卡、过一会儿弹好几个设置、主题延迟切换）",
+        file=TAURI / ".." / "src" / "stores" / "useAppStore.ts",
+        injections=[("    refreshChannels,\n", "    refreshChannelsRenamed,\n")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="refreshChannels",
+        tags=["frontend", "store"],
+    ),
 ]
 
 

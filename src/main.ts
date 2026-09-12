@@ -39,6 +39,13 @@ window.addEventListener("unhandledrejection", (e) => {
 });
 
 const app = createApp(App);
+// 渲染/生命周期里的异常：记日志（带组件名）并让 Vue 继续跑别的组件。
+// 一个组件抛错若没人接，Vue 只会把错误抛到 window —— 界面当次 patch 会中断，
+// 表现就是"这一页再也点不动"。这里至少把它变成**有名字、有位置**的一条日志。
+app.config.errorHandler = (err, _instance, info) => {
+  const e = err instanceof Error ? err : new Error(String(err));
+  reportFrontendError("vue", `${e.message} [${info}]\n${e.stack ?? ""}`);
+};
 app.use(createPinia());
 app.mount("#app");
 

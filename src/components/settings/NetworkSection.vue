@@ -18,7 +18,10 @@ const chat = useChatStore();
 const selectedIp = ref("0.0.0.0");
 
 // 通道状态来自 store（唯一真相源）—— 另一处（添加好友页）开关也会立刻反映到这里
-const channels = computed(() => app.channels);
+// `?? []` 是**防御性**写法：万一 store 还没就绪（或热更新留下了旧实例），
+// 这里也只是"列表为空"，而不会 `undefined.find` 抛错 —— 后者会让**整个设置页**
+// 再也 patch 不动（用户实测的"点设置卡死/过一会儿弹出好几个设置"）。
+const channels = computed(() => app.channels ?? []);
 const btStatus = computed(() => channels.value.find((c) => c.channel === "bluetooth"));
 const lanStatus = computed(() => channels.value.find((c) => c.channel === "lan"));
 const interfaceOptions = computed(() => [
@@ -30,7 +33,11 @@ const interfaceOptions = computed(() => [
 const policyDescription = computed(() => t(`settings.relay.policy.${app.relayPolicy}.desc`));
 
 async function loadChannels() {
-  await app.refreshChannels();
+  try {
+    await app.refreshChannels?.();
+  } catch {
+    /* 通道状态取不到不影响本页其它设置渲染 */
+  }
 }
 
 watch(
