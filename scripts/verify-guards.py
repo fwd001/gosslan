@@ -504,14 +504,14 @@ CASES: list[Case] = [
         tags=["frontend", "build"],
     ),
     Case(
-        name="手机蓝牙默认开启（零配置）",
-        why="用户实测要求：手机上蓝牙通道应默认打开、不用去设置里开（参考 BitChat 进去就能连）。"
-        "默认值依赖目标平台，主机单测只能覆盖桌面那一半，所以用源码规则钉住手机那一半",
+        name="蓝牙默认开启（三端一致，零配置）",
+        why="用户规则：「有蓝牙就默认开，不用手动开关」。缺省一旦退回按平台分支（或改成 false），"
+        "就会重新出现「手机有通道、Mac 要手点」以及「偏好=关 vs 运行时=开」互相回灌的启停抖动",
         file=TAURI / "src" / "db.rs",
-        injections=[("let default_on = cfg!(mobile);", "let default_on = false;")],
-        cmd=cargo("test", "--lib", "bt_defaults_on_for_mobile_devices"),
+        injections=[("let default_on = true;", "let default_on = false;")],
+        cmd=cargo("test", "--lib", "bt_defaults_on_everywhere"),
         cwd=TAURI,
-        expect_fail_hint="cfg!(mobile)",
+        expect_fail_hint="缺省必须是",
         tags=["rust", "android", "channel"],
     ),
 ]

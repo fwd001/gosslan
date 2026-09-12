@@ -517,10 +517,34 @@ pub async fn set_channel_enabled(
             // 只写偏好（并返回"后端未编译"的明确错误）。
             #[cfg(feature = "bluetooth")]
             {
-                if enabled {
-                    crate::network::ble::start(s.clone()).await?;
+                // ⚠️ **幂等闸门**：目标状态 == 运行状态时只写偏好，**不碰蓝牙栈**。
+                //
+                // 为什么必须有（用户 2026-09-12 Mac 4.1.5 实测日志）：
+                // `蓝牙外设角色已启动 → 已停止广播 → 已启动 …` 每秒循环十几次 ——
+                // 说明有调用方在"开/关"之间抖动（UI 侧的状态回灌或重试），
+                // 而每次都真的拆掉重建 CoreBluetooth 的 GATT server + 广播 ⇒
+                // CPU/蓝牙栈被打满 ⇒ **整个应用顿卡、局域网消息也变慢**。
+                // 现在只要运行状态已经是目标状态，就直接返回（幂等），
+                // 无论上层怎么抖都不会再拆栈；真正的状态变化才启停一次。
+                let running = s
+                    .ble
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_some();
+                if running != enabled {
+                    if enabled {
+                        crate::network::ble::start(s.clone()).await?;
+                    } else {
+                        crate::network::ble::stop(s).await;
+                    }
                 } else {
-                    crate::network::ble::stop(s).await;
+                    s.logger.info(
+                        "ble",
+                        format!(
+                            "蓝牙通道已经是{}，跳过启停（只同步偏好）",
+                            if enabled { "开启" } else { "关闭" }
+                        ),
+                    );
                 }
             }
             #[cfg(not(feature = "bluetooth"))]

@@ -909,31 +909,23 @@ mod tests {
         );
     }
 
-    /// **手机上的蓝牙通道默认开启、零配置**（用户 2026-09-12 安卓实测要求：
-    /// 「如果测到蓝牙是手机的话，蓝牙通道应该是默认打开的，并且不用设置」——
-    /// 参考 BitChat：进去就能连，不用配对/配置/开关）。桌面维持默认关闭
-    /// （局域网是同网段的快路径，蓝牙是可选的低带宽通道，不该悄悄开射频）。
+    /// **蓝牙通道缺省就是开**（用户 2026-09-12 规则：「有蓝牙就默认开，不用手动开关」）。
     ///
-    /// 默认值依赖目标平台：主机单测只能覆盖"桌面 = 关"那一半
-    /// （见 `db.rs` 的 `bt_enabled_keeps_explicit_value_and_defaults_off_on_desktop`），
-    /// 所以"手机 = 开"这半边用源码规则钉住。
+    /// 之前是"手机默认开、桌面默认关"，结果：Mac 上还要手动点一次；更糟的是
+    /// "偏好=关 而运行时=开"会互相回灌，触发启停抖动（Mac 日志里那种每秒一次的
+    /// `外设角色已启动 → 已停止广播` 循环，会把蓝牙栈和 CPU 打满、整个应用顿卡）。
     #[test]
-    fn bt_defaults_on_for_mobile_devices() {
+    fn bt_defaults_on_everywhere() {
         let db = include_str!("db.rs");
         let body = rust_fn_body(db, "pub fn get_bt_enabled(");
         assert!(
-            body.contains("cfg!(mobile)"),
-            "移动端缺省必须是**开**（`cfg!(mobile)`），否则手机上又得先去设置里打开一次"
+            body.contains("let default_on = true;"),
+            "缺省必须是**开**（三端一致）；写成按平台分支会重新引入「偏好/运行时互相回灌」的抖动"
         );
         assert!(
             body.contains("set_bt_enabled(conn, default_on)"),
-            "缺省值必须立刻持久化（与 `get_lan_enabled` 同一套语义：之后读到明确的 0/1）"
+            "缺省值必须立刻持久化（与 `get_lan_enabled` 同一套语义）"
         );
-        assert!(
-            !body.contains("default_on = true"),
-            "不能写死 true —— 那会把桌面端的射频也悄悄打开"
-        );
-        // 读取方必须走这个函数（不能有人再去读裸 setting，否则手机默认值会被绕过）
         let tm = include_str!("transport/mod.rs");
         assert!(
             tm.contains("crate::db::get_bt_enabled(&dbc)"),

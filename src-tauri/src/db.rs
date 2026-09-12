@@ -372,7 +372,10 @@ pub fn get_bt_enabled(conn: &Connection) -> bool {
     match get_setting(conn, "bt_enabled") {
         Some(v) => v == "1",
         None => {
-            let default_on = cfg!(mobile);
+            // 用户 2026-09-12 规则：**有蓝牙就默认开**（三端一致）——
+            // 之前桌面默认关、手机默认开，结果"手机上默认有通道、Mac 上还要手动点一次"，
+            // 而且（更糟）会让"偏好=关"与"运行时=开"互相回灌，触发启停抖动（见 `set_channel_enabled`）。
+            let default_on = true;
             set_bt_enabled(conn, default_on).ok();
             default_on
         }
@@ -2181,10 +2184,10 @@ mod tests {
     /// 主机单测只能覆盖"桌面 = 关"这一半；手机那一半由 `bt_default_on_for_mobile`
     /// 那条源码规则护栏盯着（见 `lib.rs` 的测试模块）。
     #[test]
-    fn bt_enabled_keeps_explicit_value_and_defaults_off_on_desktop() {
+    fn bt_enabled_defaults_on_and_keeps_explicit_value() {
         let conn = mem();
-        assert!(!get_bt_enabled(&conn), "桌面缺省必须是关");
-        assert_eq!(get_setting(&conn, "bt_enabled").as_deref(), Some("0"));
+        assert!(get_bt_enabled(&conn), "缺省必须是**开**（用户规则：有蓝牙就默认开）");
+        assert_eq!(get_setting(&conn, "bt_enabled").as_deref(), Some("1"));
 
         set_bt_enabled(&conn, true).unwrap();
         assert!(get_bt_enabled(&conn), "显式打开必须生效");

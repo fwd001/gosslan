@@ -268,7 +268,7 @@ export const useAppStore = defineStore("app", () => {
    */
   let bluetoothEnsureTried = false;
   async function ensureBluetoothOn() {
-    if (!isMobile.value || bluetoothEnsureTried) return;
+    if (bluetoothEnsureTried) return;
     bluetoothEnsureTried = true;
     try {
       await api.requestBlePermissions().catch(() => {});
@@ -462,7 +462,12 @@ export const useAppStore = defineStore("app", () => {
    * 两处各写一份必然漂移（真实缺陷：在设置窗口改语言/主题，主窗口一点不变）。
    */
   function applySettingsSnapshot(s: AppSettings) {
-      if (s.themeColor) themeColor.value = s.themeColor;
+    // 防御：快照可能为 null/undefined（IPC 边界、窗口正在销毁、旧 store 实例被调用）。
+    // 真实缺陷（用户 2026-09-12 Mac 4.1.5 实测）：设置窗口日志里出现
+    // `[前端 rejection] null is not an object (evaluating 'g.themeColor')` ——
+    // 就是这里读属性时快照为 null；而**一次渲染期异常会让那一页再也 patch 不动**，
+    // 表现出来正是"点设置顿顿的、过一会儿才突然弹出来"。
+    if (!s) return;
       if (s.themeColor) themeColor.value = s.themeColor;
       if (s.fontFamily != null) fontFamily.value = s.fontFamily;
       // 外观：优先用「用户意图」(appearanceMode)；旧记录只有布尔 darkMode → 视为一次显式选择。
@@ -561,6 +566,11 @@ export const useAppStore = defineStore("app", () => {
     // Android 首次启动申请「附近的设备」等运行时权限（系统弹框）。
     // ⚠️ 延迟到首帧之后且不 await：用户红线是"不能有任何阻断渲染的操作" ——
     // 权限弹框该在界面已经画出来之后再出现。
+    // 首帧之后自动确保蓝牙通道开启（用户规则：有蓝牙就默认开，不要手动开关）。
+    // 放在 2s 之后：此刻界面已经画出来，且**不再位于启动关键路径**上；
+    // 失败只记日志/保持关闭（`ensureBluetoothOn` 自身幂等、绝不抛）。
+    window.setTimeout(() => void ensureBluetoothOn(), 2000);
+
     // ⚠️ 移动端**启动路径不申请任何权限、不碰任何平台专有代码**。
     //    原因：安卓 release 包"打开就闪退"极可能发生在这类调用里（JNI/Kotlin 路径），
     //    而 Tauri 的安卓入口强制 panic=abort ⇒ 一旦 panic 就是整进程消失。
