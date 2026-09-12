@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "3.0.0"
+version = "3.0.1"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"

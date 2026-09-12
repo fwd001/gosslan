@@ -8,6 +8,10 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
+## [3.0.1] - 2026-09-12
+### Changed
+- 版本发布 v3.0.1（本次未预先填写更新说明，明细见 tag v3.0.0...v3.0.1 的提交记录）
+
 ## [3.0.0] - 2026-09-12
 
 ### Fixed (安卓发附件/图片总是失败 —— 选择器给的是 `content://` URI，不是文件路径)

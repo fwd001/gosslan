@@ -13,6 +13,13 @@
  * 现在：每个窗口一个 HTML + 一个入口（`src/entries/*.ts`），本文提供三者共用的启动步骤，
  * 窗口之间的差异只剩「挂载哪个根组件、挂载前要不要先取数据」——没有分支、没有拷贝。
  */
+// ⚠️ 应用样式必须在这里 import：三个窗口（主/设置/日志）都经过这个模块，
+// 所以它保证**每个窗口都加载同一份 Tailwind + 应用样式**。
+// 真实缺陷（用户 2026-09-12 实测「dev 起来整个聊天页和设置页样式全没了、像没有 CSS」）：
+// 一窗一入口重构时，旧的 `src/main.ts`（里面有 `import "./style.css"`）被删掉，
+// 而新的 `src/entries/*.ts` 没有带这句 ⇒ 打包出来的 CSS 为空、界面全裸。
+// 这类退化**不会报错、也不影响任何测试**，只会让"样式全没"，所以另有护栏盯着（见 windowEntries.test.ts）。
+import "@/style.css";
 import { createApp, nextTick, watch, type App, type Component } from "vue";
 import { createPinia } from "pinia";
 import { invoke } from "@tauri-apps/api/core";

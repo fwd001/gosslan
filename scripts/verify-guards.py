@@ -470,6 +470,17 @@ CASES: list[Case] = [
         tags=["rust", "friend"],
     ),
     Case(
+        name="应用样式（三个窗口都必须加载 style.css）",
+        why="真实缺陷：一窗一入口重构时漏掉了 `import \"./style.css\"`，dev 起来整个界面\"像没有 CSS\"，"
+        "而且不报错、不影响任何测试 —— 只有这条守卫能拦住",
+        file=ROOT / "src" / "boot" / "boot.ts",
+        injections=[('import "@/style.css";', "// （非空转验证：这一行被临时移除）")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="style.css",
+        tags=["frontend", "style"],
+    ),
+    Case(
         name="版本号规则（feat 必须算中档，否则台账与门禁一起失效）",
         why="版本分类是发布台账与 `version:check` 的唯一依据；把 feat 降成 patch 会让\"中功能\""
         "永远不提升中位，历史台账与门禁同时失真（这类退化不报错、也不影响功能）",

@@ -139,3 +139,21 @@ test("App.vue 不得再按窗口 label 分支渲染（分支回来 = 老问题�
     "index.html 不该再依赖注入的窗口标识",
   );
 });
+
+test("每个窗口都必须加载应用样式（style.css 只能挂在共用的 boot 模块上）", () => {
+  // 真实缺陷：一窗一入口重构时漏掉了 `import "./style.css"`，
+  // 结果 dev 起来"整个界面像没有 CSS" —— 不报错、不影响任何测试，只能靠这条守卫。
+  const boot = read("src/boot/boot.ts");
+  assert.match(
+    boot,
+    /import "@\/style\.css";/,
+    "共用的 boot 模块必须 import 应用样式（三个窗口都经过它 ⇒ 一处 import 全窗口生效）",
+  );
+  for (const w of WINDOWS) {
+    const entry = read(w.entry);
+    assert.ok(
+      !entry.includes("style.css"),
+      `${w.entry} 不要单独 import 样式：挂在 boot 模块上才能保证三个窗口一致，避免"某个窗口忘了带"`,
+    );
+  }
+});
