@@ -494,6 +494,216 @@ mod tests {
         out
     }
 
+    /// **Kotlin ↔ Rust 的 JNI 方法签名必须逐字对齐**。
+    ///
+    /// JNI 调用**不做任何编译期检查**：描述符写错只会在运行期抛 `NoSuchMethodError`，
+    /// 而且只有真机上才现形。真实缺陷（本轮 code review 抓到）：
+    /// Kotlin 的 `fun stop()` 是 Unit 方法（JNI `()V`），Rust 侧却用 `()Z` 调用 ⇒
+    /// 用户关掉「蓝牙通道」后手机**仍在广播**（耗电 + 隐私），日志里一个字都没有。
+    ///
+    /// 这条护栏在**主机上**就能跑：解析 Kotlin 源码里 `fun` 的形参/返回类型推出 JNI 描述符，
+    /// 与 Rust 侧 `kotlin_method!("名字", "描述符")` 的登记逐条比对；
+    /// 并检查每个 `extern fn`（native 回调）在 Kotlin 里确有同名 `external fun`。
+    #[test]
+    fn android_jni_signatures_match_kotlin() {
+        let kotlin = include_str!("../gen/android/app/src/main/java/com/gosslan/app/BlePeripheral.kt");
+        let rust = include_str!("transport/ble_android.rs");
+
+        let kotlin_fns = parse_kotlin_funs(kotlin);
+        for expected in [
+            "start",
+            "stop",
+            "send",
+            "isConnected",
+            "payloadMtu",
+            "nativeBootstrap",
+            "nativeOnFrame",
+            "nativeOnUnlinked",
+            "nativeOnNotice",
+            "nativeOnWarning",
+        ] {
+            assert!(
+                kotlin_fns.iter().any(|(n, _, _)| n == expected),
+                "没在 BlePeripheral.kt 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
+            );
+        }
+
+        // ① Rust 登记的每个 Kotlin 方法，描述符必须与 Kotlin 源码推出的**逐字相同**
+        let registered = parse_kotlin_method_registrations(rust);
+        assert!(
+            registered.len() >= 5,
+            "Rust 侧至少应登记 5 个 Kotlin 方法，实际 {}",
+            registered.len()
+        );
+        for (name, desc) in &registered {
+            let (_, kotlin_desc, _) = kotlin_fns
+                .iter()
+                .find(|(n, _, _)| n == name)
+                .unwrap_or_else(|| panic!("Rust 登记了 Kotlin 里不存在的 `{name}`"));
+            assert_eq!(
+                kotlin_desc, desc,
+                "`{name}` 的 JNI 描述符不一致：Kotlin 是 `{kotlin_desc}`，Rust 却按 `{desc}` 调用 \
+                 —— JNI 不做任何编译期检查，这只会在真机上抛 NoSuchMethodError"
+            );
+        }
+
+        // ② Rust 导出的 native 回调（snake_case → lowerCamelCase）必须在 Kotlin 里是 external fun
+        for snake in parse_extern_fn_names(rust) {
+            let camel = snake_to_lower_camel(&snake);
+            let found = kotlin_fns
+                .iter()
+                .find(|(n, _, _)| n == &camel)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Rust 导出了 native 方法 `{snake}`（Java 名 `{camel}`），但 Kotlin 里没有这个 \
+                         `external fun` —— JVM 会 UnsatisfiedLinkError"
+                    )
+                });
+            assert!(
+                found.2,
+                "Kotlin 的 `{camel}` 不是 `external` 声明，JVM 不会去查 native 实现"
+            );
+        }
+    }
+
+    /// 解析 Kotlin 里**单行**的 `[modifiers] fun name(params): Ret` → `(名字, JNI 描述符, 是否 external)`。
+    fn parse_kotlin_funs(src: &str) -> Vec<(String, String, bool)> {
+        let mut out = Vec::new();
+        for line in src.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+                continue;
+            }
+            let Some(pos) = line.find("fun ") else { continue };
+            let after = &line[pos + 4..];
+            let name: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let (Some(open), Some(close)) = (after.find('('), after.find(')')) else {
+                continue;
+            };
+            if close < open {
+                continue;
+            }
+            let params = &after[open + 1..close];
+            let ret = after[close + 1..]
+                .trim_start()
+                .strip_prefix(':')
+                .and_then(|r| r.split_whitespace().next())
+                .map(|r| r.trim_end_matches(['{', '=']))
+                .filter(|r| !r.is_empty())
+                .unwrap_or("Unit");
+            // 只解析"Rust 可能调用"的方法：形参/返回类型里有本项目没映射过的类型
+            // （例如 `bootstrap(context: Context)`）就跳过 —— 护栏只关心被登记的那几个。
+            let mut desc = String::from("(");
+            let mut mapped = true;
+            for p in params.split(',').filter(|p| !p.trim().is_empty()) {
+                let ty = p.split(':').nth(1).map(str::trim).unwrap_or("Unit");
+                match jni_type(ty) {
+                    Some(t) => desc.push_str(&t),
+                    None => {
+                        mapped = false;
+                        break;
+                    }
+                }
+            }
+            if !mapped {
+                continue;
+            }
+            desc.push(')');
+            match jni_type(ret) {
+                Some(t) => desc.push_str(&t),
+                None => continue,
+            }
+            out.push((name, desc, line.contains("external")));
+        }
+        out
+    }
+
+    /// 解析 Rust 侧 `kotlin_method!("名字", "描述符")` 的登记。
+    fn parse_kotlin_method_registrations(src: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut rest = src;
+        const NEEDLE: &str = "kotlin_method!(";
+        while let Some(i) = rest.find(NEEDLE) {
+            let after = &rest[i + NEEDLE.len()..];
+            // 结束括号要在**引号外**找：描述符形如 `"()V"`，里面也有 `)`
+            let mut end = None;
+            let mut in_quotes = false;
+            for (idx, ch) in after.char_indices() {
+                match ch {
+                    '"' => in_quotes = !in_quotes,
+                    ')' if !in_quotes => {
+                        end = Some(idx);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            let Some(end) = end else { break };
+            let parts: Vec<&str> = after[..end].split(',').map(str::trim).collect();
+            if parts.len() == 2 {
+                out.push((
+                    parts[0].trim_matches('"').to_string(),
+                    parts[1].trim_matches('"').to_string(),
+                ));
+            }
+            rest = &after[end..];
+        }
+        out
+    }
+
+    /// 解析 Rust 侧 `extern fn name(` 的 native 回调名。
+    fn parse_extern_fn_names(src: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut rest = src;
+        const NEEDLE: &str = "extern fn ";
+        while let Some(i) = rest.find(NEEDLE) {
+            let after = &rest[i + NEEDLE.len()..];
+            let name: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                out.push(name);
+            }
+            rest = after;
+        }
+        out
+    }
+
+    fn snake_to_lower_camel(snake: &str) -> String {
+        let mut parts = snake.split('_');
+        let mut out = parts.next().unwrap_or_default().to_string();
+        for part in parts {
+            let mut chars = part.chars();
+            if let Some(first) = chars.next() {
+                out.push_str(&first.to_uppercase().collect::<String>());
+                out.push_str(chars.as_str());
+            }
+        }
+        out
+    }
+
+    /// Kotlin 类型名 → JNI 描述符；本项目没映射过的类型返回 `None`（调用方跳过那个方法）。
+    ///
+    /// `Context`/`BluetoothGattServer` 这类只出现在 Kotlin 内部方法的形参里，
+    /// Rust 从不调用它们，因此不需要（也不该）在这里维护映射。
+    fn jni_type(kotlin: &str) -> Option<String> {
+        Some(match kotlin.trim() {
+            "String" => "Ljava/lang/String;".to_string(),
+            "ByteArray" => "[B".to_string(),
+            "Boolean" => "Z".to_string(),
+            "Int" => "I".to_string(),
+            "Long" => "J".to_string(),
+            "Float" => "F".to_string(),
+            "Double" => "D".to_string(),
+            "Unit" | "" => "V".to_string(),
+            _ => return None,
+        })
+    }
+
     /// 主窗口标签在 `tray` 里还有一份（那份是 `#[cfg(desktop)]`），两边不许漂移。
     #[cfg(desktop)]
     #[test]

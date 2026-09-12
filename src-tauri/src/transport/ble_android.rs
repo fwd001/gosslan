@@ -37,6 +37,19 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::transport::ble_framing::{self, BleReassembler, PushOutcome};
 
+/// 登记一个 Kotlin 方法：`方法名 + JNI 描述符`。
+///
+/// 为什么把两者写在一起：JNI 调用**不做任何签名检查**（写错就是运行期
+/// `NoSuchMethodError`，而它只在真机上才现形）。集中登记后，`lib.rs` 里的护栏可以直接
+/// 拿 Kotlin 源码里解析出来的描述符逐字比对 —— 真实缺陷：`stop()` 是 Kotlin 的 Unit 方法
+/// （`()V`），此前却用 `()Z` 调用 ⇒ 关掉蓝牙开关后手机**仍在广播**（耗电 + 隐私），
+/// 而且日志里什么都没有。
+macro_rules! kotlin_method {
+    ($name:literal, $sig:literal) => {
+        (jni_str!($name), jni_sig!($sig))
+    };
+}
+
 /// 发一帧的重试上限（对端还没订阅/通知队列满时等一等）。
 const WRITE_DEADLINE: Duration = Duration::from_secs(8);
 /// 两次重试之间的间隔。
@@ -70,7 +83,20 @@ pub struct PeripheralServer {
 impl PeripheralServer {
     /// 停止广播并关掉 GATT server（幂等）。
     pub fn stop(&self) {
-        let _ = call_static_bool("stop", &[]);
+        let class = match kotlin_class() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let (name, sig) = kotlin_method!("stop", "()V");
+        if let Err(e) = with_env(|env| {
+            env.call_static_method(class, name, sig, &[])?;
+            Ok(())
+        }) {
+            // 这里失败意味着外设**没有真正停掉**（仍在广播）—— 必须留痕，别静默
+            send_event(PeripheralEvent::Warning(format!(
+                "停止 BLE 外设失败（可能仍在广播）：{e}"
+            )));
+        }
     }
 }
 
@@ -127,12 +153,12 @@ fn kotlin_class() -> Result<&'static Global<JClass<'static>>, String> {
 fn call_static_bool(name: &str, args: &[JValue]) -> Result<bool, String> {
     let class = kotlin_class()?;
     with_env(|env| {
-        let short = match name {
-            "start" => jni_str!("start"),
-            "stop" => jni_str!("stop"),
+        let (short, sig) = match name {
+            "start" => kotlin_method!("start", "()Z"),
+            "isConnected" => kotlin_method!("isConnected", "(Ljava/lang/String;)Z"),
             other => panic!("未登记的 Kotlin 方法：{other}"),
         };
-        let value = env.call_static_method(class, short, jni_sig!("()Z"), args)?;
+        let value = env.call_static_method(class, short, sig, args)?;
         Ok(value.z()?)
     })
 }
@@ -150,6 +176,9 @@ pub fn start() -> Result<PeripheralStart, String> {
     let (tx, rx) = mpsc::unbounded_channel();
     *EVENTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
     *REASSEMBLERS.lock().unwrap_or_else(|e| e.into_inner()) = Some(HashMap::new());
+    send_event(PeripheralEvent::Notice(
+        "Android BLE 外设桥已就绪（JNI 调用与回调均已注册）".to_string(),
+    ));
 
     let (state_tx, state_rx) = oneshot::channel();
     let result = call_static_bool("start", &[]);
@@ -214,16 +243,11 @@ fn call_static_int(name: &str, arg: &str) -> Result<i32, String> {
     let class = kotlin_class()?;
     with_env(|env| {
         let jarg = env.new_string(arg)?;
-        let short = match name {
-            "payloadMtu" => jni_str!("payloadMtu"),
+        let (short, sig) = match name {
+            "payloadMtu" => kotlin_method!("payloadMtu", "(Ljava/lang/String;)I"),
             other => panic!("未登记的 Kotlin 方法：{other}"),
         };
-        let value = env.call_static_method(
-            class,
-            short,
-            jni_sig!("(Ljava/lang/String;)I"),
-            &[JValue::Object(&jarg)],
-        )?;
+        let value = env.call_static_method(class, short, sig, &[JValue::Object(&jarg)])?;
         Ok(value.i()?)
     })
 }
@@ -251,10 +275,11 @@ fn call_static_send(address: &str, bytes: &[u8]) -> Result<bool, String> {
     with_env(|env| {
         let jaddr = env.new_string(address)?;
         let jbytes = env.byte_array_from_slice(bytes)?;
+        let (name, sig) = kotlin_method!("send", "(Ljava/lang/String;[B)Z");
         let value = env.call_static_method(
             class,
-            jni_str!("send"),
-            jni_sig!("(Ljava/lang/String;[B)Z"),
+            name,
+            sig,
             &[JValue::Object(&jaddr), JValue::Object(&jbytes)],
         )?;
         Ok(value.z()?)
@@ -297,9 +322,8 @@ fn native_bootstrap<'local>(
             )
         };
     }
-    send_event(PeripheralEvent::Notice(
-        "Android BLE 外设桥已就绪（JNI bootstrap 完成）".to_string(),
-    ));
+    // 这里**不能**用 events 上报：bootstrap 发生在 App 启动时，而 events 通道要等用户
+    // 打开「蓝牙通道」才建立。桥就绪的日志改在 `start()` 里报（那里通道已经就绪）。
     Ok(())
 }
 

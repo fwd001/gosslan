@@ -188,7 +188,20 @@ CASES: list[Case] = [
         expect_fail_hint="truncate",
         tags=["frontend", "a11y"],
     ),
+    # ---------------- Rust：Android JNI 签名（跨语言一致性） ----------------
+    Case(
+        name="Android JNI 签名与 Kotlin 对齐（stop 是 ()V 不是 ()Z）",
+        why="JNI 不做编译期检查：描述符写错只在真机抛 NoSuchMethodError —— 真实缺陷是"
+        "「关掉蓝牙开关后手机仍在广播」，而且日志里什么都没有",
+        file=TAURI / "src" / "transport" / "ble_android.rs",
+        injections=[('kotlin_method!("stop", "()V")', 'kotlin_method!("stop", "()Z")')],
+        cmd=cargo("test", "--lib", "android_jni_signatures_match_kotlin"),
+        cwd=TAURI,
+        expect_fail_hint="描述符不一致",
+        tags=["rust", "ble", "android"],
+    ),
 ]
+
 
 
 def run(cmd: list[str], cwd: Path, timeout: int = 900) -> tuple[int, str]:
