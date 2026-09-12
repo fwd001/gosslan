@@ -91,11 +91,31 @@ async function onInterfaceChange() {
 
 async function toggleBluetooth() {
   const cur = btStatus.value?.enabled ?? false;
+  const target = !cur;
   try {
-    await app.setChannelEnabled("bluetooth", !cur);
+    await app.setChannelEnabled("bluetooth", target);
     app.toast(cur ? t("settings.network.toast.btOff") : t("settings.network.toast.btOn"), cur ? "info" : "success");
   } catch (e) {
-    app.toastError(e, t("settings.network.toast.btFail"));
+    if (!target) {
+      app.toastError(e, t("settings.network.toast.btFail"));
+      await loadChannels();
+      return;
+    }
+    // 打开失败**最常见的**原因是 Android 缺「附近的设备」运行时权限：
+    // 先申请（系统弹框）再自动重试一次，而不是让用户自己去设置里翻。
+    let retried = false;
+    try {
+      await api.requestBlePermissions();
+      await app.setChannelEnabled("bluetooth", true);
+      app.toast(t("settings.network.toast.btOn"), "success");
+      retried = true;
+    } catch (e2) {
+      app.toastError(e2, t("settings.network.toast.btFail"));
+    }
+    if (!retried) {
+      // 用户拒绝过权限：给一条能照着做的提示（系统设置里的路径）
+      app.toast(t("settings.network.toast.btPermissionHint"), "info");
+    }
   }
   await loadChannels();
 }

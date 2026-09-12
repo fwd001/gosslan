@@ -65,8 +65,11 @@ object BlePeripheral {
 
     private const val REQUEST_BLE_PERMISSIONS = 0x6201
 
-    /** 由 `MainActivity.onCreate` 传入的应用 Context（申请权限 / 取系统服务都靠它）。 */
+    /** 由 `MainActivity.onCreate` 传入的应用 Context（取系统服务靠它）。 */
     private var appContext: Context? = null
+
+    /** **Activity** 引用：运行时权限弹框只能由 Activity 发起（applicationContext 不行）。 */
+    private var activityRef: Activity? = null
 
     private var manager: BluetoothManager? = null
     private var gattServer: BluetoothGattServer? = null
@@ -114,6 +117,8 @@ object BlePeripheral {
     @JvmStatic
     fun bootstrap(context: Context) {
         appContext = context.applicationContext
+        // MainActivity 传进来的是它自己（Activity）——存下来用于权限弹框
+        activityRef = context as? Activity
         try {
             nativeBootstrap()
         } catch (e: UnsatisfiedLinkError) {
@@ -401,13 +406,29 @@ object BlePeripheral {
     // 权限
     // ------------------------------------------------------------------
 
-    private fun requiredPermissions(): List<String> =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            listOf(Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            // Android 11 及以下：安装期权限，无需运行时申请
-            emptyList()
+    /**
+     * 需要申请的全部运行时权限。
+     *
+     * - Android 12+（API 31）把蓝牙拆成 SCAN / CONNECT / **ADVERTISE** 三个运行时权限，
+     *   三者缺一不可：缺 SCAN 就"扫不到别人"，缺 ADVERTISE 就"别人发现不了手机"；
+     * - Android 13+（API 33）起，调用 `WifiManager`（组播锁）还需要 `NEARBY_WIFI_DEVICES`
+     *   —— 不带 `neverForLocation`（已在 manifest 声明）会被要求定位权限；
+     * - Android 11 及以下：这些都是**安装期**权限，无需运行时申请。
+     *
+     * 系统把它们统一归在「附近的设备」这一组里，所以用户只需要点一次。
+     */
+    private fun requiredPermissions(): List<String> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return emptyList()
+        val perms = mutableListOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.BLUETOOTH_ADVERTISE,
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms += Manifest.permission.NEARBY_WIFI_DEVICES
         }
+        return perms
+    }
 
     private fun hasPermissions(context: Context): Boolean =
         requiredPermissions().all {
@@ -417,5 +438,38 @@ object BlePeripheral {
     private fun requestPermissions(context: Context) {
         val activity = context as? Activity ?: return
         ActivityCompat.requestPermissions(activity, requiredPermissions().toTypedArray(), REQUEST_BLE_PERMISSIONS)
+    }
+
+    /**
+     * 是否已具备全部运行时权限（Rust 侧用来判断"能不能打开通道"，从而给出准确提示）。
+     * 无需申请的平台（Android 11 及以下）恒为 true。
+     */
+    @JvmStatic
+    fun hasRequiredPermissions(): Boolean {
+        val ctx = appContext ?: return false
+        return requiredPermissions().all {
+            ctx.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    /**
+     * 申请全部运行时权限（**首次启动**与"打开通道失败后重试"都走它）。
+     *
+     * 系统弹框是异步的：这里只负责发起；结果由用户在系统弹框里选择。
+     * 没有 Activity（比如后台被拉起）时静默跳过 —— 前端会提示"去系统设置里打开"。
+     */
+    @JvmStatic
+    fun requestAllPermissions() {
+        val activity = activityRef
+        if (activity == null) {
+            android.util.Log.w("GosslanBLE", "没有 Activity，无法弹权限框（请在系统设置里手动打开「附近的设备」）")
+            return
+        }
+        if (hasRequiredPermissions()) return
+        ActivityCompat.requestPermissions(
+            activity,
+            requiredPermissions().toTypedArray(),
+            REQUEST_BLE_PERMISSIONS,
+        )
     }
 }

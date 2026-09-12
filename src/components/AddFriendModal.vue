@@ -5,6 +5,7 @@ import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import type { ChannelStatus } from "@/types";
+import { api } from "@/api";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { avatarInitial, nameToColor } from "@/utils/color";
@@ -101,7 +102,18 @@ async function toggleChannel(ch: ChannelStatus) {
   try {
     await app.setChannelEnabled(ch.channel, !ch.enabled);
   } catch (e) {
-    app.toastError(e, t("friend.add.channelFailed", { err: "" }));
+    // 打开失败：先申请权限（Android「附近的设备」）再重试一次
+    let ok = false;
+    if (!ch.enabled) {
+      try {
+        await api.requestBlePermissions();
+        await app.setChannelEnabled(ch.channel, true);
+        ok = true;
+      } catch {
+        /* 下面统一提示 */
+      }
+    }
+    if (!ok) app.toastError(e, t("friend.add.channelFailed", { err: "" }));
   } finally {
     channelBusy.value = null;
     // 打开通道后自动重扫一次 —— 否则用户还得再点一下「重新扫描」

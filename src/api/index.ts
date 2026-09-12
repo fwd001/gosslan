@@ -104,6 +104,14 @@ export const api = {
   downloadSharedFile: (friendId: string, remotePath: string) =>
     invoke<string>("download_shared_file", { friendId, remotePath }),
 
+  /**
+   * 申请 Android 的运行时权限（「附近的设备」）。
+   *
+   * Android 12+ 把蓝牙拆成 SCAN/CONNECT/ADVERTISE、13+ 还要 NEARBY_WIFI_DEVICES，
+   * 不申请就"局域网收不到组播 + 蓝牙通道打不开"。首次启动调一次（系统弹框），
+   * 通道打开失败时也会再调一次并重试。非 Android 平台是空操作。
+   */
+  requestBlePermissions: () => invoke<void>("request_ble_permissions"),
   getChannelStatus: () => invoke<ChannelStatus[]>("get_channel_status"),
   setChannelEnabled: (channel: string, enabled: boolean) =>
     invoke<void>("set_channel_enabled", { channel, enabled }),

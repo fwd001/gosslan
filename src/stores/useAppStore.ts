@@ -499,6 +499,17 @@ export const useAppStore = defineStore("app", () => {
       online.value = st.value.online;
       boundIp.value = st.value.bound_ip;
     }
+    // Android 首次启动申请「附近的设备」等运行时权限（系统弹框）。
+    // ⚠️ 延迟到首帧之后且不 await：用户红线是"不能有任何阻断渲染的操作" ——
+    // 权限弹框该在界面已经画出来之后再出现。
+    if (isMobile.value) {
+      window.setTimeout(() => {
+        void api.requestBlePermissions().catch(() => {
+          /* 非 Android / 未编译蓝牙：空操作或忽略 */
+        });
+      }, 1500);
+    }
+
     // 自动启动在后台异步执行：init 读取时可能尚未完成，导致 online=false
     // 而实际网络已经在运行。延迟刷新一次以修正 UI 状态。
     setTimeout(async () => {

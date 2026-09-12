@@ -228,6 +228,8 @@ export const zhCN: MessageDict = {
   "settings.network.bluetooth.on": "已开启",
   "settings.network.bluetooth.off": "已关闭",
   "settings.network.bluetooth.na": "暂不可用",
+  "settings.network.toast.btPermissionHint":
+    "若仍无法开启：请到「系统设置 → 应用 → 相闻 → 权限」里允许「附近的设备」，然后重试。",
   "settings.network.routed": "跨网段连接",
   "settings.network.routed.desc": "当对方不在你的局域网内时（如跨 Tailscale / VPN 连接异地设备），在能同时连上你和对端的设备上，填写对端地址即可，应用会自动中转。",
   "settings.network.routed.empty": "尚未添加跨网段设备",
@@ -811,6 +813,8 @@ export const enUS: MessageDict = {
   "settings.network.bluetooth.on": "On",
   "settings.network.bluetooth.off": "Off",
   "settings.network.bluetooth.na": "Unavailable",
+  "settings.network.toast.btPermissionHint":
+    "If it still fails: allow \"Nearby devices\" in System Settings → Apps → Gosslan → Permissions, then retry.",
   "settings.network.routed": "Cross-subnet",
   "settings.network.routed.desc": "When the peer is outside your LAN (e.g. connecting to a remote device over Tailscale / VPN), enter the peer's address on a device that can reach both of you — the app relays automatically.",
   "settings.network.routed.empty": "No cross-subnet devices yet",

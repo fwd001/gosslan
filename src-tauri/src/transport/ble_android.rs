@@ -286,6 +286,35 @@ fn call_static_send(address: &str, bytes: &[u8]) -> Result<bool, String> {
     })
 }
 
+/// 申请 Android 运行时权限（首次启动 / 通道打开失败后重试都走它）。
+///
+/// 走 Kotlin 的 `requestAllPermissions()`：权限弹框只能由 **Activity** 发起，
+/// 而 Rust 侧没有 Activity —— 所以这件事必须交给平台侧（见 `BlePeripheral.kt`）。
+/// 非 Android 平台没有这个模块，调用方用 `cfg` 兜住。
+pub fn request_permissions() -> Result<(), String> {
+    // 已经授权就别再弹一次（也省一次 JNI 往返）：用户点了"允许"之后，
+    // 后续每次启动、每次开关通道都会走到这里。
+    if has_permissions().unwrap_or(false) {
+        return Ok(());
+    }
+    let class = kotlin_class()?;
+    let (name, sig) = kotlin_method!("requestAllPermissions", "()V");
+    with_env(|env| {
+        env.call_static_method(class, name, sig, &[])?;
+        Ok(())
+    })
+}
+
+/// 是否已具备全部运行时权限（供上层给出"去系统设置打开附近设备"这类准确提示）。
+pub fn has_permissions() -> Result<bool, String> {
+    let class = kotlin_class()?;
+    let (name, sig) = kotlin_method!("hasRequiredPermissions", "()Z");
+    with_env(|env| {
+        let v = env.call_static_method(class, name, sig, &[])?;
+        Ok(v.z()?)
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Kotlin → Rust 的回调
 // ---------------------------------------------------------------------------

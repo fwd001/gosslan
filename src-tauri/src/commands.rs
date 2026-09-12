@@ -673,6 +673,25 @@ pub fn set_ui_language(app: tauri::AppHandle, lang: String) -> Result<(), String
     Ok(())
 }
 
+/// 申请 Android 的运行时权限（「附近的设备」：蓝牙扫描/连接/广播 + 附近的 WiFi 设备）。
+///
+/// 为什么要有这条命令：Android 12+ 把这些权限都拆成**运行时**权限，不申请的话
+/// 局域网发现收不到组播、蓝牙通道也打不开 —— 用户第一次装完必须手动去系统设置里开，
+/// 体验很差。现在 App 启动时前端调一次（系统弹框），被拒时提示"去系统设置打开"。
+///
+/// 非 Android 平台是**空操作**（这些权限在 macOS/iOS/Windows 上不存在或安装即授予）。
+#[tauri::command(async)]
+pub fn request_ble_permissions() -> Result<(), String> {
+    #[cfg(all(target_os = "android", feature = "bluetooth"))]
+    {
+        return crate::transport::ble_android::request_permissions();
+    }
+    #[cfg(not(all(target_os = "android", feature = "bluetooth")))]
+    {
+        Ok(())
+    }
+}
+
 /// 前端把 JS 异常 / 未处理的 Promise 拒绝送到后端日志。
 ///
 /// 为什么需要它：界面上"点了没反应"最常见的原因就是**一次 JS 异常**
