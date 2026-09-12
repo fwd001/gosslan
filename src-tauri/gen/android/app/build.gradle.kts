@@ -16,7 +16,9 @@ val tauriProperties = Properties().apply {
 android {
     // GOSSLAN_BTLEPLUG_JAVA_BEGIN
     // btleplug 的 Android Java 实现（只被 native 代码按类名调用，必须编译进 App）
-    sourceSets["main"].java.srcDirs("/Users/wendongfu/Documents/code/gosslan/target/cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/btleplug-0.13.0/src/droidplug/java/src/main/java")
+    // 两个包都在仓库里：com/nonpolynomial/** 与 io/github/gedgygedgy/**
+    //（crates.io 的 btleplug 包里没有后者，见 scripts/android/btleplug-java/README.md）
+    sourceSets["main"].java.srcDirs("/Users/wendongfu/Documents/code/gosslan/scripts/android/btleplug-java")
     // GOSSLAN_BTLEPLUG_JAVA_END
     compileSdk = 36
     namespace = "com.gosslan.app"

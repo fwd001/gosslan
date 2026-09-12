@@ -162,6 +162,42 @@ GOSSLAN_EMBED_CHECK
     echo "    ℹ️  Gradle 判定无需重打（输入内容未变），复用已有产物；已校验包内前端 = 当前 dist（${DIST_JS}）"
   fi
 
+  # ⓪b btleplug 的两半 Java 实现都必须在 dex 里（缺一半 ⇒ 真机蓝牙初始化失败 + 闪退）。
+  #
+  # 为什么必须有这条：`com.nonpolynomial.**` 在 crates.io 的包里，而 `io.github.gedgygedgy.**`
+  # **不在**（只存在于 btleplug 的 git 仓库）。我们曾把后者手工塞进 CARGO_HOME 的提取目录，
+  # 那是易失的 —— 于是打出来的包少了一半 Java 类，而 proguard 的
+  # `-dontwarn io.github.gedgygedgy.**` 又把"类不存在"的警告吞了，构建期毫无提示。
+  # 真机现象（4.1.13 用户实测 logcat）：
+  #   failed to resolve Java class 'io/github/gedgygedgy/rust/future/Future' → 闪退。
+  # 所以：**打完包反查 dex**，两个包名一个都不能少。
+  if ! python3 - "$DST" <<'GOSSLAN_BTLEPLUG_DEX_CHECK'
+import sys, zipfile
+
+need = [b"Lcom/nonpolynomial/btleplug/android/impl/Adapter;",
+        b"Lio/github/gedgygedgy/rust/future/Future;"]
+found = {n: False for n in need}
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for name in z.namelist():
+        if not name.endswith(".dex"):
+            continue
+        blob = z.read(name)
+        for n in need:
+            if not found[n] and n in blob:
+                found[n] = True
+missing = [n.decode() for n, ok in found.items() if not ok]
+if missing:
+    print("缺类：" + "、".join(missing))
+    sys.exit(1)
+sys.exit(0)
+GOSSLAN_BTLEPLUG_DEX_CHECK
+  then
+    echo "    ❌ 包里缺 btleplug 的 Android Java 类（缺了就一定起不来蓝牙）——"
+    echo "       检查 scripts/android/btleplug-java/ 是否完整、注入脚本是否报错、R8 keep 规则是否还在"
+    FAIL=1
+    continue
+  fi
+
   # ① 签名：未签名的 APK 在真机上是 "应用未安装"，必须在这里拦住。
   if [ -n "$APKSIGNER" ]; then
     if ! "$APKSIGNER" verify --min-sdk-version 24 "$DST" >/tmp/gosslan-apksigner.txt 2>&1; then

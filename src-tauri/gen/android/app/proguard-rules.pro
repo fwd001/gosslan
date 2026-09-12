@@ -73,7 +73,7 @@
 # R8 会当成死代码整包删掉 —— 实测（dexdump 反查 release APK）确实一个类都不剩，
 # 于是 `platform::init()` 的 find_class 失败 ⇒ 之后 `Manager::new()` panic ⇒ 闪退。
 -keep class com.nonpolynomial.** { *; }
--keep class io.github.gedgygeddy.** { *; }
+-keep class io.github.gedgygedgy.** { *; }
 -dontwarn com.nonpolynomial.**
--dontwarn io.github.gedgygeddy.**
+-dontwarn io.github.gedgygedgy.**
 # GOSSLAN_JNI_END

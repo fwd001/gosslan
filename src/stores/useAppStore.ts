@@ -412,7 +412,7 @@ export const useAppStore = defineStore("app", () => {
    *
    * `continuous = true` 表示**连续输入**（拖动颜色选择器），此时去抖写库；
    * 点色板格子是离散操作，**立即写库** —— 这样"点一下"之后数据库马上就是新值，
-   * 任何并发到来的 `settings-changed` 重拉也读不到旧值（配合 `settingsDirty` 双保险）。
+   * 任何并发到来的 `settings-changed` 也读不到旧值（后端不会把事件回发给发起窗口）。
    */
   function setThemeColor(c: string, continuous = false) {
     themeColor.value = c;

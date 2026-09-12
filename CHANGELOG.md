@@ -10,6 +10,38 @@
 
 ## [Unreleased]
 
+## [4.1.15] - 2026-09-12
+
+### Fixed (安卓蓝牙起不来的真因：btleplug 的 `io.github.gedgygedgy.**` 从未进过包)
+真机 logcat（4.1.13 实测）：
+`btleplug droidplug 初始化失败（蓝牙通道将不可用）：failed to resolve Java class
+'io/github/gedgygedgy/rust/future/Future' (class not found or linkage error)` → 随后闪退。
+
+**根因**（`tar` + `dexdump` + 上游源码三方对照，不是猜的）：
+1. **真正让它静默的是 R8 keep 规则把包名拼错了**：`scripts/android/proguard-gosslan.pro` 写的是
+   `-keep class io.github.gedgygeddy.**`（**多一个 `d`、少一个 `g`**）—— 那是个**不存在的包**，
+   于是 R8 把真正的 `io.github.gedgygedgy.**` 当死代码**整包删掉**；配套的
+   `-dontwarn io.github.gedgygeddy.**` 又把"这个包不存在"的警告**吞掉**，构建期一个字都不报。
+   4.1.10 那次"修好了"是**假象**：注入目录里恰好有源码、编是编了，但 dex 里没有 ——
+   当时只验证了 `com.nonpolynomial.**` 在不在，**没验证另一半**。
+2. 发布到 crates.io 的 **btleplug-0.13.0 里也没有 `io/github/gedgygedgy/**`**：
+   `tar tzf btleplug-0.13.0.crate | grep gedgy` = 0（只有 14 个 `com/nonpolynomial/**`），
+   这 18 个 `.java` 只在它的 git 仓库里（**目录名与包名都是 `gedgygedgy`**）。
+3. 输入还不稳：那 18 个 .java 此前只存在于 CARGO_HOME 的**提取目录**，而它是**易失**的
+   （换一个 CARGO_HOME、或 cargo 重新解包就没了）⇒ 连"能编进去"都时有时无。
+
+**修法**（三处，缺一不可）：
+- 包名统一改正：`proguard-gosslan.pro` / 注入脚本 / 构建脚本里的 `gedgygeddy` → `gedgygedgy`
+  （R8 于是真的 keep 住这 18 个类）；
+- 那 18 个 `.java` **随仓库入库**（`scripts/android/btleplug-java/`），与 crate 自带的
+  `com/nonpolynomial/**` 一起挂到 Gradle 的 `sourceSets`；
+- 注入脚本对**两个目录**都做硬检查（缺任何一个直接 `throw`，工作区文件缺失时从 git 自愈），
+  打完包再**反查 dex**：`Lcom/nonpolynomial/btleplug/android/impl/Adapter;` 与
+  `Lio/github/gedgygedgy/rust/future/Future;` 必须都在，否则这次构建直接失败
+  （这条检查本该两轮前就有 —— 它就是被这个坑证明必需的那一条）。
+
+顺带把 `useAppStore` 里一句已经过时的注释（提到已删除的 `settingsDirty`）改正。
+
 ## [4.1.14] - 2026-09-12
 
 ### Fixed (A 加不上 B：B 那边已有 A，A 这边是重置过的账号 —— 申请被"已是好友"过滤掉了)
@@ -152,7 +184,7 @@ panic @ btleplug-0.13.0/src/droidplug/mod.rs:20:26：
 ```
 
 **真正的根因**（用 `dexdump` 反查 release APK 确认）：btleplug 在 Android 上依赖它自带的
-**Java 实现**（`com.nonpolynomial.**` + `io.github.gedgygeddy.**`，共 28 个 `.java`），
+**Java 实现**（`com.nonpolynomial.**` + `io.github.gedgygedgy.**`，共 28 个 `.java`），
 而 Tauri 的 Gradle 工程里**根本没有这个模块** ⇒ `platform::init()` 里的 `find_class` 失败
 ⇒ 之后 `Manager::new()` 在 crate 内 panic ⇒ 安卓 release `panic = "abort"` **整进程消失**。
 （debug 包同样没有这些类，只是表现为"蓝牙通道打不开"而不是闪退 —— 与此前那条反馈也对得上。）
@@ -161,7 +193,7 @@ panic @ btleplug-0.13.0/src/droidplug/mod.rs:20:26：
 1. `inject-android-signing.mjs`：把 crate 自带的 Java 源码目录挂到 App 的
    `sourceSets["main"].java.srcDirs(...)`（比引 Gradle 子模块简单，且不受 AGP 版本差异影响）；
 2. `proguard-gosslan.pro`：按 btleplug 官方 README 的要求 keep
-   `com.nonpolynomial.**` 与 `io.github.gedgygeddy.**`（它的 Java 代码只被 native 按类名调用，
+   `com.nonpolynomial.**` 与 `io.github.gedgygedgy.**`（它的 Java 代码只被 native 按类名调用，
    R8 会当死代码整包删掉）。
 3. 另外把"初始化失败"从**静默**改成**可见**（stderr + logcat），并在 `driver::adapter()` 前
    查一个就绪标志：万一哪天又退化，**降级成"蓝牙不可用"，绝不再 panic 闪退**。
