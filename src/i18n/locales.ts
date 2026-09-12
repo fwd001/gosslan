@@ -580,7 +580,6 @@ export const zhCN: MessageDict = {
   "diag.loading": "加载中...",
 
   // ---- 发送 / 通知 / 文件操作 ----
-  "common.defaultNickname": "Gosslan 用户",
   "send.fileFail": "文件发送失败",
   "send.groupFileFail": "群文件发送失败",
   "send.imageFail": "图片发送失败",
@@ -1172,7 +1171,6 @@ export const enUS: MessageDict = {
   "diag.loading": "Loading…",
 
   // ---- Send / notification / file ops ----
-  "common.defaultNickname": "Gosslan User",
   "send.fileFail": "Failed to send file",
   "send.groupFileFail": "Failed to send group file",
   "send.imageFail": "Failed to send image",

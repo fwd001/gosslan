@@ -176,6 +176,7 @@ export const api = {
    * 打不开它 —— 用户 2026-09-12 实测的「文字能发、附件/图片发不出去」就是这个。
    * 这个命令在 Android 上把它复制进应用缓存并返回真实路径；桌面端原样返回。
    */
+  defaultNickname: () => invoke<string>("default_nickname"),
   importPickedFile: (path: string, suggestedName?: string) =>
     invoke<string>("import_picked_file", { path, suggestedName: suggestedName ?? null }),
   openSettingsWindow: () => invoke<void>("open_settings_window"),

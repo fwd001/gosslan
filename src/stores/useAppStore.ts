@@ -564,8 +564,11 @@ export const useAppStore = defineStore("app", () => {
   async function resetDefaults() {
     // 先广播昵称/头像恢复默认（LAN 仍在线，好友可收到 UserInfo）
     if (device.value) {
-      await api.updateProfile(t("common.defaultNickname"), null);
-      device.value.nickname = t("common.defaultNickname");
+      // 默认名由后端按规则生成（`nickname.rs`：形容词+动物+设备短码）；
+      // 前端**不再**写死一份文案 —— 否则"恢复默认"得到的名字与首次安装不一致。
+      const fallback = await api.defaultNickname();
+      await api.updateProfile(fallback, null);
+      device.value.nickname = fallback;
       device.value.avatar = null;
     }
     await api.resetSettings();

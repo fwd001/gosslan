@@ -461,6 +461,15 @@ pub fn get_interface_candidates() -> Vec<crate::state::InterfaceCandidate> {
 ///
 /// 返回 `Result` 是 Tauri 的硬性要求（async 命令带 `State<'_>` 引用参数时必须返回 Result），
 /// 前端侧不受影响（`invoke` 拿到的是 `Ok` 里的数组，永远不返回 `Err`）。
+/// 默认昵称（按 `nickname.rs` 的规则由 device_id 派生）。
+///
+/// 给"恢复默认"用：前端不该再写死一份默认名文案（那是旧规则 `hostname` 的遗留），
+/// 否则"恢复默认"得到的名字与首次安装得到的名字会不一致。
+#[tauri::command(async)]
+pub fn default_nickname(state: State<'_, Arc<AppState>>) -> String {
+    crate::nickname::default_nickname(&state.inner().device_id)
+}
+
 #[tauri::command(async)]
 pub async fn get_channel_status(
     state: State<'_, Arc<AppState>>,

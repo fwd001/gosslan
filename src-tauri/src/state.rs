@@ -670,11 +670,30 @@ impl AppState {
                 .unwrap_or(TCP_PORT)
         };
 
-        let nickname = db::get_setting(&conn, "nickname").unwrap_or_else(|| {
-            hostname::get()
-                .map(|h| h.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "Gosslan 用户".to_string())
-        });
+        // 默认昵称：**不用设备用户名/hostname**，改用「形容词 + 动物 + 设备短码」的英文名
+        // （用户 2026-09-12 要求：长度合适、不改也好看、又有想改的欲望；规则见 `nickname.rs`）。
+        // 同一台设备名字稳定（由 device_id 派生），而且**不含设备信息**。
+        let hostname_now = hostname::get()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let nickname = match db::get_setting(&conn, "nickname") {
+            Some(n) => {
+                // 一次性迁移：旧的默认名（空 / 旧字面值 / 恰好是 hostname）换成新规则。
+                // 用户自己取过的名字一律不动 —— 判据是"精确等于旧默认的产物"。
+                if crate::nickname::is_legacy_default(&n, &hostname_now) {
+                    let fresh = crate::nickname::default_nickname(&device_id);
+                    db::set_setting(&conn, "nickname", &fresh).ok();
+                    fresh
+                } else {
+                    n
+                }
+            }
+            None => {
+                let fresh = crate::nickname::default_nickname(&device_id);
+                db::set_setting(&conn, "nickname", &fresh).ok();
+                fresh
+            }
+        };
         let avatar = db::get_setting(&conn, "avatar");
         // 共享目录：macOS 沙盒里**必须**先解析安全作用域书签（解析即开始访问），
         // 否则重启后目录还在、权限没了 —— 现象是"共享目录列表变空"，且没有任何报错。

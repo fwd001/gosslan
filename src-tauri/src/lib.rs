@@ -33,6 +33,7 @@ mod macos_window;
 /// macOS App Sandbox 的安全作用域书签（共享目录重启后不失访，见该文件注释）。
 #[cfg(target_os = "macos")]
 mod macos_bookmark;
+mod nickname;
 
 use tauri::Manager;
 
@@ -199,6 +200,7 @@ pub fn run() {
             commands::get_settings,
             commands::log_frontend_error,
             commands::import_picked_file,
+            commands::default_nickname,
             commands::request_ble_permissions,
             commands::set_ui_language,
             commands::search_chat_history,
