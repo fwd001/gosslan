@@ -223,3 +223,52 @@ const activityPath = path.join(
   "MainActivity.kt",
 );
 injectMainActivityPermissions(activityPath);
+
+// R8 keep 规则：release 会开混淆（`isMinifyEnabled = true`），而 Rust 是按**名字 + 签名**
+// 调 Kotlin 方法的（`kotlin_method!`）。**实测**未 keep 时这些方法会变成 a/b/c/d/e，
+// 于是 release 真机包的蓝牙外设路径直接 NoSuchMethodError —— debug 包不混淆，所以这个坑
+// 只有打了 release 包才会现形。
+//
+// 规则正文放在 `scripts/android/proguard-gosslan.pro`（版本库里的**单一事实来源**，
+// 因为 `gen/android` 整个是 `tauri android init` 生成物、随时会被重生）：
+// 这里只是把它整体搬进 `app/proguard-rules.pro`（AGP 会把该目录下所有 `*.pro` 都应用上）。
+const proguardFragmentPath = path.join(
+  root,
+  "scripts",
+  "android",
+  "proguard-gosslan.pro",
+);
+const JNI_KEEP_BEGIN = "# GOSSLAN_JNI_BEGIN";
+const JNI_KEEP_END = "# GOSSLAN_JNI_END";
+const JNI_KEEP_BLOCK = fs.existsSync(proguardFragmentPath)
+  ? fs.readFileSync(proguardFragmentPath, "utf8").trim()
+  : "";
+
+function injectProguardKeep(proguardPath) {
+  if (!fs.existsSync(proguardPath)) return;
+  if (!JNI_KEEP_BLOCK) {
+    console.error(
+      "[android-proguard] 没找到 scripts/android/proguard-gosslan.pro —— release 包的 JNI " +
+        "keep 规则会缺失（蓝牙会在真机上 NoSuchMethodError），中止。",
+    );
+    process.exit(1);
+  }
+  let rules = fs.readFileSync(proguardPath, "utf8");
+  const blockRe = new RegExp(`${JNI_KEEP_BEGIN}[\\s\\S]*?${JNI_KEEP_END}\\n?`);
+  rules = rules.replace(blockRe, "").replace(/\n+$/, "\n");
+  fs.writeFileSync(proguardPath, `${rules}\n${JNI_KEEP_BLOCK}\n`);
+  console.log(
+    "[android-proguard] 已注入 JNI keep 规则（release 混淆不会改掉 Rust 按名字调用的方法）。",
+  );
+}
+
+injectProguardKeep(
+  path.join(
+    root,
+    "src-tauri",
+    "gen",
+    "android",
+    "app",
+    "proguard-rules.pro",
+  ),
+);

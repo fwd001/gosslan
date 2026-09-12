@@ -43,23 +43,23 @@ ROOT = Path(__file__).resolve().parent.parent
 TAURI = ROOT / "src-tauri"
 
 #: 当前正在被注入的文件与它的原始内容 —— 被 Ctrl-C / kill 打断时也要能恢复。
-_CURRENT: tuple[Path, str] | None = None
+#: 有的护栏要同时改坏**两个**文件（例如"事实来源 + 注入副本"必须一致），所以这里是列表。
+_CURRENT: list[tuple[Path, str]] = []
 
 
 def restore_now() -> None:
     """把"当前注入现场"恢复回原始内容（幂等）。"""
     global _CURRENT
-    if _CURRENT is not None:
-        path, original = _CURRENT
+    for path, original in _CURRENT:
         path.write_text(original)
-        _CURRENT = None
+    _CURRENT = []
 
 
 def _on_signal(signum: int, _frame: object) -> None:
     """被中断时先把源码恢复再退出 —— 否则会留下一个"被改坏"的工作区。"""
-    path = _CURRENT[0] if _CURRENT else None
+    paths = "、".join(str(p) for p, _ in _CURRENT)
     restore_now()
-    where = f"（已恢复 {path}）" if path else ""
+    where = f"（已恢复 {paths}）" if paths else ""
     print(f"\n[中断] 收到信号 {signum}{where}，退出", file=sys.stderr)
     sys.exit(130)
 
@@ -82,6 +82,9 @@ class Case:
     cwd: Path
     expect_fail_hint: str = ""  # 期望在失败输出里出现的关键词（可空）
     tags: list[str] = field(default_factory=list)
+    #: 需要**同时**改坏的其它文件（路径, 原文, 替换）。例如"事实来源 + 构建时注入的副本"
+    #: 两边都要改，否则护栏会先以"两者漂移"失败，证明不了"漏掉方法也会被抓到"。
+    extra_injections: list[tuple[Path, str, str]] = field(default_factory=list)
 
 
 def cargo(*args: str) -> list[str]:
@@ -287,6 +290,28 @@ CASES: list[Case] = [
         expect_fail_hint="refreshChannels",
         tags=["frontend", "store"],
     ),
+    # ---------------- Android release 包：R8 不得改掉 Rust 按名字调用的 Kotlin 方法 ----------------
+    Case(
+        name="R8 keep（JNI 方法漏一个就必须报出来）",
+        why="release 开 R8 混淆时 `stop/start/send/isConnected/payloadMtu/…` 会被改名成 a/b/c/d/e，"
+        "而 JNI 只按「名字 + 签名」查找 ⇒ 真机 release 包的蓝牙外设整条路径 NoSuchMethodError"
+        "（debug 不混淆，所以开发期看不见）",
+        # ⚠️ 两个文件必须**同时**改坏：只改一个的话护栏会先以"事实来源与注入副本漂移"失败，
+        #    那就证明不了"漏掉某个方法也会被抓到"。
+        file=ROOT / "scripts" / "android" / "proguard-gosslan.pro",
+        injections=[("    public boolean send(java.lang.String, byte[]);\n", "")],
+        extra_injections=[
+            (
+                TAURI / "gen" / "android" / "app" / "proguard-rules.pro",
+                "    public boolean send(java.lang.String, byte[]);\n",
+                "",
+            )
+        ],
+        cmd=cargo("test", "--lib", "release_keeps_every_kotlin_method_called_from_rust"),
+        cwd=TAURI,
+        expect_fail_hint="缺少 `send`",
+        tags=["rust", "android", "release"],
+    ),
 ]
 
 
@@ -304,16 +329,25 @@ def run(cmd: list[str], cwd: Path, timeout: int = 900) -> tuple[int, str]:
 
 
 def verify(case: Case) -> tuple[bool, str]:
-    original = case.file.read_text()
+    global _CURRENT
+    #: [(文件, [(原文, 替换), …])] —— 主文件 + 需要"同时改坏"的其它文件
+    targets: list[tuple[Path, list[tuple[str, str]]]] = [(case.file, case.injections)]
+    targets += [(p, [(old, new)]) for (p, old, new) in case.extra_injections]
+    originals = [(path, path.read_text()) for path, _ in targets]
     detail = ""
     try:
-        for old, new in case.injections:
-            assert original.count(old) == 1, (
-                f"注入锚点在 {case.file.name} 里出现 {original.count(old)} 次（要求恰好 1 次）："
-                f"源码可能已改动，请更新 verify-guards.py"
-            )
-            case.file.write_text(original.replace(old, new, 1))
-        _CURRENT = (case.file, original)  # 登记现场：被信号打断时可恢复
+        for path, injections in targets:
+            text = path.read_text()
+            for old, new in injections:
+                assert text.count(old) == 1, (
+                    f"注入锚点在 {path.name} 里出现 {text.count(old)} 次（要求恰好 1 次）："
+                    f"源码可能已改动，请更新 verify-guards.py"
+                )
+                # ⚠️ 必须在**上一次替换的结果**上继续改（逐条累积），否则一条用例里写多个
+                # 注入时只有最后一条生效 —— 这条旧实现的坑在这里一并修掉。
+                text = text.replace(old, new, 1)
+            path.write_text(text)
+        _CURRENT = list(originals)  # 登记现场：被信号打断时可恢复
 
         code, out = run(case.cmd, case.cwd)
         if code == 0:
@@ -321,17 +355,19 @@ def verify(case: Case) -> tuple[bool, str]:
         if case.expect_fail_hint and case.expect_fail_hint not in out:
             detail = f"（失败输出里没看到 `{case.expect_fail_hint}`，请确认是这条判据报的）"
 
-        case.file.write_text(original)  # 先恢复，再验证恢复后确实通过
-        _CURRENT = None
+        for path, original in originals:  # 先恢复，再验证恢复后确实通过
+            path.write_text(original)
+        _CURRENT = []
         code2, out2 = run(case.cmd, case.cwd)
         if code2 != 0:
             return False, f"恢复源码之后测试**仍然失败** ⇒ 源码或环境已被破坏：\n{out2[-800:]}"
         return True, detail or "改坏即 FAIL、恢复即 PASS"
     finally:
         # 无论上面发生什么（断言失败/超时/异常），内容级恢复现场
-        if case.file.read_text() != original:
-            case.file.write_text(original)
-        _CURRENT = None
+        for path, original in originals:
+            if path.read_text() != original:
+                path.write_text(original)
+        _CURRENT = []
 
 
 def main() -> int:

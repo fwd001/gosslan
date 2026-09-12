@@ -568,6 +568,90 @@ mod tests {
         }
     }
 
+    /// **release 包必须 keep 住 Rust 按名字调用的 Kotlin 方法**。
+    ///
+    /// R8 在 release 下会把它们改名（**实测**：`stop`/`start`/`send`/… 全变成 `a`/`b`/`c`/…），
+    /// 而 JNI 只按「名字 + 签名」查找 ⇒ release 真机包上蓝牙外设整条路径 `NoSuchMethodError`。
+    /// debug 包不做混淆，所以这个坑在开发期完全看不见（我是在打 release 包时才抓到的）。
+    /// 这条护栏同时盯两种漂移：规则里**漏了**方法，以及规则里**多留了**已废弃的方法。
+    #[test]
+    fn release_keeps_every_kotlin_method_called_from_rust() {
+        let rust = include_str!("transport/ble_android.rs");
+        // 单一事实来源：`scripts/android/proguard-gosslan.pro`（`gen/android` 是生成物，
+        // `tauri android init` 会重生它，所以注入脚本每次构建前都把这份搬进去）。
+        let source = include_str!("../../scripts/android/proguard-gosslan.pro");
+        let generated = include_str!("../gen/android/app/proguard-rules.pro");
+
+        let source_block = proguard_jni_block(source)
+            .expect("scripts/android/proguard-gosslan.pro 里没有 GOSSLAN_JNI 标记块");
+        let generated_block = proguard_jni_block(generated).expect(
+            "gen/android/app/proguard-rules.pro 里没有 GOSSLAN_JNI 标记块 —— \
+             跑 `node scripts/inject-android-signing.mjs`（或任意一次 android 构建）就会补上；\
+             缺了它，release 包的蓝牙在真机上会 NoSuchMethodError",
+        );
+        assert_eq!(
+            source_block, generated_block,
+            "两处 JNI keep 规则漂移了：事实来源是 scripts/android/proguard-gosslan.pro，\
+             gen/android/app/proguard-rules.pro 只是构建时注入的副本"
+        );
+
+        let registered = parse_kotlin_method_registrations(rust);
+        assert!(
+            registered.len() >= 5,
+            "Rust 侧至少应登记 5 个 Kotlin 方法，实际 {}",
+            registered.len()
+        );
+        let kept = proguard_kept_method_names(&source_block);
+        assert!(
+            kept.len() >= 5,
+            "从 keep 块里只解析出 {} 个方法名 —— 护栏解析器失效了（这才是真正的风险：\
+             它一旦静默返回空，下面的检查就全是空转）",
+            kept.len()
+        );
+
+        for (name, _) in &registered {
+            assert!(
+                kept.iter().any(|k| k == name),
+                "keep 规则里缺少 `{name}` —— R8 会把它改名，release 真机上 JNI 找不到这个方法"
+            );
+        }
+        for name in &kept {
+            assert!(
+                registered.iter().any(|(n, _)| n == name),
+                "keep 规则里的 `{name}` 在 Rust 侧已经没有调用登记了（陈旧规则），删掉它"
+            );
+        }
+    }
+
+    /// 取出 `# GOSSLAN_JNI_BEGIN … # GOSSLAN_JNI_END` 之间的正文（不含两端的标记行）。
+    fn proguard_jni_block(src: &str) -> Option<String> {
+        const BEGIN: &str = "# GOSSLAN_JNI_BEGIN";
+        const END: &str = "# GOSSLAN_JNI_END";
+        let start = src.find(BEGIN)? + BEGIN.len();
+        let end = src[start..].find(END)? + start;
+        Some(src[start..end].trim().to_string())
+    }
+
+    /// 从 keep 块里抽出被 keep 的**方法名**（跳过 `native <methods>;` 这类通配与注释）。
+    fn proguard_kept_method_names(block: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for line in block.lines() {
+            let line = line.trim();
+            if !line.ends_with(';') || line.starts_with('#') || line.starts_with("-keep") {
+                continue;
+            }
+            let Some(open) = line.find('(') else { continue };
+            let Some(name) = line[..open].split_whitespace().last() else {
+                continue;
+            };
+            if name.starts_with('<') {
+                continue; // `native <methods>;`
+            }
+            out.push(name.to_string());
+        }
+        out
+    }
+
     /// 解析 Kotlin 里**单行**的 `[modifiers] fun name(params): Ret` → `(名字, JNI 描述符, 是否 external)`。
     fn parse_kotlin_funs(src: &str) -> Vec<(String, String, bool)> {
         let mut out = Vec::new();
