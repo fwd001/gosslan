@@ -8,16 +8,17 @@ import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import { t } from "@/i18n";
-import type { ChannelStatus, RelayPolicy, RoutedEndpoint } from "@/types";
+import type {RelayPolicy, RoutedEndpoint} from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
 const app = useAppStore();
 const chat = useChatStore();
 
-const channels = ref<ChannelStatus[]>([]);
 const selectedIp = ref("0.0.0.0");
 
+// 通道状态来自 store（唯一真相源）—— 另一处（添加好友页）开关也会立刻反映到这里
+const channels = computed(() => app.channels);
 const btStatus = computed(() => channels.value.find((c) => c.channel === "bluetooth"));
 const lanStatus = computed(() => channels.value.find((c) => c.channel === "lan"));
 const interfaceOptions = computed(() => [
@@ -29,7 +30,7 @@ const interfaceOptions = computed(() => [
 const policyDescription = computed(() => t(`settings.relay.policy.${app.relayPolicy}.desc`));
 
 async function loadChannels() {
-  channels.value = await api.getChannelStatus();
+  await app.refreshChannels();
 }
 
 watch(
@@ -84,7 +85,7 @@ async function onInterfaceChange() {
 async function toggleBluetooth() {
   const cur = btStatus.value?.enabled ?? false;
   try {
-    await api.setChannelEnabled("bluetooth", !cur);
+    await app.setChannelEnabled("bluetooth", !cur);
     app.toast(cur ? t("settings.network.toast.btOff") : t("settings.network.toast.btOn"), cur ? "info" : "success");
   } catch (e) {
     app.toastError(e, t("settings.network.toast.btFail"));

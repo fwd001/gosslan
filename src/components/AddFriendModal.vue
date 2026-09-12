@@ -4,8 +4,8 @@ import { computed, ref, watch } from "vue";
 import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { api } from "@/api";
 import type { ChannelStatus } from "@/types";
+import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { Check, UserPlus, X } from "lucide-vue-next";
@@ -91,29 +91,21 @@ const filteredPeers = computed(() => {
  * 进设置 → 网络与连接 才能开，很不直观。这里把两个开关**放到发现失败的现场**，
  * 并写清"为什么没发现"，让用户就地解决。
  */
-const channels = ref<ChannelStatus[]>([]);
+// 通道状态来自 store（与设置页**同一份**，两处不可能再不一致）
+const channels = computed(() => app.channels);
 const channelBusy = ref<string | null>(null);
-
-async function loadChannels() {
-  try {
-    channels.value = await api.getChannelStatus();
-  } catch {
-    channels.value = [];
-  }
-}
 
 async function toggleChannel(ch: ChannelStatus) {
   if (channelBusy.value) return;
   channelBusy.value = ch.channel;
   try {
-    await api.setChannelEnabled(ch.channel, !ch.enabled);
+    await app.setChannelEnabled(ch.channel, !ch.enabled);
   } catch (e) {
     app.toastError(e, t("friend.add.channelFailed", { err: "" }));
   } finally {
     channelBusy.value = null;
-    await loadChannels();
     // 打开通道后自动重扫一次 —— 否则用户还得再点一下「重新扫描」
-    if (channels.value.some((c) => c.enabled)) void scan();
+    if (app.channels.some((c) => c.enabled)) void scan();
   }
 }
 
@@ -133,7 +125,7 @@ watch(
   async (v) => {
     if (v) {
       keyword.value = "";
-      void loadChannels(); // 与扫描并发，别让开关状态拖慢"正在扫描"
+      void app.refreshChannels(); // 与扫描并发，别让开关状态拖慢"正在扫描"
       loading.value = true;
       try {
         await chat.searchNearbyPeers(); // 按需 who_has 群发探测
@@ -206,18 +198,12 @@ async function add(peerId: string) {
                 : t("friend.add.channel.unavailable") }}
             </div>
           </div>
-          <button
-            type="button"
-            class="tap-safe shrink-0 rounded-full px-3 py-1 text-xs font-medium transition disabled:opacity-50"
-            :class="ch.enabled
-              ? 'bg-[var(--gosslan-accent-soft)] text-[var(--gosslan-accent-ink)]'
-              : 'bg-[var(--gosslan-hover)] text-[var(--gosslan-text)]'"
+          <SettingsToggle
+            :model-value="ch.enabled"
             :disabled="!ch.available || channelBusy === ch.channel"
-            :aria-pressed="ch.enabled"
-            @click="toggleChannel(ch)"
-          >
-            {{ ch.enabled ? t("friend.add.channel.on") : t("friend.add.channel.off") }}
-          </button>
+            :label="ch.channel === 'lan' ? t('friend.add.channel.lan') : t('friend.add.channel.bluetooth')"
+            @update:model-value="toggleChannel(ch)"
+          />
         </div>
       </div>
 

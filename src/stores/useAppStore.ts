@@ -23,7 +23,7 @@ import {
   type LanguagePreference,
 } from "@/i18n";
 import { isMac } from "@/utils/platform";
-import type { AppSettings, DeviceInfo, InterfaceInfo, RelayPolicy } from "@/types";
+import type { AppSettings, ChannelStatus, DeviceInfo, InterfaceInfo, RelayPolicy } from "@/types";
 
 export type { AppearanceMode };
 
@@ -239,6 +239,31 @@ export const useAppStore = defineStore("app", () => {
   }
 
   /** 持久化全部偏好到后端 SQLite（重启后恢复，不依赖 WebView localStorage）。 */
+  /**
+   * 通道状态（局域网/蓝牙）**唯一真相源**。
+   *
+   * 用户实测的 bug：在「添加好友」页打开局域网通道，回到设置里却显示"已关闭" ——
+   * 因为两处各自持有一份 `getChannelStatus()` 的快照，而移动端设置页会**一直挂载**，
+   * `active` 不变就不再重新拉取，于是显示过期状态。放进 store 后，
+   * 任何一处开关都更新同一份状态，两边不可能再不一致。
+   */
+  const channels = ref<ChannelStatus[]>([]);
+
+  /** 重新拉取通道状态（失败保持现状，不要把列表清空）。 */
+  async function refreshChannels() {
+    try {
+      channels.value = await api.getChannelStatus();
+    } catch {
+      /* 后端暂不可用：保持现状 */
+    }
+  }
+
+  /** 开关某条通道；成功后刷新状态。**错误交给调用方**去 toast（各处文案不同）。 */
+  async function setChannelEnabled(channel: "lan" | "bluetooth", enabled: boolean) {
+    await api.setChannelEnabled(channel, enabled);
+    await refreshChannels();
+  }
+
   /** 本窗口最后一次**写设置**的时刻（见 `settings-changed` 的处理）。 */
   let lastLocalWriteAt = 0;
 
@@ -561,6 +586,9 @@ export const useAppStore = defineStore("app", () => {
   }
 
   return {
+    channels,
+    refreshChannels,
+    setChannelEnabled,
     device,
     interfaces,
     online,
