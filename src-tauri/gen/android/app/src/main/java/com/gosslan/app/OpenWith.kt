@@ -118,7 +118,12 @@ object OpenWith {
     }
   }
 
-  /** 扩展名 → MIME；认不出来就用 `*/*`（让系统列出所有候选应用）。 */
+  /**
+   * 扩展名 → MIME；认不出来就用通配类型（让系统列出所有候选应用）。
+   *
+   * ⚠️ 别在注释里写那两个字符的 MIME 通配（星号加斜杠加星号）：它就是块注释的结束标记，
+   * Kotlin 编译器会把注释当场截断 —— 这一行我第一版真踩了（`Expecting member declaration` 一片）。
+   */
   private fun resolveMime(path: String, hint: String?): String {
     hint?.trim()?.takeIf { it.isNotEmpty() && it != "*/*" }?.let { return it }
     val ext = path.substringAfterLast('.', "").lowercase()
