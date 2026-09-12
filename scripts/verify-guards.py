@@ -371,6 +371,19 @@ CASES: list[Case] = [
         expect_fail_hint="data-cleared",
         tags=["frontend", "ipc"],
     ),
+    # ---------------- Rust：BLE 扫描结果不得按未连接的 services() 过滤 ----------------
+    Case(
+        name="BLE 扫描结果不得二次过滤（否则双方永远搜不到）",
+        why="用户 2026-09-12 实测：手机与 Mac 蓝牙都开着、都在广播、系统层扫描也命中，"
+        "但一个候选都不去连 —— 因为代码拿 Peripheral::services() 复核，而它在 Android 上"
+        "只有连接并 discover_services() 之后才有值，未连接恒为空 ⇒ 候选全被丢掉",
+        file=TAURI / "src" / "transport" / "bluetooth.rs",
+        injections=[("        Ok(all)\n    }", "        let svc = uuid(SERVICE_UUID);\n        Ok(all.into_iter().filter(|p| p.services().iter().any(|s| s.uuid == svc)).collect())\n    }")],
+        cmd=cargo("test", "--lib", "scan_results_are_not_filtered_by_unconnected_services"),
+        cwd=TAURI,
+        expect_fail_hint="原样返回",
+        tags=["rust", "ble"],
+    ),
     # ---------------- 前端：运行状态必须"一个快照 + 一个事件"（②） ----------------
     Case(
         name="运行状态事件必须带快照、且不回发发起窗口（②）",

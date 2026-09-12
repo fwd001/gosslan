@@ -10,6 +10,31 @@
 
 ## [Unreleased]
 
+## [4.2.2] - 2026-09-12
+
+### Fixed (🔴 蓝牙「互相搜不到」的真因：扫描结果被未连接的 `services()` 复核掉了)
+用户 2026-09-12 实测：手机（4.2.1）与 Mac（4.1.17）蓝牙都开着、双方都在广播、
+`dumpsys bluetooth_manager` 里能看到手机**每次扫描命中 2–3 个带我们服务 UUID 的广播**，
+但**两台设备的「添加好友」列表里始终没有对方**。
+
+**根因**：`scan_peers()` 在拿到扫描结果后又按 `Peripheral::services()` 复核了一遍
+（注释里写的意图是"部分平台会忽略 ScanFilter，所以复核一次"）。但
+`Peripheral::services()` 在 **Android 上只有 `discover_services()`（= 连接）之后才有值**，
+**未连接时恒为空集合** ⇒ 所有候选都被过滤掉 ⇒ 扫描循环一个都不去连
+（`scan_loop` 里"连接失败"是 info 级、成功才打 `+ble-link`，所以日志里**一个字都没有**，
+症状就是"扫描明明有结果、却永远搜不到"）。
+
+**修法**：
+- `scan_peers()` **原样返回**平台层已经过滤好的结果（`start_scan(ScanFilter{services})`
+  就是系统级过滤，`dumpsys` 的 GATT Scanner Map 能直接看到命中数）；
+  "对方不是 Gosslan 端"由 `connect()` 里的**特征校验**兜住 —— 那一步本来就要连上；
+- 扫描循环补一条诊断日志：`BLE 扫描到 N 个候选，开始逐个连接` ——
+  这类"发现了却没去连"的缺陷以后在日志里一眼可见。
+
+**护栏**：`scan_results_are_not_filtered_by_unconnected_services`
+（断言 `scan_peers` 里不再出现 `services()` 过滤、且必须有解释性注释与"扫到候选"的日志）
++ `verify-guards.py` 对应非空转用例（把过滤加回去 ⇒ 必须 FAIL）。
+
 ## [4.2.1] - 2026-09-12
 
 ### Docs (③ 窗口架构 ADR-0018：把「一窗一入口 / 后端真相源 / 事件带载荷」定下来)

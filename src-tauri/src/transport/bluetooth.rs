@@ -123,8 +123,14 @@ pub mod driver {
 
     /// 扫描支持 Gosslan 服务的对端（**只发现、不建连** —— 与 P-A04 一致）。
     ///
-    /// `ScanFilter` 只是让系统少报无关设备：部分平台会忽略过滤条件，
-    /// 所以返回值仍要按"服务集合里有没有我们"复核一次（缺失的交由 `connect` 再判）。
+    /// ⚠️ **不要再用 `Peripheral::services()` 二次过滤**（真机踩过，症状极隐蔽）：
+    /// `start_scan(ScanFilter { services })` 已经在**平台层**过滤过 —— 系统只上报广播里带
+    /// 这个服务 UUID 的设备（`dumpsys bluetooth_manager` 的 GATT Scanner Map 里能直接看到
+    /// 每次扫描的命中数）。而 `Peripheral::services()` 在 **Android 上只有
+    /// `discover_services()`（即**连接**）之后才有值**，未连接时恒为空集合 ⇒
+    /// 拿它过滤会把**所有**候选全部丢掉：表现是"扫描明明有结果、却一个候选都不去连，
+    /// 两台设备永远发现不了彼此"（用户 2026-09-12 实测：手机与 Mac 蓝牙都开着、都搜不到）。
+    /// 对方不是 Gosslan 端的情况由 `connect()` 里的**特征校验**兜住 —— 那一步本来就要连上。
     pub async fn scan_peers(adapter: &Adapter, scan_for: Duration) -> Result<Vec<Peripheral>, String> {
         adapter
             .start_scan(ScanFilter {
@@ -140,12 +146,9 @@ pub mod driver {
             .map_err(|e| format!("读取扫描结果失败：{e}"))?;
         // 停止扫描失败不影响结果（下次 start 会覆盖）
         let _ = adapter.stop_scan().await;
-        let svc = uuid(SERVICE_UUID);
-        // `services()` 返回的是 `Service` 集合（不是 UUID 集合）⇒ 按 uuid 比
-        Ok(all
-            .into_iter()
-            .filter(|p| p.services().iter().any(|s| s.uuid == svc))
-            .collect())
+        // 平台层已经按服务 UUID 过滤过 ⇒ 这里**原样返回**（见上面的长注释：
+        // 再按 `services()` 过滤 = 在 Android 上把候选全丢掉）
+        Ok(all)
     }
 
     /// 一条已建立的 BLE 链路：对端句柄 + 收发特征 + 通知流 + 重组器。

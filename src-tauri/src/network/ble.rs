@@ -183,6 +183,13 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
     loop {
         match driver::scan_peers(&adapter, SCAN_WINDOW).await {
             Ok(peers) => {
+                // 扫到候选要留痕：真机上"扫描有结果但没去连/连不上"是排查的关键一步
+                // （用户 2026-09-12 的"互相搜不到"就卡在这里，而当时日志里什么都没有）。
+                if !peers.is_empty() {
+                    state
+                        .logger
+                        .info("ble", format!("BLE 扫描到 {} 个候选，开始逐个连接", peers.len()));
+                }
                 for peripheral in peers {
                     if *shutdown.borrow() {
                         return;

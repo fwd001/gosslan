@@ -778,6 +778,37 @@ mod tests {
         })
     }
 
+    /// **扫描结果不得再用 `Peripheral::services()` 二次过滤**（真机踩过，症状极隐蔽）。
+    ///
+    /// `start_scan(ScanFilter{services})` 已在平台层过滤；而 `services()` 在 **Android 上
+    /// 只有连接并 `discover_services()` 之后才有值**，未连接时恒为空 ⇒ 拿它过滤会把所有候选
+    /// 丢掉。真机症状（用户 2026-09-12）：两台设备蓝牙都开着、都在广播、系统层扫描也命中，
+    /// 但**一个候选都不去连**，双方永远发现不了彼此，而日志里一个字都没有。
+    #[test]
+    fn scan_results_are_not_filtered_by_unconnected_services() {
+        let bt = include_str!("transport/bluetooth.rs");
+        let body = rust_fn_body(bt, "pub async fn scan_peers(");
+        assert!(
+            !body.contains("p.services()") && !body.contains(".services().iter()"),
+            "扫描结果必须**原样返回**：按 `services()` 过滤在 Android 上会把候选全丢掉 \
+             （未连接时它恒为空集合）"
+        );
+        assert!(
+            body.contains("Ok(all)"),
+            "应当直接把平台层已经过滤好的结果返回"
+        );
+        assert!(
+            body.contains("discover_services()") || body.contains("连接"),
+            "必须在注释里写清为什么不能过滤 —— 否则下一个人很容易『顺手补一个校验』"
+        );
+        // 扫到候选必须留痕（否则这类缺陷在日志里完全不可见）
+        let ble = include_str!("network/ble.rs");
+        assert!(
+            ble.contains("BLE 扫描到"),
+            "扫到候选要打一条日志：真机排查时这是『到底有没有发现对端』的唯一线索"
+        );
+    }
+
     /// **release 包必须 keep 住 Rust 按名字调用的 Kotlin 方法**。
     ///
     /// R8 在 release 下会把它们改名（**实测**：`stop`/`start`/`send`/… 全变成 `a`/`b`/`c`/…），
