@@ -470,6 +470,18 @@ CASES: list[Case] = [
         tags=["rust", "friend"],
     ),
     Case(
+        name="打包配置（release 前端必须压缩）",
+        why="TAURI_ENV_DEBUG 是字符串（release 为 \"false\"），`!process.env.TAURI_ENV_DEBUG` "
+        "把 release 当成 debug ⇒ 前端不压缩还带 sourcemap（实测 310KB → 500KB + 735KB .map）。"
+        "这类退化不报错、不影响功能，只会让所有 release 包悄悄变慢",
+        file=ROOT / "vite.config.ts",
+        injections=[("minify: isDebugBuild ? false : \"esbuild\"", "minify: !process.env.TAURI_ENV_DEBUG ? \"esbuild\" : false")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="TAURI_ENV_DEBUG",
+        tags=["frontend", "build"],
+    ),
+    Case(
         name="手机蓝牙默认开启（零配置）",
         why="用户实测要求：手机上蓝牙通道应默认打开、不用去设置里开（参考 BitChat 进去就能连）。"
         "默认值依赖目标平台，主机单测只能覆盖桌面那一半，所以用源码规则钉住手机那一半",

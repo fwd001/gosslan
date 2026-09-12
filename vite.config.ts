@@ -7,6 +7,15 @@ import { resolve } from "node:path";
 const here = fileURLToPath(new URL(".", import.meta.url));
 
 /**
+ * 是否 **debug** 构建（未压缩 + 带 sourcemap）。
+ *
+ * ⚠️ 必须判断字面 `"true"`：Tauri 会把 `TAURI_ENV_DEBUG` 设成字符串
+ * （release 是 `"false"`），而 JS 里 `!"false"` 是 **false** —— 也就是说
+ * 直接取反会让 release 包走上"未压缩 + 带 sourcemap"的分支（详见下方 build.minify 的注释）。
+ */
+const isDebugBuild = process.env.TAURI_ENV_DEBUG === "true";
+
+/**
  * 把「首屏主题脚本」与「骨架样式」**内联**进每个窗口的 HTML。
  *
  * 为什么需要插件（而不是在三个 HTML 里各抄一份）：三个窗口都必须在内联样式/模块脚本执行
@@ -61,8 +70,15 @@ export default defineConfig(async () => ({
   build: {
     target:
       process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari13",
-    minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
-    sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    // ⚠️ `TAURI_ENV_DEBUG` 是**字符串**：Tauri 对 release 也会设成 `"false"`，
+    // 而 JS 里 `!"false"` === **false**（非空字符串都是真）⇒ 旧写法
+    // `minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false` 把 release 当成了 debug：
+    // 前端**不压缩**、还带 sourcemap。实测（安卓 release 出包）：
+    // `main-*.js` 从 310KB 涨到 **500KB**，外加 735KB 的 `.map`（也会被打进包里）。
+    // 手机上这直接变成多出来的解析时间 —— 与"响应速度高于一切"直接冲突。
+    // 只认字面 `"true"` 才算 debug 构建。
+    minify: isDebugBuild ? false : "esbuild",
+    sourcemap: isDebugBuild,
     rollupOptions: {
       // 三个窗口 = 三个 HTML 入口（Rust 侧用 WebviewUrl::App("<name>.html") 打开）。
       // 各自的入口只 import 自己需要的代码，所以设置/日志窗口不会加载聊天那一大坨
