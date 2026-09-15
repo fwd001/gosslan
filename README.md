@@ -26,6 +26,8 @@
 | **★★★ 必读** | [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md) | **v1.0 验收标准**：P0/P1 验收清单、开发策略、必须运行的验证命令 |
 | **★★★ 必读** | [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) | **项目全景**：完整功能清单、架构与代码导读、E2EE 状态机、工程约定、测试口径 |
 | **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01~P18）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
+| **★★★ 必读** | [docs/architecture/README.md](docs/architecture/README.md) | **★ V5 目标架构规范**：分层 + 单串行 mesh 引擎 + BLE 无感融合 + 四平台；含 LAN 零回归契约 C1–C6 |
+| **★★★ 必读** | [docs/architecture/07-roadmap-v5.md](docs/architecture/07-roadmap-v5.md) | **★ V5 实施路线**：分阶段、可编译、可回退 |
 | **★★ 参考** | [docs/AI_ENGINEERING_INDEX.md](docs/AI_ENGINEERING_INDEX.md) | 约束文档导航索引 + 文档与代码冲突时的处理规则 |
 | **★★ 参考** | [docs/adr/](docs/adr/) | **架构决策记录**：协议版本化、状态机边界、Rust/TS 契约、故障注入测试 |
 | **★★ 参考** | [CHANGELOG.md](CHANGELOG.md) | **版本历史**：每个版本改了什么、为什么改（含所有已修 bug 的根因） |
@@ -52,7 +54,7 @@
 | **聊天体验** | 虚拟滚动 + 触顶分页加载历史 + 未读定位分割线 +「回到最新」；连续消息合并与时间分割线；消息时间 `MM-DD HH:mm`（悬停看秒级）；6 套聊天配色预设 + 字号（**跨设备同步**：对方按我的配色渲染我的消息）；长文本折叠；**删除聊天记录**（列表项右下角 ×，二次确认） |
 | **通知** | 应用处于**后台或非当前会话**时触发系统原生通知，**点击通知唤起窗口、跳转到发送者会话并清零未读**（Windows / macOS / Android） |
 | **系统托盘** | 点击窗口「×」**最小化到托盘**（后台继续收发消息与通知），托盘菜单「显示主窗口 / 退出」——**只有选择退出才真正结束进程**（桌面端） |
-| **双通道** | 局域网 + 蓝牙**双通道聚合**架构：`Transport` 抽象接口、独立开关、按负载智能分流（蓝牙通道接口就绪待接线） |
+| **双通道** | 局域网 + 蓝牙**双通道融合**：一台设备一个身份、多条连接；**蓝牙无感加入局域网**（自动网关转发，见 [docs/architecture](docs/architecture/README.md)）；四平台 mac / win / Android / **iOS**（V5 目标） |
 | **中继路由** | 异构 **Mesh 桥接**（局域网 ↔ 蓝牙跨链路转发）+ TTL 衰减 + 有界 RingBuffer 限流，节点降压保护 |
 | **存储** | SQLite 只存文本 / 密钥 / 关系（**不存 BLOB**），图片/文件落 `Cache` 目录懒加载；**自动缓存清理**（3/7/30 天/永久 + 磁盘配额）+ VACUUM 整理 |
 | **共享目录** | 设置本地共享文件夹，好友点对点浏览目录树并下载文件（防目录穿越） |
@@ -73,7 +75,8 @@ gosslan/
 ├── CHANGELOG.md              # 版本历史
 ├── docs/
 │   ├── AI_ENGINEERING_INDEX.md   # 约束文档导航
-│   ├── protocol-invariants.md    # 协议不变量明细 INV-P01~P18
+│   ├── architecture/             # ★ V5 目标架构规范（README + 01–07）
+│   ├── protocol-invariants.md    # 协议不变量明细 INV-P01~P18 + INV-NET-*
 │   ├── acceptance/               # 版本验收标准（当前：1.0 release）
 │   ├── adr/                      # 架构决策记录
 │   └── templates/                # Bug 修复 / ADR 模板
@@ -269,6 +272,11 @@ cd src-tauri && cargo test
 ---
 
 ## 🛰️ 架构与协议
+
+> **V5 目标架构**（LAN + BLE 无感融合、单串行 mesh 引擎、四平台）见 **[docs/architecture/README.md](docs/architecture/README.md)**；
+> 实施路线见 **[docs/architecture/07-roadmap-v5.md](docs/architecture/07-roadmap-v5.md)**；
+> 决策见 **[docs/adr/0020](docs/adr/0020-layered-transport-and-single-mesh-engine.md)–[0025](docs/adr/0025-deterministic-mesh-simulation.md)**。
+> 下面几节描述的是**当前实现**（LAN 部分语义在 V5 中保持不变）。
 
 ### 设备发现（UDP :59991）
 

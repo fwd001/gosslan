@@ -1,5 +1,7 @@
 # ADR-0015: BLE Transport（Phase 7 / P3）
 
+> **2026-09-14**：方向由 **ADR-0022**（BLE 无感加入 LAN + 网关 + LAN 契约）与 **ADR-0024**（跨平台链路层 + iOS）修订；本文的射频实现细节（三端 central/peripheral、分片、握手、权限）**仍然有效**，目标架构见 `../architecture/README.md`。
+
 - Status: **Accepted**（2026-09-12 用户审核通过）。实现已落地：central `cc273b5`/`c2124ef`、
   macOS 外设 `b317c27`、Android 外设（Kotlin + JNI）`e66fd8b`/`badd668`；
   默认关闭由 feature 门 + 设置开关双重保证。

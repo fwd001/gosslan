@@ -10,6 +10,16 @@
 
 ## [Unreleased]
 
+### Docs (V5 架构规范落地：LAN + BLE 无感融合)
+
+- 新增 `docs/architecture/`（`README` + `01`–`07`）：分层与并发所有权、唯一数据模型、链路层端口与四平台（含 iOS）、
+  mesh 引擎与路由/网关、蓝牙链路策略、测试与 SLO、**V5 分阶段路线图**。
+- 新增 ADR-0020~0025：单串行 mesh 引擎、收敛唯一 Peer/Connection 模型、BLE 无感加入 LAN、BitChat 双栈透明中继、
+  跨平台链路层 + iOS、确定性仿真。
+- 更新：`AI_RULES.md` §3（蓝牙/Mesh 解冻为主线）、`docs/AI_ENGINEERING_INDEX.md`、`docs/protocol-invariants.md`（新增 INV-NET-*）、
+  `AI_PROJECT_HANDOFF.md`、`docs/ARCHITECTURE-EXPLAINED.md`、`docs/acceptance/1.0-release.md`、ADR-0014/0015/0017 状态注记。
+- 本轮**仅文档、不改代码**；实施见 `docs/architecture/07-roadmap-v5.md`。
+
 ## [4.8.2] - 2026-09-14
 
 ### Fixed (审计 §7 风险收口：续传对账 + 过期 .part 定期清扫)

@@ -23,6 +23,7 @@
 
 | 想知道 | 去哪里看 |
 |---|---|
+| **V5 目标架构与路线图（当前主线）** | **`docs/architecture/README.md` + `docs/architecture/07-roadmap-v5.md`（ADR-0020~0025）** |
 | 最近在干什么 / 每个改动为什么 | `CHANGELOG.md` 的 `[Unreleased]` + 最新的带日期小节（当前最新 **4.2.19**） |
 | 蓝牙（BLE）传输的完整设计与平台边界 | **`docs/adr/0015-ble-transport.md`**（含 §7.7 Android 外设、§7.9 Windows central） |
 | 蓝牙真机排查的过程与判据 | `docs/notes/ble-audit-2026-09-13.md`（架构图 / 根因 / Test A~F） |
@@ -40,7 +41,8 @@
   `menu.rs`、`open_path.rs`、`user_dirs.rs`、`export.rs` 等（见 ADR-0014/0015/0018）。
 - §8.2 第 4 条、§8.4 末条：说"BLE 只是接口契约、未接线"—— **已过时**。
   Android 与 macOS 的 central + peripheral 都已实现；**Windows 的 central 已于
-  2026-09-13 接线（`7-g`）**，Windows 的 peripheral 仍未做。详见 ADR-0015 §7.9。
+  2026-09-13 接线（`7-g`）**，**Windows 的 peripheral 也已在同日补齐**
+  （`26969a9`，WinRT `GattServiceProvider`；详见 ADR-0015 §7.10）。
 - §9 命令速查：Windows 生产包现在有一条命令 **`npm run dist:win:test`**
   （`scripts/build-windows-release.ps1`：护栏 → `tauri build --features bluetooth --bundles nsis` → 产物 + SHA-256）。
 
@@ -452,6 +454,8 @@ CI：push `main` / push `v*` tag / 手动触发。tag 额外发布 Release。
 | `AI_PROJECT_HANDOFF.md` | **本文件**：给 AI 编程/源码阅读/fork 者的完整上下文 |
 | `docs/protocol-invariants.md` | **协议不变量明细** INV-P01~P18 + 必覆盖测试矩阵 |
 | `docs/AI_ENGINEERING_INDEX.md` | 约束文档导航 + 文档与代码冲突时的处理规则 |
+| **`docs/architecture/`** | **★ V5 目标架构规范（README + 01–07）** |
+| **`docs/adr/0020`–`0025`** | **★ V5 决策：分层/单模型/无感融合/中继/跨平台+iOS/仿真** |
 | `README.md` | 项目门面：功能特性、快速开始、架构简介、**AI 约束文档索引** |
 | `CHANGELOG.md` | 全部版本历史（每版 Added/Fixed/Changed 明细） |
 | `docs/adr/` | **架构决策记录**：协议版本化 / 状态机边界 / Rust-TS 契约 / 故障注入测试 |

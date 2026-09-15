@@ -80,24 +80,35 @@ The following are P1:
 
 ---
 
-# 3. Explicitly Frozen for v1.0
+# 3. Scope: v1.0 Frozen List → V5 Direction
 
-Do NOT proactively implement, redesign, optimize, or expand:
+> ⚠️ **2026-09-14 更新**：本节原来的「v1.0 冻结清单」**已被后续需求与用户裁定推翻**：
+> 蓝牙传输、高级 mesh 路由、跨子网、BLE 无感融合、BitChat 透明中继**现在都是主线**。
+> 目标架构见 `docs/architecture/README.md`（V5.0），实施见 `docs/architecture/07-roadmap-v5.md`。
 
-* Bluetooth transport
+**仍然冻结（不要做）**：
+
 * QUIC
 * mDNS
-* Cross-subnet communication
-* Server relay
 * Account system
 * Noise XX
-* Advanced Mesh routing
-* Large-scale relay optimization
 * 500–1000 node optimization
-* New transport implementations
-* Large-scale architecture refactoring
-* New distributed-system mechanisms
-* Future roadmap features not required by the current task
+* Server relay（服务端中继）
+* 复制 BitChat 的消息/身份/频道/UI/DB 设计
+
+**已解冻、成为主线（按 roadmap 分阶段做）**：
+
+* Bluetooth transport / BLE 无感融合（ADR-0022）
+* 跨平台链路层 + iOS（ADR-0024）
+* Advanced Mesh routing（源路由 / 邻居并集；ADR-0022、`docs/architecture/04`）
+* BitChat 透明中继（ADR-0023）
+* 分层架构重构（ADR-0020/0021，分阶段、可回退）
+
+**与是否解冻无关、始终禁止**：
+
+* 破坏 LAN 零回归契约 C1–C6
+* 一次性大重写、`git add -A`、跳过测试 / 护栏
+* 为「未来可能支持」提前加抽象（YAGNI）
 
 Existing code related to these features may remain.
 

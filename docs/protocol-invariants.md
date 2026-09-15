@@ -603,3 +603,46 @@ AI 不得直接修改。
 | File chunk order | Chunk N before Done |
 | Group clear boundary | seq <= boundary blocked |
 | Clock skew | Ordering/read state unaffected |
+
+---
+
+## 17. Network Architecture Invariants (INV-NET)
+
+> 由 `docs/architecture/`（V5）定义，此处登记为**规范引用**。改动网络/传输/引擎时逐条自检。
+
+```text
+INV-NET-01  引擎外部不得直接锁引擎状态（只能发 MeshEvent）。
+INV-NET-02  链路层不得 import protocol / db / UI 类型。
+INV-NET-03  去重与 TTL 只有一份，位于引擎。
+INV-NET-04  引擎不直接调用 DB / 射频，只产出 Effect。
+INV-NET-05  同步边只允许 main→engine→link 方向。
+INV-NET-10  同 device_id 只有一个 Peer。
+INV-NET-11  同 endpoint 的 upsert 幂等，且绝不覆盖 health。
+INV-NET-12  Peer 在线 = 任一 Connection 健康。
+INV-NET-13  path_kind 由来路决定，不能从 IP 段反推。
+INV-NET-20  链路层不 import protocol / db / UI 类型。
+INV-NET-21  引擎只经 LinkCommand 驱动链路。
+INV-NET-22  四平台外设接口保持同形。
+INV-NET-23  LinkId 不参与身份判定。
+INV-NET-30  去重/TTL 在引擎且跨 transport 唯一。
+INV-NET-31  源发广播不截断；转发才有界 fanout。
+INV-NET-32  转发 TTL 必须 clamp 到 max_ttl。
+INV-NET-33  非成员也要转发群消息（只跳过本地消费）。
+INV-NET-34  定向帧到达目标后停止转发。
+INV-NET-35  OpaqueExternal 不进入业务处理、不落库。
+INV-NET-36  BitChat 帧只按字节搬运，绝不解析其内部结构。
+INV-NET-37  双栈默认关闭；关闭时不得注册/广播 BitChat UUID。
+INV-NET-40  链路策略是纯函数（无 I/O、可单测）。
+INV-NET-41  BLE 拨号纳入全局并发上限。
+INV-NET-42  坏片/坏帧只丢该帧，绝不断链（除真写失败）。
+INV-NET-43  自适应策略必须有「关闭开关」，可退回固定参数。
+INV-NET-50  每阶段必须有可自动化的验收。
+INV-NET-51  仿真只跑生产引擎，不复制协议逻辑。
+INV-NET-52  仿真收敛失败必须 fail。
+INV-NET-53  真机矩阵未过，不得宣布阶段完成。
+
+# LAN 零回归契约（architecture/README §6）
+C1 线格式不变；C2 语义不变；C3 发现不变；C4 关蓝牙=今天；
+C5 新引擎先影子双跑；C6 新路径稳定前不删旧表。
+```
+

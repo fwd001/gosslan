@@ -1,5 +1,9 @@
 # Gosslan 蓝牙稳定性架构重构计划（对标 bitchat）
 
+> ⚠️ **已被 V5 取代**：本文是 V4 草案与历史分析，**不再作为 canonical**。
+> 规范见 `docs/architecture/README.md`；实施见 `docs/architecture/07-roadmap-v5.md`；
+> 评审结论见 `docs/notes/ble-mesh-v4-plan-review-2026-09-14.md`。
+
 - Date: 2026-09-14
 - 性质：**计划文档，本轮不改代码**（用户 2026-09-14：只梳理可执行计划）
 - ⚠️ **2026-09-14 已按真实代码复核**：部分断言已修正（M3-d/端口/前后台扫描等），

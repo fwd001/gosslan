@@ -1,6 +1,7 @@
 # ADR-0014: Multi-Path Connection Selection
 
 - Status: Accepted（2026-09-12 用户审核通过）
+- **2026-09-14**：本文的 `pick_link` 选路策略保留；两套链路表（`state::Link` 与 `mesh::Connection`）的收敛决策见 **ADR-0021** 与 `../architecture/02-data-model.md`。
 - Date: 2026-09-12
 - Owners: Gosslan
 - Related:

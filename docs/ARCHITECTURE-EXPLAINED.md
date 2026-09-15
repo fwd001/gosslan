@@ -12,6 +12,11 @@
 >
 > **图怎么看**：下面所有架构图都是 [Mermaid](https://mermaid.js.org/) 文本图。
 > GitHub、VS Code、Zed、Typora 打开这个文件会自动渲染成图。
+>
+> ⚠️ **2026-09-14 更新（V5 方向）**：本文的「§2 期望架构」仍是有效方向，但**目标形态已被规范化**到
+> `docs/architecture/README.md`（V5：分层 + 单串行 mesh 引擎 + BLE 无感融合 + 四平台）。
+> 本文 §7.3「备件清单」的 `broadcast_gossip` 与 §7.4 的部分漂移项已过时；
+> 以 `docs/architecture/` 与 `docs/adr/0020`–`0025` 为准。
 
 ---
 
