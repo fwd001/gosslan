@@ -79,7 +79,14 @@ export default {
   unmapped: [
     ["src-tauri/src/main.rs", "6 行，只有 tauri::Builder 的入口调用"],
     ["src-tauri/src/lib.rs", "2168 行：模块注册 + 窗口管理 + 命令注册表（跨领域组装点，Phase 7）"],
-    ["src-tauri/src/commands.rs", "6422 行 / 26 个 tauri command：**前后端边界**，按领域拆是 Phase 7 的事"],
+    [
+      "src-tauri/src/commands.rs",
+      "142 行 + 25 个子模块 / 26 个 tauri command：**前后端边界**，按领域拆是 Phase 7 的事",
+    ],
+    [
+      "src-tauri/src/commands",
+      "commands.rs 的 25 个子模块（include! 物理拆分、逻辑仍属装配层）：",
+    ],
     ["src-tauri/src/state.rs", "1494 行 / 284 个 pub 项：跨领域共享状态（耦合热点）"],
     ["src/vite-env.d.ts", "类型声明"],
     ["src/types.ts", "跨领域共享类型"],
@@ -146,7 +153,7 @@ export default {
       paths: [],
       invariants: ["INV-P12"],
       activeHome: null,
-      activeHomeNote: "暂无独立文件：逻辑在 commands.rs 的 friend 命令与 db.rs 的 relationship 表",
+      activeHomeNote: "暂无独立文件：逻辑在 commands.rs 的 friend 命令与 db/friends.rs 的表 CRUD",
       enforce: false,
       consumes: [], // 暂无独立代码；待 Phase 7 提取后再补
       notes:
@@ -267,12 +274,13 @@ export default {
       name: "持久化",
       tier: "L3",
       paths: [
-        "src-tauri/src/db.rs", // 3679 行 / 196 个函数，被 13 个文件引用
+        "src-tauri/src/db.rs", // 438 行 / Schema + 16 include!
+        "src-tauri/src/db", // 16 个子模块：settings / clocks / friends / messages / conversations / offline_queue / file_transfer / favorites(含 tests) / ...
         "src-tauri/src/schema.sql",
         "src-tauri/src/export.rs", // 聊天记录导出（磁盘满 / 迁机时的自救）
       ],
       invariants: ["INV-P05", "INV-P14", "INV-008"],
-      activeHome: "src-tauri/src/db.rs",
+      activeHome: "src-tauri/src/db", // 16 个子模块（include! 物理拆分）
       enforce: false,
       consumes: [], // 叶子域：db.rs / export.rs / schema.sql 在生产代码内只被装配层 use(state/commands),对其他领域无生产代码引用；tests 内 use protocol 已被 check-domain-deps.mjs 排除
       notes:

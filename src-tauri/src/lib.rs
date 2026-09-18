@@ -1,5 +1,17 @@
 //! Gosslan 应用入口（库目标，供 Tauri 加载）。
 
+// ---- clippy 膨胀守卫 ----
+// 温和 warn，不 deny —— 局部 `#[allow(...)]` 豁免即可。
+// 意图：防止函数/枚举无边界膨胀；例外必须写理由，不可静默豁免。
+#![warn(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::large_enum_variant,
+    clippy::fn_params_excessive_bools,
+    clippy::many_single_char_names,
+    clippy::cognitive_complexity,
+)]
+
 /// Android 的「打开文件」JNI 桥（FileProvider：私有目录文件必须以 content:// 交出去）。
 #[cfg(target_os = "android")]
 mod android_open;
@@ -452,6 +464,101 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    /// 把 commands.rs 头部 + 所有子模块文件拼接成一份完整源码。
+    ///
+    /// `include!` 只做编译期拼接，`include_str!` 看不到展开后的结果。
+    /// 这条辅助让源码守卫测试拿到"等于原始单文件"的视图。
+    fn all_commands_src() -> &'static str {
+        concat!(
+            include_str!("commands.rs"),
+            "\n",
+            include_str!("commands/system.rs"),
+            "\n",
+            include_str!("commands/network.rs"),
+            "\n",
+            include_str!("commands/dev_diag.rs"),
+            "\n",
+            include_str!("commands/channel.rs"),
+            "\n",
+            include_str!("commands/settings.rs"),
+            "\n",
+            include_str!("commands/friends.rs"),
+            "\n",
+            include_str!("commands/mobile_picker.rs"),
+            "\n",
+            include_str!("commands/chat.rs"),
+            "\n",
+            include_str!("commands/groups.rs"),
+            "\n",
+            include_str!("commands/window.rs"),
+            "\n",
+            include_str!("commands/group_files.rs"),
+            "\n",
+            include_str!("commands/files.rs"),
+            "\n",
+            include_str!("commands/share.rs"),
+            "\n",
+            include_str!("commands/helpers.rs"),
+            "\n",
+            include_str!("commands/favorites.rs"),
+            "\n",
+            include_str!("commands/routed.rs"),
+            "\n",
+            include_str!("commands/external_links.rs"),
+            "\n",
+            include_str!("commands/logs.rs"),
+            "\n",
+            include_str!("commands/chat_search.rs"),
+            "\n",
+            include_str!("commands/group_announcements.rs"),
+            "\n",
+            include_str!("commands/group_todo_media.rs"),
+            "\n",
+            include_str!("commands/group_file_dispatch.rs"),
+            "\n",
+            include_str!("commands/group_file_keys.rs"),
+        )
+    }
+
+    /// 把 db.rs 头部 + 所有子模块文件拼接成一份完整源码。
+    fn all_db_src() -> &'static str {
+        concat!(
+            include_str!("db.rs"),
+            "\n",
+            include_str!("db/settings.rs"),
+            "\n",
+            include_str!("db/clocks.rs"),
+            "\n",
+            include_str!("db/group_delete_boundary.rs"),
+            "\n",
+            include_str!("db/friends.rs"),
+            "\n",
+            include_str!("db/groups.rs"),
+            "\n",
+            include_str!("db/messages.rs"),
+            "\n",
+            include_str!("db/conversations.rs"),
+            "\n",
+            include_str!("db/message_delete.rs"),
+            "\n",
+            include_str!("db/offline_queue.rs"),
+            "\n",
+            include_str!("db/group_offline_queue.rs"),
+            "\n",
+            include_str!("db/file_transfer.rs"),
+            "\n",
+            include_str!("db/file_offline.rs"),
+            "\n",
+            include_str!("db/group_files.rs"),
+            "\n",
+            include_str!("db/read_receipts.rs"),
+            "\n",
+            include_str!("db/favorites.rs"),
+            "\n",
+            include_str!("db/recalls.rs"),
+        )
+    }
+
     /// capability 的 `windows` 模式匹配。Tauri 内部用 glob；本项目只需要支持
     /// 全匹配 / `前缀*` / `*后缀` 三种写法（够用且不引入新依赖）。
     fn window_pattern_matches(pattern: &str, label: &str) -> bool {
@@ -564,7 +671,7 @@ mod tests {
     /// 规则式守卫能覆盖"以后新加的命令"，名字清单不能。
     #[test]
     fn blocking_commands_run_off_the_main_thread() {
-        let src = include_str!("commands.rs");
+        let src = all_commands_src();
         // 例外必须写在这里并交代理由（当前为空：纯窗口操作天然不含下列标记）
         const ALLOWED: [&str; 0] = [];
 
@@ -912,7 +1019,7 @@ mod tests {
     /// 收到同意或拒绝（`forget_pending_request`）后清除 —— 所以不会无限重发。
     #[test]
     fn friend_request_survives_a_dropped_link() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let i = commands
             .find("pub async fn send_friend_request(")
             .expect("send_friend_request 必须在");
@@ -1231,7 +1338,7 @@ mod tests {
             "链路快照必须立刻清掉 —— 否则聊天头部会一直显示「桥接 N」（用户实测过）"
         );
 
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         assert!(
             commands.contains("fn friend_is_online("),
             "在线判据必须是独立纯函数（可单测、可护栏）"
@@ -1530,7 +1637,7 @@ mod tests {
             "两条 FriendAccept 路径（直连 `Message::FriendAccept` + 跨跳 `GossipKind::FriendAccept`）\
              都必须清掉 pending —— 少一条就会让「已经是好友了，申请还挂着」复现"
         );
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let commands_f = code_flat(commands);
         assert_eq!(
             commands_f
@@ -1570,7 +1677,7 @@ mod tests {
             "两条 FriendRequest 路径（直连 `Message::FriendRequest` + 跨跳 `GossipKind::FriendRequest`）\
              都必须先做自动同意 —— 只修一条就会『同一件事两种行为』（这正是上一条缺陷的成因）"
         );
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         assert_eq!(
             commands
                 .matches("pub(crate) async fn accept_friend_request(")
@@ -1583,7 +1690,7 @@ mod tests {
     /// **`get_pending_requests` 必须按好友关系过滤**（用户明确要求的兜底规则）。
     #[test]
     fn pending_requests_exclude_existing_friends() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "pub fn get_pending_requests(");
         assert!(
             body.contains("is_actionable_request"),
@@ -1603,7 +1710,7 @@ mod tests {
     /// `外设角色已启动 → 已停止广播` 循环，会把蓝牙栈和 CPU 打满、整个应用顿卡）。
     #[test]
     fn bt_defaults_on_everywhere() {
-        let db = include_str!("db.rs");
+        let db = all_db_src();
         let body = rust_fn_body(db, "pub fn get_bt_enabled(");
         assert!(
             body.contains("let default_on = true;"),
@@ -1633,7 +1740,7 @@ mod tests {
             tm.contains("pub preferred: bool"),
             "ChannelStatus 必须有独立的 preferred 字段（与 running 分开），否则前端只能拿运行状态猜偏好"
         );
-        let cmds = include_str!("commands.rs");
+        let cmds = all_commands_src();
         let body = rust_fn_body(cmds, "pub async fn build_runtime_snapshot(");
         assert!(
             body.contains("get_lan_enabled") && body.contains("get_bt_enabled"),
@@ -1674,7 +1781,7 @@ mod tests {
             notif.contains("map_err(|e| e.to_string())"),
             "notify-rust 的错误必须返回出来，不能吞"
         );
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         assert!(
             commands.contains("pub fn send_test_notification("),
             "必须有设置页可调用的测试通知命令"
@@ -1690,7 +1797,7 @@ mod tests {
     ///    的节点也算在线（与后端 friend_is_online 同口径）。
     #[test]
     fn link_badge_and_presence_are_live() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "pub async fn get_conv_link(");
         assert!(
             body.contains("has_link") && body.contains("hop: 0"),
@@ -1710,7 +1817,7 @@ mod tests {
     /// resolve_media_path 直接报 Gone，前端会把"正在接收"的图片标成「已被清理」并缓存。
     #[test]
     fn in_flight_media_is_not_reported_as_deleted() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "fn resolve_media_path(");
         assert!(
             body.contains("file_receivers")
@@ -1732,7 +1839,7 @@ mod tests {
             transport.contains("CONTENT_FEATURE_PULL"),
             "自动重试也必须走能力协商（旧端不发新帧）"
         );
-        let cmds = include_str!("commands.rs");
+        let cmds = all_commands_src();
         assert!(
             cmds.contains("pub fn get_content_transfers("),
             "必须有统一状态查询命令（前端气泡据此显示）"
@@ -1777,7 +1884,7 @@ mod tests {
     /// 正确写法：锁内只 `clone` 发送端快照，发送放到锁外（与心跳发送同一纪律）。
     #[test]
     fn never_awaits_while_holding_the_links_lock() {
-        let cmds = include_str!("commands.rs");
+        let cmds = all_commands_src();
         for f in [
             "pub async fn update_profile(",
             "pub async fn broadcast_chat_style(",
@@ -1803,7 +1910,7 @@ mod tests {
             !sig.contains("content_features"),
             "content_features 不得进入签名材料（否则老端验签失败）"
         );
-        let cmds = include_str!("commands.rs");
+        let cmds = all_commands_src();
         let body = rust_fn_body(cmds, "pub async fn request_content(");
         assert!(
             body.contains("CONTENT_FEATURE_PULL"),
@@ -1946,7 +2053,7 @@ mod tests {
     /// （否则用户只能自己猜，或者干脆重启）。
     #[test]
     fn removing_a_friend_also_drops_the_in_memory_identity_binding() {
-        let cmd = include_str!("commands.rs");
+        let cmd = all_commands_src();
         let body = rust_fn_body(cmd, "pub async fn remove_friend(");
         assert!(
             body.contains("forget_peer_identity"),
@@ -2038,7 +2145,7 @@ mod tests {
     /// 有一部分就是这个假状态造成的误导）。
     #[test]
     fn runtime_snapshot_reports_real_bluetooth_runtime() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "pub async fn build_runtime_snapshot(");
         assert!(
             body.contains("runtime_state"),
@@ -2057,7 +2164,7 @@ mod tests {
     /// 现在旧的"半份状态"命令必须**不存在**，且事件必须**带载荷**（`RuntimeSnapshot`）。
     #[test]
     fn runtime_state_has_a_single_source() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         for gone in [
             "pub async fn get_channel_status(",
             "pub fn get_network_status(",
@@ -2143,7 +2250,7 @@ mod tests {
     #[cfg(desktop)]
     #[test]
     fn aux_windows_open_their_own_document() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
 
         let mut urls: Vec<String> = Vec::new();
         for part in commands.split("WebviewUrl::App(").skip(1) {
@@ -2214,7 +2321,7 @@ mod tests {
     #[cfg(desktop)]
     #[test]
     fn aux_window_open_is_singleton_serialized_and_resident() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
 
         for signature in [
             "pub fn open_settings_window(",
@@ -2334,7 +2441,7 @@ mod tests {
     #[cfg(desktop)]
     #[test]
     fn group_todos_window_label_derives_from_group_id() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "pub fn open_group_todos_window(");
         assert!(
             !body.is_empty(),
@@ -2371,7 +2478,7 @@ mod tests {
     /// 永不消失的 outbox 行 —— 属于只能靠护栏拦的那类退化。
     #[test]
     fn self_chat_stays_local() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "fn insert_self_message(");
         assert!(
             !body.is_empty(),

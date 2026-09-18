@@ -1,0 +1,111 @@
+// 职责边界：
+// - 文件离线投递队列（pending_files CRUD）
+// ---------------- 文件离线投递队列 ----------------
+
+/// 幂等写入一条待发文件记录（transfer_id 唯一）。
+pub fn insert_file_outbox(
+    conn: &Connection,
+    transfer_id: &str,
+    peer_id: &str,
+    group_id: Option<&str>,
+    local_path: &str,
+    name: &str,
+    size: u64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO file_outbox(transfer_id, peer_id, group_id, local_path, name, size, status, attempts, next_attempt_at, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7)",
+        params![transfer_id, peer_id, group_id, local_path, name, size as i64, now_ms()],
+    )?;
+    Ok(())
+}
+
+/// 取某 peer 的待投递文件（仅 `pending`，且已到重试时间）。
+pub fn list_pending_file_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(String, String)>> {
+    let now = now_ms();
+    let mut stmt = conn.prepare(
+        "SELECT transfer_id, local_path FROM file_outbox
+         WHERE peer_id = ?1 AND status = 'pending' AND next_attempt_at <= ?2 AND attempts < ?3
+         ORDER BY created_at, id",
+    )?;
+    let rows = stmt.query_map(
+        params![peer_id, now, crate::network::file::MAX_FILE_OUTBOX_RETRIES],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    )?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 投递开始：pending → sending，并累计一次尝试。
+/// 加 `WHERE status = 'pending'` 守卫：cancel_file_transfer 可能已把这条标记 failed，
+/// 此时不应该再被我们推进 sending —— 否则 spawn loop 后续可能再 mark pending 把 failed 覆盖掉。
+pub fn mark_file_outbox_sending(
+    conn: &Connection,
+    transfer_id: &str,
+    backoff_ms: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE file_outbox SET status = 'sending', attempts = attempts + 1, next_attempt_at = ?2 WHERE transfer_id = ?1 AND status = 'pending'",
+        params![transfer_id, now_ms().saturating_add(backoff_ms)],
+    )?;
+    Ok(())
+}
+
+/// 投递失败但可重试：回到 pending，等待下次连接/心跳触发。
+/// 加 `WHERE status = 'sending'` 守卫：用户已取消（status=failed）的 outbox 不能再被拉回 pending ——
+/// 否则 cancel_file_transfer 刚 mark failed，spawn loop 又 mark pending，
+/// 下一轮 flush_pending_files 又会把它捞出来重试，用户就看它永远失败不了。
+pub fn mark_file_outbox_pending(
+    conn: &Connection,
+    transfer_id: &str,
+    backoff_ms: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE file_outbox SET status = 'pending', next_attempt_at = ?2 WHERE transfer_id = ?1 AND status = 'sending'",
+        params![transfer_id, now_ms().saturating_add(backoff_ms)],
+    )?;
+    Ok(())
+}
+
+/// 投递成功：删除队列行。
+pub fn delete_file_outbox(conn: &Connection, transfer_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM file_outbox WHERE transfer_id = ?1",
+        params![transfer_id],
+    )?;
+    Ok(())
+}
+
+/// 永久失败：标记 failed，不再参与重试。
+pub fn mark_file_outbox_failed(conn: &Connection, transfer_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE file_outbox SET status = 'failed' WHERE transfer_id = ?1",
+        params![transfer_id],
+    )?;
+    Ok(())
+}
+
+/// 读某 transfer 当前已尝试次数 —— flush_pending_files 超限检查用。
+pub fn get_file_outbox_attempts(conn: &Connection, transfer_id: &str) -> Option<i64> {
+    let mut stmt = match conn.prepare("SELECT attempts FROM file_outbox WHERE transfer_id = ?1") {
+        Ok(s) => s,
+        Err(e) => {
+            // prepare 失败（schema 迁移中、磁盘满、DB 锁）—— 降级返回 None。
+            // 调用方 .map(|a| a >= MAX).unwrap_or(false) 得到 false → 不会判超限，继续重试。
+            // 这是正确的降级（prepare 失败不该把所有文件直接判 fail），
+            // 但 eprintln 让开发/运维能看到这条异常路径被走到了。
+            eprintln!("[file_outbox] get_file_outbox_attempts: prepare failed for transfer_id={transfer_id}: {e}");
+            return None;
+        }
+    };
+    stmt.query_row(params![transfer_id], |r| r.get::<_, i64>(0))
+        .ok()
+}
+
+/// 删除指定 peer 的全部文件投递记录（删除好友时使用）。
+pub fn delete_file_outbox_for_peer(conn: &Connection, peer_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM file_outbox WHERE peer_id = ?1",
+        params![peer_id],
+    )?;
+    Ok(())
+}
