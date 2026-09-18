@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readCommandsSrc } from "../../scripts/rustSrc.ts";
 
 const srcDir = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(srcDir, p), "utf8");
@@ -211,7 +212,7 @@ test("「蓝牙直连」只能由后端链路类型判定（不许用『没有 I
     "蓝牙链路不显示 IP 行（蓝牙上没有 IP 概念）",
   );
   // 后端：命令返回时必须把链路类型填上（事件推送里没有它）
-  const commands = readFileSync(join(srcDir, "..", "src-tauri", "src", "commands.rs"), "utf8");
+  const commands = readCommandsSrc();
   assert.match(commands, /async fn fill_peer_links\(/, "必须有唯一的『补链路类型』实现");
   assert.match(commands, /best_link_kind/, "链路类型按 LAN > Routed > Bluetooth 的优先级取");
 });

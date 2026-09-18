@@ -18,6 +18,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { readCommandsSrc } from "../../scripts/rustSrc.ts";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const RUST_SRC = join(ROOT, "src-tauri", "src");
@@ -152,7 +153,7 @@ test("每个改设置的后端命令都必须传 origin（否则发起窗口收�
 });
 
 test("我的在线状态 = 任一通道在跑（两个都关才是离线，用户规则）", () => {
-  const commands = readFileSync(join(RUST_SRC, "commands.rs"), "utf8");
+  const commands = readCommandsSrc();
   assert.match(
     commands,
     /let present = list\.iter\(\)\.any\(\|c\| c\.running\)/,
@@ -190,7 +191,7 @@ test("运行状态只能有一个快照 + 一个带载荷的事件（②）", ()
     /snapshot: RuntimeSnapshot/,
     "事件必须**带快照**：无载荷的话接收方只能再全量重拉一遍（就是『两份状态』的温床）",
   );
-  const commands = readFileSync(join(RUST_SRC, "commands.rs"), "utf8");
+  const commands = readCommandsSrc();
   assert.ok(
     !commands.includes("pub async fn get_channel_status(") &&
       !commands.includes("pub fn get_network_status("),
@@ -211,7 +212,7 @@ test("运行状态只能有一个快照 + 一个带载荷的事件（②）", ()
 });
 
 test("清空数据必须广播（回归：设置里清了聊天记录，主界面毫无反应）", () => {
-  const src = readFileSync(join(RUST_SRC, "commands.rs"), "utf8");
+  const src = readCommandsSrc();
   const at = src.indexOf("pub async fn clear_all_data");
   assert.ok(at > 0, "找不到 clear_all_data");
   assert.match(
