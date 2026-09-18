@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 use crate::network;
 use crate::protocol::Message;
@@ -70,9 +71,30 @@ impl Transport for LanTransport {
 
     async fn broadcast(&self, payload: &[u8]) -> Result<(), String> {
         let msg: Message = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let links = self.state.links.lock().await;
-        for link in links.values().flatten() {
-            let _ = link.bulk.send(msg.clone()).await;
+
+        // 锁内只 snapshot bulk senders，释放锁后再发送。
+        // 持锁跨 send().await 会让一条拥塞链路锁死整张 links 表 —
+        // 同 transport::broadcast_gossip 的设计（v4.18.10 已验证）。
+        let targets: Vec<_> = {
+            let links = self.state.links.lock().await;
+            links.values().flatten().map(|l| l.bulk.clone()).collect()
+        };
+
+        // 每个 peer 用 try_send 优先非阻塞，Full 时 500ms 有界补试。
+        // 一个 peer 拥塞不影响其他 peer。
+        const BULK_SEND_TIMEOUT_MS: u64 = 500;
+        for tx in &targets {
+            match tx.try_send(msg.clone()) {
+                Ok(()) => continue,
+                Err(mpsc::error::TrySendError::Closed(_)) => continue,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_millis(BULK_SEND_TIMEOUT_MS),
+                        tx.send(msg.clone()),
+                    )
+                    .await;
+                }
+            }
         }
         Ok(())
     }
