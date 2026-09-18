@@ -80,13 +80,22 @@ pub fn pick_link(
         .map(|c| c.health.is_healthy(now_ms, health_timeout_ms, max_failures))
         .collect();
 
-    // Step 2: 从 healthy 里再过滤出「当前不拥塞」的作为首选
-    // congestion_window_ms 让拥塞信号有时间衰减，避免一次瞬时 Full 永久污染
-    let preferred_mask: Vec<bool> = candidates
-        .iter()
-        .zip(healthy_mask.iter())
-        .map(|(c, healthy)| *healthy && !c.health.is_prio_congested(now_ms, congestion_window_ms))
-        .collect();
+    // Step 2: 当前版本暂不把 Priority congestion 纳入选路排除条件。
+    //
+    // 原因（2026-09-18 传输回归审计）：
+    // Priority congestion 信号的唯一来源是 prio_tx.try_send() 发现 queue Full。
+    // 但 prio channel 与 bulk channel 共享同一个 writer_loop —— writer_loop 被 bulk 的
+    // write_frame（TCP backpressure）挂起时，prio_rx 同样停止消费 → prio queue 满 →
+    // 被记录为 Priority congestion。这是「共享 writer_loop 被 bulk 阻塞」的结果，
+    // 不是「Priority 网络路径真的拥塞」。把它喂给 pick_link 会让健康 LAN 被从 preferred
+    // 候选中排除，错误切到 BLE/Routed，反而放大延迟。
+    //
+    // 因此：congestion 信号**仍记录**（mark_conn_congested 不动），但**不影响选路**，
+    // 恢复到 v4.18.10 的"只按 healthy + path_rank 选"语义。
+    //
+    // congestion_window_ms 参数保留：暂不改签名以免级联 route_order / try_send；
+    // 将来 Writer/Priority 解耦后可重新启用。
+    let preferred_mask = healthy_mask.clone();
 
     // Step 3: 从 preferred 里挑最优；如果 preferred 全空，从 healthy 里挑（保持可用）
     let search_mask = if preferred_mask.iter().any(|p| *p) {
@@ -299,30 +308,33 @@ mod tests {
     }
 
     /// Test B: LAN healthy + 拥塞，Routed healthy + 不拥塞
-    /// → LAN 让路，选 Routed（核心行为变化）
+    /// → **congestion 不影响选路**，仍按 path_rank 选 LAN（恢复 v4.18.10 语义）
+    ///
+    /// 原因：Priority congestion 信号可能由"共享 writer_loop 被 bulk backpressure 挂起"
+    /// 产生，不是 Priority 网络路径真拥塞的可靠测量。因此拥塞记录保留但选路忽略。
     #[test]
-    fn b_lan_congested_routed_not_congested_picks_routed() {
+    fn b_lan_congested_routed_not_congested_still_picks_lan() {
         let c = vec![
             congested("p", 1, PathKind::Lan),
             healthy("p", 2, PathKind::Routed),
         ];
         assert_eq!(
             pick_link(&c, NOW, TIMEOUT, MAX_FAIL, CONGESTION_WINDOW_MS),
-            Some(1)
+            Some(0) // LAN (rank 0) > Routed (rank 1)，不受 congestion 影响
         );
     }
 
     /// Test C: LAN healthy + 拥塞，BLE healthy + 不拥塞
-    /// → 让路给 BLE（PathKind 优先级 LAN > BLE，但 LAN 拥塞让路）
+    /// → **congestion 不影响选路**，仍按 path_rank 选 LAN（恢复 v4.18.10 语义）
     #[test]
-    fn c_lan_congested_ble_not_congested_picks_ble() {
+    fn c_lan_congested_ble_not_congested_still_picks_lan() {
         let c = vec![
             congested("p", 1, PathKind::Lan),
             healthy("p", 2, PathKind::Bluetooth),
         ];
         assert_eq!(
             pick_link(&c, NOW, TIMEOUT, MAX_FAIL, CONGESTION_WINDOW_MS),
-            Some(1)
+            Some(0) // LAN (rank 0) > BLE (rank 2)，不受 congestion 影响
         );
     }
 
