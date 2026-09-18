@@ -34,6 +34,19 @@ pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
          CREATE INDEX IF NOT EXISTS idx_content_transfers_status
             ON content_transfers(status);",
     )?;
+    // 防御性迁移：早期 content_transfers 可能没有 transfer_id 列
+    // （断点续传要按它找 <tid>.part）。CREATE TABLE IF NOT EXISTS 不会自动补列。
+    let has_tid: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('content_transfers') WHERE name = 'transfer_id'")
+        .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+        .map(|n| n > 0)
+        .unwrap_or(true);
+    if !has_tid {
+        let _ = conn.execute(
+            "ALTER TABLE content_transfers ADD COLUMN transfer_id TEXT",
+            [],
+        );
+    }
     Ok(())
 }
 
