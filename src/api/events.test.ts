@@ -33,6 +33,16 @@ const ALLOWED_EMIT_WITHOUT_LISTENER: Record<string, string> = {
     "紧邻 `groups-updated` 一起发（同一条路径），前端只处理后者 —— 冗余事件，可后续删除",
   "group-file-log":
     "DevDiag 面板目前走 `get_discovery_diag` 轮询拿数据，该事件暂无消费者（保留待接）",
+  "message-failed":
+    "P1-P5 后端新增：outbox sweeper 超时自动判 failed 时发出。前端 P6-P10 接消费者（渲染失败感叹号 + 重发按钮）",
+  "message-cancelled":
+    "P1-P5 后端新增：用户 cancel_send 主动停止时发出。前端 P6-P10 接消费者（渲染'已停止'状态）",
+  "message-resending":
+    "P1-P5 后端新增：用户 resend_message 重发时发出。前端 P6-P10 接消费者（按钮 loading 状态）",
+  "file-failed":
+    "P1-P5 后端新增：file_outbox sweeper 判文件超时失败时发出。前端 P6-P10 接消费者",
+  "file-cancelled":
+    "P1-P5 后端新增：cancel_file_transfer 取消文件发送时发出。前端 P6-P10 接消费者",
 };
 
 /** 只发给特定窗口、由该窗口自己监听的事件不算漏接（这里是菜单事件，前端已监听）。 */
