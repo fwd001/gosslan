@@ -24,7 +24,7 @@ import LogViewer from "@/components/LogViewer.vue";
 import FavoritePanel from "@/components/FavoritePanel.vue";
 import ToastHud from "@/components/ToastHud.vue";
 import LinksList from "@/components/LinksList.vue";
-import { Compass, MessageCircle, ScrollText, Settings, Star, Users } from "lucide-vue-next";
+import { Compass, MessageCircle, MoreHorizontal, ScrollText, Settings, Star, Users } from "lucide-vue-next";
 import type { ExternalLink, Friend, PendingRequest } from "@/types";
 const app = useAppStore();
 const chat = useChatStore();
@@ -42,6 +42,8 @@ const addFriendOpen = ref(false);
 const groupOpen = ref(false);
 const shareOpen = ref(false);
 const logsOpen = ref(false);
+/** 移动端 TabBar "更多"菜单（设置 / 日志收进二级，TabBar 最多 4 项）。 */
+const mobileMoreOpen = ref(false);
 /**
  * 收藏页。
  *
@@ -515,9 +517,15 @@ function onResizeEnd() {
     </main>
     </div>
 
-    <!-- 移动端底部导航（软键盘弹出时收起，避免浮在键盘上方遮挡输入） -->
+    <!-- 移动端底部导航（软键盘弹出时收起，避免浮在键盘上方遮挡输入）。
+         Chat Detail / 设置 / 日志 / 收藏 等全屏二级页时整个 TabBar 隐藏 ——
+         二级页不该有一级页的 TabBar，返回时才恢复（见规格 P6-P9）。 -->
     <nav
-      v-if="app.isMobile && !app.keyboardOpen && !app.multiSelectActive"
+      v-if="app.isMobile
+        && !app.keyboardOpen
+        && !app.multiSelectActive
+        && app.mobileView === 'list'
+        && !settingsOpen && !logsOpen && !favoritesOpen"
       class="safe-bottom fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]"
     >
       <button
@@ -550,8 +558,8 @@ function onResizeEnd() {
         </span>
         <span class="text-[11px]">{{ t("nav.contacts") }}</span>
       </button>
-      <!-- 收藏：移动端 rail 是 `hidden md:flex`（看不到），所以底部导航必须单独有一项，
-           否则手机上根本没有收藏入口。 -->
+      <!-- 收藏：移动端 rail hidden md:flex（看不到），TabBar 保留入口。
+           桌面端 NavRail 也有星标按钮，风格一致。 -->
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
         :class="favoritesOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
@@ -560,25 +568,58 @@ function onResizeEnd() {
         <Star class="h-5 w-5" />
         <span class="text-[11px]">{{ t("nav.favorites") }}</span>
       </button>
+      <!-- 更多：设置 / 运行日志收进二级菜单，TabBar 最多 4 项（规格要求） -->
       <button
-        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)] transition-opacity"
-        :class="settingsOpening ? 'opacity-50' : ''"
-        :aria-busy="settingsOpening"
-        @click="openSettings"
+        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)]"
+        :class="mobileMoreOpen ? 'text-[var(--gosslan-primary)]' : ''"
+        @click="mobileMoreOpen = !mobileMoreOpen"
+        aria-haspopup="menu"
+        :aria-expanded="mobileMoreOpen || undefined"
       >
-        <Settings class="h-5 w-5" />
-        <span class="text-[11px]">{{ t("nav.settings") }}</span>
-      </button>
-      <button
-        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)] transition-opacity"
-        :class="logsOpening ? 'opacity-50' : ''"
-        :aria-busy="logsOpening"
-        @click="openLogs"
-      >
-        <ScrollText class="h-5 w-5" />
-        <span class="text-[11px]">{{ t("nav.logs") }}</span>
+        <MoreHorizontal class="h-5 w-5" />
+        <span class="text-[11px]">{{ t("nav.more") }}</span>
       </button>
     </nav>
+
+    <!-- 移动端 TabBar "更多"菜单：底部 sheet 样式，盖在 TabBar 上方。
+         里面是二级功能入口（设置 / 运行日志）。点击外部或 TabBar 更多按钮收回。 -->
+    <Transition name="sheet">
+      <div
+        v-if="app.isMobile && mobileMoreOpen"
+        class="fixed left-0 right-0 z-50 flex flex-col items-stretch bg-[var(--gosslan-panel)]"
+        :style="{ bottom: 'calc(64px + env(safe-area-inset-bottom))' }"
+        role="menu"
+        @click.self="mobileMoreOpen = false"
+      >
+        <button
+          role="menuitem"
+          class="tap-safe flex items-center gap-3 border-b border-[var(--gosslan-divider)] px-5 py-4 text-left text-[var(--gosslan-text)] active:bg-[var(--gosslan-hover)]"
+          :aria-busy="settingsOpening"
+          @click="mobileMoreOpen = false; openSettings()"
+        >
+          <Settings class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          <span class="text-[15px]">{{ t("nav.settings") }}</span>
+        </button>
+        <button
+          role="menuitem"
+          class="tap-safe flex items-center gap-3 px-5 py-4 text-left text-[var(--gosslan-text)] active:bg-[var(--gosslan-hover)]"
+          :aria-busy="logsOpening"
+          @click="mobileMoreOpen = false; openLogs()"
+        >
+          <ScrollText class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          <span class="text-[15px]">{{ t("nav.logs") }}</span>
+        </button>
+      </div>
+    </Transition>
+
+    <!-- 点击遮罩关闭更多菜单：TabBar 可见区域外的点击都应收回菜单。
+         但不影响 TabBar 自身（上面那个 @click.self 只处理菜单内部点击）。 -->
+    <div
+      v-if="app.isMobile && mobileMoreOpen"
+      class="fixed inset-0 z-[45]"
+      @click="mobileMoreOpen = false"
+      aria-hidden="true"
+    ></div>
 
     <!-- 弹窗 -->
     <SettingsPanel :open="settingsOpen" @close="settingsOpen = false" />
