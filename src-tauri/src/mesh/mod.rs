@@ -22,7 +22,7 @@ pub mod router;
 pub mod selection;
 
 pub use candidate::PeerCandidate;
-pub use connection::{Connection, ConnectionHealth};
+pub use connection::{ChannelKind, Connection, ConnectionHealth};
 pub use endpoint::{BleEndpoint, Endpoint};
 pub use manager::{MergeOutcome, PeerManager};
 pub use path::PathKind;

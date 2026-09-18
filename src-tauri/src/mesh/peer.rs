@@ -183,14 +183,20 @@ impl Peer {
 
     /// 标记某条 Connection 发送侧拥塞（queue Full / writer 阻塞）。
     /// 只写时间戳，**不影响 liveness/healthy** — 拥塞是独立维度。
-    pub fn mark_connection_congested(&mut self, endpoint: &Endpoint, now_ms: i64) -> bool {
+    /// 必须指定 channel：bulk congestion 不影响 priority 选路。
+    pub fn mark_connection_congested(
+        &mut self,
+        endpoint: &Endpoint,
+        now_ms: i64,
+        channel: super::connection::ChannelKind,
+    ) -> bool {
         match self
             .connections
             .iter_mut()
             .find(|c| c.endpoint == *endpoint)
         {
             Some(c) => {
-                c.health.mark_congested(now_ms);
+                c.health.mark_congested(now_ms, channel);
                 true
             }
             None => false,

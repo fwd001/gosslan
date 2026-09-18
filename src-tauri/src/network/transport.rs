@@ -299,7 +299,16 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
     // Router 下阶段才能用它做"LAN 拥塞让位给 BLE/Routed"，本轮只记录事实。
     for idx in full_indices {
         if let Some(link) = links.get(idx) {
-            mark_conn_congested(state, peer_id, &link.endpoint);
+            mark_conn_congested(
+                state,
+                peer_id,
+                &link.endpoint,
+                if is_bulk_message(msg) {
+                    crate::mesh::ChannelKind::Bulk
+                } else {
+                    crate::mesh::ChannelKind::Priority
+                },
+            );
         }
     }
 
@@ -378,7 +387,7 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
         {
             // M3-d：gossip 扇出队列满 / writer 消费不过来 — 明确的发送侧拥塞信号。
             // 这条路径之前只 log 不标 congestion，导致 pick_link 看不到 gossip 层的拥塞。
-            mark_conn_congested(state, peer_id, endpoint);
+            mark_conn_congested(state, peer_id, endpoint, crate::mesh::ChannelKind::Priority);
             if log_throttled("gossip_drop", 30_000) {
                 state.logger.warn(
                     "transport",
@@ -1576,9 +1585,14 @@ fn mark_conn_failure(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
 /// 把「某条连接发送侧拥塞」喂给 mesh 层。
 /// queue Full / writer 被 TCP 窗口 0 卡住时调用。
 /// 只标记时间戳，**不影响 liveness/healthy** — 拥塞是独立维度。
-fn mark_conn_congested(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
+fn mark_conn_congested(
+    state: &AppState,
+    peer_id: &str,
+    endpoint: &MeshEndpoint,
+    channel: crate::mesh::ChannelKind,
+) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-    pm.mark_connection_congested(peer_id, endpoint, db::now_ms());
+    pm.mark_connection_congested(peer_id, endpoint, db::now_ms(), channel);
 }
 
 /// 把「某条连接拥塞已解除」喂给 mesh 层。

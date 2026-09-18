@@ -144,15 +144,17 @@ impl PeerManager {
 
     /// 标记某 peer 的某条 Connection 发送侧拥塞。
     /// 只写时间戳，**不影响 liveness/healthy** — 拥塞是独立维度。
+    /// 必须指定 channel：bulk congestion 不影响 priority 选路。
     pub fn mark_connection_congested(
         &mut self,
         device_id: &str,
         endpoint: &Endpoint,
         now_ms: i64,
+        channel: super::connection::ChannelKind,
     ) -> bool {
         self.peers
             .get_mut(device_id)
-            .is_some_and(|p| p.mark_connection_congested(endpoint, now_ms))
+            .is_some_and(|p| p.mark_connection_congested(endpoint, now_ms, channel))
     }
 
     /// 标记某 peer 的某条 Connection 拥塞已解除。

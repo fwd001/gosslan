@@ -7,6 +7,17 @@
 use super::endpoint::Endpoint;
 use super::path::PathKind;
 
+/// 通道类型 —— congestion 标记的粒度。
+///
+/// Connection 有两个独立的 mpsc channel：priority（Chat/Ack/Gossip）和 bulk
+/// （FileChunk/GroupFileChunk）。writer 层已经 priority-first 物理隔离，
+/// congestion 信号也必须按 channel 隔离 —— 否则 bulk Full 会污染 priority 选路。
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ChannelKind {
+    Priority,
+    Bulk,
+}
+
 /// 连接健康度（纯运行时信息，不持久化）。
 ///
 /// 设计 §35：每条 Connection 独立记录 RTT / 成功 / 失败 / 连续失败；
@@ -21,6 +32,16 @@ use super::path::PathKind;
 ///
 /// 拆开之后：`last_read_seen_ms`（真的收到了对端的帧）才是「对端活着」的证据，
 /// `is_healthy` 只看它。写成功只更新 `last_write_seen_ms`（诊断用，不参与判定）。
+///
+/// ## 为什么 congestion 必须按 channel 隔离（M3-c 修复）
+///
+/// Connection 有 priority / bulk 两个 mpsc channel，writer 层 priority-first
+/// 物理隔离。但原先只有一个 `last_congestion_ms` —— bulk Full 会把整个 Connection
+/// 标记为 congested → pick_link 把 LAN 从**所有**消息类型的 preferred 候选中排除，
+/// 包括 priority 的 ChatMessage / Gossip / Ack。
+///
+/// 现在拆成独立的 `last_prio_congestion_ms` + `last_bulk_congestion_ms`：
+/// pick_link 只检查 priority congestion，bulk congestion 不影响 Chat/Gossip 选路。
 #[derive(Clone, Debug, Default)]
 pub struct ConnectionHealth {
     /// 最近一次心跳往返时延（毫秒）。
@@ -31,13 +52,12 @@ pub struct ConnectionHealth {
     pub last_read_seen_ms: Option<i64>,
     /// 连续失败次数（成功后清零）。
     pub consecutive_failures: u32,
-    /// 最近一次**发送侧拥塞**被观察到的时间戳（Unix 毫秒）。
-    ///
-    /// 拥塞与 liveness 是**独立维度**：一条连接可以同时
-    /// `healthy = true`（心跳还在入站）且 `congested = true`（队列 Full、
-    /// writer 被 TCP 窗口 0 卡住）。正是这种"半健康半不可用"的组合
-    /// 让 Router 永远选中它、消息永远卡住。
-    pub last_congestion_ms: Option<i64>,
+    /// priority channel 最近一次**发送侧拥塞**被观察到的时间戳。
+    /// priority 用于 Chat/Ack/Gossip 等控制消息。
+    pub last_prio_congestion_ms: Option<i64>,
+    /// bulk channel 最近一次**发送侧拥塞**被观察到的时间戳。
+    /// bulk 用于 FileChunk/GroupFileChunk/大头像等大 payload。
+    pub last_bulk_congestion_ms: Option<i64>,
 }
 
 impl ConnectionHealth {
@@ -93,28 +113,44 @@ impl ConnectionHealth {
     ///
     /// 只写时间戳，**不影响 `is_healthy`** —— 拥塞与 liveness 是独立维度。
     /// 允许：`healthy = true` 且 `congested = true`。
-    pub fn mark_congested(&mut self, now_ms: i64) {
-        self.last_congestion_ms = Some(now_ms);
+    ///
+    /// 必须指定 channel：bulk congestion 不影响 priority 选路（writer 层
+    /// 已经 priority-first 物理隔离，选路层必须尊重同样的隔离）。
+    pub fn mark_congested(&mut self, now_ms: i64, channel: ChannelKind) {
+        match channel {
+            ChannelKind::Priority => self.last_prio_congestion_ms = Some(now_ms),
+            ChannelKind::Bulk => self.last_bulk_congestion_ms = Some(now_ms),
+        }
     }
 
     /// 拥塞已解除（writer 恢复消费 / TCP 窗口恢复）。
-    /// 下次成功写出时自动调用。
+    ///
+    /// writer_loop 里双通道都 empty 时调用 —— 同时清除两个 channel 的 congestion。
+    /// 因为 writer 是两个 channel 共用一个 TCP 连接，writer 恢复就意味着两个
+    /// channel 都不再被 writer 消费速度阻塞。
     pub fn mark_congestion_recovered(&mut self) {
-        self.last_congestion_ms = None;
+        self.last_prio_congestion_ms = None;
+        self.last_bulk_congestion_ms = None;
     }
 
-    /// 是否判定为"当前拥塞"。
-    ///
-    /// 用**时间窗**而不是永久标记：`last_congestion_ms` 在最近 `window_ms` 内
-    /// 才判 congested。拥塞解除时间窗后自动降级，避免一次瞬时 Full 永久污染
-    /// 选路决策。
-    ///
-    /// ```text
-    /// Ready → queue Full → Congested → writer 恢复 → Ready
-    /// ```
-    pub fn is_congested(&self, now_ms: i64, window_ms: i64) -> bool {
-        self.last_congestion_ms
+    /// priority channel 是否判定为"当前拥塞"。
+    /// pick_link 用于选路：只检查 priority congestion，bulk 拥塞不影响 Chat/Gossip。
+    pub fn is_prio_congested(&self, now_ms: i64, window_ms: i64) -> bool {
+        self.last_prio_congestion_ms
             .is_some_and(|t| now_ms.saturating_sub(t) <= window_ms)
+    }
+
+    /// bulk channel 是否判定为"当前拥塞"。
+    /// 诊断用（将来可扩展 bulk 特定的选路逻辑）。
+    pub fn is_bulk_congested(&self, now_ms: i64, window_ms: i64) -> bool {
+        self.last_bulk_congestion_ms
+            .is_some_and(|t| now_ms.saturating_sub(t) <= window_ms)
+    }
+
+    /// 是否判定为"任一 channel 当前拥塞"。
+    /// 保留用于完整诊断场景；pick_link 不使用此方法。
+    pub fn is_any_congested(&self, now_ms: i64, window_ms: i64) -> bool {
+        self.is_prio_congested(now_ms, window_ms) || self.is_bulk_congested(now_ms, window_ms)
     }
 }
 
@@ -241,7 +277,7 @@ mod tests {
         // 从未 read → 不健康
         assert!(!h.is_healthy(1000, 10_000, 3));
         // 从未拥塞 → 不拥塞
-        assert!(!h.is_congested(1000, 5_000));
+        assert!(!h.is_any_congested(1000, 5_000));
     }
 
     /// Test 1b: 正常 connection → healthy=true, congested=false
@@ -250,7 +286,7 @@ mod tests {
         let mut h = ConnectionHealth::default();
         h.mark_read_seen(1000, None);
         assert!(h.is_healthy(1000, 10_000, 3));
-        assert!(!h.is_congested(1000, 5_000));
+        assert!(!h.is_any_congested(1000, 5_000));
     }
 
     /// Test 2: mark_congested → congested=true，同时 healthy 仍 true
@@ -261,9 +297,9 @@ mod tests {
         h.mark_read_seen(1000, None);
         assert!(h.is_healthy(1000, 10_000, 3), "先建立 healthy 基线");
 
-        h.mark_congested(2000);
+        h.mark_congested(2000, ChannelKind::Priority);
         assert!(
-            h.is_congested(2000, 5_000),
+            h.is_any_congested(2000, 5_000),
             "mark_congested 后应为 congested"
         );
         assert!(
@@ -276,23 +312,23 @@ mod tests {
     #[test]
     fn congestion_can_be_recovered() {
         let mut h = ConnectionHealth::default();
-        h.mark_congested(1000);
-        assert!(h.is_congested(1000, 5_000));
+        h.mark_congested(1000, ChannelKind::Priority);
+        assert!(h.is_any_congested(1000, 5_000));
 
         h.mark_congestion_recovered();
-        assert!(!h.is_congested(2000, 5_000), "恢复后不应再判拥塞");
+        assert!(!h.is_any_congested(2000, 5_000), "恢复后不应再判拥塞");
     }
 
     /// Test 3b: 时间窗过期 → 自动降级为不拥塞（不需要显式恢复）
     #[test]
     fn congestion_expires_after_window() {
         let mut h = ConnectionHealth::default();
-        h.mark_congested(1000);
+        h.mark_congested(1000, ChannelKind::Priority);
         assert!(
-            h.is_congested(6_000, 5_000),
+            h.is_any_congested(6_000, 5_000),
             "窗口内（边界 inclusive）仍拥塞"
         );
-        assert!(!h.is_congested(6_001, 5_000), "窗口过期自动不拥塞");
+        assert!(!h.is_any_congested(6_001, 5_000), "窗口过期自动不拥塞");
     }
 
     /// Test 4: is_healthy 现有语义绝对不能被 congestion 破坏
@@ -301,23 +337,26 @@ mod tests {
     fn congestion_does_not_affect_is_healthy_at_all() {
         let mut h = ConnectionHealth::default();
         h.mark_read_seen(1000, None);
-        h.mark_congested(5000);
+        h.mark_congested(5000, ChannelKind::Priority);
 
         // read_seen 过期前 → healthy，congestion 还在窗口内 → 两者同时成立
         assert!(h.is_healthy(5_000, 10_000, 3));
-        assert!(h.is_congested(5_000, 5_000));
+        assert!(h.is_any_congested(5_000, 5_000));
 
         // read_seen 过期后 → unhealthy（这是 read_seen 自己过期的结果）
         // 此时 congestion 窗口还没过期（5000+5000=10000 < 11001 其实也过期了...）
         // 换一组数字让 congestion 还在：mark_congested 在 read_seen 过期前刚发生
         let mut h2 = ConnectionHealth::default();
         h2.mark_read_seen(1000, None);
-        h2.mark_congested(9_900); // 离 read_seen 9s，离 is_healthy timeout 还有 100ms
+        h2.mark_congested(9_900, ChannelKind::Priority); // 离 read_seen 9s，离 is_healthy timeout 还有 100ms
         assert!(
             h2.is_healthy(10_050, 10_000, 3),
             "read_seen 还没过期 → healthy"
         );
-        assert!(h2.is_congested(10_050, 5_000), "congestion 窗口还没过期");
+        assert!(
+            h2.is_any_congested(10_050, 5_000),
+            "congestion 窗口还没过期"
+        );
         // 两者同时成立 — 这就是 Router 下阶段要识别的 "healthy 但 congested"
     }
 
@@ -329,17 +368,17 @@ mod tests {
         h.mark_read_seen(1000, None);
         h.mark_write_seen(1010);
         assert!(h.is_healthy(1010, 10_000, 3));
-        assert!(!h.is_congested(1010, 5_000));
+        assert!(!h.is_any_congested(1010, 5_000));
 
         // queue Full → Congested
-        h.mark_congested(1020);
-        assert!(h.is_congested(1020, 5_000));
+        h.mark_congested(1020, ChannelKind::Priority);
+        assert!(h.is_any_congested(1020, 5_000));
         assert!(h.is_healthy(1020, 10_000, 3), "拥塞不影响健康");
 
         // writer 恢复消费 → 新的 write_seen 同时恢复拥塞
         h.mark_write_seen(1030);
         h.mark_congestion_recovered();
-        assert!(!h.is_congested(1030, 5_000));
+        assert!(!h.is_any_congested(1030, 5_000));
         assert!(h.is_healthy(1030, 10_000, 3));
     }
 }

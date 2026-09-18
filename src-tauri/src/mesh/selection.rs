@@ -85,7 +85,7 @@ pub fn pick_link(
     let preferred_mask: Vec<bool> = candidates
         .iter()
         .zip(healthy_mask.iter())
-        .map(|(c, healthy)| *healthy && !c.health.is_congested(now_ms, congestion_window_ms))
+        .map(|(c, healthy)| *healthy && !c.health.is_prio_congested(now_ms, congestion_window_ms))
         .collect();
 
     // Step 3: 从 preferred 里挑最优；如果 preferred 全空，从 healthy 里挑（保持可用）
@@ -116,6 +116,7 @@ pub fn pick_link(
 mod tests {
     use super::*;
     use crate::mesh::endpoint::Endpoint;
+    use crate::mesh::ChannelKind;
     use std::net::SocketAddr;
 
     const NOW: i64 = 1_000_000;
@@ -279,7 +280,7 @@ mod tests {
     /// 造一条「健康 + 拥塞」的连接。
     fn congested(peer: &str, port: u16, kind: PathKind) -> Connection {
         let mut c = healthy(peer, port, kind);
-        c.health.mark_congested(NOW);
+        c.health.mark_congested(NOW, ChannelKind::Priority);
         c
     }
 
@@ -346,7 +347,8 @@ mod tests {
     #[test]
     fn e_lan_congestion_recovered_resumes_priority() {
         let mut lan = healthy("p", 1, PathKind::Lan);
-        lan.health.mark_congested(NOW - CONGESTION_WINDOW_MS - 1); // 拥塞在窗口外 → 过期
+        lan.health
+            .mark_congested(NOW - CONGESTION_WINDOW_MS - 1, ChannelKind::Priority); // 拥塞在窗口外 → 过期
         let c = vec![
             healthy("p", 2, PathKind::Routed),
             lan, // LAN 拥塞信号已过期，等价于不拥塞
