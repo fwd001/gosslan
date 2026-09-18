@@ -129,6 +129,10 @@ pub async fn send_message(
     env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
 
     // 本地落库（明文）
+    // 初始状态 = "sending"：消息刚写库、正在入发送队列。
+    // try_send 成功（进 mpsc channel）后前进到 "sent"；
+    // Ack 到达 → "delivered"；ReadReceipt → "read"。
+    // 超时 / 主动取消 → "failed" / "cancelled"（见 P2/P3）。
     let rec = MessageRecord {
         id: 0,
         msg_id: msg_id.clone(),
@@ -139,7 +143,7 @@ pub async fn send_message(
         content: content.clone(),
         ts,
         seq,
-        status: "sent".to_string(),
+        status: "sending".to_string(),
     };
     // 一律写离线队列兜底（INSERT OR IGNORE 按 msg_id 幂等）：直连链路存在但已失效
     // （半开 TCP）时 broadcast 会静默丢包，此前只在「无链路」时入队导致消息永久丢失。
@@ -168,10 +172,20 @@ pub async fn send_message(
     // 定向投递：目标直连 → 只发它（精确，不再全网广播）；否则广播，靠中间节点按 target
     // 定向转发（跨跳）。投递失败**不返回 Err**：消息已落 outbox 兜底，链路刚断的竞态
     // 下由 flush_outbox 在下次建链/心跳时补发，返回 Err 会让前端误判「发送失败」而重发。
-    if s.has_link(&friend_id).await {
-        let _ = try_send(s, &friend_id, &Message::Gossip { envelope: env }).await;
+    //
+    // 状态前进：try_send 成功（进 writer_loop channel）→ "sent"；
+    // 广播模式无条件乐观前进（广播是尽力而为，视为已发出）；
+    // try_send 失败则保持 "sending"（在 outbox 等下次 flush_outbox 重试）。
+    let try_ok = if s.has_link(&friend_id).await {
+        try_send(s, &friend_id, &Message::Gossip { envelope: env.clone() }).await.is_ok()
     } else {
         broadcast_gossip(s, env).await;
+        true // 广播视为乐观已发出
+    };
+    if try_ok {
+        if let Ok(dbc) = s.db.lock() {
+            let _ = db::set_message_status(&dbc, &msg_id, "sent");
+        }
     }
     // 更新会话「当前链路」（发送方视角）：有直连则 hop=0 + 出站路径；无直连
     // （经中继广播）则乐观记 hop=1（实际跳数发送方不可知，等对端回执侧视角校正）。
@@ -440,4 +454,231 @@ pub fn delete_conversation(state: State<'_, Arc<AppState>>, conv_id: String) -> 
     }
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     db::delete_conversation(&dbc, &conv_id).map_err(|e| e.to_string())
+}
+
+/// 用户主动取消发送中的消息。
+///
+/// 语义：**这条消息还没送达对端（outbox 还在），用户不想继续发了**。
+/// 撤回是另一个操作（消息已送达后让对方删），不要混成一个 API。
+///
+/// 处理：
+/// 1. 查消息 → 终态（delivered/read/recalled）不能取消
+/// 2. 删单聊 outbox + 群 outbox（所有可能的发送队列）
+/// 3. set_message_status("cancelled")（终态守卫保证幂等）
+/// 4. emit("message-cancelled", msg_id) 通知前端刷新气泡状态
+#[tauri::command(async)]
+pub async fn cancel_send(
+    state: State<'_, Arc<AppState>>,
+    msg_id: String,
+) -> Result<(), String> {
+    let s = state.inner();
+
+    // 0. 如果是文件消息（file-xxx 或 gfile-xxx），转调 cancel_file_transfer
+    //    — 那里会触发 file_send_cancels oneshot 打断实际 chunk 循环
+    if let Some(transfer_id) = msg_id.strip_prefix("file-").or_else(|| msg_id.strip_prefix("gfile-")) {
+        return cancel_file_transfer(
+            state,
+            transfer_id.to_string(),
+        )
+        .await
+        .map(|_| ());
+    }
+
+    // 1. 查消息状态：终态（delivered/read/recalled）不能取消
+    let rec = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_message_record(&dbc, &msg_id)
+            .ok_or_else(|| format!("消息不存在：{msg_id}"))?
+    };
+
+    match rec.status.as_str() {
+        "delivered" | "read" | "recalled" => {
+            return Err(format!(
+                "消息已{}，不能取消发送（请用撤回功能）",
+                rec.status
+            ));
+        }
+        "cancelled" => {
+            return Ok(()); // 幂等：已取消过就直接成功
+        }
+        _ => {} // sending / sent / failed → 可以取消
+    }
+
+    // 删所有 outbox 队列（单聊 + 群）
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = db::delete_outbox_by_msg_id(&dbc, &msg_id);
+        let _ = db::delete_group_outbox_by_msg_id(&dbc, &msg_id);
+        // 置 cancelled
+        let _ = db::set_message_status(&dbc, &msg_id, "cancelled");
+    }
+
+    let _ = s.app.emit("message-cancelled", &msg_id);
+    Ok(())
+}
+
+/// 重发失败的消息。
+///
+/// 语义：消息之前因超时/网络错误被判 failed 或被用户取消，用户点击"重发"。
+///
+/// 状态流转：failed/cancelled → sending → 有链路则 sent → 等 Ack → delivered
+#[tauri::command(async)]
+pub async fn resend_message(
+    state: State<'_, Arc<AppState>>,
+    msg_id: String,
+) -> Result<(), String> {
+    let s = state.inner();
+
+    // 1. 查消息存在性 + 当前状态
+    let rec = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_message_record(&dbc, &msg_id)
+            .ok_or_else(|| format!("消息不存在：{msg_id}"))?
+    };
+
+    // 终态不可重发
+    match rec.status.as_str() {
+        "delivered" | "read" => {
+            return Err("消息已送达，无需重发".to_string());
+        }
+        "sending" | "sent" => {
+            return Err("消息正在发送中".to_string());
+        }
+        _ => {} // failed / cancelled → 可以重发
+    }
+
+    // 2. 重置状态为 sending
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = db::set_message_status(&dbc, &msg_id, "sending");
+    }
+
+    // 3. 判断是单聊还是群聊
+    if rec.conv_id.strip_prefix("group:").is_some() {
+        // 群消息简化：通知前端重新发
+        Err("群消息重发请删除后重新发送".to_string())
+    } else {
+        // 单聊：try_send 定向到对端
+        let msg_kind = crate::protocol::MsgKind::from_wire_str(&rec.kind);
+        if s.has_link(&rec.receiver_id).await {
+            let _ = crate::network::transport::try_send(
+                s,
+                &rec.receiver_id,
+                &Message::ChatMessage {
+                    msg_id: rec.msg_id.clone(),
+                    from: s.device_id.clone(),
+                    to: rec.receiver_id.clone(),
+                    kind: msg_kind,
+                    content: rec.content.clone(),
+                    ts: db::now_ms(),
+                    seq: 0,
+                },
+            )
+            .await;
+            // try_send 成功 → 前进到 sent
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = db::set_message_status(&dbc, &msg_id, "sent");
+        }
+        // 无链路 → 保持 sending，等 flush_outbox 下次建链/心跳时捞出来重发
+        // （如果 outbox 已被 sweeper 删了，用户下次建链前不会自动恢复）
+
+        let _ = s.app.emit("message-resending", &msg_id);
+        Ok(())
+    }
+}
+
+/// 撤回一条自己发的**单聊**消息。
+///
+/// 与群撤回（`recall_group_message`）共享同一套协议语义 —
+/// `kind = KIND_RECALL` 的 Gossip envelope，payload = RecallPayload JSON。
+/// 接收端在 handle_message 的 Gossip 分支里识别并处理（作者校验 + materialize_recall）。
+///
+/// 发送侧做：
+/// 1. 作者校验 + 5min 时间窗（本地 ts 为准）
+/// 2. 构建定向 Gossip envelope（target = friend_id，让中继按 target 定向转发）
+/// 3. try_send 直连 + broadcast_gossip 跨跳
+/// 4. 本地 insert_recall + materialize_recall（先发送、后物化，顺序不能反）
+/// 5. emit("message-recalled", msg_id) 前端刷新
+#[tauri::command(async)]
+pub async fn recall_message(
+    state: State<'_, Arc<AppState>>,
+    friend_id: String,
+    msg_id: String,
+) -> Result<(), String> {
+    let s = state.inner();
+
+    // 1. 查消息 + 权限 + 时间窗
+    let rec = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_message_record(&dbc, &msg_id)
+            .ok_or_else(|| format!("消息不存在：{msg_id}"))?
+    };
+    if rec.sender_id != s.device_id {
+        return Err("只能撤回自己发送的消息".to_string());
+    }
+    if rec.status == "recalled" {
+        return Ok(()); // 幂等：已撤回过就直接成功
+    }
+    let now = db::now_ms();
+    if rec.ts > 0 && now - rec.ts > crate::commands::RECALL_WINDOW_MS {
+        return Err("超过可撤回时间（5 分钟）".to_string());
+    }
+    // 已 cancelled/failed 的消息没必要撤回 — 撤回是让对方删，对方可能根本没收到
+    if matches!(rec.status.as_str(), "cancelled" | "failed") {
+        // 本地还是可以标记 recalled
+    }
+
+    // 2. 构建 RecallPayload + Gossip envelope（定向到 friend_id）
+    let ts = now;
+    let conv_id = friend_id.clone();
+    let seq = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::next_clock(&dbc, &conv_id).map_err(|e| format!("逻辑时钟推进失败：{e}"))?
+    };
+    let payload = crate::protocol::RecallPayload {
+        target: msg_id.clone(),
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    let plaintext = serde_json::json!({
+        "kind": crate::protocol::KIND_RECALL,
+        "content": content,
+    })
+    .to_string();
+    let payload_b64 = STANDARD.encode(plaintext.as_bytes());
+
+    let mut env = {
+        let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
+        let mut env = gossip.build_envelope(
+            &s.identity,
+            &s.device_id,
+            GossipKind::Chat,
+            None,
+            None,
+            &payload_b64,
+            ts,
+            seq,
+        );
+        // 定向到 friend_id（让中继按 target 转发，跨跳也能到达）
+        env.target = Some(friend_id.clone());
+        env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
+        env
+    };
+    // 撤回事件**不需要 E2EE**（只有 target 一个人能收到，加密反而让本地需要解密才能识别 kind）
+    env.encrypted = false;
+
+    // 3. 先发协议（直连 + 广播），不进 outbox — 撤回尽力而为
+    if s.has_link(&friend_id).await {
+        let _ = try_send(s, &friend_id, &Message::Gossip { envelope: env.clone() }).await;
+    } else {
+        broadcast_gossip(s, env.clone()).await;
+    }
+
+    // 4. 本地物化撤回（在发送之后 — 顺序反了会出现"本地已撤回但对端永远没机会收到"）
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = db::insert_recall(&dbc, &conv_id, &msg_id, &s.device_id, seq);
+        let _ = db::materialize_recall(&dbc, &msg_id);
+    }
+    let _ = s.app.emit("message-recalled", &msg_id);
+    Ok(())
 }

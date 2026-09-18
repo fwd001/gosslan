@@ -415,15 +415,16 @@ pub async fn cancel_file_transfer(
     };
 
     // 2. DB 层：单聊 outbox + 消息状态 + transfer
-    //    群文件不走 file_outbox（走 group_files 表），但我们仍然 mark 消息 failed ——
-    //    前端会靠 file-cancelled 事件自己处理。
+    //    群文件不走 file_outbox（走 group_files 表），但我们仍然 mark cancelled ——
+    //    语义：用户主动停止用 "cancelled"，自动失败用 "failed"。
+    //    终态守卫保证幂等：已 delivered/read 的不会被覆盖。
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let _ = db::mark_file_outbox_failed(&dbc, &transfer_id);
-        let _ = db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed");
+        let _ = db::set_message_status(&dbc, &format!("file-{transfer_id}"), "cancelled");
         // 群文件消息前缀是 gfile-，也处理一下
-        let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "failed");
-        let _ = db::upsert_transfer(&dbc, &transfer_id, "", "", 0, "send", "failed", None, 0.0);
+        let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "cancelled");
+        let _ = db::upsert_transfer(&dbc, &transfer_id, "", "", 0, "send", "cancelled", None, 0.0);
     }
 
     // 3. 通知前端
@@ -614,13 +615,10 @@ pub async fn send_file(
         return Err("只能发送普通文件".to_string());
     }
     let size = meta.len();
-    let name = std::path::Path::new(&path)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unnamed".to_string());
+    let name = file::derive_file_name(&path);
     let transfer_id = Uuid::new_v4().to_string();
     let subtype = file::classify_file_subtype(&name);
-    let kind = if subtype == "image" { "image" } else { "file" };
+    let kind = subtype;
     let rec = build_file_message(
         s,
         &transfer_id,

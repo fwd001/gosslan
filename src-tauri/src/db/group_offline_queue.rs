@@ -57,3 +57,30 @@ pub fn delete_group_outbox_for_peer_in_group(
     )?;
     Ok(())
 }
+
+/// 列出**超时未 GroupAck**的群 outbox 条目（按 msg_id 去重）。
+/// 返回 Vec<(msg_id, group_id)>，供清扫任务删 outbox + 置 failed。
+///
+/// 群 outbox 一条 msg_id 对应 N 个 peer_id 行，超时判定按 msg_id 粒度
+/// （同一条群消息对所有接收方要么一起成功、要么一起放弃）。
+pub fn list_expired_group_outbox(
+    conn: &Connection,
+    deadline_ms: i64,
+) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT msg_id, group_id FROM group_outbox WHERE created_at < ?1",
+    )?;
+    let rows = stmt.query_map(params![deadline_ms], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 按 msg_id 删除**所有** peer 的 group_outbox 行。
+pub fn delete_group_outbox_by_msg_id(conn: &Connection, msg_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM group_outbox WHERE msg_id = ?1",
+        params![msg_id],
+    )?;
+    Ok(())
+}

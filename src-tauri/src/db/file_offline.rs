@@ -84,6 +84,22 @@ pub fn mark_file_outbox_failed(conn: &Connection, transfer_id: &str) -> Result<(
     Ok(())
 }
 
+/// 文件 outbox 超时阈值（毫秒）。
+/// 文件比普通消息大很多，给 30min 总等待窗口。
+pub const FILE_OUTBOX_FAIL_DEADLINE_MS: i64 = 30 * 60 * 1000;
+
+/// 列出超时未发送完成的文件 outbox 条目（pending/sending 且 created_at + deadline < now）。
+/// 返回 transfer_id 列表，供 sweeper 标记 failed。
+pub fn list_expired_file_outbox(conn: &Connection, deadline_ms: i64) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT transfer_id FROM file_outbox
+         WHERE status IN ('pending', 'sending') AND created_at < ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![deadline_ms], |r| r.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 /// 读某 transfer 当前已尝试次数 —— flush_pending_files 超限检查用。
 pub fn get_file_outbox_attempts(conn: &Connection, transfer_id: &str) -> Option<i64> {
     let mut stmt = match conn.prepare("SELECT attempts FROM file_outbox WHERE transfer_id = ?1") {

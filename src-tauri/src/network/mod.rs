@@ -55,7 +55,7 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
             state.clone(),
             ip,
             tcp_port,
-            shutdown_rx,
+            shutdown_rx.clone(), // clone 一份留给 sweeper（下一个 discovery::spawn 会 move 原始值）
             probe_rx,
         )),
     )
@@ -72,12 +72,26 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
     // 进入新世代：此后旧世代（上一次 start 的 accept 任务）不得再登记链路。
     state.bump_network_generation();
     *state.network.lock().unwrap_or_else(|e| e.into_inner()) = Some(NetworkHandle {
-        shutdown: shutdown_tx,
+        shutdown: shutdown_tx.clone(),
         bound_ip: bind_ip,
         actual_bound_ip,
         tcp_port,
         tasks,
     });
+
+    // Outbox 超时清扫：独立于 transport/discovery 的后台任务，
+    // 每 30s 扫一次 outbox，把 created_at > 120s 无 Ack 的消息置 failed。
+    // 必须在 NetworkHandle 创建之后 spawn — JoinHandle 要 push 进 tasks。
+    let sweeper = transport::spawn_outbox_sweeper(state.clone(), shutdown_rx);
+    if let Some(handle) = state
+        .network
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        handle.tasks.push(sweeper);
+    }
+
     Ok(())
 }
 

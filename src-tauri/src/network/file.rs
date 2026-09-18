@@ -1434,6 +1434,44 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) {
 /// 这是纯函数，**仅依赖 basename**：FileOffer 已把 `name` 带到接收端，两端各自调用
 /// 同一实现 → 分类结果天然一致，无需给文件传输协议增加字段。
 ///
+/// 从路径提取最可靠的文件名。
+///
+/// Tauri Android file picker 有时把 content:// URI 转存到临时文件，
+/// `Path::file_name()` 返回无扩展名的 `xxx`（比如 `478812312`），
+/// 但原始路径字符串里可能仍保留着正确的扩展名。
+/// 这个函数做三级 fallback：
+/// 1. Path::file_name() 正常返回且有扩展名 → 直接用
+/// 2. Path::file_name() 没扩展名 → 从完整 path 字符串找最后一个 `.xxx` 模式补上
+/// 3. 都没有 → 返回 file_name() 的原值
+pub(crate) fn derive_file_name(raw_path: &str) -> String {
+    let p = Path::new(raw_path);
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unnamed".to_string());
+
+    // Case 1: file_name 已经有扩展名 → 直接返回
+    if p.extension().is_some() {
+        return name;
+    }
+
+    // Case 2: file_name 没扩展名，但完整路径字符串末尾有类似 .mp4 / .jpg 的后缀
+    let last_dot = raw_path.rfind('.');
+    let last_slash = raw_path.rfind('/').unwrap_or(0);
+    if let Some(dot) = last_dot {
+        if dot > last_slash && dot + 1 < raw_path.len() {
+            let ext_candidate = &raw_path[dot + 1..];
+            if (1..=10).contains(&ext_candidate.len())
+                && ext_candidate.chars().all(|c| c.is_ascii_alphanumeric())
+            {
+                return format!("{name}.{ext_candidate}");
+            }
+        }
+    }
+
+    name
+}
+
 /// 未用 MIME 魔数嗅探的原因：那要么需要给 FileOffer/RelayFileOffer 加 kind 字段
 /// （违反「不修改文件传输协议」），要么两端各自读字节嗅探（引入 sender/receiver 分歧）。
 /// 任务给出的图片/代码清单本身即扩展名，扩展名判定已足够保守且确定。
@@ -1447,9 +1485,18 @@ pub fn classify_file_subtype(name: &str) -> &'static str {
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "c" | "cpp" | "h"
-        | "hpp" | "json" | "yaml" | "yml" | "html" | "css" | "sql" | "sh" => "code",
+        // 图片：所有主流格式（含移动端 iPhone 默认 HEIC/HEIF、Android 各种、无损 BMP/TIFF/AVIF）
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic" | "heif" | "bmp" | "tiff" | "tif"
+        | "avif" | "apng" | "svg" | "ico" | "raw" | "dng" => "image",
+        // 视频：移动端最常见（MP4/MOV/3GP/AVI/MKV/WebM）
+        "mp4" | "mov" | "m4v" | "3gp" | "3gpp" | "avi" | "mkv" | "webm" | "flv" | "wmv" => "video",
+        // 音频
+        "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "wma" | "opus" => "audio",
+        // 代码/文本（刻意排除 md/txt/log/Makefile — 用户明确反馈 md 文件发送应保持文件卡片）
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "kt" | "c" | "cpp"
+        | "cc" | "h" | "hpp" | "cs" | "rb" | "php" | "swift" | "scala" | "r" | "pl" | "sh"
+        | "bash" | "zsh" | "fish" | "ps1" | "bat" | "toml" | "json" | "yaml" | "yml" | "xml"
+        | "html" | "htm" | "css" | "scss" | "less" | "sql" | "ini" | "cfg" | "conf" => "code",
         _ => "file",
     }
 }
@@ -1547,8 +1594,8 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_seq_decision, classify_file_subtype, safe_file_name, safe_transfer_id, unique_path,
-        ChunkSeq,
+        chunk_seq_decision, classify_file_subtype, derive_file_name, safe_file_name,
+        safe_transfer_id, unique_path, ChunkSeq,
     };
 
     /// **收到分片的判定规则**（2026-09-13 审计的真缺陷，必须钉住）。
@@ -1621,6 +1668,39 @@ mod tests {
             assert!(safe_file_name(name).is_none(), "{name} must be rejected");
         }
         assert_eq!(safe_file_name("report.txt").as_deref(), Some("report.txt"));
+    }
+
+    #[test]
+    fn derive_file_name_normal() {
+        // 正常路径有扩展名 → 直接取
+        assert_eq!(
+            derive_file_name("/storage/emulated/0/DCIM/Camera/VID_001.mp4"),
+            "VID_001.mp4"
+        );
+        assert_eq!(
+            derive_file_name("/home/user/Downloads/report.pdf"),
+            "report.pdf"
+        );
+    }
+
+    #[test]
+    fn derive_file_name_temporal_file_missing_ext() {
+        // Tauri Android 临时文件：file_name() 没扩展名，但完整路径末尾有 .mp4
+        assert_eq!(
+            derive_file_name("content://media/external/video/media/123456/VID_20250918.mp4"),
+            "VID_20250918.mp4"
+        );
+        assert_eq!(
+            derive_file_name("/data/data/com.gosslan.app/cache/478812312.jpg"),
+            "478812312.jpg"
+        );
+    }
+
+    #[test]
+    fn derive_file_name_no_ext_anywhere() {
+        // 真的没有扩展名 → 原样返回
+        assert_eq!(derive_file_name("/tmp/README"), "README");
+        assert_eq!(derive_file_name("/tmp/478812312"), "478812312");
     }
 
     /// `transfer_id` 会被拼成 `{id}.part` 落盘，必须与文件名同级消毒。

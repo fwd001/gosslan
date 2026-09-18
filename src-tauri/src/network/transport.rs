@@ -3695,7 +3695,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     let rec = {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         let subtype = file::classify_file_subtype(&name);
-                        let kind = if subtype == "image" { "image" } else { "file" };
+                        let kind = subtype;
                         let content = serde_json::json!({
                             "name": name,
                             "path": path.to_string_lossy().to_string(),
@@ -4871,18 +4871,24 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         // ⚠️ **目标消息可能还没落库**（撤回事件先到）。此时不能因为
                         // "查不到作者"就把整条撤回丢掉 —— 那恰好把权威集合存在的意义
                         // （解决先撤后到）封死了：随后消息带着完整正文落库，撤回永久失效。
-                        // 目标不存在时以「发送者是本群成员」为准 —— 他能解开群消息就说明
-                        // 持有群密钥、是成员；而 msg_id 是信封哈希，本就随 gossip 公开。
                         let target_exists =
                             db::get_message_preview_source(&dbc, &p.target).is_some();
                         let allowed = if target_exists {
+                            // 目标已落库：只认作者本人撤回
                             db::get_message_preview_source(&dbc, &p.target)
                                 .map(|(sid, _)| sid == env.sender_id)
                                 .unwrap_or(false)
-                        } else {
+                        } else if conv_id.starts_with("group:") {
+                            // 群消息 + 目标未落库：以「发送者是本群成员」为准 ——
+                            // 他能解开群消息就说明持有群密钥、是成员
                             db::get_group(&dbc, &group_id_for_check)
                                 .map(|g| g.members.contains(&env.sender_id))
                                 .unwrap_or(false)
+                        } else {
+                            // 单聊 + 目标未落库：允许 ——
+                            // env 被 Ed25519 签名，sender_id 不可伪造；
+                            // 单聊撤回是定向发给目标个人的，不存在群成员那类授权问题
+                            true
                         };
                         if allowed {
                             db::insert_recall(&dbc, &conv_id, &p.target, &env.sender_id, env.seq)
@@ -5585,26 +5591,31 @@ async fn handle_group_file_offer(
         // 之外的状态事件推进。此处 status=sending，Done 校验通过后转 delivered。
         // 图片文件保持 kind="image"，业务语义不降级。
         let subtype = file::classify_file_subtype(&name);
-        let kind = if subtype == "image" { "image" } else { "file" };
+        let kind = subtype;
         let conv_id = format!("group:{group_id}");
         let seq = {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::next_clock(&dbc, &conv_id).unwrap_or(1)
         };
         let rec = crate::state::MessageRecord {
-        id: 0,
-        msg_id: format!("gfile-{transfer_id}"),
-        conv_id: conv_id.clone(),
-        sender_id: sender_id.clone(),
-        receiver_id: state.device_id.clone(),
-        kind: kind.to_string(),
-        content:
-            serde_json::json!({ "name": name, "size": size, "sha256": sha256, "subtype": subtype })
-                .to_string(),
-        ts: db::now_ms(),
-        seq,
-        status: "sending".to_string(),
-    };
+            id: 0,
+            msg_id: format!("gfile-{transfer_id}"),
+            conv_id: conv_id.clone(),
+            sender_id: sender_id.clone(),
+            receiver_id: state.device_id.clone(),
+            kind: kind.to_string(),
+            content: serde_json::json!({
+                "name": name,
+                "size": size,
+                "sha256": sha256,
+                "subtype": subtype,
+                "progress": 0.0,
+            })
+            .to_string(),
+            ts: db::now_ms(),
+            seq,
+            status: "sending".to_string(),
+        };
         {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::insert_message(&dbc, &rec).ok();
@@ -5936,7 +5947,7 @@ async fn handle_group_file_done(
             .unwrap_or(1)
         };
         let subtype = file::classify_file_subtype(&gf.name);
-        let kind = if subtype == "image" { "image" } else { "file" };
+        let kind = subtype;
         let done_rec = crate::state::MessageRecord {
             id: 0,
             msg_id,
@@ -5950,6 +5961,7 @@ async fn handle_group_file_done(
                 "size": gf.size,
                 "sha256": gf.sha256,
                 "subtype": subtype,
+                "progress": 1.0,
             })
             .to_string(),
             ts: db::now_ms(),
@@ -7046,6 +7058,104 @@ pub async fn flush_group_outbox(state: &AppState, peer_id: &str) {
         };
         let _ = try_send(state, peer_id, &Message::Gossip { envelope }).await;
     }
+}
+
+// ---------------- Outbox 超时清扫 ----------------
+
+/// outbox 清扫间隔（毫秒）。
+/// 30s 跑一次，每次扫描 created_at < now - OUTBOX_FAIL_DEADLINE_MS 的条目。
+pub const OUTBOX_SWEEPER_INTERVAL_MS: u64 = 30_000;
+
+/// 启动 outbox 超时清扫后台任务。
+///
+/// 每 `OUTBOX_SWEEPER_INTERVAL_MS` 扫一次：单聊 outbox 和群 outbox 里
+/// created_at + OUTBOX_FAIL_DEADLINE < now 的条目 → 删 outbox 行 + 置
+/// messages.status = "failed" + emit("message-failed", msg_id) 通知前端。
+///
+/// 为什么必须有这个任务：
+/// - outbox 的 flush_outbox 只在「建链 / Hello / 心跳」时触发，完全无链路的 peer
+///   会让消息永远停在 outbox 里，前端永远看到 "sending"
+/// - 即使有链路，writer_loop 可能被 bulk backpressure 挂起，ChatMessage 虽然已入
+///   channel 但 writer_loop 还没写 → Ack 永远到不了 → outbox 永远不删
+/// - 这个任务打破"无限等待"：给每条消息一个最终期限（120s），超时即判 failed
+pub fn spawn_outbox_sweeper(
+    state: Arc<AppState>,
+    mut shutdown: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(OUTBOX_SWEEPER_INTERVAL_MS));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                _ = tick.tick() => {}
+            }
+
+            let now = db::now_ms();
+            let deadline_single = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
+            let deadline_group = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
+
+            // --- 单聊 outbox ---
+            let expired: Vec<String> = {
+                let Ok(dbc) = state.db.lock() else { continue };
+                db::list_expired_outbox(&dbc, deadline_single)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(_, mid)| mid)
+                    .collect()
+            };
+            for msg_id in expired {
+                if let Ok(dbc) = state.db.lock() {
+                    // 先置 failed（set_message_status 的终态守卫会保证幂等）
+                    let _ = db::set_message_status(&dbc, &msg_id, "failed");
+                    // 再删 outbox（防止下次 flush_outbox 又捞起来重发）
+                    let _ = db::delete_outbox_by_msg_id(&dbc, &msg_id);
+                }
+                let _ = state.app.emit("message-failed", &msg_id);
+            }
+
+            // --- 群 outbox（按 msg_id 去重）---
+            let expired_groups: Vec<(String, String)> = {
+                let Ok(dbc) = state.db.lock() else { continue };
+                db::list_expired_group_outbox(&dbc, deadline_group).unwrap_or_default()
+            };
+            for (msg_id, _group_id) in expired_groups {
+                if let Ok(dbc) = state.db.lock() {
+                    let _ = db::set_message_status(&dbc, &msg_id, "failed");
+                    let _ = db::delete_group_outbox_by_msg_id(&dbc, &msg_id);
+                }
+                let _ = state.app.emit("message-failed", &msg_id);
+            }
+
+            // --- 文件 outbox（比普通消息长，30min 窗口）---
+            let deadline_file = now - crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS;
+            let expired_files: Vec<String> = {
+                let Ok(dbc) = state.db.lock() else { continue };
+                db::list_expired_file_outbox(&dbc, deadline_file).unwrap_or_default()
+            };
+            for transfer_id in expired_files {
+                if let Ok(dbc) = state.db.lock() {
+                    let _ = db::mark_file_outbox_failed(&dbc, &transfer_id);
+                    // 文件消息前缀：单聊 file-{transfer_id} / 群 gfile-{transfer_id}
+                    let _ = db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed");
+                    let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "failed");
+                    let _ = db::upsert_transfer(
+                        &dbc,
+                        &transfer_id,
+                        "",
+                        "",
+                        0,
+                        "send",
+                        "failed",
+                        None,
+                        0.0,
+                    );
+                }
+                let _ = state.app.emit("file-failed", &transfer_id);
+            }
+        }
+    })
 }
 
 /// 发送单聊已读回执：同网段有直连走 `Message::ReadReceipt`（可被 pending 重试），

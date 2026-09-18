@@ -118,6 +118,32 @@ pub fn get_message_preview_source(conn: &Connection, msg_id: &str) -> Option<(St
     .flatten()
 }
 
+/// 按 msg_id 取完整消息记录（cancel_send / resend_message 等需要跨字段判断时用）。
+pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageRecord> {
+    conn.query_row(
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
+         FROM messages WHERE msg_id = ?1",
+        params![msg_id],
+        |r| {
+            Ok(MessageRecord {
+                id: r.get(0)?,
+                msg_id: r.get(1)?,
+                conv_id: r.get(2)?,
+                sender_id: r.get(3)?,
+                receiver_id: r.get(4)?,
+                kind: r.get(5)?,
+                content: r.get(6)?,
+                ts: r.get(7)?,
+                seq: r.get(8)?,
+                status: r.get(9)?,
+            })
+        },
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// 收藏取源：按 msg_id 返回 `(sender_id, kind, content, ts)`。
 ///
 /// 收藏的**内容一律以库里的消息为准**（前端只传 msg_id）：如果让前端把 content 传上来，
@@ -136,11 +162,18 @@ pub fn get_favorite_source(
     .flatten()
 }
 
-/// 更新单条消息状态。**只前进不回退**：`read` 由对方已读回执写入，而同一 msg_id 的
-/// Ack 可能因 outbox 补发晚一步到达，无条件覆盖会把已读退回「对方未读」。
+/// 更新单条消息状态。**硬终态不可逆**：`read`（已读回执）、`delivered`（Ack）、
+/// `recalled`（被撤回）一旦写入，任何后续 set 都会被拒绝。
+///
+/// 注意：`failed` 和 `cancelled` 是**软终态**（可通过 resend_message 回到 sending），
+/// 所以它们**不在** NOT IN 里 — sweeper 判 failed 后用户还能点重发。
+///
+/// 典型竞态：Ack 因 outbox 补发晚于 ReadReceipt 到达，`read` 不能被回退成 `delivered`。
 pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Result<()> {
     conn.execute(
-        "UPDATE messages SET status = ?2 WHERE msg_id = ?1 AND status != 'read'",
+        "UPDATE messages SET status = ?2
+         WHERE msg_id = ?1
+           AND status NOT IN ('read', 'delivered', 'recalled')",
         params![msg_id, status],
     )?;
     Ok(())

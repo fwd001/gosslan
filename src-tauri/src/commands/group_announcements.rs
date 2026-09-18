@@ -103,7 +103,7 @@ pub async fn pin_group_message(
 /// **只在发送端强制**。接收端无法验证发送方的墙上时钟（`env.ts` 不参与排序也不可信），
 /// 所以接收端接受任何来自作者本人的撤回 —— 这是产品规则，不是安全边界。
 /// 真正不可伪造的是**作者身份**：信封被 Ed25519 签名，只有原作者能撤回自己的消息。
-const RECALL_WINDOW_MS: i64 = 120_000;
+const RECALL_WINDOW_MS: i64 = 300_000;
 
 /// 撤回一条自己发的群消息。
 ///
@@ -135,7 +135,7 @@ pub async fn recall_group_message(
             )
             .unwrap_or(0);
         if ts > 0 && db::now_ms() - ts > RECALL_WINDOW_MS {
-            return Err("超过可撤回时间（2 分钟）".to_string());
+            return Err("超过可撤回时间（5 分钟）".to_string());
         }
         if db::is_recalled(&dbc, &target) {
             return Ok(()); // 幂等：已撤回过就直接成功
@@ -205,10 +205,7 @@ pub async fn send_group_file(
         return Err("只能发送普通文件".to_string());
     }
     let size = meta.len();
-    let name = p
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unnamed".to_string());
+    let name = file::derive_file_name(&path);
     // 文件级 SHA-256：256KB 分块流式计算放阻塞线程池（不整读内存、不卡 async runtime）
     let p_sha = p.clone();
     let sha256 = tokio::task::spawn_blocking(move || file::sha256_file_hex(&p_sha))
@@ -316,7 +313,7 @@ pub async fn send_group_file(
     // `scope == "todo"` 时跳过：待办图片是任务的一部分，不该在聊天时间线里另起一条文件消息。
     if scope != "todo" {
         let subtype = file::classify_file_subtype(&name);
-        let kind = if subtype == "image" { "image" } else { "file" };
+        let kind = subtype;
         let content =
         serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256, "subtype": subtype })
             .to_string();
