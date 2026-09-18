@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -62,6 +63,65 @@ def read_source(path: Path) -> str:
     """
     with path.open("r", encoding="utf-8", newline="") as f:
         return f.read()
+
+
+def _list_includes(root_file: Path) -> list[Path]:
+    """递归解析根文件里的 `include!("...");` 指令，返回所有被包含的子模块路径。
+
+    物理拆分后 commands.rs / db.rs 只剩 include! 指令，但锚点可能藏在任何一层
+    子模块里（子模块里还可以 include 别的子模块 — Rust 的 include! 是递归的）。
+    本函数模拟 Rust 的解析行为，帮助定位锚点真正在的文件。
+    """
+    result: list[Path] = []
+    root_dir = root_file.parent
+
+    def _walk(p: Path) -> None:
+        src = read_source(p)
+        for m in re.finditer(r'include!\("([^"]+)"\);', src):
+            child = (p.parent / m.group(1)).resolve()
+            if child not in result:
+                result.append(child)
+                _walk(child)
+
+    _walk(root_file)
+    return result
+
+
+def _resolve_anchor_file(root_file: Path, anchor: str) -> Path:
+    """在根文件及其 include! 子模块树里，找到真正包含 anchor 的那个文件。
+
+    返回的是**应该被写回**的文件（不是根文件）。如果根文件本身有锚点就返回根文件；
+    否则遍历 include! 子模块。要求 anchor 在恰好一个文件里出现恰好一次。
+    """
+    # 先看根文件自己
+    root_text = read_source(root_file)
+    if anchor in root_text:
+        return root_file
+
+    # 再搜所有 include! 子模块
+    candidates = _list_includes(root_file)
+    hits: list[tuple[Path, int]] = []
+    for child in candidates:
+        try:
+            text = read_source(child)
+        except OSError:
+            continue
+        count = text.count(anchor)
+        if count > 0:
+            hits.append((child, count))
+
+    if not hits:
+        raise AssertionError(
+            f"注入锚点在 {root_file.name} 及其 {len(candidates)} 个 include! 子模块里"
+            f"**都找不到**：{anchor[:80]!r}"
+        )
+    if len(hits) > 1:
+        detail = ", ".join(f"{p.relative_to(root_file.parent.parent)}({c})" for p, c in hits)
+        raise AssertionError(
+            f"注入锚点在多个文件里都出现了：{detail} —— 请明确指定 file="
+            f"或加更长的锚点"
+        )
+    return hits[0][0]
 
 
 def write_source(path: Path, text: str) -> None:
@@ -2131,6 +2191,30 @@ def verify(case: Case) -> tuple[bool, str]:
     #: [(文件, [(原文, 替换), …])] —— 主文件 + 需要"同时改坏"的其它文件
     targets: list[tuple[Path, list[tuple[str, str]]]] = [(case.file, case.injections)]
     targets += [(p, [(old, new)]) for (p, old, new) in case.extra_injections]
+
+    # --- 注入前预处理：把每条 injection 解析到真正包含锚点的文件 ---
+    # 物理拆分后 commands.rs / db.rs 只剩 include! 指令，锚点可能在任何子模块里。
+    # 这里做一次"锚点→目标文件"的解析，后续所有操作都在正确的子模块上进行。
+    resolved_targets: list[tuple[Path, list[tuple[str, str]]]] = []
+    for root_path, injections in targets:
+        if not injections:
+            resolved_targets.append((root_path, injections))
+            continue
+        # 如果所有锚点都在同一个文件（根文件自己或某个子模块），保持原行为
+        all_same: Path | None = None
+        per_file: dict[Path, list[tuple[str, str]]] = {}
+        for old, new in injections:
+            try:
+                target = _resolve_anchor_file(root_path, old)
+            except AssertionError:
+                # 兼容：如果不是 commands.rs/db.rs 这类 include! 根，就当作普通文件
+                target = root_path
+            if target not in per_file:
+                per_file[target] = []
+            per_file[target].append((old, new))
+        resolved_targets.extend(per_file.items())
+    targets = resolved_targets
+
     originals = [(path, read_source(path)) for path, _ in targets]
     detail = ""
     try:
