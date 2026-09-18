@@ -11,7 +11,6 @@ use crate::state::{
     TransferInfo,
 };
 
-
 /// 当前数据库版本。每次 schema 变更递增一次，并在 `MIGRATIONS` 数组末尾追加一个 step。
 pub const DB_VERSION: u32 = 6;
 
@@ -49,7 +48,10 @@ fn run_migrations(conn: &Connection) -> Result<()> {
         if step.from < current {
             continue;
         }
-        eprintln!("[gosslan-db] running v{}→v{}: {}", step.from, step.to, step.description);
+        eprintln!(
+            "[gosslan-db] running v{}→v{}: {}",
+            step.from, step.to, step.description
+        );
         (step.run)(conn)?;
         conn.pragma_update(None, "user_version", step.to)?;
     }
@@ -65,13 +67,23 @@ const MIGRATIONS: &[Migration] = &[
         run: |conn| {
             let tx = conn.unchecked_transaction()?;
             for (col, sql) in [
-                ("x25519_pubkey", "ALTER TABLE friends ADD COLUMN x25519_pubkey TEXT"),
-                ("ed25519_pubkey", "ALTER TABLE friends ADD COLUMN ed25519_pubkey TEXT"),
+                (
+                    "x25519_pubkey",
+                    "ALTER TABLE friends ADD COLUMN x25519_pubkey TEXT",
+                ),
+                (
+                    "ed25519_pubkey",
+                    "ALTER TABLE friends ADD COLUMN ed25519_pubkey TEXT",
+                ),
             ] {
                 match column_exists(&tx, "friends", col) {
-                    Ok(false) => { tx.execute(sql, [])?; }
+                    Ok(false) => {
+                        tx.execute(sql, [])?;
+                    }
                     Ok(true) => {}
-                    Err(e) => { eprintln!("[gosslan-db] v1→v2: skip {col}: {e}"); }
+                    Err(e) => {
+                        eprintln!("[gosslan-db] v1→v2: skip {col}: {e}");
+                    }
                 }
             }
             tx.commit()?;
@@ -88,7 +100,8 @@ const MIGRATIONS: &[Migration] = &[
             match column_exists(&tx, "messages", "seq") {
                 Ok(false) => {
                     tx.execute(
-                        "ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0", [],
+                        "ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
+                        [],
                     )?;
                     tx.execute(
                         "UPDATE messages SET seq = (SELECT COUNT(*) FROM messages m2 WHERE m2.conv_id = messages.conv_id AND (m2.ts < messages.ts OR (m2.ts = messages.ts AND m2.id <= messages.id)))",
@@ -96,10 +109,13 @@ const MIGRATIONS: &[Migration] = &[
                     )?;
                 }
                 Ok(true) => {}
-                Err(e) => { eprintln!("[gosslan-db] v2→v3: skip: {e}"); }
+                Err(e) => {
+                    eprintln!("[gosslan-db] v2→v3: skip: {e}");
+                }
             }
             tx.execute(
-                "CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conv_id, seq)", [],
+                "CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conv_id, seq)",
+                [],
             )?;
             tx.commit()?;
             Ok(())
@@ -113,9 +129,16 @@ const MIGRATIONS: &[Migration] = &[
         run: |conn| {
             let tx = conn.unchecked_transaction()?;
             match column_exists(&tx, "conversations", "pinned") {
-                Ok(false) => { tx.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0", [])?; }
+                Ok(false) => {
+                    tx.execute(
+                        "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+                        [],
+                    )?;
+                }
                 Ok(true) => {}
-                Err(e) => { eprintln!("[gosslan-db] v3→v4: skip: {e}"); }
+                Err(e) => {
+                    eprintln!("[gosslan-db] v3→v4: skip: {e}");
+                }
             }
             tx.commit()?;
             Ok(())
@@ -137,7 +160,9 @@ const MIGRATIONS: &[Migration] = &[
                         );
                     }
                     Ok(true) => {}
-                    Err(e) => { eprintln!("[gosslan-db] v4→v5: skip {col}: {e}"); }
+                    Err(e) => {
+                        eprintln!("[gosslan-db] v4→v5: skip {col}: {e}");
+                    }
                 }
             }
             tx.commit()?;
@@ -152,10 +177,12 @@ const MIGRATIONS: &[Migration] = &[
         run: |conn| {
             let tx = conn.unchecked_transaction()?;
             tx.execute(
-                "DELETE FROM outbox WHERE id NOT IN (SELECT MIN(id) FROM outbox GROUP BY msg_id)", [],
+                "DELETE FROM outbox WHERE id NOT IN (SELECT MIN(id) FROM outbox GROUP BY msg_id)",
+                [],
             )?;
             tx.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_msg_id ON outbox(msg_id)", [],
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_msg_id ON outbox(msg_id)",
+                [],
             )?;
             tx.commit()?;
             Ok(())
@@ -377,11 +404,16 @@ pub fn init(path: &Path) -> Result<Connection> {
     // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
     crate::content::store::ensure_schema(&conn)?;
     // ★ 预读状态：区分真·新库 vs 遗留老库
-    let pre_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
-    let pre_table_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-        [], |r| r.get(0),
-    ).unwrap_or(0);
+    let pre_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    let pre_table_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     let is_fresh = pre_version == 0 && pre_table_count == 0;
 
     if is_fresh {
@@ -435,4 +467,3 @@ include!("db/read_receipts.rs");
 include!("db/favorites.rs");
 
 include!("db/recalls.rs");
-
