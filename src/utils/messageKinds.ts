@@ -60,3 +60,15 @@ export const TIP_KINDS: readonly string[] = ["system", "recalled"];
 export function isTipKind(kind: string): boolean {
   return TIP_KINDS.includes(kind);
 }
+
+/**
+ * 是否可进「多选」（批量转发 / 收藏 / 删除）。
+ *
+ * 待办（`todo`）是**群级沉淀物**（卡种），不是普通聊天消息：它本就不可单独转发/收藏
+ * （见各处的 `forwardable`），批量删除走的也是 `deleteMessages`，而待办的正确删除入口是
+ * `updateTodo(deleted:true)` —— 所以待办卡片不进消息级批量操作（菜单里不给「多选」入口，
+ * 多选模式下也不出勾选框）。
+ */
+export function isMultiSelectable(kind: string): boolean {
+  return kind !== "todo";
+}

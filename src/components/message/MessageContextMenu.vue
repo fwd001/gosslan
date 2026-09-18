@@ -3,6 +3,7 @@ import { t } from "@/i18n";
 import { Pin, PinOff, StopCircle, Undo2 } from "lucide-vue-next";
 import { Copy, CornerUpLeft, ListChecks, Save, Share2, Star } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
+import { isMultiSelectable } from "@/utils/messageKinds";
 import ContextMenu from "@/components/ContextMenu.vue";
 
 defineProps<{
@@ -119,8 +120,9 @@ const favoritable = forwardable;
       {{ t("favorite.add") }}
     </button>
     <div class="gosslan-menu-sep" role="separator"></div>
-    <!-- 多选：微信放在菜单末尾（进入后是可批量转发/收藏/删除的模式） -->
-    <button class="gosslan-menu-item" @click="emit('multi-select')">
+    <!-- 多选：微信放在菜单末尾（进入后是可批量转发/收藏/删除的模式）。
+         待办卡片不进批量操作（见 isMultiSelectable），所以不给这个入口。 -->
+    <button v-if="isMultiSelectable(kind)" class="gosslan-menu-item" @click="emit('multi-select')">
       <ListChecks />
       {{ t("multi.enter") }}
     </button>

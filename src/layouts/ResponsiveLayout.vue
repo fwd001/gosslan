@@ -43,13 +43,32 @@ const groupOpen = ref(false);
 const shareOpen = ref(false);
 const logsOpen = ref(false);
 /**
- * 收藏面板。
+ * 收藏页。
  *
  * 刻意**不**把 `view` 扩成第三种取值（"chats" | "contacts" | "favorites"）：那会牵动
  * `NavRail` 的 view 联合类型、列表/主面板的平移条件、以及一串以 view 为判据的 watch。
- * 收藏是"盖在主面板之上的浮层"，用独立布尔表达最贴合它的语义（同 settings/logs）。
+ * 收藏是渲染在主内容区的**整页**（不再是弹窗），用独立布尔表达其开合即可；
+ * 它跟 view 互斥：切到聊天/通讯录或打开会话都会把它关掉（见下方 watch / onNavView）。
  */
 const favoritesOpen = ref(false);
+
+/** 打开收藏页（整页，非弹窗）。移动端切到主面板（收藏页渲染在主内容区）。 */
+function openFavorites() {
+  favoritesOpen.value = true;
+  if (app.isMobile) app.mobileView = "chat";
+}
+
+/** 关闭收藏页。移动端返回会话列表（iOS push/pop 语义，与 closeRequests 一致）。 */
+function closeFavorites() {
+  favoritesOpen.value = false;
+  if (app.isMobile) app.mobileView = "list";
+}
+
+/** 导航栏切到聊天/通讯录/链接：总是离开收藏页（即使 view 值没变，点导航也要关收藏）。 */
+function onNavView(v: "chats" | "contacts" | "links") {
+  favoritesOpen.value = false;
+  view.value = v;
+}
 
 /**
  * 打开设置。
@@ -198,6 +217,7 @@ watch(
   (convId) => {
     profileFriend.value = null;
     showRequests.value = false;
+    favoritesOpen.value = false;
     if (convId) view.value = "chats";
   },
 );
@@ -206,6 +226,7 @@ watch(
 watch(
   view,
   (v) => {
+    favoritesOpen.value = false;
     if (v === "chats") {
       profileFriend.value = null;
       showRequests.value = false;
@@ -345,14 +366,17 @@ function onResizeEnd() {
       :settings-opening="settingsOpening"
       :logs-opening="logsOpening"
       :favorites-open="favoritesOpen"
-      @update:view="view = $event"
+      @update:view="onNavView"
       @open-settings="openSettings"
       @open-logs="openLogs"
-      @open-favorites="favoritesOpen = true"
+      @open-favorites="openFavorites"
     />
 
-    <!-- 会话列表：桌面宽度可拖拽调（默认250px，持久化）；移动端整屏抽屉，靠 translate 滑动切换 -->
+    <!-- 会话列表：桌面宽度可拖拽调（默认250px，持久化）；移动端整屏抽屉，靠 translate 滑动切换。
+         收藏是**整页**（参考 PC 微信：点收藏后左侧不再显示聊天/通讯录列表），
+         所以桌面端收藏打开时把这一列整个收起，主区（收藏页）顶到 rail 右边。 -->
     <aside
+      v-if="app.isMobile || !favoritesOpen"
       class="h-full shrink-0 overflow-hidden rounded-tl-[var(--gosslan-radius-lg)] bg-[var(--gosslan-list)]"
       :class="app.isMobile
         ? 'absolute inset-y-0 left-0 z-20 w-full transition-transform duration-300 ' +
@@ -377,9 +401,9 @@ function onResizeEnd() {
     </aside>
 
     <!-- 拖拽分隔条：悬浮叠在列表/聊天交界上（负外边距抵消布局宽度），不留缝；
-         平时透明，悬停/拖拽时高亮 -->
+         平时透明，悬停/拖拽时高亮。收藏打开时列表已收起，这条也该跟着消失。 -->
     <div
-      v-if="!app.isMobile"
+      v-if="!app.isMobile && !favoritesOpen"
       class="relative z-10 hidden w-2 cursor-col-resize transition-colors hover:bg-primary/25 md:block"
       :class="resizing ? '-mx-1 bg-primary/40' : '-mx-1'"
       @pointerdown="onResizeStart"
@@ -395,11 +419,16 @@ function onResizeEnd() {
          （一片灰），而且滑动是单边的，看起来"像网页换页"。
          离屏时用 `inert` 摘掉焦点与交互（键盘用户 Tab 不进不可见面板）。 -->
     <main
-      class="flex h-full min-w-0 flex-1 flex-col rounded-tl-[var(--gosslan-radius-lg)] bg-[var(--gosslan-chat)]"
-      :class="app.isMobile
-        ? 'absolute inset-y-0 left-0 z-10 w-full transition-transform duration-300 ' +
-          (app.mobileView === 'list' ? 'translate-x-full' : 'translate-x-0')
-        : ''"
+      class="flex h-full min-w-0 flex-1 flex-col bg-[var(--gosslan-chat)]"
+      :class="[
+        // 微信式左上角圆角只属于「聊天区盖在列表上」的桌面观感；收藏等整页打开时它反而像
+        // 一块缺口（页头底线在圆角处断掉），所以整页态（favoritesOpen）下取消圆角。
+        favoritesOpen ? '' : 'rounded-tl-[var(--gosslan-radius-lg)]',
+        app.isMobile
+          ? 'absolute inset-y-0 left-0 z-10 w-full transition-transform duration-300 ' +
+            (app.mobileView === 'list' ? 'translate-x-full' : 'translate-x-0')
+          : '',
+      ]"
       :inert="app.isMobile && app.mobileView === 'list'"
     >
       <div
@@ -422,8 +451,10 @@ function onResizeEnd() {
           </div>
         </div>
         <template v-else>
+          <!-- 收藏页：整页渲染在主内容区（不再是弹窗） -->
+          <FavoritePanel v-if="favoritesOpen" @close="closeFavorites" />
         <!-- 新的朋友页：右侧展示好友申请列表（微信式） -->
-        <div v-if="showRequests" class="flex h-full flex-col">
+        <div v-else-if="showRequests" class="flex h-full flex-col">
           <div class="flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4" :style="{ height: 'var(--gosslan-header-h)' }">
             <span class="text-[15px] font-medium">{{ t("conv.newFriends") }}</span>
           </div>
@@ -441,14 +472,14 @@ function onResizeEnd() {
           </div>
         </div>
         <FriendProfile
-          v-if="!showRequests && profileFriend !== null"
+          v-else-if="profileFriend !== null"
           :friend="profileFriend"
           @send-message="sendMessageTo"
           @remove="removeFriend"
         />
-        <ChatWindow v-else-if="!showRequests && chat.activeConv" @open-share="shareOpen = true" />
+        <ChatWindow v-else-if="chat.activeConv" @open-share="shareOpen = true" />
         <div
-          v-else-if="!showRequests"
+          v-else
           class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
         >
           <MessageCircle class="h-16 w-16 opacity-25" />
@@ -524,7 +555,7 @@ function onResizeEnd() {
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
         :class="favoritesOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
-        @click="favoritesOpen = true"
+        @click="openFavorites"
       >
         <Star class="h-5 w-5" />
         <span class="text-[11px]">{{ t("nav.favorites") }}</span>
@@ -562,7 +593,6 @@ function onResizeEnd() {
     <AddFriendModal :open="addFriendOpen" @close="addFriendOpen = false" />
     <GroupCreateModal :open="groupOpen" @close="groupOpen = false" />
     <ShareDirectory :open="shareOpen" @close="shareOpen = false" />
-    <FavoritePanel :open="favoritesOpen" @close="favoritesOpen = false" />
 
     <!-- 移动端运行日志页：全屏覆盖、带返回（桌面端走独立窗口，见 open_log_window） -->
     <LogViewer v-if="app.isMobile && logsOpen" @back="logsOpen = false" />

@@ -9,7 +9,7 @@ import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
-import { isTipKind } from "@/utils/messageKinds";
+import { isMultiSelectable, isTipKind } from "@/utils/messageKinds";
 import { isSelfMessage } from "@/utils/selfChat";
 import { stripQuoteMsgId } from "@/utils/quote";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
@@ -712,7 +712,7 @@ async function copyFileToClipboard() {
          ⇒ 相邻消息互相遮挡（`messageHeight` 文件头专门写过这个坑）。
          覆盖层的第二个作用：多选时气泡里的链接/图片/引用点击都不该响应，它一并吃掉。
          提示行（系统消息/已撤回）不可选，所以 `!isTip`。 -->
-    <template v-if="selectMode && !isTip">
+    <template v-if="selectMode && !isTip && isMultiSelectable(message.kind)">
       <button
         class="absolute inset-0 z-10"
         :aria-label="selected ? t('multi.deselect') : t('multi.select')"
@@ -1091,8 +1091,10 @@ async function copyFileToClipboard() {
         <Star class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("favorite.add") }}
       </button>
-      <!-- 多选：移动端同样要有入口（桌面右键菜单是另一套模板） -->
+      <!-- 多选：移动端同样要有入口（桌面右键菜单是另一套模板）。
+           待办卡片不给（见 isMultiSelectable）。 -->
       <button
+        v-if="isMultiSelectable(message.kind)"
         class="flex items-center gap-3 border-t border-[var(--gosslan-divider)] px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doMultiSelect"
       >

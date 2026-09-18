@@ -15,17 +15,17 @@
  * 原消息没了就什么都读不到 —— 恰好是收藏要覆盖的场景。
  *
  * ## 浮层规则
- * `BaseModal` 是 HeadlessUI `Dialog`，两个 Dialog 不能同时展开（后开的会让前一个收到
- * outside-click 而自己关掉）。所以：行菜单（`ContextMenu`）与图片查看（普通全屏 `<button>`）
- * 都不是 Dialog，可以压在上面；而「转发」要开 `ForwardModal`（另一个 Dialog）⇒
- * 先收面板再开它，且它必须写在 `BaseModal` 的**同级**（放进 slot 会被一起卸载）。
+ * 收藏页是**普通整页**（不再是 `BaseModal` Dialog），所以行菜单（`ContextMenu`）、图片查看
+ * （普通全屏 `<button>`）、转发（`ForwardModal`，唯一的 Dialog）都可以直接压在它上面，互不冲突
+ * —— 转发不再需要"先收面板再开"（那是旧版两个 Dialog 不能共存的约束）。
+ * `ForwardModal` 必须写在页面根节点的**同级**：页面由 `v-if` 挂载，转发弹窗写进页面容器里
+ * 会随页面一起卸载。
  */
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import BaseModal from "@/components/BaseModal.vue";
 import ContextMenu from "@/components/ContextMenu.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
 import { useClipboard } from "@/composables/useClipboard";
@@ -52,7 +52,6 @@ import {
 } from "lucide-vue-next";
 import type { FavoriteEntry, FileMeta, MsgKind } from "@/types";
 
-const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const app = useAppStore();
@@ -84,6 +83,11 @@ const forward = ref<FavoriteEntry | null>(null);
 
 const items = computed(() => chat.favorites);
 
+/** 页头标题（有收藏数时显示条数，否则显示「收藏」）。 */
+const headerTitle = computed(() =>
+  items.value.length ? t("favorite.count", { n: items.value.length }) : t("favorite.title"),
+);
+
 async function load() {
   loading.value = true;
   failed.value = false;
@@ -96,18 +100,9 @@ async function load() {
   }
 }
 
-// 每次打开都重拉：面板不在时用户可能在别处收藏过（消息菜单），缓存旧快照会少条目。
-// 同时清掉上一次的搜索 / 详情 / 确认态 —— 下次打开应该是一张干净的面板。
-watch(
-  () => props.open,
-  (v) => {
-    pendingDelete.value = null;
-    menu.value = null;
-    viewer.value = null;
-    active.value = null;
-    if (v) void load();
-  },
-);
+// 每次进入页面都重拉：页面不在时用户可能在别处收藏过（消息菜单），缓存旧快照会少条目。
+// 组件由 v-if 挂载，挂载即代表"刚打开"，各 ref 初始都是 null（干净状态），直接拉一次即可。
+onMounted(() => void load());
 
 /** 单条收藏里参与搜索的文本。 */
 function searchText(f: FavoriteEntry): string {
@@ -211,9 +206,8 @@ const activeMergeItems = computed(() => {
 
 /** 图片缩略图按需加载：只对"副本还在这台机器上"的图片收藏读字节。 */
 watch(
-  [items, thumbs, () => props.open],
+  [items, thumbs],
   ([list]) => {
-    if (!props.open) return;
     for (const f of list) {
       if (f.kind !== "image" || !f.available || thumbs.value[f.id]) continue;
       void loadFavoritePreview(f.id, displayName(f)).then((r) => {
@@ -320,8 +314,8 @@ const forwardSnippet = computed(() => {
 function startForward(f: FavoriteEntry) {
   menu.value = null;
   forward.value = f;
-  // 先收面板再开转发弹窗：两个 Dialog 不能同时展开（见文件头说明）。
-  emit("close");
+  // 收藏页已是普通页面（不是 Dialog），转发弹窗直接压在它上面即可，
+  // 不再需要先关页面（旧版是为了避开「BaseModal 与 ForwardModal 两个 Dialog 不能共存」）。
 }
 
 async function doForward(convId: string) {
@@ -388,59 +382,78 @@ async function confirmDelete() {
 </script>
 
 <template>
-  <BaseModal
-    :open="open"
-    :title="items.length ? t('favorite.count', { n: items.length }) : t('favorite.title')"
-    width="max-w-2xl"
-    @close="emit('close')"
-  >
+  <div class="flex h-full min-h-0 flex-col">
+    <!-- 页头：仅移动端需要（返回 + 标题）。桌面端参考 PC 微信收藏：搜索 + 筛选直接顶到顶部，
+         不再垫一条大空白标题栏（用户 2026-09-18：「顶部这个大空白的设计不好看」）。 -->
+    <header
+      v-if="app.isMobile"
+      class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4"
+      :style="{ height: 'var(--gosslan-header-h)' }"
+    >
+      <button
+        v-if="app.isMobile"
+        class="tap-safe -ml-1 flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]"
+        :aria-label="t('common.back')"
+        @click="emit('close')"
+      >
+        ←
+      </button>
+      <span class="min-w-0 truncate text-[15px] font-medium" :title="headerTitle">
+        {{ headerTitle }}
+      </span>
+    </header>
+
     <div
       v-if="loading"
-      class="flex items-center justify-center gap-2 py-10 text-sm text-[var(--gosslan-text-2)]"
+      class="flex flex-1 items-center justify-center gap-2 text-sm text-[var(--gosslan-text-2)]"
     >
       <Loader2 class="h-4 w-4 animate-spin" />
       {{ t("favorite.loading") }}
     </div>
 
-    <div v-else-if="failed" class="py-10 text-center text-sm text-[var(--gosslan-text-2)]">
+    <div
+      v-else-if="failed"
+      class="flex flex-1 items-center justify-center text-sm text-[var(--gosslan-text-2)]"
+    >
       {{ t("favorite.loadFail") }}
     </div>
 
-    <div v-else-if="items.length === 0" class="py-10 text-center text-sm text-[var(--gosslan-text-2)]">
+    <div
+      v-else-if="items.length === 0"
+      class="flex flex-1 items-center justify-center text-sm text-[var(--gosslan-text-2)]"
+    >
       {{ t("favorite.empty") }}
     </div>
 
-    <div v-else class="space-y-3">
-      <!-- 顶部：搜索 + 类型筛选（PC 微信收藏页的结构） -->
-      <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <input
-          v-model="keyword"
-          maxlength="50"
-          autocomplete="off"
-          :placeholder="t('favorite.searchPlaceholder')"
-          class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent sm:w-56"
-        />
-        <div class="flex items-center gap-1">
-          <button
-            v-for="f in FILTERS"
-            :key="f.key"
-            class="tap-safe rounded-full px-2.5 py-1 text-xs transition"
-            :class="filterKind === f.key
-              ? 'bg-primary text-white'
-              : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-            @click="filterKind = f.key"
-          >
-            {{ t(f.label) }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 两栏：左列表 + 右详情；移动端退化成两级（列表 ↔ 详情） -->
-      <div class="flex h-[22rem] gap-3">
+    <div v-else class="flex min-h-0 flex-1 flex-col gap-3 p-3">
+      <!-- 两栏：左列表（搜索+筛选+列表）+ 右详情；移动端退化成两级（列表 ↔ 详情）。
+           PC 微信收藏里搜索/筛选就收在左栏列表上方，不单独占一整条横栏。 -->
+      <div class="flex min-h-0 flex-1 gap-3">
         <div
-          class="min-h-0 overflow-y-auto border-[var(--gosslan-divider)] pr-1 sm:border-r"
-          :class="active ? 'hidden sm:block sm:w-64 sm:shrink-0' : 'flex-1 sm:w-64 sm:flex-none'"
+          class="min-h-0 border-[var(--gosslan-divider)] pr-1 sm:w-64 sm:shrink-0 sm:flex sm:flex-col sm:gap-2 sm:border-r"
+          :class="active ? 'hidden' : 'flex flex-1 flex-col gap-2'"
         >
+          <input
+            v-model="keyword"
+            maxlength="50"
+            autocomplete="off"
+            :placeholder="t('favorite.searchPlaceholder')"
+            class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+          />
+          <div class="flex items-center gap-1">
+            <button
+              v-for="f in FILTERS"
+              :key="f.key"
+              class="tap-safe rounded-full px-2.5 py-1 text-xs transition"
+              :class="filterKind === f.key
+                ? 'bg-primary text-white'
+                : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+              @click="filterKind = f.key"
+            >
+              {{ t(f.label) }}
+            </button>
+          </div>
+          <div class="min-h-0 flex-1 overflow-y-auto">
           <!-- 每行：行本身是 <button>（可聚焦、可回车），移动端的「⋯」放在**兄弟层**用绝对定位
                —— 不能嵌在行按钮里（<button> 套 <button> 是非法 HTML，浏览器会把它拆出去，
                表现是"⋯ 点了没反应"或整行都被点）。 -->
@@ -487,6 +500,7 @@ async function confirmDelete() {
           <div v-if="filtered.length === 0" class="py-8 text-center text-xs text-[var(--gosslan-text-2)]">
             {{ t("favorite.noMatch") }}
           </div>
+        </div>
         </div>
 
         <!-- 右侧详情：全文 / 大图 / 文件卡片 + 底部操作条（PC 微信的收藏详情同样如此）。
@@ -666,9 +680,9 @@ async function confirmDelete() {
     >
       <img :src="viewer" class="max-h-[85vh] max-w-[92vw] object-contain" alt="" />
     </button>
-  </BaseModal>
+  </div>
 
-  <!-- 转发弹窗：必须是 BaseModal 的同级节点，不能放进 slot（面板一关插槽内容会被一起卸载） -->
+  <!-- 转发弹窗：必须是根节点的同级，不能放进页面容器（页面一关会被一起卸载） -->
   <ForwardModal
     :open="!!forward"
     :kind="forwardKind"
