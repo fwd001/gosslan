@@ -31,4 +31,4 @@ pub use relay_policy::{should_forward, RelayInput, RelayPolicy};
 pub use router::{
     DropReason, ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind, MeshRouter,
 };
-pub use selection::{pick_link, CONGESTION_WINDOW_MS};
+pub use selection::pick_link;

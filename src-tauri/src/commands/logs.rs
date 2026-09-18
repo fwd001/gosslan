@@ -611,6 +611,7 @@ fn aux_window_background(state: &tauri::State<'_, Arc<AppState>>) -> tauri::wind
 /// （用户 2026-09-17：「独立窗口在系统里显示的窗口名字不对，没给系统设置名字」）。
 /// 所以创建时就给功能名；**不带应用名前缀**（用户同日反馈，任务栏本身已按应用分组）。
 /// 前端加载后仍会按语言把 `document.title` 设成同样的格式，两边口径一致。
+#[cfg(desktop)]
 fn aux_window_title(
     state: &tauri::State<'_, Arc<AppState>>,
     feature_zh: &str,
