@@ -1,5 +1,6 @@
 //! SQLite 存储层：本地聊天记录、好友关系、群组、离线队列与配置。
 //! 使用 rusqlite（bundled，自带 SQLite 源码，跨平台零配置）。
+//! 数据库迁移由 PRAGMA user_version 驱动，见 `run_migrations()` / `MIGRATIONS` 数组。
 
 use std::path::Path;
 
@@ -9,6 +10,158 @@ use crate::state::{
     Conversation, Favorite, Friend, Group, GroupFile, GroupFileRecipient, MessageRecord,
     TransferInfo,
 };
+
+
+/// 当前数据库版本。每次 schema 变更递增一次，并在 `MIGRATIONS` 数组末尾追加一个 step。
+pub const DB_VERSION: u32 = 6;
+
+/// 迁移 step：(from_version, to_version, 迁移闭包)。
+struct Migration {
+    from: u32,
+    to: u32,
+    description: &'static str,
+    run: fn(&Connection) -> Result<()>,
+}
+
+/// 小工具：安全地读 `pragma_table_info` 判断某表是否有某列。
+fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool> {
+    let exists: bool = conn
+        .prepare(&format!(
+            "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1",
+            table
+        ))
+        .and_then(|mut s| s.query_row([col], |r| r.get::<_, i64>(0)))
+        .map(|n| n > 0)?;
+    Ok(exists)
+}
+
+fn run_migrations(conn: &Connection) -> Result<()> {
+    let current: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    if current >= DB_VERSION {
+        return Ok(());
+    }
+    for step in MIGRATIONS.iter() {
+        if step.from >= DB_VERSION {
+            break;
+        }
+        if step.from < current {
+            continue;
+        }
+        eprintln!("[gosslan-db] running v{}→v{}: {}", step.from, step.to, step.description);
+        (step.run)(conn)?;
+        conn.pragma_update(None, "user_version", step.to)?;
+    }
+    Ok(())
+}
+
+const MIGRATIONS: &[Migration] = &[
+    // v1 → v2：friends 加公钥列
+    Migration {
+        from: 1,
+        to: 2,
+        description: "friends 加 x25519_pubkey / ed25519_pubkey",
+        run: |conn| {
+            let tx = conn.unchecked_transaction()?;
+            for (col, sql) in [
+                ("x25519_pubkey", "ALTER TABLE friends ADD COLUMN x25519_pubkey TEXT"),
+                ("ed25519_pubkey", "ALTER TABLE friends ADD COLUMN ed25519_pubkey TEXT"),
+            ] {
+                match column_exists(&tx, "friends", col) {
+                    Ok(false) => { tx.execute(sql, [])?; }
+                    Ok(true) => {}
+                    Err(e) => { eprintln!("[gosslan-db] v1→v2: skip {col}: {e}"); }
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        },
+    },
+    // v2 → v3：messages 加 seq + 回填 + 索引
+    Migration {
+        from: 2,
+        to: 3,
+        description: "messages 加 seq 列 + 回填 + idx_messages_conv_seq",
+        run: |conn| {
+            let tx = conn.unchecked_transaction()?;
+            match column_exists(&tx, "messages", "seq") {
+                Ok(false) => {
+                    tx.execute(
+                        "ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0", [],
+                    )?;
+                    tx.execute(
+                        "UPDATE messages SET seq = (SELECT COUNT(*) FROM messages m2 WHERE m2.conv_id = messages.conv_id AND (m2.ts < messages.ts OR (m2.ts = messages.ts AND m2.id <= messages.id)))",
+                        [],
+                    )?;
+                }
+                Ok(true) => {}
+                Err(e) => { eprintln!("[gosslan-db] v2→v3: skip: {e}"); }
+            }
+            tx.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conv_id, seq)", [],
+            )?;
+            tx.commit()?;
+            Ok(())
+        },
+    },
+    // v3 → v4：conversations 加 pinned
+    Migration {
+        from: 3,
+        to: 4,
+        description: "conversations 加 pinned 列",
+        run: |conn| {
+            let tx = conn.unchecked_transaction()?;
+            match column_exists(&tx, "conversations", "pinned") {
+                Ok(false) => { tx.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0", [])?; }
+                Ok(true) => {}
+                Err(e) => { eprintln!("[gosslan-db] v3→v4: skip: {e}"); }
+            }
+            tx.commit()?;
+            Ok(())
+        },
+    },
+    // v4 → v5：group_files 加 scope / todo_id
+    Migration {
+        from: 4,
+        to: 5,
+        description: "group_files 加 scope / todo_id 列",
+        run: |conn| {
+            let tx = conn.unchecked_transaction()?;
+            for (col, default) in [("scope", "'chat'"), ("todo_id", "''")] {
+                match column_exists(&tx, "group_files", col) {
+                    Ok(false) => {
+                        let _ = tx.execute(
+                            &format!("ALTER TABLE group_files ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"),
+                            [],
+                        );
+                    }
+                    Ok(true) => {}
+                    Err(e) => { eprintln!("[gosslan-db] v4→v5: skip {col}: {e}"); }
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        },
+    },
+    // v5 → v6：outbox 清重复 + 唯一索引
+    Migration {
+        from: 5,
+        to: 6,
+        description: "outbox 清重复行 + 建 idx_outbox_msg_id 唯一索引",
+        run: |conn| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
+                "DELETE FROM outbox WHERE id NOT IN (SELECT MIN(id) FROM outbox GROUP BY msg_id)", [],
+            )?;
+            tx.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_msg_id ON outbox(msg_id)", [],
+            )?;
+            tx.commit()?;
+            Ok(())
+        },
+    },
+];
 
 /// 建表脚本（与 `schema.sql` 保持一致）
 pub const SCHEMA: &str = r#"
@@ -223,95 +376,24 @@ pub fn init(path: &Path) -> Result<Connection> {
     conn.execute_batch(SCHEMA)?;
     // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
     crate::content::store::ensure_schema(&conn)?;
-    // 迁移：早期版本 friends 表缺公钥列，此处幂等补列（兼容已有旧库）
-    for col in ["x25519_pubkey", "ed25519_pubkey"] {
-        let exists: bool = conn
-            .prepare("SELECT COUNT(*) FROM pragma_table_info('friends') WHERE name = ?1")
-            .and_then(|mut s| s.query_row([col], |r| r.get::<_, i64>(0)))
-            .map(|n| n > 0)
-            .unwrap_or(true);
-        if !exists {
-            let _ = conn.execute(&format!("ALTER TABLE friends ADD COLUMN {col} TEXT"), []);
-        }
+    // ★ 预读状态：区分真·新库 vs 遗留老库
+    let pre_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+    let pre_table_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        [], |r| r.get(0),
+    ).unwrap_or(0);
+    let is_fresh = pre_version == 0 && pre_table_count == 0;
+
+    if is_fresh {
+        conn.pragma_update(None, "user_version", DB_VERSION)?;
+    } else {
+        run_migrations(&conn)?;
     }
-    // 迁移：messages 增加逻辑序号列（旧库幂等补列），并按会话内既有顺序回填。
-    {
-        let has_seq: bool = conn
-            .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'seq'")
-            .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
-            .map(|n| n > 0)
-            .unwrap_or(true);
-        if !has_seq {
-            conn.execute(
-                "ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-            conn.execute(
-                "UPDATE messages SET seq = (
-                     SELECT COUNT(*) FROM messages m2
-                     WHERE m2.conv_id = messages.conv_id
-                       AND (m2.ts < messages.ts
-                            OR (m2.ts = messages.ts AND m2.id <= messages.id))
-                 )",
-                [],
-            )?;
-        }
-    }
-    // 迁移：conversations 增加置顶列（旧库幂等补列）。纯本地偏好，默认不置顶。
-    {
-        let has_pinned: bool = conn
-            .prepare(
-                "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'pinned'",
-            )
-            .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
-            .map(|n| n > 0)
-            .unwrap_or(true);
-        if !has_pinned {
-            conn.execute(
-                "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
-                [],
-            )?;
-        }
-    }
-    // 迁移：group_files 增加 scope / todo_id 列（旧库幂等补列；待办图片复用群文件管线）。
-    for col in [("scope", "'chat'"), ("todo_id", "''")] {
-        let exists: bool = conn
-            .prepare("SELECT COUNT(*) FROM pragma_table_info('group_files') WHERE name = ?1")
-            .and_then(|mut s| s.query_row([col.0], |r| r.get::<_, i64>(0)))
-            .map(|n| n > 0)
-            .unwrap_or(true);
-        if !exists {
-            let _ = conn.execute(
-                &format!(
-                    "ALTER TABLE group_files ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}",
-                    col = col.0,
-                    default = col.1
-                ),
-                [],
-            );
-        }
-    }
-    // 索引必须等 seq 列补齐后再建：旧库执行 SCHEMA 时 messages 表已存在，不会自动加列。
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conv_id, seq)",
-        [],
-    )?;
-    // 每次启动都把会话时钟同步到「该会话已有最大逻辑序号」，
-    // 保证旧库迁移后第一条新消息的 seq 不会回到 1 而排到历史前面。
+    // 每次启动都把会话时钟同步到「该会话已有最大逻辑序号」
     conn.execute(
         "INSERT INTO conversation_clocks(conv_id, seq)
          SELECT conv_id, MAX(seq) FROM messages GROUP BY conv_id
          ON CONFLICT(conv_id) DO UPDATE SET seq = MAX(conversation_clocks.seq, excluded.seq)",
-        [],
-    )?;
-    // 迁移：outbox.msg_id 唯一索引（INSERT OR IGNORE 去重依赖它；旧库幂等补建）
-    // 先清掉历史重复行（按 msg_id 保留最早一条），保证建索引必定成功
-    conn.execute(
-        "DELETE FROM outbox WHERE id NOT IN (SELECT MIN(id) FROM outbox GROUP BY msg_id)",
-        [],
-    )?;
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_msg_id ON outbox(msg_id)",
         [],
     )?;
     // 开启 WAL，提升并发读写
