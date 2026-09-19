@@ -109,6 +109,32 @@ impl RelayConfig {
     }
 }
 
+/// **数据面直传中继（定向借道 / 文件分片 / 不透明帧）的授权判据**。
+///
+/// 与 `decide_forward`（gossip 信封按**原始发送者**授权，身份由 Ed25519 验签背书）不同，
+/// 这些帧的 `from` 是**自报字段**（可伪造），而链路对端经过 Hello 验签、不可冒充 ——
+/// 所以授权主体统一取「当前链路对端（= 向本机提出转投请求的那一跳）」：
+/// 每一跳只对自己的直接上游负责，链式成立。
+///
+/// 真值表与 gossip 共用 `RelayPolicy::allows_relay`（策略只有一份语义）；
+/// 默认 `All` 下零查库，`Off/Friends/Allowlist` 才生效。
+/// （2026-09-19 审计 P0#5：此前数据面转发完全不经策略 —— 设置里关掉中继也照转。）
+pub fn decide_relay_from_peer(
+    config: &RelayConfig,
+    requester_peer_id: &str,
+    is_friend: impl FnOnce() -> bool,
+) -> bool {
+    match config.policy {
+        // 两种策略不碰任何查询（按需取事实的开关语义与 needs_*_lookup 一致）
+        RelayPolicy::All => true,
+        RelayPolicy::Off => false,
+        RelayPolicy::Friends => config.needs_friend_lookup() && is_friend(),
+        RelayPolicy::Allowlist => {
+            config.needs_allowlist_lookup() && config.allowlist_contains(requester_peer_id)
+        }
+    }
+}
+
 /// 转发判据的全部输入。transport 只负责把事实填进来。
 #[derive(Clone, Copy, Debug)]
 pub struct RelayInput {
@@ -182,6 +208,34 @@ pub fn decide_forward(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 数据面授权（P0#5）：真值表与 gossip 同源，但主体是「提出转投请求的链路对端」。
+    #[test]
+    fn peer_relay_respects_policy_matrix() {
+        let friend_cfg = RelayConfig::parse(Some("friends"), None);
+        let off_cfg = RelayConfig::parse(Some("off"), None);
+        let all_cfg = RelayConfig::parse(None, None);
+        let allow_cfg = RelayConfig::parse(Some("allowlist"), Some(r#"["p1"]"#));
+        // All/Off 必须完全短路（不执行闭包 ⇒ 热路径零查库）
+        let looked = std::cell::Cell::new(false);
+        assert!(decide_relay_from_peer(&all_cfg, "anyone", || {
+            looked.set(true);
+            true
+        }));
+        assert!(!decide_relay_from_peer(&off_cfg, "anyone", || {
+            looked.set(true);
+            true
+        }));
+        assert!(!looked.get(), "All/Off 策略不得在热路径查库");
+        assert!(decide_relay_from_peer(&friend_cfg, "buddy", || {
+            looked.set(true);
+            true
+        }));
+        assert!(looked.get(), "Friends 策略才查好友");
+        assert!(!decide_relay_from_peer(&friend_cfg, "buddy", || false));
+        assert!(decide_relay_from_peer(&allow_cfg, "p1", || false));
+        assert!(!decide_relay_from_peer(&allow_cfg, "p2", || true));
+    }
 
     fn input(
         is_target: bool,

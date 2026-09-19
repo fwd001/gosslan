@@ -2566,4 +2566,25 @@ mod tests {
             "reachable_neighbors 应有定义+3 个转发调用点，实际 {uses} 处 —— 有新转发点没走可达集？"
         );
     }
+
+    /// 数据面转发必须吃中继策略（2026-09-19 审计 P0#5 回归护栏）。
+    ///
+    /// 为什么必须守：控制面（gossip）从 ADR-0016 起就走 `decide_forward`，而数据面
+    /// （定向借道 / RelayChunk / OpaqueExternal）曾长期裸奔 —— 用户把中继设成
+    /// 「关闭」，文件分片照样借他的带宽一跳一跳地跑，**设置项只有一半是真的**。
+    /// 这类"开关只管一条路径"的分裂在 UI 上完全看不出来，只能源码钉死。
+    #[test]
+    fn relay_data_plane_respects_policy() {
+        let transport = include_str!("network/transport.rs");
+        let wired = transport.matches("decide_relay_from_peer(").count();
+        assert!(
+            wired >= 3,
+            "数据面三个转发点（定向借道 / RelayChunk / OpaqueExternal）都要过授权闸，实际 {wired} 处"
+        );
+        // gossip 控制面原有闸不得被拆掉
+        assert!(
+            transport.contains("decide_forward("),
+            "gossip 转发的 relay 授权闸（decide_forward）被删了？"
+        );
+    }
 }

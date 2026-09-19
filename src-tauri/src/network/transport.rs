@@ -2691,7 +2691,33 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
     // 只在「我确实有到 to 的直连」时投递；没有就丢弃（单跳中继限制，见
     // relay_send_to_neighbors 的说明）。
     if let Some(to) = directed_relay_target(&msg, &state.device_id) {
-        let _ = try_send(state, to, &msg).await;
+        // 授权闸（2026-09-19 P0#5）：定向借道此前**不经任何策略** —— 设置里关掉
+        // 中继也照转，等于「开放文件中继/目录中继」。判据与 gossip 同一张真值表，
+        // 授权主体是经 Hello 验签的链路对端（帧内 from 可自报伪造，不作依据）。
+        let cfg = state.relay_policy_config();
+        let allowed = crate::mesh::relay_policy::decide_relay_from_peer(&cfg, peer_id, || {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_friend(&dbc, peer_id).is_some()
+        });
+        if !allowed {
+            if log_throttled("relay_deny", 10_000) {
+                state.logger.warn(
+                    "mesh",
+                    format!("按中继策略拒绝对端 {peer_id} 的定向借道请求（to={to}）"),
+                );
+            }
+            return;
+        }
+        if let Err(e) = try_send(state, to, &msg).await {
+            // 丢帧必须留痕（INV-005 不得静默丢）：共享目录/中继文件上层有幂等重试，
+            // 但「一直失败」以前在本机日志里完全不可见。
+            if log_throttled("relay_drop", 10_000) {
+                state.logger.warn(
+                    "mesh",
+                    format!("定向借道转投失败 to={to}：{e}（上层会重试）"),
+                );
+            }
+        }
         return;
     }
     match msg {
@@ -2884,6 +2910,21 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 ttl: frame.ttl,
                 payload,
             };
+            // 数据面授权闸（P0#5）：外部帧同样必须吃中继策略，默认 All 行为不变
+            let cfg = state.relay_policy_config();
+            let allowed = crate::mesh::relay_policy::decide_relay_from_peer(&cfg, peer_id, || {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::get_friend(&dbc, peer_id).is_some()
+            });
+            if !allowed {
+                if log_throttled("relay_deny", 10_000) {
+                    state.logger.warn(
+                        "mesh",
+                        format!("按中继策略拒绝对端 {peer_id} 的外部帧转投 id={id}"),
+                    );
+                }
+                return;
+            }
             let targets: Vec<String> = {
                 let neighbors = reachable_neighbors(state, peer_id).await;
                 let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
@@ -2897,7 +2938,14 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let msg = fwd;
             tokio::spawn(async move {
                 for t in targets {
-                    let _ = try_send(&st, &t, &msg).await;
+                    if let Err(e) = try_send(&st, &t, &msg).await {
+                        if log_throttled("relay_drop", 10_000) {
+                            st.logger.warn(
+                                "mesh",
+                                format!("外部帧转投失败 to={t}：{e}（其余邻居不受影响）"),
+                            );
+                        }
+                    }
                 }
             });
         }
@@ -3920,7 +3968,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             to,
             ttl,
         } => {
-            handle_relay_chunk(state, transfer_id, seq, data, from, to, ttl).await;
+            handle_relay_chunk(state, peer_id, transfer_id, seq, data, from, to, ttl).await;
         }
         // ---- 群密钥分发 ----
         Message::GroupKey {
@@ -5175,6 +5223,7 @@ async fn handle_relay_file_offer(
 
 async fn handle_relay_chunk(
     state: &Arc<AppState>,
+    requester: &str,
     transfer_id: String,
     seq: u32,
     data: String,
@@ -5388,7 +5437,23 @@ async fn handle_relay_chunk(
         }
         // 重组中：进度可基于切片数上报，此处省略，完成时由 file-done 事件通知
     } else if ttl > 1 {
-        // 中继转发给最终接收方
+        // 中继转发给最终接收方 —— 授权闸同「定向借道」（2026-09-19 P0#5）：
+        // 替谁转发按**提出请求的链路对端**判（Hello 验签背书），策略 Off/Friends/
+        // Allowlist 必须真正拦得下文件分片，而不是只拦 gossip。
+        let cfg = state.relay_policy_config();
+        let allowed = crate::mesh::relay_policy::decide_relay_from_peer(&cfg, requester, || {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_friend(&dbc, requester).is_some()
+        });
+        if !allowed {
+            if log_throttled("relay_deny", 10_000) {
+                state.logger.warn(
+                    "mesh",
+                    format!("按中继策略拒绝对端 {requester} 的 RelayChunk 转投 tid={transfer_id}"),
+                );
+            }
+            return;
+        }
         let fwd = Message::RelayChunk {
             transfer_id,
             seq,
@@ -5397,7 +5462,16 @@ async fn handle_relay_chunk(
             to: to.clone(),
             ttl: ttl - 1,
         };
-        let _ = try_send(state, &to, &fwd).await;
+        if let Err(e) = try_send(state, &to, &fwd).await {
+            // 分片丢弃必须留痕：上一跳的发送队列满/半开时，整文件会因缺片校验失败重来，
+            // 以前这里 `let _ =` 连一行日志都没有（INV-005）。
+            if log_throttled("relay_drop", 10_000) {
+                state.logger.warn(
+                    "mesh",
+                    format!("RelayChunk 转投失败 to={to} seq={seq}：{e}（缺片将由整体重试收敛）"),
+                );
+            }
+        }
     }
 }
 

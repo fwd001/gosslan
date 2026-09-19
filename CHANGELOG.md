@@ -10,6 +10,23 @@
 
 ## [Unreleased]
 
+## [4.22.9] - 2026-09-19
+
+### Fixed (P0：数据面转发接上中继授权 —— 设置开关从此管到文件与外部帧)
+
+- **控制面/数据面两套真相收口**：中继授权（ADR-0016）此前只管 gossip；
+  `handle_message` 的定向借道（共享目录三件套 + RelayFileOffer）、`RelayChunk`
+  转投、`OpaqueExternal` 转投三个数据面路径**完全不吃策略** —— 用户把中继设为
+  「关闭/仅好友」，陌生邻居照样能借本机一跳一跳地跑文件流量（带宽与隐私双重失信）。
+  新增 `relay_policy::decide_relay_from_peer`（真值表与 gossip 同源；授权主体取
+  **经 Hello 验签的链路对端**，不用可自报伪造的帧内 `from` 字段），三处全部接入。
+  默认策略 `All` 行为逐字节不变，属安全开关真正生效。
+- **静默丢片留痕**：三处 `let _ = try_send()` 全部改为 `Err → log_throttled warn`
+  （relay_drop/relay_deny，10s 限频）—— 分片丢弃以前在本机日志里不可见，
+  「文件传一半失败重来」无从归因（INV-005）。
+- 测试：`peer_relay_respects_policy_matrix` 真值表（含 All/Off 零查库断言）；
+  源码护栏 `relay_data_plane_respects_policy`（三个转发点少接一处即红）。
+
 ## [4.22.8] - 2026-09-19
 
 ### Fixed (code review 修正：v7 迁移口径数据事故 + upsert_peer 热路径)
