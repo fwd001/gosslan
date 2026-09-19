@@ -10,6 +10,33 @@
 
 ## [Unreleased]
 
+## [4.22.13] - 2026-09-19
+
+### Fixed (文件消息体验链：群图片预览、视频退化成 JSON、大文件超时误判)
+
+真机反馈的四联问题（群照片预览不了 / MP4 显示成 JSON / 几百 MB 大文件必失败），
+根因是**同一条链的四个断点**：
+
+- **接收端按文件名重新猜 kind**（单聊 FileOffer / 群 offer / 完成回填三处）：
+  4.22.1 只收口了发送端，接收端仍把 mp4 写成 `kind="video"`——前端渲染链只认
+  text/code/image/file/…，视频消息整个退化成一段裸 JSON。三处统一为 `image|file`，
+  细分留在 `content.subtype`。
+- **历史行兼容（不回写数据）**：`protocol::display_kind` 在 DB 读出口把 legacy
+  `video/audio` 归一为 `file`（已入库的旧消息不再显示 JSON）；`code` 有歧义
+  （真代码块同为 kind=code）刻意不映射。测试 ×1。
+- **群图片预览打不开的真根因**：群文件完成时后端会**重发带本地 path 的消息记录**
+  （applyIncoming 注释也这么宣称），但 store 的合成循环对已有 msg_id 一律丢弃——
+  path 回填永远到不了 UI，气泡停在无 path 形态。`applyIncoming` 改为 upsert：
+  同 msg_id 以 DB 记录刷新内容、送达状态仍只前进（重复投递的正常路径行为不变）。
+- **大文件固定 10min 期限必败**：600MB 在 Wi-Fi/中继链路跑不完固定窗口 ⇒ 判超时、
+  重试又从头开始。`send_deadline_for(size)` 按 512KiB/s 保守吞吐伸缩（下限 10min、
+  上限 2h，再大交给断点续传），超时报案文案同步动态值并明说「将从断点自动续传」。
+  测试 ×1。
+- **已知未闭环（需要真机日志）**：「对方已收到甚至已读、我方仍显示发送中 0%」——
+  发送侧 delivered 推进链本身是齐的（file.rs 完成段 set status + emit），最可疑的是
+  **FileCompleteAck 在拥塞链路上丢失/迟到**（ack 走一次 `try_send` 不重试）。
+  请复现一次并抓 `[FILE]` 前缀日志（4.22.2 起 logcat 已放行），下一轮据此收口。
+
 ## [4.22.12] - 2026-09-19
 
 ### Fixed (存储：自动缓存清理真正接线 + 递归扫描 + favorites 纳入配额)

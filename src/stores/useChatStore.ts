@@ -394,8 +394,24 @@ export const useChatStore = defineStore("chat", () => {
     const knownIds = new Set(conversations.value.map((c) => c.id));
     const missing = [...byConv.keys()].filter((id) => !knownIds.has(id));
     for (const [convId, incoming] of byConv) {
+      // ⚠️ 这里曾是「已有 msg_id 一律丢弃」——但后端对同一条消息存在**回填式重发**：
+      // 群文件 Done 之后会再 emit 一条带本地 path 的 gfile 记录（transport 完成回填段），
+      // 丢弃它等于气泡永远停在无 path 形态 → 群图片预览打不开（真机 2026-09-19）。
+      // 改成 upsert：同 msg_id 以本轮记录刷新内容（DB 是真相），送达状态仍只前进不回退。
       const existing = messages.value[convId] ?? [];
-      messages.value[convId] = mergeMessages(existing, incoming);
+      const indexOf = new Map(existing.map((m, i) => [m.msg_id, i] as const));
+      const next = [...existing];
+      for (const m of incoming) {
+        const i = indexOf.get(m.msg_id);
+        if (i === undefined) {
+          indexOf.set(m.msg_id, next.length);
+          next.push(m);
+        } else {
+          const prev = next[i];
+          next[i] = { ...m, status: furthestStatus(prev.status, m.status) };
+        }
+      }
+      messages.value[convId] = mergeMessages([], next);
       touchCacheOrder(convId);
     }
     // 收完一批就收缩一次缓存（本轮可能让若干非活跃会话的缓存变冷）

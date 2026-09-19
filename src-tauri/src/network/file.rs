@@ -95,6 +95,18 @@ pub fn valid_sha256_hex(s: &str) -> bool {
 /// 继续等没有收益。LAN 上 10 分钟能传 ~600MB（2MB/s），完全够。
 pub const FILE_SEND_DEADLINE: Duration = Duration::from_secs(10 * 60);
 
+/// 按体积自适应的整体发送期限（2026-09-19 真机：一次多选里 500-600MB 的视频
+/// 在普通 Wi-Fi/中继链路上跑不完 10 分钟固定窗口 ⇒ 必被判超时、界面卡死成失败）。
+/// 保守吞吐 512 KiB/s 估算，下限 10min、上限 2h（再大的文件也该由断点续传
+/// 的 `.part` + outbox 重试兜底，而不是无限挂着发送任务）。
+pub fn send_deadline_for(size: u64) -> Duration {
+    const MIN: Duration = FILE_SEND_DEADLINE;
+    const CAP: Duration = Duration::from_secs(2 * 60 * 60);
+    const BYTES_PER_SEC: u64 = 512 * 1024;
+    let est = Duration::from_secs(size / BYTES_PER_SEC + 60);
+    est.clamp(MIN, CAP)
+}
+
 /// 中继文件发送 deadline（send_file_via_relay）。比直传短：
 /// - relay 没有 FileAccept 握手和 FileCompleteAck，只是 RelayFileOffer + RelayChunk 盲发
 /// - 单跳中继理论上比 BLE 快很多，5min 能发几十 MB
@@ -255,7 +267,8 @@ pub async fn send_file_from_path_at(
     //
     // 现在 timeout 包住 Offer 循环全部（3 次 attempt + 每次 accept 后的 stream_file），
     // 从第一次发 Offer 开始计时，确保 E2E 有硬上限。
-    let result = tokio::time::timeout(FILE_SEND_DEADLINE, async {
+    let send_deadline = send_deadline_for(size);
+    let result = tokio::time::timeout(send_deadline, async {
         // 发送 Offer → 等接受。接收端若回 FileReject.received = N（它已有 N 字节），
         // 就从该偏移续发 —— 发送端永远以接收端的真实进度为准，绝不重头覆盖。
         let mut resume_from = from_bytes;
@@ -368,12 +381,12 @@ pub async fn send_file_from_path_at(
                 "file",
                 format!(
                     "[FILE] DEADLINE peer={peer_id} tid={transfer_id} elapsed > {}s → abort",
-                    FILE_SEND_DEADLINE.as_secs()
+                    send_deadline.as_secs()
                 ),
             );
             Err(SendFileError::retryable(format!(
-                "文件发送超时（单次尝试超过 {}s，链路长时间未恢复）",
-                FILE_SEND_DEADLINE.as_secs()
+                "文件发送超时（本次尝试超过 {}s 链路未恢复，将从断点自动续传）",
+                send_deadline.as_secs()
             )))
         }
     }
@@ -1847,8 +1860,9 @@ mod tests {
 
     use super::super::super::crypto;
     use super::chunk_size_for_path;
-    use super::{sha256_file_hex, valid_sha256_hex};
+    use super::{send_deadline_for, sha256_file_hex, valid_sha256_hex, FILE_SEND_DEADLINE};
     use crate::protocol::FILE_CHUNK;
+    use std::time::Duration;
 
     /// **分块大小必须能真的被 BLE 分片层发出去**（真机 2026-09-13：大图两边都显示成功、
     /// 对方列表里却没有）。这条测试是**行为级**的：直接把两种分块大小喂给真正的
@@ -2085,6 +2099,23 @@ mod tests {
     }
 
     // ---------- 文件级 SHA-256 完整性校验 ----------
+
+    /// 大文件的发送期限必须随体积伸缩（600MB 固定 10min 窗口 = 真机必失败的根因）。
+    #[test]
+    fn send_deadline_scales_with_size() {
+        assert_eq!(
+            send_deadline_for(1024),
+            FILE_SEND_DEADLINE,
+            "小文件保持 10min 下限"
+        );
+        assert!(send_deadline_for(600 * 1024 * 1024) > Duration::from_secs(15 * 60));
+        assert!(send_deadline_for(600 * 1024 * 1024) < Duration::from_secs(25 * 60));
+        assert_eq!(
+            send_deadline_for(u64::MAX),
+            Duration::from_secs(2 * 60 * 60),
+            "再大也封顶 2h，超出交给断点续传重试而不是吊死任务"
+        );
+    }
 
     /// sha256_file_hex：流式分块结果必须与一次性内存计算一致（发送端正确性）。
     #[test]

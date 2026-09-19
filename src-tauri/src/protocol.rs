@@ -165,6 +165,21 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
 
 /// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_wire_str` 回退到 `Text` 同语义：
 /// 宁可多显示一条，也不要把不认识的内容**静默吞掉**（对端版本更新时不丢消息）。
+/// 读出口的显示 kind 归一化（**不回写数据**，行里保留原样）。
+///
+/// 背景（真机 2026-09-19）：4.22.1 之前接收端把消息 kind 写成了文件分类
+/// （mp4 ⇒ kind="video"、m4a ⇒ kind="audio"），前端渲染链只认 text/code/image/
+/// file/system/merge —— 视频消息整个退化成一段裸 JSON。发送端已收口，历史行靠这层
+/// 兼容：video/audio 一律按 file 渲染（文件卡片 + subtype 图标），数据不动。
+/// code 有歧义（真代码块消息同为 kind="code"），故不映射 —— 旧「代码文件」卡片
+/// 的渲染退化可接受，误伤真代码块不可接受。
+pub fn display_kind(kind: &str) -> String {
+    match kind {
+        "video" | "audio" => "file".into(),
+        other => other.into(),
+    }
+}
+
 pub fn kind_class(kind: &str) -> KindClass {
     WIRE_KINDS
         .iter()
@@ -1190,6 +1205,20 @@ pub fn verify_announce(pkt: &UdpPacket) -> AnnounceAuth {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// 历史 video/audio 行在**读出口**归一为文件卡片；其余 kind 原样（数据不回写）。
+    #[test]
+    fn display_kind_maps_legacy_media_to_file() {
+        assert_eq!(display_kind("video"), "file");
+        assert_eq!(display_kind("audio"), "file");
+        assert_eq!(display_kind("image"), "image");
+        assert_eq!(display_kind("file"), "file");
+        assert_eq!(display_kind("text"), "text");
+        // code 有歧义（真代码块同为 kind=code），刻意不映射
+        assert_eq!(display_kind("code"), "code");
+    }
+
     use crate::crypto::Identity;
 
     // ---------------- announce 自签名 ----------------

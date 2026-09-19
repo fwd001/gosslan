@@ -3784,7 +3784,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     let rec = {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         let subtype = file::classify_file_subtype(&name);
-                        let kind = subtype;
+                        // 与发送端同口径（commands::send_file 4.22.1）：kind 只区分
+                        // image|file，细分留 content.subtype —— 接收端不再按文件名
+                        // 重新猜一遍（旧写法把 mp4 标成 kind="video"，前端渲染链
+                        // 不认，气泡整个退化成 JSON；真机 2026-09-19）。
+                        let kind = if subtype == "image" { "image" } else { "file" };
                         let content = serde_json::json!({
                             "name": name,
                             "path": path.to_string_lossy().to_string(),
@@ -5724,7 +5728,8 @@ async fn handle_group_file_offer(
         // 之外的状态事件推进。此处 status=sending，Done 校验通过后转 delivered。
         // 图片文件保持 kind="image"，业务语义不降级。
         let subtype = file::classify_file_subtype(&name);
-        let kind = subtype;
+        // 同口径收敛（见单聊 FileOffer 处的说明）
+        let kind = if subtype == "image" { "image" } else { "file" };
         let conv_id = format!("group:{group_id}");
         let seq = {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -6080,7 +6085,8 @@ async fn handle_group_file_done(
             .unwrap_or(1)
         };
         let subtype = file::classify_file_subtype(&gf.name);
-        let kind = subtype;
+        // 同口径收敛（完成回填路径的气泡重发也不能再把 kind 打回 video/audio）
+        let kind = if subtype == "image" { "image" } else { "file" };
         let done_rec = crate::state::MessageRecord {
             id: 0,
             msg_id,
