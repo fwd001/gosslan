@@ -382,7 +382,15 @@ pub async fn broadcast_chat_style(
         links
             .values()
             .flatten()
-            .map(|link| link.normal.clone())
+            .map(|link| {
+                // 分类表唯一来源：内联大载荷的风格帧降级 Low，不占聊天道
+                use crate::network::dispatch::MessagePriority::*;
+                match crate::network::dispatch::message_priority(&msg) {
+                    High => link.high.clone(),
+                    Normal => link.normal.clone(),
+                    Low => link.low.clone(),
+                }
+            })
             .collect::<Vec<_>>()
     };
     for tx in &targets {

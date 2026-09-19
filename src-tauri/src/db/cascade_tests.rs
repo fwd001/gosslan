@@ -258,7 +258,35 @@ fn migration_v7_purges_legacy_group_orphans_only() {
     let uv: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(uv, 7);
+    assert_eq!(uv as u32, DB_VERSION, "迁移链必须把库带到最新版本");
     drop(conn);
     let _ = std::fs::remove_file(&p);
+}
+
+#[test]
+fn expired_rows_carry_peer_and_age_for_group_and_file_queues() {
+    let conn = fresh_db();
+    conn.execute(
+        "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+         VALUES ('gm1','g1','offline-meet','{}',1),('gm1','g1','online-a','{}',1),
+               ('gm2','g1','offline-meet','{}',1)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO file_outbox(transfer_id, peer_id, group_id, local_path, name, size, status, attempts, next_attempt_at, created_at)
+         VALUES ('t1','offline-meet','g1','/p','p',1,'pending',0,0,1)",
+        [],
+    )
+    .unwrap();
+    let g = list_expired_group_outbox(&conn, 500).unwrap();
+    // 行级：同一 msg 的离线成员与在线成员各自成行，sweeper 才能做「全部放弃才算失败」
+    assert_eq!(g.len(), 3);
+    assert!(g
+        .iter()
+        .any(|(m, _g, p, _c)| m == "gm1" && p == "offline-meet"));
+    let f = list_expired_file_outbox(&conn, 500).unwrap();
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].1, "offline-meet");
+    assert_eq!(f[0].2.as_deref(), Some("g1"));
 }

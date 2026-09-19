@@ -327,11 +327,14 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
                 let kinds: Vec<PathKind> = ls.iter().map(|l| l.path_kind).collect();
                 let best = crate::state::best_link_kind(&kinds)?;
                 let link = ls.iter().find(|l| l.path_kind == best)?;
-                Some((
-                    link.normal.clone(),
-                    peer_id.to_owned(),
-                    link.endpoint.clone(),
-                ))
+                // 队列由分类表决定：内联大载荷的 Gossip（带大图的 Presence 等）
+                // 自动降级 Low，不占聊天道（P0#5 批次：消除恒走 Normal 的旁路）
+                let tx = match crate::network::dispatch::message_priority(&msg) {
+                    crate::network::dispatch::MessagePriority::High => link.high.clone(),
+                    crate::network::dispatch::MessagePriority::Normal => link.normal.clone(),
+                    crate::network::dispatch::MessagePriority::Low => link.low.clone(),
+                };
+                Some((tx, peer_id.to_owned(), link.endpoint.clone()))
             })
             .collect()
     };
@@ -558,7 +561,7 @@ pub async fn spawn(
                     // 锁内只克隆 Sender。
                     let txs: Vec<mpsc::Sender<Message>> = {
                         let links = state.links.lock().await;
-                        links.values().flatten().map(|l| l.normal.clone()).collect()
+                        links.values().flatten().map(|l| l.high.clone()).collect()
                     };
                     let hb = Message::Heartbeat { device_id: state.device_id.clone() };
                     let mut congested = 0usize;
@@ -1455,7 +1458,7 @@ async fn handle_incoming(
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_clock(&dbc, &peer_id)
     };
-    let _ = normal_tx.send(build_signed_hello(&state, conv_clock)).await;
+    let _ = high_tx.send(build_signed_hello(&state, conv_clock)).await;
     state.logger.info(
         "transport",
         format!("握手补全：已向对端回发本节点 Hello（peer={peer_id}）"),
@@ -5221,6 +5224,7 @@ async fn handle_relay_file_offer(
     );
 }
 
+#[allow(clippy::too_many_arguments)] // 入队即转发上下文全量传递，打包结构体反而更难读
 async fn handle_relay_chunk(
     state: &Arc<AppState>,
     requester: &str,
@@ -7242,6 +7246,19 @@ pub fn spawn_outbox_sweeper(
             let now = db::now_ms();
             let deadline_single = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
             let deadline_group = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
+            let deadline_file = now - crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS;
+            // 可达性快照：每 tick 取一次 links 键集，三条队列复用。
+            // 此前每个候选行各抢一次 links 锁（500 离线行 = 500 次/tick，自审建议#4）；
+            // 非空判定与 `has_link` 同口径（残留空 Vec 不算可达）。
+            let reachable: std::collections::HashSet<String> = {
+                let links = state.links.lock().await;
+                links
+                    .iter()
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            };
+            let is_reachable = |peer: &str| reachable.contains(peer);
 
             // --- 单聊 outbox ---
             // 候选行 = 过了 120s 仍未 Ack 的行；是否判 failed 由对端可达性决定：
@@ -7257,8 +7274,7 @@ pub fn spawn_outbox_sweeper(
                     .collect()
             };
             for (msg_id, peer_id, created_at) in candidates {
-                let reachable = state.has_link(&peer_id).await;
-                if !db::should_fail_expired_outbox(reachable, now - created_at) {
+                if !db::should_fail_expired_outbox(is_reachable(&peer_id), now - created_at) {
                     continue;
                 }
                 if let Ok(dbc) = state.db.lock() {
@@ -7270,12 +7286,34 @@ pub fn spawn_outbox_sweeper(
                 let _ = state.app.emit("message-failed", &msg_id);
             }
 
-            // --- 群 outbox（按 msg_id 去重）---
-            let expired_groups: Vec<(String, String)> = {
+            // --- 群 outbox：行级分类 + msg 粒度放弃（2026-09-19 自审建议#5）---
+            // 一条群消息按成员各一行；某成员离线 ⇒ 他的行保留（上线补发），
+            // 只有**所有行都该放弃**时整条消息才置 failed。
+            let group_rows: Vec<(String, String, String, i64)> = {
                 let Ok(dbc) = state.db.lock() else { continue };
                 db::list_expired_group_outbox(&dbc, deadline_group).unwrap_or_default()
             };
-            for (msg_id, _group_id) in expired_groups {
+            let mut per_msg: std::collections::HashMap<String, (String, Vec<(String, i64)>)> =
+                std::collections::HashMap::new();
+            for (msg_id, group_id, peer_id, created_at) in group_rows {
+                per_msg
+                    .entry(msg_id)
+                    .or_insert_with(|| (group_id, Vec::new()))
+                    .1
+                    .push((peer_id, created_at));
+            }
+            for (msg_id, (_group_id, rows)) in per_msg {
+                let all_give_up = rows.iter().all(|(peer, created)| {
+                    db::should_fail_expired(
+                        is_reachable(peer),
+                        now - created,
+                        crate::db::OUTBOX_FAIL_DEADLINE_MS,
+                        crate::db::OUTBOX_OFFLINE_HOLD_MS,
+                    )
+                });
+                if !all_give_up {
+                    continue;
+                }
                 if let Ok(dbc) = state.db.lock() {
                     let _ = db::set_message_status(&dbc, &msg_id, "failed");
                     let _ = db::delete_group_outbox_by_msg_id(&dbc, &msg_id);
@@ -7283,13 +7321,22 @@ pub fn spawn_outbox_sweeper(
                 let _ = state.app.emit("message-failed", &msg_id);
             }
 
-            // --- 文件 outbox（比普通消息长，30min 窗口）---
-            let deadline_file = now - crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS;
-            let expired_files: Vec<String> = {
+            // --- 文件 outbox：与消息队列同一离线判据（窗口用文件自己的 30min）---
+            // 自审建议#5：离线接收方的文件此前 30min 一律判 failed ——
+            // 「关机一晚回来收不到大文件」与被修的 P0#2 同型。
+            let expired_files: Vec<(String, String, Option<String>, i64)> = {
                 let Ok(dbc) = state.db.lock() else { continue };
                 db::list_expired_file_outbox(&dbc, deadline_file).unwrap_or_default()
             };
-            for transfer_id in expired_files {
+            for (transfer_id, peer_id, _group_id, created_at) in expired_files {
+                if !db::should_fail_expired(
+                    is_reachable(&peer_id),
+                    now - created_at,
+                    crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS,
+                    crate::db::OUTBOX_OFFLINE_HOLD_MS,
+                ) {
+                    continue;
+                }
                 if let Ok(dbc) = state.db.lock() {
                     let _ = db::mark_file_outbox_failed(&dbc, &transfer_id);
                     // 文件消息前缀：单聊 file-{transfer_id} / 群 gfile-{transfer_id}

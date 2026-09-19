@@ -57,10 +57,6 @@ pub async fn update_profile(
     *s.nickname.lock().unwrap_or_else(|e| e.into_inner()) = nickname.clone();
     *s.avatar.lock().unwrap_or_else(|e| e.into_inner()) = avatar.clone();
 
-    // 资料帧要不要降级到 bulk 通道：判据与 is_bulk_message 同一份常量，避免两处漂移。
-    let bulk_profile_frame = avatar
-        .as_deref()
-        .is_some_and(|a| a.len() > crate::network::transport::CONTROL_AVATAR_MAX_BYTES);
     let msg = Message::UserInfo {
         device_id: s.device_id.clone(),
         nickname,
@@ -79,13 +75,14 @@ pub async fn update_profile(
         links
             .values()
             .flatten()
-            // 大头像资料帧走 bulk 通道：2MB 头像在 BLE 上要分上千片，绝不能堵住聊天/好友
-            // 请求的优先道；小头像仍走 priority（资料变更要立刻可见）。
+            // 队列选择唯一来源 = dispatch 分类表（大头像 → Low：2MB 头像在 BLE 上要分
+            // 上千片，绝不能堵住聊天/好友请求的道；小头像 → Normal：资料变更要立刻可见）。
             .map(|link| {
-                if bulk_profile_frame {
-                    link.low.clone()
-                } else {
-                    link.normal.clone()
+                use crate::network::dispatch::MessagePriority::*;
+                match crate::network::dispatch::message_priority(&msg) {
+                    High => link.high.clone(),
+                    Normal => link.normal.clone(),
+                    Low => link.low.clone(),
                 }
             })
             .collect::<Vec<_>>()

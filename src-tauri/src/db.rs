@@ -12,7 +12,7 @@ use crate::state::{
 };
 
 /// 当前数据库版本。每次 schema 变更递增一次，并在 `MIGRATIONS` 数组末尾追加一个 step。
-pub const DB_VERSION: u32 = 7;
+pub const DB_VERSION: u32 = 8;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -236,6 +236,26 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v7 → v8：sweeper 三条队列的 created_at 索引（2026-09-19 自审建议#4）。
+    // sweeper 每 30s 按 created_at 扫三张表；离线保留窗改为 7 天后行数会显著变多，
+    // 无索引就是每 tick 三次全表扫。软失败：建不动索引不拦启动（下次再来）。
+    Migration {
+        from: 7,
+        to: 8,
+        description: "outbox/group_outbox/file_outbox 建 created_at 索引（sweeper 扫描成本）",
+        run: |conn| {
+            for sql in [
+                "CREATE INDEX IF NOT EXISTS idx_outbox_created ON outbox(created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_group_outbox_created ON group_outbox(created_at)",
+                "CREATE INDEX IF NOT EXISTS idx_file_outbox_created ON file_outbox(created_at)",
+            ] {
+                if let Err(e) = conn.execute(sql, []) {
+                    eprintln!("[gosslan-db] v8 索引跳过一条（不影响启动）：{e}");
+                }
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// 建表脚本（与 `schema.sql` 保持一致）
@@ -330,6 +350,7 @@ CREATE TABLE IF NOT EXISTS outbox (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_peer ON outbox(peer_id);
+CREATE INDEX IF NOT EXISTS idx_outbox_created ON outbox(created_at);
 
 -- 群消息离线补发队列：同一 msg_id 需按成员各自维护投递状态。
 CREATE TABLE IF NOT EXISTS group_outbox (
@@ -343,6 +364,7 @@ CREATE TABLE IF NOT EXISTS group_outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_group_outbox_peer ON group_outbox(peer_id);
 CREATE INDEX IF NOT EXISTS idx_group_outbox_group ON group_outbox(group_id);
+CREATE INDEX IF NOT EXISTS idx_group_outbox_created ON group_outbox(created_at);
 
 CREATE TABLE IF NOT EXISTS file_transfers (
     id         TEXT PRIMARY KEY,
@@ -371,6 +393,7 @@ CREATE TABLE IF NOT EXISTS file_outbox (
     created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_file_outbox_peer ON file_outbox(peer_id, status);
+CREATE INDEX IF NOT EXISTS idx_file_outbox_created ON file_outbox(created_at);
 
 -- 群文件：一个 transfer_id 对应一个群文件。
 -- 每个群成员的投递状态在 group_file_recipients 中独立维护（DB 是最终状态来源）。

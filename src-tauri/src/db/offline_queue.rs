@@ -27,10 +27,22 @@ pub const OUTBOX_OFFLINE_HOLD_MS: i64 = 7 * 24 * 3600 * 1000;
 /// 可达（当前有 TCP 链路）⇒ 等了至少 120s 仍无 Ack，再等也没有意义 → 放弃；
 /// 不可达（对端离线）⇒ 保留，直到超出 `OUTBOX_OFFLINE_HOLD_MS`。
 pub fn should_fail_expired_outbox(peer_reachable: bool, age_ms: i64) -> bool {
+    should_fail_expired(peer_reachable, age_ms, OUTBOX_FAIL_DEADLINE_MS, OUTBOX_OFFLINE_HOLD_MS)
+}
+
+/// 通用版：不同队列的放弃窗口不同（单聊/群 120s，文件 30min），离线保留窗口统一。
+/// sweeper 的三条队列都从这一个判据出（2026-09-19 自审建议#5：
+/// 文件 outbox 曾维持 30min 无条件 failed，离线对端的文件补发被同样击穿）。
+pub fn should_fail_expired(
+    peer_reachable: bool,
+    age_ms: i64,
+    deadline_ms: i64,
+    hold_ms: i64,
+) -> bool {
     if peer_reachable {
-        age_ms >= OUTBOX_FAIL_DEADLINE_MS
+        age_ms >= deadline_ms
     } else {
-        age_ms >= OUTBOX_OFFLINE_HOLD_MS
+        age_ms >= hold_ms
     }
 }
 

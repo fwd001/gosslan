@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS outbox (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_peer ON outbox(peer_id);
+CREATE INDEX IF NOT EXISTS idx_outbox_created ON outbox(created_at);
 
 -- 群消息离线补发队列
 CREATE TABLE IF NOT EXISTS group_outbox (

@@ -90,13 +90,27 @@ pub const FILE_OUTBOX_FAIL_DEADLINE_MS: i64 = 30 * 60 * 1000;
 
 /// 列出超时未发送完成的文件 outbox 条目（pending/sending 且 created_at + deadline < now）。
 /// 返回 transfer_id 列表，供 sweeper 标记 failed。
-pub fn list_expired_file_outbox(conn: &Connection, deadline_ms: i64) -> Result<Vec<String>> {
+/// 过期候选行：(transfer_id, peer_id, group_id, created_at)
+type ExpiredFileRow = (String, String, Option<String>, i64);
+
+pub fn list_expired_file_outbox(
+    conn: &Connection,
+    deadline_ms: i64,
+) -> Result<Vec<ExpiredFileRow>> {
+    // (transfer_id, peer_id, group_id, created_at)：sweeper 按接收方可达性分类，
+    // 离线接收方的文件保留到统一离线窗口（与单聊/群 outbox 同一判据）。
     let mut stmt = conn.prepare(
-        "SELECT transfer_id FROM file_outbox
+        "SELECT transfer_id, peer_id, group_id, created_at FROM file_outbox
          WHERE status IN ('pending', 'sending') AND created_at < ?1",
     )?;
-    let rows = stmt
-        .query_map(params![deadline_ms], |r| r.get::<_, String>(0))?;
+    let rows = stmt.query_map(params![deadline_ms], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, i64>(3)?,
+        ))
+    })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 

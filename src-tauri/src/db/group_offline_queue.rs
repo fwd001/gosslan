@@ -58,20 +58,28 @@ pub fn delete_group_outbox_for_peer_in_group(
     Ok(())
 }
 
-/// 列出**超时未 GroupAck**的群 outbox 条目（按 msg_id 去重）。
-/// 返回 Vec<(msg_id, group_id)>，供清扫任务删 outbox + 置 failed。
+/// 列出**超时未 GroupAck**的群 outbox 候选行。
+/// 返回 Vec<(msg_id, group_id, peer_id, created_at)>，供清扫任务按成员分类。
 ///
 /// 群 outbox 一条 msg_id 对应 N 个 peer_id 行，超时判定按 msg_id 粒度
 /// （同一条群消息对所有接收方要么一起成功、要么一起放弃）。
 pub fn list_expired_group_outbox(
     conn: &Connection,
     deadline_ms: i64,
-) -> Result<Vec<(String, String)>> {
+) -> Result<Vec<(String, String, String, i64)>> {
+    // 行级返回（msg_id, group_id, peer_id, created_at）： sweeper 要按**每个成员**的
+    // 可达性分类（2026-09-19 自审建议#5）——某成员离线时他的行必须保留，
+    // 只有整条消息的**所有行**都该放弃时，msg 粒度才置 failed。
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT msg_id, group_id FROM group_outbox WHERE created_at < ?1",
+        "SELECT msg_id, group_id, peer_id, created_at FROM group_outbox WHERE created_at < ?1",
     )?;
     let rows = stmt.query_map(params![deadline_ms], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?,
+        ))
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }

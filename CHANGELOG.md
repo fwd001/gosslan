@@ -10,6 +10,26 @@
 
 ## [Unreleased]
 
+## [4.22.10] - 2026-09-19
+
+### Fixed (sweeper 三条队列统一离线保留 + 队列选择回归分类表单一来源 + v8 索引)
+
+code review 第二批（评审 agent 与自查共同命中，5e/6/4 三条建议）：
+
+- **群 outbox 补上离线保留**（4.21.2 只修了单聊，群是同型缺陷）：行级返回后按成员
+  分类——某成员离线 ⇒ 他的行保留到 7 天窗口（上线补发），**所有行都该放弃**整条消息
+  才置 failed。旧行为：一个成员离线 2 分钟，群消息对所有人一起被判死。
+- **文件 outbox 同样接入离线判据**：离线接收方的文件此前 30 分钟一律判 failed
+  （「关机一晚回来收不到大文件」与单聊被修的 P0#2 同型）。判定收进通用纯函数
+  `should_fail_expired(reachable, age, deadline, hold)`，三条队列一个判据。
+- **队列选择旁路收口**：心跳循环与握手回发 Hello 曾恒走 Normal（分类表判 High）、
+  `broadcast_gossip`/`update_profile`/`broadcast_chat_style` 各自手写降级判据——
+  现在四处全部现场调用 `message_priority`，「单一事实来源」从口号变成真（评审建议#6）。
+- **sweeper 锁开销**：每 tick 一次 links 键集快照复用（旧写法每个候选行抢一次
+  links 锁，500 离线行=500 次/tick）；配套 **v8 迁移**给 outbox/group_outbox/file_outbox
+  建 `created_at` 索引（离线 7 天保留窗会让行数上来了，扫描成本必须跟着），
+  SCHEMA/schema.sql 同步，软失败风格。
+
 ## [4.22.9] - 2026-09-19
 
 ### Fixed (P0：数据面转发接上中继授权 —— 设置开关从此管到文件与外部帧)
