@@ -10,6 +10,29 @@
 
 ## [Unreleased]
 
+## [4.21.5] - 2026-09-19
+
+### Security (P0：Gossip 信任链锚定到 friends 表，堵死「冒充缺席好友」)
+
+- **两处缺口同源**：`peers` 是内存态（重启后为空、好友离线时缺席），而
+  `handle_gossip` 的信任判定和 `upsert_peer` 的新建条目都只看 `peers`——
+  「不在 peers」被当成了「陌生节点」。攻击者因此可以：
+  ① 用自签信封发 `Presence`/`FriendRequest`/`FriendAccept`（unknown-sender 的 TOFU
+  白名单），抢先把好友 id 的公钥绑成自己的；② 之后自己的 `Chat` 信封通过
+  「已认识」校验，**伪造任意内容冒充好友**，`update_friend_pubkeys` 的 COALESCE
+  还会把攻击者公钥写穿 friends 表的 NULL 位。
+- **修复（对齐 ADR-0011 / INV-P11 / INV-P21）**：
+  `gossip_trust_for_unpeer_sender`——friends 在册且绑过键的 id 一律只认绑定值，
+  任何 kind 不再 TOFU；`new_peer_conflicts_with_friend`——`upsert_peer` 新建条目前
+  先对 friends 锚做冲突检查，冲突走与既有 `key_conflict` 同一出口（不落库 + 诊断事件 +
+  「可能被人冒名顶替」系统消息）。真正的陌生节点与加好友流程不受影响（与 ADR-0011
+  的 TOFU 边界一致）；键列为 NULL 的旧好友行维持原宽容。
+  回归测试 ×2（`gossip_trust_for_known_friend_never_tofus`、
+  `new_peer_entry_respects_friend_key_anchor`）。
+- **已知边界（登记在案，下一轮）**：`FriendAccept` 消费分支仍无「本机发过申请」
+  前置校验（陌生 id 的伪造同意仍能加陌生人好友）；Gossip `Chat` 消费解密用信封自带
+  `sender_pubkey` 而非绑定值，建议改为消费前与 peers/friends 锚核对。
+
 ## [4.21.4] - 2026-09-19
 
 ### Changed (工程：修 main 上既有的 CI 红 —— fmt 漏跑)

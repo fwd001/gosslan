@@ -73,6 +73,29 @@ pub fn get_friend_x25519(conn: &Connection, device_id: &str) -> Option<String> {
     .flatten()
 }
 
+/// 一次取回好友绑定的两把公钥（X25519, Ed25519）。
+///
+/// 外层 Option 区分「不是好友」（None）与「是好友但键列还是 NULL」
+/// （Some((None, None))，旧行/早期版本）—— 信任锚判定两者语义不同。
+pub fn get_friend_pubkeys(
+    conn: &Connection,
+    device_id: &str,
+) -> Option<(Option<String>, Option<String>)> {
+    conn.query_row(
+        "SELECT x25519_pubkey, ed25519_pubkey FROM friends WHERE device_id = ?1",
+        params![device_id],
+        |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<String>>(1)?,
+            ))
+        },
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// 获取好友的 Ed25519 公钥（用于 Hello 握手验签，确认 TCP 对端确实是该 device_id）。
 pub fn get_friend_ed25519(conn: &Connection, device_id: &str) -> Option<String> {
     conn.query_row(

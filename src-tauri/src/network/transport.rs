@@ -4189,6 +4189,28 @@ pub(crate) fn group_envelope_consumable(
     members.iter().any(|m| m == me) && members.iter().any(|m| m == sender)
 }
 
+/// peers 里查不到的发送方，能否按 kind 建立信任。
+///
+/// 唯一判定点（`handle_gossip` 的 sender_trusted 与回归测试共用）：
+/// - `friend_ed25519 = Some`（friends 表在册且绑过键）⇒ **只认绑定值**，任何 kind
+///   都不给 TOFU —— friends 是持久化身份锚，「重启后 peers 为空」不是放行冒充的理由；
+/// - 不在册、或旧行键列为 NULL ⇒ 只放行 Presence（节点可见性）与加好友流程的
+///   FriendRequest/FriendAccept（它们本来就来自陌生节点），其余（Chat/Group/回执）
+///   仍然拒绝。NULL 键好友的宽容行为与修复前一致，避免误伤旧数据。
+fn gossip_trust_for_unpeer_sender(
+    kind: &GossipKind,
+    friend_ed25519: Option<&str>,
+    env_ed25519: &str,
+) -> bool {
+    if let Some(stored) = friend_ed25519 {
+        return stored == env_ed25519;
+    }
+    matches!(
+        kind,
+        GossipKind::Presence | GossipKind::FriendRequest | GossipKind::FriendAccept
+    )
+}
+
 async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope) {
     // Gossip 可经第三方转发，不能仅凭信封内自报的 Ed25519 公钥建立身份。
     // 公钥必须先由 Discovery/Hello 绑定到同一个 device_id；若已知 X25519
@@ -4210,23 +4232,22 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             .map_or(true, |key| key == env.sender_pubkey)
                             || (direct_peer && p.x25519_pubkey.is_none()))
                 }
-                // 未认识：仅 Presence（节点通告）允许 TOFU —— 它存在的目的就是
-                // 让「不认识」的节点被全网看到。其余消息仍拒，避免陌生人直接投递。
-                None => match env.kind {
-                    GossipKind::Presence | GossipKind::FriendRequest | GossipKind::FriendAccept => {
-                        true
-                    }
-                    // 回执/确认不能 TOFU：发送方必须是「已绑定身份」的好友。
-                    // peers 是内存态，进程重启后为空，此处回退到 friends 表
-                    // （持久化的 ed25519 公钥）完成身份绑定，避免重启后跨跳
-                    // 回执被误拒。
-                    GossipKind::ChatAck | GossipKind::ChatReadReceipt => {
+                // 未认识（peers 里查不到）。⚠️ peers 是**内存态**，进程重启后为空、
+                // 好友恰好不在线时也会缺席 —— 「不在 peers」不等于「陌生节点」。
+                // friends 表才是持久化的身份锚：已在册的 id 一律按绑定的 ed25519 判，
+                // 不给 Presence/FriendRequest/FriendAccept 留 TOFU 后门
+                //（2026-09-19 审计 P0#3：此前攻击者可用自签信封冒充重启后缺席的好友）。
+                None => {
+                    let stored = {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        db::get_friend_ed25519(&dbc, &env.sender_id).as_deref()
-                            == Some(env.sender_ed25519.as_str())
-                    }
-                    _ => false,
-                },
+                        db::get_friend_ed25519(&dbc, &env.sender_id)
+                    };
+                    gossip_trust_for_unpeer_sender(
+                        &env.kind,
+                        stored.as_deref(),
+                        &env.sender_ed25519,
+                    )
+                }
             }
         }
     };
@@ -6474,6 +6495,23 @@ fn warn_key_conflict_once(state: &AppState, device_id: &str) {
     );
 }
 
+/// 「将要新建的 peers 条目」与 friends 锚是否冲突。
+///
+/// 判据与 `upsert_peer` Some 分支的 key_conflict 完全同口径：锚列有值、自报也有值、
+/// 且不同才算冲突；好友行的 NULL 列（旧数据/键未同步）不构成冲突，维持既有的宽容。
+/// 抽成纯函数是为了让这条安全判定有名字、有单测（同 `hello_auth_decision` 的做法）。
+fn new_peer_conflicts_with_friend(
+    friend: Option<(Option<&str>, Option<&str>)>,
+    x25519: Option<&str>,
+    ed25519: Option<&str>,
+) -> bool {
+    let Some((fx, fe)) = friend else {
+        return false;
+    };
+    matches!((fx, x25519), (Some(o), Some(n)) if o != n)
+        || matches!((fe, ed25519), (Some(o), Some(n)) if o != n)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn upsert_peer(
     state: &AppState,
@@ -6488,11 +6526,34 @@ pub async fn upsert_peer(
     rtt_ms: Option<u64>,
 ) {
     let ts = db::now_ms();
+    // friends 锚冲突预判（2026-09-19 审计 P0#3）：重启后 peers 是空的，若「新建条目」
+    // 不看持久化的好友公钥，一条伪造 Presence/FriendRequest 就能抢先把好友 id 绑上
+    // 攻击者的键 —— 之后攻击者的 Chat 信封通过「已认识」校验，假消息直接冒充好友。
+    // 判据与 Some 分支的 key_conflict 完全同口径，走同一个告警出口。
+    // DB 锁在这里拿完就放，不跨下面的 peers 锁持有。
+    let friend_anchor = if x25519.is_some() || ed25519.is_some() {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_friend_pubkeys(&dbc, device_id)
+    } else {
+        None
+    };
     // 判断是否「新节点」或「公钥首次学到/变化」，据此决定是否做昂贵的落库与群密钥补发。
     // 500-1000 节点下，若每条 announce 都写库 + 遍历群组，会形成明显热点。
     let (is_new, key_changed, key_conflict) = {
         let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         match peers.get_mut(device_id) {
+            None if friend_anchor.as_ref().is_some_and(|(fx, fe)| {
+                new_peer_conflicts_with_friend(
+                    Some((fx.as_deref(), fe.as_deref())),
+                    x25519.as_deref(),
+                    ed25519.as_deref(),
+                )
+            }) =>
+            {
+                // 不建立条目：这个 device_id 的公钥由 friends 表说了算。
+                // 走到下面与 key_conflict 同一出口（诊断事件 + 系统消息告警）。
+                (false, false, true)
+            }
             None => {
                 peers.insert(
                     device_id.to_string(),
@@ -8216,6 +8277,98 @@ mod tests {
             "验签过的公钥才可以作绑定"
         );
         assert_eq!(bound_ed25519_from_peer(None), None);
+    }
+
+    /// Gossip 侧信任锚回归（2026-09-19 审计 P0#3）：
+    /// peers 是内存态，重启后为空 —— 已在 friends 册的 id 不允许任何 kind 的 TOFU。
+    #[test]
+    fn gossip_trust_for_known_friend_never_tofus() {
+        let friend = crypto::Identity::generate();
+        let stored = friend.ed25519_public_b64();
+
+        // 好友的真实信封：三种 kind 全放行
+        for kind in [
+            GossipKind::Presence,
+            GossipKind::FriendRequest,
+            GossipKind::Chat,
+        ] {
+            assert!(
+                gossip_trust_for_unpeer_sender(&kind, Some(&stored), &stored),
+                "绑定值匹配的好友信封不应被 kind={kind:?} 拒绝"
+            );
+        }
+        // 攻击者自签信封冒充该好友：Presence/FriendRequest/FriendAccept 也必须拒
+        let attacker = crypto::Identity::generate();
+        let fake = attacker.ed25519_public_b64();
+        for kind in [
+            GossipKind::Presence,
+            GossipKind::FriendRequest,
+            GossipKind::FriendAccept,
+            GossipKind::Chat,
+        ] {
+            assert!(
+                !gossip_trust_for_unpeer_sender(&kind, Some(&stored), &fake),
+                "kind={kind:?} 不得给冒充好友的自签信封开 TOFU 后门"
+            );
+        }
+        // 真正陌生的 id：加好友流程与 Presence 仍可 TOFU；Chat/回执仍拒
+        assert!(gossip_trust_for_unpeer_sender(
+            &GossipKind::FriendAccept,
+            None,
+            &fake
+        ));
+        assert!(!gossip_trust_for_unpeer_sender(
+            &GossipKind::Chat,
+            None,
+            &fake
+        ));
+        assert!(!gossip_trust_for_unpeer_sender(
+            &GossipKind::ChatReadReceipt,
+            None,
+            &fake
+        ));
+        // 旧行键列 NULL（Some(None)）：与修复前同宽容（陌生 id 处理）
+        assert!(gossip_trust_for_unpeer_sender(
+            &GossipKind::Presence,
+            None,
+            &fake
+        ));
+    }
+
+    /// peers 新建条目的 friends 锚冲突判定（同审计 P0#3 的第二半）。
+    #[test]
+    fn new_peer_entry_respects_friend_key_anchor() {
+        let fx = "friend-x25519-key";
+        let fe = "friend-ed25519-key";
+        // 攻击者键冒充好友 ⇒ 两把键任一不符都算冲突，条目不得建立
+        assert!(new_peer_conflicts_with_friend(
+            Some((Some(fx), Some(fe))),
+            Some("attacker-x"),
+            Some(fe)
+        ));
+        assert!(new_peer_conflicts_with_friend(
+            Some((Some(fx), Some(fe))),
+            Some(fx),
+            Some("attacker-e")
+        ));
+        // 真实键一致 / 锚列为 NULL（旧行未同步）/ 非好友 ⇒ 不冲突
+        assert!(!new_peer_conflicts_with_friend(
+            Some((Some(fx), Some(fe))),
+            Some(fx),
+            Some(fe)
+        ));
+        assert!(!new_peer_conflicts_with_friend(
+            Some((None, None)),
+            Some("whoever"),
+            Some("whoever")
+        ));
+        assert!(!new_peer_conflicts_with_friend(None, Some("a"), Some("b")));
+        // 信封没带键的更新不构成冲突（无从比较）
+        assert!(!new_peer_conflicts_with_friend(
+            Some((Some(fx), Some(fe))),
+            None,
+            None
+        ));
     }
 
     /// 完整攻击链的回归：攻击者伪造 announce 抢先把公钥塞进 peers，再用它签 Hello
