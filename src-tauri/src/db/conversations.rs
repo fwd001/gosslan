@@ -11,6 +11,21 @@ pub fn touch_conversation(
     last_msg: &str,
     unread_inc: i64,
 ) -> Result<()> {
+    // group 类型：INSERT 时 name 必须从 groups 表查（防止文件/群聊消息把群名覆盖成文件名）。
+    // UPDATE 时已由 CASE WHEN 保护不会被覆盖，但 INSERT 无保护 → 必须提前纠正。
+    let effective_name = if kind == "group" {
+        let real_name = conn.query_row(
+            "SELECT name FROM groups WHERE id = ?1",
+            params![id.strip_prefix("group:").unwrap_or(id)],
+            |r| r.get::<_, String>(0),
+        );
+        match real_name {
+            Ok(n) if !n.is_empty() => n,
+            _ => name.to_string(),
+        }
+    } else {
+        name.to_string()
+    };
     conn.execute(
         "INSERT INTO conversations(id, kind, name, avatar, last_msg, last_ts, unread, updated_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6)
@@ -21,7 +36,7 @@ pub fn touch_conversation(
             last_ts = excluded.last_ts,
             unread = conversations.unread + excluded.unread,
             updated_at = excluded.updated_at",
-        params![id, kind, name, avatar, last_msg, now_ms(), unread_inc],
+        params![id, kind, effective_name, avatar, last_msg, now_ms(), unread_inc],
     )?;
     Ok(())
 }
@@ -33,10 +48,24 @@ pub fn ensure_conversation(
     name: &str,
     avatar: Option<&str>,
 ) -> Result<()> {
+    // 与 touch_conversation 同理：group 必须从 groups 表取真实群名
+    let effective_name = if kind == "group" {
+        let real_name = conn.query_row(
+            "SELECT name FROM groups WHERE id = ?1",
+            params![id.strip_prefix("group:").unwrap_or(id)],
+            |r| r.get::<_, String>(0),
+        );
+        match real_name {
+            Ok(n) if !n.is_empty() => n,
+            _ => name.to_string(),
+        }
+    } else {
+        name.to_string()
+    };
     conn.execute(
         "INSERT OR IGNORE INTO conversations(id, kind, name, avatar, unread, updated_at)
          VALUES(?1, ?2, ?3, ?4, 0, ?5)",
-        params![id, kind, name, avatar, now_ms()],
+        params![id, kind, effective_name, avatar, now_ms()],
     )?;
     Ok(())
 }

@@ -313,7 +313,7 @@ pub async fn send_group_file(
     // `scope == "todo"` 时跳过：待办图片是任务的一部分，不该在聊天时间线里另起一条文件消息。
     if scope != "todo" {
         let subtype = file::classify_file_subtype(&name);
-        let kind = subtype;
+        let kind = if subtype == "image" { "image" } else { "file" };
         let content =
         serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256, "subtype": subtype })
             .to_string();

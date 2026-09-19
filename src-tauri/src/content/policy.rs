@@ -9,6 +9,9 @@ use crate::content::model::{FailReason, TransferStatus};
 pub const RETRY_BASE_MS: i64 = 2_000;
 /// 退避封顶（ms）。
 pub const RETRY_MAX_MS: i64 = 60_000;
+/// 最大自动重试次数：超过后标记 Rejected，不再自动重试。
+/// 退避序列 (2,4,8,16,32,60,60,60)s × 8 ≈ 前 8 次累计 ≈ 4 分钟后彻底放弃。
+pub const MAX_CONTENT_RETRIES: u32 = 8;
 
 /// 第 attempts 次失败后，距下次重试的间隔：
 /// attempts==0 ⇒ 0（首次立即）；1 ⇒ base；2 ⇒ 2*base … 封顶 max。
@@ -69,9 +72,17 @@ pub fn should_retry_now(status: TransferStatus, now_ms: i64, next_attempt_at: i6
 }
 
 /// 记一次失败后的 (新状态, 新 attempts, next_attempt_at)。
+///
+/// 自动重试有封顶（`MAX_CONTENT_RETRIES`）：可恢复的失败超过上限后按 Rejected 收口。
+/// 没有这道闸，一块永远取不到的内容（对端重装 / 文件已删）会以 60s 周期无限重试，
+/// 在 Android 后台表现为持续的蓝牙/网络唤醒（真机 80 张图并发场景下放大为耗电与 OOM 风险）。
 pub fn on_failure(attempts: u32, reason: FailReason, now_ms: i64) -> (TransferStatus, u32, i64) {
     let next_attempts = attempts.saturating_add(1);
-    let status = status_after_failure(reason);
+    let status = if next_attempts >= MAX_CONTENT_RETRIES {
+        TransferStatus::Rejected
+    } else {
+        status_after_failure(reason)
+    };
     let next_at = if status == TransferStatus::Incomplete {
         now_ms.saturating_add(backoff_ms(next_attempts))
     } else {
@@ -162,6 +173,22 @@ mod tests {
             next_at,
             next_at
         ));
+    }
+
+    /// 自动重试必须封顶：第 `MAX_CONTENT_RETRIES` 次失败后，可恢复的失败也收口为 Rejected。
+    #[test]
+    fn retry_cap_turns_resumable_failure_terminal() {
+        let (s, a, next_at) = on_failure(MAX_CONTENT_RETRIES - 1, FailReason::LinkDown, 1_000);
+        assert_eq!(a, MAX_CONTENT_RETRIES);
+        assert_eq!(
+            s,
+            TransferStatus::Rejected,
+            "到达重试上限后，链路类可恢复失败也必须终止自动重试"
+        );
+        assert_eq!(next_at, 0, "终态不带下次重试时间 ⇒ should_retry_now 永假");
+        // 上限之前一步仍可续
+        let (s_prev, _, _) = on_failure(MAX_CONTENT_RETRIES - 2, FailReason::LinkDown, 1_000);
+        assert_eq!(s_prev, TransferStatus::Incomplete);
         assert!(!should_retry_now(
             TransferStatus::Incomplete,
             next_at - 1,

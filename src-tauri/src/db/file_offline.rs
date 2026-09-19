@@ -100,6 +100,23 @@ pub fn list_expired_file_outbox(conn: &Connection, deadline_ms: i64) -> Result<V
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// 崩溃恢复：AppState 初始化时把所有 `sending` 状态的 outbox 重置回 `pending`。
+///
+/// 为什么必须有：`flush_pending_files` 先 mark sending，再 `send_file_from_path`，成功后
+/// 才 delete。如果进程在 sending 期间崩溃（80 张图并发触发 OOM / ANR / 系统杀进程），
+/// 重启后这些条目永远卡在 `sending` —— `list_pending_file_outbox` 只捞 `pending` 的，
+/// 它们就被彻底遗忘了（真机：用户"发了一半的图重启后再也没到"）。
+///
+/// 重置为 pending 后：下次 Hello 触发 flush → 这些会被重新捞出来重试。
+/// 重复传输由对端的幂等 FileOffer 处理（同 transfer_id 的重复 offer → 幂等 accept）。
+pub fn reset_sending_to_pending(conn: &Connection) -> Result<i64> {
+    let n = conn.execute(
+        "UPDATE file_outbox SET status = 'pending' WHERE status = 'sending'",
+        [],
+    )?;
+    Ok(n as i64)
+}
+
 /// 读某 transfer 当前已尝试次数 —— flush_pending_files 超限检查用。
 pub fn get_file_outbox_attempts(conn: &Connection, transfer_id: &str) -> Option<i64> {
     let mut stmt = match conn.prepare("SELECT attempts FROM file_outbox WHERE transfer_id = ?1") {

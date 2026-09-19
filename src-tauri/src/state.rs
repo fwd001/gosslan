@@ -963,6 +963,18 @@ impl AppState {
         let db_path = app_data.join(db_name);
         let conn = db::init(&db_path)?;
 
+        // 🟦 崩溃恢复：把所有 sending 状态的 file_outbox 重置回 pending。
+        // 进程可能在 mark sending 后、delete 前崩溃 —— 这些条目会永远卡在 sending，
+        // list_pending_file_outbox 只捞 pending 的，它们就被彻底遗忘了。
+        // 重置后下次 Hello 触发 flush_pending_files 会重新捞出来重试；
+        // 重复传输由对端的幂等 FileOffer 处理。
+        match crate::db::reset_sending_to_pending(&conn) {
+            Ok(n) if n > 0 => {
+                eprintln!("[gosslan] 崩溃恢复：{n} 条文件 outbox 从 sending 重置为 pending");
+            }
+            _ => {}
+        }
+
         // 运行日志：多开实例用独立文件（gosslan-1.log），避免测试实例互相覆盖。
         let log_stem = if instance > 0 {
             format!("gosslan-{instance}")

@@ -10,6 +10,26 @@
 
 ## [Unreleased]
 
+## [4.22.1] - 2026-09-19
+
+### Fixed (文件与内容可靠性：崩溃恢复 / 重试封顶 / 进度收尾 / 会话名与 kind)
+
+- **file_outbox 崩溃卡死**：`flush_pending_files` 先标 `sending` 再发送，进程若在
+  发送中途被杀（真机：80 张图并发 OOM/ANR），这些行永远卡在 `sending`——
+  `list_pending_file_outbox` 只捞 `pending`，它们被彻底遗忘（「发了一半的图重启后再也没到」）。
+  现在 AppState 初始化时 `reset_sending_to_pending` 全部重置回 pending，下次 Hello 触发
+  flush 重投；重复传输由对端幂等 FileOffer 吸收。
+- **content 自动重试无封顶**：`MAX_CONTENT_RETRIES=8` 定义了却没接进 `on_failure`——
+  取不到的内容（对端重装/文件已删）会以 60s 周期无限重试。现在到达上限即收口
+  Rejected（`retry_cap_turns_resumable_failure_terminal`）。
+- **群文件/中继文件进度收尾**：最后一片可能因 250ms 节流不发 progress，前端卡
+  「发送中 0%」；两条路径完成时补发 100% progress + file-done 事件。
+- **会话名被文件名覆盖**：`touch_conversation` 的 INSERT 分支不查真实群名，
+  群文件消息会把会话名写成文件名。group 类型 INSERT 前先从 groups 表取真名
+  （UPDATE 分支早有 CASE WHEN 保护，补齐 INSERT）。
+- **文件消息 kind 收敛**：`send_file`/`send_group_file` 此前把 subtype（video/audio/…）
+  直接写进 kind，前端渲染链只认 image/file——非图片一律归 `file`，细分留在 content.subtype。
+
 ## [4.22.0] - 2026-09-19
 
 ### Changed (三级通道调度收口：分类单一来源 + BLE writer 忙轮询修复)

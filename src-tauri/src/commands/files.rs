@@ -618,7 +618,8 @@ pub async fn send_file(
     let name = file::derive_file_name(&path);
     let transfer_id = Uuid::new_v4().to_string();
     let subtype = file::classify_file_subtype(&name);
-    let kind = subtype;
+    // kind 只区分 image / file；subtype 通过 content JSON 保留细分
+    let kind = if subtype == "image" { "image" } else { "file" };
     let rec = build_file_message(
         s,
         &transfer_id,

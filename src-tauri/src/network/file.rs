@@ -172,6 +172,13 @@ pub async fn send_file_from_path_at(
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "unnamed".to_string());
+    // 📄 关键日志：文件发送入口
+    state.logger.info(
+        "file",
+        format!(
+            "[FILE] offer-sending peer={peer_id} tid={transfer_id} name={name} size={size} resume_from={from_bytes}"
+        ),
+    );
 
     // ---- E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG），仅存内存 ----
     let file_key = crypto::random_key();
@@ -275,10 +282,28 @@ pub async fn send_file_from_path_at(
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(transfer_id);
+                state.logger.error(
+                    "file",
+                    format!(
+                        "[FILE] offer SEND FAILED peer={peer_id} tid={transfer_id} err={e}"
+                    ),
+                );
                 return Err(SendFileError::retryable(format!("建立文件传输失败：{e}")));
             }
+            state.logger.info(
+                "file",
+                format!(
+                    "[FILE] offer SENT peer={peer_id} tid={transfer_id} waiting FileAccept (15s)"
+                ),
+            );
             match tokio::time::timeout(Duration::from_secs(15), rx).await {
                 Ok(Ok(Ok(()))) => {
+                    state.logger.info(
+                        "file",
+                        format!(
+                            "[FILE] accept RECEIVED peer={peer_id} tid={transfer_id} → start streaming"
+                        ),
+                    );
                     // H1 fix: stream_file 现在直接返回 SendFileError，外层不再需要
                     // 字符串 contains 手动判定 retryable/permanent。
                     return stream_file(
@@ -309,6 +334,12 @@ pub async fn send_file_from_path_at(
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(transfer_id);
+                    state.logger.warn(
+                        "file",
+                        format!(
+                            "[FILE] offer TIMEOUT/REJECTED peer={peer_id} tid={transfer_id} → abort"
+                        ),
+                    );
                     return Err(SendFileError::retryable("对方未接受文件"));
                 }
             }
@@ -322,11 +353,29 @@ pub async fn send_file_from_path_at(
     cancel_cleanup();
 
     match result {
-        Ok(inner) => inner,
-        Err(_elapsed) => Err(SendFileError::retryable(format!(
-            "文件发送超时（单次尝试超过 {}s，链路长时间未恢复）",
-            FILE_SEND_DEADLINE.as_secs()
-        ))),
+        Ok(inner) => {
+            state.logger.info(
+                "file",
+                format!(
+                    "[FILE] COMPLETED peer={peer_id} tid={transfer_id} ok={}",
+                    inner.is_ok()
+                ),
+            );
+            inner
+        }
+        Err(_elapsed) => {
+            state.logger.warn(
+                "file",
+                format!(
+                    "[FILE] DEADLINE peer={peer_id} tid={transfer_id} elapsed > {}s → abort",
+                    FILE_SEND_DEADLINE.as_secs()
+                ),
+            );
+            Err(SendFileError::retryable(format!(
+                "文件发送超时（单次尝试超过 {}s，链路长时间未恢复）",
+                FILE_SEND_DEADLINE.as_secs()
+            )))
+        }
     }
 }
 /// 无直连时，借**一跳中继**把文件发给 peer_id（接收方是请求下载的共享目录主人）。
@@ -487,6 +536,25 @@ pub async fn send_file_via_relay(
             )
             .ok();
         }
+        // 最后一片可能因节流(250ms)跳过了 emit，收尾必须发完整进度 100% + done 事件，
+        // 否则前端可能卡在 "发送中 0%"（DB 已 done 但前端没收到事件推进）。
+        let _ = state.app.emit(
+            "file-progress",
+            &crate::state::FileProgress {
+                transfer_id: transfer_id.to_string(),
+                received: size,
+                total: size,
+            },
+        );
+        let _ = state.app.emit(
+            "file-done",
+            &crate::state::FileDoneInfo {
+                transfer_id: transfer_id.to_string(),
+                name: name.clone(),
+                size,
+                path: path.to_string_lossy().to_string(),
+            },
+        );
         Ok(())
     })
     .await;

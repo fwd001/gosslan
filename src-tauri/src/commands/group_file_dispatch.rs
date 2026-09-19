@@ -175,6 +175,24 @@ async fn dispatch_group_file_to_peer(
         try_send(state, recipient, &done)
             .await
             .map_err(|e| format!("Done 发送失败：{e}"))?;
+        // 收尾：与单聊 send_file_from_path 同理 — 确保前端收到 100% progress + done 事件。
+        let _ = state.app.emit(
+            "file-progress",
+            &crate::state::FileProgress {
+                transfer_id: transfer_id.to_string(),
+                received: size,
+                total: size,
+            },
+        );
+        let _ = state.app.emit(
+            "file-done",
+            &crate::state::FileDoneInfo {
+                transfer_id: transfer_id.to_string(),
+                name: gf.name.clone(),
+                size,
+                path: source_path.to_string(),
+            },
+        );
         Ok(())
     })
     .await;
