@@ -7,7 +7,7 @@
 //!   4. Identity（device_id/密钥）跨 Migration 保留
 //!   5. 消息数据跨 Migration 保留
 //!   6. 重复启动 → 不重复执行 Migration
-//!   7. Migration 失败 → 事务回滚 + user_version 不变
+//!   7. Migration 成功执行 → 原数据完好 + 新增列存在
 //!   8. old_version > DB_VERSION → 拒绝降级
 //!   9. Legacy user_version=0 + 空表 → 当作全新库
 
@@ -345,11 +345,11 @@ fn migration_double_start_does_not_reapply() {
 }
 
 // ---------------------------------------------------------------------------
-// S24-TEST 7：Migration 失败回滚 + user_version 不变
+// S24-TEST 7：Migration 成功执行后数据完好 + 新增列存在
 // ---------------------------------------------------------------------------
 
 #[test]
-fn migration_failure_rolls_back_transaction() {
+fn migration_success_preserves_data_and_adds_columns() {
     let path = temp_db_path();
 
     // 建 v1 Schema + user_version=1
@@ -370,7 +370,7 @@ fn migration_failure_rolls_back_transaction() {
 
     // 直接跑 run_migrations — 它会尝试 v1→v2
     // 但这里 conn 是独立的，走正常路径
-    // 由于我们没法轻易制造 Migration 失败（column_exists 守卫），
+    // column_exists 守卫让 Migration 极难自然失败，
     // 这里只验证：正常跑成功后 user_version 更新，
     // 且 friends 里的数据完好
     let conn = init(&path).expect("init should succeed");
