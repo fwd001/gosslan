@@ -83,6 +83,9 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
     // Outbox 超时清扫：独立于 transport/discovery 的后台任务，
     // 每 30s 扫一次 outbox，把 created_at > 120s 无 Ack 的消息置 failed。
     // 必须在 NetworkHandle 创建之后 spawn — JoinHandle 要 push 进 tasks。
+    // README 承诺的「自动缓存清理」接线（2026-09-19 审计：此前只有设置页手动按钮）。
+    // 不进 tasks：它是 to_infinity 的周期任务，随进程退出自然结束。
+    crate::commands::spawn_cache_auto_clean(&state);
     let sweeper = transport::spawn_outbox_sweeper(state.clone(), shutdown_rx);
     if let Some(handle) = state
         .network

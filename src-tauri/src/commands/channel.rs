@@ -317,7 +317,44 @@ fn media_dirs(s: &AppState) -> Vec<PathBuf> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    vec![downloads, s.cache_dir.clone()]
+    // favorites（收藏的独立媒体副本）必须在内 —— 此前它既不占配额也永不回收，
+    // 收藏越多越接近无限增长（2026-09-19 审计）。
+    vec![downloads, s.cache_dir.clone(), s.favorites_dir.clone()]
+}
+
+/// 自动缓存清理调度（README 承诺的「3/7/30 天 + 配额自动清理」此前只有手动按钮）。
+///
+/// 启动 60s 后跑第一轮，之后每 6h；清理走 `clean_files`（不无脑 VACUUM），
+/// 只有真删了东西才补一次 VACUUM —— 整段在 spawn_blocking 里做：
+/// 文件遍历/删除与偶发 VACUUM 都不该占用 tokio worker，更不跨 await 持 db 锁。
+pub fn spawn_cache_auto_clean(s: &std::sync::Arc<crate::state::AppState>) {
+    let st = s.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+            let st2 = st.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let policy = load_policy(&st2);
+                let dirs = media_dirs(&st2);
+                let report = cache_cleaner::clean_files(&dirs, policy);
+                if report.removed > 0 {
+                    let dbc = st2.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = dbc.execute_batch("VACUUM");
+                    drop(dbc);
+                }
+                if report.removed > 0 {
+                    st2.logger.info(
+                        "storage",
+                        format!(
+                            "自动缓存清理：删 {} 个文件、释放 {} 字节",
+                            report.removed, report.freed_bytes
+                        ),
+                    );
+                }
+            })
+            .await;
+        }
+    });
 }
 
 /// SQLite 数据库文件占用（含 -wal / -shm 两个伴随文件）。

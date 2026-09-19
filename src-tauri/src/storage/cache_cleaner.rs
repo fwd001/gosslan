@@ -8,7 +8,7 @@
 //! 不是聊天文字。历史遗留的 `cache/` 目录已无写入方（P1 重构后媒体改落 downloads），
 //! 但仍一并纳入统计与清理，避免早期版本残留在里面既看不见也清不掉。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -84,37 +84,68 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 递归列出目录下的所有文件（深度栈遍历，不跟随符号链接目录）。
+///
+/// 为什么必须递归（2026-09-19 审计）：媒体按 `todo-paste/`、按日子目录等分层落盘，
+/// 旧的单层 read_dir 让这些子树**既不被统计也不被清理** —— 配额判的是假数，
+/// 「30 天后自动清」对子目录文件形同虚设。
+pub fn walk_files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let Ok(meta) = e.path().metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                stack.push(e.path());
+            } else if meta.is_file() {
+                out.push(e.path());
+            }
+        }
+    }
+    out
+}
+
+/// 自动调度用：只删文件、**不 VACUUM**（整理交给调用方按 `removed>0` 决定，
+/// 避免每 6h 空转一次持全局 db 锁的大 VACUUM —— 大库时那会冻住所有落库路径）。
+pub fn clean_files(dirs: &[PathBuf], policy: CachePolicy) -> CleanupReport {
+    clean_inner(dirs, policy)
+}
+
 /// 执行一次清理：跨 `dirs` 统一按策略删除过期 / 超配额文件，并对数据库执行 `VACUUM`。
 ///
 /// 多个目录合并成一个条目列表再规划删除：配额按「全部媒体的总占用」判断，
 /// 删除顺序仍是全局最旧优先（不会出现「A 目录空着不删、B 目录超额」的偏差）。
 pub fn clean(dirs: &[PathBuf], policy: CachePolicy, db: &rusqlite::Connection) -> CleanupReport {
+    let report = clean_inner(dirs, policy);
+    // 整理 SQLite 碎片（忽略失败：内存库 / 只读等情况）
+    let _ = db.execute_batch("VACUUM");
+    report
+}
+
+fn clean_inner(dirs: &[PathBuf], policy: CachePolicy) -> CleanupReport {
     let now = now_ms();
     let mut entries: Vec<(String, CacheEntry)> = Vec::new();
-
     for dir in dirs {
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            for e in rd.flatten() {
-                let p = e.path();
-                if !p.is_file() {
-                    continue;
-                }
-                let Ok(meta) = e.metadata() else { continue };
-                let mtime = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                let size = meta.len();
-                entries.push((
-                    p.to_string_lossy().to_string(),
-                    CacheEntry {
-                        mtime_ms: mtime,
-                        size,
-                    },
-                ));
-            }
+        for path in walk_files(dir) {
+            let Ok(meta) = path.metadata() else { continue };
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            entries.push((
+                path.to_string_lossy().to_string(),
+                CacheEntry {
+                    mtime_ms: mtime,
+                    size: meta.len(),
+                },
+            ));
         }
     }
 
@@ -126,9 +157,6 @@ pub fn clean(dirs: &[PathBuf], policy: CachePolicy, db: &rusqlite::Connection) -
         }
     }
 
-    // 整理 SQLite 碎片（忽略失败：内存库 / 只读等情况）
-    let _ = db.execute_batch("VACUUM");
-
     report
 }
 
@@ -137,14 +165,10 @@ pub fn usage(dirs: &[PathBuf]) -> (usize, u64) {
     let mut count = 0usize;
     let mut bytes = 0u64;
     for dir in dirs {
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            for e in rd.flatten() {
-                if let Ok(meta) = e.metadata() {
-                    if meta.is_file() {
-                        count += 1;
-                        bytes += meta.len();
-                    }
-                }
+        for path in walk_files(dir) {
+            if let Ok(meta) = path.metadata() {
+                count += 1;
+                bytes += meta.len();
             }
         }
     }
