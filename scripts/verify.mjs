@@ -66,8 +66,6 @@
  */
 
 import { spawnSync } from "node:child_process";
-// Windows 的 `shell:true` 会按空格截断命令：可执行路径必须自己带引号（Program Files）。
-const NODE_EXE = '"' + process.execPath + '"';
 import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -76,6 +74,11 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TAURI = path.join(ROOT, "src-tauri");
 const WIN = process.platform === "win32";
+
+// Windows 的 `shell:true` 会按空格截断命令：可执行路径必须自己带引号（Program Files）。
+// ⚠️ 只在 Windows 加引号：macOS/Linux 走 `shell:false`，引号会被当成文件名的**一部分**
+// —— 结果是第 1 步直接 `ENOENT`，整条 verify 在 unix 上从第一步就红（真踩到 2026-09-20）。
+const NODE_EXE = WIN ? '"' + process.execPath + '"' : process.execPath;
 
 /** npm 在 Windows 上是 npm.cmd；不处理会 spawn 失败。 */
 const NPM = WIN ? "npm.cmd" : "npm";

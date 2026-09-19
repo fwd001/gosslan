@@ -10,6 +10,17 @@
 
 ## [Unreleased]
 
+## [4.22.15] - 2026-09-20
+
+### Fixed (verify.mjs 在 macOS/Linux 上从第 1 步就 ENOENT — 后面 14 步从未跑过)
+
+`NODE_EXE` 无条件把 `process.execPath` 包在双引号里（Windows 的 `shell:true` 需要，
+因为 Program Files 有空格），而 macOS/Linux 走 `shell:false` ⇒ **引号成为文件名的
+一部分** ⇒ 第 1 步 `spawnSync ENOENT`，fail-fast 之下后面 14 步（含 clippy -D warnings、
+Rust 单测、护栏非空转、Android 编译门禁）在 unix 上从来没执行过。CI 自己重列步骤，
+所以这条空转只在本地可见 —— 正是审计结论「CI 与 verify.mjs 双份清单必然漂移」的实例。
+改为只在 Windows 加引号。
+
 ## [4.22.14] - 2026-09-20
 
 ### Fixed (文件分片流钉死单条链路 — 修多文件并发时大文件必失败)
