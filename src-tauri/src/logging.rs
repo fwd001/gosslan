@@ -238,8 +238,17 @@ impl Logger {
         //     一条多行消息发出（`adb logcat` 里依然逐行可见）。
         #[cfg(target_os = "android")]
         {
-            let want =
-                matches!(level, Level::Warn | Level::Error) || target == "boot" || target == "ble";
+            // info 级允许进 logcat 的 target —— 这几个是真机诊断的关键链路：
+            //   boot    = 启动路标（闪退定位）
+            //   ble     = BLE 扫描/连接/发送（唯一没法桌面自测的链路）
+            //   dispatch= 三优先级调度 + try_send + writer_loop（消息卡在哪里）
+            //   file    = FileOffer/Accept/Streaming/Done（文件传输全生命周期）
+            //   content = ContentRequest retry（retry 有没有退避/停止）
+            //   transport = TCP write fail / 链路事件
+            const LOGCAT_INFO_TARGETS: &[&str] =
+                &["boot", "ble", "dispatch", "file", "content", "transport"];
+            let want = matches!(level, Level::Warn | Level::Error)
+                || (level == Level::Info && LOGCAT_INFO_TARGETS.contains(&target));
             if want {
                 logcat::push(format!(
                     "{} [{}] [{}] {}",

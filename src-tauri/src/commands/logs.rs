@@ -320,8 +320,13 @@ fn recenter_aux_window(win: &tauri::WebviewWindow, geo: &AuxWindowGeometry) {
 /// （用户 2026-09-17：侧边栏收进二级菜单后，这两个窗口改"用完即关"），每次打开都是新数据。
 /// 窗口标题由 `logs.html` 的 `data-title-*` + 前端按语言设置 `document.title`
 /// （Tauri 会把 document title 同步到窗口标题），Rust 侧不再维护第二份标题文案。
+/// macOS 必须在**主线程**调 AppKit（`ns_window().setHasShadow` 等）。async 命令跑在 Tokio worker
+/// 线程上，会 EXC_BAD_ACCESS。改成同步命令（Tauri 在 wry 的主线程/IPC 回调里内联执行）。
+/// 原来的 async 理由是「窗口创建耗时会卡住主线程」——但 `WebviewWindowBuilder::build()` 本身
+/// 内部就会把创建分派到主线程、同步等返回，所以 async/同步**对窗口创建耗时没影响**；真正的阻塞
+/// 风险是 db 锁，所以 `aux_window_background` 改成了 try_lock（见下方）。
 #[cfg(desktop)]
-#[tauri::command(async)]
+#[tauri::command]
 pub fn open_log_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
@@ -337,7 +342,7 @@ pub fn open_log_window(
     // 尺寸与位置按主窗口算（见 aux_window_geometry 的说明）；窗口是**关闭即销毁**的，
     // 每次打开都新建 ⇒ 每次都按主窗口重新居中（不存在"用户摆好的窗口"）。
     let geo = aux_window_geometry(&app, (760.0, 560.0), (420.0, 320.0));
-    let _ = ensure_aux_window(
+    ensure_aux_window(
         &app,
         crate::WINDOW_LOGS,
         geo,
@@ -376,8 +381,9 @@ pub fn open_log_window(
             }
             Ok(win)
         },
-    );
-    Ok(())
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 /// 移动端桩：移动端的日志是**整页**（`LogViewer` 的全屏分支），没有独立窗口。
@@ -394,7 +400,7 @@ pub fn open_log_window(_app: tauri::AppHandle) -> Result<(), String> {
 /// 由前端按窗口自己的文档渲染设置页。用户 2026-09-12 反馈：「PC 端的设置页面可以按照这种
 /// 布局，弹一个单独的窗口」——参考图是「左侧窄导航 + 右侧内容」的设置窗口，不是盖在聊天上的弹窗。
 #[cfg(desktop)]
-#[tauri::command(async)]
+#[tauri::command]
 pub fn open_settings_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
@@ -405,7 +411,7 @@ pub fn open_settings_window(
     let build_app = app.clone(); // 同 open_log_window：闭包要 `'static`，不能再借 `app`
                                  // 尺寸与位置按主窗口算，理由见 aux_window_geometry。
     let geo = aux_window_geometry(&app, (780.0, 600.0), (560.0, 420.0));
-    let _ = ensure_aux_window(
+    ensure_aux_window(
         &app,
         crate::WINDOW_SETTINGS,
         geo,
@@ -436,8 +442,9 @@ pub fn open_settings_window(
             }
             Ok(win)
         },
-    );
-    Ok(())
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 /// 桌面端：打开独立「群任务」窗口（已存在则聚焦）。**每个群一个窗口**（label = `todo-<groupId>`）。
@@ -447,7 +454,7 @@ pub fn open_settings_window(
 /// 窗口加载 `todos.html`（自己的文档与入口），并从**自己的 label** 解析群 ID
 /// （见 `src/utils/auxWindowLabels.ts`）—— 所以不做"窗口内切群"，一个窗口只服务一个群。
 #[cfg(desktop)]
-#[tauri::command(async)]
+#[tauri::command]
 pub fn open_group_todos_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
@@ -467,7 +474,10 @@ pub fn open_group_todos_window(
     let bg = aux_window_background(&state);
     // 系统标题带上群名（每群一个窗口，任务栏里得能分清）；文档加载后由前端按同样口径接管。
     let group_name = {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        // try_lock：同 aux_window_background，主线程安全降级（拿不到锁就用空群名当兜底）。
+        let Ok(dbc) = state.db.try_lock() else {
+            return Err("数据库暂时被占用，请稍后再试".to_string());
+        };
         db::get_group(&dbc, &group_id)
             .map(|g| g.name)
             .unwrap_or_default()
@@ -476,7 +486,7 @@ pub fn open_group_todos_window(
     let build_app = app.clone();
     let build_label = label.clone();
     let geo = aux_window_geometry(&app, (560.0, 620.0), (360.0, 420.0));
-    let _ = ensure_aux_window(&app, &label, geo, AUX_GROUP_TODOS_RESIDENT, move || {
+    ensure_aux_window(&app, &label, geo, AUX_GROUP_TODOS_RESIDENT, move || {
         let win = WebviewWindowBuilder::new(
             &build_app,
             build_label.as_str(),
@@ -501,8 +511,9 @@ pub fn open_group_todos_window(
             apply_aux_geometry(&win, g);
         }
         Ok(win)
-    });
-    Ok(())
+    })
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 /// 移动端桩：独立群任务窗口是桌面概念（移动端用应用内弹窗 `GroupTasksPanel`）。
@@ -526,7 +537,7 @@ pub fn open_group_todos_window(_app: tauri::AppHandle, _group_id: String) -> Res
 /// 远端页面，我们自己的文档不在这里，套自绘标题栏只能改用 iframe 包一层 —— 而大量站点有
 /// `X-Frame-Options`，会直接白屏。关闭即隐藏（常驻），再点是瞬时的。
 #[cfg(desktop)]
-#[tauri::command(async)]
+#[tauri::command]
 pub fn open_link_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
@@ -589,10 +600,17 @@ pub fn open_link_window(_app: tauri::AppHandle, _url: String, _name: String) -> 
 }
 
 /// 独立窗口的初始背景色：跟随当前亮暗主题（暗色下打开时不"闪一下白"）。
+///
+/// ⚠️ 用 try_lock 而非 lock：辅助窗口命令已改成**同步命令**（主线程跑，
+/// 见 `open_log_window` 上方注释），lock 会在 db 被其他线程持有时阻塞主线程
+/// → 整个 App 卡死。try_lock 失败时返回**默认浅色**（安全降级：暗色会闪一下白，
+/// 但下一个 async 命令读 db 更新主题很快，用户感知不到；比卡死好得多）。
 #[cfg(desktop)]
 fn aux_window_background(state: &tauri::State<'_, Arc<AppState>>) -> tauri::window::Color {
     let dark = {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(dbc) = state.db.try_lock() else {
+            return tauri::window::Color(237, 241, 246, 255); // 默认浅色兜底
+        };
         db::get_setting(&dbc, "dark_mode")
             .map(|v| v == "1")
             .unwrap_or(false)

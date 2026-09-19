@@ -176,9 +176,31 @@ pub async fn send_message(
     // 状态前进：try_send 成功（进 writer_loop channel）→ "sent"；
     // 广播模式无条件乐观前进（广播是尽力而为，视为已发出）；
     // try_send 失败则保持 "sending"（在 outbox 等下次 flush_outbox 重试）。
-    let try_ok = if s.has_link(&friend_id).await {
-        try_send(s, &friend_id, &Message::Gossip { envelope: env.clone() }).await.is_ok()
+    let has = s.has_link(&friend_id).await;
+    s.logger.info(
+        "dispatch",
+        format!(
+            "[SEND-MSG] has_link={has} peer={friend_id} msg_id={msg_id} \
+             (links_table_entries={})",
+            s.links.lock().await.len()
+        ),
+    );
+    let try_ok = if has {
+        let r = try_send(s, &friend_id, &Message::Gossip { envelope: env.clone() })
+            .await
+            .is_ok();
+        s.logger.info(
+            "dispatch",
+            format!("[SEND-MSG] try_send result={r} peer={friend_id}"),
+        );
+        r
     } else {
+        s.logger.warn(
+            "dispatch",
+            format!(
+                "[SEND-MSG] NO-LINK → broadcast_gossip peer={friend_id} (links table empty!)"
+            ),
+        );
         broadcast_gossip(s, env).await;
         true // 广播视为乐观已发出
     };

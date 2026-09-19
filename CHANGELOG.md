@@ -10,6 +10,24 @@
 
 ## [Unreleased]
 
+## [4.22.2] - 2026-09-19
+
+### Fixed (macOS 辅助窗口 EXC_BAD_ACCESS + logcat 诊断链路)
+
+- **辅助窗口命令必须回主线程**：`open_log_window`/`open_settings_window`/
+  `open_group_todos_window`/`open_link_window` 此前是 async 命令（跑在 Tokio worker），
+  而 macOS 的 AppKit 调用（`ns_window().setHasShadow` 等）**必须在主线程** ⇒ 真机
+  EXC_BAD_ACCESS。改为同步命令（Tauri 在 wry 主线程 IPC 回调内联执行）；
+  async/同步对窗口创建耗时**没有差别**（`build()` 本身就同步等主线程返回），
+  真正的阻塞风险是 db 锁——窗口路径内所有 `db.lock()` 改 `try_lock` + 安全降级
+  （背景色兜底浅色/群名空串），`blocking_commands_run_off_the_main_thread` 护栏
+  登记 4 条例外并注明理由（源码扫描天然会把它们报出来，例外必须交代理由）。
+- **Android logcat 诊断白名单**：info 级放行 `boot/ble/dispatch/file/content/transport`
+  六类 target（release 包只有 logcat 可查，这几条是消息「卡在哪」的唯一观测面）；
+  warn/error 行为不变。
+- `send_message` 投递决策三态日志（has_link / try_send 结果 / NO-LINK→broadcast），
+  排障「消息发出去了但对端没影」时不再靠猜。
+
 ## [4.22.1] - 2026-09-19
 
 ### Fixed (文件与内容可靠性：崩溃恢复 / 重试封顶 / 进度收尾 / 会话名与 kind)

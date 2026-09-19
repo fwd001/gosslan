@@ -673,8 +673,15 @@ mod tests {
     #[test]
     fn blocking_commands_run_off_the_main_thread() {
         let src = all_commands_src();
-        // 例外必须写在这里并交代理由（当前为空：纯窗口操作天然不含下列标记）
-        const ALLOWED: [&str; 0] = [];
+        // 例外必须写在这里并交代理由：
+        // - open_*_window：辅助窗口命令，macOS 必须在**主线程**调 AppKit（ns_window.setHasShadow 等），
+        //   async 会 EXC_BAD_ACCESS；函数体里的 db 锁已改成 try_lock（非阻塞），主线程安全。
+        const ALLOWED: [&str; 4] = [
+            "open_log_window",
+            "open_settings_window",
+            "open_group_todos_window",
+            "open_link_window",
+        ];
 
         // 重资源标记 → 人类可读的原因
         let markers: [(&str, &str); 9] = [
