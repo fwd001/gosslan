@@ -261,7 +261,8 @@ pub fn run() {
             // 用户在设置页关闭后持久化为关闭，重启不再联网。「恢复默认」清除该键 ⇒ 回到默认开启。
             // GOSSLAN_AUTOSTART=1 强制以 0.0.0.0 开启（headless 多实例互测，
             // examples/e2e_peer.rs 依赖此行为），且不改动已持久化的偏好。
-            #[cfg(desktop)]
+            // ⚠️ 不在 cfg(desktop) 里：移动端同样需要读 lan_enabled 设置并自动启动 ——
+            // 用户在设置里打开后、杀掉 App 再进来，LAN 应该恢复上次的状态。
             {
                 let st = state.clone();
                 tauri::async_runtime::spawn(async move {
