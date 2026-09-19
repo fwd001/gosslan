@@ -182,6 +182,159 @@ object OpenWith {
       "保存失败（${t.javaClass.simpleName}）$detail"
     }
   }
+
+  /**
+   * 把 HEIC/HEIF 等跨平台不兼容格式转成 JPEG（质量 85%）。
+   *
+   * ## 为什么需要这一步
+   *
+   * 一加、小米等国产 Android 默认相机输出 HEIC（高效存储），iPhone 更是从 iOS 11 起
+   * 全面转 HEIC。但 Mac/Windows 前端的 `<img src>` 对 HEIC 支持极差：
+   *   - macOS 13 以下原生预览都打不开
+   *   - 所有浏览器（Chrome/Safari/Firefox）截至 2026 年对 HEIC 的原生解码
+   *     仍然依赖操作系统，不保证跨平台可用
+   * 结果就是：Android 发原图 → Mac 显示"裂开图标"。
+   *
+   * ## 实现要点
+   *
+   * - Android 9（API 28）起 `BitmapFactory` 原生支持 HEIC 解码，不需要三方库。
+   * - 质量 85%：视觉无损（人眼几乎看不出差别），但跨平台 100% 兼容。
+   * - 保持分辨率不降采样 — 只改编码格式。
+   * - 返回 null 表示转码失败（文件不存在 / 格式无法识别 / BitmapFactory 抛异常）。
+   * - 所有异常必须被捕获并返回 null — 绝不能穿透 JNI 让进程静默消失。
+   */
+  @JvmStatic
+  fun convertHeicToJpeg(inputPath: String): String? {
+    val ctx = appContext ?: return null
+    val file = File(inputPath)
+    if (!file.exists() || !file.canRead()) return null
+    return try {
+      // BitmapFactory.decodeFile 在 Android 9+ 自动识别 HEIC/HEIF
+      val bitmap = android.graphics.BitmapFactory.decodeFile(inputPath) ?: return null
+      try {
+        val out = File(
+          file.parentFile,
+          file.nameWithoutExtension + ".jpg"
+        )
+        java.io.FileOutputStream(out).use { fos ->
+          bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, fos)
+          fos.flush()
+        }
+        if (out.exists() && out.length() > 0) out.absolutePath else null
+      } finally {
+        bitmap.recycle()
+      }
+    } catch (t: Throwable) {
+      android.util.Log.w("GosslanImg", "HEIC 转 JPEG 失败 ${t.javaClass.simpleName}: ${t.message}")
+      null
+    }
+  }
+
+  /**
+   * 判断视频文件是不是 HEVC (H.265) 编码。
+   *
+   * 为什么要检测：一加/小米等国产 Android 默认用 HEVC 拍视频（省空间），
+   * 但 Mac/Windows 浏览器对 HEVC 支持极差（Chrome/Firefox/Safari 都不能原生解码）。
+   * 我们在 Manifest 里声明了 HEVC 不支持 → Android 12+ 系统会在 ContentResolver 读取时
+   * 自动转 H.264；这个检测方法让我们能在 Rust 侧**提前知道**，做日志/跳过转码兜底。
+   *
+   * - MediaExtractor 拿视频轨的 MIME：`video/hevc` → true，`video/avc` → false
+   * - API < 21（MediaExtractor）→ 用 ftyp box 特征判断（`ftyphev1`/`ftyphvc1`）
+   * - 返回 false 表示不是 HEVC 或检测失败（用原文件继续发）
+   */
+  @JvmStatic
+  fun isHevcVideo(path: String): Boolean {
+    val ctx = appContext ?: return false
+    val file = File(path)
+    if (!file.exists() || !file.canRead()) return false
+    return try {
+      if (android.os.Build.VERSION.SDK_INT >= 21) {
+        val extractor = android.media.MediaExtractor()
+        try {
+          extractor.setDataSource(path)
+          for (i in 0 until extractor.trackCount) {
+            val format = extractor.getTrackFormat(i)
+            val mime = format.getString(android.media.MediaFormat.KEY_MIME) ?: continue
+            if (mime.startsWith("video/")) {
+              return mime.contains("hevc") || mime.contains("h265")
+            }
+          }
+          false
+        } finally {
+          extractor.release()
+        }
+      } else {
+        // API < 21 fallback：读文件头找 ftyp box
+        val head = file.inputStream().use { it.readNBytes(16) }
+        val bytes = String(head, Charsets.US_ASCII)
+        bytes.contains("ftyphev1") || bytes.contains("ftyphvc1")
+      }
+    } catch (t: Throwable) {
+      android.util.Log.w("GosslanVideo", "HEVC 检测失败 ${t.javaClass.simpleName}: ${t.message}")
+      false
+    }
+  }
+
+  /**
+   * 判断文件是不是一加/小米/Google 的动态照片 / Motion Photo。
+   *
+   * 为什么要检测：
+   * - 微信/QQ/钉钉/飞书**全部**只发静态封面（动效丢失），行业统一做法
+   * - 一加 ColorOS Motion Photo、小米澎湃 OS Micro Video、Google Motion Photo
+   *   都是"JPEG 容器尾部追加 MP4 数据 + XMP 元数据"的单文件结构
+   * - 跨平台发动态效果需要端到端重构（解析 XMP → 拆出 JPEG + MP4 双发 → 接收端 MotionPhotoView）
+   *   — 复杂度极高，没有国内 IM 真正做过
+   *
+   * 检测方法（CSDN 深度解析方案）：
+   *   1. **XMP 元数据**：文件里找 `Camera:MotionPhoto>1<`（Google 标准）
+   *   2. **MP4 尾部特征**：JPEG 结束标记 (0xFFD9) 之后找 `ftypmp42` 或 `ftypisom`
+   *
+   * 检测出来后 Rust 侧会记录日志，但**不做特殊处理** — 直接发整个文件，
+   * 接收端只看到 JPEG 静态封面（和国内 IM 行为一致）。
+   */
+  @JvmStatic
+  fun isMotionPhoto(path: String): Boolean {
+    val ctx = appContext ?: return false
+    val file = File(path)
+    if (!file.exists() || !file.canRead()) return false
+    return try {
+      // 不要用 file.readBytes() — Motion Photo 可以 30-50MB，readBytes 直接 OOM。
+      // 按职责分区读：
+      //   1. XMP 在文件头 64KB 里（Google/一加/小米 统一放在文件头）
+      //   2. MP4 尾部特征在文件最后 1KB 里（Motion Photo 的视频数据追加在 JPEG 尾部）
+      val head = file.inputStream().use { it.readNBytes(64 * 1024) }
+      val headStr = String(head, Charsets.US_ASCII)
+      // 1. XMP 元数据检测（Google/一加/小米 统一用 XMP 容器结构）
+      if (headStr.contains("MotionPhoto>1<") && headStr.contains("Camera")) {
+        return true
+      }
+      if (headStr.contains("Container:Semantic>MotionPhoto<")) {
+        return true
+      }
+      // 2. MP4 尾部特征：JPEG 结束标记 (0xFFD9) 之后找 ftyp box
+      // 先在文件头排除普通 MP4（普通 MP4 文件头也有 ftyp）
+      val headHasFtyp = headStr.contains("ftypmp42") || headStr.contains("ftypisom")
+      // 先确认是 JPEG 文件（文件头两个字节是 0xFF 0xD8，这是 JPEG SOI 标记）
+      val isJpeg = head.size >= 2 && head[0] == 0xFF.toByte() && head[1] == 0xD8.toByte()
+      // 普通 MP4 排除：文件头有 ftyp + 不是 JPEG 开头 → 普通 MP4 不是 Motion Photo
+      if (headHasFtyp && !isJpeg) return false
+      // Motion Photo 特征：JPEG 开头 + 尾部有 MP4 ftyp
+      if (isJpeg && file.length() > 64 * 1024) {
+        // 读尾部 1KB 找 ftyp
+        val tail = file.inputStream().use { stream ->
+          stream.skip(file.length() - 1024)
+          String(stream.readNBytes(1024), Charsets.US_ASCII)
+        }
+        if (tail.contains("ftypmp42") || tail.contains("ftypisom")) {
+          return true
+        }
+      }
+      false
+    } catch (t: Throwable) {
+      android.util.Log.w("GosslanImg", "Motion Photo 检测失败 ${t.javaClass.simpleName}: ${t.message}")
+      false
+    }
+  }
 }
 
 /** Kotlin → Rust：把 JavaVM 与 `OpenWith` 类引用交给 Rust（见本文件顶部注释 2）。 */

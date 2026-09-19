@@ -33,8 +33,10 @@ use crate::jni_method::kotlin_method;
 
 /// JVM 句柄（`bootstrap` 时缓存；之后从任意线程 attach 使用）。
 static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
-/// `OpenWith` 对象类的全局引用（同上，只能在有 App 类加载器在栈上时取）。
-static KOTLIN_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
+/// `OpenWith` **object 类**的全局引用 — 所有业务方法（openWith/saveWith/convertHeicToJpeg/isHevcVideo/isMotionPhoto）
+/// 都在这个类上（加了 @JvmStatic）。注意：native_attach 的 class 参数是 `OpenWithKt`
+/// （顶层函数所在类），不是 `OpenWith` 本身，所以这里必须手动 find_class。
+static OPEN_WITH_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
 
 /// 由 Kotlin 的 `OpenWith.bootstrap` 调用（`extern` ⇒ 宏直接导出 JNI 符号名）。
 ///
@@ -58,21 +60,27 @@ pub fn ready() -> bool {
     // 就不保证被代码生成进产物 ⇒ 真机上 `nativeAttachOpenWith` 直接 UnsatisfiedLinkError
     //（只在真机、且只在 release 包里现形的典型症状）。取一次引用把它钉进产物。
     let _keep_exported = std::hint::black_box(&NATIVE_ATTACH);
-    JAVA_VM.get().is_some() && KOTLIN_CLASS.get().is_some()
+    JAVA_VM.get().is_some() && OPEN_WITH_CLASS.get().is_some()
 }
 
-/// `OpenWith.bootstrap()`：缓存 VM 与类引用。
+/// `OpenWith.bootstrap()`：缓存 VM 与 OpenWith 类引用。
 ///
-/// static 方法拿到的第二个参数就是**类引用本身**（`JClass`），不需要 `get_object_class`。
-fn native_attach<'local>(env: &mut Env<'local>, class: JClass<'local>) -> jni::errors::Result<()> {
+/// ⚠️ native_attach 的 class 参数是 `OpenWithKt`（顶层函数所在类），
+/// 但所有业务方法都在 `object OpenWith` 里 —— 所以必须额外 find_class 拿到 OpenWith。
+fn native_attach<'local>(
+    env: &mut Env<'local>,
+    _kt_class: JClass<'local>,
+) -> jni::errors::Result<()> {
     if JAVA_VM.get().is_none() {
         if let Ok(vm) = env.get_java_vm() {
             let _ = JAVA_VM.set(vm);
         }
     }
-    if KOTLIN_CLASS.get().is_none() {
-        let global = env.new_global_ref(class)?;
-        let _ = KOTLIN_CLASS.set(global);
+    if OPEN_WITH_CLASS.get().is_none() {
+        // native_attach 在 bootstrap 调用链上，此时 App 类加载器在栈上 — find_class 安全
+        let open_with = env.find_class(jni_str!("com/gosslan/app/OpenWith"))?;
+        let global = env.new_global_ref(open_with)?;
+        let _ = OPEN_WITH_CLASS.set(global);
     }
     Ok(())
 }
@@ -85,7 +93,7 @@ pub fn open_path(path: &str, mime: &str) -> Result<(), String> {
             "打开文件的能力还没准备好（MainActivity 未调用 OpenWith.bootstrap）".to_string(),
         );
     }
-    let class = KOTLIN_CLASS.get().expect("ready() 已确认类引用存在");
+    let class = OPEN_WITH_CLASS.get().expect("ready() 已确认类引用存在");
     let vm = JAVA_VM.get().expect("ready() 已确认 JavaVM 存在");
 
     let outcome = vm.attach_current_thread(|env| -> jni::errors::Result<Result<(), String>> {
@@ -128,7 +136,7 @@ pub fn save_path(path: &str, uri: &str) -> Result<(), String> {
             "保存文件的能力还没准备好（MainActivity 未调用 OpenWith.bootstrap）".to_string(),
         );
     }
-    let class = KOTLIN_CLASS.get().expect("ready() 已确认类引用存在");
+    let class = OPEN_WITH_CLASS.get().expect("ready() 已确认类引用存在");
     let vm = JAVA_VM.get().expect("ready() 已确认 JavaVM 存在");
 
     let outcome = vm.attach_current_thread(|env| -> jni::errors::Result<Result<(), String>> {
@@ -168,7 +176,7 @@ pub fn save_bytes(bytes: &[u8], uri: &str) -> Result<(), String> {
             "保存文件的能力还没准备好（MainActivity 未调用 OpenWith.bootstrap）".to_string(),
         );
     }
-    let class = KOTLIN_CLASS.get().expect("ready() 已确认类引用存在");
+    let class = OPEN_WITH_CLASS.get().expect("ready() 已确认类引用存在");
     let vm = JAVA_VM.get().expect("ready() 已确认 JavaVM 存在");
 
     let outcome = vm.attach_current_thread(|env| -> jni::errors::Result<Result<(), String>> {
@@ -195,4 +203,91 @@ pub fn save_bytes(bytes: &[u8], uri: &str) -> Result<(), String> {
         Ok(Err(message)) => Err(message),
         Err(e) => Err(format!("JNI 调用失败：{e}")),
     }
+}
+
+/// 把 HEIC/HEIF 等跨平台不兼容图片格式转成 JPEG。
+///
+/// ## 为什么在 Rust 侧做而不是 Kotlin 侧全搞定
+///
+/// Kotlin 侧 `OpenWith.convertHeicToJpeg` 返回 `String?`：成功时是新的 JPEG 路径，
+/// 失败时是 null（任何异常/不认识的格式都归一成 null）。Rust 侧拿到路径后，
+/// 把落地文件的引用从 HEIC 换成 JPEG — 后续发送/预览/文件名消毒全复用既有链路。
+/// 如果 Kotlin 侧返回 null（比如 BitmapFactory 解不了这张），Rust 侧就**静默放弃转码**，
+/// 用原文件继续走 — 绝不因为转码失败而阻塞消息发送。
+///
+/// ## 返回值
+///
+/// - `Ok(Some(new_path))` — 转码成功，新文件路径
+/// - `Ok(None)` — Kotlin 侧不支持/失败，用原文件
+/// - `Err(msg)` — JNI 桥本身出问题（不是图片问题）
+pub fn convert_heic_to_jpeg(path: &str) -> Result<Option<String>, String> {
+    if !ready() {
+        return Ok(None); // 桥未就绪时放弃转码，别阻塞发送
+    }
+    let class = OPEN_WITH_CLASS.get().expect("ready() 已确认类引用存在");
+    let vm = JAVA_VM.get().expect("ready() 已确认 JavaVM 存在");
+
+    let outcome = vm.attach_current_thread(|env| -> jni::errors::Result<Option<String>> {
+        let jpath = env.new_string(path)?;
+        let (name, sig) = kotlin_method!(
+            "convertHeicToJpeg",
+            "(Ljava/lang/String;)Ljava/lang/String;"
+        );
+        let value = env.call_static_method(class, name, sig, &[JValue::Object(&jpath)])?;
+        let obj = value.l()?;
+        if obj.as_raw().is_null() {
+            return Ok(None);
+        }
+        let new_path = env.cast_local::<JString>(obj)?.try_to_string(env)?;
+        Ok(Some(new_path))
+    });
+
+    outcome.map_err(|e| format!("JNI 调用失败：{e}"))
+}
+
+/// 判断视频文件是不是 HEVC (H.265) 编码。
+///
+/// 一加/小米等国产 Android 默认用 HEVC 拍视频（省空间），但 Mac/Windows 浏览器
+/// 对 HEVC 支持极差。我们在 Manifest 里声明了 HEVC 不支持 → Android 12+ 系统会在
+/// ContentResolver 读取时自动转 H.264；这个检测让 Rust 侧能提前知道做日志。
+///
+/// - 返回 false 表示不是 HEVC 或检测失败（静默，不阻塞发送）
+pub fn is_hevc_video(path: &str) -> bool {
+    if !ready() {
+        return false; // 桥未就绪 → 不检测
+    }
+    let class = OPEN_WITH_CLASS.get().expect("ready() 已确认类引用存在");
+    let vm = JAVA_VM.get().expect("ready() 已确认 JavaVM 存在");
+
+    let outcome = vm.attach_current_thread(|env| -> jni::errors::Result<bool> {
+        let jpath = env.new_string(path)?;
+        let (name, sig) = kotlin_method!("isHevcVideo", "(Ljava/lang/String;)Z");
+        let value = env.call_static_method(class, name, sig, &[JValue::Object(&jpath)])?;
+        Ok(value.z()?)
+    });
+
+    outcome.unwrap_or(false)
+}
+
+/// 判断文件是不是一加/小米/Google 的动态照片 / Motion Photo。
+///
+/// 微信/QQ/钉钉/飞书**全部**只发静态封面（动效丢失），行业统一做法。
+/// 这个检测让 Rust 侧能做日志提示，但不做特殊处理 — 直接发整个文件。
+///
+/// - 返回 false 表示不是 Motion Photo 或检测失败
+pub fn is_motion_photo(path: &str) -> bool {
+    if !ready() {
+        return false;
+    }
+    let class = OPEN_WITH_CLASS.get().expect("ready() 已确认类引用存在");
+    let vm = JAVA_VM.get().expect("ready() 已确认 JavaVM 存在");
+
+    let outcome = vm.attach_current_thread(|env| -> jni::errors::Result<bool> {
+        let jpath = env.new_string(path)?;
+        let (name, sig) = kotlin_method!("isMotionPhoto", "(Ljava/lang/String;)Z");
+        let value = env.call_static_method(class, name, sig, &[JValue::Object(&jpath)])?;
+        Ok(value.z()?)
+    });
+
+    outcome.unwrap_or(false)
 }

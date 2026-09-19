@@ -48,16 +48,46 @@ pub fn name_from_content_uri(uri: &str) -> Option<String> {
 /// 而"从相册选图片"必须发成**图片**消息（否则用户看到的是一个附件）。
 pub fn sniff_media_ext(head: &[u8]) -> &'static str {
     match head {
+        // ===== 图片格式 =====
         [0xFF, 0xD8, 0xFF, ..] => "jpg",
         [0x89, b'P', b'N', b'G', ..] => "png",
         [b'G', b'I', b'F', b'8', ..] => "gif",
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "webp",
         [b'B', b'M', ..] => "bmp",
+        // ===== HEIC/HEIF family（ISO BMFF ftyp box）=====
+        [_, _, _, _, b'f', b't', b'y', b'p', b'h', b'e', b'i', b'c', ..] => "heic",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'h', b'e', b'i', b'x', ..] => "heic",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'm', b'i', b'f', b'1', ..] => "heic",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'm', b's', b'f', b'1', ..] => "heic",
+        // HEVC 编码的容器：可能是 HEIC 图片或 HEVC MP4 视频 — 统一先叫 heic
+        // （视频路径后面还会用 MediaExtractor 二次检测，见 is_hevc_video）
+        [_, _, _, _, b'f', b't', b'y', b'p', b'h', b'e', b'v', b'c', ..] => "heic",
+        // ===== MP4 / MOV / HEVC 视频（ISO BMFF ftyp box）=====
+        [_, _, _, _, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm', ..] => "mp4",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'm', b'p', b'4', b'2', ..] => "mp4",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'M', b'4', b'V', b' ', ..] => "mp4",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'q', b't', b' ', b' ', ..] => "mov",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'3', b'g', b'p', b'5', ..] => "3gp",
+        [_, _, _, _, b'f', b't', b'y', b'p', b'3', b'g', b'p', ..] => "3gp",
+        // ===== WebM（EBML 容器头）=====
+        [0x1A, 0x45, 0xDF, 0xA3, ..] => "webm",
+        // ===== AVI（RIFF....AVI）=====
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'A', b'V', b'I', b' ', ..] => "avi",
+        // ===== FLV =====
+        [b'F', b'L', b'V', 0x01, ..] => "flv",
+        // ===== 其他 =====
         [0x25, b'P', b'D', b'F', ..] => "pdf",
         [b'P', b'K', 0x03, 0x04, ..] => "zip",
         _ => "bin",
     }
 }
+
+/// 这些格式在桌面/Mac 前端渲染链上不可靠，发送前需要先转成 JPEG。
+///
+/// 一加、小米等国产 Android 默认相机输出 HEIC（高效存储），Mac 的 `<img src>` 对 HEIC 支持极差
+/// （macOS 13 以下原生预览都打不开），直接发过去前端显示"裂开图标"。
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub const UNSAFE_IMAGE_EXTS: &[&str] = &["heic", "heif"];
 
 /// 文件名消毒：去掉目录分隔符与控制字符，避免写到缓存目录之外（路径穿越）。
 pub fn sanitize_file_name(name: &str) -> String {
@@ -128,6 +158,70 @@ pub async fn import_picked_file(
         .unwrap_or_else(|| format!("gosslan-{}.{ext}", db::now_ms()));
     let dest = dir.join(sanitize_file_name(&name));
     std::fs::rename(&tmp, &dest).map_err(|e| format!("落地所选文件失败：{e}"))?;
+
+    // 🟦 HEIC/HEIF → JPEG 自动转码（Android 跨平台兼容）
+    // 一加、小米等国产 Android 相机默认输出 HEIC，Mac/Windows <img> 对 HEIC 支持极差。
+    // 转码失败（JNI 桥未就绪 / BitmapFactory 解不了）时静默放弃 — 用原文件继续发送。
+    #[cfg(target_os = "android")]
+    {
+        if UNSAFE_IMAGE_EXTS.contains(&ext) {
+            let src_path = dest.to_string_lossy().to_string();
+            state.logger.info(
+                "file",
+                format!("检测到 {ext} 图片，尝试转 JPEG：{src_path}"),
+            );
+            match crate::android_open::convert_heic_to_jpeg(&src_path) {
+                Ok(Some(new_path)) => {
+                    // 转码成功：删掉原 HEIC，用 JPEG 路径替换
+                    let _ = std::fs::remove_file(&dest);
+                    state.logger.info(
+                        "file",
+                        format!("HEIC → JPEG 转码成功：{new_path}"),
+                    );
+                    return Ok(new_path);
+                }
+                Ok(None) => {
+                    state.logger.warn(
+                        "file",
+                        format!("HEIC → JPEG 转码失败（Kotlin 返回 null），保留原文件"),
+                    );
+                }
+                Err(e) => {
+                    state.logger.warn(
+                        "file",
+                        format!("HEIC → JPEG JNI 调用失败：{e}"),
+                    );
+                }
+            }
+        }
+
+        // 🟦 HEVC (H.265) 视频检测：一加/小米国产 Android 默认用 HEVC 拍视频（省空间），
+        // Mac/Windows 浏览器不支持 HEVC 硬解码 → 黑屏。
+        // 我们在 Manifest 里声明了 HEVC 不支持 → Android 12+ (API 31+) 系统会在
+        // ContentResolver 读取时自动转 H.264（Google 专为 IM 设计的 API）。
+        // 这里只检测 + 打日志，实际转码由系统负责。
+        let final_path = dest.to_string_lossy().to_string();
+        if crate::android_open::is_hevc_video(&final_path) {
+            state.logger.info(
+                "file",
+                "检测到 HEVC (H.265) 视频，依赖 Manifest 声明触发系统自动转 H.264（需 API 31+）",
+            );
+        }
+
+        // 🟦 动态照片 / Motion Photo 检测：一加 ColorOS / 小米澎湃OS / Google Motion Photo
+        // 都是"JPEG 容器 + MP4 尾部数据"的单文件结构。
+        // 微信/QQ/钉钉/飞书全部只发静态封面（动效丢失），我们**降级为同样行为** —
+        // 不做特殊处理，直接发整个文件，接收端浏览器自动只渲染静态封面。
+        // 跨平台发动态效果需要端到端重构（解析 XMP → 双文件发送 → 接收端 MotionPhotoView），
+        // 复杂度极高，没有国内 IM 真正做过。
+        if crate::android_open::is_motion_photo(&final_path) {
+            state.logger.info(
+                "file",
+                "检测到动态照片 / Motion Photo，降级为静态封面（与微信/QQ 一致）",
+            );
+        }
+    }
+
     state.logger.info(
         "file",
         format!(

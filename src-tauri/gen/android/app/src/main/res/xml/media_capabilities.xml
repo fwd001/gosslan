@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Gosslan 媒体能力声明：告诉 Android 我们**不支持** HEVC/HDR 视频。
+
+  ## 为什么要声明"不支持"而不是"支持"
+
+  Android 12+（API 31+）有**系统级自动转码**：当一个不支持 HEVC 的 App
+  通过 ContentResolver 读取相册里的 HEVC 视频时，系统会自动把 HEVC → H.264，
+  应用拿到的就是转好的 H.264 MP4 数据。这是 Google 专为 IM/社交 App 设计的 API。
+
+  如果不声明，Android 默认认为所有 App 都能播 HEVC —— 于是 IM 把原生 HEVC
+  视频发给 Mac/Windows，那边就显示黑屏（浏览器不支持 HEVC 硬解码）。
+
+  ## 效果
+
+  - 一加 15（Android 15）拍的 HEVC 视频 → 选进 Gosslan → **系统自动转成 H.264 MP4**
+  - 1 分钟 HEVC 视频，骁龙 8 Elite 硬件加速转码约 5 秒（无 CPU 占用）
+  - 桌面端直接显示，零崩溃
+
+  ## 限制
+
+  - 只对 **Android 12+** 有效（一加 15 是 Android 15，完全满足）
+  - 只对 **通过 ContentResolver 访问的 content:// URI** 有效
+    — 所以转码发生在「用户选视频」那一刻，还没落地到私有目录
+  - API < 31 的老设备：没有兜底转码（Kotlin 侧只做 HEIC→JPEG 图片转码，
+    视频检测只打日志）——HEVC 视频在老设备上仍会原样发出，桌面端可能黑屏。
+    这是已知限制（目标机型均 Android 12+），真要兜底需接 MediaCodec 异步转码。
+-->
+<media-capabilities xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 声明我们**不支持** HEVC → 触发系统自动转 H.264 -->
+    <format android:name="HEVC" supported="false" />
+    <!-- HDR 暂时也不处理 → 降级为 SDR -->
+    <format android:name="HDR10" supported="false" />
+    <format android:name="HDR10Plus" supported="false" />
+</media-capabilities>

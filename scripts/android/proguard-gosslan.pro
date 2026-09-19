@@ -34,6 +34,9 @@
     public static java.lang.String openWith(java.lang.String, java.lang.String);
     public static java.lang.String saveWith(java.lang.String, java.lang.String);
     public static java.lang.String writeBytesWith(byte[], java.lang.String);
+    public static java.lang.String convertHeicToJpeg(java.lang.String);
+    public static boolean isHevcVideo(java.lang.String);
+    public static boolean isMotionPhoto(java.lang.String);
 }
 -keep class com.gosslan.app.OpenWithKt {
     native <methods>;

@@ -579,6 +579,33 @@ mod tests {
         // 未知内容 → bin（当成普通文件，绝不猜成图片）
         assert_eq!(super::sniff_media_ext(b"\x00\x01\x02\x03"), "bin");
         assert_eq!(super::sniff_media_ext(&[]), "bin");
+
+        // ===== HEIC/HEIF family（ISO BMFF ftyp box at offset 4）=====
+        assert_eq!(super::sniff_media_ext(b"\x00\x00\x00\x20ftypheic"), "heic");
+        assert_eq!(super::sniff_media_ext(b"\x00\x00\x00\x20ftypheix"), "heic");
+        assert_eq!(super::sniff_media_ext(b"\x00\x00\x00\x20ftypmif1"), "heic");
+        assert_eq!(super::sniff_media_ext(b"\x00\x00\x00\x20ftypmsf1"), "heic");
+        assert_eq!(super::sniff_media_ext(b"\x00\x00\x00\x20ftyphevc"), "heic");
+
+        // ===== MP4 / MOV / 视频格式（ISO BMFF ftyp box）=====
+        assert_eq!(super::sniff_media_ext(b"\x00\x00\x00\x20ftypisom"), "mp4");
+        assert_eq!(super::sniff_media_ext(b"\x00\x00\x00\x20ftypmp42"), "mp4");
+        assert_eq!(super::sniff_media_ext(b"\x00\x00\x00\x20ftypM4V "), "mp4");
+        assert_eq!(super::sniff_media_ext(b"\x00\x00\x00\x20ftypqt  "), "mov");
+        assert_eq!(super::sniff_media_ext(b"\x00\x00\x00\x20ftyp3gpp5"), "3gp");
+        assert_eq!(super::sniff_media_ext(b"\x00\x00\x00\x20ftyp3gp"), "3gp");
+
+        // ===== WebM（EBML 容器）=====
+        assert_eq!(super::sniff_media_ext(b"\x1A\x45\xDF\xA3\x01\x00\x00\x00"), "webm");
+
+        // ===== AVI（RIFF....AVI）=====
+        assert_eq!(
+            super::sniff_media_ext(b"RIFF\x00\x00\x00\x00AVI LIST"),
+            "avi"
+        );
+
+        // ===== FLV =====
+        assert_eq!(super::sniff_media_ext(b"FLV\x01\x00\x00\x00\x09"), "flv");
     }
 
     /// 文件名消毒：不允许写出缓存目录之外，也不允许空名字。

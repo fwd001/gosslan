@@ -846,12 +846,15 @@ mod tests {
                 "没在 BlePeripheral.kt 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
             );
         }
-        // 打开/保存文件的桥：Rust 调 openWith / saveWith / writeBytesWith，
-        // Kotlin 调 nativeAttachOpenWith
+        // 打开/保存文件的桥：Rust 调 openWith / saveWith / writeBytesWith / convertHeicToJpeg
+        // / isHevcVideo / isMotionPhoto，Kotlin 调 nativeAttachOpenWith
         for (file, fns, expected) in [
             ("OpenWith.kt", &open_fns, "openWith"),
             ("OpenWith.kt", &open_fns, "saveWith"),
             ("OpenWith.kt", &open_fns, "writeBytesWith"),
+            ("OpenWith.kt", &open_fns, "convertHeicToJpeg"),
+            ("OpenWith.kt", &open_fns, "isHevcVideo"),
+            ("OpenWith.kt", &open_fns, "isMotionPhoto"),
             ("OpenWith.kt", &open_fns, "nativeAttachOpenWith"),
         ] {
             assert!(
@@ -870,8 +873,8 @@ mod tests {
         let open_registered = parse_kotlin_method_registrations(rust_open);
         assert_eq!(
             open_registered.len(),
-            3,
-            "android_open.rs 应恰好登记 3 个 Kotlin 方法（openWith + saveWith + writeBytesWith），实际 {} —— \
+            6,
+            "android_open.rs 应恰好登记 6 个 Kotlin 方法（openWith + saveWith + writeBytesWith + convertHeicToJpeg + isHevcVideo + isMotionPhoto），实际 {} —— \
              解析器失效或有人漏登记",
             open_registered.len()
         );

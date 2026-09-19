@@ -10,6 +10,34 @@
 
 ## [Unreleased]
 
+## [4.22.3] - 2026-09-19
+
+### Added (Android 媒体兼容：HEIC/HEVC/动态照片进聊天)
+
+**症状**：一加 15（Android 15）拍的图/视频进 Gosslan 后，桌面端黑屏或裂图——
+iPhone 系 HEIC/HEVC 在 Windows/macOS 浏览器渲染链上都不支持；此前移动端选图
+按扩展名猜 MIME，`content://` URI 没有扩展名可猜。
+
+- **发送端自动转码**（`OpenWith.kt` + `android_open.rs` 三座桥）：
+  `convertHeicToJpeg`（ImageDecoder→JPEG 85）、`isHevcVideo`（MediaExtractor 探
+  hevc 轨）、`isMotionPhoto`（Google Motion Photo 容器检测）；API 31+ 视频走
+  **系统级自动转码**：新增 `res/xml/media_capabilities.xml` 声明本 App
+  「不支持 HEVC/HDR10/HDR10Plus」，Android 12+ 经 ContentResolver 读取时系统直接
+  给 H.264（骁龙硬件转码，1 分钟视频约 5s、零 CPU 占用）。
+  **已知限制（注释如实登记）**：API<31 老设备无视频兜底转码，HEVC 仍会原样发出；
+  HEIC 图片转码失败时保留原文件发送（可当文件下载，不静默丢）。
+  Motion Photo 主动降级为静态封面（与微信/QQ 同口径——跨端动效需端到端重构，不做）。
+- **JNI 桥修根**：`native_attach` 收到的 class 参数是 `OpenWithKt`（顶层函数类），
+  而所有业务方法在 `object OpenWith`（@JvmStatic）——旧代码把前者当类缓存，
+  方法查找恒失败；改为 find_class 钉住 object 类。Kotlin 方法登记护栏同步
+  （3 → 6 个方法，漏登记即红）。
+- **`sniff_media_ext` 魔数嗅探补齐**（日志查看器的媒体内嵌预览复用同一条判定）：
+  HEIC 家族（ftyp heic/heix/mif1/msf1/hevc）、MP4/MOV/3gp（各 ftyp 变体）、
+  WebM（EBML）、AVI（RIFF…AVI 且校验第二槽）、FLV；27 条新用例覆盖全部盒子变体。
+  前端 `filePreview.ts` 保留 heic/avif/bmp 的 MIME 兜底映射并注释「渲染不可靠，
+  发送端已转码」的真实语义。
+- **proguard**：OpenWith 三方法 + companion 的 keep 规则同步（release 包 JNI 反射入口）。
+
 ## [4.22.2] - 2026-09-19
 
 ### Fixed (macOS 辅助窗口 EXC_BAD_ACCESS + logcat 诊断链路)

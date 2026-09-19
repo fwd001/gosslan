@@ -29,7 +29,15 @@ const IMAGE_MAX_BYTES = 15 * 1024 * 1024;
 const cache = new Map<string, PreviewResult>();
 const inflight = new Map<string, Promise<PreviewResult>>();
 
-/** 扩展名 → MIME。导出给收藏预览复用：两处各写一份的话，新增支持一种图片格式时必然漏一处。 */
+/**
+ * 扩展名 → MIME。
+ *
+ * ⚠️ **HEIC/HEIF 注意**：Chrome/Edge/Firefox **原生不支持渲染 HEIC**（只有 macOS Safari 16+ 支持），
+ * 所以我们在发送端自动转 JPEG（见 mobile_picker.rs 的 UNSAFE_IMAGE_EXTS）。
+ * 这里保留 heic/heif 的 MIME 映射只是**兜底** — 如果转码失败、或者历史消息里有 HEIC，
+ * 至少前端不会把它当成 application/octet-stream 下载，而是尝试渲染（浏览器不支持时自然裂开，
+ * 比偷偷下载要好）。
+ */
 export function imageMime(name: string): string {
   const ext = (name.split(".").pop() || "").toLowerCase();
   switch (ext) {
@@ -42,6 +50,13 @@ export function imageMime(name: string): string {
       return "image/gif";
     case "webp":
       return "image/webp";
+    case "heic":
+    case "heif":
+      return "image/heic";
+    case "avif":
+      return "image/avif";
+    case "bmp":
+      return "image/bmp";
     default:
       return "application/octet-stream";
   }
