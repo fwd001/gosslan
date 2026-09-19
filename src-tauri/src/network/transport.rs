@@ -362,6 +362,22 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
     }
 }
 
+/// 转发候选集合 = **可达**邻居（有非空链路），不是 peers 的「已知/已发现」集合。
+///
+/// 为什么必须有（2026-09-19 审计 P0#7）：`peers` 是知识集——Presence/announce 会跨跳
+/// 登记，异网段节点在 peers 里却没有 TCP 链路可发。拿它做 fan-out 候选，跨网段时
+/// 「看得见几十个节点、零个可达」，`try_send` 每一个都失败且被 `let _ =` 静默吞掉
+/// ——「节点互相帮转发」恰好在最需要它的场景失效。源发侧 `broadcast_gossip` 一直用的是
+/// `links.keys()`，转发与此同口径（护栏：`gossip_fanout_targets_reachable_links`）。
+async fn reachable_neighbors(state: &AppState, exclude: &str) -> Vec<String> {
+    let links = state.links.lock().await;
+    links
+        .iter()
+        .filter(|(id, v)| !v.is_empty() && id.as_str() != exclude)
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
 /// 中继态的内存 TTL：超过它且仍未完成重组的条目一律回收。
 ///
 /// 为什么必须有：`relay_file_keys` 与 `RelayManager::reassemblies` 都以**对端可控**的
@@ -2869,15 +2885,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 payload,
             };
             let targets: Vec<String> = {
-                let peers: Vec<String> = state
-                    .peers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .keys()
-                    .cloned()
-                    .collect();
+                let neighbors = reachable_neighbors(state, peer_id).await;
                 let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                gossip.choose_fanout(&peers, peer_id)
+                gossip.choose_fanout(&neighbors, peer_id)
             };
             if targets.is_empty() {
                 return;
@@ -4437,27 +4447,15 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 if direct {
                     vec![t.to_string()]
                 } else {
-                    let peers: Vec<String> = state
-                        .peers
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .keys()
-                        .cloned()
-                        .collect();
+                    let neighbors = reachable_neighbors(state, &env.sender_id).await;
                     let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                    gossip.choose_fanout(&peers, &env.sender_id)
+                    gossip.choose_fanout(&neighbors, &env.sender_id)
                 }
             }
             None => {
-                let peers: Vec<String> = state
-                    .peers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .keys()
-                    .cloned()
-                    .collect();
+                let neighbors = reachable_neighbors(state, &env.sender_id).await;
                 let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                gossip.choose_fanout(&peers, &env.sender_id)
+                gossip.choose_fanout(&neighbors, &env.sender_id)
             }
         };
         let mut fwd = env.clone();
@@ -8857,8 +8855,8 @@ mod tests {
         assert!(engine.is_new("m1"), "首次见到的信封必须进入处理与转发");
         assert!(!engine.is_new("m1"), "同一信封第二次到达在传播层判为重复");
         assert!(engine.is_new("m2"), "另一条消息不受前者影响");
-        let peers = vec!["b".to_string(), "c".to_string(), "d".to_string()];
-        let targets = engine.choose_fanout(&peers, "a");
+        let neighbors = vec!["b".to_string(), "c".to_string(), "d".to_string()];
+        let targets = engine.choose_fanout(&neighbors, "a");
         assert_eq!(targets.len(), 3, "fanout=4 时三个邻居都应被转发到");
         assert!(!targets.contains(&"a".to_string()), "不回发给信封的发送方");
     }

@@ -2544,4 +2544,26 @@ mod tests {
             "重发必须用对端当前公钥重新密封（crypto::seal + enc1: 前缀），与 send_message 同口径"
         );
     }
+
+    /// gossip / 不透明帧的转发候选必须来自**可达链路集**（2026-09-19 审计 P0#7）。
+    ///
+    /// 为什么必须守：`peers` 是知识集（Presence/announce 跨跳登记，异网段节点在里面
+    /// 却没有链路）。历史版本 `choose_fanout` 的三个调用点都拿 `peers.keys()` 当候选，
+    /// 跨网段时扇出全部拨向不可达节点、又被 `let _ =` 静默吞掉 —— 「节点互相帮转发」
+    /// 在最需要它的场景无声失效。界面上**看不出任何异常**（本地收发一切正常），
+    /// 只有跨网段压测才暴露，正是只能靠护栏钉死的那类退化。
+    #[test]
+    fn gossip_fanout_targets_reachable_links() {
+        let transport = include_str!("network/transport.rs");
+        assert!(
+            !transport.contains("choose_fanout(&peers"),
+            "转发候选不得再来自 peers（知识集）—— 用 reachable_neighbors（links 中有非空链路的邻居）"
+        );
+        // 定义 1 处 + 调用 3 处（gossip 广播分支 / 定向洪泛兜底 / OpaqueExternal）
+        let uses = transport.matches("reachable_neighbors(").count();
+        assert!(
+            uses >= 4,
+            "reachable_neighbors 应有定义+3 个转发调用点，实际 {uses} 处 —— 有新转发点没走可达集？"
+        );
+    }
 }

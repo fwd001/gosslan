@@ -10,6 +10,20 @@
 
 ## [Unreleased]
 
+## [4.22.6] - 2026-09-19
+
+### Fixed (P0：gossip 转发候选从「知识集」换成「可达集」，跨网段中继不再是空转)
+
+- **`choose_fanout` 的三个转发调用点（gossip 广播分支 / 定向帧洪泛兜底 /
+  OpaqueExternal）此前都拿 `peers.keys()` 当候选**：`peers` 是知识集——Presence/announce
+  跨跳登记，异网段节点在里面但**没有 TCP 链路**。跨网段场景下扇出全部拨向不可达节点，
+  `try_send` 失败又被 `let _ =` 静默吞掉——「节点互相帮转发」这条产品核心承诺恰好在
+  最需要它的场景空转，且界面上零异常（本地收发全正常），只有跨网段压测才暴露。
+  现在统一收进 `reachable_neighbors`（`links` 中非空链路的邻居），与源发侧
+  `broadcast_gossip` 一直使用的口径一致。BLE 链路同表登记 ⇒ mesh 桥接路径一并生效。
+- 新增源码护栏 `gossip_fanout_targets_reachable_links`（candidates 再退回 peers 即红；
+  写护栏当天就抓到一处漏网调用点）。
+
 ## [4.22.5] - 2026-09-19
 
 ### Fixed (移动端体验批量收口：多选并发 / 预览返回栈 / TabBar 恢复 / 输入区细节)
