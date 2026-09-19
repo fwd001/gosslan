@@ -83,9 +83,9 @@ pub async fn update_profile(
             // 请求的优先道；小头像仍走 priority（资料变更要立刻可见）。
             .map(|link| {
                 if bulk_profile_frame {
-                    link.bulk.clone()
+                    link.low.clone()
                 } else {
-                    link.priority.clone()
+                    link.normal.clone()
                 }
             })
             .collect::<Vec<_>>()

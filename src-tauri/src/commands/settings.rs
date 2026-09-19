@@ -382,7 +382,7 @@ pub async fn broadcast_chat_style(
         links
             .values()
             .flatten()
-            .map(|link| link.priority.clone())
+            .map(|link| link.normal.clone())
             .collect::<Vec<_>>()
     };
     for tx in &targets {

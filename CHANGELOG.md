@@ -10,6 +10,31 @@
 
 ## [Unreleased]
 
+## [4.22.0] - 2026-09-19
+
+### Changed (三级通道调度收口：分类单一来源 + BLE writer 忙轮询修复)
+
+**收编并补完前几轮散在多处的工作（high/normal/low 三级发送通道）**：
+
+- `Link` 的 bulk/priority 双队列升级为 **High/Normal/Low 三队列**；分类表收进新模块
+  `network/dispatch.rs::message_priority`（唯一事实来源），`try_send`/`send_over_order`
+  按分类选道。旧 `is_bulk_message` 删除，其真值表测试原样迁移
+  （`bulk_messages_are_only_large_chunks` 名字不变，verify-guards 锚点同步搬到 dispatch.rs）。
+- **同名常量两份不同值消除**（INV-P23）：dispatch 曾自带 `CONTROL_AVATAR_MAX_BYTES=256KiB` /
+  `BULK_GOSSIP_PAYLOAD_MAX_BYTES=4KiB`，与 transport 真机验证值（2KiB / 16KiB）漂移——
+  现在 dispatch 直接 `use` transport 的常量，单一来源、行为不变。
+- **`FileCompleteAck`/`GroupFileCompleteAck` 归位 Normal**：曾被划进 Low，
+  完成回执会排到 ≤1024 个分片后面（整文件重传或 30min 误判 failed 的入口）；
+  它与本机上行分片流无顺序耦合，维持旧 priority 语义。
+- **BLE writer 忙轮询修复（P0）**：`ble_writer_loop` 的 `high_open` 漏 `mut` 且 None 分支
+  从不判 `high_rx.is_closed()`——链路被摘后该 select 臂每轮空转命中，100% CPU 且永不退出。
+  feature 门控代码，clippy 静默；已在 `--features bluetooth` 构建下修正三臂关闭判定。
+- **注释诚实化**：dispatch/BLE writer 曾宣称「fragment 级 yield」——实现只存在于测试
+  模拟器；真实抢占粒度是**帧**（biased select，High 最坏等待 = 单条 Low 帧分片时长）。
+  文档改为如实声明，片间 yield 需要四个平台 FrameSink 同步改造，列为后续工作。
+- 删除无消费者的影子定义：`DispatchState`、`RETRY_BACKOFF_SECS`（与 `content::policy`
+  真退避表冲突）、`FILE_OFFER_TIMEOUT_SECS`（transport 内联 15s 才是执行值）。
+
 ## [4.21.5] - 2026-09-19
 
 ### Security (P0：Gossip 信任链锚定到 friends 表，堵死「冒充缺席好友」)

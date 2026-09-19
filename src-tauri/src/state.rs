@@ -227,10 +227,14 @@ pub struct Link {
     /// LAN 路径（把 D5 的修复绕过去了）；② 选路时按最高优先级当成 LAN。
     /// 而 BLE 端点根本没有 IP，更无解。⇒ 路径类型必须由**来路**决定。
     pub path_kind: PathKind,
-    /// bulk 通道：大文件分片等，避免挤占聊天。
-    pub bulk: mpsc::Sender<Message>,
-    /// priority 通道：聊天 / 控制 / 心跳，避免被大文件分片饿死（INV-P20）。
-    pub priority: mpsc::Sender<Message>,
+    /// 三级发送通道：High（控制帧，必须立即）、Normal（聊天/FileOffer）、Low（bulk 文件分片/大头像）。
+    ///
+    /// 替代旧的 bulk + priority 两级。BLE writer_loop 在 Low bulk 写入过程中会周期性
+    /// yield 检查 High/Normal，避免 4KB FileChunk（273 片 MTU × 15ms = 4s）期间
+    /// 控制帧 / 聊天消息排队等待。
+    pub high: mpsc::Sender<Message>,
+    pub normal: mpsc::Sender<Message>,
+    pub low: mpsc::Sender<Message>,
     /// **本连接**的取消信号（M3#6 死链路拆除用）。
     ///
     /// 为什么需要它：全局 `shutdown` 只能整体停网，无法单独断开一条僵尸连接。

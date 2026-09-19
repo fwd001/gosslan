@@ -244,12 +244,14 @@ CASES: list[Case] = [
         tags=["rust", "new-guards"],
     ),
     Case(
-        name="大头像资料帧必须降到 bulk 通道（否则堵住优先通道）",
-        why="UserInfo 带大 avatar 时若不降级，会占满优先通道，聊天/好友请求几分钟才到",
-        file=TAURI / "src" / "network" / "transport.rs",
+        name="大头像资料帧必须降到 Low 队列（否则堵住优先通道）",
+        why="UserInfo 带大 avatar 时若不降级，会占满优先通道，聊天/好友请求几分钟才到。"
+            "分类表已从 is_bulk_message 收进 dispatch::message_priority（单一事实来源），"
+            "锚点随之搬到 dispatch.rs",
+        file=TAURI / "src" / "network" / "dispatch.rs",
         injections=[(
-            "Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => true,",
-            "Message::UserInfo { .. } => false,",
+            "Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => {\n            MessagePriority::Low\n        }",
+            "Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => {\n            MessagePriority::Normal\n        }",
         )],
         cmd=cargo("test", "--lib", "bulk_messages_are_only_large_chunks"),
         cwd=TAURI,

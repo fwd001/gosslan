@@ -1038,8 +1038,9 @@ async fn finish_dial(
     }
 
     // ---- 登记链路（端点 = BLE 标识，路径 = Bluetooth）----
-    let (bulk_tx, bulk_rx) = mpsc::channel(1024);
-    let (prio_tx, prio_rx) = mpsc::channel(1024);
+    let (high_tx, high_rx) = mpsc::channel(1024);
+    let (normal_tx, normal_rx) = mpsc::channel(1024);
+    let (low_tx, low_rx) = mpsc::channel(1024);
     let (cancel_tx, cancel_rx) = watch::channel(false);
     state
         .links
@@ -1050,8 +1051,9 @@ async fn finish_dial(
         .push(Link {
             endpoint: ep.clone(),
             path_kind: PathKind::Bluetooth,
-            bulk: bulk_tx.clone(),
-            priority: prio_tx.clone(),
+            high: high_tx.clone(),
+            normal: normal_tx.clone(),
+            low: low_tx.clone(),
             cancel: cancel_tx,
         });
     register_connection(&state, &peer_id, ep.clone(), PathKind::Bluetooth);
@@ -1076,8 +1078,9 @@ async fn finish_dial(
         peer_id.clone(),
         ep.clone(),
         writer,
-        bulk_rx,
-        prio_rx,
+        high_rx,
+        normal_rx,
+        low_rx,
         shutdown.clone(),
         cancel_rx.clone(),
     ));
@@ -1353,28 +1356,39 @@ impl FrameSource for ChannelSource {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// BLE writer scheduler：High > Normal > Low 三级 channel（biased select，帧间严格优先）。
+///
+/// 与 TCP writer_loop 的差别在帧的代价：BLE 的 send_frame 在底层做 MTU 分片循环，
+/// 一帧 4KB FileChunk 最坏（小 MTU）要发数秒。本循环的抢占粒度是**帧**：
+/// High/Normal 的等待上限 = 正在发送的那一条 Low 帧完成的时间。
+/// 片间 yield 需要四个平台的 FrameSink 同步改 fragment 级 API，尚未实现
+/// —— 与 `dispatch` 模块头的「抢占粒度」声明保持一致，不要在注释里超前宣称。
 async fn ble_writer_loop<S: FrameSink + 'static>(
     state: Arc<AppState>,
     peer_id: String,
     ep: MeshEndpoint,
     mut writer: S,
-    mut bulk_rx: mpsc::Receiver<Message>,
-    mut prio_rx: mpsc::Receiver<Message>,
+    mut high_rx: mpsc::Receiver<Message>,
+    mut normal_rx: mpsc::Receiver<Message>,
+    mut low_rx: mpsc::Receiver<Message>,
     mut shutdown: watch::Receiver<bool>,
     mut cancel: watch::Receiver<bool>,
 ) {
-    let mut bulk_open = true;
-    let mut prio_open = true;
+    let mut high_open = true;
+    let mut normal_open = true;
+    let mut low_open = true;
     loop {
-        if !bulk_open && !prio_open {
+        if !high_open && !normal_open && !low_open {
             break;
         }
+        // 外层 select：High > Normal > Low，正常调度优先级
         let msg = tokio::select! {
             biased;
             _ = shutdown.changed() => break,
             _ = cancel.changed() => break,
-            maybe = prio_rx.recv(), if prio_open => maybe,
-            maybe = bulk_rx.recv(), if bulk_open => maybe,
+            maybe = high_rx.recv(), if high_open => maybe,
+            maybe = normal_rx.recv(), if normal_open => maybe,
+            maybe = low_rx.recv(), if low_open => maybe,
         };
         match msg {
             Some(msg) => {
@@ -1484,11 +1498,17 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                 }
             }
             None => {
-                if prio_rx.is_closed() {
-                    prio_open = false;
+                // select 的某臂被禁用（对端 Sender 全部 drop ⇒ recv 立即 None 且永久 None）。
+                // ⚠️ 三个臂都要判：漏掉 high 会让本循环以 100% CPU 空转且永不退出
+                //（链路被摘 ⇒ Link drop ⇒ high sender 归零 ⇒ 该臂每一轮都命中）。
+                if high_rx.is_closed() {
+                    high_open = false;
                 }
-                if bulk_rx.is_closed() {
-                    bulk_open = false;
+                if normal_rx.is_closed() {
+                    normal_open = false;
+                }
+                if low_rx.is_closed() {
+                    low_open = false;
                 }
             }
         }
@@ -2015,8 +2035,9 @@ async fn try_accept_handshake(
         .map_err(|e| format!("回 Hello 失败：{e}"))?;
 
     // ---- 6. 登记链路（端点 = BLE central 标识，路径 = Bluetooth）----
-    let (bulk_tx, bulk_rx) = mpsc::channel(1024);
-    let (prio_tx, prio_rx) = mpsc::channel(1024);
+    let (high_tx, high_rx) = mpsc::channel(1024);
+    let (normal_tx, normal_rx) = mpsc::channel(1024);
+    let (low_tx, low_rx) = mpsc::channel(1024);
     let (cancel_tx, cancel_rx) = watch::channel(false);
     state
         .links
@@ -2027,8 +2048,9 @@ async fn try_accept_handshake(
         .push(Link {
             endpoint: ep.clone(),
             path_kind: PathKind::Bluetooth,
-            bulk: bulk_tx.clone(),
-            priority: prio_tx.clone(),
+            high: high_tx.clone(),
+            normal: normal_tx.clone(),
+            low: low_tx.clone(),
             cancel: cancel_tx,
         });
     register_connection(state, &peer_id, ep.clone(), PathKind::Bluetooth);
@@ -2056,8 +2078,9 @@ async fn try_accept_handshake(
             writer,
             central: central.to_string(),
         },
-        bulk_rx,
-        prio_rx,
+        high_rx,
+        normal_rx,
+        low_rx,
         shutdown.clone(),
         cancel_rx.clone(),
     ));

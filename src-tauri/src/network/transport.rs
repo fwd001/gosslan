@@ -86,29 +86,10 @@ pub const CONTROL_AVATAR_MAX_BYTES: usize = HELLO_AVATAR_MAX_BYTES;
 ///
 /// 正常聊天/好友帧远小于它；只有「内联大图的通告」才会触到。16KiB 是保守值：
 /// 单帧在 BLE 上按 508B/片算也只有约 32 片（约 0.4s），不会把优先队列拖住。
-const BULK_GOSSIP_PAYLOAD_MAX_BYTES: usize = 16 * 1024;
+pub const BULK_GOSSIP_PAYLOAD_MAX_BYTES: usize = 16 * 1024;
 
-/// 大数据分片走普通通道；聊天/控制/小控制帧走高优先级通道，避免被大文件饿死。
-///
-/// 除文件分片外，还包含两类**大而可晚到**的帧：大头像的 UserInfo、内联大载荷的
-/// Gossip。它们此前都挤在优先道上，一张 400KB 头像能把聊天与好友请求堵上几分钟。
-fn is_bulk_message(msg: &Message) -> bool {
-    match msg {
-        Message::FileChunk { .. }
-        | Message::RelayChunk { .. }
-        | Message::GroupFileChunk { .. }
-        // 终止帧必须和分片同队列，保证「分片 → Done」的协议顺序不被优先级通道打乱。
-        | Message::FileDone { .. }
-        | Message::GroupFileDone { .. } => true,
-        // 大头像资料帧：内容大、可晚到，走 bulk，绝不占聊天/好友请求的优先道。
-        Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => true,
-        // 任何大载荷 Gossip（含内联大图的 Presence/自定义通告）同样降级。
-        Message::Gossip { envelope } if envelope.payload.len() > BULK_GOSSIP_PAYLOAD_MAX_BYTES => {
-            true
-        }
-        _ => false,
-    }
-}
+// 通道分类的单一事实来源已收进 `dispatch::message_priority`（旧 `is_bulk_message` 删除，
+// 阈值常量由它从这里复用 —— 同名概念不再有两份）。
 
 /// 计算一次发送要按什么顺序尝试各条链路（纯函数，便于单测 + 护栏非空转）。
 ///
@@ -210,18 +191,27 @@ const SEND_QUEUE_FULL_TIMEOUT: Duration = Duration::from_millis(500);
 ///    立刻换下一条 —— 原实现只有 `Closed` 才换，信道满会**挂起**（并锁死调用方）；
 /// ② 全部为 `Full` 时才对该条做**有界**补试（`SEND_QUEUE_FULL_TIMEOUT`），超时即 `Err`。
 async fn send_over_order(
-    senders: &[(mpsc::Sender<Message>, mpsc::Sender<Message>)],
+    senders: &[(
+        mpsc::Sender<Message>,
+        mpsc::Sender<Message>,
+        mpsc::Sender<Message>,
+    )],
     order: &[usize],
     msg: &Message,
-    bulk: bool,
+    priority: crate::network::dispatch::MessagePriority,
 ) -> Result<(), String> {
+    use crate::network::dispatch::MessagePriority;
     let mut last_err = "未建立连接".to_string();
     let mut first_full: Option<&mpsc::Sender<Message>> = None;
     for &i in order {
-        let Some((bulk_tx, prio_tx)) = senders.get(i) else {
+        let Some((high_tx, normal_tx, low_tx)) = senders.get(i) else {
             continue;
         };
-        let tx = if bulk { bulk_tx } else { prio_tx };
+        let tx = match priority {
+            MessagePriority::High => high_tx,
+            MessagePriority::Normal => normal_tx,
+            MessagePriority::Low => low_tx,
+        };
         match tx.try_send(msg.clone()) {
             Ok(()) => return Ok(()),
             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -277,11 +267,16 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
     );
 
     // ④ 按选路顺序投递（两轮策略见 `send_over_order`）。
-    let senders: Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)> = links
+    let senders: Vec<(
+        mpsc::Sender<Message>,
+        mpsc::Sender<Message>,
+        mpsc::Sender<Message>,
+    )> = links
         .iter()
-        .map(|l| (l.bulk.clone(), l.priority.clone()))
+        .map(|l| (l.high.clone(), l.normal.clone(), l.low.clone()))
         .collect();
-    send_over_order(&senders, &order, msg, is_bulk_message(msg)).await
+    let priority = crate::network::dispatch::message_priority(msg);
+    send_over_order(&senders, &order, msg, priority).await
 }
 
 /// 无直连时，把一条**定向**帧借一跳中继发给 to（共享目录 / 中继文件在无直连时用）。
@@ -333,7 +328,7 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
                 let best = crate::state::best_link_kind(&kinds)?;
                 let link = ls.iter().find(|l| l.path_kind == best)?;
                 Some((
-                    link.priority.clone(),
+                    link.normal.clone(),
                     peer_id.to_owned(),
                     link.endpoint.clone(),
                 ))
@@ -547,7 +542,7 @@ pub async fn spawn(
                     // 锁内只克隆 Sender。
                     let txs: Vec<mpsc::Sender<Message>> = {
                         let links = state.links.lock().await;
-                        links.values().flatten().map(|l| l.priority.clone()).collect()
+                        links.values().flatten().map(|l| l.normal.clone()).collect()
                     };
                     let hb = Message::Heartbeat { device_id: state.device_id.clone() };
                     let mut congested = 0usize;
@@ -612,7 +607,7 @@ pub async fn spawn(
                             links
                                 .get(&peer)
                                 .and_then(|v| v.iter().find(|l| l.endpoint == ep))
-                                .map(|l| (l.bulk.clone(), l.cancel.clone()))
+                                .map(|l| (l.low.clone(), l.cancel.clone()))
                         };
                         let Some((bulk, cancel)) = bulk else { continue };
                         // ① 精确取消这一条连接的读写任务（半开的读只有它能打断）。
@@ -621,7 +616,7 @@ pub async fn spawn(
                         {
                             let mut links = state.links.lock().await;
                             if let Some(v) = links.get_mut(&peer) {
-                                v.retain(|l| !l.bulk.same_channel(&bulk));
+                                v.retain(|l| !l.low.same_channel(&bulk));
                                 if v.is_empty() {
                                     links.remove(&peer);
                                 }
@@ -1247,7 +1242,7 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
 ///
 /// 为什么需要它：Hello 只带不超过 2KiB 的头像、Presence 已不再内联大头像，所以
 /// 「大头像」只剩这一条正式路径 —— 链路建好后同步**一次**。超过
-/// CONTROL_AVATAR_MAX_BYTES 的帧会被 is_bulk_message 降到 bulk 通道，
+/// CONTROL_AVATAR_MAX_BYTES 的帧会被通道分类降到 Low 队列，
 /// 不再和聊天/好友请求抢优先道。
 pub async fn send_user_info_to(state: &Arc<AppState>, peer_id: &str) {
     let msg = Message::UserInfo {
@@ -1388,8 +1383,9 @@ async fn handle_incoming(
         );
         return;
     }
-    let (bulk_tx, bulk_rx) = mpsc::channel(1024);
-    let (prio_tx, prio_rx) = mpsc::channel(1024);
+    let (high_tx, high_rx) = mpsc::channel(1024);
+    let (normal_tx, normal_rx) = mpsc::channel(1024);
+    let (low_tx, low_rx) = mpsc::channel(1024);
     // 本连接独立的取消信号（M3#6）：健康 watchdog 判定僵尸链路时精确断开这一条。
     let (cancel_tx, cancel_rx) = watch::channel(false);
     // 追加到该 peer 的连接列表（而非覆盖）—— 多连接支持的基础。
@@ -1411,9 +1407,9 @@ async fn handle_incoming(
         .push(Link {
             endpoint: MeshEndpoint::Tcp(peer_addr),
             path_kind: inbound_kind,
-            bulk: bulk_tx.clone(),
-            // priority 留一个 sender 在作用域内：首帧验签后要回发 Hello（见下）。
-            priority: prio_tx.clone(),
+            high: high_tx.clone(),
+            normal: normal_tx.clone(),
+            low: low_tx.clone(),
             cancel: cancel_tx,
         });
     // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
@@ -1423,8 +1419,9 @@ async fn handle_incoming(
         peer_id.clone(),
         MeshEndpoint::Tcp(peer_addr),
         w,
-        bulk_rx,
-        prio_rx,
+        high_rx,
+        normal_rx,
+        low_rx,
         shutdown.clone(),
         cancel_rx.clone(),
     ));
@@ -1442,7 +1439,7 @@ async fn handle_incoming(
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_clock(&dbc, &peer_id)
     };
-    let _ = prio_tx.send(build_signed_hello(&state, conv_clock)).await;
+    let _ = normal_tx.send(build_signed_hello(&state, conv_clock)).await;
     state.logger.info(
         "transport",
         format!("握手补全：已向对端回发本节点 Hello（peer={peer_id}）"),
@@ -1469,7 +1466,7 @@ async fn handle_incoming(
         r,
         peer_id,
         MeshEndpoint::Tcp(peer_addr),
-        bulk_tx,
+        low_tx,
         shutdown,
         cancel_rx,
     )
@@ -1566,16 +1563,18 @@ async fn writer_loop(
     // 类型是 transport 无关的 `Endpoint`（BLE 也需要它）。
     endpoint: MeshEndpoint,
     mut w: TcpSender,
-    mut bulk_rx: mpsc::Receiver<Message>,
-    mut prio_rx: mpsc::Receiver<Message>,
+    mut high_rx: mpsc::Receiver<Message>,
+    mut normal_rx: mpsc::Receiver<Message>,
+    mut low_rx: mpsc::Receiver<Message>,
     mut shutdown: watch::Receiver<bool>,
     // 本连接的取消信号（M3#6）：由健康 watchdog 在半开链路上触发。
     mut cancel: watch::Receiver<bool>,
 ) {
-    let mut bulk_open = true;
-    let mut prio_open = true;
+    let mut high_open = true;
+    let mut normal_open = true;
+    let mut low_open = true;
     loop {
-        if !bulk_open && !prio_open {
+        if !high_open && !normal_open && !low_open {
             break;
         }
         let msg = tokio::select! {
@@ -1585,8 +1584,9 @@ async fn writer_loop(
             _ = shutdown.changed() => break,
             // 本连接被判死（读活性长期过期）→ 与全局停机同样立即收尾。
             _ = cancel.changed() => break,
-            maybe = prio_rx.recv(), if prio_open => maybe,
-            maybe = bulk_rx.recv(), if bulk_open => maybe,
+            maybe = high_rx.recv(), if high_open => maybe,
+            maybe = normal_rx.recv(), if normal_open => maybe,
+            maybe = low_rx.recv(), if low_open => maybe,
         };
         match msg {
             Some(msg) => {
@@ -1634,14 +1634,17 @@ async fn writer_loop(
                 }
             }
             None => {
-                // select 无法直接区分是哪个分支关闭，用两个 recv 的 is_closed 兜底。
-                if prio_rx.is_closed() {
-                    prio_open = false;
+                // select 无法直接区分是哪个分支关闭，用三个 recv 的 is_closed 兜底。
+                if high_rx.is_closed() {
+                    high_open = false;
                 }
-                if bulk_rx.is_closed() {
-                    bulk_open = false;
+                if normal_rx.is_closed() {
+                    normal_open = false;
                 }
-                if !bulk_open && !prio_open {
+                if low_rx.is_closed() {
+                    low_open = false;
+                }
+                if !high_open && !normal_open && !low_open {
                     break;
                 }
             }
@@ -1701,14 +1704,14 @@ async fn reader_loop(
             let links = state.links.lock().await;
             links
                 .get(&peer_id)
-                .and_then(|list| list.iter().find(|l| l.bulk.same_channel(&link_tx)))
+                .and_then(|list| list.iter().find(|l| l.low.same_channel(&link_tx)))
                 .map(|l| l.endpoint.clone())
         };
         let mut links = state.links.lock().await;
         let removed = match links.get_mut(&peer_id) {
             Some(list) => {
                 let before = list.len();
-                list.retain(|l| !l.bulk.same_channel(&link_tx));
+                list.retain(|l| !l.low.same_channel(&link_tx));
                 list.len() != before
             }
             None => false,
@@ -2524,8 +2527,9 @@ async fn connect_to_peer(
     let peer_id: String = device_id.clone();
     let learned_hello: Option<Message> = Some(first);
 
-    let (bulk_tx, bulk_rx) = mpsc::channel(1024);
-    let (prio_tx, prio_rx) = mpsc::channel(1024);
+    let (high_tx, high_rx) = mpsc::channel(1024);
+    let (normal_tx, normal_rx) = mpsc::channel(1024);
+    let (low_tx, low_rx) = mpsc::channel(1024);
     // 本连接独立的取消信号（M3#6），语义同 `handle_incoming`。
     let (cancel_tx, cancel_rx) = watch::channel(false);
     state
@@ -2537,8 +2541,9 @@ async fn connect_to_peer(
         .push(Link {
             endpoint: MeshEndpoint::Tcp(endpoint),
             path_kind,
-            bulk: bulk_tx.clone(),
-            priority: prio_tx.clone(),
+            high: high_tx.clone(),
+            normal: normal_tx.clone(),
+            low: low_tx.clone(),
             cancel: cancel_tx,
         });
     // 同步到 mesh 层（拨号侧同样登记，路径类型由调用方携带）
@@ -2548,8 +2553,9 @@ async fn connect_to_peer(
         peer_id.clone(),
         ep.clone(),
         w,
-        bulk_rx,
-        prio_rx,
+        high_rx,
+        normal_rx,
+        low_rx,
         shutdown.clone(),
         cancel_rx.clone(),
     ));
@@ -2574,7 +2580,7 @@ async fn connect_to_peer(
         r,
         peer_id.clone(),
         ep.clone(),
-        bulk_tx,
+        low_tx,
         shutdown,
         cancel_rx,
     ));
@@ -7761,8 +7767,9 @@ mod tests {
             crate::state::Link {
                 endpoint: MeshEndpoint::Tcp(addr.parse().unwrap()),
                 path_kind: kind,
-                bulk: b_tx,
-                priority: p_tx,
+                high: b_tx.clone(),
+                normal: p_tx,
+                low: b_tx,
                 cancel,
             },
             b_rx,
@@ -7786,8 +7793,9 @@ mod tests {
             crate::state::Link {
                 endpoint,
                 path_kind: kind,
-                bulk: b_tx,
-                priority: p_tx,
+                high: b_tx.clone(),
+                normal: p_tx,
+                low: b_tx,
                 cancel,
             },
             b_rx,
@@ -8049,29 +8057,36 @@ mod tests {
         }
     }
 
-    /// 造 n 对信道，返回 senders + 各接收端（`None` 表示该条"已断"：接收端被丢弃）。
+    /// 造 n 组信道（high/normal/low），返回 senders + 各接收端。
+    /// msg() 造的是 Heartbeat=High，所以 receivers 保留 high_rx。
     #[allow(clippy::type_complexity)]
     fn channels(
         n: usize,
         closed: &[usize],
     ) -> (
-        Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)>,
+        Vec<(
+            mpsc::Sender<Message>,
+            mpsc::Sender<Message>,
+            mpsc::Sender<Message>,
+        )>,
         Vec<Option<mpsc::Receiver<Message>>>,
     ) {
         let mut senders = Vec::new();
         let mut receivers = Vec::new();
-        for i in 0..n {
-            let (b_tx, b_rx) = mpsc::channel(4);
-            let (p_tx, p_rx) = mpsc::channel(4);
-            senders.push((b_tx, p_tx));
-            if closed.contains(&i) {
-                // 模拟"这条链路已断"：channel 关闭（`try_send` 会返回 Closed）
-                drop(b_rx);
-                drop(p_rx);
+        for _i in 0..n {
+            let (h_tx, h_rx) = mpsc::channel(4);
+            let (n_tx, n_rx) = mpsc::channel(4);
+            let (l_tx, l_rx) = mpsc::channel(4);
+            senders.push((h_tx, n_tx, l_tx));
+            if closed.contains(&_i) {
+                drop(h_rx);
+                drop(n_rx);
+                drop(l_rx);
                 receivers.push(None);
             } else {
-                receivers.push(Some(p_rx));
-                drop(b_rx); // 只关心 priority 通道
+                receivers.push(Some(h_rx)); // Heartbeat=High → 走 high
+                drop(n_rx);
+                drop(l_rx);
             }
         }
         (senders, receivers)
@@ -8083,7 +8098,13 @@ mod tests {
         let (senders, mut rx) = channels(2, &[0]); // 下标 0（被选中）已断
                                                    // 顺序模拟选路结果：先试 0（断），再试 1（活）
         let order = vec![0usize, 1];
-        let r = send_over_order(&senders, &order, &msg("m1"), false).await;
+        let r = send_over_order(
+            &senders,
+            &order,
+            &msg("m1"),
+            crate::network::dispatch::MessagePriority::High,
+        )
+        .await;
         assert!(r.is_ok(), "断一条后必须换下一条送达，实得 {r:?}");
         let got = rx[1]
             .as_mut()
@@ -8098,9 +8119,14 @@ mod tests {
     async fn sends_only_on_first_healthy_link_in_order() {
         let (senders, mut rx) = channels(2, &[]);
         let order = vec![1usize, 0]; // 选路把下标 1 排前面
-        assert!(send_over_order(&senders, &order, &msg("m2"), false)
-            .await
-            .is_ok());
+        assert!(send_over_order(
+            &senders,
+            &order,
+            &msg("m2"),
+            crate::network::dispatch::MessagePriority::High
+        )
+        .await
+        .is_ok());
         assert!(
             rx[1].as_mut().unwrap().try_recv().is_ok(),
             "应落在顺序第一的那条"
@@ -8115,7 +8141,13 @@ mod tests {
     #[tokio::test]
     async fn all_links_closed_returns_err() {
         let (senders, _rx) = channels(2, &[0, 1]);
-        let r = send_over_order(&senders, &[0, 1], &msg("m3"), false).await;
+        let r = send_over_order(
+            &senders,
+            &[0, 1],
+            &msg("m3"),
+            crate::network::dispatch::MessagePriority::High,
+        )
+        .await;
         assert!(r.is_err(), "全断必须报错（Err 由 outbox 兜底补发）");
     }
 
@@ -8135,9 +8167,14 @@ mod tests {
 
         // 用真实信道复现：LAN 那条已断，Routed 那条活着
         let (senders, mut rx) = channels(2, &[0]);
-        assert!(send_over_order(&senders, &order, &msg("m4"), false)
-            .await
-            .is_ok());
+        assert!(send_over_order(
+            &senders,
+            &order,
+            &msg("m4"),
+            crate::network::dispatch::MessagePriority::High
+        )
+        .await
+        .is_ok());
         assert!(
             rx[1].as_mut().unwrap().try_recv().is_ok(),
             "LAN 降级后消息必须从 Routed 送出"
@@ -8488,7 +8525,7 @@ mod tests {
         assert_eq!(directed_relay_target(&normal, me), None);
     }
 
-    /// 造一个只关心 payload 长度/类型的 Gossip 信封（其余字段对 is_bulk_message 无意义）。
+    /// 造一个只关心 payload 长度/类型的 Gossip 信封（其余字段对优先级分类无意义）。
     fn test_envelope(payload_len: usize, kind: GossipKind) -> GossipEnvelope {
         GossipEnvelope {
             message_id: "m".into(),
@@ -8513,6 +8550,10 @@ mod tests {
 
     #[test]
     fn bulk_messages_are_only_large_chunks() {
+        // 旧 is_bulk_message 的判据已迁移到 `dispatch::message_priority`（单一事实来源）。
+        // 本测试保住的是**同一张真值表**：bulk ⇔ Low，且边界值不变。
+        use crate::network::dispatch::{message_priority, MessagePriority};
+        let is_bulk = |m: &Message| message_priority(m) == MessagePriority::Low;
         let chat = Message::ChatMessage {
             msg_id: "m1".into(),
             from: "a".into(),
@@ -8522,13 +8563,13 @@ mod tests {
             ts: 1,
             seq: 1,
         };
-        assert!(!is_bulk_message(&chat));
+        assert!(!is_bulk(&chat));
         let file_chunk = Message::FileChunk {
             transfer_id: "t1".into(),
             seq: 0,
             data: "abc".into(),
         };
-        assert!(is_bulk_message(&file_chunk));
+        assert!(is_bulk(&file_chunk));
         let group_file_chunk = Message::GroupFileChunk {
             transfer_id: "t1".into(),
             group_id: "g1".into(),
@@ -8536,18 +8577,18 @@ mod tests {
             seq: 0,
             data: "abc".into(),
         };
-        assert!(is_bulk_message(&group_file_chunk));
+        assert!(is_bulk(&group_file_chunk));
         // 文件终止帧必须走 bulk，避免跑到未写完的分片前面。
         let file_done = Message::FileDone {
             transfer_id: "t1".into(),
         };
-        assert!(is_bulk_message(&file_done));
+        assert!(is_bulk(&file_done));
         let group_file_done = Message::GroupFileDone {
             transfer_id: "t1".into(),
             group_id: "g1".into(),
             sender_id: "a".into(),
         };
-        assert!(is_bulk_message(&group_file_done));
+        assert!(is_bulk(&group_file_done));
 
         // 小头像资料帧：资料变更要立刻可见 ⇒ 仍走优先道。
         let small_user_info = Message::UserInfo {
@@ -8556,10 +8597,7 @@ mod tests {
             avatar: Some("x".repeat(CONTROL_AVATAR_MAX_BYTES)),
             device_type: "desktop".into(),
         };
-        assert!(
-            !is_bulk_message(&small_user_info),
-            "恰好等于上限的头像仍应走优先道"
-        );
+        assert!(!is_bulk(&small_user_info), "恰好等于上限的头像仍应走优先道");
 
         // 大头像资料帧：内容大、可晚到 ⇒ 必须降级到 bulk，绝不占聊天/好友的优先道。
         let big_user_info = Message::UserInfo {
@@ -8569,7 +8607,7 @@ mod tests {
             device_type: "desktop".into(),
         };
         assert!(
-            is_bulk_message(&big_user_info),
+            is_bulk(&big_user_info),
             "超过上限的头像资料帧必须走 bulk（否则会堵住聊天与好友请求）"
         );
 
@@ -8577,11 +8615,11 @@ mod tests {
         let small_gossip = Message::Gossip {
             envelope: test_envelope(BULK_GOSSIP_PAYLOAD_MAX_BYTES, GossipKind::Presence),
         };
-        assert!(!is_bulk_message(&small_gossip));
+        assert!(!is_bulk(&small_gossip));
         let big_gossip = Message::Gossip {
             envelope: test_envelope(BULK_GOSSIP_PAYLOAD_MAX_BYTES + 1, GossipKind::Presence),
         };
-        assert!(is_bulk_message(&big_gossip));
+        assert!(is_bulk(&big_gossip));
     }
 
     #[tokio::test]

@@ -220,6 +220,7 @@ export default {
       paths: [
         "src-tauri/src/network/ble.rs", // BLE 中央角色（活）
         "src-tauri/src/network/transport.rs", // TCP 数据面（活，8836 行）
+        "src-tauri/src/network/dispatch.rs", // 三优先级调度 + BLE yield + 发送状态定义（新建，2026-09）
         "src-tauri/src/transport", // 新栈（部分接线）
       ],
       invariants: ["INV-P20", "INV-P22", "INV-P23"],

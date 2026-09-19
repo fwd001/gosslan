@@ -77,7 +77,7 @@ impl Transport for LanTransport {
         // 同 transport::broadcast_gossip 的设计（v4.18.10 已验证）。
         let targets: Vec<_> = {
             let links = self.state.links.lock().await;
-            links.values().flatten().map(|l| l.bulk.clone()).collect()
+            links.values().flatten().map(|l| l.low.clone()).collect()
         };
 
         // 每个 peer 用 try_send 优先非阻塞，Full 时 500ms 有界补试。
