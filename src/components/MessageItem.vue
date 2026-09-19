@@ -913,7 +913,7 @@ async function copyFileToClipboard() {
 
           <!-- 未知 kind 的兜底气泡：排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
                否则虚拟列表按 `previewMetrics.TEXT_BUBBLE_PADDING` 估的高度会对不上。 -->
-          <div v-else class="select-text px-3 py-1.5 text-sm leading-normal" :style="bubbleStyle">
+          <div v-else class="select-text px-3 py-1.5 text-sm leading-normal break-all" :style="bubbleStyle">
             {{ message.content }}
           </div>
         </div>

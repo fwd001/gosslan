@@ -6,10 +6,11 @@
 import { clampScale, pinchScale, swipeDirection } from "@/utils/lightboxGestures";
 import { t } from "@/i18n";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ChevronLeft, ChevronRight, Save, X } from "lucide-vue-next";
+import { ChevronLeft, ChevronRight, RotateCcw, Save, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/useAppStore";
 import { loadFilePreview } from "@/utils/filePreview";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
+import { useBackLayer } from "@/composables/useBackLayer";
 
 /** 相册里的一张图：新格式走 readFilePreview（msg_id → blob URL），旧格式 data URL 直接用。 */
 interface GalleryImage {
@@ -32,6 +33,18 @@ const app = useAppStore();
 
 const current = computed(() => props.images[props.index] ?? null);
 const hasMultiple = computed(() => props.images.length > 1);
+
+/**
+ * 给图片预览自己注册返回栈层 —— 否则 Android 侧滑返回会把 ChatWindow 那层
+ * （ResponsiveLayout 的 useBackLayer #1）先关掉，聊天回到列表了但预览页还挂着
+ * （用户 2026-09-19：「预览页还在但背后聊天框回到列表了」）。
+ *
+ * ⚠️ 注册顺序：本组件在 ChatWindow 里 mount，而 ChatWindow 在 ResponsiveLayout 之后
+ * render，所以这条 useBackLayer 自然排在 #1 之后 → 关闭顺序正确：先关预览 → 再关聊天。 */
+useBackLayer(
+  () => props.open,
+  () => emit("close"),
+);
 
 const src = ref<string>("");
 const note = ref<string | null>(null);
@@ -277,6 +290,18 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           >
             <Save class="h-4 w-4" />
             {{ t("common.save") }}
+          </button>
+          <!-- 还原到自适应尺寸：双击图片也会触发 reset，但全屏遮罩上显式放个按钮
+               更符合"放大后总要缩回去"的直觉（用户 2026-09-19）。只在 scale≠1 时显示，
+               否则跟关闭按钮堆成一团显得多余。 -->
+          <button
+            v-if="scale !== 1"
+            class="tap-safe flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15"
+            style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
+            :title="t('common.resetZoom')" :aria-label="t('common.resetZoom')"
+            @click.stop="reset"
+          >
+            <RotateCcw class="h-4 w-4" />
           </button>
           <button
             class="tap-safe flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15"

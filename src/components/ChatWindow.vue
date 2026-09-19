@@ -768,12 +768,36 @@ async function attachFile() {
   const convId = chat.activeConv;
   if (!convId) return;
   if (!isGroup.value && !isPeerFriend.value) return;
-  const picked = await openDialog({ multiple: false });
-  if (typeof picked !== "string") return;
-  // ⚠️ 必须先"落地"：Android 的选择器给的是 `content://` URI，直接丢给后端发送必然失败
-  //（`std::fs` 打不开 URI）—— 这个命令在安卓上把它复制进缓存并返回真实路径，桌面端原样返回。
-  const local = await api.importPickedFile(picked);
-  await sendOneFile(convId, local);
+  // multiple: true → 支持一次选多个文件（用户 2026-09-19：「只能一个一个发」）
+  const pickedRaw = await openDialog({ multiple: true });
+  // Tauri plugin-dialog 的 open 在 multiple=true 时返回 string[]，false 时返回 string；
+  // 统一成数组处理，单次/多次走同一条发送逻辑。
+  const pickedList: string[] = Array.isArray(pickedRaw) ? pickedRaw : pickedRaw ? [pickedRaw] : [];
+  if (pickedList.length === 0) return;
+  // 🟦 并发限制 2：Android ART heap 通常只有 256MB，一个 10MB 文件 import + sha256 + send
+  // 全链路同时占 ~40MB，并发 3 很容易 OOM（真机：5 张图一起发直接 FATAL OutOfMemoryError）。
+  // 并发 2 是 WhatsApp/Telegram 国产 Android 版的保守值，iOS 版可以并发 4+（512MB+ heap）。
+  const CONCURRENCY = 2;
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(CONCURRENCY, pickedList.length) },
+    async () => {
+      while (cursor < pickedList.length) {
+        const i = cursor++;
+        try {
+          // ⚠️ Android 的选择器给的是 `content://` URI，直接丢给后端发送必然失败
+          //（`std::fs` 打不开 URI）—— 这个命令在安卓上把它复制进缓存并返回真实路径，桌面端原样返回。
+          const local = await api.importPickedFile(pickedList[i]);
+          await sendOneFile(convId, local);
+        } catch (e) {
+          // 单个失败不阻塞其余 — 后端 send_file 会把失败消息写入 failed 状态
+          // （见 useChatStore.sendFileTo 的 catch），用户能看到哪一条失败了。
+          console.error(`[attachFile] #${i} failed:`, e);
+        }
+      }
+    },
+  );
+  await Promise.allSettled(workers);
 }
 
 // ---------------- 拖拽文件发送 ----------------
@@ -1054,7 +1078,9 @@ function onLoadMore() {
          移动端底部只留 safe-area-inset-bottom（手机圆角/Home Indicator 区域），
          不要多余 padding — TabBar 在 ChatWindow 打开时已隐藏（mobileView='chat'），
          之前 pb-3 留了 12px 但没有 safe-area-inset，手机底部输入框会被圆角区域压住。 -->
-    <div class="shrink-0 bg-[var(--gosslan-chat)] px-4 pt-2" :style="{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 6px)' }">
+    <!-- Material 3 规范：组件外最小 padding 8dp (pt-2)，safe-area 下额外 8px breathing room
+         （Chrome 135 edge-to-edge 推荐的最小值，Android 15+ 强制 edge-to-edge 后手势导航条必留）。 -->
+    <div class="shrink-0 bg-[var(--gosslan-chat)] px-4 pt-2" :style="{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 8px)' }">
       <!-- 多选态：输入区被操作条**替换**（微信同款）。
            高度固定 4rem，与 Composer 的最小高度一致 —— 否则进出多选时消息区高度跳变，
            虚拟列表会跟着滚一下。 -->

@@ -600,7 +600,9 @@ function fileToDataUrl(f: File): Promise<string> {
          挂在**这张卡片自己的边框**上。编辑区（下面那个 contenteditable div）是卡片里一块
          透明矩形，不能给它画外框 —— 那会在卡片内部套一个方框（用户 2026-09-16 报的
          「输入框焦点态有个主题色方框」在消息输入框上就是这个形态）。 -->
-    <div ref="composerCard" class="gosslan-composer relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-4 pb-2.5 pt-2">
+    <!-- Material 3 Text Field 规范：容器垂直 padding 8dp (pt-2 pb-2)，
+         这是文字可读性和点击热区的基线；WebView 中 1dp ≈ 1px（标准密度）。 -->
+    <div ref="composerCard" class="gosslan-composer relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-4 pb-2 pt-2">
       <!-- 群聊 @ 成员选择：输入 @ 后浮出，↑↓ 导航 / Enter 或点击选中 -->
       <div
         v-if="mention && mentionFiltered.length > 0"

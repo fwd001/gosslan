@@ -159,7 +159,7 @@ test("安卓文件选择：选择器的返回值必须先落地成真实路径�
   const chat = read("components/ChatWindow.vue");
   assert.match(
     chat,
-    /const local = await api\.importPickedFile\(picked\);/,
+    /await api\.importPickedFile\(pickedList\[i\]\)/,
     "`content://` URI 直接交给后端发送必然失败（std::fs 打不开 URI）—— 必须经 importPickedFile 落地",
   );
   assert.match(read("api/index.ts"), /importPickedFile:/, "api 层要暴露这个命令");

@@ -54,16 +54,20 @@ const mobileMoreOpen = ref(false);
  */
 const favoritesOpen = ref(false);
 
-/** 打开收藏页（整页，非弹窗）。TabBar 靠 !favoritesOpen 条件自然隐藏，不需要改 mobileView ——
-     改了反而会跟 ChatWindow 的 'chat' 状态混淆，导致系统返回键（useBackLayer）不知道该关哪层。 */
+/** 打开收藏页（整页，非弹窗）。
+     只改 favoritesOpen，**不碰 mobileView** — 否则 closeFavorites 把 mobileView 改回 'list' 时会触发
+     useBackLayer #1（mobileView==='chat'）的 release，多退一次历史条目（用户 2026-09-19 Android：
+     「点返回后 TabBar 不见了，要侧划第二次才回来」）。收藏页的 main 可见性由下面 main 元素的
+     translate 条件里 `favoritesOpen ? translate-x-0 : ...` 显式覆盖。 */
 function openFavorites() {
   favoritesOpen.value = true;
 }
 
-/** 关闭收藏页。移动端返回会话列表（iOS push/pop 语义，与 closeRequests 一致）。 */
+/** 关闭收藏页。
+     只改 favoritesOpen，mobileView 保持打开收藏前的值（可能是 'chat' 也可能是 'list'）。
+     这样不会误触发 useBackLayer #1 的 release（那个只该由"关闭聊天会话"触发）。 */
 function closeFavorites() {
   favoritesOpen.value = false;
-  if (app.isMobile) app.mobileView = "list";
 }
 
 /** 导航栏切到聊天/通讯录/链接：总是离开收藏页（即使 view 值没变，点导航也要关收藏）。 */
@@ -392,13 +396,16 @@ function onResizeEnd() {
 
     <!-- 会话列表：桌面宽度可拖拽调（默认250px，持久化）；移动端整屏抽屉，靠 translate 滑动切换。
          收藏是**整页**（参考 PC 微信：点收藏后左侧不再显示聊天/通讯录列表），
-         所以桌面端收藏打开时把这一列整个收起，主区（收藏页）顶到 rail 右边。 -->
+         所以桌面端收藏打开时把这一列整个收起，主区（收藏页）顶到 rail 右边。
+         ⚠️ 移动端 translate 与下方 main 镜像对称（同用 'list' && !favoritesOpen 作为列表态判据）。
+         收藏打开时 aside 必须 -translate-x-full 滑走，否则 z-20 会盖在 z-10 的 main 上
+         → FavoritePanel 被遮住看不见（用户 2026-09-19 Android 实测）。 -->
     <aside
       v-if="app.isMobile || !favoritesOpen"
       class="h-full shrink-0 overflow-hidden rounded-tl-[var(--gosslan-radius-lg)] bg-[var(--gosslan-list)]"
       :class="app.isMobile
         ? 'absolute inset-y-0 left-0 z-20 w-full transition-transform duration-300 ' +
-          (app.mobileView === 'list' ? 'translate-x-0' : '-translate-x-full')
+          (app.mobileView === 'list' && !favoritesOpen ? 'translate-x-0' : '-translate-x-full')
         : ''"
       :style="app.isMobile ? undefined : { width: `${listW}px` }"
     >
@@ -432,26 +439,28 @@ function onResizeEnd() {
     ></div>
 
     <!-- 右侧聊天区：白色面板，左上角圆角与列表相交（微信式），面板色差替代分割线 -->
-    <!-- 移动端：聊天区与列表**一起**平移（iOS push/pop 观感）。
-         ⚠️ 不要改回 `v-if`/`hidden` 切换：那样列表滑出的 300ms 里右侧露出的是根节点底色
-         （一片灰），而且滑动是单边的，看起来"像网页换页"。
-         离屏时用 `inert` 摘掉焦点与交互（键盘用户 Tab 不进不可见面板）。 -->
+    <!-- 移动端 translate 与上方 aside 镜像对称（同判据），保证两者永远互补显示；
+         ⚠️ 不要改回 v-if/hidden：列表滑出的 300ms 右侧会露根节点底色（灰），而且滑动是单边的。
+         离屏时用 inert 摘掉焦点与交互（键盘用户 Tab 不进不可见面板）。 -->
     <main
       class="flex h-full min-w-0 flex-1 flex-col bg-[var(--gosslan-chat)]"
       :class="[
-        // 微信式左上角圆角只属于「聊天区盖在列表上」的桌面观感；收藏等整页打开时它反而像
-        // 一块缺口（页头底线在圆角处断掉），所以整页态（favoritesOpen）下取消圆角。
         favoritesOpen ? '' : 'rounded-tl-[var(--gosslan-radius-lg)]',
         app.isMobile
           ? 'absolute inset-y-0 left-0 z-10 w-full transition-transform duration-300 ' +
-            (app.mobileView === 'list' ? 'translate-x-full' : 'translate-x-0')
+            (app.mobileView === 'list' && !favoritesOpen ? 'translate-x-full' : 'translate-x-0')
           : '',
       ]"
-      :inert="app.isMobile && app.mobileView === 'list'"
+      :inert="app.isMobile && app.mobileView === 'list' && !favoritesOpen"
     >
+      <!-- pb-[calc(4rem+safe-area)] 是给 fixed 定位的 TabBar 留的占位，只有 TabBar 真正**显示**时才需要。
+           下面的 :class 条件必须与 TabBar 的 v-if 完全对齐：mobileView==='list' 且非 settings/logs/favorites 态。
+           否则在 chat 态 / 收藏态 TabBar 已隐藏，pb 还白留着 → 底部空一大截（用户 2026-09-19）。 -->
       <div
         class="min-h-0 flex-1 md:pb-0"
-        :class="app.isMobile && !app.keyboardOpen ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : ''"
+        :class="app.isMobile && !app.keyboardOpen && app.mobileView === 'list' && !favoritesOpen && !settingsOpen && !logsOpen
+          ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]'
+          : ''"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 8}px` }
           : undefined"

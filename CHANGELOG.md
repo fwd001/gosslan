@@ -10,6 +10,24 @@
 
 ## [Unreleased]
 
+## [4.22.5] - 2026-09-19
+
+### Fixed (移动端体验批量收口：多选并发 / 预览返回栈 / TabBar 恢复 / 输入区细节)
+
+- **一次选多个文件发送**（用户 2026-09-19：「只能一个一个发」）：`attachFile` 改
+  `multiple: true`，string|string[] 统一成数组；**并发上限 2**（Android ART heap
+  256MB，一个文件 import+sha256+send 峰值 ~40MB，5 张并发真机 FATAL OOM——
+  WhatsApp 国内版同款保守值）；单个失败不阻塞其余（走 sendFileTo 的 failed 态）。
+- **图片预览返回栈**：`ImageLightbox` 自己注册 `useBackLayer` —— 此前 Android
+  侧滑返回先把 ChatWindow 层弹掉、预览还挂着（「预览页还在但背后聊天回到列表」）；
+  注册顺序天然正确（子组件后 mount → 先弹出）。新增 scale≠1 时的「还原缩放」按钮。
+- **收藏页 TabBar 消失修复**：`closeFavorites` 不再改 `mobileView`（改回 'list'
+  会触发 useBackLayer #1 的 release、多退一次历史条目）；可见性只由
+  favoritesOpen 的 translate 条件表达。
+- 输入区 safe-bottom 6px→8px + Composer 垂直 padding 对齐 Material 3 基线；
+  FriendProfile「发消息」按钮 `shrink-0 whitespace-nowrap`（长昵称窄屏挤压换行）；
+  未知 kind 兜底气泡加 `break-all`（超长无空格 token 撑破气泡宽度）。
+
 ## [4.22.4] - 2026-09-19
 
 ## [4.22.3] - 2026-09-19

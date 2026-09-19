@@ -160,9 +160,10 @@ const confirmRemove = ref(false);
                 ></span>
                 {{ friend.online ? t("common.online") : t("common.offline") }}
               </span>
-              <!-- 发消息按钮：primary，跟在昵称后面，一抬头就能点 -->
+              <!-- 发消息按钮：primary，跟在昵称后面，一抬头就能点；
+                   shrink-0 whitespace-nowrap：长昵称时不被挤得换行（移动端窄屏最容易撞此问题）。 -->
               <button
-                class="tap-safe ml-auto inline-flex h-7 items-center gap-1 rounded-full bg-primary px-3 text-[12px] font-medium text-white transition hover:bg-primary-hover"
+                class="tap-safe ml-auto inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-primary px-3 text-[12px] font-medium text-white transition hover:bg-primary-hover"
                 @click="emit('send-message', friend.device_id)"
               >
                 <MessageCircle class="h-3.5 w-3.5" />
