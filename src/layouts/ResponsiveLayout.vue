@@ -587,7 +587,7 @@ function onResizeEnd() {
       <div
         v-if="app.isMobile && mobileMoreOpen"
         class="fixed left-0 right-0 z-50 flex flex-col items-stretch bg-[var(--gosslan-panel)]"
-        :style="{ bottom: 'calc(64px + env(safe-area-inset-bottom))' }"
+        :style="{ bottom: 'calc(var(--gosslan-mobile-tabbar-h) + env(safe-area-inset-bottom))' }"
         role="menu"
         @click.self="mobileMoreOpen = false"
       >

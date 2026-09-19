@@ -58,6 +58,12 @@
   --gosslan-text-footnote: 12px;
   --gosslan-text-caption: 11px;
 
+  /* ---------------- 布局尺寸 ----------------
+     Header 高度由 TitleBar 的 padding + 图标大小决定，
+     移动端 TabBar 高度 64px（py-2.5 + icon h-5 + text-[11px] + border-t）。 */
+  --gosslan-header-h: 44px;
+  --gosslan-mobile-tabbar-h: 64px;
+
   /* 主面板三档灰阶（Slate 系，对应设计规范）：rail/顶栏 #E2E8F0、列表 #F1F5F9、聊天 #F8FAFC，
      由深到浅拉开层次，面板圆角交界。 */
   --gosslan-caption: #e2e8f0;

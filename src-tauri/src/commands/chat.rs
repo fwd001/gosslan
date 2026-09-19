@@ -628,9 +628,14 @@ pub async fn recall_message(
     if rec.ts > 0 && now - rec.ts > crate::commands::RECALL_WINDOW_MS {
         return Err("超过可撤回时间（5 分钟）".to_string());
     }
-    // 已 cancelled/failed 的消息没必要撤回 — 撤回是让对方删，对方可能根本没收到
+    // 已 cancelled/failed 的消息没必要撤回 — 撤回是让对方删，对方可能根本没收到。
+    // 但用户仍可撤回（只是本地标 recalled），打一条 warn 提示开发者这种边缘路径被走了。
     if matches!(rec.status.as_str(), "cancelled" | "failed") {
-        // 本地还是可以标记 recalled
+        eprintln!(
+            "[gosslan][recall] warn: 撤回的 msg_id={msg_id} 当前 status={} — \
+             撤回是让对方删，对方可能根本没收到；仍按用户请求执行本地 recalled",
+            rec.status
+        );
     }
 
     // 2. 构建 RecallPayload + Gossip envelope（定向到 friend_id）
