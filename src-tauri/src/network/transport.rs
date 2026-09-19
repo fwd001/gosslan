@@ -2679,7 +2679,29 @@ async fn retry_incomplete_content(state: &Arc<AppState>, peer_id: &str) {
             name: rec.name.clone(),
             size: rec.size,
         };
-        if try_send(state, peer_id, &msg).await.is_ok() {
+        let sent = try_send(state, peer_id, &msg).await.is_ok();
+        {
+            // 自审必改#1：这一轮到期重发本身就是「上一轮无人应答」的事实 ——
+            // 不记一次失败，attempts 永远不涨，MAX_CONTENT_RETRIES 封顶形同虚设
+            // （对端重装/文件已删时无应答路径上没有任何 record_failure 调用点）。
+            // 记完之后 status 由退避门控制下一次；到封顶收口 Rejected，
+            // list_resumable 不再捞它 —— 无限重发链在此闭合。
+            let reason = if sent {
+                crate::content::model::FailReason::Timeout
+            } else {
+                crate::content::model::FailReason::LinkDown
+            };
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = crate::content::store::record_failure(
+                &dbc,
+                &rec.cid,
+                peer_id,
+                rec.direction,
+                reason,
+                db::now_ms(),
+            );
+        }
+        if sent {
             state.logger.info(
                 "content",
                 format!("建链自动重试未完成内容 cid={} peer={peer_id}", rec.cid),
@@ -3825,11 +3847,16 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if from == state.device_id {
                 return;
             }
-            let is_friend = {
+            // 双好友判定（2026-09-19 自审 P1#4）：`from` 是**自报字段** —— 单查它，
+            // 一个好友可以冒用另一个好友的 id 浏览别人的共享目录。也不能简单收紧成
+            // from==peer_id：借一跳中继的合法帧到达时 peer 是转投邻居而非原 requester。
+            // 残余风险（接受并记录）：中继好友 M 可以转发 from=他人 的请求，
+            // 但 M 本身已通过 4.22.9 的中继授权闸，且处于 LAN 信任模型内。
+            let allowed = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::get_friend(&dbc, &from).is_some()
+                db::get_friend(&dbc, &from).is_some() && db::get_friend(&dbc, peer_id).is_some()
             };
-            if !is_friend {
+            if !allowed {
                 return;
             }
             let entries = {
@@ -3880,11 +3907,14 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if from == state.device_id {
                 return;
             }
-            let is_friend = {
+            // 双好友判定，同 ShareTreeRequest（自审 P1#4）：`from` 自报可伪造，
+            // 下载别人共享目录的文件必须「声称的 requester 是我的好友」**且**
+            // 「提出这条链路的对端也是我的好友」（中继链两跳都在信任圈内）。
+            let allowed = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::get_friend(&dbc, &from).is_some()
+                db::get_friend(&dbc, &from).is_some() && db::get_friend(&dbc, peer_id).is_some()
             };
-            if !is_friend {
+            if !allowed {
                 return;
             }
             let share = state
