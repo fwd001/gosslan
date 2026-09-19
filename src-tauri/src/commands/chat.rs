@@ -558,29 +558,34 @@ pub async fn resend_message(
         // 群消息简化：通知前端重新发
         Err("群消息重发请删除后重新发送".to_string())
     } else {
-        // 单聊：try_send 定向到对端
+        // 单聊：重建 outbox（sweeper 判 failed 时已删），再 try_send
         let msg_kind = crate::protocol::MsgKind::from_wire_str(&rec.kind);
+        let ts = db::now_ms();
+        let queued = Message::ChatMessage {
+            msg_id: rec.msg_id.clone(),
+            from: s.device_id.clone(),
+            to: rec.receiver_id.clone(),
+            kind: msg_kind.clone(),
+            content: rec.content.clone(),
+            ts,
+            seq: 0,
+        };
+        let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
+
+        // 先写 outbox（INSERT OR IGNORE 幂等）— 确保下次建链 flush_outbox 能捞到
+        {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = db::insert_outbox(&dbc, &msg_id, &rec.receiver_id, &payload);
+        }
+
+        // 有链路则立即 try_send
         if s.has_link(&rec.receiver_id).await {
-            let _ = crate::network::transport::try_send(
-                s,
-                &rec.receiver_id,
-                &Message::ChatMessage {
-                    msg_id: rec.msg_id.clone(),
-                    from: s.device_id.clone(),
-                    to: rec.receiver_id.clone(),
-                    kind: msg_kind,
-                    content: rec.content.clone(),
-                    ts: db::now_ms(),
-                    seq: 0,
-                },
-            )
-            .await;
+            let _ = crate::network::transport::try_send(s, &rec.receiver_id, &queued).await;
             // try_send 成功 → 前进到 sent
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             let _ = db::set_message_status(&dbc, &msg_id, "sent");
         }
-        // 无链路 → 保持 sending，等 flush_outbox 下次建链/心跳时捞出来重发
-        // （如果 outbox 已被 sweeper 删了，用户下次建链前不会自动恢复）
+        // 无链路 → 保持 sending，等 flush_outbox 下次建链/心跳时捞 outbox 重发（已重建）
 
         let _ = s.app.emit("message-resending", &msg_id);
         Ok(())
