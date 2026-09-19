@@ -38,7 +38,17 @@ fn run_migrations(conn: &Connection) -> Result<()> {
     let current: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap_or(0);
-    if current >= DB_VERSION {
+    // S13: 数据库版本高于当前程序 — 说明用户从更新版本的 App 降级了，
+    // 旧代码不认识新 schema，继续使用会导致数据损坏。**拒绝继续，不降级、不删除。**
+    if current > DB_VERSION {
+        let msg = format!(
+            "DB user_version={current} > app DB_VERSION={DB_VERSION}: \
+             refusing to open (downgrade detected, please restore backup or upgrade app)"
+        );
+        eprintln!("[gosslan-db] FATAL: {msg}");
+        return Err(rusqlite::Error::InvalidParameterName(msg));
+    }
+    if current == DB_VERSION {
         return Ok(());
     }
     for step in MIGRATIONS.iter() {
@@ -467,3 +477,7 @@ include!("db/read_receipts.rs");
 include!("db/favorites.rs");
 
 include!("db/recalls.rs");
+
+#[cfg(test)]
+mod migration_tests;
+
