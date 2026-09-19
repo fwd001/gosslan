@@ -7077,7 +7077,9 @@ pub const OUTBOX_SWEEPER_INTERVAL_MS: u64 = 30_000;
 ///   会让消息永远停在 outbox 里，前端永远看到 "sending"
 /// - 即使有链路，writer_loop 可能被 bulk backpressure 挂起，ChatMessage 虽然已入
 ///   channel 但 writer_loop 还没写 → Ack 永远到不了 → outbox 永远不删
-/// - 这个任务打破"无限等待"：给每条消息一个最终期限（120s），超时即判 failed
+/// - 这个任务打破"无限等待"：对端**可达**却等不到 Ack 的条目 120s 判 failed；
+///   对端**离线**的条目不是失败，保留到 `OUTBOX_OFFLINE_HOLD_MS`（上线补发承诺，
+///   见 `db::should_fail_expired_outbox`）
 pub fn spawn_outbox_sweeper(
     state: Arc<AppState>,
     mut shutdown: watch::Receiver<bool>,
@@ -7097,15 +7099,23 @@ pub fn spawn_outbox_sweeper(
             let deadline_group = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
 
             // --- 单聊 outbox ---
-            let expired: Vec<String> = {
+            // 候选行 = 过了 120s 仍未 Ack 的行；是否判 failed 由对端可达性决定：
+            // 对端**离线**不是失败理由 —— 产品承诺「对方离线暂存、上线后自动补发」
+            //（INV-P04），保留到 OUTBOX_OFFLINE_HOLD_MS 才当僵尸清理。
+            // 2026-09-19 P0：此前离线 2 分钟即删行置 failed，离线补发被 sweeper 自己击穿。
+            let candidates: Vec<(String, String, i64)> = {
                 let Ok(dbc) = state.db.lock() else { continue };
                 db::list_expired_outbox(&dbc, deadline_single)
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|(_, mid)| mid)
+                    .map(|(_, mid, peer, created)| (mid, peer, created))
                     .collect()
             };
-            for msg_id in expired {
+            for (msg_id, peer_id, created_at) in candidates {
+                let reachable = state.has_link(&peer_id).await;
+                if !db::should_fail_expired_outbox(reachable, now - created_at) {
+                    continue;
+                }
                 if let Ok(dbc) = state.db.lock() {
                     // 先置 failed（set_message_status 的终态守卫会保证幂等）
                     let _ = db::set_message_status(&dbc, &msg_id, "failed");

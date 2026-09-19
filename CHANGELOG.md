@@ -10,6 +10,19 @@
 
 ## [Unreleased]
 
+## [4.21.2] - 2026-09-19
+
+### Fixed (P0：outbox sweeper 把「对端离线」当「发送失败」，离线补发承诺被击穿)
+
+- **好友关机 2 分钟，消息就永久判 failed**：`spawn_outbox_sweeper` 对所有超过
+  `OUTBOX_FAIL_DEADLINE_MS`（120s）的行一律删 outbox + 置 failed，不区分
+  「发出去没收到 Ack」和「对端根本不在网上」——后者正是 README/INV-P04 承诺的
+  「离线暂存、上线自动补发」场景。现在：候选行带回 `peer_id`/`created_at`，判定收进
+  纯函数 `db::should_fail_expired_outbox`——有链路（可达）仍 120s 放弃；无链路按
+  `OUTBOX_OFFLINE_HOLD_MS`（7 天）保留，到期才当僵尸行清理。补 2 个单测
+  （判定语义 + 行数据完整性）。**已知边界**：群 outbox 维持原 120s 语义（判定按
+  msg_id 粒度、删除整组行，需要单独设计，登记在案）。
+
 ## [4.21.1] - 2026-09-19
 
 ### Fixed (P0：单聊重发把明文推上线，重发实际是 no-op)
