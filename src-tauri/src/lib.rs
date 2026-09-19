@@ -1229,8 +1229,18 @@ mod tests {
             "文件分块大小必须按链路能力决定（BLE 上 256 KiB 分不出片）"
         );
         assert!(
-            stream.contains("inbound_path_kind("),
+            stream.contains("resolve_stream_link("),
             "分块大小必须取自**实际选路结果**，不能按平台写死"
+        );
+        // 保序不变量：一条分片流只能待在同一条连接上（真机：多文件并发时 600MB
+        // 大文件跑到 100% 报"文件分片顺序错误"，单发同一文件必成功）。
+        assert!(
+            stream.contains("send_on_link(&link"),
+            "分片与 FileDone 必须投到钉住的那条链路：逐条 try_send 会在队列满时换链路 ⇒ 失序"
+        );
+        assert!(
+            !stream.contains("try_send(state, peer_id, &chunk)"),
+            "文件分片不得逐条选路（跨连接乱序）"
         );
 
         let ble = include_str!("network/ble.rs");

@@ -69,7 +69,10 @@ async fn dispatch_group_file_to_peer(
             .remove(transfer_id);
     };
 
-    let result = tokio::time::timeout(file::FILE_SEND_DEADLINE, async {
+    // 期限按体积自适应（与单聊同一口径，见 `file::send_deadline_for`）：
+    // 固定 10min 窗口下 500-600MB 的视频在群发里必被误判超时。
+    let deadline = file::send_deadline_for(size);
+    let result = tokio::time::timeout(deadline, async {
         // 流式分片：按**该接收者的实际链路**选块大小 → AEAD（独立随机 nonce）→ Base64 → GroupFileChunk。
         //
         // ⚠️ 不能再用固定的 256KiB（原 `FILE_CHUNK`）：BLE 上 256KiB base64 后约 350KB，
@@ -77,8 +80,15 @@ async fn dispatch_group_file_to_peer(
         // ⇒ 整帧被丢（只留一条 warn），而发送方界面照旧显示"已发送"
         // —— 即**群文件在 BLE 上等于 0 字节可达**。
         // 单聊路径早已用 `chunk_size_for_path` 修掉同一个坑（推导见 `network/file.rs`），这里补齐。
-        let path_kind = crate::network::transport::inbound_path_kind(state, recipient).await;
-        let chunk_size = file::chunk_size_for_path(&path_kind);
+        //
+        // 分片流**钉死在该接收者的单条链路**上（与单聊同一套修复，见
+        // `transport::resolve_stream_link`）：逐片 `try_send` 会在队列满时换链路，
+        // 群聊接收端要求 seq 严格递增，一旦跨连接失序整条传输判死 ——
+        // 真机表现为群里连发 9-10 张图总有 1-2 张收不全、单发同一张必成功。
+        let link = crate::network::transport::resolve_stream_link(state, recipient)
+            .await
+            .ok_or_else(|| "未建立连接".to_string())?;
+        let chunk_size = file::chunk_size_for_path(link.path_kind.as_str());
         let mut f = tokio::fs::File::open(&src)
             .await
             .map_err(|e| e.to_string())?;
@@ -115,9 +125,14 @@ async fn dispatch_group_file_to_peer(
                 seq,
                 data,
             };
-            try_send(state, recipient, &chunk)
-                .await
-                .map_err(|e| format!("分片发送失败：{e}"))?;
+            // 投到**钉住的这条**链路：队列满时原地等背压，绝不换链路（换路 = 分片失序）。
+            tokio::select! {
+                biased;
+                _ = &mut cancel_rx => return Err("用户取消发送".to_string()),
+                r = crate::network::transport::send_on_link(&link, &chunk) => {
+                    r.map_err(|e| format!("分片发送失败：{e}"))?;
+                }
+            }
             sent += n as u64;
             // 真实本地进度节流落库（250ms），并向前端推送进度事件。
             if last_report.elapsed() >= std::time::Duration::from_millis(250) {
@@ -172,7 +187,9 @@ async fn dispatch_group_file_to_peer(
             group_id: group_id.to_string(),
             sender_id: state.device_id.clone(),
         };
-        try_send(state, recipient, &done)
+        // Done 也必须排在**自己那串分片之后**：走 `try_send` 时队列满会 failover 到另一条
+        // 空闲连接，完成帧超过仍在路上的分片先到 ⇒ 接收端判"未完成"打死整条传输。
+        crate::network::transport::send_on_link(&link, &done)
             .await
             .map_err(|e| format!("Done 发送失败：{e}"))?;
         // 收尾：与单聊 send_file_from_path 同理 — 确保前端收到 100% progress + done 事件。
@@ -201,9 +218,6 @@ async fn dispatch_group_file_to_peer(
 
     match result {
         Ok(inner) => inner,
-        Err(_) => Err(format!(
-            "群文件发送超时（超过 {}s）",
-            file::FILE_SEND_DEADLINE.as_secs()
-        )),
+        Err(_) => Err(format!("群文件发送超时（超过 {}s）", deadline.as_secs())),
     }
 }

@@ -20,7 +20,7 @@ use tokio::time::Duration;
 use crate::crypto;
 use crate::db;
 use crate::network::transport::{
-    clear_file_wire_progress, file_wire_progress_at, resolve_member_x25519, try_send,
+    clear_file_wire_progress, file_wire_progress_at, resolve_member_x25519, send_on_link, try_send,
 };
 use crate::protocol::{Message, ShareEntry, FILE_CHUNK};
 use crate::state::{AppState, FileDoneInfo, FileFailedInfo, FileReceiver};
@@ -601,9 +601,13 @@ async fn stream_file(
     let mut f = tokio::fs::File::open(&path)
         .await
         .map_err(|e| SendFileError::permanent(format!("打开文件失败：{e}")))?;
-    // 分块大小按**当前链路的实际选路结果**决定（BLE 上必须小，见 `chunk_size_for_path`）。
-    let path_kind = crate::network::transport::inbound_path_kind(state, peer_id).await;
-    let chunk_size = chunk_size_for_path(&path_kind);
+    // 整条分片流**钉死在一条链路**上（保序），分块大小也按这条链路决定
+    // （BLE 上必须小，见 `chunk_size_for_path`）。为什么不能逐片 `try_send`：
+    // 见 `transport::resolve_stream_link`。
+    let link = crate::network::transport::resolve_stream_link(state, peer_id)
+        .await
+        .ok_or_else(|| SendFileError::retryable("未建立连接"))?;
+    let chunk_size = chunk_size_for_path(link.path_kind.as_str());
     let mut buf = vec![0u8; chunk_size];
     // 断点续传：从接收端已持有的前缀之后开始读（分片序号也从 from_seq 接着数）。
     if from_bytes > 0 {
@@ -653,9 +657,14 @@ async fn stream_file(
             seq,
             data,
         };
-        try_send(state, peer_id, &chunk)
-            .await
-            .map_err(SendFileError::retryable)?;
+        // 投递到**这条**链路：队列满时原地等背压，绝不换链路（换路 = 分片失序 = 整条传输判死）。
+        tokio::select! {
+            biased;
+            _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+            r = crate::network::transport::send_on_link(&link, &chunk) => {
+                r.map_err(SendFileError::retryable)?;
+            }
+        }
         seq += 1;
         sent += n as u64;
 
@@ -701,15 +710,20 @@ async fn stream_file(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(transfer_id.to_string(), tx);
-    try_send(
-        state,
-        peer_id,
-        &Message::FileDone {
-            transfer_id: transfer_id.to_string(),
-        },
-    )
-    .await
-    .map_err(SendFileError::retryable)?;
+    // FileDone 必须排在**自己那串分片之后**：它和分片同为 Low 优先级，若走 `try_send`
+    // 逐条选路，队列满时会 failover 到另一条空闲连接 —— 于是完成帧超过仍在路上的分片
+    // （最多 1024 片 ≈ 262MB）先到，接收端判 "文件传输未完成" 直接把传输打死。
+    // 真机症状：多文件并发时 600MB 的大文件跑到 100% 报分片/接收失败，单发同一文件必成功。
+    let done = Message::FileDone {
+        transfer_id: transfer_id.to_string(),
+    };
+    tokio::select! {
+        biased;
+        _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+        r = send_on_link(&link, &done) => {
+            r.map_err(SendFileError::retryable)?;
+        }
+    }
     // wait_complete_ack 也支持 cancel —— ack 窗口最长 ~90s，用户不想等就该立刻释放。
     let completed = tokio::select! {
         biased;

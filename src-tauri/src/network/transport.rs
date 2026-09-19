@@ -279,6 +279,85 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
     send_over_order(&senders, &order, msg, priority).await
 }
 
+/// 为一条**有序字节流**（文件分片）解析它应当钉住的链路：选路结果里那条"实际会走的"连接。
+///
+/// 为什么文件分片不能像其它消息一样用 `try_send`（真机 2026-09-19：一次多选里
+/// 500-600MB 的文件发到 100% 报"文件分片顺序错误"，群聊连发 9-10 张图总有 1-2 张收不全，
+/// 单独发同一个文件/图片则必定成功）：
+///
+/// `try_send` 是**逐消息**重算选路的，且第一轮用非阻塞 `try_send` —— 队列满就算这条链路
+/// "现在不行"，立刻换下一条（这是 M3-b 给普通消息设计的 failover）。一个 peer 有多条独立
+/// TCP 连接，同一个 `FileChunk{seq}` 流因此可能被拆到两条连接上发：两条连接的到达顺序
+/// 互不保证，接收端 `file::write_chunk` 要求 seq 严格递增、追加写且**不 seek**，一片失序
+/// 就 `ChunkSeq::Gap` ⇒ 整条传输判死。
+///
+/// 空闲时队列不满，永远走第一条链路，所以单发看不出问题；两个流并发共用一条 1024 槽的
+/// Low 队列（每连接一套，见 `dispatch.rs`），满了才第一次真正触发 failover —— 症状由此
+/// 只在多文件并发时出现。
+///
+/// 返回 `None` 表示当前没有可用链路（调用方按可重试失败处理，交给 outbox 续投）。
+pub(crate) async fn resolve_stream_link(
+    state: &AppState,
+    peer_id: &str,
+) -> Option<crate::state::Link> {
+    let links: Vec<crate::state::Link> = {
+        let g = state.links.lock().await;
+        match g.get(peer_id) {
+            Some(l) if !l.is_empty() => l.clone(),
+            _ => return None,
+        }
+    };
+    let (health_timeout_ms, max_failures) = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        (pm.health_timeout_ms(), pm.max_failures())
+    };
+    let conns: Vec<crate::mesh::Connection> = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        pm.get(peer_id)
+            .map(|p| p.connections().to_vec())
+            .unwrap_or_default()
+    };
+    let order = route_order(
+        &links,
+        peer_id,
+        &conns,
+        db::now_ms(),
+        health_timeout_ms,
+        max_failures,
+    );
+    // 只在"选路优先 + 通道仍开着"里取第一条；全关了才返回 None。
+    order
+        .iter()
+        .filter_map(|&i| links.get(i))
+        .find(|l| !l.low.is_closed())
+        .cloned()
+}
+
+/// 在**指定的那一条**链路上投递一帧。队列满时原地等待，绝不换链路。
+///
+/// 与 `send_over_order` 的两点关键差别，都是为了保序：
+/// - 满 ⇒ 等（背压），而不是 failover 到另一条连接；
+/// - 等待不设局部超时 —— 链路死掉时 writer 循环退出会 drop 掉 Receiver，`send` 立刻返回
+///   `Err`，所以不会真的挂住；整体上限由调用方的 `send_deadline_for(size)` 兜住。
+///   在这里加短超时反而更糟：超时放弃后，队列里那批在途旧分片仍会被送达，而续传尝试的
+///   seq 从 0 重新数，两者混在同一条追加写的流里 ⇒ 更难恢复的失序。
+pub(crate) async fn send_on_link(link: &crate::state::Link, msg: &Message) -> Result<(), String> {
+    use crate::network::dispatch::MessagePriority;
+    let tx = match crate::network::dispatch::message_priority(msg) {
+        MessagePriority::High => &link.high,
+        MessagePriority::Normal => &link.normal,
+        MessagePriority::Low => &link.low,
+    };
+    match tx.try_send(msg.clone()) {
+        Ok(()) => return Ok(()),
+        Err(mpsc::error::TrySendError::Closed(_)) => return Err("链路已关闭".to_string()),
+        Err(mpsc::error::TrySendError::Full(_)) => {}
+    }
+    tx.send(msg.clone())
+        .await
+        .map_err(|_| "链路已关闭".to_string())
+}
+
 /// 无直连时，把一条**定向**帧借一跳中继发给 to（共享目录 / 中继文件在无直连时用）。
 ///
 /// 只做「借邻居的直连」这一跳：给所有有直连的邻居各发一份（帧自带 to），邻居收到后
@@ -8346,6 +8425,98 @@ mod tests {
     #[test]
     fn route_order_empty_when_no_links() {
         assert!(route_order(&[], "peer", &[], 1000, 15_000, 3,).is_empty());
+    }
+
+    // ---- 文件分片流的"钉住一条链路"投递（真机多文件并发失序回归）----
+
+    /// 造一条三通道各自独立、容量可调的链路（`make_link` 把 high/low 合成一个通道，
+    /// 这里要分开才能断言分片走的是 Low）。
+    fn pinned_link(
+        cap: usize,
+    ) -> (
+        crate::state::Link,
+        mpsc::Receiver<Message>,
+        mpsc::Receiver<Message>,
+        mpsc::Receiver<Message>,
+    ) {
+        let (h_tx, h_rx) = mpsc::channel(cap);
+        let (n_tx, n_rx) = mpsc::channel(cap);
+        let (l_tx, l_rx) = mpsc::channel(cap);
+        let (cancel, _cancel_rx) = watch::channel(false);
+        (
+            crate::state::Link {
+                endpoint: MeshEndpoint::Tcp("192.168.1.20:59992".parse().unwrap()),
+                path_kind: PathKind::Lan,
+                high: h_tx,
+                normal: n_tx,
+                low: l_tx,
+                cancel,
+            },
+            h_rx,
+            n_rx,
+            l_rx,
+        )
+    }
+
+    fn chunk(seq: u32) -> Message {
+        Message::FileChunk {
+            transfer_id: "t1".to_string(),
+            seq,
+            data: "AA".to_string(),
+        }
+    }
+
+    /// **核心判据**：队列满时原地等待（背压），而不是返回 Err 让上层放弃这次尝试。
+    ///
+    /// 为什么这是判据而不是"顺手加个测试"：旧路径每片都走 `try_send`，满即 failover 到
+    /// 另一条独立 TCP 连接 —— 两条连接到达顺序互不保证，接收端严格递增 seq 的追加写
+    /// 立刻判死（"文件分片顺序错误"）。单发不满队列所以看不出，多文件并发必现。
+    #[tokio::test]
+    async fn send_on_link_backpressures_when_queue_full() {
+        let (link, _h, _n, mut low) = pinned_link(2);
+        assert!(send_on_link(&link, &chunk(0)).await.is_ok());
+        assert!(send_on_link(&link, &chunk(1)).await.is_ok());
+        // 队列已满：必须仍在等，而不是 Err（Err 会让上层中途放弃，留下在途旧分片）。
+        let r = tokio::time::timeout(
+            std::time::Duration::from_millis(80),
+            send_on_link(&link, &chunk(2)),
+        )
+        .await;
+        assert!(r.is_err(), "满队列应原地背压等待，实得 {r:?}");
+        // 消费端腾出槽位后仍能送达，且**顺序不乱** —— 保序是这条链路的唯一契约。
+        let first = low.recv().await.expect("应收到第 0 片");
+        assert!(send_on_link(&link, &chunk(2)).await.is_ok());
+        let mut seqs = vec![match first {
+            Message::FileChunk { seq, .. } => seq,
+            other => panic!("只应收到 FileChunk，实得 {other:?}"),
+        }];
+        for _ in 0..2 {
+            match low.recv().await.expect("应收到分片") {
+                Message::FileChunk { seq, .. } => seqs.push(seq),
+                other => panic!("只应收到 FileChunk，实得 {other:?}"),
+            }
+        }
+        assert_eq!(seqs, vec![0, 1, 2], "同一条链路上的分片必须按提交顺序到达");
+    }
+
+    /// 链路死亡（Receiver 被 drop）→ 立刻 Err，不无限挂起。
+    /// 这是"满则等"可以不带局部超时的前提：真正的僵死只会表现为通道关闭。
+    #[tokio::test]
+    async fn send_on_link_errs_immediately_when_closed() {
+        let (link, _h, _n, low) = pinned_link(4);
+        drop(low);
+        let r = send_on_link(&link, &chunk(0)).await;
+        assert!(r.is_err(), "通道已关必须报错，实得 {r:?}");
+    }
+
+    /// 分片走该链路的 Low 通道，控制帧走 High —— 钉链路不能绕过三级通道。
+    #[tokio::test]
+    async fn send_on_link_respects_priority_channels() {
+        let (link, mut high, _n, mut low) = pinned_link(4);
+        assert!(send_on_link(&link, &chunk(0)).await.is_ok());
+        assert!(send_on_link(&link, &msg("hb")).await.is_ok()); // Heartbeat = High
+        assert!(low.try_recv().is_ok(), "分片应落在 Low 通道");
+        assert!(matches!(high.try_recv(), Ok(Message::Heartbeat { .. })));
     }
 
     // ---- Hello 握手身份认证（P0 安全修复回归）----
