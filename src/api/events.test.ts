@@ -33,16 +33,6 @@ const ALLOWED_EMIT_WITHOUT_LISTENER: Record<string, string> = {
     "紧邻 `groups-updated` 一起发（同一条路径），前端只处理后者 —— 冗余事件，可后续删除",
   "group-file-log":
     "DevDiag 面板目前走 `get_discovery_diag` 轮询拿数据，该事件暂无消费者（保留待接）",
-  "message-failed":
-    "P1-P5 后端新增：outbox sweeper 超时自动判 failed 时发出。前端 P6-P10 接消费者（渲染失败感叹号 + 重发按钮）",
-  "message-cancelled":
-    "P1-P5 后端新增：用户 cancel_send 主动停止时发出。前端 P6-P10 接消费者（渲染'已停止'状态）",
-  "message-resending":
-    "P1-P5 后端新增：用户 resend_message 重发时发出。前端 P6-P10 接消费者（按钮 loading 状态）",
-  "file-failed":
-    "P1-P5 后端新增：file_outbox sweeper 判文件超时失败时发出。前端 P6-P10 接消费者",
-  "file-cancelled":
-    "P1-P5 后端新增：cancel_file_transfer 取消文件发送时发出。前端 P6-P10 接消费者",
 };
 
 /** 只发给特定窗口、由该窗口自己监听的事件不算漏接（这里是菜单事件，前端已监听）。 */
@@ -124,6 +114,19 @@ test("前端监听的事件必须真的有人发（避免死监听/拼错事件�
     dead,
     [],
     `以下事件前端在听、后端却从来不发（多半是拼错或功能被摘掉了）：${dead.join(", ")}`,
+  );
+});
+
+test("例外清单不得包含已被监听的事件（挂账说谎会让真漏接隐身）", () => {
+  // 真实教训（2026-09-19 审计）：`file-failed`/`file-cancelled` 早就在 bindEvents 里
+  // 接了，例外表却还挂着「待接」——白名单失修会让 review 的人对整张表失去信任，
+  // 真漏接混在里面也查不出来。接上消费者的那一刻必须同时把条目删掉。
+  const listened = frontendListenedEvents();
+  const stale = Object.keys(ALLOWED_EMIT_WITHOUT_LISTENER).filter((name) => listened.has(name));
+  assert.deepEqual(
+    stale,
+    [],
+    `以下事件已在 bindEvents 监听，却仍挂在例外清单里：${stale.join(", ")} —— 请删掉条目`,
   );
 });
 

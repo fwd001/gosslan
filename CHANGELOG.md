@@ -10,6 +10,19 @@
 
 ## [Unreleased]
 
+## [4.21.3] - 2026-09-19
+
+### Fixed (P0：message-failed 等状态事件前端无人接，气泡永久「发送中」)
+
+- **后端在发、前端没听**（违反 INV-006「UI 必须反映真实状态」）：outbox sweeper 判 failed /
+  用户取消 / 用户重发三条路径分别 emit `message-failed` / `message-cancelled` /
+  `message-resending`，但 `bindEvents` 没有消费者——DB 已是 failed，界面气泡却永远停在
+  sending/delivered，只有重开会话才纠正。现在三个事件统一接到 `onMessageStatusChanged`
+  （从 DB 重查该会话，状态的唯一真相源是 `messages.status`，不再维护第二套内存状态机）。
+- **例外清单失修**：`file-failed`/`file-cancelled` 早已监听，白名单仍挂「待接」谎报。
+  本次清掉 5 条入账条目，并给 `events.test.ts` 加反向检查：**已监听的事件不得留在
+  例外清单**，防止白名单再次说谎。
+
 ## [4.21.2] - 2026-09-19
 
 ### Fixed (P0：outbox sweeper 把「对端离线」当「发送失败」，离线补发承诺被击穿)

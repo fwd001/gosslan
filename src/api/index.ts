@@ -464,6 +464,12 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),
     listen<string>("file-cancelled", (e) => h.onFileCancelled(e.payload)),
     listen<string>("message-status-changed", (e) => h.onMessageStatusChanged(e.payload)),
+    // 后端改了这些消息的状态就发对应事件（sweeper 判失败 / 用户取消 / 用户重发）。
+    // 前端一律走「从 DB 重查该会话」：状态的唯一真相源是 messages.status（INV-006/P15），
+    // 不在内存里再维护一套失败/取消状态机。
+    listen<string>("message-failed", (e) => h.onMessageStatusChanged(e.payload)),
+    listen<string>("message-cancelled", (e) => h.onMessageStatusChanged(e.payload)),
+    listen<string>("message-resending", (e) => h.onMessageStatusChanged(e.payload)),
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
     listen<string>("group-member-removed", (e) => h.onGroupMemberRemoved(e.payload)),
