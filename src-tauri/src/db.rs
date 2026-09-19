@@ -208,37 +208,31 @@ const MIGRATIONS: &[Migration] = &[
         to: 7,
         description: "清理历史孤儿群消息与投递/回执残留",
         run: |conn| {
-            let tx = conn.unchecked_transaction()?;
-            tx.execute(
-                "DELETE FROM messages
-                 WHERE conv_id LIKE 'group:%'
-                   AND conv_id NOT IN (SELECT id FROM conversations)",
-                [],
-            )?;
-            tx.execute(
-                "DELETE FROM group_outbox WHERE group_id NOT IN (SELECT id FROM groups)",
-                [],
-            )?;
-            tx.execute(
-                "DELETE FROM file_outbox
-                 WHERE group_id IS NOT NULL AND group_id NOT IN (SELECT id FROM groups)",
-                [],
-            )?;
-            tx.execute(
-                "DELETE FROM group_reads WHERE group_id NOT IN (SELECT id FROM groups)",
-                [],
-            )?;
-            tx.execute(
-                "DELETE FROM pending_group_reads WHERE group_id NOT IN (SELECT id FROM groups)",
-                [],
-            )?;
-            tx.execute(
-                "DELETE FROM group_recalled_messages
-                 WHERE conv_id LIKE 'group:%'
-                   AND conv_id NOT IN (SELECT id FROM conversations)",
-                [],
-            )?;
-            tx.commit()?;
+            // ⚠️ 口径修正（自审 #2）：**双锚都要不在册**才算孤儿 ——
+            // `NOT IN conversations` 单独用是数据事故：用户删群会话是合法操作
+            // （commands::delete_conversation），groups 行还在，v7 升级会把
+            // 一整段在册群的历史不可逆清空。
+            // 与 v3-v5 同风格：尽力清理、eprintln 容错，绝不 `?` 上抛把
+            // db::init 变成 Err 让应用起不来（清不干净下次升级还会再来一遍）。
+            let orphan_group = "id NOT IN (SELECT id FROM groups) \
+                 AND ('group:' || id) NOT IN (SELECT id FROM conversations)";
+            let orphan_conv = "substr(conv_id, 7) NOT IN (SELECT id FROM groups) \
+                 AND conv_id NOT IN (SELECT id FROM conversations)";
+            let cleanup = |sql: &str| -> rusqlite::Result<()> { conn.execute(sql, []).map(|_| ()) };
+            for sql in [
+                &format!("DELETE FROM messages WHERE conv_id LIKE 'group:%' AND {orphan_conv}"),
+                &format!("DELETE FROM group_outbox WHERE {orphan_group}"),
+                &format!("DELETE FROM file_outbox WHERE group_id IS NOT NULL AND {orphan_group}"),
+                &format!("DELETE FROM group_reads WHERE {orphan_group}"),
+                &format!("DELETE FROM pending_group_reads WHERE {orphan_group}"),
+                &format!(
+                    "DELETE FROM group_recalled_messages WHERE conv_id LIKE 'group:%' AND {orphan_conv}"
+                ),
+            ] {
+                if let Err(e) = cleanup(sql) {
+                    eprintln!("[gosslan-db] v7 孤儿清理跳过一条语句（不影响启动）：{e}");
+                }
+            }
             Ok(())
         },
     },

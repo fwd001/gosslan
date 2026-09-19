@@ -10,6 +10,22 @@
 
 ## [Unreleased]
 
+## [4.22.8] - 2026-09-19
+
+### Fixed (code review 修正：v7 迁移口径数据事故 + upsert_peer 热路径)
+
+- **v7 孤儿清理的 DELETE 口径是错的（自审必改#2）**：消息/墓碑两条用了
+  `conv_id NOT IN conversations` 单锚，而「用户删掉群会话」是合法操作且 groups 行还在
+  —— 按旧口径升级会把**整段在册群历史不可逆清空**，与自家注释承诺的「只清 groups 表
+  没有的」直接矛盾。改为**双锚**（groups 与 conversations 都不在册才算孤儿），
+  并在 `migration_v7_purges...` 加陷阱用例（群在册+会话被删 ⇒ 一条不清）。
+- **v7 风格对齐 v3-v5**：清理语句逐条 eprintln 容错，不再用 `?` 上抛 ——
+  一条 DELETE 失败（BUSY/磁盘满）不该让 `db::init` 变 Err 把应用锁死在启动页。
+- **`upsert_peer` 的 friends 锚查询挪到「条目确实不存在」时**（自审必改#3）：
+  4.21.5 的实现只要 announce 带公钥就抢全局 db 锁跑 SELECT，
+  5s×N 节点在千节点规模 ≈ 200 次/秒与所有写路径争锁；peers 已存在的条目纯白读。
+  预检 `contains_key` 与插入之间的竞态无害（Some 分支同样有冲突判定）。
+
 ## [4.22.7] - 2026-09-19
 
 ### Fixed (P0：删除级联收口——删会话/退群不再留「幽灵数据」)

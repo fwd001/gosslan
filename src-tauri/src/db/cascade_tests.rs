@@ -223,6 +223,14 @@ fn migration_v7_purges_legacy_group_orphans_only() {
         .ok();
         // 孤儿：群已不在 groups 表、会话也不在 conversations
         ins_msg(&conn, "orph", "group:dead", "text", "legacy garbage", 1);
+        // ⚠️ 陷阱用例（自审 #2）：**用户删过群会话但群还在** —— 合法状态，
+        // 一条都不能清（旧口径 `NOT IN conversations` 单锚会在这里造成不可逆数据丢失）
+        conn.execute(
+            "INSERT INTO groups(id, name, creator, created_at) VALUES ('alive','A','me',1)",
+            [],
+        )
+        .unwrap();
+        ins_msg(&conn, "kept", "group:alive", "text", "在册群历史", 1);
         conn.execute(
             "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at) VALUES ('orph','dead','a','{}',1)",
             [],
@@ -241,6 +249,11 @@ fn migration_v7_purges_legacy_group_orphans_only() {
         count(&conn, "SELECT COUNT(*) FROM messages WHERE msg_id='live'"),
         1,
         "在册会话的消息一条都不能误伤"
+    );
+    assert_eq!(
+        count(&conn, "SELECT COUNT(*) FROM messages WHERE msg_id='kept'"),
+        1,
+        "群在册（groups 有行）而会话被删过 —— 历史必须保留，这不是孤儿"
     );
     let uv: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))

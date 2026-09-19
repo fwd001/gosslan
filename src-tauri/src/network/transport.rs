@@ -6534,8 +6534,14 @@ pub async fn upsert_peer(
     // 不看持久化的好友公钥，一条伪造 Presence/FriendRequest 就能抢先把好友 id 绑上
     // 攻击者的键 —— 之后攻击者的 Chat 信封通过「已认识」校验，假消息直接冒充好友。
     // 判据与 Some 分支的 key_conflict 完全同口径，走同一个告警出口。
-    // DB 锁在这里拿完就放，不跨下面的 peers 锁持有。
-    let friend_anchor = if x25519.is_some() || ed25519.is_some() {
+    // ⚠️ 只对「peers 里还没有的条目」查锚：announce 是 5s×N 节点的热路径，
+    // 每条都打一次 DB 读会在 500 节点下放大成明显热点（自查发现，评审补记）。
+    // 预检与真正的插入之间的竞态无害：条目恰好挤进来时走 Some 分支，同样有冲突判定。
+    let needs_anchor = {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        !peers.contains_key(device_id)
+    };
+    let friend_anchor = if needs_anchor && (x25519.is_some() || ed25519.is_some()) {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_friend_pubkeys(&dbc, device_id)
     } else {
