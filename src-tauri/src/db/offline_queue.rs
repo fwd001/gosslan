@@ -101,7 +101,7 @@ mod offline_queue_tests {
         assert!(!should_fail_expired_outbox(true, OUTBOX_FAIL_DEADLINE_MS - 1));
         // 离线：120s / 1 小时都不构成失败理由（承诺是上线后补发）
         assert!(!should_fail_expired_outbox(false, OUTBOX_FAIL_DEADLINE_MS));
-        assert!(!should_fail_expired_outbox(false, 3600_000));
+        assert!(!should_fail_expired_outbox(false, 3_600_000));
         // 离线保留窗口的意义是防僵尸行：到点才清
         assert!(!should_fail_expired_outbox(false, OUTBOX_OFFLINE_HOLD_MS - 1));
         assert!(should_fail_expired_outbox(false, OUTBOX_OFFLINE_HOLD_MS));

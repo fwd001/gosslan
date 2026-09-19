@@ -10,6 +10,7 @@
 #[cfg(feature = "bluetooth")]
 pub mod ble;
 pub mod discovery;
+pub mod dispatch;
 pub mod file;
 pub mod transport;
 
