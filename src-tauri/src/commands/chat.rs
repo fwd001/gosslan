@@ -558,17 +558,51 @@ pub async fn resend_message(
         // 群消息简化：通知前端重新发
         Err("群消息重发请删除后重新发送".to_string())
     } else {
-        // 单聊：重建 outbox（sweeper 判 failed 时已删），再 try_send
+        // 单聊：重建 outbox（sweeper 判 failed 时已删），再 try_send。
+        // 必须先用对端当前公钥重新密封（与 send_message 同一套 seal 逻辑）：
+        // messages 表存的是明文，直接把 rec.content 上线没有 `enc1:` 前缀 ⇒
+        // 接收端 open_direct_content 拒收（不落库不 Ack），重发静默变成 no-op，
+        // 稍后再被判 failed —— 用户看到「重发没反应」就是这么来的。
+        // ts/seq 同理必须沿用原记录：seq=0 会让接收端把重发消息排到会话最前
+        //（排序按 seq，INV-P09），两端顺序分裂。
+        if rec.sender_id != s.device_id {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = db::set_message_status(&dbc, &msg_id, &rec.status);
+            return Err("只能重发自己发出的消息".to_string());
+        }
         let msg_kind = crate::protocol::MsgKind::from_wire_str(&rec.kind);
-        let ts = db::now_ms();
+        let pubkey = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_friend_x25519(&dbc, &rec.receiver_id)
+        }
+        .or_else(|| {
+            s.peers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&rec.receiver_id)
+                .and_then(|p| p.x25519_pubkey.clone())
+        });
+        let Some(pubkey) = pubkey else {
+            // 没有公钥就发不出去加密消息：回滚状态并明确报错，
+            // 而不是写一条接收端永远拒收的明文 outbox 行。
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = db::set_message_status(&dbc, &msg_id, &rec.status);
+            return Err(format!(
+                "尚未获取 {} 的公钥，无法重发：对方可能离线或处于不同子网",
+                rec.receiver_id
+            ));
+        };
+        let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey)
+            .ok_or("密钥交换失败")?;
+        let sealed = crypto::seal(&shared, rec.content.as_bytes()).ok_or("加密失败")?;
         let queued = Message::ChatMessage {
             msg_id: rec.msg_id.clone(),
             from: s.device_id.clone(),
             to: rec.receiver_id.clone(),
             kind: msg_kind.clone(),
-            content: rec.content.clone(),
-            ts,
-            seq: 0,
+            content: format!("enc1:{}", STANDARD.encode(&sealed)),
+            ts: rec.ts,
+            seq: rec.seq,
         };
         let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
 

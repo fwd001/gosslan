@@ -2504,4 +2504,34 @@ mod tests {
             "自聊消息必须只落本地库（`db::insert_message`）"
         );
     }
+
+    /// 单聊重发必须先重新密封再入队（2026-09-19 P0 回归护栏）。
+    ///
+    /// 为什么必须守：`messages` 表存的是**明文**（见 send_message 的「本地落库（明文）」），
+    /// resend 若直接把 `rec.content` 当线上内容，就没有 `enc1:` 前缀 ⇒
+    /// 接收端 `open_direct_content` 拒收（不落库、不 Ack）⇒ 重发实际是 no-op，
+    /// 那一行 outbox 还会被 sweeper 再次判 failed —— 用户看到的是「点重发没反应」。
+    /// 同理 `seq: 0` 会让接收端把重发消息排到会话最前（排序按 seq，INV-P09），两端顺序分裂。
+    /// 两侧都能「正常加密」，普通单测测不出来，只能源码护栏钉死。
+    #[test]
+    fn resend_reseals_before_enqueue() {
+        let commands = all_commands_src();
+        let body = rust_fn_body(commands, "async fn resend_message(");
+        assert!(
+            !body.is_empty(),
+            "找不到 resend_message（这条护栏会变成空转）"
+        );
+        assert!(
+            !body.contains("content: rec.content.clone()"),
+            "重发不得把库内明文直接上线：没有 enc1: 前缀接收端会拒收"
+        );
+        assert!(
+            !body.contains("seq: 0"),
+            "重发必须沿用原逻辑 seq：seq=0 会让接收端排到会话最前（INV-P09）"
+        );
+        assert!(
+            body.contains("crypto::seal") && body.contains("enc1:"),
+            "重发必须用对端当前公钥重新密封（crypto::seal + enc1: 前缀），与 send_message 同口径"
+        );
+    }
 }

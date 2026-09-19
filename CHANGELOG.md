@@ -10,6 +10,18 @@
 
 ## [Unreleased]
 
+## [4.21.1] - 2026-09-19
+
+### Fixed (P0：单聊重发把明文推上线，重发实际是 no-op)
+
+- **`resend_message` 重建 outbox 时直接用了库内明文**（`messages` 表存明文是设计如此，见
+  send_message「本地落库（明文）」），没有 `enc1:` 前缀 ⇒ 接收端 `open_direct_content`
+  一律拒收（不落库、不 Ack），2 分钟后又被 sweeper 判 failed —— 用户症状是「点重发没反应」；
+  同时 `seq: 0` 若真被收进会排到会话最前（排序按 seq，INV-P09），两端顺序分裂。
+  现在：重发路径与 send_message 同口径——查对端当前公钥（friends → peers）、`crypto::seal`
+  重封后再入队，沿用原 `ts`/`seq`；拿不到公钥时回滚状态并明确报错，不再写一条接收端
+  永远拒收的明文行；补「只能重发自己发出的消息」校验。新增源码护栏 `resend_reseals_before_enqueue`。
+
 ## [4.21.0] - 2026-09-19
 
 ### Changed (群任务/群管理/窗口外观/公告 —— 用户 2026-09-17 第二轮)
