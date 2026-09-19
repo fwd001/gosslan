@@ -169,10 +169,34 @@ pub fn last_message_from_sender(
 pub fn delete_conversation(conn: &Connection, conv_id: &str) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     // ⚠️ 只删 Bubble。Card（群公告/待办）与 Silent（回应/撤回/置顶）**不属于"聊天历史"** ——
-    // 清空聊天记录顺手删掉群公告是错误语义（钉盘/群文件同理：那是群资产，不是聊天记录）。
+    // 清空聊天记录顺手删掉群公告是错误语义（群文件同理：那是群资产，不是聊天记录）。
     // 清单从 `WIRE_KINDS` 派生，不手写：加了新 kind 而忘了同步这里就是静默的数据丢失。
     let keep =
         crate::protocol::sql_kind_list(&["system"], |c| c != crate::protocol::KindClass::Bubble);
+    // 被删消息的在途投递队列必须同事务清空（与 delete_messages 同一口径）：
+    // 留着这几行，flush_outbox 会在下次建链/心跳把**已删除的消息**补发回去，
+    // 对端落库后还会反向出现在本机（对方再发回执/重同步时）——「删了又冒出来」。
+    let doomed = format!("SELECT msg_id FROM messages WHERE conv_id = ?1 AND kind NOT IN ({keep})");
+    tx.execute(&format!("DELETE FROM outbox WHERE msg_id IN ({doomed})"), params![conv_id])?;
+    tx.execute(
+        &format!("DELETE FROM group_outbox WHERE msg_id IN ({doomed})"),
+        params![conv_id],
+    )?;
+    // 文件队列按对话归属键删（单聊 peer_id / 群 group_id），
+    // 否则补发任务会给一个已不存在的会话发 FileOffer。
+    if let Some(gid) = conv_id.strip_prefix("group:") {
+        tx.execute("DELETE FROM file_outbox WHERE group_id = ?1", params![gid])?;
+    } else {
+        tx.execute(
+            "DELETE FROM file_outbox WHERE peer_id = ?1 AND group_id IS NULL",
+            params![conv_id],
+        )?;
+    }
+    // 撤回墓碑随它标记的消息一起走（留着只会让同 msg_id 的迟到副本被误挡）
+    tx.execute(
+        "DELETE FROM group_recalled_messages WHERE conv_id = ?1",
+        params![conv_id],
+    )?;
     tx.execute(
         &format!("DELETE FROM messages WHERE conv_id = ?1 AND kind NOT IN ({keep})"),
         params![conv_id],

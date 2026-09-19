@@ -383,6 +383,8 @@ mod tests {
     #[test]
     fn recall_is_idempotent_and_materializes_content() {
         let conn = mem();
+        conn.execute("INSERT INTO conversations(id, kind, name) VALUES ('g1','group','G')", [])
+            .unwrap();
         insert_message(&conn, &rec_as("m1", "g1", "text", "这句要撤回")).unwrap();
         assert!(!is_recalled(&conn, "m1"));
 
@@ -416,6 +418,8 @@ mod tests {
     #[test]
     fn recall_recorded_before_the_message_arrives_still_applies() {
         let conn = mem();
+        conn.execute("INSERT INTO conversations(id, kind, name) VALUES ('g1','group','G')", [])
+            .unwrap();
         // 撤回先到（消息还没落库）
         insert_recall(&conn, "g1", "later", "a", 9).unwrap();
         assert!(is_recalled(&conn, "later"), "权威集合独立于消息行存在");
@@ -437,6 +441,9 @@ mod tests {
     #[test]
     fn silent_kinds_are_excluded_from_search_and_read_watermark() {
         let conn = mem();
+        // 搜索只搜「还在会话列表里」的会话（删除级联收口的孤儿防御）——补会话行
+        conn.execute("INSERT INTO conversations(id, kind, name) VALUES ('g1','group','G')", [])
+            .unwrap();
         insert_message(&conn, &rec_as("m1", "g1", "text", "周报 已发")).unwrap();
         // 同一条消息的表情回应：正文里也含"周报"，若不过滤就会被搜出来
         let mut rx = rec_as(
@@ -504,6 +511,11 @@ mod tests {
     #[test]
     fn search_history_filters_sender_time_and_excludes_system() {
         let conn = mem();
+        // 搜索 join conversations：c1/c2 需在册（本测试验证的是筛选，不是孤儿语义）
+        conn.execute("INSERT INTO conversations(id, kind, name) VALUES ('c1','single','C1')", [])
+            .unwrap();
+        conn.execute("INSERT INTO conversations(id, kind, name) VALUES ('c2','single','C2')", [])
+            .unwrap();
         let mut a1 = rec_as("m1", "c1", "text", "想你 今天一起吃饭");
         a1.sender_id = "alice".into();
         a1.ts = 1_000;

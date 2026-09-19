@@ -12,7 +12,7 @@ use crate::state::{
 };
 
 /// 当前数据库版本。每次 schema 变更递增一次，并在 `MIGRATIONS` 数组末尾追加一个 step。
-pub const DB_VERSION: u32 = 6;
+pub const DB_VERSION: u32 = 7;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -192,6 +192,50 @@ const MIGRATIONS: &[Migration] = &[
             )?;
             tx.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_msg_id ON outbox(msg_id)",
+                [],
+            )?;
+            tx.commit()?;
+            Ok(())
+        },
+    },
+    // v6 → v7：清除历史孤儿群消息与投递残留（2026-09-19 删除级联收口）。
+    // 旧版 delete_group / leave_group 不删 messages 等表，退群成员库里留着
+    // 一整段搜得到、点不开的历史；delete_conversation 也不清 outbox/file_outbox。
+    // 新代码已同事务收口，这里把**存量**垃圾清掉（只清群行已不确定的数据，
+    // 保守口径：groups 表里没有的 group_id ⇒ 一定是孤儿）。
+    Migration {
+        from: 6,
+        to: 7,
+        description: "清理历史孤儿群消息与投递/回执残留",
+        run: |conn| {
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
+                "DELETE FROM messages
+                 WHERE conv_id LIKE 'group:%'
+                   AND conv_id NOT IN (SELECT id FROM conversations)",
+                [],
+            )?;
+            tx.execute(
+                "DELETE FROM group_outbox WHERE group_id NOT IN (SELECT id FROM groups)",
+                [],
+            )?;
+            tx.execute(
+                "DELETE FROM file_outbox
+                 WHERE group_id IS NOT NULL AND group_id NOT IN (SELECT id FROM groups)",
+                [],
+            )?;
+            tx.execute(
+                "DELETE FROM group_reads WHERE group_id NOT IN (SELECT id FROM groups)",
+                [],
+            )?;
+            tx.execute(
+                "DELETE FROM pending_group_reads WHERE group_id NOT IN (SELECT id FROM groups)",
+                [],
+            )?;
+            tx.execute(
+                "DELETE FROM group_recalled_messages
+                 WHERE conv_id LIKE 'group:%'
+                   AND conv_id NOT IN (SELECT id FROM conversations)",
                 [],
             )?;
             tx.commit()?;
@@ -478,5 +522,7 @@ include!("db/favorites.rs");
 
 include!("db/recalls.rs");
 
+#[cfg(test)]
+mod cascade_tests;
 #[cfg(test)]
 mod migration_tests;

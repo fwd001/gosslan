@@ -10,6 +10,30 @@
 
 ## [Unreleased]
 
+## [4.22.7] - 2026-09-19
+
+### Fixed (P0：删除级联收口——删会话/退群不再留「幽灵数据」)
+
+审计坐实的三处漏口一次收口（schema 无 FK，级联全靠手写，此前只覆盖了单条消息删除）：
+
+- **`delete_conversation` 不清投递队列**：被删会话的 `outbox`/`group_outbox`/
+  `file_outbox` 行留在库里 → 下次建链/心跳把**已删除的消息**补发回去（「删了又冒出来」），
+  还会给不存在的会话发 FileOffer。现在同事务清空在途队列与撤回墓碑；
+  Card/Silent（公告、待办、置顶）维持既有的「不属于聊天历史」保护不动。
+- **`delete_group`/退群不删消息与回执**：退群后整段历史成为孤儿——仍命中全局搜索、
+  点又点不开、挤占「共 N 条」。现在单事务级联清理 messages/group_outbox/file_outbox/
+  group_reads/pending_group_reads/撤回墓碑/clear_boundary 键。
+  **刻意保留** `conversation_clocks`（逻辑序号只增不减，删了会撞历史序号）；
+  `content_transfers` 按 cid 跨会话共享、需引用计数，登记为已知限制未动。
+- **`search_history` 只搜在册会话**（`conv_id IN conversations`）：兜住存量孤儿与
+  未来任何漏网路径。
+- **DB v6→v7 迁移**：一次性清掉收口之前入库的孤儿群消息/投递/水位行
+  （保守口径：只清 groups/conversations 双不在册的数据）。
+  降级拒绝机制不变（v7 库在旧版 App 上开不了，属设计行为）。
+- 测试：`db::cascade_tests` 4 条（队列清空/Card 保留/时钟保留/搜索孤儿/迁移边界）；
+  既有 4 条搜索/撤回测试补 conversations fixture——它们此前隐式依赖「孤儿可搜」，
+  正是本次收口的对象。
+
 ## [4.22.6] - 2026-09-19
 
 ### Fixed (P0：gossip 转发候选从「知识集」换成「可达集」，跨网段中继不再是空转)

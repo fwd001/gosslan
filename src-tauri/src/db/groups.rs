@@ -191,27 +191,59 @@ pub fn list_group_reads(conn: &Connection, group_id: &str) -> Result<Vec<(String
     rows.collect()
 }
 
-/// 彻底删除一个群：群表 + 成员关系 + 会话 + 群文件投递数据。被移除的成员端收到通知后调用。
+/// 彻底删除一个群：群表 + 成员关系 + 会话 + 群文件投递数据 + 聊天历史与其投递残留。
+/// 被移除的成员端收到通知后调用；退群（leave_group）复用同一收口。
+///
+/// ⚠️ 全程单事务：这张清单曾经散着写，漏删过消息与已读水位 ——
+/// 孤儿消息留在 `messages` 里会继续命中全局搜索（点又点不开），
+/// `group_outbox`/`file_outbox` 残留会让补发任务给已不存在的关系发帧。
+/// 刻意**保留**的：`conversation_clocks`（逻辑序号只增不减，删了会撞历史序号）、
+/// `content_transfers`（按 cid 键，跨会话共享，删除需引用计数——登记为已知限制）。
 pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
-    conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    let conv_id = format!("group:{group_id}");
+    tx.execute(
         "DELETE FROM group_members WHERE group_id = ?1",
         params![group_id],
     )?;
     // 群文件投递数据随群删除，避免悬挂（按 group_id 关联逐层清理）
-    conn.execute(
+    tx.execute(
         "DELETE FROM group_file_recipients WHERE transfer_id IN
          (SELECT transfer_id FROM group_files WHERE group_id = ?1)",
         params![group_id],
     )?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM group_files WHERE group_id = ?1",
         params![group_id],
     )?;
-    delete_group_outbox_for_group(conn, group_id)?;
-    conn.execute("DELETE FROM groups WHERE id = ?1", params![group_id])?;
-    conn.execute(
-        "DELETE FROM conversations WHERE id = ?1",
-        params![format!("group:{group_id}")],
+    // —— 以下为聊天历史与投递/回执残留 ——
+    tx.execute("DELETE FROM messages WHERE conv_id = ?1", params![conv_id])?;
+    delete_group_outbox_for_group(&tx, group_id)?;
+    tx.execute(
+        "DELETE FROM file_outbox WHERE group_id = ?1",
+        params![group_id],
     )?;
+    tx.execute(
+        "DELETE FROM group_reads WHERE group_id = ?1",
+        params![group_id],
+    )?;
+    tx.execute(
+        "DELETE FROM pending_group_reads WHERE group_id = ?1",
+        params![group_id],
+    )?;
+    tx.execute(
+        "DELETE FROM group_recalled_messages WHERE conv_id = ?1",
+        params![conv_id],
+    )?;
+    tx.execute(
+        "DELETE FROM settings WHERE key = ?1",
+        params![crate::db::clear_boundary_key(group_id)],
+    )?;
+    tx.execute("DELETE FROM groups WHERE id = ?1", params![group_id])?;
+    tx.execute(
+        "DELETE FROM conversations WHERE id = ?1",
+        params![conv_id],
+    )?;
+    tx.commit()?;
     Ok(())
 }

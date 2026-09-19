@@ -1248,13 +1248,13 @@ CASES: list[Case] = [
     Case(
         name="窗口单例（打开命令不得自己查窗口存在性）",
         why="连点两下会开出第二个窗口：`build()` 的重复 label 检查在 prepare 阶段，而窗口登记进 manager "
-        "是主线程创建完成之后 —— 并发调用会双双通过。必须统一走 ensure_aux_window（单例 + 串行）",
-        file=TAURI / "src" / "commands.rs",
+        "是主线程创建完成之后 —— 并发调用会双双通过。必须统一走 ensure_aux_window（单例 + 串行）。"
+        "2026-09-19 随 4.22.2 的 async→同步改造，锚点从 commands.rs 搬到 commands/logs.rs",
+        file=TAURI / "src" / "commands" / "logs.rs",
         injections=[
             (
-                "    let _ = ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, AUX_WINDOWS_RESIDENT, move || {",
-                "    let _ = app.get_webview_window(crate::WINDOW_SETTINGS);\n"
-                "    let _ = ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, AUX_WINDOWS_RESIDENT, move || {",
+                "    ensure_aux_window(\n        &app,\n        crate::WINDOW_SETTINGS,",
+                "    if app.get_webview_window(crate::WINDOW_SETTINGS).is_some() {\n        return Ok(());\n    }\n    ensure_aux_window(\n        &app,\n        crate::WINDOW_SETTINGS,",
             )
         ],
         cmd=cargo("test", "--lib", "aux_window_open_is_singleton_serialized_and_resident"),

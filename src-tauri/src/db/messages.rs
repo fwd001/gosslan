@@ -284,6 +284,11 @@ pub fn search_history(
          FROM messages
          WHERE content LIKE ?1 ESCAPE '\\'
            AND kind NOT IN ({unsearchable})
+           -- 只搜**还在会话列表里**的会话：删除级联收口之前入库的历史孤儿
+           -- （退群/删会话没清干净的消息）不该继续出现在搜索结果里——
+           -- 点又点不开，还挤占「共 N 条」。新数据已在 delete_group/delete_conversation
+           -- 同事务清掉，这一条兜住存量与未来任何漏网路径。
+           AND conv_id IN (SELECT id FROM conversations)
            AND (?2 IS NULL OR sender_id = ?2)
            AND (?3 IS NULL OR ts >= ?3)
            AND (?4 IS NULL OR ts <= ?4)
