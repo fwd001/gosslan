@@ -10,6 +10,15 @@
 
 ## [Unreleased]
 
+## [4.21.4] - 2026-09-19
+
+### Changed (工程：修 main 上既有的 CI 红 —— fmt 漏跑)
+
+- **`cargo fmt --check` 自 `5e31ebe` 起在 main 上持续失败**：`db.rs` 与 `db/migration_tests.rs`
+  入库时漏了格式化，把 Rust job 的 fmt 门禁整段挡红（macOS/Windows 两条腿同挂，
+  后续所有 push 连带变红）。本次对这两个文件补跑 `cargo fmt --all`，不改任何行为。
+  测试基线：`cargo test --lib --features bluetooth` 540/540。
+
 ## [4.21.3] - 2026-09-19
 
 ### Fixed (P0：message-failed 等状态事件前端无人接，气泡永久「发送中」)

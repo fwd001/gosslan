@@ -480,4 +480,3 @@ include!("db/recalls.rs");
 
 #[cfg(test)]
 mod migration_tests;
-

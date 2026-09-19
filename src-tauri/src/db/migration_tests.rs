@@ -11,7 +11,7 @@
 //!   8. old_version > DB_VERSION → 拒绝降级
 //!   9. Legacy user_version=0 + 空表 → 当作全新库
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::env;
 use std::path::PathBuf;
 
@@ -57,9 +57,7 @@ fn migration_fresh_db_gets_latest_version() {
 
     // 核心表应该都存在
     let tables: Vec<String> = conn
-        .prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-        )
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         .unwrap()
         .query_map([], |r| r.get(0))
         .unwrap()
@@ -67,14 +65,24 @@ fn migration_fresh_db_gets_latest_version() {
         .collect();
 
     for required in &[
-        "settings", "friends", "conversations", "messages", "groups",
-        "group_members", "outbox", "group_outbox", "file_transfers",
-        "file_outbox", "group_files", "favorites",
+        "settings",
+        "friends",
+        "conversations",
+        "messages",
+        "groups",
+        "group_members",
+        "outbox",
+        "group_outbox",
+        "file_transfers",
+        "file_outbox",
+        "group_files",
+        "favorites",
     ] {
         assert!(
             tables.contains(&required.to_string()),
             "全新库缺少必需表 '{}'，实际表: {:?}",
-            required, tables
+            required,
+            tables
         );
     }
 }
@@ -166,7 +174,8 @@ fn migration_v1_to_v6_full_chain() {
     assert!(super::column_exists(&conn, "friends", "ed25519_pubkey").unwrap());
     assert!(super::column_exists(&conn, "messages", "seq").unwrap());
     assert!(super::column_exists(&conn, "conversations", "pinned").unwrap());
-    assert!(super::column_exists(&conn, "group_files", "scope").unwrap_or(true)); // group_files 可能不存在于这个最小 Schema
+    assert!(super::column_exists(&conn, "group_files", "scope").unwrap_or(true));
+    // group_files 可能不存在于这个最小 Schema
 }
 
 // ---------------------------------------------------------------------------
@@ -195,12 +204,18 @@ fn migration_preserves_identity_data() {
         .unwrap();
         conn.execute(
             "INSERT INTO settings(key, value) VALUES (?1, ?2)",
-            params!("x25519_secret", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+            params!(
+                "x25519_secret",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            ),
         )
         .unwrap();
         conn.execute(
             "INSERT INTO settings(key, value) VALUES (?1, ?2)",
-            params!("ed25519_secret", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+            params!(
+                "ed25519_secret",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            ),
         )
         .unwrap();
     }
@@ -309,11 +324,9 @@ fn migration_preserves_message_data() {
 
     // v2→v3 seq 应该被回填（seq > 0）
     let seq: i64 = conn
-        .query_row(
-            "SELECT seq FROM messages WHERE msg_id = 'msg-2'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT seq FROM messages WHERE msg_id = 'msg-2'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert!(seq > 0, "v2→v3 应该回填 seq");
 }
