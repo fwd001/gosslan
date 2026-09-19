@@ -54,10 +54,10 @@ const mobileMoreOpen = ref(false);
  */
 const favoritesOpen = ref(false);
 
-/** 打开收藏页（整页，非弹窗）。移动端切到主面板（收藏页渲染在主内容区）。 */
+/** 打开收藏页（整页，非弹窗）。TabBar 靠 !favoritesOpen 条件自然隐藏，不需要改 mobileView ——
+     改了反而会跟 ChatWindow 的 'chat' 状态混淆，导致系统返回键（useBackLayer）不知道该关哪层。 */
 function openFavorites() {
   favoritesOpen.value = true;
-  if (app.isMobile) app.mobileView = "chat";
 }
 
 /** 关闭收藏页。移动端返回会话列表（iOS push/pop 语义，与 closeRequests 一致）。 */
@@ -272,6 +272,22 @@ useBackLayer(
   () => {
     app.mobileView = "list";
   },
+);
+
+// 移动端全屏二级页也需要系统返回键支持（Android 返回键 / 桌面后退导航）。
+// 这些 useBackLayer 必须**在 ChatWindow 那层之后**注册 —— 用户同时打开会话+收藏时，
+// 返回键应该先关收藏（最近打开的层），再关会话。
+useBackLayer(
+  () => app.isMobile && favoritesOpen.value,
+  () => closeFavorites(),
+);
+useBackLayer(
+  () => app.isMobile && settingsOpen.value,
+  () => (settingsOpen.value = false),
+);
+useBackLayer(
+  () => app.isMobile && logsOpen.value,
+  () => (logsOpen.value = false),
 );
 
 let unlistenMenu: UnlistenFn[] | null = null;

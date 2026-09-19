@@ -268,8 +268,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           class="absolute right-4 z-10 flex items-center gap-1"
           :style="{ top: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }"
         >
+          <!-- 加 drop-shadow 让白字在白色图片上也可见（问题修复：白背景白字→隐形） -->
           <button
-            class="flex h-9 items-center gap-1.5 rounded-full px-3 text-[13px] text-white/85 transition hover:bg-white/15"
+            class="flex h-9 items-center gap-1.5 rounded-full px-3 text-[13px] text-white/90 transition hover:bg-white/15"
+            style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
             :title="t('common.saveImage')"
             @click.stop="saveImage"
           >
@@ -277,7 +279,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
             {{ t("common.save") }}
           </button>
           <button
-            class="tap-safe flex h-9 w-9 items-center justify-center rounded-full text-white/85 transition hover:bg-white/15"
+            class="tap-safe flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15"
+            style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
             :title="t('common.closeEsc')" :aria-label="t('common.closeEsc')"
             @click.stop="emit('close')"
           >

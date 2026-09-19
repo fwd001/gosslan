@@ -1050,8 +1050,11 @@ function onLoadMore() {
       </button>
     </div>
 
-    <!-- 输入区：浅灰底上放一个白底圆角卡片，无顶部分割线 -->
-    <div class="shrink-0 bg-[var(--gosslan-chat)] px-4 pb-3 pt-2">
+    <!-- 输入区：浅灰底上放一个白底圆角卡片，无顶部分割线。
+         移动端底部只留 safe-area-inset-bottom（手机圆角/Home Indicator 区域），
+         不要多余 padding — TabBar 在 ChatWindow 打开时已隐藏（mobileView='chat'），
+         之前 pb-3 留了 12px 但没有 safe-area-inset，手机底部输入框会被圆角区域压住。 -->
+    <div class="shrink-0 bg-[var(--gosslan-chat)] px-4 pt-2" :style="{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 6px)' }">
       <!-- 多选态：输入区被操作条**替换**（微信同款）。
            高度固定 4rem，与 Composer 的最小高度一致 —— 否则进出多选时消息区高度跳变，
            虚拟列表会跟着滚一下。 -->
