@@ -14,10 +14,16 @@ pub fn upsert_transfer(
     path: Option<&str>,
     progress: f64,
 ) -> Result<()> {
+    // ⚠️ path 用 COALESCE：进度节流的 upsert 一律传 path=None，没有 COALESCE 时
+    // 第一次进度 tick 就把建行时写入的本地路径擦成 NULL。前端把 `file_transfers.path`
+    // 当作 content 缺 path 时的唯一兜底来源（useMessageFile），群图片预览失效的机制
+    // 就有它一份。写法与 content_transfers 保持同口径。
     conn.execute(
         "INSERT INTO file_transfers(id, peer_id, name, size, direction, status, path, progress, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-         ON CONFLICT(id) DO UPDATE SET status = excluded.status, path = excluded.path, progress = excluded.progress",
+         ON CONFLICT(id) DO UPDATE SET status = excluded.status,
+             path = COALESCE(excluded.path, file_transfers.path),
+             progress = excluded.progress",
         params![id, peer_id, name, size as i64, direction, status, path, progress, now_ms()],
     )?;
     Ok(())

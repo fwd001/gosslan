@@ -388,3 +388,66 @@ fn fill_message_sha256_backfills_once_and_keeps_other_fields() {
         "空值/缺行两条路径都不该产生写入"
     );
 }
+
+/// 进度节流的 upsert 传 `path=None` 时**不得擦掉**已记录的本地路径。
+///
+/// 钉的事故：发送行在建行时写入真实 path，而每 250ms 的进度 upsert 一律传 None ——
+/// 没有 COALESCE 时第一次 tick 就把路径擦成 NULL，前端把 `file_transfers.path` 当作
+/// content 缺 path 时的唯一兜底来源（useMessageFile），于是群图片预览整类失效。
+#[test]
+fn transfer_progress_upsert_never_erases_the_known_path() {
+    let conn = fresh_db();
+    upsert_transfer(
+        &conn,
+        "t1",
+        "p1",
+        "a.bin",
+        10,
+        "send",
+        "pending",
+        Some("/d/a.bin"),
+        0.0,
+    )
+    .unwrap();
+    let read = |conn: &Connection| {
+        conn.query_row("SELECT path FROM file_transfers WHERE id = 't1'", [], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(read(&conn).as_deref(), Some("/d/a.bin"));
+
+    // 进度 tick：只有 progress 变，path 必须留着
+    upsert_transfer(&conn, "t1", "p1", "a.bin", 10, "send", "active", None, 0.5).unwrap();
+    assert_eq!(
+        read(&conn).as_deref(),
+        Some("/d/a.bin"),
+        "传 None 表示「这次不知道」，不是「把它清空」"
+    );
+    let progress: f64 = conn
+        .query_row(
+            "SELECT progress FROM file_transfers WHERE id = 't1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        progress, 0.5,
+        "其余字段照常更新，不能为了保 path 把进度也冻住"
+    );
+
+    // 真知道新路径时（收完 rename 到最终名）必须覆盖
+    upsert_transfer(
+        &conn,
+        "t1",
+        "p1",
+        "a.bin",
+        10,
+        "receive",
+        "done",
+        Some("/d/a (1).bin"),
+        1.0,
+    )
+    .unwrap();
+    assert_eq!(read(&conn).as_deref(), Some("/d/a (1).bin"));
+}

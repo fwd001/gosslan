@@ -10,6 +10,23 @@
 
 ## [Unreleased]
 
+## [4.22.23] - 2026-09-20
+
+### Fixed (进度 upsert 不再把 file_transfers.path 擦成 NULL)
+
+`upsert_transfer` 的冲突分支写的是 `path = excluded.path`，**没有 COALESCE**；
+而发送路径每 250ms 的进度落库一律传 `path = None`（只有建行与完成时传 Some）。
+后果：建行时写进去的本地路径，被第一次进度 tick 抹成 NULL。
+
+这本身是潜伏缺陷，但它正好落在群图片预览的救援路径上 —— 前端
+`useMessageFile` 取 `path` 是 `meta.path ?? transfers[].path`，DB content 缺 path 的
+一段时间里唯一能用的就是这个兜底源。上一轮修 stale 快照竞态（4.22.17）时，review 顺手
+指出这个兜底随时会被擦掉，本条把源头堵住，与 `content_transfers` 的
+`path = COALESCE(excluded.path, ...)` 同口径。
+
+- 测试 `transfer_progress_upsert_never_erases_the_known_path`：传 None 保旧值、
+  progress 等其他字段照常更新（不能为了保 path 把进度冻住）、真知道新路径时正常覆盖。
+
 ## [4.22.22] - 2026-09-20
 
 ### Fixed (cid 回填后必须通知前端 — 修 v4.22.16 引入的合并卡片丢钥匙)
