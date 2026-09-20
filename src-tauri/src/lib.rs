@@ -1287,6 +1287,33 @@ mod tests {
         );
     }
 
+    /// **群文件投递的取消登记必须按 (transfer_id, recipient) 分键**（真机：三成员以上
+    /// 的群文件只有一个人收得到）。
+    ///
+    /// 群发是「每个可达成员各 `tokio::spawn` 一个任务、共用同一个 `transfer_id`」。
+    /// 单键时后注册的 `HashMap::insert` 会挤掉前一个任务的 `Sender`，对方的 oneshot 立刻
+    /// 以 `Err(RecvError)` 完成，而投递循环的取消分支分不清「用户真点了取消」和
+    /// 「登记被顶替」⇒ N-1 个成员以「用户取消发送」这个假原因当场中断。
+    /// 只能钉源码：这是语言级细节，行为测试要先构造出"顶替"才看得到。
+    #[test]
+    fn group_file_cancel_registry_is_scoped_per_recipient() {
+        let dispatch = code_flat(include_str!("commands/group_file_dispatch.rs"));
+        let fanout = code_flat(include_str!("commands/group_announcements.rs"));
+        assert!(
+            dispatch.contains("file_cancel_key(transfer_id,recipient)"),
+            "群投递的取消登记必须带 recipient（否则同 transfer_id 的任务互相挤掉登记）"
+        );
+        assert!(
+            !dispatch.contains(".insert(transfer_id.to_string(),cancel_tx)"),
+            "不得回退成 transfer_id 单键"
+        );
+        assert!(
+            fanout.contains("update_group_file_recipient(&dbc,&tid3,&m3,status,0.0)"),
+            "群投递出错必须给成员落终态：离线补发只捞 status='pending'，留在 sending \
+             就是「永远在发、重启也不重试」"
+        );
+    }
+
     /// **扫描结果不得再用 `Peripheral::services()` 二次过滤**（真机踩过，症状极隐蔽）。
     ///
     /// `start_scan(ScanFilter{services})` 已在平台层过滤；而 `services()` 在 **Android 上

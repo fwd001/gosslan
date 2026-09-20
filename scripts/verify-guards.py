@@ -623,6 +623,27 @@ CASES: list[Case] = [
         tags=["rust", "file", "perf"],
     ),
     Case(
+        name="群文件取消登记必须按收件人分键",
+        why="群发是「每个成员一个投递任务、共用同一个 transfer_id」。单键时后注册的 insert "
+        "挤掉前一个任务的 Sender ⇒ 对方 oneshot 立刻 Err(RecvError)，被取消分支当成"
+        "「用户取消发送」⇒ N 个成员里只有最后一个发得完（真机三成员群必现，且报错原因是假的）",
+        file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
+        injections=[(
+            "let cancel_key = file::file_cancel_key(transfer_id, recipient);",
+            "let cancel_key = transfer_id.to_string();",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "group_file_cancel_registry_is_scoped_per_recipient",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="群投递的取消登记必须带 recipient",
+        tags=["rust", "file", "group"],
+    ),
+    Case(
         name="BLE 离开 PoweredOn 必须摘掉全部订阅",
         why="CoreBluetooth 不会补发「对端断开」⇒ 订阅状态陈旧会让写任务白等 8s 且日志空白",
         file=TAURI / "src" / "transport" / "bluetooth_peripheral.rs",

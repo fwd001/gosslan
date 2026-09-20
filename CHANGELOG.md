@@ -10,6 +10,39 @@
 
 ## [Unreleased]
 
+## [4.22.19] - 2026-09-20
+
+### Fixed (群文件取消登记按收件人分键 — 三成员以上只有一个人收得到)
+
+上一轮提交前的独立 review 抓出的 BLOCKER，代码逐行核实成立（不是 review 误判）：
+
+`group_announcements.rs` 对每个可达成员各 `tokio::spawn` 一个投递任务，**共用同一个
+`transfer_id`**，而 `group_file_dispatch.rs` 用 `file_send_cancels.insert(transfer_id, tx)`
+登记取消句柄 —— `HashMap::insert` 会把前一个任务的 `Sender` 挤掉，oneshot 的 `Receiver`
+在 `Sender` 被 drop 时立刻以 `Err(RecvError)` 完成，而投递循环里的
+`_ = &mut cancel_rx => return Err("用户取消发送")` **分不清「用户真点了取消」和
+「登记被顶替」** ⇒ N 个成员里只有最后注册那个能发完，其余当场以「用户取消发送」这个
+**假原因**中断。
+
+这条是既有缺陷，但被 v4.22.14 显著放大：我把 cancel 分支挪到了分片发送周围（任务在那里
+停留整段传输时间），原本要卡进"文件读取那一微秒"才可能触发的顶替，现在几乎必现。
+
+- 新增 `file::file_cancel_key(transfer_id, recipient)` 与 `file_cancel_prefix`，三处登记点
+  （单聊直传、中继、群投递）全部带上收件人；用 NUL 作分隔符，因为 `transfer_id`(uuid) 与
+  `device_id` 都不会含它 —— 前缀匹配不会误伤「id 恰好同前缀」的兄弟传输。
+- `cancel_file_transfer` 改为按前缀**批量**发信号：一条群文件本来就有 N 条在途流，
+  只拿一条等于"取消只停住最后一个成员"。
+- 群投递错误出口补终态：`dispatch_group_file_to_peer` 一进来就把该成员置 `sending`，
+  而离线补发只捞 `status='pending'`（`db/group_files.rs:107`）—— 出错后留在 sending
+  就是「永远在发、重启也不会重试」，群文件面板上那条永远转圈。现在按原因落
+  `cancelled`（用户主动）或 `failed`（其余）。
+
+测试：`file_cancel_keys_are_scoped_per_recipient`（含"前缀不得误伤 t11"这条真陷阱）；
+源码守卫 `group_file_cancel_registry_is_scoped_per_recipient`（用 `code_flat` 做空白归一，
+避免被 rustfmt 拆行后空转）+ verify-guards 登记该守卫的"改坏必须 FAIL"用例。
+覆盖边界：登记顶替→误取消的端到端行为需要真实 `AppState` 与两个并发投递任务才能驱动，
+本仓库没有那套 harness，故按「纯函数键 + 源码守卫 + 真机待验」交付。
+
 ## [4.22.18] - 2026-09-20
 
 ### Changed (transport.rs 分册第 1 步：出站投递与链路选路搬出主文件)

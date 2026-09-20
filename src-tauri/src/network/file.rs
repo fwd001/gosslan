@@ -78,6 +78,27 @@ pub fn chunk_size_for_path(path: &str) -> usize {
     }
 }
 
+/// `AppState::file_send_cancels` 的键：`transfer_id` + 收件人，用 NUL 连接。
+///
+/// 为什么不能只用 `transfer_id`（真机：三成员以上群文件只有一人收得到）：
+/// 群文件是**每个成员一个投递任务、共用同一个 `transfer_id`**
+/// （`group_announcements.rs` 对每个可达成员 `tokio::spawn`）。单键时后注册的
+/// `HashMap::insert` 会把前一个任务的 `Sender` 直接挤掉，而 oneshot 的 `Receiver`
+/// 在 `Sender` 被 drop 时立刻以 `Err(RecvError)` 完成 —— 投递循环里
+/// `_ = &mut cancel_rx => ...` 这条分支分不清「用户真点了取消」和「登记被顶替」，
+/// 于是 N-1 个成员以「用户取消发送」这个**假原因**当场中断，而且永远停在 sending。
+///
+/// 为什么用 NUL 不用 `:`：`transfer_id`（uuid）与 `device_id` 都不会含 NUL，
+/// 前缀匹配因此不可能误伤「id 恰好以另一个 id 开头」的兄弟条目。
+pub fn file_cancel_key(transfer_id: &str, recipient: &str) -> String {
+    format!("{transfer_id}\u{0}{recipient}")
+}
+
+/// 取消入口用的前缀：同一 `transfer_id` 下所有收件人的键都以它开头。
+pub fn file_cancel_prefix(transfer_id: &str) -> String {
+    format!("{transfer_id}\u{0}")
+}
+
 /// SHA-256 hex 表示校验（64 位 hex，大小写均可；比较时统一小写）。
 pub fn valid_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -257,19 +278,20 @@ pub async fn send_file_from_path_at(
 
     let _ = from_seq;
     // ---- 用户取消注册表（L3 fix: 提前到 deadline 外层注册，覆盖 E2E） ----
-    let transfer_id_owned = transfer_id.to_string();
+    // 键含收件人：见 `file_cancel_key`（单键会让同 transfer_id 的并发投递互相挤掉登记）。
+    let cancel_key = file_cancel_key(transfer_id, peer_id);
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
     state
         .file_send_cancels
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id_owned.clone(), cancel_tx);
+        .insert(cancel_key.clone(), cancel_tx);
     let cancel_cleanup = || {
         state
             .file_send_cancels
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&transfer_id_owned);
+            .remove(&cancel_key);
     };
 
     // ---- 整体 deadline（L3 fix: 从 Offer 循环入口开始计时，覆盖 E2E） ----
@@ -470,19 +492,20 @@ pub async fn send_file_via_relay(
     };
 
     // ---- cancel + timeout 注册 ----
-    let transfer_id_owned = transfer_id.to_string();
+    // 键含收件人（与直传同口径，见 `file_cancel_key`）。
+    let cancel_key = file_cancel_key(transfer_id, peer_id);
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
     state
         .file_send_cancels
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id_owned.clone(), cancel_tx);
+        .insert(cancel_key.clone(), cancel_tx);
     let cancel_cleanup = || {
         state
             .file_send_cancels
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&transfer_id_owned);
+            .remove(&cancel_key);
     };
 
     let result = tokio::time::timeout(RELAY_FILE_SEND_DEADLINE, async {
@@ -2185,6 +2208,32 @@ mod tests {
         assert_eq!(
             got, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "空文件 SHA-256 必须是标准已知值"
+        );
+    }
+
+    /// 取消登记必须**按收件人分键**（真机：三成员以上群文件只有一人收得到）。
+    ///
+    /// 钉的判据：单键时后注册的 `insert` 挤掉前一个任务的 `Sender`，对方的 oneshot
+    /// 立刻 `Err(RecvError)` 完成，而投递循环的取消分支分不清"被取消"与"登记被顶替"
+    /// ⇒ N-1 个成员以「用户取消发送」这个假原因当场中断。
+    #[test]
+    fn file_cancel_keys_are_scoped_per_recipient() {
+        let a = super::file_cancel_key("t1", "peer-a");
+        let b = super::file_cancel_key("t1", "peer-b");
+        assert_ne!(a, b, "同一 transfer_id 的不同收件人必须各自成键");
+        let prefix = super::file_cancel_prefix("t1");
+        assert!(
+            a.starts_with(prefix.as_str()) && b.starts_with(prefix.as_str()),
+            "取消入口要能按前缀一次命中该 transfer 的全部在途流"
+        );
+        assert!(
+            !super::file_cancel_key("t11", "peer-a").starts_with(prefix.as_str()),
+            "前缀匹配不得误伤 id 恰好同前缀的兄弟传输"
+        );
+        assert_eq!(
+            a.split('\u{0}').count(),
+            2,
+            "键必须恰好 transfer_id + recipient 两段"
         );
     }
 

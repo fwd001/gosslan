@@ -403,18 +403,26 @@ pub async fn cancel_file_transfer(
 ) -> Result<bool, String> {
     let s = state.inner();
 
-    // 1. 发 cancel 信号
+    // 1. 发 cancel 信号 —— 一个 transfer_id 可能对应**多条**在途流（群文件是每个成员一条，
+    //    登记键见 `file::file_cancel_key`），必须按前缀全部命中，不能只拿一条。
     let signalled = {
         let mut cancels = s
             .file_send_cancels
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if let Some(tx) = cancels.remove(&transfer_id) {
-            let _ = tx.send(());
-            true
-        } else {
-            false
+        let prefix = file::file_cancel_prefix(&transfer_id);
+        let keys: Vec<String> = cancels
+            .keys()
+            .filter(|k| k.starts_with(prefix.as_str()))
+            .cloned()
+            .collect();
+        let matched = !keys.is_empty();
+        for k in keys {
+            if let Some(tx) = cancels.remove(&k) {
+                let _ = tx.send(());
+            }
         }
+        matched
     };
 
     // 2. DB 层：单聊 outbox + 消息状态 + transfer

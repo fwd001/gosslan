@@ -55,18 +55,23 @@ async fn dispatch_group_file_to_peer(
         .map_err(|e| format!("Offer 发送失败：{e}"))?;
 
     // ---- cancel + timeout 注册（H3 fix: 群文件也支持用户取消 + 整体 deadline）----
+    // 键必须带 recipient：本函数是**每个成员各 spawn 一个任务、共用同一个 transfer_id**
+    // （group_announcements.rs 的 fan-out 循环）。只按 transfer_id 登记时，后注册的任务会
+    // 把前一个的 Sender 挤掉 ⇒ 前者的 cancel_rx 以 Err(RecvError) 完成 ⇒ 被取消分支当成
+    // 「用户取消发送」，N 个成员里只有最后一个发得完（真机三成员群必现）。
+    let cancel_key = file::file_cancel_key(transfer_id, recipient);
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
     state
         .file_send_cancels
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id.to_string(), cancel_tx);
+        .insert(cancel_key.clone(), cancel_tx);
     let cancel_cleanup = || {
         state
             .file_send_cancels
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(transfer_id);
+            .remove(&cancel_key);
     };
 
     // 期限按体积自适应（与单聊同一口径，见 `file::send_deadline_for`）：
