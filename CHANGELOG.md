@@ -10,6 +10,40 @@
 
 ## [Unreleased]
 
+## [4.22.17] - 2026-09-20
+
+### Fixed (群图片预览的 stale 快照竞态 + 「发送中 0% 而对端已读」)
+
+真机两条残留：① 群里连发 9-10 张图总有 1-2 张预览不出（单独发同一张必成功）；
+② 文件对方已收已读（双对勾），本机仍钉在「发送中 0%」。
+
+**① 是快照竞态，不是 4.22.13 修的 dedupe**：群文件消息在 Offer 阶段落库的内容**不带
+本地 path**，收完才回填。而 `loadMessages` 的 DB 快照经 `preserveDeliveryStatus` 合并时
+**只保 status、content 一律取 DB** ⇒ 一次在回填前取数的重查后到，就把内存里已回填的 path
+擦回无 path 形态；`useMessageFile` 在 path 为空时根本不发预览请求 → 空白气泡。
+单聊不受影响，因为单聊 Done 是**直接 insert 一条带 path 的记录**（这就是"群聊坏、单聊好"
+一直找不到根因的形状差）。
+
+- 新增纯函数 `pickMediaContent(prev, incoming)`：媒体行只在「先前有 path、新的没有」时
+  保住旧 content，其余一律以新载荷为准（DB 是真相这条原则没被放宽）；
+  `preserveDeliveryStatus` 与 `applyIncoming` 两条覆盖路径同时接上。测试 ×2。
+- `handle_group_file_done` 补 emit `file-done`：单聊、中继、群**发送方**都发，唯独群
+  **接收端**漏了。漏掉的后果不是少个事件 —— 接收端在字节落盘前读预览会得到「已被清理」，
+  而那种确定性失败判定是被**永久缓存**的（`utils/filePreview.ts` 只缓存确定性失败），
+  清缓存的唯一入口就是 `onFileDone` 的 `invalidateFilePreview`。不触发 ⇒ 文件早好好躺在
+  磁盘上、气泡却永远空白，重启前不会自己好回来。
+
+**② 是进度事件被静默丢弃**：`updateTransferProgress` 在 `transfers` 里找不到该 id 时直接
+no-op 且无重放，而多选发送是"每个文件各自 `void refreshTransfers()`"的并发 IPC ——
+后发先至的**旧快照**里没有刚建的那条 transfer，覆盖回来后所有进度事件都落空，
+进度条就永久停在 0%（此前怀疑的 FileCompleteAck 丢失是错的假设，已推翻）。
+
+- `refreshTransfers` 加请求序号，旧快照不得覆盖新状态；两次 IPC 改 `Promise.all`。
+- 进度/done 事件找不到行时不再静默丢弃，改为防抖一次补拉（400ms，不放大 IPC）。
+
+验证：npm test 489 全绿（新增 2 条）、cargo test --features bluetooth 570 全绿、
+vite build + vue-tsc 通过。
+
 ## [4.22.16] - 2026-09-20
 
 ### Fixed (点完大文件不再"卡一会儿" — 气泡前不做整文件扫描；导入复制不再占住 async worker)

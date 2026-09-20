@@ -8,6 +8,7 @@ import {
   mergeMessages,
   messageMentionsAll,
   messageMentionsName,
+  pickMediaContent,
   preserveDeliveryStatus,
   previewText,
   selectCachedConversations,
@@ -408,7 +409,13 @@ export const useChatStore = defineStore("chat", () => {
           next.push(m);
         } else {
           const prev = next[i];
-          next[i] = { ...m, status: furthestStatus(prev.status, m.status) };
+          // content 不能一律取新的：群文件的 path 是收完才回填的，回填前的后到记录
+          // 会把已回填的 path 擦掉 ⇒ 预览请求根本不发出去（空白气泡）。见 pickMediaContent。
+          next[i] = {
+            ...m,
+            content: pickMediaContent(prev, m),
+            status: furthestStatus(prev.status, m.status),
+          };
         }
       }
       messages.value[convId] = mergeMessages([], next);
@@ -503,10 +510,30 @@ export const useChatStore = defineStore("chat", () => {
       .filter(([readerId, lastReadTs]) => members.has(readerId) && readerId !== myId && lastReadTs >= messageTs)
       .map(([readerId]) => readerId);
   }
+  /** 进行中的 refreshTransfers 序号：并发触发时只让**最新那次**写回结果。 */
+  let transfersReqSeq = 0;
   async function refreshTransfers() {
-    transfers.value = await api.getTransfers();
+    const req = ++transfersReqSeq;
+    const [list, contents] = await Promise.all([
+      api.getTransfers(),
+      api.getContentTransfers().catch(() => []),
+    ]);
+    // 后发先至的旧快照必须丢掉：多选发送时每个文件都会 `void refreshTransfers()`，
+    // 旧快照里**没有**刚建的那条 transfer ⇒ 覆盖回来后，后续 file-progress 全部落空
+    // （见 updateTransferProgress），进度条永久钉在「发送中 0%」——而对端早就收完已读。
+    if (req !== transfersReqSeq) return;
+    transfers.value = list;
     // 顺带刷新统一内容状态：未完成 / 校验失败的气泡据此显示「点击重试」。
-    contentTransfers.value = await api.getContentTransfers().catch(() => []);
+    contentTransfers.value = contents;
+  }
+  /** 进度/done 事件早于 transfer 行进内存时的一次性补拉（防抖，不放大 IPC）。 */
+  let transfersRepairTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleTransfersRepair() {
+    if (transfersRepairTimer) return;
+    transfersRepairTimer = setTimeout(() => {
+      transfersRepairTimer = null;
+      void refreshTransfers();
+    }, 400);
   }
   /** 上一次真正拉取拓扑的时间（`refreshTopologyThrottled` 用）。 */
   let lastTopologyAt = 0;
@@ -1349,7 +1376,12 @@ export const useChatStore = defineStore("chat", () => {
 
   function updateTransferProgress(p: FileProgress) {
     const t = transfers.value.find((x) => x.id === p.transfer_id);
-    if (t) t.progress = p.total > 0 ? p.received / p.total : 0;
+    if (t) {
+      t.progress = p.total > 0 ? p.received / p.total : 0;
+      return;
+    }
+    // 找不到行**不能静默丢**：进度是节流发的（250ms 一次），丢掉一次就可能再也没有下一次。
+    scheduleTransfersRepair();
   }
   function onFileDone(d: FileDoneInfo) {
     const t = transfers.value.find((x) => x.id === d.transfer_id);
@@ -1357,6 +1389,8 @@ export const useChatStore = defineStore("chat", () => {
       t.status = "done";
       t.path = d.path;
       t.progress = 1;
+    } else {
+      scheduleTransfersRepair();
     }
     // 字节刚落盘：让这条消息的预览缓存失效 —— 收到图片时可能"消息先到、字节后到"，
     // 在途读预览会得到"仍在接收"；不失效就不会重读，图片只能靠重发才出来。

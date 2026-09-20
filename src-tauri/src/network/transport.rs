@@ -6195,6 +6195,20 @@ async fn handle_group_file_done(
                 .ok();
         }
         let _ = state.app.emit("message-received", &done_rec);
+        // 群**接收**端也必须 emit `file-done`：单聊、中继、群发送方都发，唯独这里漏了。
+        // 漏掉不是"少一个事件"这么轻 —— 接收端在字节落盘前读预览会得到「已被清理」，
+        // 而那个确定性失败判定被**永久缓存**（utils/filePreview.ts 只缓存确定性失败），
+        // 清缓存的唯一入口就是 `onFileDone` 里的 invalidateFilePreview。不触发 ⇒
+        // 文件早就好好躺在磁盘上，气泡却永远空白；重启前都不会自己好回来。
+        let _ = state.app.emit(
+            "file-done",
+            &crate::state::FileDoneInfo {
+                transfer_id: transfer_id.to_string(),
+                name: gf.name.clone(),
+                size: gf.size,
+                path: r.final_path.to_string_lossy().to_string(),
+            },
+        );
     }
     // 完成确认：无论 ACK 发送成败，file_key 已清理不再保留（ACK 丢失由后续阶段处理）
     send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true).await;

@@ -7,6 +7,7 @@ import {
   mergeMessages,
   messageMentionsAll,
   messageMentionsName,
+  pickMediaContent,
   preserveDeliveryStatus,
   previewText,
   selectCachedConversations,
@@ -255,6 +256,54 @@ test("会话重查快照不得退回已推进的送达状态", () => {
 test("空本地缓存时原样返回重查结果", () => {
   const fresh = [msg({ msg_id: "m1", status: "sent" })];
   assert.equal(preserveDeliveryStatus(fresh, []), fresh);
+});
+
+// ==================== 媒体 path 回填 vs stale 快照 ====================
+
+test("群图片：回填前的 DB 快照不得擦掉已回填的 path", () => {
+  const done = msg({
+    msg_id: "gfile-1",
+    kind: "image",
+    status: "delivered",
+    content: JSON.stringify({ name: "a.jpg", path: "/d/a.jpg" }),
+  });
+  // loadMessages 在 Done 回填之前取的数据：同一 msg_id、没有 path
+  const stale = msg({
+    msg_id: "gfile-1",
+    kind: "image",
+    status: "sent",
+    content: JSON.stringify({ name: "a.jpg", progress: 0 }),
+  });
+  const out = preserveDeliveryStatus([stale], [done]);
+  assert.equal(JSON.parse(out[0].content).path, "/d/a.jpg", "path 被 stale 快照擦掉 ⇒ 预览请求根本不会发出");
+  assert.equal(out[0].status, "delivered", "status 仍只前进");
+  assert.equal(out[0].msg_id, "gfile-1");
+});
+
+test("pickMediaContent：只保护「有 path → 无 path」这一种回退", () => {
+  const noPath = msg({ msg_id: "g1", kind: "file", content: JSON.stringify({ name: "a", size: 1 }) });
+  const withPath = msg({
+    msg_id: "g1",
+    kind: "file",
+    content: JSON.stringify({ name: "a", size: 1, path: "/d/a" }),
+  });
+  assert.equal(pickMediaContent(undefined, withPath), withPath.content, "无旧记录 ⇒ 取新");
+  assert.equal(pickMediaContent(noPath, withPath), withPath.content, "新记录带 path ⇒ 取新");
+  assert.equal(pickMediaContent(withPath, noPath), withPath.content, "新记录丢了 path ⇒ 保旧");
+  const moved = msg({
+    msg_id: "g1",
+    kind: "file",
+    content: JSON.stringify({ name: "a", size: 1, path: "/d/renamed" }),
+  });
+  assert.equal(pickMediaContent(withPath, moved), moved.content, "两边都有 path ⇒ 以新载荷为准");
+  const text = msg({ msg_id: "t1", kind: "text", content: "hi" });
+  assert.equal(pickMediaContent(withPath, text), text.content, "非媒体行一律取新");
+  const broken = msg({ msg_id: "g2", kind: "image", content: "{不是 JSON" });
+  assert.equal(
+    pickMediaContent(withPath, broken),
+    withPath.content,
+    "新载荷解析不出 path 就当作无 path：本地那份有 path 的必须留住",
+  );
 });
 
 test("送达状态只前进：sent→delivered→read，逆序不变", () => {
