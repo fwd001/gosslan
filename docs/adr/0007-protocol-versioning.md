@@ -112,5 +112,28 @@ protocol version bump
    并且一律按 capability 门控，不门控不许发
 ```
 
-第 ① 步没有做完之前，任何"新帧类型"都不许上线 —— 那会让老设备**直接连不上**（见 INV-P24 现状）。
+第 ① 步没有做完之前，任何"新帧类型"都不许上线 —— 那会让老设备**直接连不上**（INV-P24 的
+"为什么"一节记的就是这个后果）。
+
+### 落地进度（2026-09-20）
+
+```text
+① 前半  容忍 Unknown            ✅ v4.22.27  Message::Unknown + decode_frame（握手首帧仍严格）
+① 后半  Hello 报版本 + 面板显示  ✅ v4.22.28  protocol_version / app_version（可选、不进签名）
+                                   → AppState::peer_versions → 诊断面板「版本互通」+ 降级日志
+②      前端渲染兜底 + 可解释状态  ⬜
+③      新帧 / HKDF v2 派生       ⬜（且必须等 ① 在网里铺开后才允许）
+```
+
+决策 1 的"这一步不断老版本互通"已经在测试里坐实：老格式 Hello（没有这两个字段）必须照样
+解析成 `None`，而 Hello 遇到未知**字段**必须照单收下（新→老方向）—— 见
+`hello_version_fields_roundtrip_and_old_peer_declares_nothing`。
+反过来，"字段进了签名材料"这个会让老端验签失败的错误由守卫
+`peer_version_is_declared_not_signed_and_reclaimed` 钉住，并由 `verify-guards.py`
+的「Hello 必须声明本机版本」用例做非空转验证。
+
+**这里刻意没做的事**（下一个 AI 别顺手加）：没有 `MIN_PROTOCOL_VERSION`、没有版本区间协商、
+没有 capability 位图。今天没有任何一条按版本门控的消息，所以那些机制一个调用点都没有；
+它们应随第一个真正需要门控的新帧一起出现（那时才知道要门控什么）。
+`PROTOCOL_VERSION` 现在全网都是 1，它的价值只是"把版本号写进线格式，让将来能写门控"。
 

@@ -718,11 +718,16 @@ fn sweep_peers(state: &AppState) {
         crate::network::transport::clear_conv_link(state, &id);
         // 连带清掉按 device_id 索引的内存表：它们原先只在「删好友」时清，
         // 而节点进出（换网、换设备、临时上线）比删好友频繁得多 ——
-        // 长跑后 `peer_content_features` / `key_conflict_warned` 会无界增长。
+        // 长跑后 `peer_content_features` / `peer_versions` / `key_conflict_warned` 会无界增长。
         // 与 `conv_link` 同一个回收点：节点已不在 peers 表，这些按它的 id 记的状态
         // 也就失去了参照（它再上线会重新 Hello / 重新 announce，届时按需重建）。
         state
             .peer_content_features
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+        state
+            .peer_versions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&id);

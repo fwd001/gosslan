@@ -19,7 +19,7 @@ import { computed, onMounted, ref } from "vue";
 import { Bluetooth, RefreshCw, Wifi } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
 import { api } from "@/api";
-import type { DiscoveryDiag } from "@/types";
+import type { DiscoveryDiag, PeerVersionDiag } from "@/types";
 
 defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -66,6 +66,25 @@ function fmtTs(ts: number): string {
 /** 候选链路的图标：蓝牙 / 网卡。 */
 function iconFor(kind: string) {
   return kind === "bluetooth" ? Bluetooth : Wifi;
+}
+
+/** 版本行的主语：昵称优先，昵称空了退回 device_id（不显示空串）。 */
+function peerLabel(p: PeerVersionDiag): string {
+  return p.nickname || p.device_id;
+}
+
+/** 对端声明的版本一句话。**没声明就说"未声明"**，不替老版本猜一个号。 */
+function peerVersionText(p: PeerVersionDiag): string {
+  if (p.protocol_version === null && !p.app_version) return t("diag.peerNotDeclared");
+  return t("diag.peerVersionLine", {
+    p: p.protocol_version ?? "?",
+    a: p.app_version || "-",
+  });
+}
+
+/** 对端线格式版本比本机高 ⇒ 这一帧我们大概率看不懂（INV-P24 要求这个事实可见）。 */
+function peerIsNewer(p: PeerVersionDiag): boolean {
+  return p.protocol_version !== null && p.protocol_version > (diag.value?.protocol_version ?? 0);
 }
 </script>
 
@@ -266,6 +285,31 @@ function iconFor(kind: string) {
           </div>
           <div v-if="bt.no_dial > 0" class="mt-1 opacity-60">
             {{ t("diag.btNoDial") }}{{ bt.no_dial }}
+          </div>
+        </section>
+
+        <!-- ⑤ 版本互通：跨版本问题时第一眼要看"谁老、谁根本没报版本" -->
+        <section>
+          <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.versions") }}</h4>
+          <div class="opacity-70">
+            {{ t("diag.localVersion", { p: diag.protocol_version, a: diag.app_version }) }}
+          </div>
+          <p v-if="diag.peer_versions.length === 0" class="mt-1 opacity-50">
+            {{ t("diag.peerVersionsEmpty") }}
+          </p>
+          <div v-else class="mt-1 max-h-48 space-y-0.5 overflow-y-auto font-mono text-[11px]">
+            <div v-for="p in diag.peer_versions" :key="p.device_id" class="flex gap-3">
+              <span class="min-w-0 flex-1 truncate opacity-70" :title="p.device_id">
+                {{ peerLabel(p) }}
+              </span>
+              <span
+                class="shrink-0"
+                :class="peerIsNewer(p) ? 'text-[var(--gosslan-danger-ink)]' : ''"
+              >
+                {{ peerVersionText(p) }}
+                <template v-if="peerIsNewer(p)"> · {{ t("diag.peerNewer") }}</template>
+              </span>
+            </div>
           </div>
         </section>
       </template>

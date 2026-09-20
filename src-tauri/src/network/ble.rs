@@ -2288,6 +2288,8 @@ mod tests {
             avatar: None,
             device_type: "desktop".into(),
             content_features: crate::protocol::content_features(),
+            protocol_version: Some(crate::protocol::PROTOCOL_VERSION),
+            app_version: Some(crate::protocol::current_app_version().to_string()),
             tcp_port: 59992,
             x25519_pubkey: "xk".into(),
             ed25519_pubkey: "ek".into(),

@@ -439,6 +439,9 @@ async fn main() {
             avatar: None,
             device_type: "desktop".into(),
             content_features: gosslan_lib::protocol::content_features(),
+            // 不声明版本 = 模拟网里现存的老实例（理由见 dual_link.rs 同处注释）
+            protocol_version: None,
+            app_version: None,
             tcp_port: 0,
             x25519_pubkey: xk,
             ed25519_pubkey: ek,

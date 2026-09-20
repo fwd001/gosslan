@@ -2114,6 +2114,50 @@ mod tests {
         );
     }
 
+    /// **对端版本必须「声明但不签名、记录但会回收」**（ADR-0007 决策 1 / INV-P24）。
+    ///
+    /// 为什么只能钉源码：这三个环节各自的行为都是"什么都没发生"，
+    /// 没有哪个测试会因为**漏了**其中一条而失败，而每条漏掉的后果都不轻：
+    /// - 进了签名材料 ⇒ 老端验签失败 ⇒ "报版本"本身变成破坏性变更（老设备直接连不上）；
+    /// - 不记录 ⇒ 未知帧日志与诊断面板都无从解释"到底谁版本高"；
+    /// - 不回收 ⇒ 节点进出比删好友频繁得多，长跑后这张表无界增长。
+    #[test]
+    fn peer_version_is_declared_not_signed_and_reclaimed() {
+        let proto = include_str!("protocol.rs");
+        let sig = rust_fn_body(proto, "pub fn hello_signing_bytes(");
+        for f in ["protocol_version", "app_version"] {
+            assert!(
+                !sig.contains(f),
+                "{f} 不得进入 Hello 签名材料（否则老端验签失败，加字段=断兼容）"
+            );
+        }
+        let transport = crate::network::transport_src_for_guards();
+        let built = rust_fn_body(&transport, "pub fn build_signed_hello(");
+        assert!(
+            code_flat(&built).contains("protocol_version:Some(crate::protocol::PROTOCOL_VERSION)"),
+            "本机 Hello 必须声明 PROTOCOL_VERSION，否则对端永远看不到我们的版本"
+        );
+        assert!(
+            code_flat(&built).contains("app_version:Some(crate::protocol::current_app_version("),
+            "本机 Hello 必须声明 app_version（只给人看，但诊断面板要靠它认人）"
+        );
+        let hello_arm = rust_fn_body(&transport, "pub async fn handle_message(");
+        assert!(
+            hello_arm.contains("peer_versions"),
+            "Hello 到达时必须记录对端声明的版本（TCP 与 BLE 共用这一个写入点）"
+        );
+        let cmds = all_commands_src();
+        assert!(
+            cmds.contains("result.peer_versions = collect_peer_versions("),
+            "诊断面板必须真的把对端版本取出来 —— 只存不读等于没有"
+        );
+        let disc = include_str!("network/discovery.rs");
+        assert!(
+            disc.contains("peer_versions"),
+            "sweep_peers 必须回收 peer_versions（与 peer_content_features 同一回收点）"
+        );
+    }
+
     /// 外设侧**每次订阅都必须清掉该 central 的重组器**（用户优先级 ①：加入 mesh 的稳定性）。
     ///
     /// 为什么（2026-09-13 框架审计）：对端的 `msg_id` **每条连接都从 1 重新开始**，而 macOS

@@ -115,6 +115,10 @@ async fn connect_and_hello(
         avatar: None,
         device_type: "desktop".to_string(),
         content_features: gosslan_lib::protocol::content_features(),
+        // 这两个字段是 v4.22.28 才加的：**留空 = 模拟网里现存的老实例**，
+        // 于是每次跑这个模拟器都顺带验证一遍"对端不声明版本"的降级路径（INV-P24）。
+        protocol_version: None,
+        app_version: None,
         tcp_port: 0,
         x25519_pubkey: x25519,
         ed25519_pubkey: ed25519,

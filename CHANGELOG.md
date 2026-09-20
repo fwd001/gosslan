@@ -10,6 +10,45 @@
 
 ## [Unreleased]
 
+## [4.22.28] - 2026-09-20
+
+### Added (节点之间终于知道对方是什么版本 — ADR-0007 落地①后半)
+
+上一轮让老设备"看得懂新帧看不懂就跳过"，这一轮给它一个能解释"谁老"的依据：`Hello` 增加两个
+**可选**字段 `protocol_version` / `app_version`（`PROTOCOL_VERSION = 1`，本机应用版本取
+`CARGO_PKG_VERSION`）。老设备不发这两个字段 ⇒ 解成 `None`；新设备收到老设备**没听说过**的字段
+照样忽略 ⇒ **这一步不断现有互通**（这正是 ADR-0007 决策 1 与决策 3 的区别：决策 3 会断，所以
+必须等 ① 铺开）。
+
+- **不进签名材料**：`hello_signing_bytes` 一个字节都不变。进了签名材料就是"报版本"这件事本身
+  变成破坏性变更 —— 老端验签失败 ⇒ 连不上，比不报版本严重得多。
+- 两个字段分开用：`protocol_version` 是**兼容性判据**，`app_version` **只给人看**。绝不用应用
+  版本做兼容判断（`4.22.10` 与 `4.22.9` 线格式相同，字符串比较会凭空排出高低）。
+- 记录点只有一个：验签通过后 `handle_message` 的 `Hello` 分支写 `AppState::peer_versions`
+  —— TCP 与 BLE 建链后都把首帧交回这里，所以两条 transport 天然同一份事实，没有第二处写入。
+  不挂到 `Peer` 上：`Peer` 会被不带版本的 UDP announce 反复重建，挂上去每次广播后丢真值。
+  回收点与 `peer_content_features` 同一个（`sweep_peers`），否则长跑无界增长。
+- 立刻有消费者，不是"先存着"：**①** 未知帧降级日志从"倒推对方更新"变成写清
+  「对端声明（协议=? 应用=?）／本机协议=?」；**②** 隐藏诊断面板新增「版本互通」格
+  （本机版本 + 每个已知对端的声明，昵称现查 `peers`；老端如实显示"未声明"，不替它猜版本号；
+  对端协议比本机高时标红）。数据仍走 `get_discovery_diag` 一个命令 —— 面板"一次拿全、
+  不出现两份数据对不上"的既有纪律。
+- 刻意**没做**的：`MIN_PROTOCOL_VERSION`、版本区间协商、capability 位图。今天没有任何一条按版本
+  门控的消息，那些机制零调用点；它们该跟第一个需要门控的新帧一起出现。
+- 测试/守卫：`hello_version_fields_roundtrip_and_old_peer_declares_nothing`（新端往返 +
+  老格式 Hello 必须解析成 `None` + **未知字段必须被忽略**这条"不许 deny_unknown_fields"的哨兵）；
+  守卫 `peer_version_is_declared_not_signed_and_reclaimed`（签名材料不含版本字段 /
+  本机必须声明 / Hello 必须记录 / 面板必须读取 / 离线必须回收，5 条）；
+  `verify-guards.py` 新用例「Hello 必须声明本机版本」实跑改坏即 FAIL、恢复即 PASS。
+- 三个外部对端模拟器（`examples/{dual_link,mirror_dial,e2e_peer}.rs`）一并补上这两个字段，
+  并且**刻意留成 `None`**：它们模拟的就是网里现存的老实例，于是每次跑模拟器都在验证
+  "对端不声明版本"的降级路径。改这里的过程也暴露一个自查口径错误 —— 我只跑了
+  `cargo test --lib`，而 verify 第 12 步是不带 `--lib` 的 `cargo test`，**examples 只有后者看得见**，
+  所以第一次本地"全绿"是假的（三个 example 编译失败）。以后加协议字段一律用
+  `cargo check --all-targets` 或 `npm run verify` 兜底。
+- 文档：INV-P24 补「落地进度」块（哪几条已做、哪几条没做，别让下一个 AI 拿旧事实当现状），
+  测试矩阵补"老端 Hello 不带版本字段"一行；ADR-0007 记 ① 已完成 + 刻意不做的清单。
+
 ## [4.22.27] - 2026-09-20
 
 ### Fixed (未知帧类型降级为"忽略"，不再是"断链" — INV-P24 落地①)

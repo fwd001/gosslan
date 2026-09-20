@@ -791,6 +791,13 @@ export const zhCN: MessageDict = {
   "diag.broadcast": "广播",
   "diag.privateNet": "私有网段",
   "diag.seconds": "{n}s",
+  // 版本互通（ADR-0007 决策 1）：本机与每个对端声明的协议/应用版本
+  "diag.versions": "版本互通",
+  "diag.localVersion": "本机 协议 {p} · 应用 {a}",
+  "diag.peerVersionsEmpty": "还没有对端声明版本（未建链，或对方是不报版本的老版本）",
+  "diag.peerNotDeclared": "未声明版本（老版本）",
+  "diag.peerVersionLine": "协议 {p} · 应用 {a}",
+  "diag.peerNewer": "对端协议更高",
 
   // ---- 发送 / 通知 / 文件操作 ----
   "send.fileFail": "文件发送失败",
@@ -1662,6 +1669,12 @@ export const enUS: MessageDict = {
   "diag.broadcast": "bcast",
   "diag.privateNet": "private",
   "diag.seconds": "{n}s",
+  "diag.versions": "Versions",
+  "diag.localVersion": "This device: protocol {p} · app {a}",
+  "diag.peerVersionsEmpty": "No peer has declared a version yet (no link, or peers predate version reporting)",
+  "diag.peerNotDeclared": "no version declared (older build)",
+  "diag.peerVersionLine": "protocol {p} · app {a}",
+  "diag.peerNewer": "peer protocol is newer",
 
   // ---- Send / notification / file ops ----
   "send.fileFail": "Failed to send file",

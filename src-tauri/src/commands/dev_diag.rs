@@ -216,6 +216,33 @@ fn collect_candidates(bt: &crate::state::BleDiag) -> Vec<crate::state::Interface
     out
 }
 
+/// 收集「版本互通」事实：本机版本 + 各对端在 Hello 里声明的版本。
+///
+/// 为什么值得单独一格：跨版本互通的故障以前只能靠"猜谁老"——`忽略未知帧类型` 那条日志
+/// 说明对端比本机新，但没人知道是哪台、什么版本（INV-P24 要求"对端更高必须可解释"）。
+/// 昵称现查 `peers`（面板要说"现在这是谁"，而版本表记的是 Hello 那一刻）。
+fn collect_peer_versions(s: &Arc<AppState>) -> Vec<crate::state::PeerVersionDiag> {
+    let declared: Vec<(String, crate::state::PeerVersion)> = s
+        .peer_versions
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(id, v)| (id.clone(), v.clone()))
+        .collect();
+    let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out: Vec<crate::state::PeerVersionDiag> = declared
+        .into_iter()
+        .map(|(id, v)| crate::state::PeerVersionDiag {
+            nickname: peers.get(&id).map(|p| p.nickname.clone()).unwrap_or_default(),
+            device_id: id,
+            protocol_version: v.protocol_version,
+            app_version: v.app_version,
+        })
+        .collect();
+    out.sort_by(|a, b| a.device_id.cmp(&b.device_id));
+    out
+}
+
 /// 获取网络诊断状态（供隐藏开发者面板展示）。
 ///
 /// 数据分两块，**互不冒充**：`mode`/`bound_ip`/… 只描述局域网；蓝牙在 `bluetooth` 里
@@ -251,6 +278,11 @@ pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::Disc
     let bt = collect_ble_diag(s);
     result.candidates = collect_candidates(&bt);
     result.bluetooth = bt;
+    // 版本互通：每次现取（本机版本是编译期常量，对端版本随 Hello 变），不留默认值 ——
+    // `DiscoveryDiag::default()` 里 protocol_version 是 0，那是"还没采过"而不是"版本 0"。
+    result.protocol_version = crate::protocol::PROTOCOL_VERSION;
+    result.app_version = crate::protocol::current_app_version().to_string();
+    result.peer_versions = collect_peer_versions(s);
     result
 }
 

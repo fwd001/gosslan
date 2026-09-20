@@ -209,6 +209,22 @@ pub struct Peer {
     pub link: Option<String>,
 }
 
+/// 对端在 Hello 里声明的版本（`device_id -> 声明`）。
+///
+/// 只记录**声明值**，不做任何推断：老端不发这两个字段 ⇒ 两项都是 `None`，
+/// 面板上如实显示"未声明"（而不是替它猜一个版本）。
+///
+/// 为什么单独一张表而不是挂到 `Peer` 上：`Peer` 会被 UDP announce 反复重建，
+/// 而 announce 不带版本 —— 挂上去就会在每次广播后丢掉真值。
+/// 这张表只在**验签通过的 Hello** 里写入，回收点与 `peer_content_features` 同一个。
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct PeerVersion {
+    /// 对端线格式版本（`None` = 老端未声明 ⇒ 按最低版本处理）
+    pub protocol_version: Option<u32>,
+    /// 对端应用版本串，**只给人看**（不参与兼容判断）
+    pub app_version: Option<String>,
+}
+
 /// 一条已建立的 TCP 连接。
 ///
 /// `endpoint` 让连接可以按**端点**去重（同一 peer 的 LAN 与 Tailscale 是两条不同连接），
@@ -495,6 +511,25 @@ pub struct DiscoveryDiag {
     pub candidates: Vec<InterfaceCandidate>,
     /// 蓝牙通道事实（独立于局域网，纯蓝牙用户也看得见自己的状态）
     pub bluetooth: BleDiag,
+    /// 本机线格式版本（与 `peer_versions` 同一屏对齐，跨版本排查先看这一行）
+    pub protocol_version: u32,
+    /// 本机应用版本（只给人看，不参与任何兼容判断）
+    pub app_version: String,
+    /// 各对端在 Hello 里声明的版本（按 device_id 排序）
+    pub peer_versions: Vec<PeerVersionDiag>,
+}
+
+/// 诊断面板的一行「对端声明了什么版本」。
+///
+/// 昵称在这里补而不是存进 `peer_versions`：那张表只记 Hello 那一次的声明，
+/// 而昵称会随 UserInfo 变 —— 面板要说的是"现在这是谁"。
+#[derive(Serialize, Clone, Debug)]
+pub struct PeerVersionDiag {
+    pub device_id: String,
+    pub nickname: String,
+    /// `None` = 对端是没报版本的老版本（面板显示"未声明"，不当成版本 0 也不当成版本 1）
+    pub protocol_version: Option<u32>,
+    pub app_version: Option<String>,
 }
 
 /// 网络拓扑摘要（供拓扑状态栏展示）
@@ -939,6 +974,9 @@ pub struct AppState {
     /// 各对端在 Hello 里声明的内容能力位图（device_id -> bits）。**不参与签名**，
     /// 仅用于"能不能对它发 ContentRequest"；旧端不声明 ⇒ 默认 0 ⇒ 不发新帧（向后兼容）。
     pub peer_content_features: Mutex<HashMap<String, u32>>,
+    /// 各对端在 Hello 里声明的版本（device_id -> 声明）。**不参与签名**，当前只被诊断面板
+    /// 与"忽略未知帧"的降级日志读（INV-P24：对端版本更高必须可解释）。
+    pub peer_versions: Mutex<HashMap<String, PeerVersion>>,
     /// 按需探测触发：值递增 → 发现任务立即群发一次 `who_has`（好友搜索用）
     pub probe: Mutex<Option<watch::Sender<u64>>>,
 
@@ -1205,6 +1243,7 @@ impl AppState {
             network_generation: AtomicU64::new(0),
             peers_notify: Arc::new(Notify::new()),
             peer_content_features: Mutex::new(HashMap::new()),
+            peer_versions: Mutex::new(HashMap::new()),
             probe: Mutex::new(None),
             diag: Mutex::new(DiscoveryDiag::default()),
             app_active: AtomicBool::new(true),

@@ -686,6 +686,22 @@ CASES: list[Case] = [
         tags=["rust", "protocol", "compat"],
     ),
     Case(
+        name="Hello 必须声明本机版本，且版本不得进签名材料",
+        why="「加两个可选字段」的全部价值就是让「谁版本高」可查：不声明 ⇒ INV-P24 的降级日志"
+        "和诊断面板永远只能写「未声明」，跨版本故障重新变回猜。反过来一旦这两个字段进了"
+        "Hello 签名材料，老端验签就会失败 ⇒「报版本」这件事自身变成破坏性变更。"
+        "两头都是「缺了没人报错」的行为，只能钉源码",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "protocol_version: Some(crate::protocol::PROTOCOL_VERSION),",
+            "protocol_version: None,",
+        )],
+        cmd=cargo("test", "--lib", "peer_version_is_declared_not_signed_and_reclaimed"),
+        cwd=TAURI,
+        expect_fail_hint="本机 Hello 必须声明 PROTOCOL_VERSION",
+        tags=["rust", "protocol", "compat"],
+    ),
+    Case(
         name="群文件取消登记必须按收件人分键",
         why="群发是「每个成员一个投递任务、共用同一个 transfer_id」。单键时后注册的 insert "
         "挤掉前一个任务的 Sender ⇒ 对方 oneshot 立刻 Err(RecvError)，被取消分支当成"

@@ -55,6 +55,22 @@ pub fn current_device_type() -> &'static str {
     "mobile"
 }
 
+/// 本机**线格式**版本（ADR-0007 决策 1）。
+///
+/// 只在**破坏兼容**的协议变更时 +1；加可选字段、加新帧类型都**不** bump
+/// （新帧由"对端声明的 `protocol_version` 够高才发"做 capability 门控，见 INV-P24）。
+/// 今天所有已发布版本（v4.8.2 起）都是 1。
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// 本机应用版本串（取自 `Cargo.toml`，与 `package.json` 由 `scripts/version.mjs` 同步）。
+///
+/// ⚠️ **只用于给人看**：诊断面板、日志、"对方版本较新"提示。
+/// 绝不用它做兼容判断 —— `4.22.10` 与 `4.22.9` 的线格式完全相同，
+/// 而字符串比较会把它们排出高低（这正是本 ADR "不把 app version 当 protocol version" 那条）。
+pub fn current_app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 /// 内容能力位：支持按 cid 拉取（ContentRequest / 拥有即授权服务）。
 pub const CONTENT_FEATURE_PULL: u32 = 1 << 0;
 
@@ -706,6 +722,18 @@ pub enum Message {
         /// 内容能力位图（见 CONTENT_FEATURE_PULL）。**不参与签名**：老端忽略、新端可读。
         #[serde(default)]
         content_features: u32,
+        /// 对端**线格式**版本（`PROTOCOL_VERSION`，ADR-0007 决策 1）。
+        ///
+        /// `None` = 老端没发这个字段 ⇒ 按最低版本处理（能力门控一律当"不支持新帧"）。
+        /// **不参与签名**，与 `content_features` 同理：加字段不能弄坏老端验签，
+        /// 否则"报版本"这件事本身就成了一次破坏性变更。
+        #[serde(default)]
+        protocol_version: Option<u32>,
+        /// 对端应用版本串（如 `"4.22.27"`）。**只给人看**（诊断面板 / 日志 /
+        /// "对方版本较新"提示），绝不用它做兼容判断 —— 见 `current_app_version`。
+        /// 同样不参与签名、老端缺省为 `None`。
+        #[serde(default)]
+        app_version: Option<String>,
         tcp_port: u16,
         x25519_pubkey: String,
         ed25519_pubkey: String,
@@ -1716,6 +1744,8 @@ mod tests {
             avatar: None,
             device_type: "desktop".into(),
             content_features: super::content_features(),
+            protocol_version: Some(super::PROTOCOL_VERSION),
+            app_version: Some(super::current_app_version().to_string()),
             tcp_port: 59992,
             x25519_pubkey: "xk".into(),
             ed25519_pubkey: "ek".into(),
@@ -1792,6 +1822,8 @@ mod tests {
             avatar: None,
             device_type: "desktop".into(),
             content_features: super::content_features(),
+            protocol_version: None,
+            app_version: None,
             tcp_port: 59992,
             x25519_pubkey: "xk".into(),
             ed25519_pubkey: "ek".into(),
@@ -1826,6 +1858,8 @@ mod tests {
             avatar: None,
             device_type: "mobile".into(),
             content_features: super::content_features(),
+            protocol_version: None,
+            app_version: None,
             tcp_port: 1,
             x25519_pubkey: "x".into(),
             ed25519_pubkey: "e".into(),
@@ -1844,6 +1878,63 @@ mod tests {
             Message::Hello { device_type, .. } => assert!(device_type.is_empty()),
             _ => panic!("expect hello"),
         }
+    }
+
+    /// 版本声明（ADR-0007 决策 1）：新端往返保持，**老 Hello 缺省为 `None`**。
+    ///
+    /// 这一步的全部价值来自"加这两个字段不断老版本互通"，所以两个方向都要钉：
+    /// - 老→新：缺字段的 Hello 必须照样解析（报错就是老设备**连不上**，不是"少个信息"）；
+    /// - 新→老：我们多带的字段必须被忽略 —— 判据就是这里**没有** `deny_unknown_fields`，
+    ///   一旦有人加上，"给帧加字段"这件事本身会变成一次破坏性变更。
+    #[test]
+    fn hello_version_fields_roundtrip_and_old_peer_declares_nothing() {
+        let hello = Message::Hello {
+            device_id: "a".into(),
+            nickname: "A".into(),
+            avatar: None,
+            device_type: "desktop".into(),
+            content_features: super::content_features(),
+            protocol_version: Some(2),
+            app_version: Some("9.9.9".into()),
+            tcp_port: 1,
+            x25519_pubkey: "x".into(),
+            ed25519_pubkey: "e".into(),
+            conv_clock: 0,
+            nonce: "n".into(),
+            sig: "s".into(),
+        };
+        let json = serde_json::to_string(&hello).unwrap();
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::Hello {
+                protocol_version,
+                app_version,
+                ..
+            } => {
+                assert_eq!(protocol_version, Some(2));
+                assert_eq!(app_version.as_deref(), Some("9.9.9"));
+            }
+            _ => panic!("expect hello"),
+        }
+        // 老端（4.22.27 之前）的 Hello：没有这两个字段 ⇒ 必须是 `None`。
+        // 不能回落成 Some(1)：诊断面板要能区分"对方是没报版本的老版本"和"对方报了 1"。
+        let legacy = r#"{"type":"hello","device_id":"a","nickname":"A","avatar":null,"tcp_port":1,"x25519_pubkey":"x","ed25519_pubkey":"e","conv_clock":0}"#;
+        match serde_json::from_str::<Message>(legacy).unwrap() {
+            Message::Hello {
+                protocol_version,
+                app_version,
+                ..
+            } => {
+                assert_eq!(protocol_version, None);
+                assert_eq!(app_version, None);
+            }
+            _ => panic!("expect hello"),
+        }
+        // 新→老：未知**字段**必须被忽略（这条断言就是"不许 deny_unknown_fields"的哨兵）。
+        let newer = r#"{"type":"hello","device_id":"a","nickname":"A","avatar":null,"tcp_port":1,"x25519_pubkey":"x","ed25519_pubkey":"e","conv_clock":0,"protocol_version":9,"some_future_field":true}"#;
+        assert!(
+            serde_json::from_str::<Message>(newer).is_ok(),
+            "Hello 遇到未知字段必须照单收下，否则加字段就等于破坏性变更"
+        );
     }
 
     #[test]

@@ -913,6 +913,8 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
         avatar,
         device_type: crate::protocol::current_device_type().to_string(),
         content_features: crate::protocol::content_features(),
+        protocol_version: Some(crate::protocol::PROTOCOL_VERSION),
+        app_version: Some(crate::protocol::current_app_version().to_string()),
         tcp_port,
         x25519_pubkey,
         ed25519_pubkey,
@@ -2416,10 +2418,30 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         // 而是"跟这台设备彻底连不上"（反序列化失败 → io::Error → reader 退出 → 重连再失败）。
         Message::Unknown { wire_type } => {
             if log_throttled("unknown_frame", 10_000) {
+                // 把对端**声明**的版本一起写进日志：以前这句"本机版本低于对端"是从
+                // "看不懂这一帧"倒推的，现在真机能直接看到是谁的哪个版本，
+                // 老端没声明时如实写"未声明"而不是假装它报了 1。
+                let declared = state
+                    .peer_versions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(peer_id)
+                    .map(|v| {
+                        format!(
+                            "协议={} 应用={}",
+                            v.protocol_version
+                                .map(|p| p.to_string())
+                                .unwrap_or_else(|| "未声明".into()),
+                            v.app_version.as_deref().unwrap_or("未声明"),
+                        )
+                    })
+                    .unwrap_or_else(|| "未声明".into());
                 state.logger.warn(
                     "proto",
                     format!(
-                        "忽略未知帧类型 type={wire_type} peer={peer_id}（本机版本低于对端，升级后即可识别；链路保持）"
+                        "忽略未知帧类型 type={wire_type} peer={peer_id}：对端声明（{declared}），\
+                         本机协议={} —— 本机版本低于对端，升级后即可识别；链路保持",
+                        crate::protocol::PROTOCOL_VERSION,
                     ),
                 );
             }
@@ -2504,6 +2526,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             avatar,
             device_type,
             content_features,
+            protocol_version,
+            app_version,
             tcp_port,
             x25519_pubkey,
             ed25519_pubkey,
@@ -2519,6 +2543,19 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(device_id.clone(), content_features);
+            // 记录对端声明的版本（同样不签名）。TCP 与 BLE 都走这一个写入点：
+            // 两条 transport 建链后都会把这个已验签的 Hello 交回 `handle_message`。
+            state
+                .peer_versions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(
+                    device_id.clone(),
+                    crate::state::PeerVersion {
+                        protocol_version,
+                        app_version,
+                    },
+                );
             let ip = state
                 .peers
                 .lock()

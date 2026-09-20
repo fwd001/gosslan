@@ -457,6 +457,21 @@ export interface DiscoveryDiag {
   last_announce_recv: number;
   candidates: InterfaceCandidate[];
   bluetooth: BleDiag;
+  /** 本机线格式版本（跨版本排查的基准行） */
+  protocol_version: number;
+  /** 本机应用版本，只给人看 */
+  app_version: string;
+  /** 各对端在 Hello 里声明的版本 */
+  peer_versions: PeerVersionDiag[];
+}
+
+/** 诊断面板的一行「对端声明了什么版本」（ADR-0007 决策 1）。 */
+export interface PeerVersionDiag {
+  device_id: string;
+  nickname: string;
+  /** null = 对端是没报版本的老版本，不当成 0 也不当成 1 */
+  protocol_version: number | null;
+  app_version: string | null;
 }
 
 // ---------------- 运行日志（「运行日志」页用） ----------------

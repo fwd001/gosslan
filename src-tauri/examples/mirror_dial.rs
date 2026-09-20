@@ -87,6 +87,9 @@ async fn dial_in(endpoint: &str, id: &Identity) -> Result<tokio::net::tcp::Owned
         avatar: None,
         device_type: "desktop".to_string(),
         content_features: gosslan_lib::protocol::content_features(),
+        // 不声明版本 = 模拟网里现存的老实例（理由见 dual_link.rs 同处注释）
+        protocol_version: None,
+        app_version: None,
         tcp_port: 0,
         x25519_pubkey: x25519,
         ed25519_pubkey: ed25519,
