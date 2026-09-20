@@ -16,14 +16,53 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> std
     crate::transport::tcp::write_bytes(w, &json).await
 }
 
+/// 只取 `type` 标签的轻量视图 —— 用来区分"我们不认识这个帧类型"和"认识但字段畸形"。
+#[derive(serde::Deserialize)]
+struct FrameTag {
+    #[serde(rename = "type")]
+    tag: String,
+}
+
+/// 反序列化一帧，并落实**跨版本优雅降级**（INV-P24 第 1 条）。
+///
+/// ```text
+/// 未知 type            ⇒ Message::Unknown  —— 调用方忽略这一条 + 节流日志，链路保持
+/// 已知 type 但字段畸形  ⇒ Err                —— 那是我们自己的 bug，不能静默吞掉
+/// 连 type 都没有       ⇒ Err                —— 不是 Gosslan 的帧
+/// ```
+///
+/// 为什么必须有这个函数：`Message` 是 `#[serde(tag = "type")]` 的内部控制枚举，遇到不认识的
+/// 变体会直接反序列化失败。旧路径把失败转成 `io::Error` ⇒ reader 当连接错误 ⇒ **拆链** ⇒
+/// 重连后同一帧再拆。也就是说在新版本上线任何新帧类型之前，老设备不是"看不懂那一条"，
+/// 而是"跟新设备连不上"。本函数把那个后果消掉。
+///
+/// 已知类型的错误判定用的是 serde 自己的措辞（`unknown variant ...`），**不维护类型清单** ——
+/// 清单会漂移成第二份真相（本项目已有多次"影子常量/影子表"的教训）。
+pub(crate) fn decode_frame(buf: &[u8]) -> Result<Message, serde_json::Error> {
+    match serde_json::from_slice::<Message>(buf) {
+        Ok(msg) => Ok(msg),
+        Err(e) if e.to_string().starts_with("unknown variant") => {
+            // 取回那个 type 名字用于日志；取不到（畸形 JSON）就当未知类型处理，
+            // 仍然不拆链 —— 一条看不懂的帧不构成断开理由。
+            let tag = serde_json::from_slice::<FrameTag>(buf)
+                .map(|t| t.tag)
+                .unwrap_or_else(|_| "<no-type>".to_string());
+            Ok(Message::Unknown { wire_type: tag })
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Message> {
-    // 同上：解帧与长度校验由 bytes 层负责，这里只做业务反序列化。
+    // 分帧与长度校验由 bytes 层负责，这里只做业务反序列化（含未知帧降级）。
     let buf = crate::transport::tcp::read_bytes(r).await?;
-    serde_json::from_slice(&buf)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    decode_frame(&buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 /// 预认证阶段读首帧：上限收紧到 `MAX_PREAUTH_FRAME`（未验签的连接不得要求大缓冲）。
+///
+/// ⚠️ 这里**刻意不做**未知帧降级：首帧必须是 Hello，一条对端无法解析的帧在认证之前
+/// 不构成"可以继续聊"的理由 —— 降级是给已建链后的数据面用的，不是给握手用的。
 async fn read_frame_preauth<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Message> {
     let buf =
         crate::transport::tcp::read_bytes_capped(r, crate::protocol::MAX_PREAUTH_FRAME).await?;

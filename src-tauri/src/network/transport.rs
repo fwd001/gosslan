@@ -2411,6 +2411,19 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         return;
     }
     match msg {
+        // 跨版本降级（INV-P24 第 1 条）：看不懂的新帧 ⇒ 忽略这一条 + 节流日志，**绝不拆链**。
+        // 不这么做的话，新版本一旦上线任何新帧类型，老设备的表现就不是"少收到一条消息"，
+        // 而是"跟这台设备彻底连不上"（反序列化失败 → io::Error → reader 退出 → 重连再失败）。
+        Message::Unknown { wire_type } => {
+            if log_throttled("unknown_frame", 10_000) {
+                state.logger.warn(
+                    "proto",
+                    format!(
+                        "忽略未知帧类型 type={wire_type} peer={peer_id}（本机版本低于对端，升级后即可识别；链路保持）"
+                    ),
+                );
+            }
+        }
         // ADR-0019 Phase 3：按 cid 拉取。**拥有即授权**，无需人工确认 —— 但只服务
         // "确实是我的好友、且 from 就是这条链路的对端（防冒名）"。回发复用既有
         // FileOffer→Chunk→Done→CompleteAck 流程（send_file_from_path）。
@@ -7236,6 +7249,67 @@ mod tests {
             leftover.is_err(),
             "被丢弃的那条不得留在队列里 —— 否则按\"没发出去\"重发就成了重复片"
         );
+    }
+
+    /// INV-P24 第 1 条：**未知帧类型必须降级，不得变成连接错误**。
+    ///
+    /// 旧行为：`Message` 是内部标签枚举，遇到不认识的 `type` 直接反序列化失败 ⇒
+    /// `io::Error` ⇒ reader 循环退出 ⇒ **拆链**。新版本只要上线一种新帧，老设备就从
+    /// "少收一条"变成"跟这台设备连不上"（还会重连-再拆的死循环）。
+    #[test]
+    fn unknown_wire_type_degrades_instead_of_erroring() {
+        let buf = serde_json::json!({ "type": "TimeTravelPing", "msg_id": "m1" }).to_string();
+        match decode_frame(buf.as_bytes()) {
+            Ok(Message::Unknown { wire_type }) => assert_eq!(wire_type, "TimeTravelPing"),
+            other => panic!("未知帧必须降级成 Message::Unknown（不报错），实得 {other:?}"),
+        }
+    }
+
+    /// 但降级**不能顺手把"已知类型 + 字段畸形"也吞掉** —— 那是我们自己的 bug，
+    /// 静默忽略就等于把真实协议错误藏起来（INV-005 不允许静默丢消息）。
+    #[test]
+    fn malformed_known_frame_still_errors() {
+        let buf = serde_json::json!({ "type": "heartbeat" }).to_string(); // 故意缺字段
+        let e = decode_frame(buf.as_bytes()).err();
+        assert!(
+            e.is_some(),
+            "已知类型缺字段必须报错，实得 Ok —— 说明降级判定吞太宽"
+        );
+        assert!(
+            !e.unwrap().to_string().starts_with("unknown variant"),
+            "报错原因必须是字段问题，不是变体未知"
+        );
+    }
+
+    /// 完全不是 Gosslan 帧的字节（没有 type / 不是 JSON）⇒ 仍然报错（交给调用方丢帧）。
+    #[test]
+    fn non_frame_bytes_still_error() {
+        assert!(
+            decode_frame(b"{\"a\":1}").is_err(),
+            "没有 type 字段的 JSON 不是我们的帧"
+        );
+        assert!(
+            decode_frame(b"not json at all").is_err(),
+            "非 JSON 字节必须报错"
+        );
+    }
+
+    /// 端到端：走**真实** read_frame 路径收到未知帧 ⇒ 解出 Unknown（不 Err ⇒ 链路不动）。
+    #[tokio::test]
+    async fn read_frame_tolerates_unknown_wire_type() {
+        let payload = serde_json::json!({ "type": "QuantumPing", "seq": 1 }).to_string();
+        let (a, b) = tokio::io::duplex(1024);
+        let (mut _ar, mut aw) = tokio::io::split(a);
+        let (mut br, mut _bw) = tokio::io::split(b);
+        let (wr, rd) = tokio::join!(
+            crate::transport::tcp::write_bytes(&mut aw, payload.as_bytes()),
+            read_frame(&mut br)
+        );
+        wr.unwrap();
+        match rd.expect("未知帧不得成为连接错误") {
+            Message::Unknown { wire_type } => assert_eq!(wire_type, "QuantumPing"),
+            other => panic!("read_frame 应把未知帧降级成 Unknown，实得 {other:?}"),
+        }
     }
 
     /// 分片走该链路的 Low 通道，控制帧走 High —— 钉链路不能绕过三级通道。

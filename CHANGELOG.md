@@ -10,6 +10,40 @@
 
 ## [Unreleased]
 
+## [4.22.27] - 2026-09-20
+
+### Fixed (未知帧类型降级为"忽略"，不再是"断链" — INV-P24 落地①)
+
+上一轮把跨版本降级写成约束（INV-P24 / ADR-0007 Accepted），这一轮落实它的第 ① 步，
+也是唯一一条"不做就会伤现有互通"的：
+
+`Message` 是 `#[serde(tag = "type")]` 的内部标签枚举，遇到不认识的 `type` 直接反序列化失败
+⇒ `read_frame` 返回 `io::Error(InvalidData)` ⇒ `reader_loop` 当连接错误处理 ⇒ **拆链**
+⇒ 重连后同一帧再拆。也就是说在新版本上线任何一种新帧之前，老设备的表现不是"少收一条消息"，
+而是**跟新设备连不上**。本项目无服务器、无强制升级通道，这个后果不能靠"整批升级"解决。
+
+- `transport/outbound.rs` 新增 `decode_frame(buf)`：未知 `type` ⇒ `Message::Unknown{wire_type}`
+  （只由解码产生，发送侧永不构造）；**已知 `type` 但字段畸形仍然报错** —— 那是我们自己的
+  bug，静默吞掉等于藏起协议错误（INV-005）。判定用 serde 自己的措辞（`unknown variant ...`），
+  **不维护第二份类型清单**（清单会漂移，本项目已有多次影子常量/影子表的教训）。
+- `handle_message` 加 `Message::Unknown` 分支：忽略 + `log_throttled("unknown_frame", 10s)` 的
+  警告日志（写明"本机版本低于对端，升级后可识别；链路保持"）。
+- **握手首帧刻意不降级**：`read_frame_preauth` 保持严格 —— 未认证的连接没有"看不懂就放过"的
+  理由；降级只给已建链的数据面用。
+- 测试 4 条：未知 type 降级 / 已知类型畸形仍报错（并断言报错原因不是 unknown variant，防止
+  降级判定吞太宽）/ 非帧字节仍报错 / 走真实 `read_frame` 的端到端降级（tokio duplex）。
+  另把 `protocol.rs` 里那条"未知 type 是硬解析错误"的旧测试**注释改正**：它过去把
+  "混版本会断链、必须整批升级"当契约钉，如今 serde 层事实不变（降级正是靠它判别），
+  但立场已指向 INV-P24；对照用例（已知变体必须能解析）保留，防空转。
+- 守卫 `unknown_wire_frame_is_tolerated_after_auth`（5 条断言，含"preauth 不得走 decode_frame"
+  这条反向断言）+ verify-guards 的"改坏必须 FAIL、恢复必须 PASS"用例（实跑通过）。
+- `ADR-0017` 里"不必再保证未知 type 不被断链"那句**标注为已被取代**并指向 INV-P24/ADR-0007：
+  不改掉它，下一个 AI 会拿它当依据把降级又删回去。
+
+验证：`cargo test --features bluetooth --lib` 581 全绿、clippy `-D warnings` 0 warning、
+Android aarch64 0 warning、新守卫用例非空转通过。
+覆盖边界：跨版本真机（老包收新帧）需要两个不同安装版本互发，属用户真机验收项。
+
 ## [4.22.26] - 2026-09-20
 
 ### Docs (跨版本兼容成为约束：INV-P24 + ADR-0007 落定 + 三节按现实重写)

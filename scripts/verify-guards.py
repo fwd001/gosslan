@@ -665,6 +665,27 @@ CASES: list[Case] = [
         tags=["rust", "file", "perf"],
     ),
     Case(
+        name="未知帧类型必须降级而不是拆链",
+        why="Message 是 #[serde(tag=\"type\")] 的内部枚举：不认识的 type 直接反序列化失败 ⇒ "
+        "io::Error ⇒ reader 退出 ⇒ 拆链。新版本只要上线一种新帧，老设备就不是「少收一条」而是"
+        "「跟这台设备连不上」。这条的行为是**什么都没发生**，没有任何测试会因为缺少它而失败",
+        file=TAURI / "src" / "network" / "transport" / "outbound.rs",
+        injections=[(
+            "decode_frame(&buf).map_err(",
+            "serde_json::from_slice(&buf).map_err(",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "unknown_wire_frame_is_tolerated_after_auth",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="数据面 read_frame 必须走 decode_frame",
+        tags=["rust", "protocol", "compat"],
+    ),
+    Case(
         name="群文件取消登记必须按收件人分键",
         why="群发是「每个成员一个投递任务、共用同一个 transfer_id」。单键时后注册的 insert "
         "挤掉前一个任务的 Sender ⇒ 对方 oneshot 立刻 Err(RecvError)，被取消分支当成"

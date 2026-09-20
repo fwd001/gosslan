@@ -1379,6 +1379,42 @@ mod tests {
         );
     }
 
+    /// **INV-P24 第 1 条：未知帧类型必须降级，不得成为连接错误**（ADR-0007 落地①）。
+    ///
+    /// 为什么只能钉源码：这条的行为是"什么都没发生"—— 没有测试会因为**缺少**它而失败，
+    /// 而它的缺失后果极重：新版本上线任何一种新帧，老设备不是少收一条消息，
+    /// 而是**跟新设备连不上**（反序列化失败 → io::Error → reader 退出 → 重连再失败）。
+    /// 同时**握手首帧不许降级**：未认证的连接没有"看不懂就放过"的理由。
+    #[test]
+    fn unknown_wire_frame_is_tolerated_after_auth() {
+        let out = code_flat(include_str!("network/transport/outbound.rs"));
+        assert!(
+            out.contains("Err(e)ife.to_string().starts_with(\"unknownvariant\")"),
+            "未知变体必须由 serde 自己的措辞识别（不维护第二份类型清单，清单会漂移）"
+        );
+        assert!(
+            out.contains("Ok(Message::Unknown{wire_type:tag})"),
+            "未知 type 必须降级成 Message::Unknown"
+        );
+        assert!(
+            out.contains("fnread_frame") && out.contains("decode_frame(&buf)"),
+            "数据面 read_frame 必须走 decode_frame，否则降级形同不存在"
+        );
+        let preauth = rust_fn_body(
+            include_str!("network/transport/outbound.rs"),
+            "async fn read_frame_preauth",
+        );
+        assert!(
+            !preauth.contains("decode_frame"),
+            "握手首帧不得降级：非 Hello / 看不懂的帧在认证前就该拒掉"
+        );
+        let agg = code_flat(&crate::network::transport_src_for_guards());
+        assert!(
+            agg.contains("Message::Unknown{wire_type}=>{"),
+            "handle_message 必须有 Unknown 分支（忽略 + 节流日志），否则会退化成 panic 或误判"
+        );
+    }
+
     /// **扫描结果不得再用 `Peripheral::services()` 二次过滤**（真机踩过，症状极隐蔽）。
     ///
     /// `start_scan(ScanFilter{services})` 已在平台层过滤；而 `services()` 在 **Android 上
