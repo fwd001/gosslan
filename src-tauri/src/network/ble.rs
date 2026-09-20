@@ -1151,7 +1151,7 @@ fn frame_trace(msg: &Message) -> String {
     match msg {
         Message::Ack { msg_id } => format!("type=ack msg_id={msg_id}"),
         Message::ChatMessage { msg_id, kind, .. } => {
-            format!("type=chat_message kind={kind:?} msg_id={msg_id}")
+            format!("type=chat_message kind={kind} msg_id={msg_id}")
         }
         // 好友申请/同意走的是 `Gossip` 信封（GossipKind::FriendRequest/FriendAccept）——
         // **必须把 kind 打出来**，否则日志里只有 `type=gossip`，根本分不清

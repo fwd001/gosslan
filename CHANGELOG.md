@@ -10,6 +10,48 @@
 
 ## [Unreleased]
 
+## [4.22.34] - 2026-09-20
+
+### Fixed (对端发来的未知消息类型不再被整帧丢弃 — INV-P24 第 2 条的另一半)
+
+上一轮建好了"未知内容显示成占位"的兜底，但**单聊根本走不到那个兜底**：
+`ChatMessage.kind` 是 `MsgKind` 枚举，对端发 `kind:"sticker"` 时 serde 报
+`unknown variant` —— 而 `decode_frame` 只能看错误字符串的前缀，**分不清"未知帧类型"和
+"未知嵌套枚举值"**，于是整条 `chat_message` 被降级成 `Message::Unknown` 丢弃。
+后果不是"少一个占位"，而是**消息根本进不了库**：接收方什么都不知道（连"看不懂"都看不见），
+发送方拿不到 Ack ⇒ outbox 一直重投 ⇒ 最后显示「发送失败」。
+也就是说 V1 那条"未知帧不拆链"的降级，顺手把"未知 kind"也一起吃掉了。
+
+**改法**：`ChatMessage.kind` 在**线格式上**改成 `String`（JSON 完全不变，对端无感），
+接收侧原样入库，交给上一轮的 `isKnownKind` 兜底显示。
+
+- 发送侧词表不变：`commands::send_message` 仍先归一化成 `MsgKind` 再 `as_str()` 发出，
+  所以"本机不会发出乱码 kind"这条性质保留。
+- `open_direct_content` 不再 `kind.as_str()`，改为**原样透传**（此前它就是把枚举转回字符串，
+  现在少一次有损往返）。
+- 重发路径同样受益：`MsgKind::from_wire_str` 那种"不认识就当 text"的回落不再是正确性的前提
+  ——以前若真有一条未知 kind 的消息被重发，它会以 `text` 身份把 JSON 正文发给对方
+  （正是用户禁止的那个形态），现在这条路径不存在了。
+- 消息身份不受影响：`msg_id` 由发送方给出、kind **不参与**任何哈希（已逐处核实），
+  去重/Ack/排序口径不变。
+
+**判据测试**（`unknown_message_kind_still_decodes_as_a_chat_message`）：同一个未知值
+放在 `kind` 上必须还能解析（且原样保留、不回落 text），放在 `type` 上仍然必须是硬解析错误
+（那才是该降级成 Unknown 的场景）。第二条是对照，防整条测试空转。
+
+顺带修掉两处**会说谎的注释**：`MsgKind::Merge` 上方写着"帧的 kind 是编成这个枚举传的，
+漏了就回退成 text ⇒ 对方看到裸 JSON"——事实已变（漏登记的代价从"对方看到 JSON"
+降级为"本机发不出这种消息"）；`previewText`/`preview_text` 的跨语言契约说明同步。
+
+**INV-P24 第 2 条到此闭合**：单聊与群聊两条路径现在都会把未知 kind 送到
+`UnsupportedKindBubble`（上一轮只有群聊能走到）。
+
+验证：`npm run verify:full` **15 步全绿 / 367.8s / EXIT=0**（clippy 0 告警、
+`cargo test --features bluetooth` 含 examples、护栏非空转子集、Android 0 warning）；
+新用例已登记进 macos 基线（585→586，删除 0 条）。
+仍**没有真机证据**：现网还没有比本机新的 Gosslan，验证方式是单元测试 + 契约测试；
+端到端确认要等第一个新 kind 上线（可用 `examples/e2e_peer.rs` 发一条未知 kind）。
+
 ## [4.22.33] - 2026-09-20
 
 ### Fixed (本机不认识的消息类型不再显示成裸 JSON — INV-P24 第 2 条落地)

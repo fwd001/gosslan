@@ -91,9 +91,11 @@ pub enum MsgKind {
     System,
     /// 合并转发的聊天记录（微信式：多条消息合成一张卡片）。
     ///
-    /// ⚠️ 必须在这里也列一份（而不是只加 `WIRE_KINDS`）：**单聊直连**帧的 kind 是编成
-    /// 这个枚举传的（`ChatMessage.kind`），接收侧用 `from_wire_str` 还原 —— 漏了就会回退
-    /// 成 `Text`，结果是"合并转发的卡片在对方那边变成一坨裸 JSON 正文"。
+    /// ⚠️ 必须在这里也列一份（而不是只加 `WIRE_KINDS`）：`MsgKind` 是**发送侧的词表**，
+    /// 漏在这里就发不出这个 kind（`as_str` 编译不过）。
+    /// 接收侧不再依赖它 —— `ChatMessage.kind` 从 v4.22.34 起是字符串，未知 kind 原样入库
+    /// 由前端按 `is_known_kind` 显示占位（INV-P24 第 2 条），所以"漏一个变体"的代价从
+    /// "对方看到一坨裸 JSON"降级成"我们发不出这种消息"。
     Merge,
 }
 
@@ -846,7 +848,18 @@ pub enum Message {
         msg_id: String,
         from: String,
         to: String,
-        kind: MsgKind,
+        /// **线格式是字符串，不是枚举**（INV-P24 第 2 条）。
+        ///
+        /// 曾经这里是 `MsgKind`：对端 Gosslan 比本机新、发来一个本机不认识的 kind 时，
+        /// serde 会报 `unknown variant` —— 而 `decode_frame` 无法区分"未知**帧**类型"与
+        /// "未知**嵌套枚举值**"，于是整条 `chat_message` 被降级成 `Message::Unknown` 丢弃。
+        /// 后果不是"少显示一个占位"，而是**消息根本进不了库**：接收方什么都不知道，
+        /// 发送方拿不到 Ack，最后显示「发送失败」。
+        ///
+        /// 改成字符串后未知 kind 原样入库，前端按 `isKnownKind` 显示可解释的占位
+        /// （见 `UnsupportedKindBubble`）。发送侧仍然只产出 `MsgKind` 的词表
+        /// （`commands::send_message` 会先归一化），所以"本机不会发出乱码 kind"不变。
+        kind: String,
         content: String,
         ts: i64,
         /// 会话逻辑序号（Lamport），接收方按此排序，而非发送方墙上时钟。
@@ -1999,6 +2012,30 @@ mod tests {
             serde_json::from_str::<Message>(newer).is_ok(),
             "Hello 遇到未知字段必须照单收下，否则加字段就等于破坏性变更"
         );
+    }
+
+    /// **未知 kind 不得把整条 `chat_message` 带崩**（INV-P24 第 2 条）。
+    ///
+    /// 这条钉的是"`ChatMessage.kind` 为什么是 String 而不是 `MsgKind`"：只要它是枚举，
+    /// `kind:"sticker"` 就会让 serde 报 `unknown variant`，而 `decode_frame` 分不清
+    /// "未知**帧**类型"与"未知**嵌套枚举值**" ⇒ 整帧被降级成 `Message::Unknown` 丢弃
+    /// ⇒ 消息根本进不了库，前端连「不支持的消息类型」都来不及显示，发送方永远等不到 Ack。
+    /// 所以正确的判据是：**同一个未知值放在 kind 上必须还能解析，放在 type 上才该降级**。
+    #[test]
+    fn unknown_message_kind_still_decodes_as_a_chat_message() {
+        let frame = br#"{"type":"chat_message","msg_id":"m1","from":"a","to":"b","kind":"sticker","content":"enc1:AAA","ts":1,"seq":1}"#;
+        match serde_json::from_slice::<Message>(frame)
+            .expect("未知 kind 必须仍能解析成 ChatMessage（否则整条消息会被静默丢弃）")
+        {
+            Message::ChatMessage { kind, msg_id, .. } => {
+                assert_eq!(kind, "sticker", "kind 必须原样保留，不能回落成 text");
+                assert_eq!(msg_id, "m1");
+            }
+            other => panic!("应还原为 ChatMessage，实得 {other:?}"),
+        }
+        // 对照（防空转）：未知值放在 **type** 上时仍是硬解析错误 —— 那才是
+        // `decode_frame` 该降级成 Unknown 的场景（见 unknown_message_type_is_a_hard_parse_error）。
+        assert!(serde_json::from_slice::<Message>(br#"{"type":"sticker"}"#).is_err());
     }
 
     #[test]

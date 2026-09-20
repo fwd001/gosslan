@@ -34,7 +34,7 @@ use crate::mesh::{
     Endpoint as MeshEndpoint, PathKind, PeerCandidate, PeerIdentity, PeerOnlineState,
 };
 use crate::network::file;
-use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind};
+use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message};
 use crate::state::{
     AppState, FileDoneInfo, FileFailedInfo, FileProgress, Link, LinkState, MessageRecord, Peer,
     PendingRequest,
@@ -3870,14 +3870,16 @@ fn open_direct_content(
     my_x25519_secret: &StaticSecret,
     sender_pubkey: Option<&str>,
     wire: &str,
-    kind: MsgKind,
+    kind: String,
 ) -> Option<(String, String)> {
     let b64 = wire.strip_prefix("enc1:")?;
     let pubkey = sender_pubkey?;
     let shared = crypto::shared_secret(my_x25519_secret, pubkey)?;
     let bytes = STANDARD.decode(b64).ok()?;
     let plain = crypto::open(&shared, &bytes)?;
-    Some((String::from_utf8(plain).ok()?, kind.as_str().to_string()))
+    // kind **原样透传**（不做 `from_wire_str` 那样的回落）：本机不认识的 kind 也要带着真值
+    // 入库，前端才会显示「不支持的消息类型」而不是把它当成 text 渲染出一坨裸 JSON。
+    Some((String::from_utf8(plain).ok()?, kind))
 }
 
 /// 用接收方当前公钥重新密封待发内容（`msg_id` 由调用方保持不变）。
@@ -7730,7 +7732,7 @@ mod tests {
             msg_id: "m1".into(),
             from: "a".into(),
             to: "b".into(),
-            kind: MsgKind::Text,
+            kind: "text".into(),
             content: "hi".into(),
             ts: 1,
             seq: 1,
@@ -7875,7 +7877,7 @@ mod tests {
                 &b.x25519_secret,
                 Some(&a.x25519_public_b64()),
                 &wire,
-                MsgKind::Code
+                "code".to_string()
             ),
             Some(("你好 e2ee".to_string(), "code".to_string()))
         );
@@ -7889,7 +7891,7 @@ mod tests {
         let b = crate::crypto::Identity::generate();
         let wire = seal_direct(&a, &b.x25519_public_b64(), "pending key");
         assert_eq!(
-            open_direct_content(&b.x25519_secret, None, &wire, MsgKind::Text),
+            open_direct_content(&b.x25519_secret, None, &wire, "text".to_string()),
             None
         );
         assert_eq!(
@@ -7897,7 +7899,7 @@ mod tests {
                 &b.x25519_secret,
                 Some(&a.x25519_public_b64()),
                 &wire,
-                MsgKind::Text
+                "text".to_string()
             ),
             Some(("pending key".to_string(), "text".to_string()))
         );
@@ -7916,7 +7918,7 @@ mod tests {
                 &b.x25519_secret,
                 Some(&a_old.x25519_public_b64()),
                 &wire,
-                MsgKind::Text
+                "text".to_string()
             ),
             None
         );
@@ -7925,7 +7927,7 @@ mod tests {
                 &b.x25519_secret,
                 Some(&a_new.x25519_public_b64()),
                 &wire,
-                MsgKind::Text
+                "text".to_string()
             ),
             Some(("rotated sender".to_string(), "text".to_string()))
         );
@@ -7947,7 +7949,7 @@ mod tests {
                 &b_new.x25519_secret,
                 Some(&a.x25519_public_b64()),
                 &stale,
-                MsgKind::Text
+                "text".to_string()
             ),
             None
         );
@@ -7964,7 +7966,7 @@ mod tests {
                 &b_new.x25519_secret,
                 Some(&a.x25519_public_b64()),
                 &resealed,
-                MsgKind::Text
+                "text".to_string()
             ),
             Some(("stale seal".to_string(), "text".to_string()))
         );
@@ -7988,12 +7990,12 @@ mod tests {
                 &b.x25519_secret,
                 Some(&spk),
                 "enc1:!!not base64!!",
-                MsgKind::Text
+                "text".to_string()
             ),
             None
         );
         assert_eq!(
-            open_direct_content(&b.x25519_secret, Some(&spk), "enc1:", MsgKind::Text),
+            open_direct_content(&b.x25519_secret, Some(&spk), "enc1:", "text".to_string()),
             None
         );
         let wire = seal_direct(&a, &b.x25519_public_b64(), "intact");
@@ -8004,17 +8006,24 @@ mod tests {
         raw[last] ^= 0xFF; // 破坏 AEAD tag
         let tampered = format!("enc1:{}", STANDARD.encode(&raw));
         assert_eq!(
-            open_direct_content(&b.x25519_secret, Some(&spk), &tampered, MsgKind::Text),
+            open_direct_content(&b.x25519_secret, Some(&spk), &tampered, "text".to_string()),
             None
         );
-        assert!(open_direct_content(&b.x25519_secret, Some(&spk), &wire, MsgKind::Text).is_some());
+        assert!(
+            open_direct_content(&b.x25519_secret, Some(&spk), &wire, "text".to_string()).is_some()
+        );
     }
 
     #[test]
     fn plaintext_payload_is_rejected() {
         let me = crate::crypto::Identity::generate();
         assert_eq!(
-            open_direct_content(&me.x25519_secret, None, "plain old text", MsgKind::Text),
+            open_direct_content(
+                &me.x25519_secret,
+                None,
+                "plain old text",
+                "text".to_string()
+            ),
             None
         );
     }

@@ -33,7 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // 注意：lib 名是 `gosslan_lib`（Cargo.toml `[lib] name`），不是 `gosslan`。
 use gosslan_lib::crypto::Identity;
-use gosslan_lib::protocol::{hello_signing_bytes, Message, MsgKind};
+use gosslan_lib::protocol::{hello_signing_bytes, Message};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -151,7 +151,7 @@ async fn send_chat<W: AsyncWrite + Unpin>(
         msg_id: format!("dual-link-{}-{seq}", now_ms()),
         from: my_id.to_string(),
         to: app_id.to_string(),
-        kind: MsgKind::Text,
+        kind: "text".to_string(),
         content: "dual-link-probe".to_string(),
         ts: now_ms(),
         seq,

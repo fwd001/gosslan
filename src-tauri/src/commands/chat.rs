@@ -153,7 +153,8 @@ pub async fn send_message(
         msg_id: msg_id.clone(),
         from: s.device_id.clone(),
         to: friend_id.clone(),
-        kind: msg_kind,
+        // 线格式是字符串（见 `ChatMessage::kind`）；发送侧仍只产出 `MsgKind` 的词表。
+        kind: msg_kind.as_str().to_string(),
         content: wire_content,
         ts,
         seq,
@@ -621,7 +622,7 @@ pub async fn resend_message(
             msg_id: rec.msg_id.clone(),
             from: s.device_id.clone(),
             to: rec.receiver_id.clone(),
-            kind: msg_kind.clone(),
+            kind: msg_kind.as_str().to_string(),
             content: format!("enc1:{}", STANDARD.encode(&sealed)),
             ts: rec.ts,
             seq: rec.seq,

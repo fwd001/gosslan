@@ -31,8 +31,7 @@ use tokio::sync::mpsc;
 
 use gosslan_lib::crypto::{self, Identity};
 use gosslan_lib::protocol::{
-    hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind, UdpPacket, FILE_CHUNK,
-    UDP_PORT,
+    hello_signing_bytes, GossipEnvelope, GossipKind, Message, UdpPacket, FILE_CHUNK, UDP_PORT,
 };
 
 const PEER_ID: &str = "e2e-peer";
@@ -493,7 +492,7 @@ async fn main() {
         msg_id: DIRECT_MSG_ID.into(),
         from: PEER_ID.into(),
         to: app_id.clone(),
-        kind: MsgKind::Text,
+        kind: "text".to_string(),
         content: seal_direct(&identity, &app_x25519, "e2e-direct-ok"),
         ts: now_ms(),
         seq: 1,
@@ -692,13 +691,13 @@ async fn main() {
             (
                 "代码消息（kind=code）",
                 CODE_MSG_ID,
-                MsgKind::Code,
+                "code".to_string(),
                 CODE_CONTENT,
             ),
             (
                 "1MB 大文本消息（大帧分片）",
                 BIG_MSG_ID,
-                MsgKind::Text,
+                "text".to_string(),
                 &"x".repeat(BIG_SIZE),
             ),
         ] {
@@ -897,7 +896,7 @@ async fn main() {
                     msg_id: msg_id.into(),
                     from: PEER_ID.into(),
                     to: app_id.clone(),
-                    kind: MsgKind::Text,
+                    kind: "text".to_string(),
                     content: seal_direct(&identity, &app_x25519, &format!("out-of-order-{msg_id}")),
                     ts,
                     seq: if msg_id == OOO_A_ID { 2 } else { 1 },
@@ -926,7 +925,7 @@ async fn main() {
                 msg_id: "e2e-alive-001".into(),
                 from: PEER_ID.into(),
                 to: app_id.clone(),
-                kind: MsgKind::Text,
+                kind: "text".to_string(),
                 content: seal_direct(&identity, &app_x25519, "alive"),
                 ts: now_ms(),
                 seq: 1,

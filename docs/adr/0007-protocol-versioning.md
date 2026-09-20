@@ -124,8 +124,8 @@ protocol version bump
 ②      前端渲染兜底 + 可解释状态  ◐ v4.22.33 渲染兜底已落（未知 kind 绝不显示裸 JSON，
                                    判据 = `is_known_kind`/`isKnownKind` 查 WIRE_KINDS）；
                                    "对方版本较新"的用户可见状态 ⬜（数据源 V2 已就绪）
-                                   ⚠️ 单聊路径要等 V3a（`ChatMessage.kind` 是嵌套枚举，
-                                   未知 kind 现在会在帧层就被丢掉，前端根本没机会显示）
+                                   ✅ 另一半 v4.22.34：`ChatMessage.kind` 改回 `String` —— 未知 kind 不再在帧层
+                                   被丢掉，单聊与群聊两条路径都会显示占位
 ③      新帧 / HKDF v2 派生       ⬜（且必须等 ① 在网里铺开后才允许）
 ```
 
