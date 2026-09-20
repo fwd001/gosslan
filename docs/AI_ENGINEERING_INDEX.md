@@ -31,7 +31,8 @@
 
 ## ADRs
 
-- `0007-protocol-versioning.md`
+- `0007-protocol-versioning.md`（**Accepted 2026-09-20**：`protocol_version` + capability
+  门控 + 灰度顺序 + 三项决策，是跨版本兼容的权威出处）
 - `0008-state-machine-boundaries.md`
 - `0009-rust-typescript-contract.md`
 - `0010-failure-injection-testing.md`
@@ -39,10 +40,15 @@
 - `0012-logical-sequence-ordering.md`
 - `0013-transport-priority-queues.md`
 - `0014-multi-path-connection-selection.md`
+- `0015-ble-transport.md`
+- `0016-relay-authorization.md`
+- `0017-opaque-external-wire-frame.md`
+- `0018-window-architecture.md`
+- `0019-content-transfer.md`
 
 > Earlier ADRs `0001`–`0006` (message idempotency, outbox+ACK, E2EE, transport, no-Web-Worker,
 > device fingerprint) were removed; their normative content now lives in
-> `docs/protocol-invariants.md` (INV-P01…P20) and `AI_RULES.md` (INV-001…008).
+> `docs/protocol-invariants.md` (INV-P01…P24) and `AI_RULES.md` (INV-001…008).
 > Do not re-create them as a second source of truth.
 
 ## Rule

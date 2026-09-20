@@ -1,9 +1,9 @@
 # Gosslan AI Development Rules
 
-> Version: 1.0
-> Status: Release / Stable LAN Chat
+> Version: 1.1（2026-09-20：定位、范围与跨版本兼容三节按现实重写）
+> Status: Release track / Decentralized mesh chat & team collaboration
 > Project type: Tauri v2 + Vue 3 + TypeScript + Rust + SQLite
-> Primary goal: Stable LAN Chat
+> Primary goal: 稳定 · 速度 · 可达 · 安全 · 可解释（见 §1）
 >
 > This document is the primary engineering rule for AI-assisted development.
 > When a task conflicts with this document, stop and resolve the conflict before coding.
@@ -12,33 +12,32 @@
 
 # 1. Project Positioning
 
-Gosslan is currently a **pre-release project**.
+Gosslan 是一个**去中心化的 mesh 通讯工具**：以局域网为主，跨网段靠节点互相中继转发，
+蓝牙用于近场加入。节点既互为中继也可以直连；没有服务器、没有账号、没有强制升级 ——
+每台设备都是对等的一份。
 
-The immediate goal is not to build a complete distributed communication platform.
-
-The immediate goal is:
-
-> **Make the existing LAN chat stable, reliable, understandable, and easy to extend.**
-
-The current priority is:
+对用户的目标只有一句：**像普通聊天/团队协作工具一样无感地使用**。
+技术上的四个目标按优先级排列：
 
 ```text
-Stable LAN Chat
+稳定（不丢、不重、不炸、不静默失败）
     ↓
-Correct message delivery
+速度（大文件与聊天并发时都不互相饿死）
     ↓
-Correct persistence
+可达（跨网段/蓝牙/离线补发都要真的能到）
     ↓
-Correct E2EE
+安全（身份锚定、E2EE、中继不越权）
     ↓
-Correct offline recovery
-    ↓
-Good user experience
-    ↓
-Simple extensibility
+可解释（用户看得懂现在在发生什么：进度、失败原因、版本差异）
 ```
 
-Do not sacrifice current chat stability for future architecture.
+产品判断标准（用户反复强调的两条）：
+
+* **点击即乐观响应**：任何操作在界面上必须立刻有反馈，慢的工作放后面做。
+* **状态必须可感知**：发送方进度真实推进、`delivered` = 对方收完且合成完、
+  `read` = 对方真的看到。"0% 却已读""一直转圈但其实成功"这类组合算缺陷，不算边界情况。
+
+稳定性优先于新功能：不为了"架构上能支持"就实现未来特性（见 §3）。
 
 ---
 
@@ -78,34 +77,45 @@ The following are P1:
 * Basic stress testing
 * UI stability improvements
 
+## 2.2 已经扩出的范围（2026-09-20 记录，避免文档与代码互相打脸）
+
+2.1 那份清单是"LAN Chat 稳定"时期的 v1.0 目标，它们仍然是 P0 地基。此后产品定位已扩大为
+mesh（见 §1），下面这些**同属 v1.0 必做项**，不再算"未来特性"：
+
+* 群聊与团队协作（群消息、群文件、群任务、删除/退群的一致性）
+* 多路径并存与选路（LAN / 跨网段 Routed / 蓝牙），含大文件分片流的**保序**
+* 中继转发与中继授权（用户能表达"别拿我当中转"，且设置真的管到数据面）
+* 离线补发在三种队列（单聊 / 群 / 文件）上语义一致
+* **跨版本优雅降级**（INV-P24：未知帧不拆链、未知内容不显示裸 JSON、新能力按版本门控）
+
+验收口径见 `docs/acceptance/1.0-release.md`。
+
 ---
 
-# 3. Explicitly Frozen for v1.0
+# 3. Explicitly Out of Scope（当前不做，别主动碰）
 
-Do NOT proactively implement, redesign, optimize, or expand:
+2026-09-20 重写。旧版本这一节把 Bluetooth / 跨子网 / Mesh 路由 / 中继优化列为"冻结"，
+但代码早已越过（ADR-0014 多路径选路、ADR-0015 BLE 传输、ADR-0016 中继授权、
+ADR-0017 opaque 外部帧，且三端 BLE 已发布）。**约束与代码相反时，每个新会话读到的第一课
+都是"别做你正在做的事"**，那是无效约束。所以按当前定位改成下面这份真实清单。
 
-* Bluetooth transport
-* QUIC
-* mDNS
-* Cross-subnet communication
-* Server relay
-* Account system
-* Noise XX
-* Advanced Mesh routing
-* Large-scale relay optimization
-* 500–1000 node optimization
-* New transport implementations
-* Large-scale architecture refactoring
-* New distributed-system mechanisms
-* Future roadmap features not required by the current task
+**已经在范围内、不要再去"冻结"它**：蓝牙传输与近场加入、跨网段与中继转发、多路径选择与
+保序、中继授权策略、群聊与团队协作、离线补发、文件断点续传。这些都是**当前产品本体**，
+改进它们属于本职工作。
 
-Existing code related to these features may remain.
+不要主动实现、重设计、扩展的：
 
-Preserve useful interfaces and extension points when practical.
+* QUIC / 自建新传输栈
+* mDNS 发现（现有 UDP 广播 + 手动端点已经够用）
+* 账号体系、服务端注册、任何需要"有个后台"的东西
+* Noise XX 之类的握手重做（现有 Hello 签名认证已经承担该职责；要动走 ADR）
+* 500~1000 节点规模的专门优化、全局索引/FTS、多设备漫游、消息编辑
+* 大改架构的重构（拆文件、挪模块属于允许的整理，不改变行为）
+* 当前任务不需要的路线图特性 —— **不要因为架构上能支持就实现它**
 
-But:
+保留扩展点是允许的（接口留白、注册表、capability 位），但不要为它写实现。
 
-> **Do not implement future features merely because the architecture could support them.**
+> 想碰上面任何一条：先停下问用户，别自己开工。
 
 ---
 
@@ -566,38 +576,53 @@ Before modifying a protocol message, check:
 8. Does reconnect/retry change its behavior?
 9. Does it affect gossip or forwarding?
 10. Does the TypeScript side depend on it?
+11. **老版本遇到它会看到什么？**（连不上？静默丢？看得懂？）—— 答案必须是"忽略并继续"
+    或"可解释地降级"，见 INV-P24
+12. **它需要 `protocol_version` bump 吗？**加可选字段不需要；新增 variant / 改必填 /
+    改语义都需要，且必须按 capability 门控（ADR-0007）
 
 ---
 
-# 12. Pre-Release Protocol Compatibility
+# 12. Cross-Version Protocol Compatibility
 
-## IMPORTANT
+## IMPORTANT — 前提已在 2026-09-20 更正
 
-Gosslan has **not been released**.
+本项目**已经在外发布**：GitHub Releases 上有带安装介质与 sha256 校验的正式包
+（`v4.8.2` 2026-09-14 → `v4.20.0` 2026-09-18，覆盖 macOS / Windows / Android）。
+它没有服务器、也没有强制升级通道 —— 所以"网里同时存在多个版本"是**当前事实**，
+不是假设场景。一台 4.18 的手机和一台 4.22 的 Mac 在同一个局域网里说话，就是日常。
 
-There are currently no production users or historical clients that must remain compatible.
+本节早期写的是"尚未发布、没有历史客户端需要兼容"，那个前提被仓库自己证伪了；
+它曾把 `docs/adr/0007-protocol-versioning.md` 一直压在 Proposed 状态。
 
-Therefore:
+因此规则从"不要写兼容层"改成下面这条更准的说法：
 
-> **Do not add compatibility layers for hypothetical old versions.**
+> **兼容性靠"加法 + 门控"获得，不靠"两边都留一份"获得。**
 
-Do not preserve obsolete protocol behavior merely because an older development build might have used it.
+允许的（也是首选的）兼容手段：
 
-Do not add:
+* 只**加可选字段**，读侧对缺失值有默认行为（老对端不发也能跑）
+* 未知内容一律**降级并可解释**（INV-P24：未知帧不拆链、未知 kind 不显示裸 JSON）
+* 新帧 / 新语义必须按对端 `protocol_version` 或 capability **门控**，不门控不许发
 
-* legacy protocol branches
-* unnecessary version adapters
-* compatibility wrappers
-* duplicate old/new message formats
-* migration code for versions that never shipped
+不允许的：
 
-unless there is a real requirement.
+* 为"理论上可能存在的旧版本"写双份消息格式、版本适配器、迁移代码
+* 一条 wire 变更同时"破坏老版本"又"没有任何提示"（静默连不上比功能缺失严重一个数量级）
+* 把 legacy 分支当永久状态 —— 每个 legacy 分支必须在 ADR 里写明**退出条件**
+
+判断要不要兼容，看的是"有没有已发布的包还可能在网里"，答案在 2026-09-20 之后是"有"。
 
 ---
 
-## 12.1 Breaking Protocol Changes Are Allowed
+## 12.1 Breaking Protocol Changes
 
-Before release, a protocol change may intentionally break the current development version.
+允许破坏兼容，但必须先满足这三条（缺一不可）：
+
+1. 写 ADR：谁会断、断了他看到什么、legacy 分支什么时候删；
+2. `protocol_version` bump，且发送侧对新帧/新语义做 capability 门控；
+3. **先让"能容忍 Unknown + 会报版本"的版本铺开**，之后才允许出现新帧类型
+   （顺序颠倒 = 老设备直接连不上，见 INV-P24 的"现状"段）。
 
 Examples:
 
@@ -620,9 +645,7 @@ old state machine
 → corrected state machine
 ```
 
-This is acceptable when it produces a cleaner and more correct current implementation.
-
-However:
+上面三类例子都属于**破坏兼容**，因此先要满足 12.1 开头那三条门，再走下面的清单：
 
 > Breaking does not mean careless.
 
@@ -632,21 +655,30 @@ For a protocol-breaking change:
 2. Update receiver.
 3. Update related tests.
 4. Update E2E tests.
-5. Update protocol documentation if necessary.
-6. Remove obsolete compatibility code.
+5. Update protocol documentation if necessary（`docs/protocol-invariants.md` / ADR）.
+6. 只在"已确认没人在用"之后才删 legacy 分支，并在 ADR 里记下这个判断依据。
 7. Verify the complete message flow.
+8. 想清楚"老版本遇到它到底看到什么"：理想答案是"忽略并继续"，最差也不能是"连不上"。
 
 ---
 
-# 13. Pre-Release Database Rules
+# 13. Database Schema Rules
 
-The same principle applies to SQLite.
+同上的前提修正也适用于 SQLite：**已经发布的包里装着真实用户数据**。
 
-Because Gosslan has not been released:
+因此 schema 变更的口径是：
 
-> **Database schema cleanup and breaking changes are allowed when they simplify the current system or fix incorrect design.**
+> **允许清理与破坏性改动，但已发布包装着真实用户数据 ⇒ 必须能升不能毁，且不许把老数据读错。**
 
-Do not build complicated migration systems solely for hypothetical unreleased versions.
+具体到本项目已经在做的那套（不要再造第二套）：
+
+* `user_version` 单调递增 + 分步迁移；**降级一律拒绝启动**（不猜、不删数据）——
+  拒绝必须给用户可读解释（"本机数据来自更新版本，请升级后再打开"），不能只是一个错误。
+* 迁移只做"结构搬运/存量清理"，不做"顺手改语义"；一次迁移一件事。
+* 不为"从没发布过的中间态"写迁移（那是真正的假想兼容）；为"已发布包里可能有的状态"写，
+  并且要在迁移测试里**造出那个旧状态**再验证。
+* 读侧对历史形态要能容错（`protocol::display_kind` 是现成的例子：老 `video/audio` 行
+  在**读出口**归一成 `file`，不回写数据）。
 
 ---
 
@@ -1188,7 +1220,8 @@ When possible, verify with two actual devices on the same LAN.
 
 # 30. Real Device Acceptance
 
-Automated tests are not enough for Stable LAN Chat.
+Automated tests are not enough. 跨版本、多路径、蓝牙与中继这类问题只在真机上暴露，
+单测与构建全绿也可能整体不可用。
 
 At least two real devices should verify:
 
@@ -1556,7 +1589,7 @@ Continue chatting
 
 without major crashes, message loss, duplicate messages, or state corruption.
 
-That is the current definition of **Stable LAN Chat**.
+That is the current definition of **v1.0**：mesh 上的聊天与协作既稳定又可解释。
 
 ---
 
