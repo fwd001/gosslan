@@ -315,6 +315,39 @@ pub(crate) async fn send_on_link(link: &crate::state::Link, msg: &Message) -> Re
         .map_err(|_| "链路已关闭".to_string())
 }
 
+/// 一次等待 tick 之后，调用方决定继续等还是放弃（`send_on_link_with_tick` 用）。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Tick {
+    Wait,
+    Abort,
+}
+
+/// 与 `send_on_link` 等价，但在**等待期间**每隔 `tick` 醒来调用一次 `on_tick`。
+///
+/// 为什么必须存在：对端不收时 `send_on_link` 就一直挂在背压上，任何写在它**之后**的
+/// 停滞检查都得不到执行机会 —— 检查必须活在这个等待里面。
+///
+/// 安全性前提（已实测钉死，见 `timed_out_send_leaves_nothing_behind`）：`tx.send()` 的
+/// future 被丢弃不会把消息留在队列里 ⇒ "超时后重发同一条"不会产生重复分片；重复分片在
+/// 群接收端是致命的（严格 `seq != next_seq` 判死），所以这条不是"顺手加个轮询"。
+pub(crate) async fn send_on_link_with_tick(
+    link: &crate::state::Link,
+    msg: &Message,
+    tick: Duration,
+    mut on_tick: impl FnMut() -> Tick,
+) -> Result<(), String> {
+    loop {
+        match tokio::time::timeout(tick, send_on_link(link, msg)).await {
+            Ok(r) => return r,
+            Err(_) => {
+                if on_tick() == Tick::Abort {
+                    return Err("链路停滞（对端长时间未再接收）".to_string());
+                }
+            }
+        }
+    }
+}
+
 /// 无直连时，把一条**定向**帧借一跳中继发给 to（共享目录 / 中继文件在无直连时用）。
 ///
 /// 只做「借邻居的直连」这一跳：给所有有直连的邻居各发一份（帧自带 to），邻居收到后

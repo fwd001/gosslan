@@ -118,14 +118,51 @@ pub const FILE_SEND_DEADLINE: Duration = Duration::from_secs(10 * 60);
 
 /// 按体积自适应的整体发送期限（2026-09-19 真机：一次多选里 500-600MB 的视频
 /// 在普通 Wi-Fi/中继链路上跑不完 10 分钟固定窗口 ⇒ 必被判超时、界面卡死成失败）。
-/// 保守吞吐 512 KiB/s 估算，下限 10min、上限 2h（再大的文件也该由断点续传
-/// 的 `.part` + outbox 重试兜底，而不是无限挂着发送任务）。
+/// 保守吞吐 512 KiB/s 估算，下限 10min、上限 **1h**（512 KiB/s 下 1h ≈ 1.8GB，
+/// 再大的文件也该由断点续传的 `.part` + outbox 重试兜底，而不是无限挂着发送任务）。
+///
+/// 为什么原来敢给 2h、现在敢压到 1h：真正该管"对端不收"的是下面的**停滞判定**
+/// （`stall_verdict`，以 writer 实发为准），它 60s 就退出。deadline 只负责
+/// "整件事最多占多久资源"，不再兼任停滞兜底。
 pub fn send_deadline_for(size: u64) -> Duration {
     const MIN: Duration = FILE_SEND_DEADLINE;
-    const CAP: Duration = Duration::from_secs(2 * 60 * 60);
+    const CAP: Duration = Duration::from_secs(60 * 60);
     const BYTES_PER_SEC: u64 = 512 * 1024;
     let est = Duration::from_secs(size / BYTES_PER_SEC + 60);
     est.clamp(MIN, CAP)
+}
+
+/// 连续这么久没有再**写出**任何一片 ⇒ 界面上把这条传输标成「网络停滞」。
+/// 取 15s：LAN 上一条 256KiB 片的间隔是毫秒级，15s 静默已经不是抖动而是对端读不动。
+pub const FILE_STALL_WARN_MS: i64 = 15_000;
+
+/// 连续停滞超过这个时长 ⇒ 放弃本次尝试（可重试）：outbox 会按对端真实已收字节续传，
+/// 比让发送任务在背压里干等到 deadline（最长 1h）诚实得多。
+pub const FILE_STALL_ABORT_MS: i64 = 60_000;
+
+/// 停滞判定的档位（**纯函数**输出，副作用留给调用方：发事件 / 退出）。
+#[derive(Debug, PartialEq, Eq)]
+pub enum StallVerdict {
+    /// 链路上还在实发，一切正常。
+    Healthy,
+    /// 已经静默到该提醒用户的程度，但还在等。
+    Warn,
+    /// 静默太久 ⇒ 本次尝试该放弃了。
+    Abort,
+}
+
+/// 只判"停滞到哪个档"。
+///
+/// `idle_ms` 必须是**距最近一次成功写出该 transfer 分片**的毫秒数（调用方负责
+/// 用本次尝试的起始时间做下限，否则上一轮 attempt 留下的旧时间戳会让第一轮就 Abort）。
+pub fn stall_verdict(idle_ms: i64) -> StallVerdict {
+    if idle_ms >= FILE_STALL_ABORT_MS {
+        StallVerdict::Abort
+    } else if idle_ms >= FILE_STALL_WARN_MS {
+        StallVerdict::Warn
+    } else {
+        StallVerdict::Healthy
+    }
 }
 
 /// 中继文件发送 deadline（send_file_via_relay）。比直传短：
@@ -632,6 +669,48 @@ pub async fn send_file_via_relay(
     }
 }
 
+/// 停滞检查的醒来间隔：对端不收时最长 5s 才反映到界面，够用且不制造事件噪声。
+pub const FILE_STALL_TICK: Duration = Duration::from_secs(5);
+
+/// 把"发事件"和"要不要放弃"这两件副作用集中在一处（单聊与群发共用）。
+///
+/// `started_ms` 必须是**本次尝试**的起点：上一轮 attempt 留下的 writer 时间戳会让
+/// 第一个 tick 就被判成停滞（`max` 兜住这个下界）。
+pub(crate) fn stall_tick(
+    state: &AppState,
+    transfer_id: &str,
+    started_ms: i64,
+    shown: &mut bool,
+) -> crate::network::transport::Tick {
+    let idle = db::now_ms() - file_wire_progress_at(state, transfer_id).max(started_ms);
+    let abort = stall_verdict(idle) == StallVerdict::Abort;
+    if abort {
+        state.logger.warn(
+            "file",
+            format!(
+                "[STALL] transfer={transfer_id} 已静默 {idle}ms ⇒ 放弃本次尝试，交 outbox 续传"
+            ),
+        );
+    }
+    let should_show = !abort && stall_verdict(idle) == StallVerdict::Warn;
+    if should_show != *shown {
+        *shown = should_show;
+        let _ = state.app.emit(
+            "file-stalled",
+            &crate::state::FileStalledInfo {
+                transfer_id: transfer_id.to_string(),
+                stalled: should_show,
+                idle_ms: idle,
+            },
+        );
+    }
+    if abort {
+        crate::network::transport::Tick::Abort
+    } else {
+        crate::network::transport::Tick::Wait
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn stream_file(
     state: &Arc<AppState>,
@@ -666,6 +745,9 @@ async fn stream_file(
     }
     let mut seq = from_seq;
     let mut sent = from_bytes;
+    // 本次尝试的起点（停滞判定的下界，见 `stall_tick`）+ 「停滞」提示的当前状态。
+    let stream_started_ms = db::now_ms();
+    let mut stalled_shown = false;
     // 进度节流：避免每片一次 SQLite 写 + IPC 事件（大文件会形成事件风暴卡死界面）
     let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
 
@@ -730,10 +812,16 @@ async fn stream_file(
             data,
         };
         // 投递到**这条**链路：队列满时原地等背压，绝不换链路（换路 = 分片失序 = 整条传输判死）。
+        // 等待期间每 `FILE_STALL_TICK` 醒一次做停滞检查 —— 对端不收时这里就是唯一的观测点。
         tokio::select! {
             biased;
             _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
-            r = crate::network::transport::send_on_link(&link, &chunk) => {
+            r = crate::network::transport::send_on_link_with_tick(
+                &link,
+                &chunk,
+                FILE_STALL_TICK,
+                || stall_tick(state, transfer_id, stream_started_ms, &mut stalled_shown),
+            ) => {
                 r.map_err(SendFileError::retryable)?;
             }
         }
@@ -771,6 +859,18 @@ async fn stream_file(
                 },
             );
         }
+    }
+
+    // 分片全部投完 ⇒ 收回停滞提示（接下来是 FileDone + ack 等待，那是另一段语义）。
+    if stalled_shown {
+        let _ = state.app.emit(
+            "file-stalled",
+            &crate::state::FileStalledInfo {
+                transfer_id: transfer_id.to_string(),
+                stalled: false,
+                idle_ms: 0,
+            },
+        );
     }
 
     // 发送方在 FileDone 之后必须等待接收方 FileCompleteAck：
@@ -1940,7 +2040,10 @@ mod tests {
 
     use super::super::super::crypto;
     use super::chunk_size_for_path;
-    use super::{send_deadline_for, sha256_file_hex, valid_sha256_hex, FILE_SEND_DEADLINE};
+    use super::{
+        send_deadline_for, sha256_file_hex, stall_verdict, valid_sha256_hex, StallVerdict,
+        FILE_SEND_DEADLINE, FILE_STALL_ABORT_MS, FILE_STALL_WARN_MS,
+    };
     use crate::protocol::FILE_CHUNK;
     use std::time::Duration;
 
@@ -2192,8 +2295,36 @@ mod tests {
         assert!(send_deadline_for(600 * 1024 * 1024) < Duration::from_secs(25 * 60));
         assert_eq!(
             send_deadline_for(u64::MAX),
-            Duration::from_secs(2 * 60 * 60),
-            "再大也封顶 2h，超出交给断点续传重试而不是吊死任务"
+            Duration::from_secs(60 * 60),
+            "再大也封顶 1h，超出交给断点续传重试而不是吊死任务"
+        );
+    }
+
+    /// 停滞判定的三档边界。钉的是"什么时候该提醒、什么时候该放弃"，
+    /// 阈值本身写死在常量里，改常量必须同时改这里（防止有人顺手把 abort 调成 warn）。
+    #[test]
+    fn stall_verdict_boundaries() {
+        assert_eq!(stall_verdict(0), StallVerdict::Healthy);
+        assert_eq!(
+            stall_verdict(FILE_STALL_WARN_MS - 1),
+            StallVerdict::Healthy,
+            "还没到提醒线不得提前吓用户"
+        );
+        assert_eq!(stall_verdict(FILE_STALL_WARN_MS), StallVerdict::Warn);
+        assert_eq!(
+            stall_verdict(FILE_STALL_ABORT_MS - 1),
+            StallVerdict::Warn,
+            "提醒与放弃之间只有 Warn"
+        );
+        assert_eq!(stall_verdict(FILE_STALL_ABORT_MS), StallVerdict::Abort);
+        assert_eq!(stall_verdict(i64::MAX), StallVerdict::Abort);
+        assert!(
+            FILE_STALL_WARN_MS < FILE_STALL_ABORT_MS,
+            "提醒必须早于放弃，否则用户只看到突然失败"
+        );
+        assert!(
+            FILE_STALL_ABORT_MS < FILE_SEND_DEADLINE.as_millis() as i64,
+            "停滞放弃要早于最短 deadline，否则 deadline 才是唯一出口（界面会冻住十分钟）"
         );
     }
 

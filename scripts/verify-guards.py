@@ -588,8 +588,8 @@ CASES: list[Case] = [
         "把分片改回 try_send 是「看起来更智能（会换路）」的退化，只有源码守卫拦得住",
         file=TAURI / "src" / "network" / "file.rs",
         injections=[(
-            "r = crate::network::transport::send_on_link(&link, &chunk)",
-            "r = try_send(state, peer_id, &chunk)",
+            "r = send_on_link(&link, &done) => {",
+            "r = try_send(state, peer_id, &done) => {",
         )],
         cmd=cargo(
             "test",
@@ -599,8 +599,29 @@ CASES: list[Case] = [
             "ble_file_transfer_respects_link_limits",
         ),
         cwd=TAURI,
-        expect_fail_hint="文件分片不得逐条选路",
+        expect_fail_hint="FileDone 必须排在",
         tags=["rust", "file", "transport"],
+    ),
+    Case(
+        name="分片等待期间必须做停滞检查",
+        why="对端不收时 send_on_link 一直挂在背压上，写在它之后的任何检查都得不到执行 ⇒ "
+        "界面冻在同一个百分比最长到 deadline（1h），用户只能猜是不是软件死了。"
+        "摘掉检查是**无声**的：功能测试全绿、进度条照走",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "|| stall_tick(state, transfer_id, stream_started_ms, &mut stalled_shown),",
+            "|| crate::network::transport::Tick::Wait,",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "ble_file_transfer_respects_link_limits",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="分片必须投到钉住的那条链路",
+        tags=["rust", "file", "reliability"],
     ),
     Case(
         name="群文件 Offer 必须与分片同链路",

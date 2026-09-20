@@ -1234,12 +1234,22 @@ mod tests {
         );
         // 保序不变量：一条分片流只能待在同一条连接上（真机：多文件并发时 600MB
         // 大文件跑到 100% 报"文件分片顺序错误"，单发同一文件必成功）。
+        // 一律用 code_flat：裸子串会被 rustfmt 拆行而静默空转。
+        let stream_f = code_flat(&stream);
         assert!(
-            stream.contains("send_on_link(&link"),
-            "分片与 FileDone 必须投到钉住的那条链路：逐条 try_send 会在队列满时换链路 ⇒ 失序"
+            stream_f.contains("send_on_link_with_tick(&link,&chunk,FILE_STALL_TICK,")
+                && stream_f
+                    .contains("stall_tick(state,transfer_id,stream_started_ms,&mutstalled_shown)"),
+            "分片必须投到钉住的那条链路，且等待期间必须做停滞检查 —— 对端不收时发送就挂在\
+             背压上，这里是唯一的观测点（摘掉检查 = 界面冻在同一个百分比直到 deadline）"
         );
         assert!(
-            !stream.contains("try_send(state, peer_id, &chunk)"),
+            stream_f.contains("send_on_link(&link,&done)"),
+            "FileDone 必须排在**自己那串分片之后**走同一条链路：走 try_send 时队列满会换到\
+             空闲连接，完成帧超过在途分片先到 ⇒ 接收端判「文件传输未完成」"
+        );
+        assert!(
+            !stream_f.contains("try_send(state,peer_id,&chunk)"),
             "文件分片不得逐条选路（跨连接乱序）"
         );
 
@@ -1261,8 +1271,9 @@ mod tests {
         // 是**静默 return**（不报错、不回执），这批分片就永久丢了。
         let g = code_flat(include_str!("commands/group_file_dispatch.rs"));
         assert!(
-            g.contains("send_on_link(&link,&offer)") && g.contains("send_on_link(&link,&chunk)"),
-            "群文件的 Offer 与分片必须走同一条钉住的链路"
+            g.contains("send_on_link(&link,&offer)")
+                && g.contains("send_on_link_with_tick(&link,&chunk,file::FILE_STALL_TICK,"),
+            "群文件的 Offer 与分片必须走同一条钉住的链路（分片还要带停滞检查）"
         );
         assert!(
             !g.contains("try_send(state,recipient,"),

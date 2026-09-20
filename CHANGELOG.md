@@ -10,6 +10,41 @@
 
 ## [Unreleased]
 
+## [4.22.24] - 2026-09-20
+
+### Fixed (链路停滞成为可见状态 + 发送期限上限 2h→1h)
+
+钉链路 + 满则背压之后，剩下的诚实问题是：**对端活着但不收了**（安卓被挂后台、接收端
+磁盘/主线程卡住），`send_on_link` 会一直挂在 `tx.send()` 上 —— 既不再发进度也不报错，
+界面冻在同一个百分比，最长到 deadline（原来 2h）。用户只能猜"是不是软件死了"。
+这条是上一轮 review 指出、用户拍板的口径：保留不换路（换路必然乱序），但要**看得见**，
+并且别等到 2 小时。
+
+- 新增纯函数 `file::stall_verdict(idle_ms)` + 两个阈值：
+  `FILE_STALL_WARN_MS = 15s`（提醒）／`FILE_STALL_ABORT_MS = 60s`（放弃本次尝试）。
+  `idle_ms` 以 **writer 实发**为准（`mark_file_wire_progress` 那条既有链路），不是投进队列。
+  调用方负责用"本次尝试起点"做下界 —— 否则上一轮 attempt 留下的旧时间戳会让第一个 tick
+  就误判停滞（这个坑写在函数注释里，并用 `max(started_ms)` 兜住）。
+- `transport::send_on_link_with_tick`：等待期间每 5s 醒一次跑检查。摘掉它=无声退化，
+  所以守卫与 verify-guards 都钉住；单聊与群发共用同一个 `file::stall_tick`。
+  ⚠️ 这个写法的安全性是**实测**出来的，不是猜的：`timed_out_send_leaves_nothing_behind`
+  证明 `tx.send()` 的 future 被丢弃不会把消息留在队列里 ⇒ 超时后重发同一条不会造出
+  重复分片（重复分片在群接收端是致命的：严格 `seq != next_seq` 判死）。
+- 新事件 `file-stalled {transfer_id, stalled, idle_ms}`，**只在状态翻转时发**一次；
+  前端 `stalledTransfers` 单独存（不放 `transfers[]` 行上 —— `refreshTransfers()` 会整体
+  替换那个数组，行上的临时标记会被无声冲掉），气泡文案切到「网络停滞，等待恢复…」，
+  进度条保留不动。done/failed 一律收回提示。
+- 放弃时错误原因是 retryable 的「链路停滞」⇒ outbox 5s 后按对端真实已收字节续传，
+  最多 `MAX_FILE_OUTBOX_RETRIES` 次才置失败。进度条不再"自己走完"，停在真实位置。
+- `send_deadline_for` 上限 2h → **1h**（停滞判定接管了"对端不收"这件事，
+  deadline 只需要负责"整件事最多占多久资源"）。
+- 守卫更新：`ble_file_transfer_respects_link_limits` 的断言改用 `code_flat`
+  （裸子串会被 rustfmt 拆行后静默空转 —— review 指出、上一轮我自己也撞过），
+  并新增两条 verify-guards 用例（分片+Done 同链路、等待期间必须有停滞检查）。
+
+测试：`stall_verdict_boundaries`（三档边界 + "提醒必须早于放弃"+"放弃必须早于最短
+deadline"）、`timed_out_send_leaves_nothing_behind`（send future 的取消安全实测）。
+
 ## [4.22.23] - 2026-09-20
 
 ### Fixed (进度 upsert 不再把 file_transfers.path 擦成 NULL)

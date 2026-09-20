@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 export const api = {
   /**
@@ -422,6 +422,7 @@ export type EventHandlers = {
   /** 某条消息被撤回（msg_id）。本地据此把该行改成「已撤回」形态。 */
   onMessageRecalled: (msgId: string) => void;
   onFileProgress: (p: FileProgress) => void;
+  onFileStalled: (p: FileStalledInfo) => void;
   onFileDone: (d: FileDoneInfo) => void;
   onFileFailed: (d: FileFailedInfo) => void;
   /** 用户手动取消了一条正在发送的文件（transfer_id）。前端据此 mark failed + toast。 */
@@ -460,6 +461,7 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<GroupReadInfo>("group-read", (e) => h.onGroupRead(e.payload)),
     listen<string>("message-recalled", (e) => h.onMessageRecalled(e.payload)),
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
+    listen<FileStalledInfo>("file-stalled", (e) => h.onFileStalled(e.payload)),
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
     listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),
     listen<string>("file-cancelled", (e) => h.onFileCancelled(e.payload)),

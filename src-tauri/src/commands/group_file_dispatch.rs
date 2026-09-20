@@ -104,6 +104,9 @@ async fn dispatch_group_file_to_peer(
         let mut buf = vec![0u8; chunk_size];
         let mut seq: u32 = 0;
         let mut sent: u64 = 0;
+        // 本次投递的起点 + 停滞提示状态（与单聊共用 `file::stall_tick`）
+        let stream_started_ms = db::now_ms();
+        let mut stalled_shown = false;
         let mut last_report = std::time::Instant::now() - std::time::Duration::from_secs(1);
         loop {
             // 每片开始前先查 cancel —— 用户点了"取消发送"就立刻停
@@ -133,11 +136,17 @@ async fn dispatch_group_file_to_peer(
                 seq,
                 data,
             };
-            // 投到**钉住的这条**链路：队列满时原地等背压，绝不换链路（换路 = 分片失序）。
+            // 投到**钉住的这条**链路：队列满时原地等背压，绝不换链路（换路 = 分片失序）；
+            // 等待期间做停滞检查（与单聊同一套 `file::stall_tick`）。
             tokio::select! {
                 biased;
                 _ = &mut cancel_rx => return Err("用户取消发送".to_string()),
-                r = crate::network::transport::send_on_link(&link, &chunk) => {
+                r = crate::network::transport::send_on_link_with_tick(
+                    &link,
+                    &chunk,
+                    file::FILE_STALL_TICK,
+                    || file::stall_tick(state, transfer_id, stream_started_ms, &mut stalled_shown),
+                ) => {
                     r.map_err(|e| format!("分片发送失败：{e}"))?;
                 }
             }

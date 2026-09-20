@@ -61,6 +61,9 @@ export function useMessageFile(
   const fileStatusText = computed(() => {
     const t = transfer.value;
     if (!t || t.status === "done") return null;
+    // 链路停滞：后端按 writer **实发**判定（对端长时间没再收任何一片）。不显示出来的话，
+    // 用户看到的是"进度条冻在 63%"，只能猜是软件死了 —— 而后端其实还在背压里等。
+    if (chat.isTransferStalled(t.id)) return $t("send.stalled");
     const pct = Math.round((t.progress ?? 0) * 100);
     return t.direction === "send" ? $t("send.sendingPct", { pct }) : $t("send.receivingPct", { pct });
   });

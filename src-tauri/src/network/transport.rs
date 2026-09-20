@@ -8124,6 +8124,29 @@ mod tests {
         assert!(r.is_err(), "通道已关必须报错，实得 {r:?}");
     }
 
+    /// **决定停滞判定能不能写成"带超时的重发循环"**：`tx.send()` 的 future 被中途丢弃时，
+    /// 消息会不会已经留在队列里。会留 ⇒ 重试就是**重复片**，而群接收端是严格
+    /// `seq != next_seq` 判死 ⇒ 重复片直接打死传输。
+    ///
+    /// 结论钉在这里：tokio 1.x 的 `send` 取消安全 ⇒ 丢弃即"没发出去"，可以安全地
+    /// `timeout(stall_tick, send_on_link(..))` 循环等待并在超时里做停滞检查。
+    #[tokio::test]
+    async fn timed_out_send_leaves_nothing_behind() {
+        let (tx, mut rx) = mpsc::channel::<Message>(1);
+        tx.send(chunk(0)).await.unwrap(); // 先把容量占满，逼下一次 send 进入等待
+        let r = tokio::time::timeout(std::time::Duration::from_millis(20), tx.send(chunk(1))).await;
+        assert!(r.is_err(), "前置条件：队列满 ⇒ 这次 send 必须超时并被丢弃");
+        assert!(
+            matches!(rx.recv().await, Some(Message::FileChunk { seq: 0, .. })),
+            "第一片照常送达"
+        );
+        let leftover = tokio::time::timeout(std::time::Duration::from_millis(20), rx.recv()).await;
+        assert!(
+            leftover.is_err(),
+            "被丢弃的那条不得留在队列里 —— 否则按\"没发出去\"重发就成了重复片"
+        );
+    }
+
     /// 分片走该链路的 Low 通道，控制帧走 High —— 钉链路不能绕过三级通道。
     #[tokio::test]
     async fn send_on_link_respects_priority_channels() {

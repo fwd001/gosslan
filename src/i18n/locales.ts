@@ -799,6 +799,8 @@ export const zhCN: MessageDict = {
   "send.notFriend": "对方不是好友，请先扫描添加好友之后再继续聊天。",
   "send.sendingPct": "发送中 {pct}%",
   "send.receivingPct": "接收中 {pct}%",
+  // 对端长时间没再收任何一片（后端按 writer 实发判定）：进度条会冻住，必须说清是网络卡住
+  "send.stalled": "网络停滞，等待恢复…",
   "msg.cleaned": "已被清理",
   "msg.filePathUnavailable": "文件路径不可用",
   "msg.openFileFail": "打开文件失败",
@@ -1668,6 +1670,7 @@ export const enUS: MessageDict = {
   "send.notFriend": "Not friends yet. Scan to add them first.",
   "send.sendingPct": "Sending {pct}%",
   "send.receivingPct": "Receiving {pct}%",
+  "send.stalled": "Network stalled, waiting to recover…",
   "msg.cleaned": "Cleaned up",
   "msg.filePathUnavailable": "File path unavailable",
   "msg.openFileFail": "Failed to open file",

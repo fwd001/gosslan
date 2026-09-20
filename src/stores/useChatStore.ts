@@ -33,6 +33,7 @@ import type {
   FileDoneInfo,
   FileFailedInfo,
   FileProgress,
+  FileStalledInfo,
   FavoriteEntry,
   Friend,
   Group,
@@ -1374,6 +1375,27 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /**
+   * 处于「网络停滞」的 transfer（按 writer 实发判定，后端只在状态翻转时发一次事件）。
+   *
+   * 为什么单独存而不下到 `transfers[]` 行上：`refreshTransfers()` 会用后端快照**整体替换**
+   * 那个数组，行上的临时标记会被无声冲掉；停滞是"这次尝试"的状态，必须活得比快照久。
+   */
+  const stalledTransfers = ref<Set<string>>(new Set());
+  function isTransferStalled(id: string) {
+    return stalledTransfers.value.has(id);
+  }
+  function setTransferStalled(id: string, stalled: boolean) {
+    if (stalledTransfers.value.has(id) === stalled) return;
+    const next = new Set(stalledTransfers.value);
+    if (stalled) next.add(id);
+    else next.delete(id);
+    stalledTransfers.value = next;
+  }
+  function onFileStalled(p: FileStalledInfo) {
+    setTransferStalled(p.transfer_id, p.stalled);
+  }
+
   function updateTransferProgress(p: FileProgress) {
     const t = transfers.value.find((x) => x.id === p.transfer_id);
     if (t) {
@@ -1384,6 +1406,8 @@ export const useChatStore = defineStore("chat", () => {
     scheduleTransfersRepair();
   }
   function onFileDone(d: FileDoneInfo) {
+    // 终态一律收回「网络停滞」提示：后端只在翻转时发事件，漏一条就会让下次重试显示旧状态。
+    setTransferStalled(d.transfer_id, false);
     const t = transfers.value.find((x) => x.id === d.transfer_id);
     if (t) {
       t.status = "done";
@@ -1398,6 +1422,7 @@ export const useChatStore = defineStore("chat", () => {
     invalidateFilePreview(`gfile-${d.transfer_id}`);
   }
   function onFileFailed(d: FileFailedInfo) {
+    setTransferStalled(d.transfer_id, false);
     const msgId = `file-${d.transfer_id}`;
     for (const [convId, list] of Object.entries(messages.value)) {
       const i = list.findIndex((m) => m.msg_id === msgId);
@@ -1578,6 +1603,9 @@ export const useChatStore = defineStore("chat", () => {
         // 进度由事件载荷直接更新，不再全量刷新传输列表（避免大文件 IPC 风暴卡死界面）
         updateTransferProgress(p);
       },
+      // 链路停滞（对端长时间没再收任何一片）：气泡文案要从「发送中 63%」变成
+      // 「网络停滞」，否则用户只会觉得软件卡死 —— 后端在背压里等，前端什么都不知道。
+      onFileStalled,
       onFileDone: (d) => {
         onFileDone(d);
         void refreshTransfers();
@@ -1724,6 +1752,8 @@ export const useChatStore = defineStore("chat", () => {
     refreshGroups,
     resetAfterDataCleared,
     refreshTransfers,
+    stalledTransfers,
+    isTransferStalled,
     refreshTopology,
     favorites,
     refreshFavorites,

@@ -523,6 +523,18 @@ pub struct FileDoneInfo {
     pub path: String,
 }
 
+/// 链路停滞状态变化（只在**状态翻转**时发一次，不是每 tick 都发）。
+///
+/// 为什么需要它：`send_on_link` 在对端不收时会一直挂在背压上 —— 既不再发进度也不报错，
+/// 界面就冻在同一个百分比最长到 deadline（1h）。用户需要知道"卡在网络上"而不是"软件死了"。
+/// `idle_ms` = 距最近一次真正写出分片的毫秒数（以 writer 实发为准，不是投进队列）。
+#[derive(Serialize, Clone, Debug)]
+pub struct FileStalledInfo {
+    pub transfer_id: String,
+    pub stalled: bool,
+    pub idle_ms: i64,
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct FileFailedInfo {
     pub transfer_id: String,
