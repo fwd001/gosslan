@@ -78,6 +78,14 @@ const deviceType = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return "";
   return chat.friends.find((f) => f.device_id === conv.value!.id)?.device_type ?? "";
 });
+/**
+ * 对方 Gosslan 的线格式版本比本机高 ⇒ 头部一个标记（整句说明在联系人详情）。
+ * 结论由后端算好随好友记录带下来；对方没报版本（老实例）时恒为 false。
+ */
+const peerVersionNewer = computed(() => {
+  if (!conv.value || conv.value.kind !== "single") return false;
+  return chat.friends.find((f) => f.device_id === conv.value!.id)?.peer_version_newer ?? false;
+});
 
 /** 会话当前链路（最近一条消息的链路 + 跳数）。单聊显示，群聊不显示。 */
 const linkState = ref<LinkState | null>(null);
@@ -881,6 +889,7 @@ function onLoadMore() {
       :is-group="isGroup"
       :online="online"
       :device-type="deviceType"
+      :peer-version-newer="peerVersionNewer"
       :link-state="linkState"
       :member-count="memberCount"
       :can-rename="canRename"

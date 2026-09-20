@@ -123,7 +123,8 @@ protocol version bump
                                    → AppState::peer_versions → 诊断面板「版本互通」+ 降级日志
 ②      前端渲染兜底 + 可解释状态  ◐ v4.22.33 渲染兜底已落（未知 kind 绝不显示裸 JSON，
                                    判据 = `is_known_kind`/`isKnownKind` 查 WIRE_KINDS）；
-                                   "对方版本较新"的用户可见状态 ⬜（数据源 V2 已就绪）
+                                   "对方版本较新"的用户可见状态 ✅ v4.22.35（判定只在 peer_protocol_is_newer 一处，
+                                   结论随好友记录下发，前端不再自己比数字）
                                    ✅ 另一半 v4.22.34：`ChatMessage.kind` 改回 `String` —— 未知 kind 不再在帧层
                                    被丢掉，单聊与群聊两条路径都会显示占位
 ③      新帧 / HKDF v2 派生       ⬜（且必须等 ① 在网里铺开后才允许）

@@ -80,6 +80,13 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
         })
         .unwrap_or_default();
     let now = crate::db::now_ms();
+    // 对端版本快照：与 device_type 同一个"读时富化"套路（`peer_versions` 只在验签后的
+    // Hello 里写入）。先取快照再拿 db 锁 —— 不为省事在持 db 锁期间再去锁别的表。
+    let versions: std::collections::HashMap<String, crate::state::PeerVersion> = s
+        .peer_versions
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut friends = db::list_friends(&dbc).unwrap_or_default();
     for f in friends.iter_mut() {
@@ -90,6 +97,11 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
             .get(&f.device_id)
             .map(|p| p.device_type.clone())
             .unwrap_or_default();
+        // 版本：判定放在唯一的 `peer_protocol_is_newer` 里，前端只消费结论。
+        let declared = versions.get(&f.device_id);
+        f.peer_app_version = declared.and_then(|v| v.app_version.clone());
+        f.peer_version_newer =
+            crate::protocol::peer_protocol_is_newer(declared.and_then(|v| v.protocol_version));
     }
     friends
 }

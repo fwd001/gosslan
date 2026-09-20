@@ -356,6 +356,16 @@ pub struct Friend {
     /// 设备类型（"desktop" / "mobile"，空串 = 未知）。从 peers 表现场读取。
     #[serde(default)]
     pub device_type: String,
+    /// 对端 Gosslan 的**应用版本**（如 `"4.22.34"`）。`None` = 还没连过，或对方是
+    /// 不报版本的老版本 —— 两者都不猜（见 `PeerVersion`）。只用于给人看。
+    #[serde(default)]
+    pub peer_app_version: Option<String>,
+    /// 对端**线格式版本比本机高** ⇒ 界面给一句可解释提示（INV-P24）。
+    ///
+    /// 判定只有一处：`protocol::peer_protocol_is_newer`。前端**不再自己比数字** ——
+    /// 那会把 `PROTOCOL_VERSION` 变成第二份真相源（本项目反复出事的形状）。
+    #[serde(default)]
+    pub peer_version_newer: bool,
     pub online: bool,
 }
 

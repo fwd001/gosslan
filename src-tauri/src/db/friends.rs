@@ -116,6 +116,9 @@ pub fn list_friends(conn: &Connection) -> Result<Vec<Friend>> {
             nickname: r.get(1)?,
             avatar: r.get(2)?,
             device_type: String::new(),
+            // 版本是**内存里的东西**（Hello 时写入），DB 层给空值，由命令层读时富化
+            peer_app_version: None,
+            peer_version_newer: false,
             online: false,
         })
     })?;

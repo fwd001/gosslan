@@ -216,6 +216,24 @@ const confirmRemove = ref(false);
               <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.deviceType") }}</span>
               <span>{{ t(deviceTypeKey(friend.device_type)) }}</span>
             </div>
+            <!-- 版本行：只在"知道点什么"时出现。老实例（两个字段都没报）整行不显示 ——
+                 不猜版本、也不用"未知"占位糊一面墙。 -->
+            <template v-if="friend.peer_app_version || friend.peer_version_newer">
+              <div class="h-px bg-[var(--gosslan-divider)]"></div>
+              <div class="flex items-start justify-between gap-4 px-4 py-2.5 text-sm">
+                <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.version") }}</span>
+                <span class="text-right">
+                  <span>{{ friend.peer_app_version || t("friend.profile.versionUnknown") }}</span>
+                  <!-- 这才是 INV-P24 要的"可解释状态"：说清差异、说清该升级哪一台 -->
+                  <span
+                    v-if="friend.peer_version_newer"
+                    class="mt-0.5 block text-xs text-[var(--gosslan-warning-ink)]"
+                  >
+                    {{ t("friend.profile.versionNewerHint") }}
+                  </span>
+                </span>
+              </div>
+            </template>
             <template v-if="addressLine">
               <div class="h-px bg-[var(--gosslan-divider)]"></div>
               <div class="flex items-center justify-between gap-4 px-4 py-2.5 text-sm">

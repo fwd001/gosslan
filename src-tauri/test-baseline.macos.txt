@@ -487,6 +487,7 @@ protocol::tests::msg_kind_mapping
 protocol::tests::only_is_known_kind_can_tell_unrecognized_apart
 protocol::tests::opaque_external_round_trips_through_wire_format
 protocol::tests::opaque_external_validation_bounds
+protocol::tests::peer_protocol_newer_only_when_declared_higher
 protocol::tests::preview_text_hides_payload_for_unknown_kind
 protocol::tests::reaction_payload_roundtrips
 protocol::tests::unknown_message_kind_still_decodes_as_a_chat_message

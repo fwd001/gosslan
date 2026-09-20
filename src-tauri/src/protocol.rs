@@ -71,6 +71,19 @@ pub fn current_app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// 对端**线格式版本是否比本机高**（INV-P24：对端更高必须成为可解释的状态）。
+///
+/// 这是全仓唯一的兼容判定处，结果直接以 `Friend::peer_version_newer` 发给前端 ——
+/// 前端不许自己比数字，否则 `PROTOCOL_VERSION` 就有了第二份真相源。
+///
+/// `None`（老版本没声明这个字段）判 **false**：没声明 ≠ 版本 0，也 ≠ 版本 1。
+/// 把"未知"当成"更高"会在满屏好友上刷出一排"对方版本较新"的错提示；当成"更低"
+/// 则会藏掉真实存在的差异。所以老实例就是**什么都不提示**，与"未声明"在诊断里
+/// 显示成"未声明"是同一个口径。
+pub fn peer_protocol_is_newer(declared: Option<u32>) -> bool {
+    declared.is_some_and(|v| v > PROTOCOL_VERSION)
+}
+
 /// 内容能力位：支持按 cid 拉取（ContentRequest / 拥有即授权服务）。
 pub const CONTENT_FEATURE_PULL: u32 = 1 << 0;
 
@@ -2036,6 +2049,19 @@ mod tests {
         // 对照（防空转）：未知值放在 **type** 上时仍是硬解析错误 —— 那才是
         // `decode_frame` 该降级成 Unknown 的场景（见 unknown_message_type_is_a_hard_parse_error）。
         assert!(serde_json::from_slice::<Message>(br#"{"type":"sticker"}"#).is_err());
+    }
+
+    /// 兼容判定的四种输入 —— `Some(PROTOCOL_VERSION)` 那条是**防空转的关键**：
+    /// 写成 `>=` 就会在每个同版本好友上刷"对方版本较新"，而真网里同版本才是常态。
+    #[test]
+    fn peer_protocol_newer_only_when_declared_higher() {
+        assert!(!peer_protocol_is_newer(None), "未声明 ≠ 更高（也 ≠ 更低）");
+        assert!(
+            !peer_protocol_is_newer(Some(PROTOCOL_VERSION)),
+            "同版本必须判不高 —— 写成 >= 就会满屏误报"
+        );
+        assert!(!peer_protocol_is_newer(Some(0)), "0 也不猜成更高");
+        assert!(peer_protocol_is_newer(Some(PROTOCOL_VERSION + 1)));
     }
 
     #[test]
