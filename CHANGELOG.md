@@ -10,6 +10,28 @@
 
 ## [Unreleased]
 
+## [4.22.18] - 2026-09-20
+
+### Changed (transport.rs 分册第 1 步：出站投递与链路选路搬出主文件)
+
+`network/transport.rs` 已经 1 万行，任何一次评审都要在同一屏里同时看选路、握手、
+gossip、文件、群文件、中继六件事 —— 这是"改一处顺手碰坏另一处"的结构性温床。
+按 `commands.rs` 的既有先例用 `include!` 分册：**同一模块、零 `use` 改动、运行时零差异**，
+只是把单文件切到可评审的粒度（分 5-6 步做，每步只搬一段连续代码）。
+
+本步搬「出站投递 + 链路选路」418 行 → `network/transport/outbound.rs`
+（帧编码 `write_frame`/`read_frame`、`route_order`、`send_over_order`、`try_send`、
+上一轮新增的 `resolve_stream_link`/`send_on_link`、`relay_send_to_neighbors`、
+`broadcast_gossip`、`reachable_neighbors`）。
+
+配套改动（这一步真正的风险所在）：源码守卫是用 `include_str!` 读**文件文本**的，
+只读主文件会让搬进分册的代码 0 命中 ⇒ 守卫**假红**，而下一个人会以为红的是代码不是锚点。
+新增 `network::transport_src_for_guards()`（cfg(test)）把主文件与全部分册拼成全集，
+11 处 transport 守卫一律改读它；今后新增分册必须在那个函数里同步登记一行。
+
+验证：`cargo test --features bluetooth --lib` 570 全绿（含全部源码守卫）；
+`check-domain-deps` 按模块路径判定，`network::transport` 域归属不变。
+
 ## [4.22.17] - 2026-09-20
 
 ### Fixed (群图片预览的 stale 快照竞态 + 「发送中 0% 而对端已读」)

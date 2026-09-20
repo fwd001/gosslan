@@ -214,6 +214,19 @@ pub async fn start_from_prefs(state: Arc<AppState>) -> Result<(), String> {
     }
 }
 
+/// **只给源码守卫用**：`network/transport.rs` 已按 `commands.rs` 的先例分册
+/// （`include!` 进同一模块，运行时零差异），而守卫是用 `include_str!` 读**文件文本**的。
+/// 只读主文件会让搬进分册的代码 0 命中 ⇒ 守卫假红，而下一个人会以为红的是代码不是锚点。
+/// 所以守卫一律看全集；新增分册时必须在这里同步登记一行。
+#[cfg(test)]
+pub(crate) fn transport_src_for_guards() -> String {
+    let mut src = String::new();
+    src.push_str(include_str!("transport.rs"));
+    src.push('\n');
+    src.push_str(include_str!("transport/outbound.rs"));
+    src
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

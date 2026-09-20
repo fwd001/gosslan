@@ -1043,7 +1043,7 @@ mod tests {
             body.contains("send_friend_request_via_link"),
             "发送逻辑要复用同一个实现（补发走的是同一条路径）"
         );
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         assert!(
             transport.contains("pub async fn flush_pending_friend_request("),
             "必须有补发入口"
@@ -1052,7 +1052,7 @@ mod tests {
             transport.contains("flush_pending_friend_request(state, &device_id).await;"),
             "建链/Hello 补全时必须调用补发（所有传输的建链都会走到那里）"
         );
-        let forget = rust_fn_body(transport, "pub fn forget_pending_request(");
+        let forget = rust_fn_body(&transport, "pub fn forget_pending_request(");
         assert!(
             forget.contains("pending_out_requests"),
             "收到同意/拒绝后必须清掉登记，否则会一直补发"
@@ -1249,7 +1249,7 @@ mod tests {
             "「帧无法分片」只该丢这一帧：拆链路会让同连接上其它传输一起失败"
         );
 
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         assert!(
             transport.contains("file::has_receiver(state, &transfer_id)"),
             "重复的 FileOffer 必须幂等回 accept（旧行为 reject ⇒ 对端停止重试、文件永远收不到）"
@@ -1378,8 +1378,8 @@ mod tests {
     /// **在线看 last_seen 新鲜度**（`friend_is_online`）。
     #[test]
     fn offline_peer_stays_listed_but_is_not_online() {
-        let transport = include_str!("network/transport.rs");
-        let body = rust_fn_body(transport, "pub(crate) async fn mark_peer_offline(");
+        let transport = crate::network::transport_src_for_guards();
+        let body = rust_fn_body(&transport, "pub(crate) async fn mark_peer_offline(");
         assert!(
             !body.contains("remove(device_id)"),
             "链路断了**不能**立刻删节点条目：BLE 上「连上→退让→断开」是常态，\
@@ -1681,8 +1681,8 @@ mod tests {
     /// 表现成"有时候会清、有时候不清"。这里把"两条路径都要清"钉死。
     #[test]
     fn every_friend_accept_path_forgets_the_pending_request() {
-        let transport = include_str!("network/transport.rs");
-        let transport_f = code_flat(transport);
+        let transport = crate::network::transport_src_for_guards();
+        let transport_f = code_flat(&transport);
         assert_eq!(
             transport_f.matches("forget_pending_request(state,&from)").count(),
             2,
@@ -1698,7 +1698,7 @@ mod tests {
             1,
             "`respond_friend_request` 的同意路径也要走同一个助手（别各写一遍）"
         );
-        let helper = rust_fn_body(transport, "pub fn forget_pending_request(");
+        let helper = rust_fn_body(&transport, "pub fn forget_pending_request(");
         assert!(
             helper.contains("remove(peer_id)"),
             "助手必须真的把内存态的 pending 删掉"
@@ -1715,8 +1715,8 @@ mod tests {
     /// 用户给的规则：既然 B 那边已经把 A 当好友，就等于 B 已经同意了 —— 直接走完整的同意路径。
     #[test]
     fn friend_request_from_existing_friend_auto_accepts() {
-        let transport = include_str!("network/transport.rs");
-        let helper = rust_fn_body(transport, "async fn auto_accept_if_already_friend(");
+        let transport = crate::network::transport_src_for_guards();
+        let helper = rust_fn_body(&transport, "async fn auto_accept_if_already_friend(");
         assert!(
             helper.contains("db::get_friend") && helper.contains("accept_friend_request"),
             "自动同意必须：① 真的判『他是不是已经是我的好友』；② 走**同一个** accept 实现（别各写一遍）"
@@ -1814,7 +1814,7 @@ mod tests {
     ///    永远只能靠猜。
     #[test]
     fn notifications_are_observable_and_respect_the_switch() {
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         assert!(
             !transport.contains("tauri_plugin_notification::NotificationExt"),
             "network 层不得再直接用插件的 show()（它把错误 spawn 掉丢了）—— 统一走 crate::notifications"
@@ -1882,7 +1882,7 @@ mod tests {
     /// **未完成的内容要能自动重试，且同样受能力协商约束**（ADR-0019 Phase 1）。
     #[test]
     fn incomplete_content_is_auto_retried_behind_capability_gate() {
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         assert!(
             transport.contains("async fn retry_incomplete_content("),
             "必须实现建链自动重试"
@@ -1975,7 +1975,7 @@ mod tests {
             body_by_cid.contains("CONTENT_FEATURE_PULL"),
             "request_content_by_cid 也必须按对端能力位协商"
         );
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         assert!(
             transport.contains("find_source"),
             "服务端必须按 cid 找本地内容"
@@ -2112,7 +2112,7 @@ mod tests {
             "`remove_friend` 必须调 `forget_peer_identity` —— 只删 friends 表那一行，\
              内存里的旧公钥会继续当信任根用（症状：删了好友重新加也没用，必须重启）"
         );
-        let tr = include_str!("network/transport.rs");
+        let tr = crate::network::transport_src_for_guards();
         // 对方解除关系那条路径（Message::FriendRemove）同样要清
         let start = tr
             .find("Message::FriendRemove {")
@@ -2595,7 +2595,7 @@ mod tests {
     /// 只有跨网段压测才暴露，正是只能靠护栏钉死的那类退化。
     #[test]
     fn gossip_fanout_targets_reachable_links() {
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         assert!(
             !transport.contains("choose_fanout(&peers"),
             "转发候选不得再来自 peers（知识集）—— 用 reachable_neighbors（links 中有非空链路的邻居）"
@@ -2616,7 +2616,7 @@ mod tests {
     /// 这类"开关只管一条路径"的分裂在 UI 上完全看不出来，只能源码钉死。
     #[test]
     fn relay_data_plane_respects_policy() {
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         let wired = transport.matches("decide_relay_from_peer(").count();
         assert!(
             wired >= 3,
