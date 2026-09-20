@@ -162,7 +162,8 @@ jobs:
       # ⚠️ 这一步是**最该进 CI** 的：2026-09-16 发现「焦点可见」那条护栏因为
       # MessageComposer.vue 加了文件级逃生阀而**退化成空转**（改坏也不报）——
       # 护栏失效时不会有任何信号，只有把它跑起来才知道。此前的 92 条护栏全靠人工记得跑。
-      # 全量护栏（含 Rust 用例，要重编译，10 分钟以上）留给发布前手动跑 `npm run verify -- --full`。
+      # 全量护栏（含 Rust 用例，要重编译）留给发布前手动跑 `npm run verify:full -- --full`。
+      # （`verify.mjs` 分层后 `--full` 会自动拉起重门禁层，不会静默跑成快速层。）
       - name: 护栏非空转（前端子集）
         run: python3 scripts/verify-guards.py --only frontend
 

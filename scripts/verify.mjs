@@ -33,7 +33,9 @@
  *     npm run verify              # 快速层：不碰 cargo，秒级~20s（日常迭代就跑这个）
  *     npm run verify:full         # 全量层：加 cargo fmt/clippy/test + Rust 清单 + 护栏扫描 + Android
  *     npm run verify:full -- --full   # 再加**完整**护栏（123 条逐条改坏验证，10 分钟以上）
- *     npm run verify -- --no-guards   # 跳过护栏扫描（不推荐；仅护栏工具缺失时临时绕过）
+ *                                     #   （`--full` 也会自动拉起重门禁层，不会静默跑成快速层）
+ *     npm run verify:full -- --no-guards  # 全量层但跳过护栏扫描（护栏工具缺失时的临时绕过，会留痕）
+ *                                     #   （快速层本来就不含护栏扫描，那里加这个参数是无操作）
  *     npm run verify -- --list    # 只列出会跑哪些步骤（加 -- --full-gate 看全量层）
  *
  * ### 为什么分两层（实测数据，不是猜的）
@@ -132,8 +134,12 @@ const listOnly = argv.includes("--list");
  *   （前端 job + Rust job × mac/win 矩阵 + Android job）⇒ 推上去必然被编译检验；
  * - 快速层结束时**显式列出**没跑哪些重门禁（绝不静默），别把本地绿当成"编得过"；
  * - 动过 Rust/依赖/构建配置 ⇒ 提交前跑 `npm run verify:full`（口径写进 AI_RULES.md）。
+ *
+ * ⚠️ `--full`（全量护栏）**自动蕴含**本开关：护栏扫描属于重门禁层，若只给 `--full` 又把它
+ * 过滤掉，旧写法 `npm run verify -- --full` 会安静地一条护栏都不跑、还打印满屏绿 ——
+ * 那是"没守却当作守到了"，比慢得多严重。
  */
-const fullGate = argv.includes("--full-gate");
+const fullGate = argv.includes("--full-gate") || full;
 
 // ⚠️ 快速层不跑护栏 ⇒ 连"找 python"都不做：否则没装 python 的机器上，一个与护栏无关的
 // 快速检查会因为找不到解释器直接红（分层时很容易顺手漏掉这一条）。
@@ -237,11 +243,13 @@ const steps = [
 ];
 
 if (!noGuards) {
+  // 条数与耗时都交给该步自己打印（`verify-guards.py` 有 `[n/m]` 进度）——
+  // 写死在这里的数字一定会腐烂：这里曾经同时错过"97 条"和"十几秒"两个旧值。
   steps.push({
     name: full ? "护栏非空转（全量，慢）" : "护栏非空转（前端子集）",
     why: full
-      ? "97 条护栏全部「改坏必须 FAIL、恢复必须 PASS」；Rust 用例要重编译，10 分钟以上"
-      : "前端子集十几秒；全量护栏请用 --full（发版前跑一次）",
+      ? "全部护栏逐条「改坏必须 FAIL、恢复必须 PASS」；含 Rust 用例 ⇒ 每条都要重编译，比子集慢得多"
+      : "只扫打了 frontend 标签的护栏；全量请用 --full（发版/出包前跑一次）",
     cwd: ROOT,
     cmd: python ?? "python3",
     args: ["scripts/verify-guards.py", ...(full ? [] : ["--only", "frontend"])],
@@ -296,6 +304,50 @@ function isHeavyStep(s) {
 
 const active = fullGate ? steps : steps.filter((s) => !isHeavyStep(s));
 const heldOut = steps.length - active.length;
+
+/**
+ * 会不会拉起 Rust 工具链（`bash` 与 `python` 也算：`check-mobile.sh` 与 `verify-guards.py`
+ * 内部都在跑 cargo）。
+ */
+function mayTouchToolchain(s) {
+  return (
+    s.cmd === "cargo" ||
+    s.cmd === "rustup" ||
+    s.cmd === "bash" ||
+    s.cmd === "python3" ||
+    s.cmd === "python" ||
+    s.args.some((a) => typeof a === "string" && a.startsWith("cargo"))
+  );
+}
+
+/**
+ * 分层**自证**：快速层里不许出现"会被识别为碰工具链、却没归进重门禁层"的步骤。
+ *
+ * 为什么要有它：`isHeavyStep` 是按名字/命令认的启发式。将来有人加一条
+ * `{cmd:"bash", args:["scripts/x.sh"]}` 名叫「某项检查」——它内部可能跑 cargo，
+ * 却会因为名字没带关键词而**悄悄落进快速层**，表现是"快速层怎么突然三分钟了"，
+ * 没人会去查原因（本项目铁律：会让人想绕过的门禁等于没有门禁）。这里当场红并给出修法。
+ *
+ * ⚠️ 覆盖面与盲区（别把它当成"分层已被机器守住"）：
+ *   · 守得住：`cmd` 是 cargo / rustup / bash / python*，或 args 里出现 `cargo*` 却没归层；
+ *   · 守不住：经由 npm/npx 间接拉起工具链的步骤（如 `npm run tauri build`）—— 文本判据
+ *     看不出它会编译。这类只能靠命名约定，好在漏判的后果是"快速层变慢"（可见），
+ *     不是"门禁被跳过"（安全方向）；
+ *   · **本条自证尚未做过非空转验证**（想注入一条 bash 步骤证明它会红时，临时探针文件被
+ *     权限策略拦下）。要补的话：把它登记进 `verify-guards.py` 的 CASES，
+ *     注入 = 给某条 bash 步骤改名去掉关键词，要求 `verify` 快速层以退出码 1 失败。
+ */
+{
+  const leaked = !fullGate && active.filter((s) => mayTouchToolchain(s) && !isHeavyStep(s));
+  if (leaked && leaked.length > 0) {
+    console.error("✗ 门禁分层自检失败：以下步骤会碰 Rust 工具链，却没被归进重门禁层：");
+    for (const s of leaked) console.error(`   · ${s.name}（cmd=${s.cmd}）`);
+    console.error("  后果：`npm run verify` 从秒级退化成几分钟，且没人看得出为什么。");
+    console.error("  修法：让步骤名命中 isHeavyStep 的关键词之一（cargo / （Rust） /");
+    console.error("        移动端编译门禁 / 护栏非空转），或把 cmd 换成不碰工具链的入口。");
+    process.exit(1);
+  }
+}
 
 if (listOnly) {
   console.log(`npm run verify${fullGate ? " -- --full-gate" : ""} 会按顺序跑：`);
