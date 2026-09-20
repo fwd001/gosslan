@@ -300,6 +300,25 @@ CASES: list[Case] = [
         expect_fail_hint="file-progress",
         tags=["rust", "file", "progress"],
     ),
+    Case(
+        name="发送尝试必须装写出记账的回收守卫（否则失败重试退回入队口径）",
+        why="v4.22.37 的进度按 writer 记的 chunks 换算，而 stream_file 有十来处提前 return，"
+        "旧写法只在成功路径清一次 ⇒ 失败重试时读到上一轮残留的 chunks，进度又变回按入队算，"
+        "而且只在「发失败再重试」时才出现。v4.22.38 改成 WireLedger 的 Drop 统一回收。"
+        "单测只能证明 Drop 本身对，删掉这行装守卫的代码它照样绿 —— 所以必须机器钉接线",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "    let _wire_ledger = WireLedger {\n"
+            "        table: &state.file_wire_progress,\n"
+            "        transfer_id: transfer_id.to_string(),\n"
+            "    };",
+            "    let _ = &state.file_wire_progress;",
+        )],
+        cmd=cargo("test", "--lib", "file_send_progress_counts_wire_not_queue"),
+        cwd=TAURI,
+        expect_fail_hint="回收守卫",
+        tags=["rust", "file", "lifecycle"],
+    ),
     # ---------------- 本地新增护栏（2026-09-14）----------------
 
     Case(

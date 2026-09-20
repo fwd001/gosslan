@@ -10,6 +10,59 @@
 
 ## [Unreleased]
 
+## [4.22.38] - 2026-09-21
+
+### Fixed (写出记账随发送尝试一起回收 —— 上一轮进度修复的漏掉的那半)
+
+v4.22.37 把发送进度改成按 writer 记的 `chunks` 换算，但那张表的清理只写在
+`stream_file` 的**成功路径**末尾一处。而 `stream_file` 有十来处提前 `return Err(...)`
+（用户取消 / 链路已关闭 / 加密失败 / `?`），一条都没覆盖。
+
+后果不是内存，是**口径**：一次失败的发送会在 `file_wire_progress` 里留下上一次的 `chunks`，
+下一次重试同一文件（新 transfer_id 也一样会撞上"这张表从不回收"）时读到的计数比真实
+写出量大，于是进度又退回"按入队算"—— 正好把上一轮那条修复抹掉，而且现场只在
+"传失败 → 再重发"时才出现，最容易漏测。
+
+**改法**：`WireLedger` 一个持有表引用 + transfer_id 的 RAII 守卫，`Drop` 里删。
+`stream_file` 开头装一次，函数末尾那处手写清理删掉 —— 成功、取消、`?`、panic 展开
+走的是同一条回收路径，"什么时候删"这件事全仓只剩一处。
+
+顺手把 `clear_file_wire_progress(state, id)` 换成 `clear_file_wire_progress_in(table, id)`：
+守卫持有的是表而不是 `AppState`，这样回收语义可以脱离 `AppState` 单测（见下）。
+
+### Tests
+
+- `wire_ledger_is_reclaimed_on_every_exit_path`：本地造一张表，跑两次"发送尝试"，
+  一次正常返回、一次**提前 return**，两次都断言表已空。
+- 源守卫 `file_send_progress_counts_wire_not_queue` 加了两条断言：`stream_file` 里必须
+  装 `WireLedger {`，且**不许再出现第二处** `clear_file_wire_progress`。
+  这两条是必须的 —— 只测 Drop 本身的话，把 `stream_file` 里装守卫那行删掉，Drop 测试
+  照样全绿（它测的是辅助类型，不是接线）。为此另登记一条 `verify-guards` 用例，
+  注入方式就是"删掉装守卫那行"。
+
+### 边界（说清没做什么，已并入 #35）
+
+群发路径**没有**一起改。原因不是省事：`commands/group_file_dispatch.rs:66-71` 写明群发是
+"每个成员各 spawn 一个任务、**共用同一个 transfer_id**"（cancel 键为此专门带了 recipient），
+所以这张只按 transfer_id 记的表里的 `chunks` 是 N 个成员的**总和** —— 既不能拿来算单个成员
+的进度，也不能由任何一个成员先结束时清理。而且不能简单换成"按 writer 所在连接的 peer_id 记"：
+Routed 链路上 writer 的 peer 是中继而非目的地，两个走同一中继的成员还是会撞。
+要修得先定一个能从发送任务传到 writer 再传回的稳定身份（帧里带 per-recipient attempt id），
+那属于协议面，按 INV-P24 的加字段路子走。中继发文件（`RelayChunk`）同理且更远 ——
+它是多邻居 fire-and-forget，"写给了谁"不唯一，进度口径要由邻居确认来定义。
+
+### 验证
+
+- `npm run verify:full` **15 步全绿 / EXIT=0 / 207.7s**（clippy `-D warnings` 0 告警、
+  Rust 单测含 examples、Android aarch64 0 warning）。
+- 非空转：`verify-guards.py --only "发送"` → 3 条（本轮新增的"装守卫那行被删掉"注入、
+  上一轮的"进度改回入队"注入，外加一条同名匹配的旧用例）全部
+  「改坏即 FAIL、恢复即 PASS」，GUARDS_EXIT=0；跑完确认 `file.rs` 已还原、无注入残留。
+- macos 基线 592 → **593**（新增 `wire_ledger_is_reclaimed_on_every_exit_path`）。
+- 真机证据：本轮**没有新增需要界面的验证** —— 修的是失败重试路径的内存表回收，
+  外部不可见。要现场看的话需要"发一个大文件 → 中途取消 → 重发同一个文件"，
+  观察点应是第二次的进度从一开始就按链路爬，而不是直接跳到接近完成。
+
 ## [4.22.37] - 2026-09-21
 
 ### Fixed (发送进度不再按"入队"计数 —— 262MB 还在队列里就显示 100% 的假象)

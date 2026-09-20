@@ -1242,10 +1242,15 @@ pub(crate) fn file_wire_chunks_at(state: &AppState, transfer_id: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// 传输收尾时清掉进展记录（成功/失败都清），避免这张表随历史传输无限增长。
-pub(crate) fn clear_file_wire_progress(state: &AppState, transfer_id: &str) {
-    state
-        .file_wire_progress
+/// 传输收尾时清掉进展记录，避免这张表随历史传输无限增长。
+///
+/// 收在 `file.rs::WireLedger` 的 `Drop` 里（成功、取消、链路失败、panic 展开都走同一处）；
+/// 这里只留"怎么删"，不留第二套"什么时候删"。
+pub(crate) fn clear_file_wire_progress_in(
+    table: &std::sync::Mutex<HashMap<String, crate::state::FileWireProgress>>,
+    transfer_id: &str,
+) {
+    table
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(transfer_id);

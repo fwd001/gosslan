@@ -20,7 +20,7 @@ use tokio::time::Duration;
 use crate::crypto;
 use crate::db;
 use crate::network::transport::{
-    clear_file_wire_progress, file_wire_chunks_at, file_wire_progress_at, resolve_member_x25519,
+    clear_file_wire_progress_in, file_wire_chunks_at, file_wire_progress_at, resolve_member_x25519,
     send_on_link, try_send,
 };
 use crate::protocol::{Message, ShareEntry, FILE_CHUNK};
@@ -712,6 +712,25 @@ pub(crate) fn stall_tick(
     }
 }
 
+/// 一次发送尝试的"写出记账"，离开作用域就回收（v4.22.38）。
+///
+/// 为什么用 `Drop` 而不是在函数末尾调一次清理：`stream_file` 有十来处提前
+/// `return Err(...)`（用户取消 / 链路已关闭 / 加密失败 / 没建上连接 / `?`），
+/// 手写清理注定漏掉几个。漏掉的后果不是内存问题那么大，而是**口径**问题：
+/// 重试时读到上一次尝试残留的 `chunks`，进度会悄悄退回"按入队算"（v4.22.37 那条
+/// 修复等于白做，而且现场只在"发失败又重试"时才出现）。`Drop` 覆盖 `?`、提前
+/// return 与 panic 展开，只此一处，所以也不会有第二份"什么时候删"。
+struct WireLedger<'a> {
+    table: &'a std::sync::Mutex<std::collections::HashMap<String, crate::state::FileWireProgress>>,
+    transfer_id: String,
+}
+
+impl Drop for WireLedger<'_> {
+    fn drop(&mut self) {
+        clear_file_wire_progress_in(self.table, &self.transfer_id);
+    }
+}
+
 /// 发送进度换算：**已真的写出链路的分块**折算成明文字节，而不是"已入队"的字节。
 ///
 /// 为什么要单独一个函数（v4.22.37）：`send_on_link` 返回成功只代表这一帧进了那条链路的
@@ -748,6 +767,12 @@ async fn stream_file(
     cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), SendFileError> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    // 本次尝试的写出记账，离开作用域（含所有提前 return）自动回收。见 `WireLedger`。
+    let _wire_ledger = WireLedger {
+        table: &state.file_wire_progress,
+        transfer_id: transfer_id.to_string(),
+    };
 
     let mut f = tokio::fs::File::open(&path)
         .await
@@ -933,8 +958,7 @@ async fn stream_file(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(transfer_id);
-    // 进展记录用完即清（成功/失败都清），避免这张表随历史传输无限增长。
-    clear_file_wire_progress(state, transfer_id);
+    // 进展记录由 `_wire_ledger` 在离开作用域时回收（成功与所有失败路径同一处）。
     if !completed {
         return Err(SendFileError::retryable("接收方未确认文件完成"));
     }
@@ -1888,8 +1912,49 @@ pub fn human_size(bytes: u64) -> String {
 mod tests {
     use super::{
         chunk_seq_decision, classify_file_subtype, derive_file_name, safe_file_name,
-        safe_transfer_id, unique_path, wire_progress_bytes, ChunkSeq,
+        safe_transfer_id, unique_path, wire_progress_bytes, ChunkSeq, WireLedger,
     };
+
+    /// 写出记账必须**随发送尝试一起回收**（v4.22.38）。
+    ///
+    /// 重点是"提前 return 那条路"：`stream_file` 有十来处早退（取消/链路关闭/加密失败/`?`），
+    /// 旧写法只在成功路径清一次 ⇒ 失败后重试会读到上一次的 `chunks`，进度悄悄退回
+    /// "按入队算"，也就是把 v4.22.37 那条修复抹掉。这里用本地表复现同一个 Drop 语义
+    /// （造不出也不需要造 AppState —— 要验的就是"离开作用域就没残留"）。
+    #[test]
+    fn wire_ledger_is_reclaimed_on_every_exit_path() {
+        use crate::state::FileWireProgress;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+
+        let table: Mutex<HashMap<String, FileWireProgress>> = Mutex::new(HashMap::new());
+        let attempt = |early: bool| -> Result<(), ()> {
+            let _ledger = WireLedger {
+                table: &table,
+                transfer_id: "t1".to_string(),
+            };
+            // 模拟 writer 记账：这一片真的写出去了
+            table.lock().unwrap().insert(
+                "t1".to_string(),
+                FileWireProgress {
+                    at_ms: 1,
+                    chunks: 9,
+                },
+            );
+            if early {
+                return Err(());
+            }
+            Ok(())
+        };
+
+        assert!(attempt(false).is_ok());
+        assert!(table.lock().unwrap().is_empty(), "正常结束必须回收这条记账");
+        assert!(attempt(true).is_err());
+        assert!(
+            table.lock().unwrap().is_empty(),
+            "提前 return 也必须回收 —— 旧写法漏的就是这一条"
+        );
+    }
 
     /// 发送进度必须按"**已写出链路**"算，不按入队算（v4.22.37）。
     ///

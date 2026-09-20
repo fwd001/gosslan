@@ -2306,6 +2306,17 @@ mod tests {
             !body.contains("received: sent"),
             "file-progress 不许再直接发入队量（那就是 100% 假象）"
         );
+        // ④ 记账的生命周期：装了回收守卫，且**没有第二处手写清理**。
+        //    只测 `WireLedger` 的 Drop 语义不够 —— 把 stream_file 里那行装守卫的代码删掉，
+        //    Drop 测试照样全绿（它测的是辅助类型，不是接线）。
+        assert!(
+            body.contains("WireLedger {"),
+            "stream_file 必须装写出记账的回收守卫，否则失败路径的残留会让重试退回入队口径"
+        );
+        assert!(
+            !body.contains("clear_file_wire_progress"),
+            "清理只许有 WireLedger::drop 一处，第二处迟早与它口径不同"
+        );
 
         let transport = crate::network::transport_src_for_guards();
         let mark = rust_fn_body(&transport, "pub(crate) fn mark_file_wire_progress(");

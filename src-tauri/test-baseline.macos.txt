@@ -376,6 +376,7 @@ network::file::tests::sha256_file_hex_matches_in_memory_hash
 network::file::tests::stall_verdict_boundaries
 network::file::tests::tampered_chunk_fails_to_decrypt
 network::file::tests::unique_path_never_returns_existing_path
+network::file::tests::wire_ledger_is_reclaimed_on_every_exit_path
 network::tests::discovery_failure_rolls_back_started_transport
 network::tests::transport_bind_failure_never_starts_discovery
 network::tests::transport_success_starts_discovery_and_merges_handles
