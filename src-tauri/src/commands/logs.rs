@@ -117,15 +117,28 @@ fn install_hide_on_close(win: &tauri::WebviewWindow) {
 /// - `disable_shadow`：系统阴影是**矩形**，与窗口自身的圆角冲突（会露出四个直角）。
 ///
 /// ⚠️ **不要**对外链窗口（`WINDOW_LINK`）调用：它保留系统标题栏，去掉阴影会是可见的退化。
+///
+/// ## 为什么是"把这几行投回主线程"而不是"把整个命令搬回主线程"
+///
+/// AppKit 调用必须在主线程；但**命令本身不能跑在主线程** —— 同步命令会在 wry 的 IPC 回调里
+/// 内联执行，而 Windows 上建 WebView2 会在**调用线程里泵消息**（见 [`ensure_aux_window`] 的
+/// 详细说明）⇒ 与正在处理的 IPC 重入 ⇒ 主线程永久挂死（用户 2026-09-20 真机：Win 端点「设置」
+/// 整个界面无响应，只能杀进程）。两边的约束只能这样同时满足。
+///
+/// `run_on_main_thread` 只入队不等待（投的是 `Message::Task`），而窗口创建（`CreateWindow`）
+/// 走同一条队列**且先入队** ⇒ 这几行一定发生在窗口建出来之后（`ns_window()` 不会拿到空指针）。
 #[cfg(desktop)]
-fn decorate_aux_window(win: &tauri::WebviewWindow) {
+fn decorate_aux_window(win: &tauri::WebviewWindow, app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
-        let _ = win.set_closable(true);
-        crate::macos_window::disable_shadow(win);
+        let w = win.clone();
+        let _ = app.run_on_main_thread(move || {
+            let _ = w.set_closable(true);
+            crate::macos_window::disable_shadow(&w);
+        });
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = win;
+    let _ = (win, app);
 }
 
 /// 打开（或聚焦）一个独立窗口：**单例 + 串行创建**。
@@ -140,6 +153,20 @@ fn decorate_aux_window(win: &tauri::WebviewWindow) {
 /// [`AUX_LINK_RESIDENT`]（复用同一窗口导航）；设置/日志/群任务均销毁（每次开窗拿新数据）。
 ///
 /// 返回 `(窗口, 是否本次新建)`：外链窗口需要在"已存在"这条路径上 `navigate()` 到新网址。
+///
+/// ## ⚠️ 调用方**必须**是 async 命令（Windows 上否则永久挂死主线程）
+///
+/// 同步命令在 Tauri 里是**在 wry 的 IPC 回调里、主线程内联执行**的。而窗口创建在 Windows 上会
+/// 走 WebView2：`CreateCoreWebView2Controller` + `wait_with_pump`，**在调用线程里泵消息**
+/// —— 主线程一边建窗一边泵消息，就会重入正在处理的 IPC 回调：
+/// 本函数持有 `AUX_WINDOW_CREATE_LOCK`（std Mutex，**不可重入**），重入后第二次 `lock()`
+/// 由同一线程发起 ⇒ 永久自锁，界面整体无响应、只能杀进程（用户 2026-09-20 Win 真机实证）。
+/// `tauri-runtime-wry` 源码里那行 "must be called from a separate thread, otherwise the channel
+/// will introduce a deadlock" 说的就是这件事。
+///
+/// 工作线程发起则安全：`build()` 只是把创建**入队**到事件循环并立刻返回（`proxy.send_event`），
+/// 主线程不在任何 IPC 回调里 ⇒ 没有可重入的现场。macOS 需要的"AppKit 必须在主线程"由
+/// [`decorate_aux_window`] 单独投回主线程。
 #[cfg(desktop)]
 fn ensure_aux_window<F>(
     app: &tauri::AppHandle,
@@ -320,13 +347,13 @@ fn recenter_aux_window(win: &tauri::WebviewWindow, geo: &AuxWindowGeometry) {
 /// （用户 2026-09-17：侧边栏收进二级菜单后，这两个窗口改"用完即关"），每次打开都是新数据。
 /// 窗口标题由 `logs.html` 的 `data-title-*` + 前端按语言设置 `document.title`
 /// （Tauri 会把 document title 同步到窗口标题），Rust 侧不再维护第二份标题文案。
-/// macOS 必须在**主线程**调 AppKit（`ns_window().setHasShadow` 等）。async 命令跑在 Tokio worker
-/// 线程上，会 EXC_BAD_ACCESS。改成同步命令（Tauri 在 wry 的主线程/IPC 回调里内联执行）。
-/// 原来的 async 理由是「窗口创建耗时会卡住主线程」——但 `WebviewWindowBuilder::build()` 本身
-/// 内部就会把创建分派到主线程、同步等返回，所以 async/同步**对窗口创建耗时没影响**；真正的阻塞
-/// 风险是 db 锁，所以 `aux_window_background` 改成了 try_lock（见下方）。
+/// ⚠️ 这个命令**必须**是 `#[tauri::command(async)]`——理由见 [`ensure_aux_window`]：同步命令在
+/// wry 的 IPC 回调里内联跑主线程，而 Windows 上建 WebView2 会**在调用线程里泵消息**，
+/// 与正在处理的 IPC 重入后会永久挂死主线程（2026-09-20 Win 真机：点「设置」整个界面无响应，
+/// 只能杀进程）。macOS 那几行 AppKit 调用改由 [`decorate_aux_window`] 单独投回主线程，
+/// 所以这里不再需要"整个命令搬回主线程"。
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_log_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
@@ -375,7 +402,7 @@ pub fn open_log_window(
             .minimizable(true)
             .closable(true)
             .build()?;
-            decorate_aux_window(&win);
+            decorate_aux_window(&win, &build_app);
             if let Some(g) = geo {
                 apply_aux_geometry(&win, g);
             }
@@ -400,7 +427,7 @@ pub fn open_log_window(_app: tauri::AppHandle) -> Result<(), String> {
 /// 由前端按窗口自己的文档渲染设置页。用户 2026-09-12 反馈：「PC 端的设置页面可以按照这种
 /// 布局，弹一个单独的窗口」——参考图是「左侧窄导航 + 右侧内容」的设置窗口，不是盖在聊天上的弹窗。
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_settings_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
@@ -436,7 +463,7 @@ pub fn open_settings_window(
             .minimizable(true)
             .closable(true)
             .build()?;
-            decorate_aux_window(&win);
+            decorate_aux_window(&win, &build_app);
             if let Some(g) = geo {
                 apply_aux_geometry(&win, g);
             }
@@ -454,7 +481,7 @@ pub fn open_settings_window(
 /// 窗口加载 `todos.html`（自己的文档与入口），并从**自己的 label** 解析群 ID
 /// （见 `src/utils/auxWindowLabels.ts`）—— 所以不做"窗口内切群"，一个窗口只服务一个群。
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_group_todos_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
@@ -506,7 +533,7 @@ pub fn open_group_todos_window(
         .minimizable(true)
         .closable(true)
         .build()?;
-        decorate_aux_window(&win);
+        decorate_aux_window(&win, &build_app);
         if let Some(g) = geo {
             apply_aux_geometry(&win, g);
         }
@@ -537,7 +564,7 @@ pub fn open_group_todos_window(_app: tauri::AppHandle, _group_id: String) -> Res
 /// 远端页面，我们自己的文档不在这里，套自绘标题栏只能改用 iframe 包一层 —— 而大量站点有
 /// `X-Frame-Options`，会直接白屏。关闭即隐藏（常驻），再点是瞬时的。
 #[cfg(desktop)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_link_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,

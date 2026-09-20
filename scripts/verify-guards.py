@@ -211,6 +211,25 @@ CASES: list[Case] = [
         expect_fail_hint="get_settings",
         tags=["rust", "perf"],
     ),
+    Case(
+        name="开窗命令必须留在工作线程（Windows 同步建 WebView2 = 永久卡死）",
+        why="v4.22.2 为修 macOS 的 AppKit 线程问题，把 open_*_window 改成同步命令 —— "
+        "Win 端点「设置」立刻整个界面无响应、只能杀进程（用户 2026-09-20 真机）。"
+        "机制：同步命令在 wry 的 IPC 回调里**内联跑主线程**，而 Windows 建 WebView2 会在"
+        "调用线程里泵消息（tauri-runtime-wry：must be called from a separate thread,"
+        " otherwise the channel will introduce a deadlock）⇒ 与正在处理的 IPC 重入 ⇒ "
+        "AUX_WINDOW_CREATE_LOCK 同线程二次 lock（std Mutex 不可重入）= 永久自锁。"
+        "这条用例证明「把开窗命令改回同步」一定会被护栏拦下",
+        file=TAURI / "src" / "commands" / "logs.rs",
+        injections=[(
+            "#[tauri::command(async)]\npub fn open_settings_window(",
+            "#[tauri::command]\npub fn open_settings_window(",
+        )],
+        cmd=cargo("test", "--lib", "blocking_commands_run_off_the_main_thread"),
+        cwd=TAURI,
+        expect_fail_hint="创建窗口",
+        tags=["rust", "window", "deadlock"],
+    ),
     # ---------------- 本地新增护栏（2026-09-14）----------------
 
     Case(

@@ -673,15 +673,12 @@ mod tests {
     #[test]
     fn blocking_commands_run_off_the_main_thread() {
         let src = all_commands_src();
-        // 例外必须写在这里并交代理由：
-        // - open_*_window：辅助窗口命令，macOS 必须在**主线程**调 AppKit（ns_window.setHasShadow 等），
-        //   async 会 EXC_BAD_ACCESS；函数体里的 db 锁已改成 try_lock（非阻塞），主线程安全。
-        const ALLOWED: [&str; 4] = [
-            "open_log_window",
-            "open_settings_window",
-            "open_group_todos_window",
-            "open_link_window",
-        ];
+        // ⚠️ 例外清单已清空（2026-09-20）：v4.22.2 曾把 4 个开窗命令登记成例外（理由是
+        // "macOS 必须主线程调 AppKit"），结果在 Windows 上换来了更严重的故障 ——
+        // 同步命令在 IPC 回调里内联跑主线程，而 Windows 建 WebView2 会在调用线程里泵消息
+        // ⇒ 与 IPC 重入 ⇒ 持锁自锁 ⇒ 整个界面永久无响应。macOS 的约束改由
+        // `commands::logs::decorate_aux_window` 把 AppKit 调用单独投回主线程解决，
+        // 不再需要任何例外。
 
         // 重资源标记 → 人类可读的原因
         let markers: [(&str, &str); 9] = [
@@ -696,9 +693,13 @@ mod tests {
             ("block_on", "阻塞等待异步任务"),
         ];
 
+        // 建窗命令单独判：`open_*_window` 的函数体里没有上面那些重资源标记（db 访问都在
+        // 已 try_lock 的辅助函数里），光靠 markers 抓不到它 —— 而它恰恰是最不能同步的一条。
+        let window_markers = ["ensure_aux_window(", "WebviewWindowBuilder::new("];
+
         let mut offenders: Vec<String> = Vec::new();
         for (name, is_async, body) in command_bodies(src) {
-            if is_async || ALLOWED.contains(&name.as_str()) {
+            if is_async {
                 continue;
             }
             let hit: Vec<&str> = markers
@@ -708,6 +709,12 @@ mod tests {
                 .collect();
             if !hit.is_empty() {
                 offenders.push(format!("  {name}: {}", hit.join("、")));
+            }
+            if window_markers.iter().any(|m| body.contains(m)) {
+                offenders.push(format!(
+                    "  {name}: 创建窗口 —— Windows 上主线程内联建 WebView2 会泵消息、\
+                     与 IPC 回调重入 ⇒ 永久挂死（见 commands/logs.rs 的 ensure_aux_window）"
+                ));
             }
         }
         assert!(

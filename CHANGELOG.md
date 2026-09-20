@@ -10,6 +10,41 @@
 
 ## [Unreleased]
 
+## [4.22.30] - 2026-09-20
+
+### Fixed (Win 端点「设置」整个界面卡死、只能杀进程 — 开窗命令回到工作线程)
+
+**现象**（用户 2026-09-20 真机）：Windows 上点「设置」→ 整个窗口无响应，一直不恢复，只能杀进程。
+
+**根因**：`v4.22.2` 为修 macOS 的 `EXC_BAD_ACCESS`（AppKit 必须在主线程）把 4 个开窗命令从
+`async` 改成了**同步**。而同步命令在 Tauri 里是**在 wry 的 IPC 回调里内联跑主线程**的；
+Windows 上建 WebView2 会在**调用线程里泵消息**（`tauri-runtime-wry` 源码原话：
+"must be called from a separate thread, otherwise the channel will introduce a deadlock"）
+⇒ 主线程一边建窗一边泵消息 ⇒ 重入正在处理的 IPC ⇒ 第二次进 `ensure_aux_window` 时
+`AUX_WINDOW_CREATE_LOCK`（`std::sync::Mutex`，**不可重入**）由同一线程二次 `lock()` ⇒
+**永久自锁**，界面整体无响应。macOS 建窗不泵消息，所以只有 Windows 中招 —— 这也解释了
+为什么当初那个改法在 macOS 上"验证通过"却埋了雷。
+
+**改动**（回到工作线程 + 只把 AppKit 那几行投回主线程，两个平台的约束同时满足）：
+- 4 个 `open_*_window` 命令恢复 `#[tauri::command(async)]`：`build()` 只把创建**入队**到事件循环
+  并立刻返回（`proxy.send_event`），主线程不在任何 IPC 回调里 ⇒ 没有可重入的现场。
+- 新增 `decorate_aux_window(win, app)`：macOS 的 `set_closable` / `disable_shadow` 改由
+  `app.run_on_main_thread(...)` **只入队不等待**投回主线程；窗口创建（`CreateWindow`）与它同队列
+  且先入队 ⇒ AppKit 调用一定发生在窗口建出来之后。
+- 修掉那条**把 bug 引进来的注释**：原文写"`WebviewWindowBuilder::build()` 内部会把创建分派到
+  主线程、同步等返回，所以 async/同步对耗时没影响"—— 源码里 `send_user_message` 在工作线程上
+  是 `proxy.send_event`（**投完就返回，不等待**），"同步等返回"只发生在 **getter**
+  （`rx.recv()`）。注释已改成实测事实 + 后果，免得下一个人再照它改回去。
+- 护栏收口：`blocking_commands_run_off_the_main_thread` 的 4 条 `ALLOWED` 例外**全部撤掉**，
+  并新增一条独立判据「函数体里出现 `ensure_aux_window(` / `WebviewWindowBuilder::new(` 的命令
+  必须是 async」—— 光靠原有重资源标记抓不到它（开窗命令体里没有 `db::` 这类字样，db 访问都在
+  已 `try_lock` 的辅助函数里），而它恰恰最不能同步。`verify-guards.py` 新用例
+  「开窗命令必须留在工作线程」实跑：改回同步即 FAIL（提示"创建窗口"）、恢复即 PASS。
+
+**验证**：`blocking_commands_run_off_the_main_thread` 通过；`npm run verify` 全 15 步见下；
+macOS 侧需要用户本机冒烟一次（`open_log_window` / `open_settings_window` 各点一次，
+确认窗口正常出现、无阴影、⌘W 能关）—— 本环境跑不了 GUI（见 `AI_RULES` 的真机验证约定）。
+
 ## [4.22.29] - 2026-09-20
 
 ### Chores (Rust 用例基线补齐 78 条 — 门禁从"只盯老名字"变成真兜底)
