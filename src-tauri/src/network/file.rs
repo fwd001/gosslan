@@ -224,9 +224,23 @@ pub async fn send_file_from_path_at(
         .map_err(SendFileError::permanent)?;
     // 发送行的 sha256 在建记录时是空的（不能让气泡等一次 O(体积) 扫描），这里用真正用于
     // 校验的那份补上 —— 同一值、幂等，重试的后续尝试进来也是 no-op。
-    {
+    let msg_id = format!("file-{transfer_id}");
+    let backfilled = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::fill_message_sha256(&dbc, &format!("file-{transfer_id}"), &file_sha256).ok();
+        db::fill_message_sha256(&dbc, &msg_id, &file_sha256).unwrap_or(false)
+    };
+    if backfilled {
+        // 改了库还必须让前端也看到：只写库时内存里那条记录仍是 cid 空的版本，
+        // 用户在同一会话里把刚发出去的文件转成合并卡片时，卡片按 `sha256`(=cid) 带出去，
+        // 对端就再也拉不回这份内容（v4.22.16 引入的回归）。
+        // 自记录不会触发通知（`maybeNotify` 对 sender_id==自己直接 return）。
+        let rec = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_message_record(&dbc, &msg_id)
+        };
+        if let Some(rec) = rec {
+            let _ = state.app.emit("message-received", &rec);
+        }
     }
     let receiver_pubkey = resolve_member_x25519(state, peer_id);
     let sealed_key_b64 = (|| {

@@ -1299,6 +1299,11 @@ mod tests {
             body.contains("fill_message_sha256"),
             "投递任务算出的 cid 必须回填发送行，否则本地合并卡片按 cid 找不回字节"
         );
+        assert!(
+            body.contains("backfilled") && body.contains("emit(\"message-received\", &rec)"),
+            "回填改了库就必须通知前端：只写库时内存里那条记录仍是 cid 空的版本，\
+             同一会话把刚发的文件转成合并卡片会丢掉对端的拉取钥匙（v4.22.16 的回归）"
+        );
     }
 
     /// **接收端判死必须把否定确认送回，而且发送端要能在分片循环里立刻看到**。

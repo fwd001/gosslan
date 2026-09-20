@@ -323,7 +323,10 @@ fn fill_message_sha256_backfills_once_and_keeps_other_fields() {
     )
     .unwrap();
 
-    fill_message_sha256(&conn, "file-t1", "aa11").unwrap();
+    assert!(
+        fill_message_sha256(&conn, "file-t1", "aa11").unwrap(),
+        "第一次回填必须报告「真的改了」—— 调用方据此决定是否通知前端"
+    );
     let content: String = conn
         .query_row(
             "SELECT content FROM messages WHERE msg_id = 'file-t1'",
@@ -340,16 +343,22 @@ fn fill_message_sha256_backfills_once_and_keeps_other_fields() {
         "只补一个字段，同载荷的其余键不得丢：{content}"
     );
 
-    // 同值再进来（= outbox 重试的第二次尝试）不得再写一次
-    fill_message_sha256(&conn, "file-t1", "aa11").unwrap();
+    // 同值再进来（= outbox 重试的第二次尝试）不得再写一次，也不得报"改了"
+    assert!(
+        !fill_message_sha256(&conn, "file-t1", "aa11").unwrap(),
+        "同值回填必须是 no-op"
+    );
     assert_eq!(
         count(&conn, "SELECT n FROM write_log"),
         1,
-        "同值回填必须是 no-op"
+        "同值回填不得产生第二次写入"
     );
 
     // 空值不覆盖已有值；不存在的 msg_id 静默通过（内容补发复用同一个投递函数）
-    fill_message_sha256(&conn, "file-t1", "").unwrap();
+    assert!(
+        !fill_message_sha256(&conn, "file-t1", "").unwrap(),
+        "空 sha256 必须直接跳过"
+    );
     let after: String = conn
         .query_row(
             "SELECT content FROM messages WHERE msg_id = 'file-t1'",
@@ -361,7 +370,10 @@ fn fill_message_sha256_backfills_once_and_keeps_other_fields() {
         after.contains("\"sha256\":\"aa11\""),
         "空值不得擦掉已有 cid"
     );
-    fill_message_sha256(&conn, "file-missing", "bb22").unwrap();
+    assert!(
+        !fill_message_sha256(&conn, "file-missing", "bb22").unwrap(),
+        "缺行必须返回 false（没有东西被补，也就没必要通知前端）"
+    );
     assert_eq!(
         count(
             &conn,

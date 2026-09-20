@@ -10,6 +10,27 @@
 
 ## [Unreleased]
 
+## [4.22.22] - 2026-09-20
+
+### Fixed (cid 回填后必须通知前端 — 修 v4.22.16 引入的合并卡片丢钥匙)
+
+v4.22.16 把整文件哈希从"建发送记录之前"挪到投递任务里算完再回填，气泡不再等 O(体积)
+扫描 —— 但回填**只写库、不 emit**，于是内存里那条记录一直是 `sha256:""` 的版本，直到下次
+重查会话才从 DB 拿回来。后果是具体的一条功能回归：
+
+用户在同一会话里把刚发出去的文件勾选转成合并卡片时，卡片载荷由**内存里的记录**经
+`mediaSafeContent` 生成（`ChatWindow.vue` 的 forwardSelection → `buildMergePayload`），
+`mediaCid` 取到空串 ⇒ 卡片只渲染成一行占位文字，且 `requestContentByCid` 永远不会发出
+⇒ **对端再也拉不回这份内容**。更早的窗口：文件排着等一个离线好友时，投递任务根本没跑，
+cid 会**无限期**为空（不只是"算哈希那几秒"）。
+
+- `db::fill_message_sha256` 改为返回 `Result<bool>`（这次到底改没改行），四种情形分别可测：
+  真改了 / 同值幂等 / 空值跳过 / 缺行不动。
+- 投递任务在真的回填后取回该行并 `emit("message-received", &rec)`，让 store 走既有的
+  upsert 路径把 cid 补进内存。自记录不会打扰用户：`maybeNotify` 对 `sender_id == 自己`
+  直接 return；`applyIncoming` 的状态仍是"只前进不回退"。
+- 守卫 `no_whole_file_scan_before_the_file_bubble` 加一条断言：回填改了库就必须通知前端。
+
 ## [4.22.21] - 2026-09-20
 
 ### Fixed (接收端分片判死立刻回否定确认 — 不再把整份文件灌进已死的传输)

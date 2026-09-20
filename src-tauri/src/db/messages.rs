@@ -199,12 +199,14 @@ pub fn update_message_content(
 /// 回填文件消息 `content` 里的单个 `sha256` 字段（发送方建行时还算不起，见
 /// `commands/files.rs::build_file_message`：整文件哈希是 O(体积) 的，不能挡在气泡前面）。
 ///
+/// 返回 `true` = 这次真的改了行；`false` = 幂等跳过 / 缺行 / 载荷不是 JSON。
+/// 调用方据此决定要不要通知前端（只改库不 emit 的话，内存里那条记录仍是 cid 空的版本）。
 /// 只做读-改-写一次，且**幂等**：值已经是目标值就不写（投递任务每次尝试都会进来一次）。
-/// `msg_id` 不存在时静默返回 Ok —— 内容补发（ContentRequest）复用同一个投递函数，
+/// `msg_id` 不存在时静默返回 `false` —— 内容补发（ContentRequest）复用同一个投递函数，
 /// 那条路径的 msg_id 根本不是 `file-*`，此时没有任何东西要补。
-pub fn fill_message_sha256(conn: &Connection, msg_id: &str, sha256: &str) -> Result<()> {
+pub fn fill_message_sha256(conn: &Connection, msg_id: &str, sha256: &str) -> Result<bool> {
     if sha256.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
     let current: Option<String> = conn
         .query_row(
@@ -214,20 +216,20 @@ pub fn fill_message_sha256(conn: &Connection, msg_id: &str, sha256: &str) -> Res
         )
         .ok();
     let Some(content) = current else {
-        return Ok(());
+        return Ok(false);
     };
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return Ok(()); // 非 JSON 载荷（理论上不会出现在 file 消息上）：不动它
+        return Ok(false); // 非 JSON 载荷（理论上不会出现在 file 消息上）：不动它
     };
     if value.get("sha256").and_then(|v| v.as_str()) == Some(sha256) {
-        return Ok(());
+        return Ok(false);
     }
     value["sha256"] = serde_json::Value::String(sha256.to_string());
     conn.execute(
         "UPDATE messages SET content = ?2 WHERE msg_id = ?1",
         params![msg_id, value.to_string()],
     )?;
-    Ok(())
+    Ok(true)
 }
 
 /// 搜索消息内容，返回匹配的会话 ID 列表（去重，按最新匹配排序）。
