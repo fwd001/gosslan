@@ -248,19 +248,33 @@ git push origin main && git push origin v1.0.1
 
 ## 🧪 测试
 
+### 统一验证入口（先看这个）
+
+```bash
+npm run verify        # 快速层：结构门禁 + 前端断言 + vue-tsc 类型检查，不碰 cargo（秒级）
+npm run verify:full   # 重门禁层：cargo fmt/clippy/test、Rust 清单、护栏非空转、Android 交叉编译
+```
+
+**默认跑快速层就够日常用**，但它**不等于"编得过"** —— 结束时脚本会列出没跑哪几项。
+改过 Rust 代码 / `Cargo.*` / 构建配置，提交前必须 `npm run verify:full`；
+发版或出包前再加 `-- --full`（123 条护栏逐条改坏验证）。
+CI（`verify.yml`）在任意分支每次 push 全跑，是这套分层的兜底。判据细节见 `AI_RULES.md` §37.1。
+
 ### 前端（node 内置测试运行器，零额外依赖，需 Node ≥ 22）
 
 ```bash
 npm test
 ```
 
-覆盖核心纯函数（共 22 个用例）：Gossip 消息去重合并、会话未读统计与排序、主题色派生、文件大小格式化、类名合成。
+覆盖核心纯函数与源码守卫（用例数会涨，以命令输出为准）：Gossip 消息去重合并、会话未读统计与排序、主题色派生、文件大小格式化、类名合成。
 
 ### 后端（Rust）
 
 ```bash
-cd src-tauri && cargo test
+cd src-tauri && cargo test --features bluetooth
 ```
+
+`--features bluetooth` **不能省**：漏了会有十余条 BLE 用例连同被测代码一起不编译，而测试仍然全绿。
 
 覆盖：E2EE 加解密（X25519 密钥交换 / Ed25519 签名 / ChaCha20-Poly1305）、Gossip 去重与信封签名校验、文件切片乱序重组、SQLite 存储层（好友/消息/离线队列/群组/**删除会话**）、协议 JSON 往返与 TCP 分帧。
 

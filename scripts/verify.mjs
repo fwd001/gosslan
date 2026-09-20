@@ -28,12 +28,31 @@
  * 这个脚本把顺序固定下来（顺序本身有讲究，见下面每一步的注释），并让
  * CI、发布脚本、本地开发**跑同一套**。
  *
- * ## 用法
+ * ## 用法（2026-09-20 起分两层）
  *
- *     npm run verify              # 默认：全部步骤，护栏只跑前端子集（约 1~2 分钟）
- *     npm run verify -- --full    # 再加完整护栏（Rust 用例要重编译，10 分钟以上）
- *     npm run verify -- --no-guards  # 跳过护栏（不推荐；仅用于护栏工具缺失时的临时绕过）
- *     npm run verify -- --list    # 只列出会跑哪些步骤
+ *     npm run verify              # 快速层：不碰 cargo，秒级~20s（日常迭代就跑这个）
+ *     npm run verify:full         # 全量层：加 cargo fmt/clippy/test + Rust 清单 + 护栏扫描 + Android
+ *     npm run verify:full -- --full   # 再加**完整**护栏（123 条逐条改坏验证，10 分钟以上）
+ *     npm run verify -- --no-guards   # 跳过护栏扫描（不推荐；仅护栏工具缺失时临时绕过）
+ *     npm run verify -- --list    # 只列出会跑哪些步骤（加 -- --full-gate 看全量层）
+ *
+ * ### 为什么分两层（实测数据，不是猜的）
+ *
+ * 一次全量 verify = **412s**，但里面**只有 5.1s 真的在执行测试**：
+ *   · 177s 冷编译测试产物（583 条用例本身只跑 5s）
+ *   · 43s clippy 把同一个 crate 按 check profile **再编一遍**（与 test profile 不共享产物）
+ *   · 168s 护栏非空转扫描（每条改坏→跑→还原，顺带把源文件 mtime 弄脏 ⇒ 下一轮又多编 60s）
+ *   · 5.1s 真的跑测试
+ * 也就是说慢的从来不是"检查"，是"编译"——**改一行注释不该付 400s 的编译税**。
+ *
+ * ### 为什么这样拆仍然安全（关键前提，别当成"检查变松了"）
+ *
+ *   1. CI（`verify.yml`）在**任意分支每次 push** 跑全套：前端 job + Rust job（mac/win 矩阵）
+ *      + Android job ⇒ 只要推上去，编译一定被验证；
+ *   2. 快速层结束时**显式列出**它没跑哪些重门禁（见 `--full-gate` 与汇总段），
+ *      绿色只代表"这一层过了"，不代表"编得过" —— 静默省略是本项目最忌讳的事；
+ *   3. 该跑的时机写进了 `AI_RULES.md`：**动过 Rust/依赖/构建配置 ⇒ 提交前必须
+ *      `npm run verify:full`**；纯文档、纯前端文案/样式 ⇒ 快速层 + CI 兜底。
  *
  * ## 顺序为什么是这样（不要随手调换）
  *
@@ -102,8 +121,23 @@ const argv = process.argv.slice(2);
 const full = argv.includes("--full");
 const noGuards = argv.includes("--no-guards");
 const listOnly = argv.includes("--list");
+/**
+ * 是否跑「重门禁层」（cargo 编译 / 护栏非空转 / Android 交叉编译）。
+ *
+ * **默认不跑**（2026-09-20 分层）。理由不是"省时间"这么轻：一次全量 verify 实测 412s，
+ * 而其中**只有 5.1s 真的在执行测试** —— 见文件头「为什么分两层」的实测拆分。
+ *
+ * 安全网（分层成立的前提，不是省略检查）：
+ * - `.github/workflows/verify.yml` 在**任意分支每次 push** 跑全套
+ *   （前端 job + Rust job × mac/win 矩阵 + Android job）⇒ 推上去必然被编译检验；
+ * - 快速层结束时**显式列出**没跑哪些重门禁（绝不静默），别把本地绿当成"编得过"；
+ * - 动过 Rust/依赖/构建配置 ⇒ 提交前跑 `npm run verify:full`（口径写进 AI_RULES.md）。
+ */
+const fullGate = argv.includes("--full-gate");
 
-const python = noGuards ? null : findPython();
+// ⚠️ 快速层不跑护栏 ⇒ 连"找 python"都不做：否则没装 python 的机器上，一个与护栏无关的
+// 快速检查会因为找不到解释器直接红（分层时很容易顺手漏掉这一条）。
+const python = noGuards || !fullGate ? null : findPython();
 
 /** @type {{name: string, cwd: string, cmd: string, args: string[], why: string}[]} */
 const steps = [
@@ -164,8 +198,10 @@ const steps = [
     args: ["test"],
   },
   {
-    name: "前端构建（npm run build）",
-    why: "不只是构建产物：cargo test 依赖 dist/ 存在（见文件头第 3 条）",
+    name: "前端静态检查 + 构建（npm run build）",
+    why:
+      "vue-tsc 类型检查 + vite 产物。留在快速层：它**不碰 cargo**，而且是前端唯一的类型门禁" +
+      "（漏了它，写坏 TS 只能等下一次真编译才炸）。dist/ 同时是 cargo 的硬依赖（见文件头第 3 条）。",
     cwd: ROOT,
     cmd: NPM,
     args: ["run", "build"],
@@ -242,37 +278,63 @@ function mobileSkipReason() {
   return null;
 }
 
+/**
+ * 「重门禁层」= 需要 cargo 编译、或本身耗时在分钟级的步骤。
+ *
+ * 判据按**名字与命令**认，不给 15 个步骤各加字段（那会演化成第二份清单，加一步就得记得
+ * 同步、漏一个就静默不跑）。新增步骤时如果它要编译，名字里带上 `cargo` / `（Rust）` /
+ * `移动端编译门禁` / `护栏非空转` 即可自动归层。
+ */
+function isHeavyStep(s) {
+  return (
+    s.cmd === "cargo" ||
+    s.name.includes("（Rust）") ||
+    s.name.includes("移动端编译门禁") ||
+    s.name.includes("护栏非空转")
+  );
+}
+
+const active = fullGate ? steps : steps.filter((s) => !isHeavyStep(s));
+const heldOut = steps.length - active.length;
+
 if (listOnly) {
-  console.log("npm run verify 会按顺序跑：");
-  steps.forEach((s, i) =>
+  console.log(`npm run verify${fullGate ? " -- --full-gate" : ""} 会按顺序跑：`);
+  active.forEach((s, i) =>
     console.log(
       `  ${i + 1}. ${s.name} —— ${s.why}` +
         (s.skipReason ? `\n      ⏭ 本机将跳过：${s.skipReason}` : ""),
     ),
   );
+  if (!fullGate) {
+    console.log("  ── 以下重门禁层默认不跑（`npm run verify:full` 全跑，CI 每次 push 全跑）：");
+    steps.filter(isHeavyStep).forEach((s) => console.log(`     · ${s.name}`));
+  }
   process.exit(0);
 }
 
-if (!noGuards && !python) {
-  // 不静默跳过：本项目最忌讳的就是"没有守到却当作守到了"。
+// ⚠️ 只在护栏**真的要跑**时才要求 python：快速层不跑护栏，没装 python 也必须能过。
+// 但也不能静默：全量层里找不到解释器就是硬失败（本项目最忌讳"没守却当作守到了"）。
+if (!noGuards && fullGate && !python) {
   console.error("✗ 找不到 python（试过 python3 / python），无法跑护栏非空转验证。");
   console.error("  verify-guards.py 是本项目的既有护栏工具，Windows 上一直在用 ——");
-  console.error("  请装 python3，或明确用 `npm run verify -- --no-guards` 跳过（会在输出里留痕）。");
+  console.error("  请装 python3，或明确用 `npm run verify:full -- --no-guards` 跳过（会在输出里留痕）。");
   process.exit(1);
 }
 
 // dist/ 缺失时提前说清楚，避免让人对着 cargo 的 proc-macro panic 发愣。
-if (!existsSync(path.join(ROOT, "dist")) && steps.some((s) => s.cwd === TAURI)) {
-  console.log("提示：dist/ 不存在，第 4 步会先构建前端（cargo test 依赖它）。\n");
+if (!existsSync(path.join(ROOT, "dist")) && active.some((s) => s.cwd === TAURI)) {
+  console.log("提示：dist/ 不存在 —— 前端构建步骤会先产出它（cargo 的 build.rs 依赖）。\n");
 }
 
-console.log("=== Gosslan verify ===\n");
+console.log(
+  `=== Gosslan verify —— ${fullGate ? "全量层（含 cargo 编译 / 护栏扫描 / Android）" : "快速层（不编译）"} ===\n`,
+);
 
 const results = [];
 const t0 = Date.now();
 
-for (const [i, s] of steps.entries()) {
-  const label = `[${i + 1}/${steps.length}] ${s.name}`;
+for (const [i, s] of active.entries()) {
+  const label = `[${i + 1}/${active.length}] ${s.name}`;
   console.log(`${label}`);
   console.log(`      ${s.why}`);
 
@@ -308,7 +370,7 @@ for (const [i, s] of steps.entries()) {
 
 const total = ((Date.now() - t0) / 1000).toFixed(1);
 const failed = results.filter((r) => !r.ok);
-const notRun = steps.length - results.length;
+const notRun = active.length - results.length;
 
 console.log("--- 汇总 ---");
 for (const r of results) {
@@ -316,8 +378,18 @@ for (const r of results) {
   const tail = r.skipped ? `跳过（${r.skipped}）` : `${r.secs}s`;
   console.log(`  ${mark} ${r.name}  ${tail}`);
 }
-for (const s of steps.slice(results.length)) {
+for (const s of active.slice(results.length)) {
   console.log(`  ⏭   ${s.name}（未跑）`);
+}
+// ⚠️ 快速层必须**点名**它没跑什么：本项目最忌讳的就是"没守却当作守了"。
+// 绿色只表示"这一层的门禁过了"，不表示"代码编得过"。
+if (!fullGate && failed.length === 0) {
+  console.log(`  ── ${heldOut} 项重门禁**本次未跑**：`);
+  for (const s of steps.filter(isHeavyStep)) console.log(`     · ${s.name}`);
+  console.log(
+    "     → 提交/打包前跑 `npm run verify:full`；push 到任意分支时 CI 会全跑\n" +
+      "       （verify.yml：前端 job + Rust job（mac/win）+ Android job）。",
+  );
 }
 
 const skipped = results.filter((r) => r.skipped).length;
@@ -325,7 +397,7 @@ const ran = results.filter((r) => !r.skipped).length;
 
 if (failed.length === 0) {
   console.log(
-    `\n✅ 全部通过（${ran} 步${skipped ? `，跳过 ${skipped} 步` : ""}，共 ${total}s）`,
+    `\n✅ ${fullGate ? "全部门禁" : "快速层门禁"}通过（${ran} 步${skipped ? `，跳过 ${skipped} 步` : ""}，共 ${total}s）`,
   );
   if (skipped) console.log("   ⚠️ 被跳过的步骤在 CI 上仍会跑 —— 别把本地的 ⏭ 当成通过。");
   process.exit(0);
