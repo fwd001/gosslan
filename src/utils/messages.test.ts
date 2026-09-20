@@ -98,6 +98,27 @@ test("previewText：长文本截断 30 字符、短文本原样", () => {
   assert.equal(previewText(msg({ msg_id: "x", content: "hi" })), "hi");
 });
 
+/**
+ * **本机不认识的 kind 绝不能返回载荷原文**（INV-P24 第 2 条）。
+ *
+ * 会话列表/通知的文案在 Rust 算（`protocol::preview_text`），这里的是前端自己那条路径
+ * （消息列表渲染、置顶列表都用它）。两边同一判据、同一文案，由
+ * `messageKinds.test.ts` 与 Rust 比对字面量。
+ * 对照分支不可省：`text` 必须照旧透传，否则"不管什么 kind 都塞占位"也能让第一条通过。
+ *
+ * ⚠️ 这里要 `as unknown as` 是因为 `MessageRecord.kind` 的类型只列了已知值，而**运行时**
+ * 它会收到对端新版本带来的任意字符串 —— 类型表达不了这件事（放宽成 string 会牵动所有
+ * 比较点，与 V3a 的 Rust 改动一起做，见任务「未知 kind 不再整帧丢弃」）。
+ */
+test("previewText：本机不认识的 kind 给占位而不是载荷", () => {
+  const payload = '{"question":"周五前交","options":["A","B"]}';
+  const future = msg({ msg_id: "x", content: payload });
+  future.kind = "sticker" as unknown as typeof future.kind;
+  assert.equal(previewText(future), "[不支持的消息]");
+  assert.ok(!previewText(future).includes("周五"), "未知 kind 不得外泄载荷内容");
+  assert.equal(previewText(msg({ msg_id: "x", kind: "text", content: "hi" })), "hi");
+});
+
 // ---------------- 会话更新（applyIncomingToConversations） ----------------
 
 function conv(id: string, lastTs: number | null = null, unread = 0, pinned = false): Conversation {

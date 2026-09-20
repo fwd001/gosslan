@@ -48,6 +48,45 @@ export const SILENT_KINDS: readonly string[] = [
 export const CARD_KINDS: readonly string[] = ["announcement", "todo", "poll"];
 
 /**
+ * 时间线内容类 kind —— **与 Rust `WIRE_KINDS` 里 class 为 `Bubble` 的那些一致**（契约测试比对）。
+ *
+ * 为什么单独列一份而不是从 `kindClass` 反推：`kindClass` 对**未知** kind 也返回 `bubble`
+ * （故意的，宁可多显示一条也不要静默吞掉对端的新内容），反推会得到一张"什么都在里面"的假表，
+ * 于是"本机认不认识"这个判据就没了。
+ */
+export const BUBBLE_KINDS: readonly string[] = [
+  "text",
+  "code",
+  "image",
+  "file",
+  "system",
+  "recalled",
+  "merge",
+];
+
+/**
+ * 这个 kind 本机**认识**吗（INV-P24 第 2 条的判据来源）。
+ *
+ * 与 `kindClass` 必须分开用：分类回答"怎么对待它"，本判据回答"会不会显示成看不懂的东西"。
+ * 渲染层据此决定走专门卡片、纯文本，还是「不支持的消息类型」占位 —— 缺了这一步，
+ * 对端版本比本机新时用户看到的就是载荷原文（一串 JSON）。
+ */
+export function isKnownKind(kind: string): boolean {
+  return (
+    SILENT_KINDS.includes(kind) ||
+    CARD_KINDS.includes(kind) ||
+    BUBBLE_KINDS.includes(kind)
+  );
+}
+
+/**
+ * 未知 kind 的占位文案。**必须与 Rust 的 `UNSUPPORTED_PREVIEW_LABEL` 一字不差** ——
+ * 会话列表（Rust 算）与气泡（前端算）说的必须是同一句话，`messageKinds.test.ts` 直接
+ * 读 `protocol.rs` 比对这个字面量。
+ */
+export const UNSUPPORTED_KIND_LABEL = "[不支持的消息]";
+
+/**
  * 提示行（微信式居中灰字）：**进时间线**，但**不是一条消息** —— 没有头像、没有气泡，
  * 不可右键/长按/复制/回应。这是它与 bubble 的全部差别。
  *

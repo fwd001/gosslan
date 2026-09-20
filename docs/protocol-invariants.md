@@ -779,7 +779,17 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 第 4 条 的前提：会报版本   ✅ v4.22.28  Hello 带可选 protocol_version / app_version
                             （不进签名材料）；写入点只有一个 = 验签后的 Hello，
                             TCP 与 BLE 共用；节点离线时与 peer_content_features 同点回收
-第 2 条 前端渲染兜底       ⬜ 未做（第 2 步）
+第 2 条 未知内容不显示裸 JSON ✅ v4.22.33  判据统一走 `is_known_kind` / `isKnownKind`
+                            （只能查 `WIRE_KINDS`，不许维护第二份清单；`kindClass` 对未知值
+                            回落 Bubble，用它判"认识"会永远判成认识）
+                            覆盖：会话列表与通知文案（Rust `preview_text` + 前端 `previewText`，
+                            两侧文案由 messageKinds.test.ts 机器比对）、时间线气泡
+                            （`UnsupportedKindBubble`：可解释说明 + 主动展开才给原文）、
+                            引用片段、搜索命中行、收藏列表、虚拟列表高度估算。
+                            ⚠️ 今天真正会走到这个兜底的是**群聊**（gossip 载荷里 kind 是 String，
+                            未知值能进库）与历史坏行；**单聊**的未知 kind 会在帧层就被
+                            V1 的 Unknown 降级整帧丢掉（`ChatMessage.kind` 是嵌套枚举），
+                            所以"单聊收到新类型消息显示占位"这条要等 V3a 才成立。
 第 4 条 门控本身           ⬜ 还没有需要门控的新帧 —— 第一个新帧上线前必须先补
 ```
 

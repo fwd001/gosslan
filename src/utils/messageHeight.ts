@@ -7,7 +7,7 @@ import {
   textBubbleHeight,
 } from "@/utils/previewMetrics";
 import type { FontSizeKey } from "@/utils/chatStyle";
-import { isTipKind } from "@/utils/messageKinds";
+import { isKnownKind, isTipKind } from "@/utils/messageKinds";
 import type { MessageRecord } from "@/types";
 
 /** 时间分割线阈值（≥5 分钟）。 */
@@ -42,6 +42,13 @@ const TODO_CARD_BASE = 96;
 const TODO_CARD_DESC = 58;
 /** 任务卡片有图片时追加（一行 80px 缩略图 + 间距，留余量）。 */
 const TODO_CARD_IMAGES = 88;
+/**
+ * 未知 kind 的占位气泡（`UnsupportedKindBubble`）：说明行 + 展开按钮 + 上下边距，留余量。
+ *
+ * 它**与载荷长度无关** —— 未知消息的载荷往往是 JSON，按文本估会高出一大片空白。
+ * 改占位气泡的行数时要同步这里（与 MERGE_CARD 同一类契约）。
+ */
+const UNSUPPORTED_BUBBLE = 92;
 export interface EstimateContext {
   messages: MessageRecord[];
   isGroup: boolean;
@@ -123,8 +130,10 @@ function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
         /* 异常内容按最小卡片估 */
       }
       return TODO_CARD_BASE + (desc ? TODO_CARD_DESC : 0) + (imgs ? TODO_CARD_IMAGES : 0);
-    }    default:
-      return textBubbleHeight(m.content, fontSize);
+    }    // 本机不认识的 kind（对端版本比本机新）⇒ 渲染占位气泡，高度与载荷长度无关
+    // （详见 `UNSUPPORTED_BUBBLE` 的说明：按文本估会留出一大片空白）。
+    default:
+      return isKnownKind(m.kind) ? textBubbleHeight(m.content, fontSize) : UNSUPPORTED_BUBBLE;
   }
 }
 

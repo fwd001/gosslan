@@ -204,6 +204,22 @@ pub fn kind_class(kind: &str) -> KindClass {
         .unwrap_or(KindClass::Bubble)
 }
 
+/// 这个 kind **在本机的词表里**吗。
+///
+/// 与 `kind_class` 的区别就是这条判据存在的理由：`kind_class` 对未知值**回落到 Bubble**
+/// （宁可多显示一条），于是"未知"这件事在类型上看不出来。而渲染层必须能区分
+/// "知道怎么显示但没专门分支" 与 "压根不认识"（INV-P24 第 2 条）⇒ 判据只能查这张表，
+/// **不允许再维护第二份 kind 清单**（清单会漂移，本项目已有多次教训）。
+pub fn is_known_kind(kind: &str) -> bool {
+    WIRE_KINDS.iter().any(|(k, _)| *k == kind)
+}
+
+/// 未知 kind 的预览/占位文案（INV-P24 第 2 条：绝不把载荷原样甩给用户）。
+///
+/// 前端有一份同样的字符串（`utils/messageKinds.ts`）—— 会话列表与通知说的必须是同一句话，
+/// 所以 `messageKinds.test.ts` 会直接读本常量逐项比对，防两侧漂成两个词。
+pub const UNSUPPORTED_PREVIEW_LABEL: &str = "[不支持的消息]";
+
 /// 「进时间线，但**不打扰**」—— 不计未读、不改会话预览、不弹通知。
 ///
 /// 与 `Silent` 的区别：静默事件**根本不进时间线**（表情回应/撤回是状态，不是内容），
@@ -307,8 +323,9 @@ pub fn merge_summary(content: &str) -> String {
 // 前端 `utils/messages.ts` 的 `previewText`）。JSON 载荷的 kind 若不给**人话**，就会把
 // 「会话列表/通知显示一段 JSON」暴露给用户（用户 2026-09-17）。
 //
-// ⚠️ 前端 `previewText` 与本函数必须**逐项一致**（哪些 kind 给什么文案）——它没有跨语言
-// 契约测试，改动时两处一起改。
+// ⚠️ 前端 `previewText` 与本函数必须**逐项一致**（哪些 kind 给什么文案）——
+// 由 `src/utils/messageKinds.test.ts` 读 `WIRE_KINDS` 与 `UNSUPPORTED_PREVIEW_LABEL` 机器比对
+// （2026-09-20 起，此前只靠注释提醒"两处一起改"，那是迟早会漂的）。
 
 /// 截断到 30 字符（与前端 `previewText` 的 default 分支同口径）。
 fn truncate_preview(content: &str) -> String {
@@ -360,8 +377,16 @@ fn announcement_preview(content: &str) -> String {
 /// 静默类（reaction/recall/pin/poll_vote/announcement_delete/todo_update）照理到不了预览
 /// （两侧都按 `is_non_notifying_kind` 过滤），这里仍兜一层——防"某一侧的过滤条件日后变了"
 /// 再把 JSON 露出去。
+///
+/// ⚠️ 默认分支**不再无条件透传正文**（INV-P24 第 2 条）：`text`/`system` 的正文本来就是给
+/// 人看的 ⇒ 照旧截断；**表里没有的 kind**（对端版本比本机新，或 4.22.1 之前写坏的形态）
+/// 载荷多半是解不开的 JSON ⇒ 原样截断就等于"界面上出现一串 JSON 字符串"（用户明确要求禁止）。
 pub fn preview_text(kind: &str, content: &str) -> String {
-    match kind {
+    // 先过一层显示归一化：库里存着 4.22.1 之前接收端写坏的 `kind="video"/"audio"` 历史行，
+    // 不归一化就会被当成"未知种类" ⇒ 一条真实视频消息在列表里显示成「[不支持的消息]」。
+    // `display_kind` 与气泡渲染共用同一个函数，两侧口径不会分叉。
+    let kind = display_kind(kind);
+    match kind.as_str() {
         "file" => "[文件]".to_string(),
         "image" => "[图片]".to_string(),
         "code" => "[代码]".to_string(),
@@ -373,7 +398,8 @@ pub fn preview_text(kind: &str, content: &str) -> String {
         "reaction" => "[回应]".to_string(),
         "recall" | "recalled" => "[撤回]".to_string(),
         "pin" => "[置顶]".to_string(),
-        _ => truncate_preview(content),
+        other if is_known_kind(other) => truncate_preview(content),
+        _ => UNSUPPORTED_PREVIEW_LABEL.to_string(),
     }
 }
 
@@ -1256,6 +1282,44 @@ mod tests {
         assert_eq!(display_kind("text"), "text");
         // code 有歧义（真代码块同为 kind=code），刻意不映射
         assert_eq!(display_kind("code"), "code");
+    }
+
+    /// **未知 kind 的预览必须是占位文案，绝不能是载荷**（INV-P24 第 2 条）。
+    ///
+    /// 为什么值得单独钉：`preview_text` 的默认分支过去**无条件透传正文**，于是对端版本比
+    /// 本机新时（或 4.22.1 之前写坏的 kind 形态），会话列表与系统通知会直接显示一串裸 JSON。
+    /// 而它的行为是"少显示点东西"，没有任何测试会因为缺少它而失败。
+    /// 三个对照分支同样重要：`text`/`system` 必须照旧透传（否则"全都塞进占位"也能让第一条
+    /// 断言通过 = 空转），历史 `video` 行必须归一成 `[文件]`（把真实消息判成"不支持"同样是错）。
+    #[test]
+    fn preview_text_hides_payload_for_unknown_kind() {
+        let payload = r#"{"question":"周五前交","options":["A","B"]}"#;
+        assert_eq!(preview_text("sticker", payload), UNSUPPORTED_PREVIEW_LABEL);
+        assert!(
+            !preview_text("sticker", payload).contains('周'),
+            "未知 kind 的预览不得外泄载荷内容"
+        );
+        // 对照 1：已知但没有专门分支的 kind ⇒ 正文本来就是给人看的，照旧截断
+        assert_eq!(preview_text("text", "hello"), "hello");
+        assert_eq!(preview_text("system", "X 加入了群聊"), "X 加入了群聊");
+        // 对照 2：4.22.1 之前写坏的历史行 ⇒ 归一化成 [文件]，不是"不支持"
+        assert_eq!(
+            preview_text("video", r#"{"name":"a.mp4","path":"/x/a.mp4","size":1}"#),
+            "[文件]"
+        );
+    }
+
+    /// `is_known_kind` 与 `kind_class` 的区别必须成立（前者能认出"未知"）。
+    ///
+    /// 只钉一条判据：`kind_class` 对未知值回落到 Bubble（设计上就看不出未知），
+    /// 所以渲染层判"未知"必须走 `is_known_kind` —— 这条测试挡住有人把两者混用一个。
+    #[test]
+    fn only_is_known_kind_can_tell_unrecognized_apart() {
+        assert!(!is_known_kind("sticker"), "表里没有的 kind 必须判为未知");
+        assert_eq!(kind_class("sticker"), KindClass::Bubble, "回落仍是 Bubble");
+        for (k, _) in WIRE_KINDS {
+            assert!(is_known_kind(k), "{k} 在表里却判成未知");
+        }
     }
 
     use crate::crypto::Identity;

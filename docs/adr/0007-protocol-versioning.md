@@ -121,7 +121,11 @@ protocol version bump
 ① 前半  容忍 Unknown            ✅ v4.22.27  Message::Unknown + decode_frame（握手首帧仍严格）
 ① 后半  Hello 报版本 + 面板显示  ✅ v4.22.28  protocol_version / app_version（可选、不进签名）
                                    → AppState::peer_versions → 诊断面板「版本互通」+ 降级日志
-②      前端渲染兜底 + 可解释状态  ⬜
+②      前端渲染兜底 + 可解释状态  ◐ v4.22.33 渲染兜底已落（未知 kind 绝不显示裸 JSON，
+                                   判据 = `is_known_kind`/`isKnownKind` 查 WIRE_KINDS）；
+                                   "对方版本较新"的用户可见状态 ⬜（数据源 V2 已就绪）
+                                   ⚠️ 单聊路径要等 V3a（`ChatMessage.kind` 是嵌套枚举，
+                                   未知 kind 现在会在帧层就被丢掉，前端根本没机会显示）
 ③      新帧 / HKDF v2 派生       ⬜（且必须等 ① 在网里铺开后才允许）
 ```
 

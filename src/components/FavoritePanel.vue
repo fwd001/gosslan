@@ -35,6 +35,7 @@ import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, loadFavoritePreview } from "@/utils/favoritePreview";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
+import { isKnownKind, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
 import {
   AlignLeft,
   Code,
@@ -158,6 +159,9 @@ function displayName(f: FavoriteEntry): string {
 
 /** 列表行的标题（PC 微信那种"一行标题 + 一行摘要"）。 */
 function rowTitle(f: FavoriteEntry): string {
+  // 未知 kind（对端 Gosslan 比本机新）的载荷是 JSON：既不能原样显示，也不能落到
+  // `displayName()` 的兜底 —— 那等于给一条不认识的东西编一个"文件"身份。
+  if (!isKnownKind(f.kind)) return UNSUPPORTED_KIND_LABEL;
   if (f.kind === "text" || f.kind === "code") {
     const one = f.content.replace(/\s+/g, " ").trim();
     return one.slice(0, 40) || t("favorite.untitled");
@@ -168,6 +172,8 @@ function rowTitle(f: FavoriteEntry): string {
 
 /** 列表行的摘要（标题之外再给一行，便于在列表里分辨）。 */
 function rowSubtitle(f: FavoriteEntry): string {
+  // 与 rowTitle 同一判据：不认识就不给任何"看起来像内容"的东西（载荷是 JSON）
+  if (!isKnownKind(f.kind)) return "";
   if (f.kind === "text" || f.kind === "code") {
     const one = f.content.replace(/\s+/g, " ").trim();
     return one.length > 40 ? `…${one.slice(40, 100)}` : "";

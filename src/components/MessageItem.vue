@@ -9,7 +9,7 @@ import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
-import { isMultiSelectable, isTipKind } from "@/utils/messageKinds";
+import { isKnownKind, isMultiSelectable, isTipKind, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
 import { isSelfMessage } from "@/utils/selfChat";
 import { stripQuoteMsgId } from "@/utils/quote";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
@@ -27,6 +27,7 @@ import MessageReactionBar from "@/components/message/MessageReactionBar.vue";
 import type { ReactionChip } from "@/utils/reactions";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import TodoCardBubble from "@/components/TodoCardBubble.vue";
+import UnsupportedKindBubble from "@/components/message/UnsupportedKindBubble.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
 import { Check, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Star, TextSelect, Undo2 } from "lucide-vue-next";
@@ -507,6 +508,8 @@ function quoteSnippet(kind: MsgKind, content: string): string {
   if (kind === "file") return t("msg.file");
   // 合并转发：引用它是"引用一张聊天记录卡片"，正文是 JSON，不能截进引用块
   if (kind === "merge") return t("merge.title");
+  // 本机不认识的 kind（对端版本更新）：载荷通常是 JSON，截进引用块等于把 JSON 露出来
+  if (!isKnownKind(kind)) return UNSUPPORTED_KIND_LABEL;
   const oneLine = content.replace(/\s+/g, " ").trim();
   return oneLine.length > 40 ? `${oneLine.slice(0, 40)}…` : oneLine;
 }
@@ -911,7 +914,18 @@ async function copyFileToClipboard() {
             @open="emit('open-tasks')"
           />
 
-          <!-- 未知 kind 的兜底气泡：排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
+          <!-- 本机不认识的 kind（= 对端 Gosslan 比本机新）：给可解释的占位，
+               绝不把载荷原文甩上屏（INV-P24 第 2 条）。判据只能走 isKnownKind ——
+               `kindClass` 对未知值也返回 bubble，用它判会永远不进这个分支。 -->
+          <UnsupportedKindBubble
+            v-else-if="!isKnownKind(message.kind)"
+            :kind="message.kind"
+            :content="message.content"
+            :bubble-style="bubbleStyle"
+          />
+
+          <!-- 已知但没有专门渲染分支的 kind：按纯文本兜底。
+               排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
                否则虚拟列表按 `previewMetrics.TEXT_BUBBLE_PADDING` 估的高度会对不上。 -->
           <div v-else class="select-text px-3 py-1.5 text-sm leading-normal break-all" :style="bubbleStyle">
             {{ message.content }}

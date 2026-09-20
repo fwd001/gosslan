@@ -3,7 +3,17 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { CARD_KINDS, SILENT_KINDS, TIP_KINDS, isSilentKind, isTipKind, kindClass } from "./messageKinds.ts";
+import {
+  BUBBLE_KINDS,
+  CARD_KINDS,
+  SILENT_KINDS,
+  TIP_KINDS,
+  UNSUPPORTED_KIND_LABEL,
+  isKnownKind,
+  isSilentKind,
+  isTipKind,
+  kindClass,
+} from "./messageKinds.ts";
 import { TODO_STATUSES } from "./todos.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -47,11 +57,44 @@ test("跨语言契约：kind 分类与 protocol.rs 的 WIRE_KINDS 一致", () =>
   const rustCard = entries.filter(([, c]) => c === "Card").map(([k]) => k).sort();
   assert.deepEqual([...CARD_KINDS].sort(), rustCard, "TS 与 Rust 的 Card 清单必须一致");
 
+  // 内容类清单同样要一致 —— 它是 `isKnownKind` 的三条来源之一，漏一项就会把
+  // 一条本机其实会渲染的消息判成「不支持」。
+  const rustBubble = entries.filter(([, c]) => c === "Bubble").map(([k]) => k).sort();
+  assert.deepEqual([...BUBBLE_KINDS].sort(), rustBubble, "TS 与 Rust 的内容类清单必须一致");
+
   // 逐个 kind 的分类也要对得上（不只是静默那一列）
   for (const [kind, cls] of entries) {
     const expected = cls === "Silent" ? "silent" : cls === "Card" ? "card" : "bubble";
     assert.equal(kindClass(kind), expected, `${kind} 的分类两侧不一致`);
   }
+});
+
+/**
+ * **未知 kind 的判据与占位文案必须跨语言一致**（INV-P24 第 2 条）。
+ *
+ * 为什么必须机器判：会话列表与通知的文案由 Rust 算、气泡由前端算 —— 同一句"不支持"
+ * 漂成两个词，用户会在两个位置看到两种说法。更危险的是一种看起来完全合理的写法：
+ * 把 `isKnownKind` 实现成 `kindClass(kind) === "bubble"` —— 未知值**也**回落到 bubble，
+ * 于是兜底路径永远不触发、载荷原文继续上屏，而页面上只是"少了一个占位"，没人会报 bug。
+ */
+test("跨语言契约：未知 kind 判据与占位文案与 protocol.rs 一致", () => {
+  const label = protocolRs.match(/pub const UNSUPPORTED_PREVIEW_LABEL: &str = "([^"]+)"/)?.[1];
+  assert.ok(label, "应在 protocol.rs 找到 UNSUPPORTED_PREVIEW_LABEL");
+  assert.equal(UNSUPPORTED_KIND_LABEL, label, "两侧占位文案必须一字不差");
+
+  const table = protocolRs.slice(
+    protocolRs.indexOf("pub const WIRE_KINDS"),
+    protocolRs.indexOf("];", protocolRs.indexOf("pub const WIRE_KINDS")),
+  );
+  for (const m of table.matchAll(/\("([^"]+)",\s*KindClass::\w+\)/g)) {
+    assert.ok(isKnownKind(m[1]), `Rust 表里的 ${m[1]} 被前端判成未知`);
+  }
+  // 表外的必须判未知 —— 整条兜底路径的开关
+  assert.ok(!isKnownKind("sticker"), "表里没有的 kind 必须判为未知");
+  assert.ok(!isKnownKind(""), "空 kind 必须判为未知");
+  // 反向对照：kindClass 对未知仍返回 bubble ⇒ 两个判据不可互相替代
+  assert.equal(kindClass("sticker"), "bubble");
+  assert.ok(!isKnownKind("sticker"));
 });
 
 /**

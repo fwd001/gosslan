@@ -34,7 +34,8 @@ import {
   type SenderOption,
 } from "@/utils/chatSearch";
 import { t } from "@/i18n";
-import type { ChatSearchGroup } from "@/types";
+import type { ChatSearchGroup, ChatSearchMessage } from "@/types";
+import { isKnownKind, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
 
 const props = defineProps<{ open: boolean; initialKeyword?: string }>();
 const emit = defineEmits<{
@@ -42,6 +43,17 @@ const emit = defineEmits<{
   /** 跳到命中的那一条（父组件负责开会话 + 定位） */
   (e: "open-conversation", payload: { convId: string; msgId: string }): void;
 }>();
+
+/**
+ * 搜索结果里一行显示的文本（INV-P24 第 2 条）。
+ *
+ * 本机不认识的 kind（对端 Gosslan 比本机新）载荷往往是 JSON —— 检索页直接铺 `content`
+ * 等于把 JSON 摆给用户看。这里换成与气泡/会话列表同一句占位文案。
+ */
+function cellText(m?: ChatSearchMessage): string {
+  if (!m) return "";
+  return isKnownKind(m.kind) ? m.content : UNSUPPORTED_KIND_LABEL;
+}
 
 const app = useAppStore();
 /** 输入法守卫：拼音候选里按回车是选字，不该被当成"重新搜索"（与发送键同一套判定） */
@@ -319,8 +331,8 @@ function showSender(group: ChatSearchGroup): boolean {
             </span>
             <span
               class="mt-0.5 block truncate text-xs text-[var(--gosslan-text-2)]"
-              :title="g.messages[0]?.content ?? ''"
-              v-html="highlightText(hitSnippet(g.messages[0]?.content ?? '', keyword), keyword)"
+              :title="cellText(g.messages[0])"
+              v-html="highlightText(hitSnippet(cellText(g.messages[0]), keyword), keyword)"
             ></span>
             <span class="mt-0.5 block text-[11px] text-[var(--gosslan-text-2)]">
               {{ t("search.groupCount", { n: g.total }) }}
@@ -367,7 +379,7 @@ function showSender(group: ChatSearchGroup): boolean {
               </div>
               <div
                 class="mt-0.5 gosslan-selectable whitespace-pre-wrap break-words text-[13px] leading-relaxed text-[var(--gosslan-text)]"
-                v-html="highlightText(m.content, keyword)"
+                v-html="highlightText(cellText(m), keyword)"
               ></div>
             </div>
           </div>

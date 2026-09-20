@@ -1,6 +1,6 @@
 import type { Conversation, MessageRecord } from "@/types";
 import { MENTION_AFTER, MENTION_BEFORE, escapeRe } from "./linkify.ts";
-import { isSilentKind } from "./messageKinds.ts";
+import { isKnownKind, isSilentKind, UNSUPPORTED_KIND_LABEL } from "./messageKinds.ts";
 import { mergeSummary } from "./mergeCard.ts";
 
 /**
@@ -190,7 +190,12 @@ export function previewText(rec: MessageRecord): string {
     case "recalled":
       return "[撤回]";
     case "pin":
-      return "[置顶]";    default:
+      return "[置顶]";
+    default:
+      // ⚠️ 表里**没有**的 kind（对端版本比本机新）绝不能原样截断 —— 那是"界面上出现一串
+      // JSON 字符串"的最后一环（INV-P24 第 2 条）。判据与文案都与 Rust `preview_text` 同源，
+      // 由 `messageKinds.test.ts` 机器比对。已知但无专门文案的（text / system）照旧截断。
+      if (!isKnownKind(rec.kind)) return UNSUPPORTED_KIND_LABEL;
       return rec.content.slice(0, 30);
   }
 }

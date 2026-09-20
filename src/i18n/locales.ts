@@ -809,6 +809,10 @@ export const zhCN: MessageDict = {
   // 对端长时间没再收任何一片（后端按 writer 实发判定）：进度条会冻住，必须说清是网络卡住
   "send.stalled": "网络停滞，等待恢复…",
   "msg.cleaned": "已被清理",
+  // 认不出的消息类型（对端 Gosslan 比本机新）：可解释的占位，绝不显示载荷原文（INV-P24）
+  "msg.unsupportedKind": "对方发送了一种本机还不支持的消息，升级 Gosslan 后可查看",
+  "msg.showRawContent": "查看原始内容",
+  "msg.hideRawContent": "收起原始内容",
   "msg.filePathUnavailable": "文件路径不可用",
   "msg.openFileFail": "打开文件失败",
   "msg.fileSaved": "文件已保存",
@@ -1685,6 +1689,9 @@ export const enUS: MessageDict = {
   "send.receivingPct": "Receiving {pct}%",
   "send.stalled": "Network stalled, waiting to recover…",
   "msg.cleaned": "Cleaned up",
+  "msg.unsupportedKind": "The sender used a message type this build can't display. Update Gosslan to view it.",
+  "msg.showRawContent": "Show raw content",
+  "msg.hideRawContent": "Hide raw content",
   "msg.filePathUnavailable": "File path unavailable",
   "msg.openFileFail": "Failed to open file",
   "msg.fileSaved": "File saved",

@@ -10,6 +10,50 @@
 
 ## [Unreleased]
 
+## [4.22.33] - 2026-09-20
+
+### Fixed (本机不认识的消息类型不再显示成裸 JSON — INV-P24 第 2 条落地)
+
+用户诉求原话：「老设备和新设备聊天…不应该出现 json 字符串，要优雅降级」。V1/V2 解决了
+"连不上"和"谁知道对方是什么版本"，这一轮解决**看得懂的东西不许以 JSON 形式露出来**。
+
+**判据只有一个来源**：`protocol::is_known_kind()` / `utils/messageKinds.isKnownKind()`，
+即"查 `WIRE_KINDS` 表"。不能拿 `kind_class` / `kindClass` 代替 —— 它们对未知 kind **回落到
+Bubble**（那是故意的：宁可多显示一条，也不静默吞掉对端的新内容），用它判"认识不认识"会永远
+判成认识、兜底分支永不触发，而症状只是"少了一句占位"，没人会当 bug 报。这条区别由
+`messageKinds.test.ts` 反向对照钉住。
+
+覆盖到的每一层（缺一个就会在某个角落重新冒出 JSON）：
+
+| 站点 | 之前 | 现在 |
+|---|---|---|
+| 会话列表 / 系统通知（Rust `preview_text`） | `_ =>` 无条件截断正文 ⇒ JSON | 未知 kind ⇒「[不支持的消息]」；`text`/`system` 照旧透传 |
+| 同一件事的前端侧（`previewText`） | `default:` 截 30 字符 ⇒ JSON | 同一判据同一文案 |
+| 时间线气泡（`MessageItem` 的 `v-else`） | `{{ message.content }}` 原样上屏 | 新 `UnsupportedKindBubble`：可解释说明 + **主动展开**才给原文（附 `type:` 供诊断） |
+| 引用片段（`quoteSnippet`） | 落到"取前 40 字" | 占位文案 |
+| 搜索命中行（`ChatSearchDialog`） | `m.content` 直接 `v-html` | `cellText()` 判未知 |
+| 收藏列表（`rowTitle`/`rowSubtitle`） | 兜底成「文件」——给不认识的东西编身份 | 占位文案 + 空摘要 |
+| 虚拟列表高度（`messageHeight`） | 按载荷长度估 ⇒ 占位气泡下面一大片空白 | 未知 kind 走固定 `UNSUPPORTED_BUBBLE` |
+
+顺带修掉一条**现存的**错误：`preview_text` 以前不看 `display_kind`，于是 4.22.1 之前写坏的
+历史行（`kind="video"`）在会话列表里显示成载荷 JSON 前 30 字符。现在 Rust 侧先归一化再判，
+`video` → `[文件]`（既不是 JSON，也不是"不支持"）。
+
+补了一条**欠账很久的契约**：`protocol.rs` 里原本写着"前端 `previewText` 与本函数没有跨语言
+契约测试，改动时两处一起改" —— 靠自觉的两处一致迟早漂。现在 `messageKinds.test.ts` 直接读
+`protocol.rs` 比对 `WIRE_KINDS` 的 Bubble 清单与 `UNSUPPORTED_PREVIEW_LABEL` 字面量。
+
+**诚实的覆盖边界**：今天真正会走进这个兜底的只有**群聊**（gossip 载荷的 kind 本来就是 String，
+未知值能进库）与历史坏行；**单聊**的未知 kind 会在帧层就被 V1 的 Unknown 降级**整帧丢掉**
+（`ChatMessage.kind` 是嵌套枚举 ⇒ serde 报 unknown variant ⇒ 与"未知帧类型"无法区分），
+所以"单聊收到新类型消息显示占位"要等下一轮（任务 #27：kind 改回 String）。本轮先落兜底再放开
+入口，顺序不能反 —— 反过来做会让那条 JSON 立刻出现在会话列表里。
+
+测试：Rust `preview_text_hides_payload_for_unknown_kind`（含 text/system 透传与 video→[文件]
+两个**防空转对照**）、`only_is_known_kind_can_tell_unrecognized_apart`；前端
+`previewText：本机不认识的 kind 给占位而不是载荷`、契约测试两条新断言（Bubble 清单 + 占位文案
+字面量 + 表外必判未知）。`npm test` 491 全绿。
+
 ## [4.22.32] - 2026-09-20
 
 ### Fixed (上一轮门禁分层埋的一条静默空转 + 两处假数字 — code review 抓出)
