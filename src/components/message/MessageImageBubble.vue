@@ -98,7 +98,7 @@ onUnmounted(clearTimer);
          与容器同宽，加载前后不跳变。 -->
     <div
       v-if="state !== 'loaded'"
-      class="flex h-32 w-full items-center justify-center bg-black/5 dark:bg-white/5"
+      class="flex h-32 w-full items-center justify-center bg-[var(--gosslan-hover)]"
     >
       <ImageOff v-if="state === 'failed'" class="h-6 w-6 opacity-50" />
       <ImageIcon v-else class="h-6 w-6 animate-pulse opacity-40" />

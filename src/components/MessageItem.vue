@@ -704,10 +704,6 @@ async function copyFileToClipboard() {
        悬停揭示必须挂在这一层，否则 group-hover/msg 永远不触发（那个组名以前根本不存在）。 -->
   <div
     class="group/msg relative py-1.5"
-    :class="[
-      highlighted ? 'rounded-[var(--gosslan-radius-md)] bg-primary/5 ring-1 ring-primary/25' : '',
-      selectMode && selected ? 'rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)]' : '',
-    ]"
   >
     <!-- 多选态：透明覆盖层 + 左侧勾选框，两者都**绝对定位**，不进 flex 流。
          为什么必须这样：气泡宽度是 `max-w-[72%]`，勾选框若作为 flex 兄弟插进来会挤窄气泡、
@@ -722,22 +718,22 @@ async function copyFileToClipboard() {
         :aria-pressed="selected"
         @click="emit('toggle-select')"
       ></button>
-      <!-- 勾选框（微信款）：20px 圆、未选 1px 细边、选中实底 + 粗白勾。
-           刻意**不用** border-2：2px 的环在 18px 的圆里内孔只剩 14px，深色下是一圈
+      <!-- 勾选框（微信款）：18px 圆、未选 1px 细边、选中实底 + 细白勾。
+           为什么不用 border-2：2px 的环在 16-18px 的圆里内孔只剩 12-14px，深色下是一圈
            又重又闷的「O」（用户 2026-09-17 反馈"太丑"）。微信的勾选圈之所以轻，
            靠的就是 1px 边 + 选中瞬间整个圆变实底，而不是靠加粗描边。
-           填充色用 bg-primary（正牌 token）—— 之前写的 --gosslan-accent **并不存在**，
+           填充色用 bg-[var(--gosslan-primary)]（正牌 token）—— 之前写的 --gosslan-accent **并不存在**，
            var() 解析失败会让整条声明被丢弃（选中态变成无色圆 + 看不见的白勾）。
            位置**在左侧**（微信一比一：微信多选的勾选圈就在消息左侧的边槽里）。
            左边距 8px（`left-2`）：自己的消息那一行左边是空的，圈贴着面板边缘会显得局促。
-           别人的行则由右侧的行内边距把头像整排让开（见下面 `pl-10`），圈独占一条干净边槽。 -->
+           别人的行则由右侧的行内边距把头像整排让开（见下面 `pl-9`），圈独占一条干净边槽。 -->
       <span
-        class="pointer-events-none absolute left-2 top-1/2 z-20 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full border transition"
+        class="pointer-events-none absolute left-2 top-1/2 z-20 flex h-[18px] w-[18px] -translate-y-1/2 items-center justify-center rounded-full border transition"
         :class="selected
-          ? 'border-primary bg-primary'
+          ? 'border-primary bg-[var(--gosslan-primary)]'
           : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]'"
       >
-        <Check v-if="selected" class="h-3 w-3 text-white" :stroke-width="3" aria-hidden="true" />
+        <Check v-if="selected" class="h-2.5 w-2.5 text-white" :stroke-width="2.5" aria-hidden="true" />
       </span>
     </template>
     <!-- 时间分割线（间隔 ≥ 5 分钟）：居中浅灰小字 -->
@@ -747,9 +743,9 @@ async function copyFileToClipboard() {
 
     <!-- 未读分割线（打开会话时定位的第一条未读上方） -->
     <div v-if="showUnreadDivider" class="my-1.5 flex items-center gap-2 px-3">
-      <div class="h-px flex-1 bg-primary/30"></div>
-      <span class="rounded-full bg-primary-light px-2 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)]">{{ t("msg.unreadDivider") }}</span>
-      <div class="h-px flex-1 bg-primary/30"></div>
+      <div class="h-px flex-1 bg-[var(--gosslan-primary-soft)]"></div>
+      <span class="rounded-full bg-[var(--gosslan-primary-light)] px-2 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)]">{{ t("msg.unreadDivider") }}</span>
+      <div class="h-px flex-1 bg-[var(--gosslan-primary-soft)]"></div>
     </div>
 
     <!-- 提示行（系统消息 / 已撤回）：微信式居中灰字，**通栏**、无头像、无气泡。
@@ -766,13 +762,18 @@ async function copyFileToClipboard() {
     <!-- 多选态给左侧勾选圈让出边槽：**只有"别人的"那一行**需要整排右移。
          自己的行头像在右侧、气泡是右对齐的，左移不动它 —— 加了这个内边距只会白白挤窄
          自己的气泡（多一圈折行），换不来任何观感收益。
-         别人的行 `pl-10`(40px) = 圈 left-2(8) + 圆 20 + 间隙 12，头像正好从圈右侧干净地起排。
+         别人的行 `pl-9`(36px) = 圈 left-2(8) + 圆 18 + 间隙 10，头像正好从圈右侧干净地起排。
          ⚠️ 这里只动横向内边距：高度估算用的 `COLUMNS_PER_LINE` 是**常量**、不随宽度变，
          所以不会破坏 VirtualList 的估算（横向挪动与"相邻消息互相遮挡"那个坑无关）。 -->
     <div
       v-else
-      class="flex gap-2 px-4"
-      :class="[mine ? 'flex-row-reverse' : '', selectMode && !mine ? 'pl-10' : '']"
+      class="flex gap-2 rounded-[var(--gosslan-radius-md)] px-4 transition"
+      :class="[
+        mine ? 'flex-row-reverse' : '',
+        selectMode && !mine ? 'pl-9' : '',
+        highlighted ? 'bg-[var(--gosslan-primary-light)] ring-1 ring-[var(--gosslan-primary-ring)]' : '',
+        selectMode && selected ? 'bg-[var(--gosslan-hover)]' : '',
+      ]"
     >
       <!-- 头像：每条消息独立完整渲染 -->
       <MessageAvatar :name="avatarName" :avatar="avatarSrc" />
@@ -821,6 +822,7 @@ async function copyFileToClipboard() {
             v-if="message.kind === 'text'"
             :content="message.content"
             :bubble-style="bubbleStyle"
+            :card-style="cardStyle"
             :clamped="isLongText"
             :copied="copiedKey === 'text'"
             :mine="mine"
@@ -852,7 +854,7 @@ async function copyFileToClipboard() {
           <button
             v-else-if="message.kind === 'image' && attachmentMissing"
             type="button"
-            class="flex h-32 w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-black/5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary dark:bg-white/5 dark:hover:bg-white/10"
+            class="flex h-32 w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary "
             @click="refetchContent"
           >
             <ImageOff class="h-6 w-6 opacity-50" />
@@ -902,6 +904,7 @@ async function copyFileToClipboard() {
           <MergeCard
             v-else-if="message.kind === 'merge'"
             :content="message.content"
+            :card-style="cardStyle"
             :mine="mine"
             @open="emit('open-merge', { content: message.content, senderId: message.sender_id })"
           />
@@ -910,6 +913,7 @@ async function copyFileToClipboard() {
           <TodoCardBubble
             v-else-if="message.kind === 'todo'"
             :message="message"
+            :card-style="cardStyle"
             :mine="mine"
             @open="emit('open-tasks')"
           />
@@ -958,7 +962,7 @@ async function copyFileToClipboard() {
         {{ t("common.cancel") }}
       </button>
       <button
-        class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:opacity-90"
+        class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
         @click="confirmRecall"
       >
         {{ t("common.confirm") }}

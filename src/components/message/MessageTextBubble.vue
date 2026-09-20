@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, nextTick, ref, watch, type CSSProperties } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -15,6 +15,7 @@ import { Check, Copy } from "lucide-vue-next";
 const props = defineProps<{
   content: string;
   bubbleStyle: CSSProperties;
+  cardStyle: CSSProperties;
   /** 超过预览行数：正文截断为固定行数，「展开显示」走独立 Modal。 */
   clamped: boolean;
   copied: boolean;
@@ -69,8 +70,8 @@ const clampStyle = computed<CSSProperties>(() =>
       }
     : {},
 );
-const bubbleStyle = computed<CSSProperties>(() => ({
-  ...props.bubbleStyle,
+const finalStyle = computed<CSSProperties>(() => ({
+  ...(props.clamped ? props.cardStyle : props.bubbleStyle),
   fontSize: "var(--gosslan-msg-size, 14px)",
 }));
 
@@ -103,12 +104,29 @@ const segments = computed<RenderSegment[]>(() => {
 
 /**
  * @提及 高亮文字色（微信式蓝字）：按主题色派生，并以当前气泡的实际底色
- * （bubbleStyle.background）校验对比 ≥4.5——预设差异被天然覆盖。
+ * 校验对比 ≥4.5——预设差异被天然覆盖。
  * 不直接用主题色：text-primary 在浅蓝气泡上对比只有 2.94（历史坑）。
+ *
+ * ⚠️ 气泡底色是 CSS 变量字符串（"var(--bubble-bg)"），contrastRatio 算不了——
+ * 必须先 resolve 成真实色：bubbleStyle 里 --bubble-bg 是 inline 设置的真实 hex
+ * （不是 CSS var），getComputedStyle 能读出来。
  */
+function resolveBgColor(style: CSSProperties | undefined, el: HTMLElement | null): string {
+  if (!style) return "";
+  // 优先读我们塞进去的 --bubble-bg-raw（真实 hex，bubbleStyle 有，cardStyle 没有）
+  const raw = (style as Record<string, unknown>)["--bubble-bg-raw"];
+  if (typeof raw === "string" && raw.startsWith("#")) return raw;
+  // fallback：从 DOM 上解析 --bubble-bg（也是 inline 设置的真实 hex）
+  if (el) {
+    const cs = getComputedStyle(el);
+    const v = cs.getPropertyValue("--bubble-bg").trim();
+    if (v && v.startsWith("#")) return v;
+  }
+  return "";
+}
 const mentionFg = computed(() => {
-  const bg = typeof props.bubbleStyle.background === "string" ? props.bubbleStyle.background : "";
-  return mentionHighlightColor(app.themeColor, app.dark, bg || "#ffffff");
+  const bg = resolveBgColor(props.clamped ? props.cardStyle : props.bubbleStyle, contentEl.value);
+  return mentionHighlightColor(app.themeColor, app.dark, bg || (app.dark ? "#1c2434" : "#eeeef0"));
 });
 
 /** @提及 淡背景：取 mentionFg（主题色派生）的低透明度，做成互联网公司式的浅色块。 */
@@ -150,7 +168,7 @@ async function openLink(href: string) {
   <div
     class="group gosslan-bubble-text select-text relative min-w-0 px-3 py-1.5 font-medium leading-normal"
     :class="selectMode ? 'gosslan-selecting' : ''"
-    :style="bubbleStyle"
+    :style="finalStyle"
   >
     <!-- ⚠️ 这一层只为了框住「引用块 + 正文」，让「选择文字」的全选范围=
          用户在这个气泡里看得见的内容。引用块与正文是兄弟节点，ref 挂在正文上时
@@ -207,7 +225,7 @@ async function openLink(href: string) {
     <div
       v-if="clamped"
       class="mt-1.5 flex items-center gap-2 border-t pt-1.5"
-      :style="{ borderColor: 'rgba(128,128,128,0.2)' }"
+      :style="{ borderColor: 'var(--gosslan-divider)' }"
     >
       <button class="tap-safe text-xs opacity-70 transition hover:opacity-100" @click="emit('expand', content)">
         {{ t("common.expand") }}

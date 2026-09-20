@@ -332,7 +332,7 @@ async function add(peerId: string) {
           <!-- 对方已先申请加我 → 直接同意/拒绝（与「新朋友」页同一套动作） -->
           <span v-else-if="pendingFromIds.has(p.device_id)" class="flex shrink-0 items-center gap-1.5">
             <button
-              class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-avatar-radius)] bg-primary text-white transition hover:bg-primary-hover disabled:opacity-50"
+              class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-primary)] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
               :title="t('common.agree')" :aria-label="t('common.agree')"
               :disabled="responding[p.device_id]"
               @click="respond(p.device_id, true)"
@@ -358,7 +358,7 @@ async function add(peerId: string) {
           </button>
           <button
             v-else
-            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-xs font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
             @click="add(p.device_id)"
           >
             <UserPlus class="h-3.5 w-3.5" />

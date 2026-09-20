@@ -10,6 +10,7 @@
  */
 import { computed } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
+import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
 import GroupTasksBoard from "@/components/GroupTasksBoard.vue";
 import { foldTodos } from "@/utils/todos";
@@ -19,6 +20,9 @@ const props = defineProps<{ open: boolean; groupId: string | null }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const chat = useChatStore();
+const app = useAppStore();
+/** 移动端 → 整页全屏（push/pop 式），桌面端 → max-w-lg 弹窗。 */
+const fullscreen = computed(() => app.isMobile);
 /** 标题里的计数：只读一次折叠结果，真正的看板在 `GroupTasksBoard` 里自己算。 */
 const count = computed(() =>
   props.groupId ? foldTodos(chat.messages[`group:${props.groupId}`] ?? []).length : 0,
@@ -28,6 +32,7 @@ const count = computed(() =>
 <template>
   <BaseModal
     :open="open"
+    :fullscreen="fullscreen"
     :title="count ? t('todo.title') + ` (${count})` : t('todo.title')"
     width="max-w-lg"
     @close="emit('close')"

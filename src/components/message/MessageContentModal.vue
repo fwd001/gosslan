@@ -36,10 +36,12 @@ const segments = computed<RenderSegment[]>(() => {
   return out;
 });
 
-/** @提及配色：以弹窗面板底色为对比基准（气泡那套是按气泡底色算的，这里不能复用）。 */
-const mentionFg = computed(() =>
-  mentionHighlightColor(app.themeColor, app.dark, app.dark ? "#1e293b" : "#ffffff"),
-);
+/** @提及配色：以弹窗面板底色为对比基准（气泡那套是按气泡底色算的，这里不能复用）。
+ *  从 CSS 变量读真实面板色，避免将来改了主题 token 这里忘记同步。 */
+const mentionFg = computed(() => {
+  const panel = getComputedStyle(document.documentElement).getPropertyValue("--gosslan-panel").trim();
+  return mentionHighlightColor(app.themeColor, app.dark, panel || (app.dark ? "#1e293b" : "#ffffff"));
+});
 
 /** @提及 淡背景：与气泡同款取法（mentionFg 的 16%）。
  *  ⚠️ 必须显式给：不给就落到 style.css 里 12% 的兜底值，同一句话在气泡与全文里
@@ -76,7 +78,7 @@ async function openLink(href: string) {
         <template v-for="(seg, i) in segments" :key="i">
           <MessageLinkText
             v-if="seg.kind === 'link'"
-            class="text-[var(--gosslan-accent-ink)]"
+            class="text-[var(--gosslan-primary)]"
             :href="seg.href"
             :label="seg.value"
             @open="openLink"
@@ -100,7 +102,7 @@ async function openLink(href: string) {
     <div class="mt-3 flex justify-end">
       <button
         class="tap-safe preview-action"
-        :class="copied ? 'text-[var(--gosslan-accent-ink)]' : ''"
+        :class="copied ? 'text-[var(--gosslan-primary)]' : ''"
         @click="emit('copy', content)"
       >
         <Check v-if="copied" class="h-3 w-3" />

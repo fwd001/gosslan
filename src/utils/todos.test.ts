@@ -152,17 +152,17 @@ test("状态配色口径统一：延期用 warning，不得再出现 danger", ()
  * 后端是权威（真正的拦截在命令层），这份是界面显示用的镜像；两边都各自有一条用例表，
  * 改口径时两处一起改（`src-tauri/src/commands.rs` 的 `todo_update_permission_matrix`）。
  */
-test("授权矩阵：创建者全权 / 被指派人只能改状态 / 群主能改结构", () => {
+test("授权矩阵：创建者与群主全权 / 被指派人不能改结构 / 无关成员什么都不行", () => {
   const item = { creator: "alice", assignees: ["bob", "carol"] };
   // 创建者：改状态、改结构都行
   assert.ok(canUpdateTodo(item, "alice", "owner", false));
   assert.ok(canUpdateTodo(item, "alice", "owner", true));
-  // 被指派人：只能改状态
+  // 被指派人：能改状态，不能改结构（标题 / 删除）
   assert.ok(canUpdateTodo(item, "bob", "owner", false));
   assert.equal(canUpdateTodo(item, "bob", "owner", true), false, "被指派人不得改标题 / 删除");
-  // 群主：能改结构；改状态不是他的特权（除非他同时是创建者或被指派人）
+  // 群主：**改什么都行**（用户 2026-09-20「群主不能编辑群任务」）
   assert.ok(canUpdateTodo(item, "owner", "owner", true));
-  assert.equal(canUpdateTodo(item, "owner", "owner", false), false);
+  assert.ok(canUpdateTodo(item, "owner", "owner", false));
   // 无关成员：什么都不行
   assert.equal(canUpdateTodo(item, "dave", "owner", false), false);
   assert.equal(canUpdateTodo(item, "dave", "owner", true), false);

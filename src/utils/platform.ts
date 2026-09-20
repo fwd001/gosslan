@@ -47,3 +47,23 @@ export const isAndroid =
   typeof navigator !== "undefined" && typeof navigator.userAgent === "string"
     ? isAndroidUA(navigator.userAgent)
     : false;
+
+/**
+ * 判断一段 UA 是否来自 iOS / iPadOS（纯函数，便于单测）。
+ *
+ * 用途：返回箭头按平台给原生观感 —— iOS 用 chevron（`<`），其余平台（Android / 桌面）
+ * 用 Material 的左箭头（`←`，用户 2026-09-20：「桌面版的箭头回退到 Android，iOS 保持 iOS 风格」）。
+ *
+ * ⚠️ 用 `iPhone|iPad|iPod`，**不能**用 `/Mac OS X/`：桌面 macOS 的 UA 也含 `Mac OS X`，
+ * 会把 Mac 误判成 iOS。已知局限：iPadOS 13+ 的「桌面模式」UA 伪装成 `Macintosh`，
+ * 这里会落到非 iOS 分支（本项目不发行 iPad，可接受，与 isMacUA 的注释同一口径）。
+ */
+export function isIOSUA(ua: string): boolean {
+  return /iPad|iPhone|iPod/.test(ua);
+}
+
+/** 运行时平台判定（iOS）。与 isMac 同一套 navigator 守卫。 */
+export const isIOS =
+  typeof navigator !== "undefined" && typeof navigator.userAgent === "string"
+    ? isIOSUA(navigator.userAgent)
+    : false;

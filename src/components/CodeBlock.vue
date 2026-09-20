@@ -77,12 +77,12 @@ const langLabel = computed(() => (detectedLang.value === "plaintext" ? "text" : 
 
 const codeBg = computed(() => (app.dark ? CODE_SURFACE.dark : CODE_SURFACE.light));
 const codeFg = computed(() => (app.dark ? "#e6edf3" : "#24292e"));
-const toolbarBg = computed(() => (app.dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)"));
+const toolbarBg = computed(() => "var(--gosslan-hover)");
 /** 工具栏文字（语言 · 行数，12px）：透明度是"白/黑蒙层的比例"，不是颜色本身，
  *  所以必须按两套底色分别验一遍对比度——亮色原为 0.4，实测只有 2.90（不达标），
  *  提到 0.55 后 ≈ 4.6；暗色 0.5 在 #161b22 上有 5.1，保持不变。 */
-const toolbarFg = computed(() => (app.dark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.55)"));
-const borderStyle = computed(() => app.dark ? "border-white/10" : "border-black/10");
+const toolbarFg = computed(() => "var(--gosslan-text-2)");
+const borderStyle = computed(() => "border-[var(--gosslan-border)]");
 
 const html = computed(() => {
   try {

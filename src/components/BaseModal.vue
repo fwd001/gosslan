@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { Dialog, DialogPanel, DialogTitle, TransitionChild, TransitionRoot } from "@headlessui/vue";
+import { X } from "lucide-vue-next";
 import { useBackLayer } from "@/composables/useBackLayer";
+import BackArrow from "@/components/ui/BackArrow.vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { t } from "@/i18n";
 
@@ -47,7 +49,10 @@ useBackLayer(
 <template>
   <TransitionRoot :show="open" as="template">
     <Dialog as="div" class="relative z-50" @close="emit('close')">
+      <!-- 整页形态不画遮罩：整页面板本身不透明，遮罩只会在滑入的过程里
+           给「上一页」糊一层黑（观感成了 modal，而不是页面推进）。卡片形态才需要遮罩。 -->
       <TransitionChild
+        v-if="!fullscreen"
         as="template"
         enter="duration-200 ease-out"
         enter-from="opacity-0"
@@ -56,10 +61,10 @@ useBackLayer(
         leave-from="opacity-100"
         leave-to="opacity-0"
       >
-        <div class="glass fixed inset-0 bg-black/40" aria-hidden="true" />
+        <div class="glass fixed inset-0 bg-[var(--gosslan-overlay)]" aria-hidden="true" />
       </TransitionChild>
       <div
-        class="fixed inset-0 overflow-y-auto"
+        class="fixed inset-0 overflow-y-auto overflow-x-hidden"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 12}px` }
           : undefined"
@@ -73,15 +78,22 @@ useBackLayer(
                卡片形态：保持原有的居中卡片。
                ⚠️ 这条注释**必须在 `<TransitionChild>` 之外**：dev 构建会保留 HTML 注释，
                而 `as="template"` 的插槽里多出一个注释节点就会让 Headless UI 抛
-               "Passing props on template!"（Vue 渲染直接炸 ⇒ 整个窗口卡死）。 -->
+               "Passing props on template!"（Vue 渲染直接炸 ⇒ 整个窗口卡死）。
+               —— 整页形态按「一页」处理：与设置/日志/收藏等详情页**同一套 page-slide**
+               （从右滑入 / 滑出），而不是卡片的淡入缩放。否则同样是整页下钻，
+               群任务 / 搜索页的转场却和别的详情页不一样（用户 2026-09-20「群任务的转场好像不对」）。 -->
           <TransitionChild
             as="template"
-            enter="duration-200 ease-out"
-            enter-from="opacity-0 scale-95"
-            enter-to="opacity-100 scale-100"
-            leave="duration-150 ease-in"
-            leave-from="opacity-100 scale-100"
-            leave-to="opacity-0 scale-95"
+            :enter="fullscreen
+              ? 'transition-[transform,opacity] duration-[var(--gosslan-duration)] ease-[var(--gosslan-ease)]'
+              : 'duration-200 ease-out'"
+            :enter-from="fullscreen ? 'translate-x-full opacity-40' : 'opacity-0 scale-95'"
+            :enter-to="fullscreen ? 'translate-x-0 opacity-100' : 'opacity-100 scale-100'"
+            :leave="fullscreen
+              ? 'transition-[transform,opacity] duration-[var(--gosslan-duration)] ease-[var(--gosslan-ease)]'
+              : 'duration-150 ease-in'"
+            :leave-from="fullscreen ? 'translate-x-0 opacity-100' : 'opacity-100 scale-100'"
+            :leave-to="fullscreen ? 'translate-x-full opacity-40' : 'opacity-0 scale-95'"
           >
             <DialogPanel
               v-if="fullscreen"
@@ -96,9 +108,7 @@ useBackLayer(
                   :title="t('common.back')" :aria-label="t('common.back')"
                   @click="emit('close')"
                 >
-                  <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.9">
-                    <path d="m15 18-6-6 6-6" />
-                  </svg>
+                  <BackArrow />
                 </button>
                 <DialogTitle v-if="title" as="h2" class="text-[15px] font-medium">{{ title }}</DialogTitle>
               </header>
@@ -111,9 +121,18 @@ useBackLayer(
               class="elevated w-full rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
               :class="width"
             >
-              <DialogTitle v-if="title" as="h3" class="text-base font-semibold mb-4">
-                {{ title }}
-              </DialogTitle>
+              <div v-if="title" class="mb-4 flex items-start justify-between gap-3">
+                <DialogTitle as="h3" class="text-base font-semibold leading-6">
+                  {{ title }}
+                </DialogTitle>
+                <button
+                  class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+                  :title="t('common.close')" :aria-label="t('common.close')"
+                  @click="emit('close')"
+                >
+                  <X class="h-4 w-4" />
+                </button>
+              </div>
               <slot />
             </DialogPanel>
           </TransitionChild>

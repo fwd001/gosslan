@@ -25,7 +25,7 @@ const emit = defineEmits<{ (e: "close"): void }>();
         leave-from="opacity-100"
         leave-to="opacity-0"
       >
-        <div class="fixed inset-0 bg-black/40" aria-hidden="true" @click="emit('close')" />
+        <div class="fixed inset-0 bg-[var(--gosslan-overlay)]" aria-hidden="true" @click="emit('close')" />
       </TransitionChild>
 
       <div class="fixed inset-x-0 bottom-0">

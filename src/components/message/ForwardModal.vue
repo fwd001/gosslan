@@ -113,7 +113,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
           :key="c.id"
           class="flex h-[52px] w-full items-center gap-3 rounded-[var(--gosslan-radius-md)] px-2 text-left transition"
           :class="[
-            picked === c.id ? 'bg-[var(--gosslan-hover)] ring-1 ring-inset ring-primary' : 'hover:bg-[var(--gosslan-hover)]',
+            picked === c.id ? 'bg-[var(--gosslan-hover)] ring-1 ring-inset ring-[var(--gosslan-primary-ring)]' : 'hover:bg-[var(--gosslan-hover)]',
             // 多选时点会话只是**选中目标**（模式在底部两个按钮上选），不再立即转发
             multi ? 'cursor-pointer' : '',
           ]"
@@ -149,7 +149,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
           {{ t("multi.forwardPerMessage") }}
         </button>
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-primary px-4 py-2 text-sm text-white transition hover:bg-primary-hover disabled:opacity-40"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
           :disabled="!picked"
           @click="picked && emit('pick', picked, 'merged')"
         >

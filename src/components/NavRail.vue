@@ -8,24 +8,21 @@ import { Compass, MoreHorizontal, Moon, ScrollText, Settings, Sun } from "lucide
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { t } from "@/i18n";
 
+const NAV_STATES = ["chats", "contacts", "links", "favorites", "me"] as const;
+type NavState = (typeof NAV_STATES)[number];
+
 defineProps<{
-  view: "chats" | "contacts" | "links";
+  /** 当前导航状态——**单一数据源**，所有按钮互斥高亮由这一个值决定。
+   * 取代之前分散的 `view` + `favoritesOpen` 两个独立 ref（那两者会同时为真导致"多选"）。 */
+  navState: NavState;
   /** 正在打开独立窗口时的忙碌态（单飞/防抖状态在 `useWindowLauncher` 里，见该文件）。 */
   settingsOpening?: boolean;
   logsOpening?: boolean;
-  /**
-   * 收藏面板是否展开。
-   *
-   * 收藏**不是**一个 view（它打开的是浮层，主面板仍停在聊天/通讯录上），
-   * 所以它没有"选中态底色"，只有图标填充跟着面板开关走。
-   */
-  favoritesOpen?: boolean;
 }>();
 const emit = defineEmits<{
-  (e: "update:view", v: "chats" | "contacts" | "links"): void;
+  (e: "update:navState", v: NavState): void;
   (e: "open-settings"): void;
   (e: "open-logs"): void;
-  (e: "open-favorites"): void;
 }>();
 
 const app = useAppStore();
@@ -148,17 +145,17 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
     <div class="mt-5 flex flex-col items-center gap-2">
       <button
         class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
-        :class="view === 'chats'
+        :class="navState === 'chats'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
         :title="t('nav.chats')"
         :aria-label="chat.totalUnread > 0 ? t('nav.chats.unread', { n: chat.totalUnread }) : t('nav.chats')"
-        @click="emit('update:view', 'chats')"
+        @click="emit('update:navState', 'chats')"
       >
         <svg
           viewBox="0 0 24 24"
           class="h-[22px] w-[22px]"
-          :fill="view === 'chats' ? 'currentColor' : 'none'"
+          :fill="navState === 'chats' ? 'currentColor' : 'none'"
           stroke="currentColor"
           stroke-width="1.9"
           stroke-linejoin="round"
@@ -173,19 +170,19 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
       </button>
       <button
         class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
-        :class="view === 'contacts'
+        :class="navState === 'contacts'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
         :title="t('nav.contacts')"
         :aria-label="chat.pendingRequests.length ? t('nav.contacts.pending', { n: chat.pendingRequests.length }) : t('nav.contacts')"
-        @click="emit('update:view', 'contacts')"
+        @click="emit('update:navState', 'contacts')"
       >
         <!-- 单条 path + evenodd：外框实心时人像自动成为镂空（微信选中态的观感）。
              未选中时只有描边，人像以线条呈现。 -->
         <svg
           viewBox="0 0 24 24"
           class="h-[22px] w-[22px]"
-          :fill="view === 'contacts' ? 'currentColor' : 'none'"
+          :fill="navState === 'contacts' ? 'currentColor' : 'none'"
           stroke="currentColor"
           stroke-width="1.9"
           stroke-linejoin="round"
@@ -209,17 +206,17 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
            而 lucide 的线性图标填充后会变成墨团（见上面「聊天/通讯录」的说明）。 -->
       <button
         class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
-        :class="favoritesOpen
+        :class="navState === 'favorites'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
         :title="t('nav.favorites')"
         :aria-label="t('nav.favorites')"
-        @click="emit('open-favorites')"
+        @click="emit('update:navState', navState === 'favorites' ? 'chats' : 'favorites')"
       >
         <svg
           viewBox="0 0 24 24"
           class="h-[22px] w-[22px]"
-          :fill="favoritesOpen ? 'currentColor' : 'none'"
+          :fill="navState === 'favorites' ? 'currentColor' : 'none'"
           stroke="currentColor"
           stroke-width="1.9"
           stroke-linejoin="round"
@@ -231,12 +228,12 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
            （用户指定：链接入口要有"探索/发现"的指向感，而不是一条链子）。 -->
       <button
         class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
-        :class="view === 'links'
+        :class="navState === 'links'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
         :title="t('nav.links')"
         :aria-label="t('nav.links')"
-        @click="emit('update:view', 'links')"
+        @click="emit('update:navState', 'links')"
       >
         <Compass class="h-[22px] w-[22px]" />      </button>
     </div>

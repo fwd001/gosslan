@@ -244,7 +244,7 @@ watch(
           @click="cancelPolicyChange"
         >{{ t("common.cancel") }}</button>
         <button
-          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
           @click="confirmPolicyChange"
         >{{ t("common.confirm") }}</button>
       </div>
@@ -265,7 +265,7 @@ watch(
           @click="confirmClean = false"
         >{{ t("common.cancel") }}</button>
         <button
-          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
           @click="cleanNow"
         >{{ t("settings.storage.clean.btn") }}</button>
       </div>

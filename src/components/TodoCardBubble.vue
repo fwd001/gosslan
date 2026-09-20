@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { CSSProperties } from "vue";
 /**
  * 时间线里的群任务卡片气泡（用户 2026-09-17：任务消息不该在聊天里显示原始 JSON）。
  *
@@ -16,9 +17,16 @@ import { t } from "@/i18n";
 import { ChevronRight, ListTodo } from "lucide-vue-next";
 import type { MessageRecord } from "@/types";
 
-const props = defineProps<{ message: MessageRecord; /** 自己发的卡片：尖角朝右指向右侧头像。 */
-mine?: boolean }>();
+const props = defineProps<{
+  message: MessageRecord;
+  /** 自己发的卡片：尖角朝右指向右侧头像。 */
+  mine?: boolean;
+  /** 从父层 MessageItem 透传的卡片样式（固定底色，不跟随 mine/other）。 */
+  cardStyle?: CSSProperties;
+}>();
 const emit = defineEmits<{ (e: "open"): void }>();
+
+const { cardStyle } = props;
 
 const { memberProfile } = useMemberProfile();
 
@@ -32,12 +40,12 @@ function statusText(s: TodoStatus): string {
 </script>
 
 <template>
-  <div class="relative w-64 max-w-full" :style="{ '--bubble-bg': 'var(--gosslan-card)' }">
-    <div class="overflow-hidden rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-card)]">
+  <div class="relative w-64 max-w-full" :style="cardStyle">
+    <div class="overflow-hidden rounded-[var(--gosslan-bubble-radius)]">
     <div class="flex items-center gap-2 px-3 pt-2.5">
-      <ListTodo class="h-4 w-4 shrink-0 text-[var(--gosslan-accent-ink)]" />
+      <ListTodo class="h-4 w-4 shrink-0 text-[var(--gosslan-primary)]" />
       <span
-        class="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--gosslan-text)]"
+        class="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--gosslan-card-ink)]"
         :title="todo?.title || t('todo.title')"
       >
         {{ todo?.title || t("todo.title") }}
@@ -50,7 +58,7 @@ function statusText(s: TodoStatus): string {
 
     <p
       v-if="todo?.description"
-      class="mt-1 max-h-[4.2em] overflow-hidden whitespace-pre-wrap break-words px-3 text-[12px] leading-relaxed text-[var(--gosslan-text-2)]"
+      class="mt-1 max-h-[4.2em] overflow-hidden whitespace-pre-wrap break-words px-3 text-[12px] leading-relaxed text-[var(--gosslan-card-ink)] opacity-70"
     >
       {{ todo.description }}
     </p>
@@ -63,19 +71,19 @@ function statusText(s: TodoStatus): string {
       <span
         v-for="a in assignees"
         :key="a"
-        class="truncate rounded-full bg-[var(--gosslan-hover)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-text-2)]"
+        class="truncate rounded-full bg-[var(--gosslan-hover)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-card-ink)] opacity-70"
         :title="memberProfile(a).name"
       >
         {{ memberProfile(a).name }}
       </span>
-      <span v-if="assignees.length === 0" class="text-[11px] text-[var(--gosslan-text-2)]">
+      <span v-if="assignees.length === 0" class="text-[11px] text-[var(--gosslan-card-ink)] opacity-70">
         {{ t("todo.assigneesEmpty") }}
       </span>
     </div>
 
     <button
       type="button"
-      class="mt-2 flex w-full items-center justify-center gap-1 border-t border-[var(--gosslan-card-line)] py-1.5 text-[12px] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
+      class="mt-2 flex w-full items-center justify-center gap-1 border-t border-[var(--gosslan-card-line)] py-1.5 text-[12px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
       @click="emit('open')"
     >
       {{ t("todo.openPanel") }}

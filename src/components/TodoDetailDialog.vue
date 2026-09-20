@@ -113,7 +113,7 @@ watch(
                 type="button"
                 role="menuitem"
                 class="gosslan-menu-item"
-                :class="s === item.status ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
+                :class="s === item.status ? 'font-medium text-[var(--gosslan-primary)]' : ''"
                 :disabled="s === item.status"
                 :aria-current="s === item.status ? 'true' : undefined"
                 @click="choose(s)"
@@ -158,7 +158,7 @@ watch(
         <button
           v-if="canChangeStatus && item.status !== 'done'"
           type="button"
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:opacity-90"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)]"
           @click="emit('complete')"
         >
           <Check class="mr-1 inline h-3.5 w-3.5" />{{ t("todo.complete") }}

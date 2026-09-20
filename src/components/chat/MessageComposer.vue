@@ -743,7 +743,7 @@ function fileToDataUrl(f: File): Promise<string> {
         <button
           class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[6px] px-3.5 text-[13px] font-medium transition"
           :class="hasDraft
-            ? 'bg-primary text-white hover:bg-primary-hover'
+            ? 'bg-[var(--gosslan-primary)] text-white hover:bg-[var(--gosslan-primary-hover)]'
             : 'cursor-default bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"
           :disabled="!hasDraft"
           @mousedown.prevent

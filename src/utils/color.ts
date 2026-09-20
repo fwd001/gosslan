@@ -45,15 +45,18 @@ export function luma(hex: string): number {
 }
 
 /**
- * 把颜色朝 target 混合到指定亮度：只在当前亮度高于 targetLuma 时才动，
- * 已经够暗的颜色原样返回（避免 slate 这类深色气泡被压得看不见）。
+ * 把颜色朝 target 混合到指定亮度（双向：提亮/压暗都支持）。
+ * 原来只做"朝暗压"——但微信式浅底需要"朝白提"到目标 luma，方向搞反了 ratio 会变负。
+ * 通用公式：resultLuma = from*(1-r) + to*r  →  r = (targetLuma - from) / (to - from)
+ * ratio 不在 [0,1] 范围内说明朝 target 方向走达不到，原样返回。
  */
 export function mixToLuma(hex: string, target: [number, number, number], targetLuma: number): string {
   const from = luma(hex);
-  if (from <= targetLuma) return hex;
   const to = 0.2126 * target[0] + 0.7152 * target[1] + 0.0722 * target[2];
-  if (from - to < 1) return hex;
-  return mixHex(hex, target, Math.min(1, (from - targetLuma) / (from - to)));
+  if (Math.abs(from - targetLuma) < 0.5) return hex;
+  const ratio = (targetLuma - from) / (to - from);
+  if (ratio < 0 || ratio > 1) return hex;
+  return mixHex(hex, target, ratio);
 }
 
 /**

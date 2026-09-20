@@ -18,6 +18,7 @@ import { computed } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
+import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import { t, type LanguagePreference } from "@/i18n";
 
 const app = useAppStore();
@@ -37,20 +38,13 @@ const languageOptions = computed<{ value: LanguagePreference; label: string }[]>
   <SettingsGroup :title="t('settings.group.language')" :footer="t('settings.language.desc')">
     <SettingsRow :label="t('settings.language.title')" last>
       <!-- flex-wrap + whitespace-nowrap：英文「Follow System」较长，放不下时换行而不是溢出/挤压 -->
-      <div class="flex flex-wrap items-center gap-1">
-        <button
-          v-for="l in languageOptions"
-          :key="l.value"
-          class="whitespace-nowrap rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 text-xs transition"
-          :aria-pressed="app.language === l.value"
-          :class="app.language === l.value
-            ? 'bg-primary text-white'
-            : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-          @click="app.setLanguage(l.value)"
-        >
-          {{ l.label }}
-        </button>
-      </div>
+      <SegmentedControl
+        :model-value="app.language"
+        :options="languageOptions"
+        size="sm"
+        :aria-label="t('settings.language.title')"
+        @update:model-value="(v) => app.setLanguage(v as LanguagePreference)"
+      />
     </SettingsRow>
   </SettingsGroup>
 </template>
