@@ -57,6 +57,8 @@ db::cascade_tests::fill_message_sha256_backfills_once_and_keeps_other_fields
 db::cascade_tests::migration_v7_purges_legacy_group_orphans_only
 db::cascade_tests::search_history_skips_orphan_conversations
 db::cascade_tests::transfer_progress_upsert_never_erases_the_known_path
+db::migration_tests::downgrade_message_says_who_is_old_and_what_to_do
+db::migration_tests::downgrade_refusal_writes_nothing
 db::migration_tests::migration_double_start_does_not_reapply
 db::migration_tests::migration_fresh_db_gets_latest_version
 db::migration_tests::migration_legacy_user_version_0_with_tables_runs_all_steps
@@ -510,6 +512,7 @@ tests::ble_link_has_a_designated_dialer
 tests::ble_start_does_not_block_on_the_peripheral_state_wait
 tests::ble_write_failure_retries_then_tears_the_link_down
 tests::blocking_commands_run_off_the_main_thread
+tests::boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking
 tests::bt_defaults_on_everywhere
 tests::capability_covers_every_window_label
 tests::channel_status_exposes_persisted_preference

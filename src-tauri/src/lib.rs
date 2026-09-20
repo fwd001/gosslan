@@ -180,7 +180,58 @@ pub fn run() {
     let app = builder
         .setup(|app| {
             state_mark("boot", "AppState::init 之前");
-            let state = state::AppState::init(app.handle().clone())?;
+            let state = match state::AppState::init(app.handle().clone()) {
+                Ok(state) => state,
+                Err(e) => {
+                    // 数据来自**更新**的版本 ⇒ 拒绝打开（"能升不能毁"红线），但"拒绝"
+                    // 必须是用户看得懂、知道该干什么的一句话，而不是一个悄悄消失的窗口：
+                    // setup 返回 Err 会被 Tauri 变成 panic，而 Windows 发布版是
+                    // `windows_subsystem = "windows"`（无控制台）⇒ stderr 无处可去 = 用户
+                    // 看到窗口闪一下就没了，什么提示都没有。
+                    //
+                    // 按**类型**分支而不是错误字符串：协议层已经因为"按前缀分类"吞过一整条
+                    // 消息（INV-P24 第 2 条，v4.22.34 才修掉）。
+                    if let Some(db::InitError::Downgrade { current }) =
+                        e.downcast_ref::<db::InitError>()
+                    {
+                        let msg = db::InitError::downgrade_message(*current);
+                        state_mark("boot", "数据库版本比本机程序新，拒绝启动");
+                        eprintln!("[gosslan]{msg}");
+                        // 弹窗**只在桌面端**做。移动端不是"顺手也弹一下"：那个时点原生对话框
+                        // 到底能不能显示，我在这里没有任何实测手段，而"弹出来了但没有 state"
+                        // 与"压根没弹"在 Android 上的分别是**崩溃 vs 永久白屏** —— 后者更糟。
+                        // 宁可让移动端保持现状（panic + logcat 一行），也不把未验证的行为写进
+                        // 移动端启动路径。
+                        #[cfg(desktop)]
+                        {
+                            use tauri_plugin_dialog::DialogExt as _;
+                            let handle = app.handle().clone();
+                            // ⚠️ **只能非阻塞 `show` + 提前 `return Ok(())`**。
+                            // 插件的桌面实现是 `run_on_main_thread(...)`
+                            // （tauri-plugin-dialog-2.7.3/src/desktop.rs:222），而 setup 正跑在
+                            // 主线程上 ⇒ 阻塞版 API 的 `rx.recv()` 会钉住主线程，排在队列
+                            // 里的弹窗任务永远执行不到 = 开机自锁（与 v4.22.30 修掉的 Windows
+                            // 开窗卡死同一个形状）。让主线程回到事件循环，弹窗才会出现。
+                            handle
+                                .dialog()
+                                .message(msg)
+                                .title("Gosslan")
+                                .show(move |_| {
+                                    // 用户点掉提示之后才退出（exit 走事件循环代理，跨线程安全）
+                                    handle.exit(1);
+                                });
+                            // 提前返回 ⇒ 不 `manage(state)`、不建托盘：前端所有命令都会拿到
+                            // "state not found" 的 IPC 错误（不 panic），界面停在空白 ——
+                            // 这比"半死的界面"诚实，而且原生弹窗盖在上面。
+                            return Ok(());
+                        }
+                    }
+                    // 非降级的启动错误、以及移动端（上面那段 cfg(desktop) 不参与编译）
+                    // 都走原路：Err → 框架 panic → 退出。文案已经进 stderr，
+                    // 安卓上 `state_mark` 还会把它送进 logcat。
+                    return Err(e);
+                }
+            };
             state
                 .logger
                 .info("boot", "AppState::init 完成（设置/目录/局域网就绪）");
@@ -2162,6 +2213,71 @@ mod tests {
         assert!(
             disc.contains("peer_versions"),
             "sweep_peers 必须回收 peer_versions（与 peer_content_features 同一回收点）"
+        );
+    }
+
+    /// 启动期"数据比本机新 ⇒ 拒绝打开"这条路径的三个形状都必须钉住（AI_RULES §13）。
+    ///
+    /// ① **判定早于任何写操作**：`execute_batch(SCHEMA)` 是 `CREATE TABLE IF NOT EXISTS`，
+    ///    看着无害，但它确实写文件；先写再判，`downgrade_message()` 里"数据没有被修改"就成了
+    ///    谎话，而用户正是凭这句话决定"可以放心装新版本"。（回归过的位置：v4.22.36 之前
+    ///    判定在 `run_migrations` 里 = SCHEMA 之后。）
+    /// ② **调用方按类型分支**，不许 `to_string().contains("user_version")` —— 协议层已经
+    ///    因为按错误字符串分类吞过一整条消息（INV-P24 第 2 条，v4.22.34）。
+    /// ③ **弹窗只能非阻塞**：`blocking_show()` 的桌面实现是 `run_on_main_thread`
+    ///    （tauri-plugin-dialog-2.7.3/src/desktop.rs:222），而 `setup` 正跑在主线程上 ⇒
+    ///    排在队列里的弹窗永远执行不到 = 开机自锁，与 v4.22.30 修掉的 Windows 开窗卡死
+    ///    同一个形状。写错成 blocking 版本不会报错，只会**永远白屏**，所以必须机器拦。
+    #[test]
+    fn boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking() {
+        /// 只留**代码行**：这条守卫判的是"有没有真的调用"，注释里提到 API 名字是
+        /// 常事（本条第一次跑就被自己的注释判红了），所以先把行注释剥掉 ——
+        /// 既不让散文误伤守卫，也不让散文冒充成实现。
+        fn code_only(src: &str) -> String {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let db = code_only(include_str!("db.rs"));
+        // ⚠️ 只取**测试模块之前**那段代码：守卫自己就在 lib.rs 里，全文一起扫的话
+        // 下面这几个字面串会先命中守卫自己的源码 —— 正判据永远为真、负判据永远为假，
+        // 这条守卫会变成看着严密实际空转的那种。
+        let lib = code_only(
+            include_str!("lib.rs")
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap_or_default(),
+        );
+
+        let check = "if current > DB_VERSION";
+        let write = "conn.execute_batch(SCHEMA)";
+        assert_eq!(
+            db.matches(check).count(),
+            1,
+            "降级判定全仓只许一处（第二处迟早与第一处口径不同）"
+        );
+        assert_eq!(
+            db.matches(write).count(),
+            1,
+            "本机 schema 只许在一处写入，否则这条顺序断言无法判定位置"
+        );
+        assert!(
+            db.find(check).unwrap() < db.find(write).unwrap(),
+            "降级判定必须早于 execute_batch(SCHEMA)：先写再判 = 「数据未被修改」是谎话"
+        );
+
+        assert!(
+            lib.contains("downcast_ref::<db::InitError>()"),
+            "启动期必须按 db::InitError 类型分支，而不是按错误字符串猜"
+        );
+        assert!(
+            !lib.contains("blocking_show"),
+            "主线程上 blocking_show() 会自锁（弹窗任务排在被钉住的主线程队列里）"
+        );
+        assert!(
+            lib.contains(".show(move |_|"),
+            "降级提示必须非阻塞排队 + 提前 return，让主线程回到事件循环"
         );
     }
 

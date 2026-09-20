@@ -34,20 +34,80 @@ fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool> {
     Ok(exists)
 }
 
-fn run_migrations(conn: &Connection) -> Result<()> {
-    let current: u32 = conn
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .unwrap_or(0);
-    // S13: 数据库版本高于当前程序 — 说明用户从更新版本的 App 降级了，
-    // 旧代码不认识新 schema，继续使用会导致数据损坏。**拒绝继续，不降级、不删除。**
-    if current > DB_VERSION {
-        let msg = format!(
-            "DB user_version={current} > app DB_VERSION={DB_VERSION}: \
-             refusing to open (downgrade detected, please restore backup or upgrade app)"
-        );
-        eprintln!("[gosslan-db] FATAL: {msg}");
-        return Err(rusqlite::Error::InvalidParameterName(msg));
+/// `init()` 的失败分类 —— **必须是有类型的**，不许让调用方按错误字符串猜。
+///
+/// 协议层已经在这上面摔过一次：`decode_frame` 用 `unknown variant` 前缀分类，结果把
+/// "未知嵌套枚举值"也误判成"未知帧类型"，整条消息被吞（INV-P24 第 2 条，v4.22.34 才修掉）。
+/// 启动期的降级判定是同一类判断，所以一开始就给它一个类型。
+#[derive(Debug)]
+pub enum InitError {
+    /// 数据文件的 `user_version` 比本机 `DB_VERSION` 新 ⇒ **本机程序比数据旧**。
+    /// 唯一正确的处置是拒绝打开（AI_RULES 的"能升不能毁"红线），但必须给用户
+    /// 可读、可行动的解释（`downgrade_message`），不能只是一个错误。
+    Downgrade { current: u32 },
+    /// 其它 SQLite 错误（打不开、迁移失败……）。
+    Sqlite(rusqlite::Error),
+}
+
+impl InitError {
+    /// **只有降级这一种情况**给人看的那句话（启动期原生对话框与日志共用这一份文案）。
+    ///
+    /// 刻意不做成"每种错误各自配一句人话"的形状：其它 SQLite 错误没有
+    /// "该升级还是该修文件"这种可行动作，硬凑一句反而把用户支到错误方向 —— 类型上直接
+    /// 不给"把降级文案套到别的错误上"的机会，比写一条测试去禁止它更省事。
+    ///
+    /// 中英各一句不是敷衍：此刻数据库还没打开，读不到用户存的 `language` 偏好，
+    /// 而这个弹窗必须在 webview 之外显示（应用已经没有可用的后端状态了）——
+    /// 所以两种语言都给，而不是猜一种。
+    pub fn downgrade_message(current: u32) -> String {
+        format!(
+                "本机 Gosslan 比这份数据旧，无法打开。\n\
+                 数据版本 v{current}，本机支持到 v{DB_VERSION}。\n\
+                 \n\
+                 你的聊天记录没有被修改（迁移在写入任何数据之前就已中止）。\n\
+                 请升级到不低于创建这份数据的 Gosslan 版本后再打开；\n\
+                 如果必须留在当前版本，请先从更新版本里导出的备份恢复。\n\
+                 \n\
+                 --- \n\
+                 This Gosslan build is older than the data file \
+                 (data v{current}, this app supports up to v{DB_VERSION}), so it refuses to open it.\n\
+                 Your messages were NOT modified — the check runs before any write.\n\
+                 Install a Gosslan version at least as new as the one that created this data."
+        )
     }
+}
+
+impl std::fmt::Display for InitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 日志用**单行**技术描述（`downgrade_message` 那段长文案给人看，别刷进日志文件）。
+        match self {
+            Self::Downgrade { current } => write!(
+                f,
+                "DB user_version={current} > app DB_VERSION={DB_VERSION}: \
+                 数据来自更新的版本，拒绝降级打开（未执行任何迁移）"
+            ),
+            Self::Sqlite(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for InitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Sqlite(e) => Some(e),
+            Self::Downgrade { .. } => None,
+        }
+    }
+}
+
+impl From<rusqlite::Error> for InitError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Sqlite(e)
+    }
+}
+
+/// 执行迁移（**只在 `current <= DB_VERSION` 时**被调用，见 `init` 里唯一的降级判定）。
+fn run_migrations(conn: &Connection, current: u32) -> Result<()> {
     if current == DB_VERSION {
         return Ok(());
     }
@@ -466,18 +526,29 @@ CREATE INDEX        IF NOT EXISTS idx_favorites_time ON favorites(favorited_at D
 "#;
 
 /// 打开（或创建）数据库并执行迁移。
-pub fn init(path: &Path) -> Result<Connection> {
+pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     let conn = Connection::open(path)?;
+    // S13: 数据库版本高于当前程序 — 说明用户从更新版本的 App 降级了，旧代码不认识新
+    // schema，继续使用会导致数据损坏。**拒绝继续，不降级、不删除。**
+    //
+    // ★ 位置是**语义的一部分**：必须早于下面任何一句写操作。`execute_batch(SCHEMA)`
+    //   看着是 `CREATE TABLE IF NOT EXISTS`（对老表无害），但它确实写文件，而且一旦先跑它，
+    //   "你的数据没有被改动"这句提示就成了谎话。全仓只允许这一处降级判定。
+    let current: u32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    if current > DB_VERSION {
+        let err = InitError::Downgrade { current };
+        eprintln!("[gosslan-db] FATAL: {err}");
+        return Err(err);
+    }
     conn.execute_batch(SCHEMA)?;
     // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
     crate::content::store::ensure_schema(&conn)?;
-    // ★ 预读状态：区分真·新库 vs 遗留老库
-    let pre_version: u32 = conn
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .unwrap_or(0);
+    // ★ 预读状态：区分真·新库 vs 遗留老库（`current` 已在降级判定处读过，不再读第二遍）
     let pre_table_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -485,12 +556,12 @@ pub fn init(path: &Path) -> Result<Connection> {
             |r| r.get(0),
         )
         .unwrap_or(0);
-    let is_fresh = pre_version == 0 && pre_table_count == 0;
+    let is_fresh = current == 0 && pre_table_count == 0;
 
     if is_fresh {
         conn.pragma_update(None, "user_version", DB_VERSION)?;
     } else {
-        run_migrations(&conn)?;
+        run_migrations(&conn, current)?;
     }
     // 每次启动都把会话时钟同步到「该会话已有最大逻辑序号」
     conn.execute(

@@ -674,6 +674,12 @@ For a protocol-breaking change:
 
 * `user_version` 单调递增 + 分步迁移；**降级一律拒绝启动**（不猜、不删数据）——
   拒绝必须给用户可读解释（"本机数据来自更新版本，请升级后再打开"），不能只是一个错误。
+  落地（v4.22.36）：判定在 `db::init` 里**唯一一处**且**早于 `execute_batch(SCHEMA)`**
+  （先写再判 = "数据未被改动"是谎话，`downgrade_refusal_writes_nothing` 拦这条）；
+  错误是带类型的 `db::InitError::Downgrade`，`downgrade_message()` 是那一句人话；启动期由
+  `lib.rs` 的非阻塞原生弹窗显示。**不许改成 `blocking_show()`** —— 插件的桌面实现走
+  `run_on_main_thread`，而 `setup` 就跑在主线程上 ⇒ 弹窗永远排不到 = 开机自锁
+  （与 §37.1 / v4.22.30 的 Windows 开窗卡死同一个形状）。
 * 迁移只做"结构搬运/存量清理"，不做"顺手改语义"；一次迁移一件事。
 * 不为"从没发布过的中间态"写迁移（那是真正的假想兼容）；为"已发布包里可能有的状态"写，
   并且要在迁移测试里**造出那个旧状态**再验证。

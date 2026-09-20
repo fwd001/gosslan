@@ -230,6 +230,60 @@ CASES: list[Case] = [
         expect_fail_hint="创建窗口",
         tags=["rust", "window", "deadlock"],
     ),
+    # ---------------- 启动期：数据比本机新（v4.22.36）----------------
+    Case(
+        name="降级拒绝必须早于任何写操作（「数据未被修改」不许是谎话）",
+        why="拒绝降级这件事本身是对的，但判定曾经写在 run_migrations 里 = execute_batch(SCHEMA) "
+        "之后：那次 batch 虽是 CREATE TABLE IF NOT EXISTS，却确实写文件 ⇒ 弹窗里"
+        "「你的聊天记录没有被修改（迁移在写入任何数据之前就已中止）」成了假话，"
+        "而用户正是凭这句话判断「可以放心去装新版本」",
+        file=TAURI / "src" / "db.rs",
+        injections=[(
+            "        return Err(err);\n"
+            "    }\n"
+            "    conn.execute_batch(SCHEMA)?;",
+            "        conn.execute_batch(SCHEMA)?;\n"
+            "        return Err(err);\n"
+            "    }\n"
+            "    conn.execute_batch(SCHEMA)?;",
+        )],
+        cmd=cargo("test", "--lib", "downgrade_refusal_writes_nothing"),
+        cwd=TAURI,
+        expect_fail_hint="不许建任何表",
+        tags=["rust", "boot"],
+    ),
+    Case(
+        name="开机降级弹窗必须非阻塞（blocking_show 在主线程自锁）",
+        why="插件桌面实现是 app_handle.run_on_main_thread(...)（desktop.rs:222），而 setup "
+        "就跑在主线程上 ⇒ blocking_show 的 rx.recv() 钉住主线程、弹窗任务永远排不到 = "
+        "开机白屏死锁，与 v4.22.30 的 Windows 开窗卡死同一个形状。写错不会编译失败，"
+        "只会永远看不见那句提示，所以只能机器拦",
+        file=TAURI / "src" / "lib.rs",
+        injections=[(
+            "                            handle\n"
+            "                                .dialog()\n"
+            "                                .message(msg)\n"
+            "                                .title(\"Gosslan\")\n"
+            "                                .show(move |_| {\n"
+            "                                    // 用户点掉提示之后才退出（exit 走事件循环代理，跨线程安全）\n"
+            "                                    handle.exit(1);\n"
+            "                                });",
+            "                            if handle\n"
+            "                                .dialog()\n"
+            "                                .message(msg)\n"
+            "                                .title(\"Gosslan\")\n"
+            "                                .blocking_show()\n"
+            "                            {\n"
+            "                                std::process::exit(1);\n"
+            "                            }",
+        )],
+        cmd=cargo(
+            "test", "--lib", "boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking"
+        ),
+        cwd=TAURI,
+        expect_fail_hint="blocking_show",
+        tags=["rust", "boot", "deadlock"],
+    ),
     # ---------------- 本地新增护栏（2026-09-14）----------------
 
     Case(

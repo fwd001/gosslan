@@ -10,6 +10,116 @@
 
 ## [Unreleased]
 
+## [4.22.36] - 2026-09-20
+
+### Fixed (数据比本机新时，"拒绝启动"终于说得清发生了什么 — AI_RULES §13 的落地补齐)
+
+用户诉求里那句「版本不支持应该提醒，而不是报错」在**本地数据**这一侧一直没做到：
+`db::init` 遇到 `user_version > DB_VERSION` 的行为是对的（拒绝降级、不删数据），
+但用户看到的效果是"窗口闪一下就没了"。三层叠加：
+
+1. 文案是英文技术串（`refusing to open (downgrade detected, ...)`），而且为了传出去
+   被硬塞进 `rusqlite::Error::InvalidParameterName` —— 一个语义完全不相干的变体；
+2. 这个错误从 `AppState::init` 冒到 Tauri 的 `setup`，`setup` 返回 Err 会被框架变成
+   `panic!("Failed to setup app: ...")`（tauri-2.11.5/src/app.rs:1424）；
+3. Windows 发布版是 `windows_subsystem = "windows"`（无控制台）⇒ panic 的 stderr 无处可去。
+
+于是"正确地拒绝"在用户端等于"无声崩溃"。AI_RULES §13 早就写了"拒绝必须给用户可读解释，
+不能只是一个错误"——规则在场，实现没跟上。
+
+**顺带修掉一个更隐蔽的问题**：降级判定原本在 `run_migrations` 里，而 `run_migrations`
+是在 `conn.execute_batch(SCHEMA)` **之后**才跑的。那句是 `CREATE TABLE IF NOT EXISTS`，
+对已有表无害，但它确实写文件 —— 也就是说旧代码一边宣称"你的数据没有被改动"，一边
+已经把本机这套 schema 的缺失表建进了一个**比本机更新**的库里。现在判定挪到
+`Connection::open` 之后的第一件事，并在 `migration_tests.rs` 里用
+「拒绝之后库里仍然一张表都没有」钉住位置（`downgrade_refusal_writes_nothing`）。
+
+**改法**：
+
+- `db::init` 的失败改成带类型的 `enum InitError { Downgrade { current }, Sqlite(..) }`
+  （`Display` 给单行技术描述写日志，`downgrade_message(current)` 给人看的那句话：两个版本号
+  都在场、承诺数据未被修改、说清该升级而不是删库）。**按类型分支而不是错误字符串**是刻意的 ——
+  协议层已经因为"按 `unknown variant` 前缀分类"吞过一整条消息（INV-P24 第 2 条，v4.22.34
+  才修掉），同一类判断不许再犯第二次。
+- `lib.rs` 的 `setup` 在启动失败处分类型识别降级，弹**原生非阻塞**对话框，用户点掉后
+  `exit(1)`；其余错误仍按原路返回。
+- 弹窗**只能是 `show`，不能是 `blocking_show`**：插件的桌面实现是
+  `run_on_main_thread(...)`（tauri-plugin-dialog-2.7.3/src/desktop.rs:222），而 `setup`
+  正跑在主线程上 ⇒ 阻塞版的 `rx.recv()` 会把主线程钉住，排在队列后面的弹窗任务永远
+  执行不到 —— 与 v4.22.30 刚修掉的 Windows 开窗卡死是**同一个形状**。所以提前
+  `return Ok(())` 让主线程回到事件循环，代价是不再 `manage(state)`（前端命令全部拿到
+  "state not found" 的 IPC 错误、界面停在空白）：比"半死的界面"诚实，且弹窗盖在上面。
+- 弹窗文案中英各一句不是敷衍：此刻数据库没打开，读不到用户的 `language` 偏好，
+  而这个弹窗必须在 webview 之外显示 —— 两种语言都给，而不是猜一种。
+
+**测试**（`db/migration_tests.rs`）：`migration_refuses_downgrade` 从 "is_err" 收紧成必须是
+`InitError::Downgrade { current: 99 }`；新增 `downgrade_refusal_writes_nothing`（上面那条
+位置红线）、`downgrade_message_says_who_is_old_and_what_to_do`（两个版本号 + "没有被修改" +
+"升级"必须在场，老英文串与 `InvalidParameterName` 必须不在场）。
+护栏源守卫 `boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking`
+判 ①唯一一处 ②按类型分支 ③非阻塞，两条 `verify-guards.py` 用例分别注入
+"判定挪到写入之后"和"改用 blocking_show"验证非空转。
+
+**自查后删掉的两处**（都是我自己多写的东西，记下来是因为"删测试"必须留痕）：
+
+1. `#[cfg(not(desktop))] { let _ = msg; return Err(e); }` 是**死分支** —— 桌面块不参与编译时
+   本来就落到外层 `return Err(e)`。移动端行为不变，少 5 行。
+2. 原本给 `InitError` 写了 `user_message(&self)`，带一条 `Sqlite` 分支返回"无法打开本地数据库"，
+   并配了一条测试断言"非降级错误不许套降级文案"。但那条分支在生产里**永远不会被显示**
+   （只有降级走弹窗）—— 为一段不会执行的路径写文案再写测试禁止误用，是绕了一圈的过度设计。
+   改成 `downgrade_message(current)` 只服务降级那一种，于是"把降级文案套到文件损坏上"
+   在类型上直接不成立。**随之删掉 `sqlite_errors_are_not_reported_as_downgrade` 这一条测试**
+   （它保护的对象已经不存在，不是改断言迁就实现），用例总数 591 → 590。
+
+**自己写出来才发现的两个坑**（都记在这里，因为它们是同两类反复出事的形状）：
+
+1. 守卫第一次跑就把自己判红了 —— 它在 `lib.rs` 里，而注释里写了 `blocking_show()`
+   这个 API 名。修法不是改注释措辞（那样散文一动守卫就瞎），而是判据只看代码行
+   （剥掉 `//` 开头行）**并且**只取 `#[cfg(test)]` 之前那段：否则正判据
+   （`.show(move |_|`）会先命中守卫自己的源码，变成"永远为真"的空转守卫 ——
+   这比判据太松更危险，因为它看起来是绿的。
+2. 移动端刻意**不**走弹窗（`#[cfg(desktop)]` 才弹）：那个时点原生对话框在 Android 上
+   显不显示，我在这里没有实测手段；而"提前 `return Ok(())` 但弹窗没出现"的后果是
+   永久白屏，比现在的"崩溃 + logcat 一行"更糟。所以移动端保持原行为，
+   由 `check-mobile.sh` 证明 `#[cfg(not(desktop))]` 那条分支编得过。
+
+## 验证
+
+- `npm run verify:full` **15 步全绿 / EXIT=0 / 376.7s**（这一轮跑了两遍：审查改动后的
+  最终代码重跑一遍才算数）：clippy `-D warnings` 0 告警、
+  `cargo test --features bluetooth`（examples 一并编）、Android aarch64 编译门禁 76.6s
+  通过（就是上面那条移动端分支的编译证据）。
+- 两条新护栏的**非空转**证据：`python3 -u scripts/verify-guards.py --only boot`
+  → 两条都是「改坏即 FAIL、恢复即 PASS」，EXIT=0。
+- macos 基线 587 → **590**：新增 3 条（`downgrade_refusal_writes_nothing` +
+  `downgrade_message_says_who_is_old_and_what_to_do` + 源守卫那 1 条），
+  另有 1 条老测试 `migration_refuses_downgrade` 从 "is_err" 收紧成判类型；
+  以及**删掉 1 条**（`sqlite_errors_are_not_reported_as_downgrade`，见上"自查后删掉的两处"）——
+  587 + 3 = 590 对得上，删的那条不是为了让谁变绿。
+- **真机确认（用户 2026-09-20 亲眼）**：起隔离实例 `gosslan-1.db`（`PRAGMA user_version = 99`，
+  不碰真实 `gosslan.db`）跑 release 二进制 ⇒ 屏幕上出现原生弹窗「本机 Gosslan 比这份数据旧，
+  无法打开…（中英各一段）」，点 OK 后进程干净退出；日志侧同时留下
+  `[gosslan-db] FATAL: DB user_version=99 > app DB_VERSION=8: …（未执行任何迁移）`。
+  这条路径**不再是"只能靠单元测试相信"的**。
+  边界要说清：**以上是 macOS**。Windows 走的是同一条 `#[cfg(desktop)]` 分支，但
+  Windows 的 WebView2/TaskDialog 行为差异已经坑过我们一次（v4.22.30 的开窗卡死），
+  所以"Windows 上这个弹窗也正常"**还没有证据** —— 下次在 Win 机上出包时顺手验一次
+  （同样用 `GOSSLAN_INSTANCE=1` + 一个 `user_version=99` 的 `gosslan-1.db`，不碰真库）。
+  移动端则是**刻意没做**（见上），保持今天的行为：崩溃 + logcat 一行。
+- ⚠️ 顺带记一个"看着像证据其实不是"的坑：插件桌面实现里 `ok=true` **同时**是
+  "用户点了 OK" 和 "弹窗根本没显示、结果被 default 掉了"两种情况（`desktop.rs:219`
+  把 `MessageDialogResult` 直接喂给回调，失败路径也走同一个值）。我一度根据"回调 2~6 秒就返回了"
+  判成弹窗没显示 —— 实际是人在键盘上点的。**回调返回不是显示证据，人眼才是**。
+  以后要机器判"弹窗到底有没有出现"，得换个可观测的面（窗口存在性/截图），别拿回调当证据。
+- 我这台 shell 的两条观测通道都被权限堵死，记下来免得下次再试：`screencapture` 报
+  `could not create image from display`（无屏幕录制权限），`System Events` 报
+  `-25211`（无辅助访问权限）—— 所以"截个图看弹窗"这种验证在这里做不了，只能请人看。
+- 顺带一个门禁自身的观测：上一版全量层 1067.3s 里"护栏非空转（前端子集）"占 594.2s，
+  本轮同一步只有 68.7s —— 差在**并行的 `tauri build` 抢 cargo 构建锁**。
+  期间一条用例还因为 `Command ... timed out after 900 seconds` 被判"不符合预期"，
+  而它其实什么都没做错。结论：护栏扫描的 900s 超时在"有人正在打包"时会误报，
+  这是门禁鲁棒性问题（已并入待办 #25/#33 一起处理，不在本轮偷偷改）。
+
 ## [4.22.35] - 2026-09-20
 
 ### Added (「对方版本较新」从诊断面板里的一条数据，变成用户看得见的状态 — INV-P24 第 2 条收尾)

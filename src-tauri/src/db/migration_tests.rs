@@ -8,14 +8,18 @@
 //!   5. 消息数据跨 Migration 保留
 //!   6. 重复启动 → 不重复执行 Migration
 //!   7. Migration 成功执行 → 原数据完好 + 新增列存在
-//!   8. old_version > DB_VERSION → 拒绝降级
+//!   8. old_version > DB_VERSION → 拒绝降级（且必须是**带类型**的 InitError::Downgrade）
+//!   8b. 拒绝降级**不建任何表** —— 降级判定必须早于 execute_batch(SCHEMA)
+//!   8c. 降级文案必须可读可行动（两个版本号 + "数据未被修改" + 该升级）。
+//!       非降级错误**没有这份文案可拿** —— `downgrade_message` 只服务降级那一种，
+//!       所以"把降级文案套到文件损坏上"这件事在类型上就不成立，不需要测试去禁。
 //!   9. Legacy user_version=0 + 空表 → 当作全新库
 
 use rusqlite::{params, Connection};
 use std::env;
 use std::path::PathBuf;
 
-use super::{init, DB_VERSION};
+use super::{init, InitError, DB_VERSION};
 
 /// 每个测试创建一个独立临时 DB 文件，避免跨测试污染。
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -422,12 +426,13 @@ fn migration_refuses_downgrade() {
         .unwrap();
     }
 
-    // init 应该返回 Err
-    let result = init(&path);
+    // init 应该返回**带类型的**降级错误（调用方按类型分支，不许按错误字符串猜）
+    let err = init(&path)
+        .err()
+        .expect("user_version=99 > DB_VERSION 应该拒绝打开，实际 Ok");
     assert!(
-        result.is_err(),
-        "user_version=99 > DB_VERSION={} 应该拒绝打开，实际 Ok",
-        DB_VERSION
+        matches!(err, InitError::Downgrade { current } if current == 99),
+        "必须是 InitError::Downgrade{{current:99}}，实际 {err:?}"
     );
 
     // 确认数据库没被修改
@@ -440,6 +445,62 @@ fn migration_refuses_downgrade() {
 
     // 原数据完好
     drop(conn);
+}
+
+// ---------------------------------------------------------------------------
+// S24-TEST 8b：拒绝降级**一个字节都不许写**（"数据未被修改"这句提示的可验证版本）
+// ---------------------------------------------------------------------------
+
+/// 这条才是真正拦住"检测写晚了"的那一条。
+///
+/// `init()` 里降级判定**必须早于** `execute_batch(SCHEMA)`：那句看着只是
+/// `CREATE TABLE IF NOT EXISTS`（对已有表无害），但它确实写文件，而且一旦先跑，
+/// `downgrade_message()` 里"迁移在写入任何数据之前就已中止"就成了谎话 —— 用户据此
+/// 判断"我可以放心装新版本"，所以这句话必须是事实而不是安慰。
+#[test]
+fn downgrade_refusal_writes_nothing() {
+    let path = temp_db_path();
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA user_version = 99;").unwrap();
+    }
+    assert!(init(&path).is_err(), "v99 数据必须被拒绝");
+
+    let conn = Connection::open(&path).unwrap();
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        tables, 0,
+        "拒绝降级时不许建任何表（本机 schema 一旦写进新库，那份数据就回不去了）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S24-TEST 8c：降级提示必须可读且可行动（AI_RULES：拒绝必须给解释，不能只是一个错误）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn downgrade_message_says_who_is_old_and_what_to_do() {
+    let msg = InitError::downgrade_message(DB_VERSION + 7);
+    // ① 两个版本号都要在场 —— 只说"版本不支持"用户没法判断该装哪个版本
+    assert!(msg.contains(&(DB_VERSION + 7).to_string()), "{msg}");
+    assert!(msg.contains(&DB_VERSION.to_string()), "{msg}");
+    // ② 说清数据没动 + 该干什么
+    assert!(msg.contains("没有被修改"), "必须承诺数据未被改动：{msg}");
+    assert!(msg.contains("升级"), "必须给出可行动作（升级）：{msg}");
+    // ③ 老文案是英文 + 靠 rusqlite 变体名传出，用户读不懂；确认它不再回来
+    assert!(
+        !msg.contains("refusing to open"),
+        "不该把内部报错当用户文案：{msg}"
+    );
+    assert!(!msg.contains("InvalidParameterName"), "{msg}");
+    // ④ 不许出现裸 JSON / 结构体 Debug 输出（同一类"把内部形态露给用户"的问题）
+    assert!(!msg.contains('{'), "文案里不该有未替换的占位符：{msg}");
 }
 
 // ---------------------------------------------------------------------------
