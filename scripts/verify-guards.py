@@ -603,6 +603,27 @@ CASES: list[Case] = [
         tags=["rust", "file", "transport"],
     ),
     Case(
+        name="群文件 Offer 必须与分片同链路",
+        why="Offer=Normal、Chunk=Low，各自逐条选路。Normal 满时 failover 到另一条连接 ⇒ "
+        "分片先到（接收端还没密钥，静默丢弃）、Offer 后到 ⇒ 首个 seq 对不上 ⇒ 整条判死。"
+        "只钉分片不钉 Offer 比不钉更危险：分裂点是新造出来的",
+        file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
+        injections=[(
+            "crate::network::transport::send_on_link(&link, &offer)",
+            "crate::network::transport::try_send(state, recipient, &offer)",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "ble_file_transfer_respects_link_limits",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="群文件的 Offer 与分片必须走同一条钉住的链路",
+        tags=["rust", "file", "transport"],
+    ),
+    Case(
         name="文件气泡前不得做整文件扫描",
         why="真机（Mac 发送端）点大文件后要「卡一会儿」才出现发送中气泡：建发送记录时整读文件"
         "算 sha256。这类代码是「顺手把 cid 提前准备好」写回去的，代价挂在用户点击之后 ⇒ 必须钉死",

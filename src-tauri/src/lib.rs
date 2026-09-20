@@ -1254,6 +1254,20 @@ mod tests {
             transport.contains("file::has_receiver(state, &transfer_id)"),
             "重复的 FileOffer 必须幂等回 accept（旧行为 reject ⇒ 对端停止重试、文件永远收不到）"
         );
+
+        // 群路径同理：Offer / Chunk / Done 三类帧必须全在同一条链路上。
+        // 只钉分片不钉 Offer 会造出更隐蔽的分裂：Offer 是 Normal、分片是 Low，Normal 满掉
+        // 时 failover 到另一条连接 ⇒ 分片先到、密钥后到，而接收端没有该 transfer 的密钥时
+        // 是**静默 return**（不报错、不回执），这批分片就永久丢了。
+        let g = code_flat(include_str!("commands/group_file_dispatch.rs"));
+        assert!(
+            g.contains("send_on_link(&link,&offer)") && g.contains("send_on_link(&link,&chunk)"),
+            "群文件的 Offer 与分片必须走同一条钉住的链路"
+        );
+        assert!(
+            !g.contains("try_send(state,recipient,"),
+            "群文件三类帧都不得再走逐条选路的 try_send（跨连接乱序）"
+        );
     }
 
     /// **气泡前不得做 O(体积) 的整文件扫描**（真机 Mac 发 600MB：点完"卡一会儿"才出现

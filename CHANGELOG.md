@@ -10,6 +10,29 @@
 
 ## [Unreleased]
 
+## [4.22.20] - 2026-09-20
+
+### Fixed (群文件的 Offer 也钉在分片那条链路上 — 补 v4.22.14 留下的分裂)
+
+上一轮把分片流与 `FileDone` 钉到了单条链路，但**群路径的 `GroupFileOffer` 还留在
+`try_send` 上**，这比不改更危险：
+
+`Offer` 是 Normal 优先级、`Chunk` 是 Low，两者走各自的选路。burst 里两个成员各一条流时
+Normal 通道也可能满，`send_over_order` 就会把这一条 Offer failover 到**另一条连接** ——
+于是分片落在链路 A、Offer 落在链路 B。而接收端在「没有该 transfer 的会话密钥」时对分片是
+**静默 return**（`transport.rs` 的 group chunk 分支既不报错也不回执），这批先到的分片
+就被永久丢弃，等 Offer 到了、密钥有了，首个 seq 也对不上 ⇒ 整条传输判死。
+真机形状仍然是那条：群里连发 9-10 张总有 1-2 张收不全，单独发同一张必成功。
+
+修法：在发 Offer 之前就 `resolve_stream_link` 一次，Offer / 全部 Chunk / Done 三类帧
+一律走 `send_on_link(&link, ..)`；分块大小也从这条已钉住的链路读 `path_kind`。
+单聊的 Offer 刻意不动 —— 它后面紧跟一个 `FileAccept` 等待，分片不可能在密钥之前出发，
+没有这条分裂（原因写进守卫注释，避免下一个人"顺手统一"）。
+
+守卫：`ble_file_transfer_respects_link_limits` 增加群路径三条断言（Offer 与 Chunk 必须
+`send_on_link(&link,..)`、且整个 dispatch 文件里不得再出现 `try_send(state, recipient,`），
+配套 verify-guards 的"改坏必须 FAIL"用例。
+
 ## [4.22.19] - 2026-09-20
 
 ### Fixed (群文件取消登记按收件人分键 — 三成员以上只有一个人收得到)

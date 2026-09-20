@@ -39,6 +39,15 @@ async fn dispatch_group_file_to_peer(
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         let _ = db::update_group_file_recipient(&dbc, transfer_id, recipient, "sending", 0.0);
     }
+    // 整条群文件流（Offer → Chunk → Done）**钉在同一条链路**上。
+    // 为什么 Offer 也必须钉：它和分片不同优先级（Offer=Normal、Chunk=Low），走 `try_send`
+    // 时是按消息各自选路的 —— 一次 burst 里两个成员各一条流，Normal 满掉就会 failover 到
+    // 另一条连接，于是 Offer 落在链路 A、分片落在链路 B。接收端**没有该 transfer 的会话密钥
+    // 时是静默 return**（不报错、不回执），等 Offer 到达时前面那批分片已经丢了 ⇒ 首个 seq
+    // 对不上 ⇒ 整条传输判死。真机形状：群里连发 9-10 张总有 1-2 张收不全、单发同一张必成功。
+    let link = crate::network::transport::resolve_stream_link(state, recipient)
+        .await
+        .ok_or_else(|| "未建立连接".to_string())?;
     let offer = Message::GroupFileOffer {
         transfer_id: transfer_id.to_string(),
         group_id: group_id.to_string(),
@@ -50,7 +59,7 @@ async fn dispatch_group_file_to_peer(
         scope: gf.scope.clone(),
         todo_id: gf.todo_id.clone(),
     };
-    try_send(state, recipient, &offer)
+    crate::network::transport::send_on_link(&link, &offer)
         .await
         .map_err(|e| format!("Offer 发送失败：{e}"))?;
 
@@ -86,13 +95,7 @@ async fn dispatch_group_file_to_peer(
         // —— 即**群文件在 BLE 上等于 0 字节可达**。
         // 单聊路径早已用 `chunk_size_for_path` 修掉同一个坑（推导见 `network/file.rs`），这里补齐。
         //
-        // 分片流**钉死在该接收者的单条链路**上（与单聊同一套修复，见
-        // `transport::resolve_stream_link`）：逐片 `try_send` 会在队列满时换链路，
-        // 群聊接收端要求 seq 严格递增，一旦跨连接失序整条传输判死 ——
-        // 真机表现为群里连发 9-10 张图总有 1-2 张收不全、单发同一张必成功。
-        let link = crate::network::transport::resolve_stream_link(state, recipient)
-            .await
-            .ok_or_else(|| "未建立连接".to_string())?;
+        // 分块大小读**这条已钉住的链路**的 path_kind（BLE 上必须 4KiB，见 chunk_size_for_path）。
         let chunk_size = file::chunk_size_for_path(link.path_kind.as_str());
         let mut f = tokio::fs::File::open(&src)
             .await
