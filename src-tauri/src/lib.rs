@@ -1301,6 +1301,41 @@ mod tests {
         );
     }
 
+    /// **接收端判死必须把否定确认送回，而且发送端要能在分片循环里立刻看到**。
+    ///
+    /// 旧行为是"判死但谁也不告诉"：发送端把剩下的整份文件继续灌进一条已经死掉的传输，
+    /// FileDone 无人应答 → 干等一个 `FILE_ACK_IDLE` → 判"可重试" → 再整发 5 次。
+    /// 真机形状：600MB 跑到 100% 两边都显示失败，中间几十分钟界面一直"发送中"。
+    /// 这条链有**三个环节**（回帧、早注册、循环里盯），断掉任意一个都看不出差别，
+    /// 所以三个点一起钉。
+    #[test]
+    fn receiver_abort_notifies_the_sender_inside_the_loop() {
+        let tr = code_flat(&crate::network::transport_src_for_guards());
+        assert!(
+            tr.contains("iffile::fail_receive(state,&transfer_id,peer_id,&e){")
+                && tr.contains(
+                    "Message::FileCompleteAck{transfer_id:transfer_id.clone(),success:false,}"
+                ),
+            "分片判死必须回 FileCompleteAck{{success:false}}（fail_receive 返回 false 表示没有活的\
+             接收器，不重复回）"
+        );
+        assert!(
+            !tr.contains("let _=file::fail_receive(state,&transfer_id,peer_id,&e);"),
+            "不得退回「abort 了但不告诉发送端」的旧写法"
+        );
+        let f = code_flat(include_str!("network/file.rs"));
+        assert!(
+            f.contains("_=&mutack_rx=>"),
+            "分片循环必须盯着否定确认，才能当场停手而不是把剩余字节灌完"
+        );
+        assert_eq!(
+            f.matches(".insert(transfer_id.to_string(),tx)").count(),
+            2,
+            "pending_file_accept 与 pending_file_complete 各登记一次；出现第三次说明有人\
+             又把 complete 注册挪回了循环之后（那样循环里的 ack_rx 就成了死代码）"
+        );
+    }
+
     /// **群文件投递的取消登记必须按 (transfer_id, recipient) 分键**（真机：三成员以上
     /// 的群文件只有一个人收得到）。
     ///

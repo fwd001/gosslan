@@ -665,6 +665,27 @@ CASES: list[Case] = [
         tags=["rust", "file", "group"],
     ),
     Case(
+        name="接收端分片判死必须回否定确认",
+        why="旧行为是「abort 了但谁也不告诉」⇒ 发送端把剩下的整份文件继续灌进一条已死的传输，"
+        "FileDone 无人应答 → 干等一个 FILE_ACK_IDLE → 判可重试 → 再整发 5 次。"
+        "真机形状：600MB 跑到 100% 两边都失败，中间几十分钟界面一直「发送中」",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "if file::fail_receive(state, &transfer_id, peer_id, &e) {",
+            "if false {\n                        let _ = file::fail_receive(state, &transfer_id, peer_id, &e);",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "receiver_abort_notifies_the_sender_inside_the_loop",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="分片判死必须回 FileCompleteAck",
+        tags=["rust", "file", "reliability"],
+    ),
+    Case(
         name="BLE 离开 PoweredOn 必须摘掉全部订阅",
         why="CoreBluetooth 不会补发「对端断开」⇒ 订阅状态陈旧会让写任务白等 8s 且日志空白",
         file=TAURI / "src" / "transport" / "bluetooth_peripheral.rs",

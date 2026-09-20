@@ -655,6 +655,16 @@ async fn stream_file(
     // 进度节流：避免每片一次 SQLite 写 + IPC 事件（大文件会形成事件风暴卡死界面）
     let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
 
+    // 完成/否定确认的登记**提前到分片循环之前**：接收端一旦对某一片判死就能立刻把
+    // `FileCompleteAck{success:false}` 送回来。放在循环之后注册的话，这条否定确认会因为
+    // 找不到 rx 而被丢掉，发送端只能把剩下的字节全部灌完、再干等 `FILE_ACK_IDLE` 才发现失败。
+    let (tx, mut ack_rx) = tokio::sync::oneshot::channel::<bool>();
+    state
+        .pending_file_complete
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(transfer_id.to_string(), tx);
+
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
@@ -677,6 +687,19 @@ async fn stream_file(
         let n = tokio::select! {
             biased;
             _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+            _ = &mut ack_rx => {
+                // 接收端已对某一片判死并回了否定确认 ⇒ 立刻停手，别再把剩余字节灌进一条
+                // 已经死掉的传输。旧行为：整份发完 → FileDone 无人应答 → 干等一个
+                // FILE_ACK_IDLE → 判"可重试" → 再整发 5 次（真机：两边都显示失败）。
+                state
+                    .pending_file_complete
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(transfer_id);
+                return Err(SendFileError::retryable(
+                    "接收端提前终止该传输（分片校验失败/超出声明大小），下次按对端已收字节续传",
+                ));
+            }
             n = f.read(&mut buf) => n.map_err(|e| SendFileError::permanent(format!("读取文件失败：{e}")))?,
         };
         if n == 0 {
@@ -738,13 +761,7 @@ async fn stream_file(
 
     // 发送方在 FileDone 之后必须等待接收方 FileCompleteAck：
     // TCP write 成功不代表文件已成功持久化，只有接收方 size/SHA-256 校验通过并落盘，
-    // 才允许把本地消息推进到 delivered。
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    state
-        .pending_file_complete
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id.to_string(), tx);
+    // 才允许把本地消息推进到 delivered。（登记在分片循环之前，见上面 `ack_rx` 的注释。）
     // FileDone 必须排在**自己那串分片之后**：它和分片同为 Low 优先级，若走 `try_send`
     // 逐条选路，队列满时会 failover 到另一条空闲连接 —— 于是完成帧超过仍在路上的分片
     // （最多 1024 片 ≈ 262MB）先到，接收端判 "文件传输未完成" 直接把传输打死。
@@ -763,7 +780,7 @@ async fn stream_file(
     let completed = tokio::select! {
         biased;
         _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
-        done = wait_complete_ack(state, transfer_id, rx) => done,
+        done = wait_complete_ack(state, transfer_id, ack_rx) => done,
     };
     state
         .pending_file_complete

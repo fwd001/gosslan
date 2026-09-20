@@ -10,6 +10,37 @@
 
 ## [Unreleased]
 
+## [4.22.21] - 2026-09-20
+
+### Fixed (接收端分片判死立刻回否定确认 — 不再把整份文件灌进已死的传输)
+
+真机形状：600MB 跑到 100%、两边都显示失败，中间几十分钟界面上一直"发送中"。
+
+接收端对某一片判死时（`write_chunk` 返回 Err）只 `fail_receive` 把本地接收器摘掉，
+**谁也不告诉**。发送端于是把剩下的整份文件继续灌进一条已经死掉的传输；等 `FileDone`
+到达时接收端已无该 transfer → 走"重复 FileDone"分支、`already_done` 为假 → **一个 ack
+都不发** → 发送端在 `wait_complete_ack` 里干等满一个 `FILE_ACK_IDLE`，再以
+"接收方未确认文件完成"判**可重试** → outbox 连着再整发 5 次。
+
+三段一起修（缺任何一段都不成立）：
+
+- 接收端：`fail_receive` 返回 `true`（真的中止了一个在途接收器）时回
+  `FileCompleteAck{success:false}`。返回 `false` 表示早已中止/未知传输/来源不符，
+  不重复回。这是**已有的帧、已有的处理逻辑**，不需要新协议。
+- 发送端注册点前移：`pending_file_complete` 原本在分片循环**之后**才登记 —— 那时到达的
+  否定确认因为找不到 rx 被直接丢掉，回帧等于白回。现在提前到循环之前登记。
+- 发送端在分片循环的 `select!` 里盯它：一收到否定确认当场以可重试失败退出，
+  并按对端真实已收字节续传（`FileOffer.from_bytes` + `FileReject.received` 那条既有路径），
+  不再把剩余字节灌完。
+
+守卫：`receiver_abort_notifies_the_sender_inside_the_loop` 三条断言（回帧、不得退回旧的
+"静默 abort"写法、循环里必须有 ack 分支且 `pending_file_complete` 不得被重复注册）；
+verify-guards 登记"改坏必须 FAIL、恢复必须 PASS"用例（实跑通过）。
+覆盖边界：回帧→停手是跨进程双端行为，仓库没有双实例 harness，按"源码守卫 + 真机待验"交付。
+
+**未修（记录在案）**：两条 cancel 分支 `_ = &mut *cancel_rx => return ...` 提前 return 时
+不摘 `pending_file_complete`，用户取消后那条表项会留在表里（体量极小，且下次同 id 注册会覆盖）。
+
 ## [4.22.20] - 2026-09-20
 
 ### Fixed (群文件的 Offer 也钉在分片那条链路上 — 补 v4.22.14 留下的分裂)

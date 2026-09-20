@@ -3399,7 +3399,22 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     }
                 }
                 Err(e) => {
-                    let _ = file::fail_receive(state, &transfer_id, peer_id, &e);
+                    // true = 本次真的中止了一个在途接收器（false = 早已中止/未知传输/来源不符，
+                    // 再发通知只会重复）。**必须回否定确认**：旧行为是"判死但谁也不告诉"，
+                    // 发送端于是把剩下的整份文件继续灌进一条已经死掉的传输，最后 FileDone
+                    // 无人应答、干等一个 FILE_ACK_IDLE，再按"可重试"整发 5 次 —— 真机上
+                    // 表现为两边都显示失败，而中间几十分钟界面上一直"发送中"。
+                    if file::fail_receive(state, &transfer_id, peer_id, &e) {
+                        let _ = try_send(
+                            state,
+                            peer_id,
+                            &Message::FileCompleteAck {
+                                transfer_id: transfer_id.clone(),
+                                success: false,
+                            },
+                        )
+                        .await;
+                    }
                 }
             }
         }
