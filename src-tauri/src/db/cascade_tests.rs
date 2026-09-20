@@ -1,9 +1,10 @@
-//! 删除级联收口的行为测试（2026-09-19 审计 P0#6）。
+//! 删除级联与消息字段回填的行为测试（2026-09-19 审计 P0#6 + 2026-09-20 大文件体验轮）。
 //!
-//! 钉住的三类事故：
+//! 钉住的几类事故：
 //!   ① 删会话后 `outbox`/`group_outbox`/`file_outbox` 残留 → 下次建链把已删消息补发回去；
 //!   ② 退群/删群不删 `messages` 与已读水位 → 全局搜索命中「点不开的孤儿」；
-//!   ③ 收口前入库的历史孤儿由 v7 迁移一次性清掉。
+//!   ③ 收口前入库的历史孤儿由 v7 迁移一次性清掉；
+//!   ④ 发送行的 `sha256` 由投递任务回填 —— 只补一个字段，且同值不得产生第二次写入。
 
 use super::*;
 use rusqlite::Connection;
@@ -289,4 +290,89 @@ fn expired_rows_carry_peer_and_age_for_group_and_file_queues() {
     assert_eq!(f.len(), 1);
     assert_eq!(f[0].1, "offline-meet");
     assert_eq!(f[0].2.as_deref(), Some("g1"));
+}
+
+/// 发送行的 `sha256` 回填：只补一个字段、同值不重复写、缺行/空值静默通过。
+///
+/// 为什么要钉"不重复写"：回填点在投递任务里，每次 outbox 重试都会再进来一次；
+/// 若同值也写，就是在拥塞链路上给全局单连接 DB 多加无谓的写放大。
+#[test]
+fn fill_message_sha256_backfills_once_and_keeps_other_fields() {
+    let conn = fresh_db();
+    conn.execute(
+        "INSERT INTO conversations(id, kind, title, ts) VALUES ('p1','single','P',1)",
+        [],
+    )
+    .ok();
+    ins_msg(
+        &conn,
+        "file-t1",
+        "p1",
+        "file",
+        "{\"name\":\"a.bin\",\"size\":7,\"sha256\":\"\",\"subtype\":\"bin\"}",
+        1,
+    );
+    // 用触发器数真实写入次数（不看返回值，返回值两种情况都是 Ok）
+    conn.execute("CREATE TABLE write_log(n INTEGER NOT NULL DEFAULT 0)", [])
+        .unwrap();
+    conn.execute("INSERT INTO write_log(n) VALUES (0)", [])
+        .unwrap();
+    conn.execute(
+        "CREATE TRIGGER trg AFTER UPDATE ON messages BEGIN UPDATE write_log SET n = n + 1; END",
+        [],
+    )
+    .unwrap();
+
+    fill_message_sha256(&conn, "file-t1", "aa11").unwrap();
+    let content: String = conn
+        .query_row(
+            "SELECT content FROM messages WHERE msg_id = 'file-t1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        content.contains("\"sha256\":\"aa11\""),
+        "回填没生效：{content}"
+    );
+    assert!(
+        content.contains("\"name\":\"a.bin\"") && content.contains("\"size\":7"),
+        "只补一个字段，同载荷的其余键不得丢：{content}"
+    );
+
+    // 同值再进来（= outbox 重试的第二次尝试）不得再写一次
+    fill_message_sha256(&conn, "file-t1", "aa11").unwrap();
+    assert_eq!(
+        count(&conn, "SELECT n FROM write_log"),
+        1,
+        "同值回填必须是 no-op"
+    );
+
+    // 空值不覆盖已有值；不存在的 msg_id 静默通过（内容补发复用同一个投递函数）
+    fill_message_sha256(&conn, "file-t1", "").unwrap();
+    let after: String = conn
+        .query_row(
+            "SELECT content FROM messages WHERE msg_id = 'file-t1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        after.contains("\"sha256\":\"aa11\""),
+        "空值不得擦掉已有 cid"
+    );
+    fill_message_sha256(&conn, "file-missing", "bb22").unwrap();
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM messages WHERE msg_id = 'file-missing'"
+        ),
+        0,
+        "缺行必须静默通过，且不得凭空插入"
+    );
+    assert_eq!(
+        count(&conn, "SELECT n FROM write_log"),
+        1,
+        "空值/缺行两条路径都不该产生写入"
+    );
 }

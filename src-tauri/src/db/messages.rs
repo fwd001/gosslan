@@ -196,6 +196,40 @@ pub fn update_message_content(
     Ok(())
 }
 
+/// 回填文件消息 `content` 里的单个 `sha256` 字段（发送方建行时还算不起，见
+/// `commands/files.rs::build_file_message`：整文件哈希是 O(体积) 的，不能挡在气泡前面）。
+///
+/// 只做读-改-写一次，且**幂等**：值已经是目标值就不写（投递任务每次尝试都会进来一次）。
+/// `msg_id` 不存在时静默返回 Ok —— 内容补发（ContentRequest）复用同一个投递函数，
+/// 那条路径的 msg_id 根本不是 `file-*`，此时没有任何东西要补。
+pub fn fill_message_sha256(conn: &Connection, msg_id: &str, sha256: &str) -> Result<()> {
+    if sha256.is_empty() {
+        return Ok(());
+    }
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT content FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(content) = current else {
+        return Ok(());
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Ok(()); // 非 JSON 载荷（理论上不会出现在 file 消息上）：不动它
+    };
+    if value.get("sha256").and_then(|v| v.as_str()) == Some(sha256) {
+        return Ok(());
+    }
+    value["sha256"] = serde_json::Value::String(sha256.to_string());
+    conn.execute(
+        "UPDATE messages SET content = ?2 WHERE msg_id = ?1",
+        params![msg_id, value.to_string()],
+    )?;
+    Ok(())
+}
+
 /// 搜索消息内容，返回匹配的会话 ID 列表（去重，按最新匹配排序）。
 /// LIKE 通配符（% _）被转义为普通字符，只做字面包含搜索。
 pub fn search_messages(conn: &Connection, keyword: &str, limit: i64) -> Result<Vec<String>> {

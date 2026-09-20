@@ -194,7 +194,19 @@ pub async fn send_file_from_path_at(
 
     // ---- E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG），仅存内存 ----
     let file_key = crypto::random_key();
-    let file_sha256 = sha256_file_hex(&path).map_err(SendFileError::permanent)?;
+    // 整文件哈希放阻塞线程池（群路径 group_announcements.rs 早就是这么做的）：这是 async
+    // 任务，600MB 的同步整读会把一个 tokio worker 占满，连带别的路径一起卡。
+    let hash_path = path.clone();
+    let file_sha256 = tokio::task::spawn_blocking(move || sha256_file_hex(&hash_path))
+        .await
+        .map_err(|e| SendFileError::permanent(format!("哈希任务失败：{e}")))?
+        .map_err(SendFileError::permanent)?;
+    // 发送行的 sha256 在建记录时是空的（不能让气泡等一次 O(体积) 扫描），这里用真正用于
+    // 校验的那份补上 —— 同一值、幂等，重试的后续尝试进来也是 no-op。
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::fill_message_sha256(&dbc, &format!("file-{transfer_id}"), &file_sha256).ok();
+    }
     let receiver_pubkey = resolve_member_x25519(state, peer_id);
     let sealed_key_b64 = (|| {
         let pubkey = receiver_pubkey.as_deref()?;

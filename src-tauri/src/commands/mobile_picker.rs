@@ -141,9 +141,17 @@ pub async fn import_picked_file(
         .fs()
         .open(uri, tauri_plugin_fs::OpenOptions::new().read(true).clone())
         .map_err(|e| format!("打不开所选文件（{e}）"))?;
-    let mut out = std::fs::File::create(&tmp).map_err(|e| format!("写入临时文件失败：{e}"))?;
-    std::io::copy(&mut src, &mut out).map_err(|e| format!("复制所选文件失败：{e}"))?;
-    drop(out);
+    // 整文件复制是 O(体积) 的同步 I/O —— 必须离开 async worker（600MB 的复制占住一个
+    // tokio worker，会把同进程里其它传输的进度事件、DB 访问一起拖住）。
+    let tmp_for_copy = tmp.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), std::io::Error> {
+        let mut out = std::fs::File::create(&tmp_for_copy)?;
+        std::io::copy(&mut src, &mut out)?;
+        out.sync_all()
+    })
+    .await
+    .map_err(|e| format!("复制任务失败：{e}"))?
+    .map_err(|e| format!("复制所选文件失败：{e}"))?;
     // 名字优先级：URI 里能解出来的 > 前端给的显示名 > 按内容嗅探补一个
     let head = {
         use std::io::Read as _;
@@ -156,7 +164,11 @@ pub async fn import_picked_file(
     let name = name_from_content_uri(&path)
         .or_else(|| suggested_name.map(|n| sanitize_file_name(&n)))
         .unwrap_or_else(|| format!("gosslan-{}.{ext}", db::now_ms()));
-    let dest = dir.join(sanitize_file_name(&name));
+    // 目标名必须**保证不存在**：前端多选是并发的（CONCURRENCY=2），两个 URI 解不出名字的
+    // 文件会在同一毫秒落到同一个 `gosslan-<ms>.jpg`，而 `rename` 到已存在的路径是
+    // **静默覆盖** —— 第一份字节被换掉时它可能正在被哈希/分片发送。真机形状：
+    // 一次发 9-10 张总有 1-2 张预览不出或内容错位，单独发同一张必成功。
+    let dest = crate::network::file::unique_path(&dir, &sanitize_file_name(&name));
     std::fs::rename(&tmp, &dest).map_err(|e| format!("落地所选文件失败：{e}"))?;
 
     // 🟦 HEIC/HEIF → JPEG 自动转码（Android 跨平台兼容）

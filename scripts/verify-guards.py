@@ -582,6 +582,47 @@ CASES: list[Case] = [
         tags=["rust", "file"],
     ),
     Case(
+        name="文件分片流必须钉在单条链路上投递",
+        why="真机多文件并发：600MB 跑到 100% 报「文件分片顺序错误」。逐条 try_send 在队列满时"
+        "会 failover 到另一条独立 TCP 连接 ⇒ 同一串 seq 跨连接乱序，接收端追加写不 seek ⇒ 判死。"
+        "把分片改回 try_send 是「看起来更智能（会换路）」的退化，只有源码守卫拦得住",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "r = crate::network::transport::send_on_link(&link, &chunk)",
+            "r = try_send(state, peer_id, &chunk)",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "ble_file_transfer_respects_link_limits",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="文件分片不得逐条选路",
+        tags=["rust", "file", "transport"],
+    ),
+    Case(
+        name="文件气泡前不得做整文件扫描",
+        why="真机（Mac 发送端）点大文件后要「卡一会儿」才出现发送中气泡：建发送记录时整读文件"
+        "算 sha256。这类代码是「顺手把 cid 提前准备好」写回去的，代价挂在用户点击之后 ⇒ 必须钉死",
+        file=TAURI / "src" / "commands" / "files.rs",
+        injections=[(
+            '"sha256": "",',
+            '"sha256": file::sha256_file_hex(std::path::Path::new(path)).unwrap_or_default(),',
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "no_whole_file_scan_before_the_file_bubble",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="建发送记录前不得整读文件",
+        tags=["rust", "file", "perf"],
+    ),
+    Case(
         name="BLE 离开 PoweredOn 必须摘掉全部订阅",
         why="CoreBluetooth 不会补发「对端断开」⇒ 订阅状态陈旧会让写任务白等 8s 且日志空白",
         file=TAURI / "src" / "transport" / "bluetooth_peripheral.rs",

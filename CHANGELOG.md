@@ -10,6 +10,34 @@
 
 ## [Unreleased]
 
+## [4.22.16] - 2026-09-20
+
+### Fixed (点完大文件不再"卡一会儿" — 气泡前不做整文件扫描；导入复制不再占住 async worker)
+
+真机（Mac 发送端）：点一个大文件后聊天框里要过一会儿才出现「发送中」气泡。这与用户的产品
+设计直接冲突 —— 任何操作点击后必须立刻乐观响应。
+
+链路上挂在气泡前面的是两次 O(体积) 整读：
+- `commands/files.rs::build_file_message` 在建发送记录时整读文件算 sha256；
+  而**投递任务待会儿还会为 FileOffer 再整读一遍**（`network/file.rs` 里本来就是它算校验值）。
+  现在建记录时 `sha256` 先留空，投递任务算完用 `db::fill_message_sha256` 回填同一份值
+  （幂等：同值不再写；缺行静默通过 —— 内容补发复用同一个投递函数，那条路径没有 `file-*` 行）。
+  少一次整读只是顺带的好处，真正的点是**气泡不再等任何 O(体积) 的活**。
+- `import_picked_file`（Android `content://` → 缓存目录）用同步 `std::io::copy` 在 async
+  命令里整复制，600MB 会占住一个 tokio worker，连带拖住同进程其它传输的进度事件与 DB 访问。
+  改 `spawn_blocking` + `sync_all`。
+
+顺带修掉一个同源并发缺陷：导入落盘名用 `gosslan-<毫秒>.<ext>` 兜底，而多选是并发的
+（前端 CONCURRENCY=2），两个 URI 解不出名字的文件会在同一毫秒撞上同一个 `dest` ——
+`rename` 到已存在路径是**静默覆盖**，此时第一份字节可能正在被哈希/分片发送。
+改用 `file::unique_path` 保证目标名不存在（真机形状：一次发 9-10 张总有 1-2 张预览不出，
+单独发同一张必成功）。
+
+测试：`fill_message_sha256_backfills_once_and_keeps_other_fields`（用 AFTER UPDATE 触发器
+数真实写入次数：同值必须 no-op、空值与缺行不得产生写入、只补一个字段不得丢其余键）；
+源码守卫 `no_whole_file_scan_before_the_file_bubble`（钉住"建记录前不得整读文件"这条
+很容易顺手写回去的不变量）。
+
 ## [4.22.15] - 2026-09-20
 
 ### Fixed (verify.mjs 在 macOS/Linux 上从第 1 步就 ENOENT — 后面 14 步从未跑过)

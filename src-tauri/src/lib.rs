@@ -1256,6 +1256,37 @@ mod tests {
         );
     }
 
+    /// **气泡前不得做 O(体积) 的整文件扫描**（真机 Mac 发 600MB：点完"卡一会儿"才出现
+    /// 发送中气泡 —— 建发送记录时先整读一遍文件算 sha256，而投递任务待会儿还要再读一遍）。
+    ///
+    /// 这条不变量很容易"顺手写回去"：它看起来只是"提前把 cid 准备好"，代价却挂在用户
+    /// 点下发送按钮之后。cid 的正确来源是投递任务（它本来就要算，用于 FileOffer 校验值），
+    /// 算完回填发送行。
+    #[test]
+    fn no_whole_file_scan_before_the_file_bubble() {
+        let files = include_str!("commands/files.rs");
+        let build = rust_fn_body(files, "fn build_file_message(");
+        assert!(
+            !build.contains("sha256_file_hex("),
+            "建发送记录前不得整读文件算哈希：那会把气泡挡在一次 O(体积) 扫描之后"
+        );
+        assert!(
+            build.contains("\"sha256\": \"\""),
+            "cid 必须以空串占位（载荷形状不能变，前端按 sha256 键取值）"
+        );
+
+        let file = include_str!("network/file.rs");
+        let body = rust_fn_body(file, "pub async fn send_file_from_path_at(");
+        assert!(
+            body.contains("spawn_blocking"),
+            "整文件哈希必须在阻塞线程池：占住 async worker 会连带拖慢其它传输"
+        );
+        assert!(
+            body.contains("fill_message_sha256"),
+            "投递任务算出的 cid 必须回填发送行，否则本地合并卡片按 cid 找不回字节"
+        );
+    }
+
     /// **扫描结果不得再用 `Peripheral::services()` 二次过滤**（真机踩过，症状极隐蔽）。
     ///
     /// `start_scan(ScanFilter{services})` 已在平台层过滤；而 `services()` 在 **Android 上
