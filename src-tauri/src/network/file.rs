@@ -20,7 +20,8 @@ use tokio::time::Duration;
 use crate::crypto;
 use crate::db;
 use crate::network::transport::{
-    clear_file_wire_progress, file_wire_progress_at, resolve_member_x25519, send_on_link, try_send,
+    clear_file_wire_progress, file_wire_chunks_at, file_wire_progress_at, resolve_member_x25519,
+    send_on_link, try_send,
 };
 use crate::protocol::{Message, ShareEntry, FILE_CHUNK};
 use crate::state::{AppState, FileDoneInfo, FileFailedInfo, FileReceiver};
@@ -711,6 +712,28 @@ pub(crate) fn stall_tick(
     }
 }
 
+/// 发送进度换算：**已真的写出链路的分块**折算成明文字节，而不是"已入队"的字节。
+///
+/// 为什么要单独一个函数（v4.22.37）：`send_on_link` 返回成功只代表这一帧进了那条链路的
+/// mpsc 队列（容量 1024，见 `transport.rs::writer_loop`）。LAN 一片 256KB ⇒ 最多
+/// **262MB** 可以"界面已经 100%、实际还在排队"，用户据此以为传完了。真实写出量由 writer
+/// 在 `write_frame` 成功后记账（`mark_file_wire_progress`），TCP 与 BLE 同一个证据点。
+///
+/// 两处钳制各有各的原因，都不是防御性装饰：
+///   · `min(enqueued)`：计数器按 transfer_id 记，万一残留着上一次尝试的更大值，
+///     进度也绝不能超过本机已经读出来的字节；
+///   · `min(size)`：最后一片是短片，按整片折算会越过文件总大小（进度 >100%）。
+fn wire_progress_bytes(
+    from_bytes: u64,
+    chunk_size: usize,
+    enqueued: u64,
+    flushed_chunks: u64,
+    size: u64,
+) -> u64 {
+    let on_wire = from_bytes.saturating_add(flushed_chunks.saturating_mul(chunk_size as u64));
+    enqueued.min(on_wire).min(size)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn stream_file(
     state: &Arc<AppState>,
@@ -830,10 +853,19 @@ async fn stream_file(
 
         if last_report.elapsed() >= Duration::from_millis(250) {
             last_report = std::time::Instant::now();
+            // 进度按**已写出链路**的分块算，不按入队算：入队最多能领先一整条队列
+            // （1024 片 ≈ 262MB），旧口径下用户看到 100% 时其实还有大半文件没上链路。
+            let on_wire = wire_progress_bytes(
+                from_bytes,
+                chunk_size,
+                sent,
+                file_wire_chunks_at(state, transfer_id),
+                size,
+            );
             let progress = if size == 0 {
                 1.0
             } else {
-                sent as f64 / size as f64
+                on_wire as f64 / size as f64
             };
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -854,7 +886,7 @@ async fn stream_file(
                 "file-progress",
                 &crate::state::FileProgress {
                     transfer_id: transfer_id.to_string(),
-                    received: sent,
+                    received: on_wire,
                     total: size,
                 },
             );
@@ -1856,8 +1888,42 @@ pub fn human_size(bytes: u64) -> String {
 mod tests {
     use super::{
         chunk_seq_decision, classify_file_subtype, derive_file_name, safe_file_name,
-        safe_transfer_id, unique_path, ChunkSeq,
+        safe_transfer_id, unique_path, wire_progress_bytes, ChunkSeq,
     };
+
+    /// 发送进度必须按"**已写出链路**"算，不按入队算（v4.22.37）。
+    ///
+    /// 症状（真机 600MB）：`send_on_link` 成功只代表进了那条链路的 1024 槽队列，
+    /// LAN 一片 256KB ⇒ 最多 262MB 还在排队时界面已经 100%。①⑤ 就是这条主症状；
+    /// ②③④ 各钉一个换算边界（续传前缀、短片、计数器残留）。
+    #[test]
+    fn progress_counts_written_chunks_not_enqueued_bytes() {
+        let chunk = 256 * 1024usize;
+        let enqueued = 1024 * chunk as u64; // 一整条队列都灌满了
+                                            // ① 主症状：1024 片全入队、链路只走了 1 片 ⇒ 进度就是 1 片
+        assert_eq!(
+            wire_progress_bytes(0, chunk, enqueued, 1, enqueued * 2),
+            chunk as u64
+        );
+        // ⑤ 一片都没写出 ⇒ 0（旧口径这里已经是 262MB）
+        assert_eq!(wire_progress_bytes(0, chunk, enqueued, 0, enqueued * 2), 0);
+        // ② 断点续传：from_bytes 是对端已持有的前缀，天然算"已上路"，必须计入
+        assert_eq!(
+            wire_progress_bytes(
+                1_000_000,
+                chunk,
+                1_000_000 + 5 * chunk as u64,
+                3,
+                10_000_000
+            ),
+            1_000_000 + 3 * chunk as u64
+        );
+        // ③ 最后一片是短片：按整片折算会越过文件总大小 ⇒ 钳到 size
+        let size = 3 * chunk as u64 + 10;
+        assert_eq!(wire_progress_bytes(0, chunk, size, 4, size), size);
+        // ④ 计数器残留得比本机读出来的还多 ⇒ 绝不能超过已入队量
+        assert_eq!(wire_progress_bytes(0, chunk, 7, 999, 10_000), 7);
+    }
 
     /// **收到分片的判定规则**（2026-09-13 审计的真缺陷，必须钉住）。
     ///

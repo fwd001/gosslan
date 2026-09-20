@@ -364,6 +364,7 @@ network::file::tests::image_extensions
 network::file::tests::invalid_sha256_format_is_rejected
 network::file::tests::markdown_is_a_document_not_code
 network::file::tests::other_files
+network::file::tests::progress_counts_written_chunks_not_enqueued_bytes
 network::file::tests::receiver_hash_lifecycle_success
 network::file::tests::receiver_hash_mismatch_fails
 network::file::tests::rejects_path_traversal_file_names
@@ -520,6 +521,7 @@ tests::cmd_w_is_handled_by_our_own_menu_item
 tests::content_pull_requires_capability_negotiation
 tests::every_friend_accept_path_forgets_the_pending_request
 tests::external_link_rejects_non_http_schemes
+tests::file_send_progress_counts_wire_not_queue
 tests::friend_request_from_existing_friend_auto_accepts
 tests::friend_request_survives_a_dropped_link
 tests::gossip_fanout_targets_reachable_links

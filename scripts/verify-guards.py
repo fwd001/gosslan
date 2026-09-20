@@ -284,6 +284,22 @@ CASES: list[Case] = [
         expect_fail_hint="blocking_show",
         tags=["rust", "boot", "deadlock"],
     ),
+    Case(
+        name="发送进度不得退回按入队计数（262MB 还在队列里就 100%）",
+        why="send_on_link 返回成功只代表帧进了那条链路的 1024 槽 mpsc 队列，LAN 一片 256KB ⇒ "
+        "最多 262MB 还在排队时界面已经显示 100%（真机 600MB 就是这条）。v4.22.37 起进度按 "
+        "writer 记账的已写出片数换算；这条用例证明「把 file-progress 改回直接发入队量」一定被抓"
+        ,
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "                    received: on_wire,",
+            "                    received: sent,",
+        )],
+        cmd=cargo("test", "--lib", "file_send_progress_counts_wire_not_queue"),
+        cwd=TAURI,
+        expect_fail_hint="file-progress",
+        tags=["rust", "file", "progress"],
+    ),
     # ---------------- 本地新增护栏（2026-09-14）----------------
 
     Case(

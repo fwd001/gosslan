@@ -1184,11 +1184,14 @@ fn mark_conn_write_seen(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint
     pm.mark_connection_seen(peer_id, endpoint, db::now_ms(), None, false);
 }
 
-/// 记录「某个文件传输又有一帧**真的离开了链路**」。
+/// 记录「某个文件传输又有一帧**真的离开了链路**」：刷新时刻 **并**累加一片。
 ///
 /// 为什么必须落在"写出"而不是"入队"：发送侧 mpsc 容量 1024，1MB 文件的分块会在
-/// **1 秒内**全部入队，而链路上要跑几分钟（BLE 上更久）。`FileCompleteAck` 的等待窗口
-/// 正是靠这张表从"固定 30s 墙钟"改成"安静 30s 才算失败"（`file.rs::wait_complete_ack`）。
+/// **1 秒内**全部入队，而链路上要跑几分钟（BLE 上更久）。两个消费方共用这一个证据点：
+///   · `FileCompleteAck` 的等待窗口靠 `at_ms` 从"固定 30s 墙钟"改成"安静 30s 才算失败"
+///     （`file.rs::wait_complete_ack`）；
+///   · 发送进度靠 `chunks` 换算成字节（v4.22.37，`file.rs::wire_progress_bytes`）——
+///     在此之前进度条读的是入队量，于是 LAN 上最多 262MB 还堵在队列里时界面就 100% 了。
 /// 放在 writer_loop 里是唯一正确的位置 —— 它是"字节真的走了"的唯一证据点。
 ///
 /// TCP 与 BLE 两条写循环都要调（BLE 见 `network/ble.rs`）。
@@ -1199,11 +1202,22 @@ pub(crate) fn mark_file_wire_progress(state: &AppState, msg: &Message) {
         Message::GroupFileChunk { transfer_id, .. } => transfer_id,
         _ => return,
     };
+    let now = db::now_ms();
     state
         .file_wire_progress
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id.clone(), db::now_ms());
+        .entry(transfer_id.clone())
+        .and_modify(|p| {
+            p.at_ms = now;
+            // 饱和加：这张表只增不减到收尾，理论上碰不到上界，但进度换算依赖它，
+            // 宁可停在 u64::MAX 也不要溢出一个负数把进度算成 0。
+            p.chunks = p.chunks.saturating_add(1);
+        })
+        .or_insert(crate::state::FileWireProgress {
+            at_ms: now,
+            chunks: 1,
+        });
 }
 
 /// 读「该 transfer 最近一次真的写出字节」的时刻（0 = 从未写出过）。
@@ -1213,7 +1227,18 @@ pub(crate) fn file_wire_progress_at(state: &AppState, transfer_id: &str) -> i64 
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(transfer_id)
-        .copied()
+        .map(|p| p.at_ms)
+        .unwrap_or(0)
+}
+
+/// 读「该 transfer 已经真的写出多少片」（无记录 = 0）。发送进度的唯一真实来源。
+pub(crate) fn file_wire_chunks_at(state: &AppState, transfer_id: &str) -> u64 {
+    state
+        .file_wire_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(transfer_id)
+        .map(|p| p.chunks)
         .unwrap_or(0)
 }
 

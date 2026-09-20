@@ -629,6 +629,19 @@ pub struct GroupFileRecipient {
     pub updated_at: i64,
 }
 
+/// `file_wire_progress` 的值：**分块真的离开链路**的时刻与累计数。
+///
+/// 两个字段同一个写入点（`transport::mark_file_wire_progress`，TCP 与 BLE 的 writer
+/// 都在 `write_frame` 成功之后调它），所以"安静多久"与"路上走了几片"不会各说各话：
+/// `at_ms` 供停滞判定与 `FileCompleteAck` 等待使用，`chunks` 供发送进度换算。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FileWireProgress {
+    /// 最近一次有分块写出的时刻（ms）。0 = 从未写出过。
+    pub at_ms: i64,
+    /// 累计已写出的分块数（本次 transfer 计数，收尾时随记录一起清掉）。
+    pub chunks: u64,
+}
+
 /// 正在接收的文件状态
 pub struct FileReceiver {
     pub file: std::fs::File,
@@ -959,12 +972,15 @@ pub struct AppState {
     pub group_file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
-    /// **文件发送的"真的写出去了"进展**：transfer_id -> 最近一次有分块离开链路的时刻（ms）。
+    /// **文件发送的"真的写出去了"进展**：transfer_id -> `FileWireProgress`。
     ///
-    /// 用途：把 `FileCompleteAck` 的等待从"固定 30s 墙钟"改成"**安静** 30s 才算失败"
-    /// （见 `network/file.rs::wait_complete_ack`）。判据必须落在**写出**而不是"入队"上 ——
-    /// 队列能装 1024 帧，1MB 文件会在 1 秒内全部入队，而链路上要跑几分钟。
-    pub file_wire_progress: Mutex<HashMap<String, i64>>,
+    /// 两个用途，判据都必须落在**写出**而不是"入队"上 —— 队列能装 1024 帧，1MB 文件会在
+    /// 1 秒内全部入队，而链路上要跑几分钟：
+    ///   ① 把 `FileCompleteAck` 的等待从"固定 30s 墙钟"改成"**安静** 30s 才算失败"
+    ///      （见 `network/file.rs::wait_complete_ack`）；
+    ///   ② 发送进度本身（v4.22.37）：进度条按已写出的分块数换算。旧口径直接拿"入队字节"
+    ///      当进度，于是 LAN 上最多 262MB 还在队列里时，界面已经显示 100%。
+    pub file_wire_progress: Mutex<HashMap<String, FileWireProgress>>,
     /// 等待共享目录树响应：request_id -> 应答通道
     pub pending_share_tree:
         Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<crate::protocol::ShareEntry>>>>,

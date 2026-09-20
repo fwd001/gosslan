@@ -2281,6 +2281,45 @@ mod tests {
         );
     }
 
+    /// 发送进度必须落在"已写出链路"上，不许回到"已入队"（v4.22.37 的用户可见症状）。
+    ///
+    /// 三处同时成立才有意义，所以一起钉：
+    ///   ① writer 那唯一的证据点必须**累加片数**（只记时刻的话进度算不出来）；
+    ///   ② 状态表的值必须是带 `chunks` 的结构，而不是裸时间戳；
+    ///   ③ `stream_file` 的进度与 `file-progress` 事件必须用换算后的 `on_wire` ——
+    ///      旧写法 `received: sent` 就是那个"262MB 还在队列里就 100%"的假象。
+    /// 判据都取**函数体**而不是全文：`received: sent` 在中继发文件那条路径里是合法的
+    /// （另一套语义），全文一扫会误伤。
+    #[test]
+    fn file_send_progress_counts_wire_not_queue() {
+        let file = include_str!("network/file.rs");
+        let body = rust_fn_body(file, "async fn stream_file(");
+        assert!(
+            body.contains("wire_progress_bytes("),
+            "stream_file 的进度必须经 wire_progress_bytes 换算"
+        );
+        assert!(
+            body.contains("file_wire_chunks_at("),
+            "换算必须读 writer 记的已写出片数，否则等于没换"
+        );
+        assert!(
+            !body.contains("received: sent"),
+            "file-progress 不许再直接发入队量（那就是 100% 假象）"
+        );
+
+        let transport = crate::network::transport_src_for_guards();
+        let mark = rust_fn_body(&transport, "pub(crate) fn mark_file_wire_progress(");
+        assert!(
+            code_flat(&mark).contains("p.chunks=p.chunks.saturating_add(1)"),
+            "writer 的写出证据点必须累加片数"
+        );
+        let state = include_str!("state.rs");
+        assert!(
+            state.contains("Mutex<HashMap<String, FileWireProgress>>"),
+            "进展表的值必须是 {{at_ms, chunks}} 结构，时间戳单独一个字段撑不起进度口径"
+        );
+    }
+
     /// 外设侧**每次订阅都必须清掉该 central 的重组器**（用户优先级 ①：加入 mesh 的稳定性）。
     ///
     /// 为什么（2026-09-13 框架审计）：对端的 `msg_id` **每条连接都从 1 重新开始**，而 macOS
