@@ -10,6 +10,32 @@
 
 ## [Unreleased]
 
+## [4.22.25] - 2026-09-20
+
+### Changed (transport.rs 分册第 2 步：Gossip 处理搬出主文件)
+
+`gossip.rs` 分册 903 行：`group_envelope_consumable`（只管消费不管转发的判据）、
+`gossip_trust_for_unpeer_sender`（信任判定，friends 锚）、`handle_gossip`（去重 / 消费 / 扇出）、
+`parse_gossip_payload`。同 `include!` 机制，运行时零差异。
+
+搬的时候暴露两个真问题，都当场修掉：
+
+1. **一段被错接的文档**：`transport.rs` 里 `group_envelope_consumable` 头上挂着 11 行
+   描述"多跳转发：把 MeshFrame 载荷还原成 GossipEnvelope"的文档 —— 那个函数早已不在这里，
+   文档留下来会让下一个人以为这个判据负责转发（恰恰是它**不管**的那件事）。随分册删除。
+2. **守卫的自匹配陷阱**（这是分册真正教回来的东西）：`handle_gossip_does_not_bail_out_for_non_members`
+   用 `src.find("async fn handle_gossip")` 取函数体，而**聚合文本里本测试自己那句字面量也算一次
+   命中**。以前主文件里"定义在前、测试在后"所以侥幸正确；分册后主文件排在分册前面，
+   `find` 先命中测试里那一串，body 于是包含下面那条 forbidden 字面量 ⇒ 守卫自证其罪地理应失败。
+   锚点改成"行首 + 带左括号"（`\nasync fn handle_gossip(`）才真正稳。
+   同形陷阱在另外两个守卫（`build_signed_hello` / `broadcast_presence`）上目前还不会触发
+   （定义在测试之前），等第 3 步搬握手时会撞上，届时同法处理。
+3. verify-guards 的那条锚点随函数搬到 `transport/gossip.rs`（改坏必须 FAIL 已重跑通过）；
+   领域图认领新文件（判据 D 又一次当场拦住）；`transport_src_for_guards()` 登记第三册。
+
+验证：`cargo test --features bluetooth --lib` 576 全绿、clippy `-D warnings` 无输出、
+领域图一致、被搬走的那条守卫非空转重跑通过。
+
 ## [4.22.24] - 2026-09-20
 
 ### Fixed (链路停滞成为可见状态 + 发送期限上限 2h→1h)

@@ -539,7 +539,7 @@ CASES: list[Case] = [
         why="旧实现把『我不是群成员』直接 return 掉，位置在转发之前 ⇒ 非成员中继不转发群消息 ⇒ "
         "BLE-only 三点中继（手机—电脑—手机）里群聊永远不通，而同链路单聊正常。"
         "这类退化**不会让任何行为测试失败**，只能靠结构护栏盯住",
-        file=TAURI / "src" / "network" / "transport.rs",
+        file=TAURI / "src" / "network" / "transport" / "gossip.rs",
         injections=[(
             "    let group_consumable = group_envelope_consumable(\n",
             "    if matches!(env.kind, GossipKind::Group) && !env.group_members.is_empty() {\n"

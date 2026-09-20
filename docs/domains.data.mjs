@@ -221,6 +221,7 @@ export default {
         "src-tauri/src/network/ble.rs", // BLE 中央角色（活）
         "src-tauri/src/network/transport.rs", // TCP 数据面（活，主文件；正按 include! 分册中）
         "src-tauri/src/network/transport/outbound.rs", // 分册：出站投递 + 链路选路（同模块，非新领域）
+        "src-tauri/src/network/transport/gossip.rs", // 分册：Gossip 消费判据与 handle_gossip（同模块）
         "src-tauri/src/network/dispatch.rs", // 三优先级调度 + BLE yield + 发送状态定义（新建，2026-09）
         "src-tauri/src/transport", // 新栈（部分接线）
       ],
@@ -240,7 +241,7 @@ export default {
         "platform", // transport/ble_android.rs 用 jni_method::kotlin_method
       ],
       notes:
-        "⚠️ **两个同名 transport.rs**：network/transport.rs（约 9600 行，活；已开始 include! 分册）与 transport/{mod,tcp}.rs（新栈）。「传输」这一个关注点今天有**三个家**：TCP 数据面走 network/、BLE 数据面走 transport/bluetooth.rs::driver + 三个外设模块、控制面（开关/状态/分流）走 transport/mod.rs。这是「改完这个 bug 又冒那个」的结构性来源，逐条证据见 docs/migration-ledger.md。BLE 载荷预算已收敛为单一事实来源（INV-P23，Phase 3/4）。",
+        "⚠️ **两个同名 transport.rs**：network/transport.rs（活；主文件 + include! 分册合计约 1 万行）与 transport/{mod,tcp}.rs（新栈）。「传输」这一个关注点今天有**三个家**：TCP 数据面走 network/、BLE 数据面走 transport/bluetooth.rs::driver + 三个外设模块、控制面（开关/状态/分流）走 transport/mod.rs。这是「改完这个 bug 又冒那个」的结构性来源，逐条证据见 docs/migration-ledger.md。BLE 载荷预算已收敛为单一事实来源（INV-P23，Phase 3/4）。",
     },
 
     // -------------------------------------------------------------------------

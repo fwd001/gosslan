@@ -224,6 +224,8 @@ pub(crate) fn transport_src_for_guards() -> String {
     src.push_str(include_str!("transport.rs"));
     src.push('\n');
     src.push_str(include_str!("transport/outbound.rs"));
+    src.push('\n');
+    src.push_str(include_str!("transport/gossip.rs"));
     src
 }
 
