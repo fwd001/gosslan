@@ -24,6 +24,8 @@ pub mod ble_android;
 #[cfg(all(feature = "bluetooth", target_os = "windows"))]
 pub mod bluetooth_peripheral_windows;
 pub mod lan;
+// 公网中继的记录层封装与字节流管道（被 `transport/tcp.rs` 的可选密封态使用）。
+pub mod relay_seal;
 pub mod tcp;
 
 use std::sync::Arc;

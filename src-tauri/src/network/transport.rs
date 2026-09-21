@@ -46,6 +46,9 @@ use crate::transport::tcp::{TcpReceiver, TcpSender};
 // 只是把 9800 行的单文件切到可评审的粒度。
 include!("transport/outbound.rs");
 
+// ---- 公网中继（会合循环 / 协商接线 / 撤链，ADR-0020）----
+include!("transport/relay.rs");
+
 /// 中继态的内存 TTL：超过它且仍未完成重组的条目一律回收。
 ///
 /// 为什么必须有：`relay_file_keys` 与 `RelayManager::reassemblies` 都以**对端可控**的
@@ -179,6 +182,8 @@ pub async fn spawn(
     let shutdown_for_routed = shutdown.clone();
     let state_for_presence = state.clone();
     let shutdown_for_presence = shutdown.clone();
+    let state_for_relay = state.clone();
+    let shutdown_for_relay = shutdown.clone();
     let accept_task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -401,6 +406,7 @@ pub async fn spawn(
                                 addr,
                                 PathKind::Routed,
                                 shutdown,
+                                None,
                             )
                             .await
                             {
@@ -432,11 +438,17 @@ pub async fn spawn(
         }
     });
 
+    // 公网中继（ADR-0020）：用户没填服务器时，这个任务每 10s 只做一次
+    // "读三个 setting → 什么都没配 → 什么都不做"，不产生任何网络流量。
+    let relay_task =
+        tokio::spawn(relay_rendezvous_task(state_for_relay, shutdown_for_relay));
+
     Ok(vec![
         accept_task,
         heartbeat_task,
         routed_task,
         presence_task,
+        relay_task,
     ])
 }
 
@@ -2106,7 +2118,7 @@ pub async fn ensure_link(
     // LAN 发现路径的拨号失败是常态（对端离线、或本轮该由对端拨），刻意不打日志；
     // 但**握手验签失败/身份不符**会在 `connect_to_peer` 内以 warn + 诊断事件留痕
     // （那是「有人冒充」或「配置写错」的信号，不能静默）。
-    let _ = connect_to_peer(state, Some(peer_id), endpoint, PathKind::Lan, shutdown).await;
+    let _ = connect_to_peer(state, Some(peer_id), endpoint, PathKind::Lan, shutdown, None).await;
 }
 
 /// 建立一条到 `endpoint` 的连接。
@@ -2128,12 +2140,17 @@ pub async fn ensure_link(
 /// 为什么必须「先握手、再登记」：链路 key（`links` 的 HashMap key，以及 `writer_loop`
 /// 持有的 `peer_id`）必须在 spawn 之前确定，而 `writer_loop` 要用它回写
 /// `pending_reads`，事后无法改名。
+#[allow(clippy::too_many_arguments)]
 async fn connect_to_peer(
     state: &Arc<AppState>,
     known_id: Option<&str>,
     endpoint: SocketAddr,
     path_kind: PathKind,
     mut shutdown: watch::Receiver<bool>,
+    // 经中继时才传（`None` = 直连，行为与今天逐字节一致，ADR-0020 D1/D3）：这条 socket
+    // 其实通向一台公网中继服务器，先完成准入与两端协商、把读写半换成密封态，之后
+    // **照原来的流程一字不改**地握手、登记、收发。
+    relay: Option<RelayCtx<'_>>,
 ) -> DialOutcome {
     // 传输无关的端点表示（拨号本身仍是 TCP：BLE 走自己的拨号路径，见 ADR-0015）
     let ep = MeshEndpoint::Tcp(endpoint);
@@ -2185,6 +2202,23 @@ async fn connect_to_peer(
     // 握手阶段要直接读写 socket（此时还没有 writer / reader 循环），故声明为 mut。
     let mut r = TcpReceiver::new(raw_r);
     let mut w = TcpSender::new(raw_w);
+
+    // 经中继时：先与服务器完成准入、再与对端完成协商密封，然后才走下面那段一模一样的
+    // 握手。**协商失败直接断链，不降级为明文**（AI_RULES §19：不得静默绕过加密）。
+    if let Some(ctx) = relay {
+        if let Err(e) = relay_negotiate(&mut w, &mut r, ctx.device_id, ctx.signing, ctx.dial).await
+        {
+            state.push_diag_event("relay_negotiate", &format!("{}; server={}", e, ctx.dial.server));
+            state.logger.warn(
+                "relay",
+                format!(
+                    "协商失败 peer={} server={}：{}",
+                    ctx.dial.peer_id, ctx.dial.server, e
+                ),
+            );
+            return DialOutcome::Failed(e);
+        }
+    }
 
     // ---- 握手：**两条路径都必须验签**（§8 / ADR-0011）----
     //

@@ -96,6 +96,26 @@ pub fn get_friend_pubkeys(
     .flatten()
 }
 
+/// 列出所有**已绑定 Ed25519 公钥**的好友 `(device_id, ed25519_pubkey)`。
+///
+/// 公网中继的会合循环用它算通道哈希并做协商验签（`network/transport/relay.rs`）。
+/// 两个刻意的选择：
+/// - 单条查询而不是"N 次 `get_friend_ed25519`"：这个循环每 10 秒跑一轮，好友上百时
+///   N+1 会成为它唯一的成本来源。
+/// - `ed25519_pubkey IS NULL` 的老记录**直接不进候选**：没有绑定值就没有可验的身份。
+///   走公网时绝不拿"自报公钥 + TOFU"凑数（ADR-0020 D4）—— 那等于把冒充的门开在公网侧。
+pub fn list_bound_friend_identities(
+    conn: &Connection,
+) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT device_id, ed25519_pubkey FROM friends WHERE ed25519_pubkey IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    // 单行读取失败**跳过而不是整表作废**：一个脏行不该让其余好友都失去公网通路。
+    // 但错误本身必须能被调用方看见，所以这里只在行级容忍，语句级错误由 `?` 上抛。
+    rows.collect()
+}
+
 /// 获取好友的 Ed25519 公钥（用于 Hello 握手验签，确认 TCP 对端确实是该 device_id）。
 pub fn get_friend_ed25519(conn: &Connection, device_id: &str) -> Option<String> {
     conn.query_row(

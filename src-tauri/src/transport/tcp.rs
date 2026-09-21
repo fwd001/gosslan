@@ -32,6 +32,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 
 use crate::protocol::MAX_FRAME;
+use crate::transport::relay_seal::{OpenPipe, SealPipe};
 
 /// 写入一帧：`4 字节大端长度 + payload`。
 pub async fn write_bytes<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> std::io::Result<()> {
@@ -113,20 +114,41 @@ impl TcpTransport {
     /// （与既有 `OwnedReadHalf` / `OwnedWriteHalf` 的用法一致）。
     pub fn into_split(self) -> (TcpReceiver, TcpSender) {
         (
-            TcpReceiver { read: self.read },
-            TcpSender { write: self.write },
+            TcpReceiver {
+                read: Box::new(self.read),
+                open: None,
+            },
+            TcpSender {
+                write: Box::new(self.write),
+                seal: None,
+            },
         )
     }
 }
 
-/// 一条 TCP 连接的**发送端**：只写字节。
+/// 一条连接的**发送端**：只写字节；可选地套一层中继记录层封装。
+///
+/// `write` 是装箱的 `AsyncWrite` 而不是写死 `OwnedWriteHalf`，只有一个理由：
+/// 记录层必须能在测试里对着 `tokio::io::duplex` 跑（真 socket 造不出"每次只能写 8 字节"
+/// 的背压，而那正是 `SealPipe` 唯一会写错的地方 —— 字节被吞两遍或漏一遍）。
+/// 对外类型仍是具体的 `TcpSender` ⇒ `writer_loop` 的签名一个字都不用改。
 pub struct TcpSender {
-    write: OwnedWriteHalf,
+    write: Box<dyn AsyncWrite + Unpin + Send>,
+    /// `Some` = 这条链路的帧流必须再封一层（只有公网中继电路会启用，见 `relay_seal`）。
+    seal: Option<SealPipe>,
 }
 
 impl TcpSender {
-    pub fn new(write: OwnedWriteHalf) -> Self {
-        Self { write }
+    pub fn new<W: AsyncWrite + Unpin + Send + 'static>(write: W) -> Self {
+        Self {
+            write: Box::new(write),
+            seal: None,
+        }
+    }
+
+    /// 启用记录层封装。**一旦启用不可撤销** —— 半程明文就是给中继留注入口子。
+    pub fn enable_seal(&mut self, key: [u8; 32]) {
+        self.seal = Some(SealPipe::new(key));
     }
 
     /// 直接把 bytes 写出去（`write_bytes` 的便捷包装）。
@@ -140,54 +162,163 @@ impl TcpSender {
     }
 }
 
-/// 委托底层写半：让 `TcpSender` 可直接喂给任何 `W: AsyncWrite` 的通用函数
-/// （例如既有的 `write_frame`），不必为连接端点重写分帧代码。
+/// 委托底层写半（未启用记录层时字节级等价于此前的实现）。
+///
+/// 启用记录层后的关键约束：**要么整批认下（`Ok(buf.len())`），要么 `Pending`**，
+/// 绝不返回"吞了一半"。因为 `write_all` 在 `Pending` 后会拿同一个切片重试，
+/// 而 `SealPipe::absorb` 已经幂等地记过"这批吞过了"（`staged`），所以既不会少一遍
+/// 也不会多一遍。少这条判据的后果是帧错位 —— 整条链路解不开。
 impl AsyncWrite for TcpSender {
     fn poll_write(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.write).poll_write(cx, buf)
+        // 按字段解构：`seal` 与 `write` 是两个不相交的字段，否则借用检查会当成
+        // 同时可变借用整个 self。
+        let TcpSender { write, seal } = self.get_mut();
+        let Some(pipe) = seal.as_mut() else {
+            return Pin::new(write.as_mut()).poll_write(cx, buf);
+        };
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        // ① 先把上一批遗留的密文推干净；推不完就 Pending，且**不吞**本次字节。
+        while pipe.has_out() {
+            match Pin::new(write.as_mut()).poll_write(cx, pipe.out_slice()) {
+                Poll::Ready(Ok(0)) => return Poll::Ready(Err(write_zero())),
+                Poll::Ready(Ok(n)) => pipe.advance_out(n),
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        // ② 吸收本次字节（内部可能产出一条记录）。
+        if let Err(e) = pipe.absorb(buf) {
+            return Poll::Ready(Err(e));
+        }
+        // ③ 把密文写出去；写干净了才算这批被消费。
+        loop {
+            if !pipe.has_out() {
+                pipe.clear_staged();
+                return Poll::Ready(Ok(buf.len()));
+            }
+            match Pin::new(write.as_mut()).poll_write(cx, pipe.out_slice()) {
+                Poll::Ready(Ok(0)) => return Poll::Ready(Err(write_zero())),
+                Poll::Ready(Ok(n)) => pipe.advance_out(n),
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.write).poll_flush(cx)
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let TcpSender { write, seal } = self.get_mut();
+        if let Some(pipe) = seal.as_mut() {
+            while pipe.has_out() {
+                match Pin::new(write.as_mut()).poll_write(cx, pipe.out_slice()) {
+                    Poll::Ready(Ok(0)) => return Poll::Ready(Err(write_zero())),
+                    Poll::Ready(Ok(n)) => pipe.advance_out(n),
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+        }
+        Pin::new(write.as_mut()).poll_flush(cx)
     }
 
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.write).poll_shutdown(cx)
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(self.get_mut().write.as_mut()).poll_shutdown(cx)
     }
 }
 
-/// 一条 TCP 连接的**接收端**：只读字节。
+fn write_zero() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::WriteZero, "底层写半接受了 0 字节")
+}
+
+/// 一条连接的**接收端**：只读字节；可选地解一层中继记录层封装。
+///
+/// 装箱理由同 `TcpSender`。
 pub struct TcpReceiver {
-    read: OwnedReadHalf,
+    read: Box<dyn AsyncRead + Unpin + Send>,
+    open: Option<OpenPipe>,
 }
 
 impl TcpReceiver {
-    pub fn new(read: OwnedReadHalf) -> Self {
-        Self { read }
+    pub fn new<R: AsyncRead + Unpin + Send + 'static>(read: R) -> Self {
+        Self {
+            read: Box::new(read),
+            open: None,
+        }
+    }
+
+    /// 启用记录层解密。**一旦启用不可撤销**（同 `TcpSender::enable_seal`）。
+    pub fn enable_seal(&mut self, key: [u8; 32]) {
+        self.open = Some(OpenPipe::new(key));
     }
 
     /// 直接读出一帧 bytes（`read_bytes` 的便捷包装）。
     ///
-    /// ⚠️ 同 `TcpSender::send_bytes`：当前只有本文件测试在用，
-    /// 生产路径走 `read_frame(&mut receiver, …)`。
+    /// ⚠️ 同 `TcpSender::send_bytes`：当前只有本文件测试在用，生产路径走 `read_frame`。
     #[allow(dead_code)]
     pub async fn receive_bytes(&mut self) -> std::io::Result<Vec<u8>> {
         read_bytes(&mut self.read).await
     }
 }
 
-/// 同 `TcpSender`：实现 `AsyncRead` 以直接复用既有的 `read_frame`。
+/// 单次从底层拉取的缓冲大小。记录层要在内部分组成帧，太小会syscall过多；
+/// 也不能太大 —— 未认证的对端不得让我们一次分配大块内存。
+const READ_SCRATCH: usize = 16 * 1024;
+
 impl AsyncRead for TcpReceiver {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.read).poll_read(cx, buf)
+        let TcpReceiver { read, open } = self.get_mut();
+        let Some(pipe) = open.as_mut() else {
+            return Pin::new(read.as_mut()).poll_read(cx, buf);
+        };
+        // 已有明文先送明文：这样一次 socket 读能喂很多次 poll_read。
+        // ⚠️ 必须 `advance(n)`：`initialize_unfilled()` 只是借出那块内存，
+        // 不调 advance 的话 ReadBuf 的 filled 游标仍是 0，`read_exact` 会把"0 字节"
+        // 当成 EOF ⇒ 密封链路上一帧都送不出去（这个 bug 是字节等价用例抓到的）。
+        let n = pipe.take_plain(buf.initialize_unfilled());
+        if n > 0 {
+            buf.advance(n);
+            return Poll::Ready(Ok(()));
+        }
+        loop {
+            let mut scratch = [0u8; READ_SCRATCH];
+            let mut rb = tokio::io::ReadBuf::new(&mut scratch);
+            let n = match Pin::new(read.as_mut()).poll_read(cx, &mut rb) {
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(())) => rb.filled().len(),
+                // 底层暂时没数据 ⇒ **就是 Pending**，不是截断。一条记录合法地横跨多次
+                // socket 读（真机上 16KB 分片必然横跨），把"已攒半条 + 此刻无数据"判成
+                // EOF 会让每条大帧链路刚起步就自杀 —— 这个 bug 是 duplex(1) 的用例抓到的。
+                // 截断只在下面 n==0（底层真的 EOF）时判。
+                Poll::Pending => return Poll::Pending,
+            };
+            if n == 0 {
+                // 底层 EOF 且没有明文可交付 ⇒ 真 EOF（`read_exact` 自己判 UnexpectedEof）。
+                if pipe.has_partial() {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "记录不完整",
+                    )));
+                }
+                return Poll::Ready(Ok(()));
+            }
+            if let Err(e) = pipe.absorb_encrypted(&scratch[..n]) {
+                return Poll::Ready(Err(e));
+            }
+            let n = pipe.take_plain(buf.initialize_unfilled());
+            if n > 0 {
+                buf.advance(n);
+                return Poll::Ready(Ok(()));
+            }
+        }
     }
 }
 
