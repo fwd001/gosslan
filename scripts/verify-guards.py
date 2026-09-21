@@ -354,6 +354,29 @@ CASES: list[Case] = [
         expect_fail_hint="没声明",
         tags=["rust", "protocol", "gating"],
     ),
+    # ---------------- 门禁自己的分层自检 ----------------
+    Case(
+        name="门禁分层的自证不是装饰（漏归重门禁层必须当场红）",
+        why="verify.mjs 的快速层靠 `isHeavyStep` 按**名字/命令**判断哪一步会碰工具链，"
+        "旁边另有一条自证 `mayTouchToolchain`。两者判据不同正是重点：将来有人加一条 "
+        "`{cmd:\"bash\", name:\"某项检查\"}` 而名字没带关键词 ⇒ 它**悄悄落进快速层**，"
+        "表现是「快速层怎么突然三分钟」，没人会去查 —— 会让人想绕过的门禁等于没有门禁。\n"
+        "     ⚠️ 这条用例是补 v4.22.31 欠下的账：当时我用「注入一条 cmd:cargo 的步骤」"
+        "自证，那是**错的** —— cargo 步骤本来就被 isHeavyStep 归走，永远不会漏，"
+        "所以那次『通过』什么也没证明。真正的注入必须造出"
+        "「会碰工具链却没归层」的组合，也就是把一条 bash 步骤改名去掉关键词。\n"
+        "     跑的是 `--list`：自证在 listOnly 分支**之前**执行，所以既不编译也不跑测试，"
+        "秒级出结论，可以留在日常子集里",
+        file=ROOT / "scripts" / "verify.mjs",
+        injections=[(
+            '  name: "移动端编译门禁（Android）",',
+            '  name: "移动端检查（Android）",',
+        )],
+        cmd=["node", "scripts/verify.mjs", "--list"],
+        cwd=ROOT,
+        expect_fail_hint="分层自检失败",
+        tags=["gates", "frontend", "new-guards"],
+    ),
     # ---------------- 本地新增护栏（2026-09-14）----------------
 
     Case(

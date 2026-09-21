@@ -333,9 +333,12 @@ function mayTouchToolchain(s) {
  *   · 守不住：经由 npm/npx 间接拉起工具链的步骤（如 `npm run tauri build`）—— 文本判据
  *     看不出它会编译。这类只能靠命名约定，好在漏判的后果是"快速层变慢"（可见），
  *     不是"门禁被跳过"（安全方向）；
- *   · **本条自证尚未做过非空转验证**（想注入一条 bash 步骤证明它会红时，临时探针文件被
- *     权限策略拦下）。要补的话：把它登记进 `verify-guards.py` 的 CASES，
- *     注入 = 给某条 bash 步骤改名去掉关键词，要求 `verify` 快速层以退出码 1 失败。
+ *   · **本条自证已做过非空转验证**（v4.22.40）：`verify-guards.py` 里
+ *     「门禁分层的自证不是装饰」那条 —— 注入方式是把 `移动端编译门禁（Android）`
+ *     改名去掉关键词，于是它 `cmd:"bash"` 会碰工具链却不再被 `isHeavyStep` 归走 ⇒
+ *     快速层必须以退出码 1 红掉。
+ *     （顺带修正一段历史自证：v4.22.31 当时用"注入一条 `cmd:"cargo"` 的步骤"来证，
+ *     那是**无效注入** —— cargo 步骤本来就被归走，永远不会漏，那次"通过"什么也没证明。）
  */
 {
   const leaked = !fullGate && active.filter((s) => mayTouchToolchain(s) && !isHeavyStep(s));
