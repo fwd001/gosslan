@@ -440,8 +440,7 @@ pub async fn spawn(
 
     // 公网中继（ADR-0020）：用户没填服务器时，这个任务每 10s 只做一次
     // "读三个 setting → 什么都没配 → 什么都不做"，不产生任何网络流量。
-    let relay_task =
-        tokio::spawn(relay_rendezvous_task(state_for_relay, shutdown_for_relay));
+    let relay_task = tokio::spawn(relay_rendezvous_task(state_for_relay, shutdown_for_relay));
 
     Ok(vec![
         accept_task,
@@ -2118,7 +2117,15 @@ pub async fn ensure_link(
     // LAN 发现路径的拨号失败是常态（对端离线、或本轮该由对端拨），刻意不打日志；
     // 但**握手验签失败/身份不符**会在 `connect_to_peer` 内以 warn + 诊断事件留痕
     // （那是「有人冒充」或「配置写错」的信号，不能静默）。
-    let _ = connect_to_peer(state, Some(peer_id), endpoint, PathKind::Lan, shutdown, None).await;
+    let _ = connect_to_peer(
+        state,
+        Some(peer_id),
+        endpoint,
+        PathKind::Lan,
+        shutdown,
+        None,
+    )
+    .await;
 }
 
 /// 建立一条到 `endpoint` 的连接。
@@ -2208,7 +2215,10 @@ async fn connect_to_peer(
     if let Some(ctx) = relay {
         if let Err(e) = relay_negotiate(&mut w, &mut r, ctx.device_id, ctx.signing, ctx.dial).await
         {
-            state.push_diag_event("relay_negotiate", &format!("{}; server={}", e, ctx.dial.server));
+            state.push_diag_event(
+                "relay_negotiate",
+                &format!("{}; server={}", e, ctx.dial.server),
+            );
             state.logger.warn(
                 "relay",
                 format!(

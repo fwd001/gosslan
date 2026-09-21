@@ -297,10 +297,7 @@ pub fn accept_wrap_offer(
     } else {
         (a2b, b2a)
     };
-    Some(WrappedSession {
-        out_key,
-        in_key,
-    })
+    Some(WrappedSession { out_key, in_key })
 }
 
 /// 双向两条独立密钥（方向不互用 ⇒ 反射攻击的第一道闸门）。
