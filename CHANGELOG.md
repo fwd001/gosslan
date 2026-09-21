@@ -10,6 +10,35 @@
 
 ## [Unreleased]
 
+## [4.25.1] - 2026-09-22
+
+### Fixed (公网中继接线留下的最后一条 dead code 把 CI 的两条 Rust job 打红了)
+
+`6798808`（及它前面几个 relay 提交）之后，CI 上 `Rust 单测 / 清单（macos-latest）` 与
+`（windows-latest）` **两条都红**，原因只有一行：
+
+```text
+error: function `parse_channel_hex` is never used   --> src/transport/relay_seal.rs:123
+```
+
+`cargo clippy --features bluetooth -- -D warnings` 只编 lib（不带 `--tests`），而这个函数
+**只有同文件的 3 条断言在用** ⇒ 生产构建里它确实是死代码。relay 那一批刚接线的 7 条
+dead-code 警告里，其余 6 条都被接线消掉了，只剩这一条。
+
+- 处理：给它 `#[allow(dead_code)]` + 写清"为什么留、谁在用、和 `tcp.rs` 的
+  `send_bytes`/`receive_bytes` 同一个口径"。**没有删函数**的理由是它不是废码而是
+  `channel_hex` 的格式契约反边 —— 那 3 条断言守的是"64 位小写十六进制、长度与字符集都严格"，
+  而服务器侧按同一个格式校验（`server.mjs` 的 `/^[0-9a-f]{64}$/`）；删函数就要连带删断言，
+  格式约束只剩服务器一侧在守，客户端哪天改成大写或 base64 不会有测试报错。
+- ⚠️ 顺带记一条比这条警告更值钱的机制：**CI 的 verify 是 fail-fast**，clippy 是 rust 组第 2 步，
+  它一红，后面的 **`cargo test` 与 `check-test-manifest`（Rust）两步根本没跑** —— 也就是说
+  "relay 那批接线的单测到底过不过"在 CI 上是未知的（本地实测：过，见下）。同一个形状
+  v4.23.4/35 已经付过一次钱（那次是"verify 全绿"却漏看了 build-android 的红）。
+- 另记：本仓库对"这类小修要不要 bump 版本"没有一致口径（`62fd5ca fix(gates)` 就没 bump），
+  而用户协议是"每个改动一次版本提升" ⇒ 这次按协议 bump patch，口径冲突留给用户裁定。
+
+Version-Bump: patch
+
 ## [4.25.0] - 2026-09-22
 
 ### Added (公网盲管道中继：局域网连不上时多一条链路 —— ADR-0020)

@@ -120,6 +120,14 @@ pub fn channel_hex(ch: &[u8; 32]) -> String {
 }
 
 /// 解析十六进制通道字段；长度或字符非法返回 `None`。
+///
+/// ⚠️ 目前**只有测试在用**（生产侧只走编码方向：`channel_hex` 算出来就直接进 `GSRL1` 首行
+/// 与签名材料，没有任何地方把 hex 读回成字节）。留着是因为它是 `channel_hex` 的**格式契约
+/// 反边**：那 3 条断言守的是"64 位小写十六进制、长度与字符集都严格"这一件事，而服务器侧
+/// 正是按同一个格式校验（`server.mjs` 的 `/^[0-9a-f]{64}$/`）—— 删了函数就得连带删断言，
+/// 格式约束就只剩服务器一侧在守，客户端哪天改成大写或 base64 不会有测试报错。
+/// 与 `transport/tcp.rs` 里 `send_bytes` / `receive_bytes` 同一个口径（测试在用、生产未接）。
+#[allow(dead_code)]
 pub fn parse_channel_hex(s: &str) -> Option<[u8; 32]> {
     if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
