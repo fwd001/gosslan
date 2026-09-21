@@ -15,7 +15,7 @@
 
 [Unit]
 Description=Gosslan blind circuit relay (no payload parsing, no storage)
-Documentation=https://github.com/yann9/gosslan/tree/main/relay-server
+Documentation=https://github.com/fwd001/gosslan-relay-server
 After=network-online.target
 Wants=network-online.target
 

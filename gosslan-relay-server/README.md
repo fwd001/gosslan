@@ -8,8 +8,13 @@ Gosslan 的**公网中转**：一台只会组网的服务器。把两条 TCP 连
 于是"跨网段"这条路本来就没有路。**局域网能连上时它完全不参与**（客户端链路优先级
 LAN > 跨网段/中继 > 蓝牙），填了它也不会让正常聊天绕道公网。
 
-> 本目录是自包含的：将来整目录搬出去独立成仓库即可，不需要主仓的其它文件。
-> 客户端侧（Rust）的实现与决策记录在主仓：`src-tauri/src/transport/relay_seal.rs`
+> **本目录是自包含的**，并且已经有了自己的仓库：
+> <https://github.com/fwd001/gosslan-relay-server>（跑起来只需要这个目录里的东西）。
+> Gosslan 主仓里保留同一份，是为了让"服务器协议"和"客户端记录层"能一起改、一起看 diff。
+>
+> ⚠️ 两边内容应当一致；改动先落哪边都行，但**另一边的同名文件要同步**（漂移的代价是
+> README 里的协议规格与真实服务器行为不符，而服务器是唯一不看代码就部署的东西）。
+> 客户端侧（Rust）实现与决策记录在主仓：`src-tauri/src/transport/relay_seal.rs`
 > 与 `docs/adr/0020-blind-circuit-relay.md`。
 
 ---
@@ -342,13 +347,14 @@ sudo cp -r 新版本/* /opt/gosslan-relay/ && pm2 start ecosystem.config.cjs && 
 4. 服务器可以断链、可以观察流量形状与时刻，但读不到内容、也伪造不了一帧。
 5. 只支持 IPv4 字面量地址（不支持域名）：客户端侧限制，不是这台服务器的。
 
-## 独立成仓库时的清单
+## 独立仓库的同步约定
 
-本目录已经是完整可运行单元，搬走时确认：
+本目录已经是完整可运行单元（2026-09-21 已建独立仓库
+[fwd001/gosslan-relay-server](https://github.com/fwd001/gosslan-relay-server)，
+从新位置跑 `node selftest.mjs` 8/8 通过验证过搬家完整性）。
 
-- [ ] `server.mjs` / `package.json` / `ecosystem.config.cjs` / `selftest.mjs` / `bench.mjs`
-      / `Dockerfile` / `gosslan-relay.service` / `README.md` 全在这一个目录里
-- [ ] `.env` 与 `/etc/gosslan-relay.env` **不进仓库**（现在就加进 `.gitignore`）
-- [ ] README 里指向主仓的两处引用（`relay_seal.rs`、ADR-0020）改成 `Gosslan 主仓 <路径>` 的说明性引用
-- [ ] 新仓库跑一次 `node selftest.mjs` 确认搬家没改坏
-- [ ] 客户端侧的通道哈希/记录层规格已在上面「协议规格」一节完整抄录，无需再回主仓查
+- 9 个文件全在本目录：`server.mjs` / `package.json` / `ecosystem.config.cjs` / `selftest.mjs`
+  / `bench.mjs` / `Dockerfile` / `gosslan-relay.service` / `README.md` / `.gitignore`
+- `.env` 与 `/etc/gosslan-relay.env` 已被 `.gitignore` 挡住，**口令绝不进任何仓库**
+- 「协议规格」一节完整抄录了通道哈希算法与记录层线格式，独立仓库无需回主仓查
+- 只有两处刻意指回主仓（客户端实现与 ADR-0020），那是"另一半"，不该往这里搬
