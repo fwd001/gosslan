@@ -45,6 +45,10 @@
 - `0017-opaque-external-wire-frame.md`
 - `0018-window-architecture.md`
 - `0019-content-transfer.md`
+- `0020-blind-circuit-relay.md`（**Accepted 2026-09-21**：可选自托管的公网哑管道中继。
+  服务器代码**不在本仓库** → <https://github.com/fwd001/gosslan-relay-server>；
+  本仓只有客户端侧的 `src-tauri/src/transport/relay_seal.rs`。
+  ⚠️ 改到中继线格式要**同一轮改两个仓库**，两边各有一份规格文字，漂移没有测试提醒）
 
 > Earlier ADRs `0001`–`0006` (message idempotency, outbox+ACK, E2EE, transport, no-Web-Worker,
 > device fingerprint) were removed; their normative content now lives in
