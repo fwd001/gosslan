@@ -6,8 +6,9 @@ name: Verify
 #  ## 为什么要有这个 workflow
 #
 #  本仓库此前**三个 workflow 全是打包**（build / build-macos / build-android），
-#  没有任何一个跑测试。也就是说：457 条前端断言 + 503 条 Rust 用例 + 93 条非空转
-#  护栏，全部依赖**人工记得跑**。纪律很强，但没有门禁 —— 一次漏跑就能把回归合进 main。
+#  没有任何一个跑测试 —— 前端断言、Rust 用例、护栏非空转全依赖**人工记得跑**。
+#  纪律很强，但没有门禁：一次漏跑就能把回归合进 main。（条数故意不写在这里：
+#  写死就必然腐烂，本文件头部曾经挂着"457/503/93"三个早已对不上的数字好几天。）
 #
 #  真实案例（CHANGELOG 4.18.7 → 4.18.10）：BLE 分片问题连着四个版本边修边冒，
 #  每一版都是人工验证过的。有这条门禁，4.18.7 的修复会当场被 4.18.9 的用例拦住。
@@ -107,69 +108,14 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      - name: 前端测试
-        run: npm test
-
-      # 守的是「新增 .test.ts 但忘了登记进 package.json」——那类文件不会被执行，
-      # 而 `npm test` 依然全绿（退出码 0 的空转）。
-      - name: 测试清单守卫（前端）
-        run: node scripts/check-test-manifest.mjs --only frontend
-
-      # 守的是「不变量有了例外，但只写在实现旁边、没写进 protocol-invariants.md」——
-      # 那份文档是 AI 的必读清单里唯一的不变量来源，没登记的例外会被照文档误修。
-      # 纯静态扫描，不需要编译，所以放在这个（快的）job 里。
-      - name: 不变量例外守卫
-        run: node scripts/check-invariant-exceptions.mjs
-
-      # 守的是「BLE 载荷预算的常量与换算只有一份」。病史很长：CHANGELOG 4.18.7→4.18.10
-      # **连着四个版本**修同一个分片预算问题，根因就是同名概念多处各算一遍，
-      # 且数值恰好一致 ⇒ 不报错、只在真机上表现为「某台设备收不到消息」。
-      # 纯静态扫描，不需要编译。
-      - name: BLE 常量单一事实来源
-        run: node scripts/check-ble-constants.mjs
-
-      # 守的是「领域图不许变成虚构」：路径必须存在、一个文件不许被两个领域认领、
-      # 不许有文件既没归属也没显式列进 unmapped、且 `enforce` 只能开在**已收口的单家领域**
-      #（把「边界收口完成一个，打开一个」从口号变成机器判定）。
-      # 为什么重要：本仓库处在半完成迁移中，"域 = 某个目录"是错的地图，而地图错了比没有更危险。
-      - name: 领域图守门
-        run: node scripts/check-domain-map.mjs
-
-      # 守的是「每个领域的跨域 use 必须声名」：对每个域 paths 下的 .rs 文件扫描
-      # 生产代码的 `use crate::xxx`（排除 #[cfg(test)] mod），落在另一个领域的引用
-      # 必须在那条 consumes 列表里。判据 H/I 顺带守"consumes 不能引不存在的域/不能自引"。
-      # 与上一条互补：check-domain-map 守图的形式,这条守图的依赖方向。
-      # 加在领域图守门之后 —— 任何新增领域一旦存在,这条立刻适用,无须人记得开。
-      - name: 领域依赖方向守门
-        run: node scripts/check-domain-deps.mjs
-
-      # 守的是「改动半径与重复犯案」:每个 commit 按规模分级(L1 ≤5 文件/≤200 行/1 领域放行;
-      # L2 需 [plan];L3 或碰 protocol/crypto/schema 敏感文件需 [impact]),且同一领域在
-      # 最近 5 个 fix 里出现 ≥3 次 → FAIL(4.18.7→4.18.10 连修四版的教训:小 diff 不等于安全)。
-      # 范围自动用 push event 的 before..sha(本地 = 未推送 commit);纯文档/工程 commit 豁免,
-      # chore(release) 的版本白名单豁免。
-      - name: Change Budget 守门
-        run: node scripts/check-change-budget.mjs
-
-      # 结构检查（唯一行首 `## [Unreleased]` 锚点 / 标题格式 / 新在前降序）。
-      # 注意用的是 `version:changelog` 而不是 `version:check`：后者的版本记账部分
-      # 在攒提交期间本来就该是红的，把它拉进来会让这一步周期性误报。
-      - name: CHANGELOG 结构
-        run: npm run version:changelog
-
-      # 护栏非空转验证的前端子集（约 1.5 分钟）。
-      #
-      # ⚠️ 这一步是**最该进 CI** 的：2026-09-16 发现「焦点可见」那条护栏因为
-      # MessageComposer.vue 加了文件级逃生阀而**退化成空转**（改坏也不报）——
-      # 护栏失效时不会有任何信号，只有把它跑起来才知道。此前的 92 条护栏全靠人工记得跑。
-      # 全量护栏（含 Rust 用例，要重编译）留给发布前手动跑 `npm run verify:full -- --full`。
-      # （`verify.mjs` 分层后 `--full` 会自动拉起重门禁层，不会静默跑成快速层。）
-      - name: 护栏非空转（前端子集）
-        run: python3 scripts/verify-guards.py --only frontend
-
-      # 不只是"为 Rust job 准备 dist"：前端构建本身失败也应当拦住这次 PR。
-      - name: 前端构建
-        run: npm run build
+      # ⚠️「跑哪些检查」只有一份定义：`scripts/verify.mjs` 的步骤表（这里只说"跑哪一组"）。
+      # 以前两边各抄一份，已经因此腐烂过：本文件头部曾写着「457 条前端断言 + 503 条 Rust
+      # 用例 + 93 条护栏」，而条数一直在动。要加/删一步 ⇒ 改 verify.mjs 的步骤表（每条必须
+      # 声明 group，漏声明 verify.mjs 自己会红）。步骤级理由（--features bluetooth 不能省、
+      # ci-run.sh 注解通道、fetch-depth 为 Change Budget 服务）都在 verify.mjs 的 why 里。
+      - name: 跑门禁（frontend 组 —— 清单只在 scripts/verify.mjs）
+        shell: bash
+        run: bash scripts/ci-run.sh "verify frontend 组" node scripts/verify.mjs --group frontend
 
   # ---------------------------------------------------------------------------
   #  Rust：单测 + 清单守卫（macOS + Windows 两条腿）
@@ -230,27 +176,11 @@ jobs:
       #
       # ⚠️ Windows 上必须显式 `shell: bash`（用 Git Bash）——脚本依赖 tee/grep/tail/node。
 
-      # ---- fmt + clippy ----
-      # 2026-09-17 一次性 fmt 全量重排 + 清理 26 条 clippy warning 后，两项均零红。
-      # 放在 test 之前：格式/风格问题不该等测试跑完才发现。
-      - name: cargo fmt --check
-        working-directory: src-tauri
-        run: cargo fmt --check --all
-
-      - name: cargo clippy（-D warnings，--features bluetooth）
-        working-directory: src-tauri
-        run: cargo clippy --features bluetooth -- -D warnings
-
-      - name: Rust 单测
+      # 清单只有一份：见 verify.mjs 的 group=rust（fmt → clippy → 单测 → 测试清单守卫）。
+      # `--features bluetooth` 不能省、清单守卫为什么必须跟着跑，都写在那一步的 why 里。
+      - name: 跑门禁（rust 组 —— 清单只在 scripts/verify.mjs）
         shell: bash
-        working-directory: src-tauri
-        run: bash ../scripts/ci-run.sh "Rust 单测（${{ matrix.os }}）" cargo test --features bluetooth
-
-      # 比对「基线名单 ⋈ 实际 --list」：缺名即红，专门拦"测试静默消失"。
-      # 本平台没有基线时会打印与其它平台基线的**差集**（新平台引导用，见脚本注释）。
-      - name: 测试清单守卫（Rust）
-        shell: bash
-        run: bash scripts/ci-run.sh "测试清单守卫（${{ matrix.os }}）" node scripts/check-test-manifest.mjs --only rust
+        run: bash scripts/ci-run.sh "verify rust 组（${{ matrix.os }}）" node scripts/verify.mjs --group rust
 
   # ---------------------------------------------------------------------------
   #  Android 编译门禁（第三个平台）
@@ -326,4 +256,5 @@ jobs:
       # 失败诊断走 ci-run.sh：它把关键行合成**一条多行 check 注解**
       #（注解是唯一可匿名读取的渠道，见该脚本头部）。
       - name: 移动端编译门禁（默认 feature + --features bluetooth，各自 0 warning）
-        run: bash scripts/ci-run.sh "Android 编译门禁" bash scripts/check-mobile.sh --bluetooth
+        # 清单只有一份：见 verify.mjs 的 group=android（内部就是 check-mobile.sh --bluetooth）。
+        run: bash scripts/ci-run.sh "verify android 组" node scripts/verify.mjs --group android

@@ -10,6 +10,63 @@
 
 ## [Unreleased]
 
+## [4.23.0] - 2026-09-21
+
+### Changed (CI 与本地的"跑哪些检查"合成一份：CI 只说跑哪一组)
+
+`.github/workflows/verify.yml` 以前把 15 项检查**又抄了一遍**（10 + 4 + 1 个 `run:` 步骤），
+于是"清单"有两份、必然漂移 —— 证据就在同一个文件头部：那里挂着「457 条前端断言 +
+503 条 Rust 用例 + 93 条非空转护栏」，而这三个数字早就对不上实际。
+
+v4.22.41 已经把归属做成了步骤表上的一列（`group`）并强制声明，这一版把 CI 切过去：
+三个 job 各自只跑 `node scripts/verify.mjs --group frontend|rust|android`，
+环境准备（`fetch-depth: 0`、`npm ci`、rust-toolchain/rust-cache、JDK+NDK、
+`ci-run.sh` 的 check 注解通道）全部留在 YAML —— 那些是"怎么准备机器"，不是"跑哪些检查"。
+步骤级理由（`--features bluetooth` 不能省、清单守卫是它的兜底、Change Budget 需要历史）
+改由 verify.mjs 里各步的 `why` 承担，不再在两处各写一份。
+
+顺带删掉头部那三个腐烂数字（并且注明它们曾经烂在那里）。
+
+### Added / Fixed (PR #22 主题色体系 + 移动端下钻页统一 + 群任务编辑权限，记账补录)
+
+**这批改动在合并时声明了 `Version-Bump: minor` 却没落地版本号、也没写本文件小节**；
+它们早已在 main 上，这一节是补记账（作者：yann9，PR #22，+1845/−620 / 57 文件）。
+
+- **主题色体系**：呈现层颜色 token 化（`src/style.css` 的 `--gosslan-*` 一族 +
+  `src/utils/chatStyle.ts` 用户可自定义聊天底色 + `color.ts` / `platform.ts` 配套），
+  以及 `src/utils/designGuards.test.ts` 里的设计守卫。
+- **移动端下钻页统一**：转场、返回箭头、列表风格收口（`MobilePageFrame`、`AuxWindowShell`、
+  `useBackLayer` 等），`FavoritePanel` / 「我的」/「链接」几个下钻页对齐。
+- **群任务编辑权限**：`may_update_todo` 改为「创建者或群主 ⇒ 一切字段；非群主的结构改动
+  （标题/描述/图片/删除）一律拒；其余看被指派人」。起因是用户报"群主不能编辑群任务"
+  —— 此前群主改描述/状态会落到"被指派人"那一档被拒。鉴权仍在命令层，
+  配套测试是四角色矩阵（`alice`/`bob`/`carol`/`owner` × 组合，含 5 条负例，
+  `commands/logs_tests.rs`）。
+- 审查记录（不改代码，见 commit 报告）：这一批留下两处"事实抄两份"待清理
+  —— @提及高亮的面板底色在 `MessageTextBubble.vue` 与 `MessageContentModal.vue`
+  各写一份兜底且**两处值不同**；`may_update_todo` 的 `_edits_assignees` 已成死参数
+  而函数上方权限表仍在讲那一档。均登记为待办 #40。
+
+### Fixed (PR #23 一批移动端 / 设置缺陷修复，记账补录)
+
+同样是**合并时声明了 `Version-Bump: patch` 却没落地版本号、没写小节**的补录
+（作者：yann9，PR #23，25 文件 / +496−76）。
+
+- **弹窗 z 序**：`BaseModal` 原先 `z-50`，而 HeadlessUI 的 `Dialog` 挂到 body 下的 portal 根，
+  与移动端整页下钻（`z-[60]`）在文档根层级比 ⇒ 弹窗"DOM 里有、屏幕上看不见"，
+  用户体感是"点了没反应"。修法之外还加了静态守卫：整页框架 < 弹窗 < 右键菜单 < 图片预览/Toast
+  （`designGuards.test.ts` 第 ⑫ 条，带反向清单校验）。
+- **安卓首启动渲染成桌面三栏**：真因是启动时系统权限弹框盖在 WebView 的**首次布局**上，
+  `matchMedia("(max-width: 767px)")` 读到兜底视口宽度（980 那档）⇒ `isMobile=false`。
+  两侧互补修法：注入侧把 `requestRuntimePermissions()` 推到 `decorView.post { post { … } }`
+  （首帧 traversal 之后），前端侧新增 `platform.ts::resolveMobileLayout`（平台优先、宽度兜底）。
+- **返回栈在 pushState 不可用时的自触发 pop**：退化用 `location.hash` 压条目会**自己**引发一次
+  `popstate` ⇒ 刚压入的层被立刻关掉（"弹窗一出现就消失"）。现在 `HistoryPort.push` 返回落点、
+  纯逻辑吃掉那一次。
+- **导航选中态**：「链接」的指南针图标缺 `:fill` 绑定 ⇒ 选中只变色不实心；补上并加守卫 ⑬
+  （清单外的 `navState` key 会红，防清单过期）。
+- 设置页结构/骨架主色等零项，详见该 commit。
+
 ## [4.22.41] - 2026-09-21
 
 ### Changed (门禁"跑哪些检查"收成一份：步骤表加 CI 归属，CI 只需说跑哪一组)
