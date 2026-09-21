@@ -10,6 +10,44 @@
 
 ## [Unreleased]
 
+## [4.23.4] - 2026-09-21
+
+### Fixed (Change Budget 在 CI 上其实是零覆盖 —— 「空范围即绿」现在单独成一类)
+
+#33② 的怀疑成立，而且比"报告得不够细"更糟：**这道门禁从来没在 CI 上判过任何东西。**
+
+机制：`check-change-budget.mjs` 在 push 事件上要的是 `github.event.before..github.sha`，
+而 **`GITHUB_EVENT_BEFORE` 不是 Actions 的默认环境变量**（默认只有 `GITHUB_SHA` /
+`GITHUB_REF_NAME` / `GITHUB_EVENT_NAME` / `GITHUB_EVENT_PATH`），`verify.yml` 从没映射过它
+⇒ 脚本静默退到 `origin/<分支>..HEAD`，而 push 之后远端 ref 已经指向 HEAD ⇒ **空范围**
+⇒ 判 0 个 commit 然后打一行"自然通过"退出 0。`fetch-depth: 0` 那段注释一直在说在做
+before..sha 探测：探测代码在，输入没喂进来，于是那句说明长期是假的。
+
+- `verify.yml`：补上 `env: GITHUB_EVENT_BEFORE: ${{ github.event.before }}`（连"为什么必须有
+  这一行"一起写在该文件顶部，别再靠注释口头承诺）。
+- **push→main 上零覆盖 = 硬失败**（退出码 1）。这是"CI 绿"第一次真的等价于"Change Budget
+  判过这次推送的 commit"：范围来源不是事件里的 before..sha 就红，且红意走 `ci-run.sh` 的
+  注解通道 ⇒ 匿名可读。**下次 main push 全绿本身就是这条修复的证据**。
+- **零覆盖不再冒充通过**：脚本新增退出码 2，`verify.mjs` 把它单列成"⚠️ 零覆盖（没判到任何
+  对象）"，与 ✅/❌/⏭ 并列（本地 push 之后重跑就是这个状态 —— 正确，但不许读成"守住了"）。
+- 范围候选改为"取第一个非空"：`origin/<分支>..HEAD` → 非 main 分支再试
+  `origin/main..HEAD` → 只有 CI 才兜底 `HEAD~1..HEAD`。本地故意不给这条兜底：那会把已推送的
+  commit 反复重判，又误红又假装判过了。
+- 顺手清掉两处会腐烂的数字：`verify.mjs` 头部的"457/505"、`check-test-manifest.mjs` 头部的
+  "455/503/87"（实际今天 501 条前端断言）—— 与 v4.23.0 在 verify.yml 里做的是同一件事。
+- ⚠️ 一处**自我不一致**记在案：上一版 a7edb69 前缀写 `feat(gates)` 而 trailer 声明 `patch`，
+  按 `semver.mjs` 的类型表 `feat ⇒ minor` ⇒ 这一对不自洽（`version:check` 不在 CI 上，所以
+  没人报）。gates 类改动产品无变化就是 patch，以后这类前缀一律用 `fix` / `chore`，别让前缀
+  与 trailer 各说一份 —— 尤其现在 trailer 是判据 3 的输入。
+
+**验证**：三场景退出码实测 —— 本地已 push ⇒ `2`；模拟 CI 且 before 已映射 ⇒ 判到
+`c9e5193..a7edb69` 这 1 个 commit、`0`；模拟 CI 但 env 缺失 ⇒ `1` 并指名"先查那段 env"。
+`npm run verify` 快速层 9 步 ✅（Change Budget 显示为"⚠️ 零覆盖 0.1s"而不是 ✅）、
+`verify-guards.py --only frontend` 46/46 ✅、verify.yml 经 Psych 解析通过（env 键存在，
+steps 4/6/10 未变）。边界：零覆盖/空转这两条新退出码**没有**非空转用例 —— 注入模型是"改坏
+必须 FAIL"，而它要求的是"没东西可判时必须非 0"，方向相反，需要的是另一条接缝；本轮用上面
+三次实测代替，缺口留在这里说明白。
+
 ## [4.23.3] - 2026-09-21
 
 ### Changed (Change Budget 加了第 4 道判据：`Version-Bump` 不落地就是没写)

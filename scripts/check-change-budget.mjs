@@ -91,7 +91,10 @@
  *   「无 trailer 无版本文件」有 56 条(旧的"多 commit 攒一版"流),现在强令每 commit 必
  *   bump 会把门禁变成对历史的审判。真发生了靠 review + `[plan]` 说明兜底。
  *
- * 退出码:0 = 全部通过;1 = 有 commit 超预算未声明、版本声明未落地,或重复犯案。
+ * 退出码:0 = 全部通过;1 = 有 commit 超预算未声明、版本声明未落地、重复犯案,
+ *         或 **CI 上 push 到 main 却零覆盖**(= 范围没拿到 before,门禁在空转);
+ *         2 = **零覆盖**(跑了但范围内没有 commit 可判,常见于本地"已 push 之后重跑")。
+ *         ⇒ 2 不是 0:`verify.mjs` 会把它单列成"未覆盖项",而不是 ✅。
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -383,6 +386,12 @@ let data;
 let usedRange = null;
 /** 完整 message 是否读到了（判据 4 与犯案窗口的前置；读不到 = 停用，不是通过）。 */
 let messagesReadable = true;
+/** 本次是否**一个 commit 都没判到**（零覆盖）。零覆盖必须以退出码 2 单独说话，不能算 ✅。 */
+let zeroCoverage = false;
+/** 范围是否真来自 CI push event 的 before..sha（push→main 时这是"门禁有没有在跑"的唯一凭据）。 */
+let rangeFromEventBefore = false;
+/** 实际用的范围是从哪儿来的（写进输出，也写进"CI 空转"那条失败信息）。 */
+let rangeSource = null;
 
 if (fromJson) {
   data = JSON.parse(readFileSync(path.resolve(ROOT, fromJson), "utf8"));
@@ -397,37 +406,66 @@ if (fromJson) {
   // 它一旦被 push 过,再跑本地 verify 就红,门禁变成了对历史的审判而不是对未来的闸。
   // "未推送"与 CI 的 before..after 语义一致:门禁向前看。
   let range = rangeArg;
+  rangeSource = rangeArg ? "--range 显式指定" : null;
   if (!range && process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_EVENT_BEFORE) {
     const before = process.env.GITHUB_EVENT_BEFORE;
     // force push / 新分支时 before 不在本仓库历史里,git 会报错 —— 用 try 探测
     try {
       execFileSync("git", ["cat-file", "-e", `${before}^{commit}`], { cwd: ROOT, stdio: "ignore" });
       range = `${before}..${process.env.GITHUB_SHA ?? "HEAD"}`;
+      rangeSource = "CI push event 的 before..sha";
+      rangeFromEventBefore = true;
     } catch {
       /* before 不可达,落到未推送范围 */
     }
   }
   if (!range) {
+    // 候选按序取**第一个非空**的范围：`origin/<本分支>..HEAD` 在"刚把分支推上去、CI 正在
+    // 跑"这种情形下是**空**的（远端 ref 已经指向 HEAD），这时退回与 main 的差集才判得到东西。
+    let branch = "HEAD";
     try {
-      const branch = git("rev-parse", "--abbrev-ref", "HEAD").trim();
-      git("cat-file", "-e", `origin/${branch}^{commit}`);
-      range = `origin/${branch}..HEAD`;
+      branch = git("rev-parse", "--abbrev-ref", "HEAD").trim();
     } catch {
-      range = "HEAD~1..HEAD";
+      /* 空仓库等极端情形,直接用 HEAD~1 */
+    }
+    const inCI = Boolean(process.env.GITHUB_EVENT_NAME);
+    const candidates = [
+      `origin/${branch}..HEAD`,
+      ...(branch === "main" ? [] : ["origin/main..HEAD"]),
+      // ⚠️ `HEAD~1..HEAD` 只在 CI 上兜底。本地正相反：全部已推送时它会把"最后一个已推送
+      // commit"再判一遍 —— 那是审判历史而不是把关未来（文件头讲过这个坑），本地宁可报
+      // **零覆盖**（退出码 2），也不要既误红又假装判过了。
+      ...(inCI ? ["HEAD~1..HEAD"] : []),
+    ];
+    for (const c of candidates) {
+      try {
+        git("cat-file", "-e", c.split("..")[0] + "^{commit}");
+        if (Number(git("rev-list", "--count", c).trim()) > 0) {
+          range = c;
+          rangeSource = `未推送范围（候选里第一个非空：${c}）`;
+          break;
+        }
+      } catch {
+        /* 该候选的端点不存在,试下一个 */
+      }
+    }
+    if (!range) {
+      range = candidates[0];
+      rangeSource = "所有候选范围都为空（没有新 commit 可判 ⇒ 零覆盖）";
     }
   }
   usedRange = range;
 
-  // 空范围(全部已推送)= 没有要检查的新 commit —— 显式说清(commits 为空自然通过)
+  // 空范围(全部已推送)= 没有要检查的新 commit —— **零覆盖,不是通过**（见文末退出码）
   let commitsRaw = "";
   let rangeReadable = true;
   try {
     commitsRaw = git("log", range, "--numstat", "-M", "--format=%H%x00%s");
   } catch {
     rangeReadable = false;
-    console.log(`检查范围:${range}(空或不可达)—— 没有未推送的新 commit,判据 1/2/4 自然通过`);
+    console.log(`检查范围:${range}(不可达)—— 判据 1/2/4 与窗口全部**未运行**`);
   }
-  console.log(`检查范围:${usedRange}`);
+  console.log(`检查范围:${usedRange}（来源：${rangeSource}）`);
 
   // 解析:逐行状态机(见 parseCommits 注释 —— 不能按空行切块)
   data = { commits: parseCommits(commitsRaw) };
@@ -452,6 +490,9 @@ if (fromJson) {
   data.recentFixes = rangeReadable && messagesReadable ? buildOffenderWindow(data.commits) : null;
 }
 
+// 零覆盖 = 一个 commit 都没判到（范围空 / 不可达 / fixture 空）。**不是通过**。
+zeroCoverage = data.commits.length === 0;
+
 // ---------------- 判据 1/2:逐 commit 分级 ----------------
 
 console.log("\n判据 1/2:变更分级(规模 / 敏感文件 / 标记)");
@@ -469,7 +510,9 @@ for (const commit of data.commits) {
   );
   if (verdict.problem) fail(`      ${verdict.problem}`);
 }
-if (ok) console.log("  ✓ 全部 commit 在预算内或已声明");
+if (zeroCoverage) {
+  console.log("  ⚠️ 零覆盖：受检范围里一个 commit 都没有 ⇒ 三道判据都没看过任何代码（**不等于通过**）");
+} else if (ok) console.log("  ✓ 全部 commit 在预算内或已声明");
 
 // ---------------- 判据 4:版本声明必须落地 ----------------
 // trailer 现在是有消费者的（判据 3 拿它判"这次是不是修补"）。一个可以随便写、也可以
@@ -533,10 +576,10 @@ if (data.recentFixes) {
     console.log(`  ${mark} ${d}: ${shas.length} 次(${shas.join(", ")})`);
     if (shas.length >= OFFENDER_LIMIT && !offender) offender = { d, shas };
   }
-  if (byDomain.size === 0) console.log("  (窗口内 fix 都只动豁免文件,无领域归属)");
+  if (byDomain.size === 0) console.log("  (窗口里的修补都没落在有归属的领域上,无领域可计)");
   if (offender) {
     fail(
-      `  ✗ 「${offender.d}」领域在最近 ${OFFENDER_WINDOW} 个 fix 里出现了 ${offender.shas.length} 次 —— ` +
+      `  ✗ 「${offender.d}」领域在最近 ${OFFENDER_WINDOW} 个修补形状提交里出现了 ${offender.shas.length} 次 —— ` +
         `这是 4.18.7→4.18.10 的标准犯案形态(每个补丁都很小,但它们在互相修)。\n` +
         `      请停下来:① 该领域的不变量补了吗(docs/protocol-invariants.md)?\n` +
         `      ② 单一事实来源收敛了吗(docs/migration-ledger.md 的台账行)?\n` +
@@ -549,9 +592,36 @@ if (data.recentFixes) {
 
 // ---------------- 汇总 ----------------
 
+const ciPushMain =
+  process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_NAME === "main";
+
+if (ok && ciPushMain && !rangeFromEventBefore) {
+  // CI 上 push 到 main，唯一**正确**的范围是 `github.event.before..github.sha`。走到这里
+  // 说明它没拿到（env 没映射 / before 不可达 / 候选全空）⇒ 这一步看的不是本次推送的内容。
+  // 必须红，而且要红得能被 `ci-run.sh` 转成注解（匿名可读渠道）—— 否则"CI 全绿"会被当成
+  // "Change Budget 判过这次推送"，而它可能一个 commit 都没看过。
+  console.error(
+    `\n✗ CI push→main 的受检范围不是事件里的 before..sha` +
+      `（范围 ${usedRange}，来源：${rangeSource ?? "未知"}）⇒ 门禁看的不是本次推送（空转）。\n` +
+      `  先查 verify.yml 顶部那段 env：GITHUB_EVENT_BEFORE: \${{ github.event.before }}`,
+  );
+  process.exit(1);
+}
+
+if (ok && zeroCoverage) {
+  console.log(`  受检范围：${usedRange ?? "（fixture）"} ｜ 判到的 commit：0`);
+  console.log("\n⚠️ Change Budget **零覆盖** —— 跑了，但没有任何 commit 可判（退出码 2 ≠ 通过 0）。");
+  console.log("  本地最常见的成因：这条提交已经 push 过（origin/main..HEAD 为空）。");
+  console.log("  想真判一批：`node scripts/check-change-budget.mjs --range a1b2c3..HEAD`。");
+  process.exit(2);
+}
+
 if (ok) {
   console.log("\n✓ Change Budget 通过。");
-  console.log("  (已知边界:管不了语义(+10 行能让链路发不出消息,靠测试)/拆 commit gaming 靠犯案判据兜底。)");
+  console.log(
+    "  (已知边界:管不了语义(+10 行能让链路发不出消息,靠测试)/拆 commit gaming 靠犯案判据兜底/" +
+      "不写 Version-Bump trailer 且不动版本文件的提交,犯案窗口看不见。)",
+  );
   process.exit(0);
 }
 console.error("\n✗ Change Budget 未通过 —— 请补声明([plan]/[impact])或收敛改动,别绕过。");

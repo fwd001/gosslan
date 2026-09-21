@@ -84,6 +84,25 @@ concurrency:
 permissions:
   contents: read
 
+# =============================================================================
+#  ⚠️ 这一行 env 是"Change Budget 到底有没有在 CI 上跑过"的开关
+#
+#  `check-change-budget.mjs` 在 push 事件上要判的范围是 `github.event.before..github.sha`
+#  （本次推送新引入了哪些 commit）。但 **`GITHUB_EVENT_BEFORE` 不是 Actions 的默认环境变量**
+#  —— 默认只有 `GITHUB_SHA` / `GITHUB_REF_NAME` / `GITHUB_EVENT_NAME` / `GITHUB_EVENT_PATH`，
+#  事件 JSON 里的 `before` 必须自己映射进来。
+#
+#  没映射时脚本会静默退到 `origin/<分支>..HEAD`，而 push 之后远端 ref **已经**指向 HEAD
+#  ⇒ 空范围 ⇒ 判不到任何 commit。表现就是"这一步 ✅、CI 全绿"，实际什么都没看 ——
+#  正是本项目最忌讳的"没守却当作守了"。（`fetch-depth: 0` 那段的注释一直说在做 before..sha
+#  探测；探测代码在，输入没喂进来，于是这句说明长期是假的。）
+#
+#  现在零覆盖在 push-to-main 上是**硬失败**（脚本退出码 1），失败详情走 `ci-run.sh` 的注解
+#  通道 ⇒ 匿名可读。所以"CI 绿"从今天起才等价于"Change Budget 真判过这次推送的 commit"。
+# =============================================================================
+env:
+  GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+
 jobs:
   # ---------------------------------------------------------------------------
   #  前端：测试 + 清单守卫 + 构建
@@ -95,9 +114,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Change Budget 守门需要 git 历史:CI push event 的 before..sha 探测、
-          # 重复犯案窗口的 merge-base(HEAD, origin/main)..HEAD。默认 fetch-depth=1
-          # 连 HEAD~1 都没有,必须拉全历史(仓库很小,秒级)。
+          # Change Budget 守门需要 git 历史：push event 的 before..sha 探测（顶部那段 env
+          # 讲的就是这件事）、犯案窗口与受检范围共用同一批 commit。默认 fetch-depth=1
+          # 连 HEAD~1 都没有，必须拉全历史（仓库很小，秒级）。
           fetch-depth: 0
 
       - uses: actions/setup-node@v4

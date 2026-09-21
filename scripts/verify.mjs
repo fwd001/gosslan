@@ -6,8 +6,8 @@
  *
  * 这个仓库的验证手段散在很多地方，且此前**没有任何一个地方把它们串起来**：
  *
- *   · `npm test`                        前端断言（457）
- *   · `cargo test --features bluetooth` Rust 用例（505）
+ *   · `npm test`                        前端断言（条数由它自己打印，写在这里一定会腐烂）
+ *   · `cargo test --features bluetooth` Rust 用例（同上）
  *   · `check-test-manifest`             挡住"测试静默不跑"
  *   · `check-invariant-exceptions`      挡住"照文档误修"
  *   · `check-ble-constants`             挡住"BLE 载荷预算多处各算一遍"
@@ -194,6 +194,9 @@ const steps = [
     group: "frontend",
     name: "Change Budget 守门",
     why: "挡住「改动半径不声明 + 同领域反复打补丁 + 版本声明不成立」——L2 需 [plan]、L3/敏感文件需 [impact]、同领域 3 次修补即红（按 Version-Bump 声明判「修补」，不看 feat/fix 前缀）、声明与四个版本清单文件必须双向一致",
+    // 退出码 2 = 受检范围为空（一个 commit 都没判到）。**不能算 ✅**：它既不是通过也不是失败，
+    // 而是"这一步没看过任何代码" ⇒ 汇总里单列成未覆盖项（跟重门禁层同一套说法）。
+    zeroCoverageExit: 2,
     cwd: ROOT,
     cmd: NODE_EXE,
     args: ["scripts/check-change-budget.mjs"],
@@ -497,8 +500,11 @@ for (const [i, s] of active.entries()) {
   const secs = ((Date.now() - start) / 1000).toFixed(1);
 
   // status 为 null 表示被信号杀掉（或命令没跑起来）。
-  const ok = r.status === 0;
-  results.push({ name: s.name, ok, secs });
+  // 退出码 `zeroCoverageExit` 单独一类：命令跑了、但范围内没有任何东西可判 ⇒ 不红，
+  // 但也**绝不记成 ✅**（本项目最忌讳"没守却当作守了"）。
+  const zero = s.zeroCoverageExit != null && r.status === s.zeroCoverageExit;
+  const ok = r.status === 0 || zero;
+  results.push({ name: s.name, ok, secs, zeroCoverage: zero });
 
   if (!ok) {
     console.error(
@@ -508,7 +514,9 @@ for (const [i, s] of active.entries()) {
     console.error("   后面的步骤没有跑（fail-fast）。");
     break;
   }
-  console.log(`      ✅ ${secs}s\n`);
+  console.log(
+    zero ? `      ⚠️ 零覆盖 ${secs}s（跑了，但范围内没有可判定的对象）\n` : `      ✅ ${secs}s\n`,
+  );
 }
 
 const total = ((Date.now() - t0) / 1000).toFixed(1);
@@ -517,8 +525,12 @@ const notRun = active.length - results.length;
 
 console.log("--- 汇总 ---");
 for (const r of results) {
-  const mark = r.skipped ? "⏭" : r.ok ? "✅" : "❌";
-  const tail = r.skipped ? `跳过（${r.skipped}）` : `${r.secs}s`;
+  const mark = r.skipped ? "⏭" : r.zeroCoverage ? "⚠️" : r.ok ? "✅" : "❌";
+  const tail = r.skipped
+    ? `跳过（${r.skipped}）`
+    : r.zeroCoverage
+      ? `零覆盖 ${r.secs}s（没判到任何对象）`
+      : `${r.secs}s`;
   console.log(`  ${mark} ${r.name}  ${tail}`);
 }
 for (const s of active.slice(results.length)) {
@@ -541,6 +553,7 @@ if (groupFlag && failed.length === 0) {
 }
 
 const skipped = results.filter((r) => r.skipped).length;
+const zeroCov = results.filter((r) => r.zeroCoverage);
 const ran = results.filter((r) => !r.skipped).length;
 
 if (failed.length === 0) {
@@ -550,6 +563,11 @@ if (failed.length === 0) {
     }通过（${ran} 步${skipped ? `，跳过 ${skipped} 步` : ""}，共 ${total}s）`,
   );
   if (skipped) console.log("   ⚠️ 被跳过的步骤在 CI 上仍会跑 —— 别把本地的 ⏭ 当成通过。");
+  if (zeroCov.length) {
+    console.log(`   ⚠️ ${zeroCov.length} 步**零覆盖**（跑了但没判到东西）：${zeroCov.map((r) => r.name).join("、")}`);
+    console.log("      最常见成因：本地在 push 之后重跑（`origin/main..HEAD` 已为空）。");
+    console.log("      零覆盖 ≠ 守住 —— 要看它真判了什么，用 `node scripts/check-change-budget.mjs --range a..b`。");
+  }
   process.exit(0);
 }
 console.error(`\n❌ 失败 ${failed.length} 步${notRun ? `，未跑 ${notRun} 步` : ""}（共 ${total}s）`);
