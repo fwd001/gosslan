@@ -324,6 +324,51 @@ fn apply_aux_geometry(win: &tauri::WebviewWindow, geo: AuxWindowGeometry) {
     let _ = win.set_fullscreen(false);
 }
 
+/// 把「用户上次拉的尺寸」还原回来（**只还原尺寸**，位置仍旧居中在主窗口上）。
+///
+/// 为什么必须自己再调一次 `restore_state`：`tauri_plugin_window_state` 是在
+/// `on_window_ready`（= **build 期间**）还原的，而我们随后就用 `apply_aux_geometry` 落地了
+/// 设计尺寸 ⇒ 顺序上"用户尺寸"被盖掉，群任务窗口**每次打开都回到设计尺寸**，
+/// 用户拉过的大小等于没被记住（用户 2026-09-21：「这个窗口都没记住用户的尺寸吗？」）。
+/// 这里在几何落地**之后**按 label 再还原一次，与插件天然的顺序无关。
+///
+/// 只还原 `SIZE`、不还原 `POSITION`：位置仍由 [`recenter_aux_window`] 居中 ——
+/// 多屏下"窗口弹到另一块屏"是用户报过的老问题（2026-09-16），不能被历史位置带回去；
+/// 用户也确认过这个口径：「窗口只用记住大小就行啊，不用记住位置」。
+/// ⚠️ 调用方在它之后**必须再居中一次**：本函数会改尺寸，而居中位置是按外框尺寸算的
+/// （那是 [`AuxWindowGeometry::centered_pos`] 的输入）。
+///
+/// 还原出来的尺寸**以设计尺寸为上限**（下钳到最小尺寸）：换默认尺寸时不会被状态文件里
+/// 的历史大尺寸顶回去（本轮刚把 1080×780 改小，那把已经落过盘）。想放开上限就改这里。
+#[cfg(desktop)]
+fn restore_aux_window_size(win: &tauri::WebviewWindow, geo: &AuxWindowGeometry) {
+    use tauri::{PhysicalSize, Size};
+    use tauri_plugin_window_state::{StateFlags, WindowExt};
+    // 没有保存过状态时它会把"当前尺寸"写进缓存（等于设计尺寸），不影响下面的钳制。
+    if win.restore_state(StateFlags::SIZE).is_err() {
+        return;
+    }
+    let Ok(cur) = win.inner_size() else {
+        return;
+    };
+    let (w, h) = clamp_aux_size((cur.width, cur.height), geo.min, geo.size);
+    if (w, h) != (cur.width, cur.height) {
+        let _ = win.set_size(Size::Physical(PhysicalSize::new(w, h)));
+    }
+}
+
+/// [`restore_aux_window_size`] 的纯计算部分（便于单测）：把还原出来的尺寸夹进 `[min, max]`。
+///
+/// `max` 取 `.max(min)` 是防御：几何不变式说 `min ≤ size`，但真被违反时 `clamp` 会 panic，
+/// 而"窗口打不开"比"窗口尺寸不合意"严重得多。
+#[cfg(desktop)]
+fn clamp_aux_size(cur: (u32, u32), min: (u32, u32), max: (u32, u32)) -> (u32, u32) {
+    (
+        cur.0.clamp(min.0, max.0.max(min.0)),
+        cur.1.clamp(min.1, max.1.max(min.1)),
+    )
+}
+
 /// 把窗口摆到主窗口正中（**只动位置，不动尺寸**）。
 ///
 /// 位置按**真实外框**算：外框含标题栏与边框，而这两样在不同缩放的屏上厚度不同，
@@ -512,7 +557,12 @@ pub fn open_group_todos_window(
     let title = aux_window_title(&state, "群任务", "Group Tasks", Some(&group_name));
     let build_app = app.clone();
     let build_label = label.clone();
-    let geo = aux_window_geometry(&app, (560.0, 620.0), (360.0, 420.0));
+    // 设计尺寸 780×620（首版 560×620 太"瘦长"、一版 1080×780 又太大，都是用户 2026-09-21
+    // 实机反馈）：任务看板是单列长列表，太窄标题/指派人/时间挤成一团，太宽则大片空白。
+    // 780 与设置窗口同宽，620 是原来的高度 ⇒ 从"竖长条"变成正常横向窗口，又明显小于主窗口。
+    // `fit_aux_window` 仍会把理想尺寸夹到「主窗口 − 两侧各 24px」，主窗口更小时跟着缩
+    //（几何不变式见 `logs_tests`）；实际用起来的尺寸由 `restore_aux_window_size` 记住。
+    let geo = aux_window_geometry(&app, (780.0, 620.0), (360.0, 420.0));
     ensure_aux_window(&app, &label, geo, AUX_GROUP_TODOS_RESIDENT, move || {
         let win = WebviewWindowBuilder::new(
             &build_app,
@@ -522,7 +572,7 @@ pub fn open_group_todos_window(
         .title(title)
         .devtools(AUX_DEVTOOLS)
         // 同 open_log_window：设计尺寸只作初值，几何在 build 之后按物理像素落地。
-        .inner_size(560.0, 620.0)
+        .inner_size(780.0, 620.0)
         .min_inner_size(360.0, 420.0)
         .background_color(bg)
         .visible(false)
@@ -536,6 +586,14 @@ pub fn open_group_todos_window(
         decorate_aux_window(&win, &build_app);
         if let Some(g) = geo {
             apply_aux_geometry(&win, g);
+            // 必须在几何落地**之后**（见函数说明）：把用户上次拉的尺寸还原回来，
+            // 否则每次打开都回到设计尺寸 —— 用户 2026-09-21：「这个窗口都没记住用户的尺寸吗？」
+            restore_aux_window_size(&win, &g);
+            // ⚠️ 还原尺寸之后**必须再居中一次**：`recenter_aux_window` 是按窗口**当时的**
+            // 外框尺寸算位置的，而尺寸刚刚被改过 ⇒ 不重算就会偏掉半个尺寸差，
+            // 表现是"每次弹出来都不居中"（用户 2026-09-21 实机反馈）。只动尺寸、不动位置
+            // 是用户要的口径：「窗口只用记住大小就行啊，不用记住位置」。
+            recenter_aux_window(&win, &g);
         }
         Ok(win)
     })

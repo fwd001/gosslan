@@ -8,15 +8,21 @@ import { t } from "@/i18n";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChevronLeft, ChevronRight, RotateCcw, Save, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/useAppStore";
-import { loadFilePreview } from "@/utils/filePreview";
+import { loadContentPreview, loadFilePreview, type PreviewResult } from "@/utils/filePreview";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
 import { useBackLayer } from "@/composables/useBackLayer";
 
-/** 相册里的一张图：新格式走 readFilePreview（msg_id → blob URL），旧格式 data URL 直接用。 */
+/**
+ * 相册里的一张图 —— 三种来源，按下面的优先级取字节：
+ *  ① `dataSrc`：已经拿到的 data URL / objectURL（合并转发卡片、旧格式消息）；
+ *  ② `cid`：待办描述图片（sha256 = content store cid，载荷里没有 msg_id）；
+ *  ③ `msgId`：聊天消息（走 readFilePreview）。
+ */
 interface GalleryImage {
-  msgId: string;
   name: string;
-  dataSrc: string | null;
+  dataSrc?: string | null;
+  msgId?: string;
+  cid?: string;
 }
 
 const props = defineProps<{
@@ -49,22 +55,31 @@ useBackLayer(
 const src = ref<string>("");
 const note = ref<string | null>(null);
 
-/** 解析当前图片 src：旧格式直接用 dataSrc，新格式走 readFilePreview（带缓存，秒回）。 */
+function apply(r: PreviewResult) {
+  src.value = r.url ?? "";
+  note.value = r.note ?? null;
+}
+
+/** 解析当前图片 src：dataSrc 直接用，否则按 cid（待办描述图）/ msg_id（聊天消息）读预览（带缓存，秒回）。 */
 async function resolveCurrent() {
   const img = current.value;
   if (!img) {
-    src.value = "";
-    note.value = null;
+    apply({});
     return;
   }
   if (img.dataSrc) {
-    src.value = img.dataSrc;
-    note.value = null;
+    apply({ url: img.dataSrc });
     return;
   }
-  const r = await loadFilePreview(img.msgId, "image", img.name);
-  src.value = r.url ?? "";
-  note.value = r.note ?? null;
+  if (img.cid) {
+    apply(await loadContentPreview(img.cid, img.name));
+    return;
+  }
+  if (img.msgId) {
+    apply(await loadFilePreview(img.msgId, "image", img.name));
+    return;
+  }
+  apply({});
 }
 
 watch(current, () => void resolveCurrent(), { immediate: true });

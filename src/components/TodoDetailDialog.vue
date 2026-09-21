@@ -8,6 +8,7 @@
  */
 import { computed, ref, watch } from "vue";
 import BaseModal from "@/components/BaseModal.vue";
+import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import { TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, type TodoItem, type TodoStatus } from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
@@ -57,17 +58,49 @@ function choose(s: TodoStatus) {
   if (s === props.item?.status) return; // 当前项本就不可点，双保险
   emit("status", s);
 }
-// 关掉详情时收起菜单（下次打开是干净的）
+
+/**
+ * 图片点开大图（用户 2026-09-21：「任务详情里图片不能点击预览」）。
+ *
+ * 复用聊天的 `ImageLightbox`（同一套双指缩放/滑动切图/保存），只是相册条目按 **cid**
+ * 而不是 `msg_id` 解析 —— 待办描述图片的载荷里只有 sha256（= content store cid）。
+ * 弹窗与预览都 Teleport 到 body，预览的 z-[80] 压在弹窗 z-[65] 之上（与合并转发卡片同一做法）。
+ */
+const lightboxIndex = ref<number | null>(null);
+const gallery = computed(() =>
+  (props.item?.images ?? []).map((im) => ({ cid: im.sha256, name: im.name })),
+);
+
+/**
+ * 弹窗要求关闭（点遮罩 / Esc）。
+ *
+ * 预览开着时**只收预览、不关详情**：HeadlessUI 的 `Dialog` 把「面板之外的任何点击」都当成
+ * 关闭信号（`useOutsideClick` 只认 `DialogPanel` 那几个容器），而预览是 `Teleport to="body"`
+ * 的、就排在面板外面 —— 不挡一下的话，在预览里点「保存 / 关闭」会顺带把任务详情一起关掉。
+ * 让最上面那层吃掉这一次关闭，也正好是浮层该有的层级语义。
+ */
+function onDialogClose() {
+  if (lightboxIndex.value !== null) {
+    lightboxIndex.value = null;
+    return;
+  }
+  emit("close");
+}
+
+// 关掉详情时收起菜单（下次打开是干净的；预览由上面的 onDialogClose 收）
 watch(
   () => props.open,
   (v) => {
-    if (!v) menuOpen.value = false;
+    if (!v) {
+      menuOpen.value = false;
+      lightboxIndex.value = null;
+    }
   },
 );
 </script>
 
 <template>
-  <BaseModal :open="open" :title="item?.title ?? t('todo.title')" width="max-w-lg" @close="emit('close')">
+  <BaseModal :open="open" :title="item?.title ?? t('todo.title')" width="max-w-lg" @close="onDialogClose">
     <div v-if="item" class="space-y-4">
       <!-- 状态：**显式两步**（用户 2026-09-17：「一不小心就把状态改了」）。
            此前是一排 4 个分段按钮、一点即写库，而且与看板顶部的**筛选**分段控件长得一样，
@@ -145,11 +178,17 @@ watch(
         <p v-else class="text-[12px] text-[var(--gosslan-text-2)]">{{ t("todo.noDescription") }}</p>
       </div>
 
-      <!-- 图片 -->
+      <!-- 图片：点缩略图看大图（复用聊天的 ImageLightbox，见 script 里的说明） -->
       <div v-if="item.images.length">
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.imagesLabel") }}</div>
         <div class="flex flex-wrap gap-1.5">
-          <TodoImageThumb v-for="img in item.images" :key="img.sha256" :image="img" />
+          <TodoImageThumb
+            v-for="(img, i) in item.images"
+            :key="img.sha256"
+            :image="img"
+            clickable
+            @open="lightboxIndex = i"
+          />
         </div>
       </div>
 
@@ -206,4 +245,13 @@ watch(
       </div>
     </div>
   </BaseModal>
+
+  <!-- 大图预览：Teleport 到 body，压在弹窗之上（与合并转发卡片同一做法） -->
+  <ImageLightbox
+    :images="gallery"
+    :index="lightboxIndex ?? 0"
+    :open="lightboxIndex !== null"
+    @close="lightboxIndex = null"
+    @update:index="lightboxIndex = $event"
+  />
 </template>

@@ -26,6 +26,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import BaseModal from "@/components/BaseModal.vue";
+import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
@@ -193,6 +194,24 @@ const draft = ref<{
   imagePaths: Record<string, string>;
 } | null>(null);
 const saving = ref(false);
+
+/** 表单里的大图预览（点缩略图打开）。与任务详情各自持有一个 `ImageLightbox`：
+ *  两处的相册来源不同（草稿 vs 已保存的任务），共用一个反而要来回切来源。 */
+const draftImageIndex = ref<number | null>(null);
+const draftGallery = computed(() =>
+  (draft.value?.images ?? []).map((im) => ({ cid: im.sha256, name: im.name })),
+);
+
+/** 关表单：预览开着时**只收预览、不关表单** —— HeadlessUI 的 Dialog 把「面板之外的任何点击」
+ *  都当成关闭信号，而预览是 Teleport 到 body 的、就在面板外面；不挡一下的话，在预览里点
+ *  「保存」，底下的表单会连编辑内容一起关掉（与 `TodoDetailDialog.onDialogClose` 同款处理）。 */
+function closeDraft() {
+  if (draftImageIndex.value !== null) {
+    draftImageIndex.value = null;
+    return;
+  }
+  draft.value = null;
+}
 
 /** 当前草稿能否改标题：新建随便改；编辑时只有创建者/群主能改（被指派人只能改指派人）。 */
 const draftCanEditTitle = computed(() => {
@@ -742,7 +761,7 @@ watch(
     :open="!!draft"
     :title="draft?.todoId ? t('todo.edit') : t('todo.create')"
     width="max-w-lg"
-    @close="draft = null"
+    @close="closeDraft()"
   >
     <div v-if="draft" class="space-y-4">
       <!-- 标题 -->
@@ -830,7 +849,7 @@ watch(
           </button>
           <div v-else class="flex flex-wrap gap-1.5 p-2">
             <div v-for="(img, i) in draft.images" :key="img.sha256" class="group relative">
-              <TodoImageThumb :image="img" />
+              <TodoImageThumb :image="img" clickable @open="draftImageIndex = i" />
               <button
                 type="button"
                 class="tap-safe absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] text-white opacity-90 transition hover:opacity-100"
@@ -869,12 +888,12 @@ watch(
 
       <!-- 操作 -->
       <div class="flex items-center justify-end gap-2 border-t border-[var(--gosslan-divider)] pt-3">
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="draft = null"
-        >
-          {{ t("common.cancel") }}
-        </button>
+          <button
+            class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="closeDraft()"
+          >
+            {{ t("common.cancel") }}
+          </button>
         <button
           class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:opacity-90 disabled:opacity-50"
           :disabled="saving"
@@ -910,4 +929,14 @@ watch(
       </button>
     </div>
   </BaseModal>
+
+  <!-- 大图预览：表单里的缩略图也可点开（与任务详情一致）。
+       Teleport 到 body、z-[80] 压在上面那些弹窗之上；放在模板最末 ⇒ 返回栈里它是最上面一层。 -->
+  <ImageLightbox
+    :images="draftGallery"
+    :index="draftImageIndex ?? 0"
+    :open="draftImageIndex !== null"
+    @close="draftImageIndex = null"
+    @update:index="draftImageIndex = $event"
+  />
 </template>

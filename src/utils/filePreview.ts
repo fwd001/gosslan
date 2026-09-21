@@ -3,6 +3,13 @@
 // 图片走原始字节 → Blob → objectURL（绝不把 Base64 字符串塞进 Vue）；
 // 代码走原始字节 → TextDecoder → 字符串交给 CodeBlock。
 // 按 msg_id 缓存并做 in-flight 去重，避免 VirtualList 滚动反复读同一文件。
+//
+// ⚠️ **objectURL 的生命周期归本模块的缓存所有，消费者不得 `revokeObjectURL`**
+// （2026-09-21 的真根因）：同一个 cid/msg_id 的 URL 是**缓存里大家共用的同一个字符串**
+// （一张待办描述图会同时出现在聊天时间线的任务卡、看板表单、任务详情三处）。
+// 任何一处卸载/换图时 revoke，都会把其它视图的图一起打回裂图 —— 更糟的是缓存里那个 URL
+// 已经死了却仍被命中（`cache.get` 直接返回它），此后连退避重试也救不回来，只能重启应用。
+// 要回收内存请走缓存自己的出口（见 `favoritePreview.dropFavoritePreview`），不要由消费者就地 revoke。
 
 import { api } from "@/api";
 import { previewFailureResult, type PreviewResult } from "@/utils/mediaAvailability";
