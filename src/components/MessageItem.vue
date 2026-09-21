@@ -767,14 +767,28 @@ async function copyFileToClipboard() {
          所以不会破坏 VirtualList 的估算（横向挪动与"相邻消息互相遮挡"那个坑无关）。 -->
     <div
       v-else
-      class="flex gap-2 rounded-[var(--gosslan-radius-md)] px-4 transition"
+      class="relative flex gap-2 rounded-[var(--gosslan-radius-md)] px-4 transition"
       :class="[
         mine ? 'flex-row-reverse' : '',
         selectMode && !mine ? 'pl-9' : '',
-        highlighted ? 'bg-[var(--gosslan-primary-light)] ring-1 ring-[var(--gosslan-primary-ring)]' : '',
         selectMode && selected ? 'bg-[var(--gosslan-hover)]' : '',
       ]"
     >
+      <!-- 定位高亮（搜索命中 / 引用跳转）画在**左右内缩的装饰层**上，不参与布局。
+           用户 2026-09-21：「消息被选中的时候（消息定位）的选择框为啥左右没边距」——
+           直接把 bg/ring 画在这一行上，框就顶到面板的最左/最右（面板本身没有横向留白）；
+           而把 `px-4` 改成 `mx-2 px-2` 又会连带挪动头像/气泡，多选态那个 `pl-9`(36px)
+           还会额外叠加 8px 边距 ⇒ 头像位置跟着变。
+           所以用一层 `absolute inset-y-0 left-2 right-2` 的纯装饰层（`pointer-events-none`），
+           内容照旧排在它上面；气泡自带底色，露出来的正好是"带左右边距的框"。
+           层**常驻**并带 `transition`：淡入淡出靠它，不要改成 v-if（那样没有过渡）。 -->
+      <div
+        class="pointer-events-none absolute inset-y-0 left-2 right-2 rounded-[var(--gosslan-radius-md)] ring-1 transition"
+        :class="highlighted
+          ? 'bg-[var(--gosslan-primary-light)] ring-[var(--gosslan-primary-ring)]'
+          : 'bg-transparent ring-transparent'"
+        aria-hidden="true"
+      ></div>
       <!-- 头像：每条消息独立完整渲染 -->
       <MessageAvatar :name="avatarName" :avatar="avatarSrc" />
 

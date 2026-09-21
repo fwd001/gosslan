@@ -276,7 +276,14 @@ function injectPermissionsManifest(manifestPath) {
 injectPermissionsManifest(manifestPath);
 injectPortraitManifest(manifestPath);
 
-// Android 13+ 运行时权限：在 MainActivity.onCreate 里主动申请「附近设备 / 蓝牙 / 通知」。
+// Android 13+ 运行时权限：在 MainActivity 里主动申请「附近设备 / 蓝牙 / 通知」。
+//
+// ⚠️ 时机：**首次布局之后**（`decorView.post {}`），不能在 `onCreate` 里立刻弹。
+// 真实事故（用户 2026-09-21，安卓首次启动）：「请求权限会把首页样式搞崩」—— 权限弹框盖在
+// WebView 的**首次布局**上时，前端 `matchMedia("(max-width: 767px)")` 读到的是**兜底视口宽度**
+// （980px 那档）⇒ `isMobile = false` ⇒ 手机上渲染出**桌面三栏布局**，而且"变窄"那次过渡早于
+// 监听注册 ⇒ 一直错下去。`decorView.post` 保证排在第一次 layout 之后；前端侧另有平台优先的
+// 兜底（`src/utils/platform.ts::resolveMobileLayout`），两处互补、各自都能独立防住这类回归。
 function injectMainActivityPermissions(activityPath) {
   if (!fs.existsSync(activityPath)) return;
   let src = fs.readFileSync(activityPath, "utf8");
@@ -294,9 +301,21 @@ function injectMainActivityPermissions(activityPath) {
   );
   src = src.replace(
     /super\.onCreate\(savedInstanceState\)/,
-    "super.onCreate(savedInstanceState)\n    requestRuntimePermissions()",
+    "super.onCreate(savedInstanceState)\n" +
+      "    // 权限弹框等**首帧画完**再弹：\n" +
+      "    // 连续 post 两次 = 第一次 traversal（measure/layout/draw）结束之后才跑\n" +
+      "    //（单次 post 会在 attach 阶段就执行，那时 WebView 还没被量过一次）。\n" +
+      "    // 弹框若盖在首次布局上，前端读到的视口宽度会是兜底值 ⇒ 手机上判成桌面布局。\n" +
+      "    window.decorView.post { window.decorView.post { requestRuntimePermissions() } }",
   );
   const method = `
+  /**
+   * Android 13+ 运行时权限（附近设备 / 蓝牙 / 通知）。
+   *
+   * ⚠️ 调用点必须是 \`window.decorView.post {}\`（首次布局之后）：权限弹框如果盖在 WebView
+   * 的**首次布局**上，前端 \`matchMedia\` 会读到兜底视口宽度（980px 档）⇒ 手机上判成"桌面"
+   * ⇒ 首页渲染成三栏布局（用户 2026-09-21 实测）。前端另有平台优先兜底，两处互补。
+   */
   private fun requestRuntimePermissions() {
     val permissions = mutableListOf<String>()
     if (Build.VERSION.SDK_INT >= 33) {
@@ -319,7 +338,7 @@ function injectMainActivityPermissions(activityPath) {
   if (lastBrace === -1) return;
   src = src.slice(0, lastBrace) + method + src.slice(lastBrace);
   fs.writeFileSync(activityPath, src);
-  console.log("[android-permissions] 已注入运行时权限申请（附近设备 / 蓝牙 / 通知）。");
+  console.log("[android-permissions] 已注入运行时权限申请（附近设备 / 蓝牙 / 通知，首帧后弹）。");
 }
 
 const activityPath = path.join(

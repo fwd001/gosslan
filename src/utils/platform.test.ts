@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isAndroidUA, isMacUA } from "./platform.ts";
+import { isAndroidUA, isMacUA, resolveMobileLayout } from "./platform.ts";
 
 test("isMacUA：桌面 macOS UA 判为 Mac", () => {
   const uas = [
@@ -59,4 +59,26 @@ test("isAndroidUA：桌面三端 / iOS 判为非 Android", () => {
     "",
   ];
   for (const ua of uas) assert.equal(isAndroidUA(ua), false, ua);
+});
+
+test("resolveMobileLayout：移动平台**一律**走移动布局，宽度判否也不算数", () => {
+  // 回归（用户 2026-09-21，安卓首次启动）：权限弹框盖在 WebView 首次布局上时，
+  // matchMedia 会读到兜底视口宽度（980px 档）⇒ narrow=false。若判据只看宽度，
+  // 手机上就会渲染成桌面三栏布局。
+  assert.equal(
+    resolveMobileLayout({ android: true, ios: false, narrow: false }),
+    true,
+    "安卓必须恒为移动布局（竖屏锁定，没有窄窗口这种中间态）",
+  );
+  assert.equal(resolveMobileLayout({ android: false, ios: true, narrow: false }), true, "iOS 同理");
+  assert.equal(resolveMobileLayout({ android: true, ios: false, narrow: true }), true);
+});
+
+test("resolveMobileLayout：桌面端按宽度切（窄窗口用移动布局，宽窗口用三栏）", () => {
+  assert.equal(resolveMobileLayout({ android: false, ios: false, narrow: true }), true);
+  assert.equal(
+    resolveMobileLayout({ android: false, ios: false, narrow: false }),
+    false,
+    "桌面宽窗口要保留三栏布局",
+  );
 });

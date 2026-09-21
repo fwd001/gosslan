@@ -67,3 +67,20 @@ export const isIOS =
   typeof navigator !== "undefined" && typeof navigator.userAgent === "string"
     ? isIOSUA(navigator.userAgent)
     : false;
+
+/**
+ * 布局要不要走"移动端"（纯函数，便于单测）。
+ *
+ * ⚠️ **平台优先，宽度兜底** —— 这个顺序是事故换来的：
+ * 真实事故（用户 2026-09-21，Android 首次启动）：启动时的系统权限弹框盖在 WebView 的
+ * **首次布局**上，此刻 `matchMedia("(max-width: 767px)")` 会读到**兜底视口宽度**（980px 那档）
+ * ⇒ `isMobile = false` ⇒ **手机上渲染出桌面三栏布局**，首页样式整个"崩"。
+ *
+ * 安卓 / iOS 都是**竖屏锁定**的手机/平板（`screenOrientation="portrait"`），压根不存在
+ * "窄窗口"这种中间态 ⇒ 它们在移动布局里**没有第二种可能**；只有桌面端才需要靠宽度在
+ * "三栏"与"移动布局"之间切换（`tauri.conf.json` 的 `minWidth: 360` 允许拖窄）。
+ * 同一条道理在 `isAndroidUA` 的注释里已经写过一次（"必须按 UA 判平台，不能按屏幕宽度"）。
+ */
+export function resolveMobileLayout(o: { android: boolean; ios: boolean; narrow: boolean }): boolean {
+  return o.android || o.ios || o.narrow;
+}

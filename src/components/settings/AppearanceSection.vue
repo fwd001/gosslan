@@ -34,7 +34,11 @@ const appearanceOptions = computed(() => [
 </script>
 
 <template>
-  <SettingsGroup :title="t('settings.group.appearance')">
+  <!-- 组标题用**条目名**「外观」而不是分组名「外观与通知」（`settings.group.appearance`）：
+       本分区只有外观（显示模式 / 主题色 / 字体），通知在另一个分区里（`NotificationSection`）。
+       桌面端导航项也读同一个键 ⇒ 「标签 = 内容」（settingsStructure 守卫钉住）。
+       用户 2026-09-21：「桌面版的外观和通知里只有外观啊，为啥叫外观和通知」。 -->
+  <SettingsGroup :title="t('settings.item.appearance')">
     <SettingsRow
       :label="t('settings.appearance.mode')"
       :description="t('settings.appearance.mode.desc')"

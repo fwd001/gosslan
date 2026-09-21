@@ -12,6 +12,7 @@
  */
 import { h } from "vue";
 import LogViewer from "@/components/LogViewer.vue";
+import ToastHud from "@/components/ToastHud.vue";
 import { useAppStore } from "@/stores/useAppStore";
 import {
   createWindowApp,
@@ -22,8 +23,10 @@ import {
 installFrontendErrorReporting();
 void mountAuxWindow(
   createWindowApp({
-    // 日志窗口永远是"独立窗口"形态（自绘标题栏 + 窗口控制按钮）
-    render: () => h(LogViewer, { standalone: true }),
+    // 日志窗口永远是"独立窗口"形态（自绘标题栏 + 窗口控制按钮）。
+    // 本窗口不套 `AuxWindowShell`（日志页要兼移动端整页形态），所以 toast 宿主在这里显式挂
+    // —— 否则「复制 / 清空 / 导出」的结果没有可见反馈（用户 2026-09-21：点了没反应）。
+    render: () => [h(LogViewer, { standalone: true }), h(ToastHud)],
   }),
   () => useAppStore().init(),
 );

@@ -950,3 +950,73 @@ test("真实的 style.css + MessageComposer.vue 通过", () => {
   );
   assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
 });
+
+// ---------------- ⑫ 浮层 z 序阶梯：弹窗必须盖住整页下钻页，但不能盖住菜单/预览/toast ----------------
+//
+// 真实缺陷（用户 2026-09-21，**只在移动端**）：`BaseModal` 原先写 `z-50`，而 HeadlessUI 的
+// `Dialog` 会把自己挂到 `<body>` 下的 `#headlessui-portal-root`（即 z 是在**文档根层级**上比的，
+// 不是留在调用者子树里比的）。移动端的整页下钻页是 `MobilePageFrame` 的 `fixed inset-0 z-[60]`
+// ⇒ z-50 的弹窗被整页盖在后面：**DOM 里有、屏幕上看不见**，用户看到的就是「点了没反应」。
+// 这类退化没有任何运行时报错、桌面上也完全正常，只能静态钉住阶梯。
+test("浮层 z 序阶梯：整页框架 < 弹窗 < 右键菜单 < 图片预览、Toast", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  /** 取该文件里**第一个** `z-[NN]`。注释里为解释阶梯写着一串 z-[NN]，必须先剥掉两种注释。 */
+  const zOf = (rel: string) => {
+    const src = readFileSync(join(srcDir, rel), "utf8")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    const m = /z-\[(\d+)\]/.exec(src);
+    assert.ok(m, `${rel} 里找不到 z-[NN]（浮层必须显式声明层级）`);
+    const n = Number(m[1]);
+    assert.ok(n > 0 && n < 100, `${rel} 的 z 值 ${n} 不像层级值`);
+    return n;
+  };
+  const frame = zOf("components/MobilePageFrame.vue");
+  const modal = zOf("components/BaseModal.vue");
+  const menu = zOf("components/ContextMenu.vue");
+  const preview = zOf("components/message/ImageLightbox.vue");
+  const toast = zOf("components/ToastHud.vue");
+
+  assert.ok(
+    frame < modal,
+    `弹窗(z-${modal}) 必须高于整页框架(z-${frame})：否则移动端「设置/日志/收藏…」里打开的弹窗会被整页盖住（用户看到"点了没反应"）`,
+  );
+  assert.ok(modal < menu, `右键菜单(z-${menu}) 应高于弹窗(z-${modal})，否则菜单会被弹窗盖住`);
+  assert.ok(
+    modal < preview,
+    `图片预览(z-${preview}) 应高于弹窗(z-${modal})：合并转发卡等弹窗里点图要看大图`,
+  );
+  assert.ok(
+    modal < toast,
+    `Toast(z-${toast}) 必须高于弹窗(z-${modal})：弹窗里的失败提示要看得见`,
+  );
+});
+
+// ---------------- ⑬ 可选中导航项的图标必须有「选中 = 实心」的 fill 绑定 ----------------
+//
+// 真实缺陷（用户 2026-09-21）：「链接这个指南针为什么选中的时候不是实心选中变色的」——
+// 这一栏的选中态**不用底色块，而是把图标本身填成实心**（用户 2026-09-12 定的：参考微信）。
+// 聊天 / 通讯录 / 收藏 都是自绘 SVG + `:fill="navState === 'x' ? 'currentColor' : 'none'"`
+// （lucide 那种描边图标 fill 之后会变成墨团，所以必须自绘），唯独「链接」当时还是
+// `<Compass />` 原样 ⇒ 选中只变颜色不变实心。这类"漏一个"在界面上很不起眼，只能静态钉住。
+test("可选中导航项：图标必须有 :fill 的选中绑定（漏一个就只变颜色不变实心）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const nav = readFileSync(join(srcDir, "components", "NavRail.vue"), "utf8");
+  // 与实际实现同步的清单：新增可选中项时**必须**在这里补一行（漏了会被下面的断言拦下）
+  const selectable = ["chats", "contacts", "favorites", "links"];
+  for (const key of selectable) {
+    assert.ok(
+      nav.includes(`:fill="navState === '${key}' ? 'currentColor' : 'none'"`),
+      `NavRail 的「${key}」缺少实心选中态：要自绘 SVG 并绑上 :fill="navState === '${key}' ? 'currentColor' : 'none'"`,
+    );
+  }
+  // 反向：这四项之外不应再有别的 `navState === '<key>'` 图标高亮（否则清单就过期了）
+  const keys = [...nav.matchAll(/navState === '([a-zA-Z]+)'/g)].map((m) => m[1]);
+  const unknown = [...new Set(keys)].filter((k) => !selectable.includes(k));
+  assert.deepEqual(
+    unknown,
+    [],
+    `NavRail 里出现了清单外的可选中 key：${unknown.join(", ")} —— 请同步上面的 selectable 清单`,
+  );
+});

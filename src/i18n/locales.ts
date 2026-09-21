@@ -155,6 +155,7 @@ export const zhCN: MessageDict = {
   "settings.toast.shareSet": "共享目录已设置",
   "settings.toast.shareFail": "设置共享目录失败",
   "settings.toast.defaultsRestored": "已恢复默认设置",
+  "settings.toast.restoreFail": "恢复默认设置失败",
   "settings.toast.chatCleared": "聊天数据已清除",
   "settings.toast.clearFail": "清除失败",
 
@@ -314,6 +315,7 @@ export const zhCN: MessageDict = {
 
   // ---- 关于 ----
   "settings.about.fingerprint": "设备指纹",
+  "settings.about.fingerprintCopy": "点击复制设备指纹",
 
   // ---- 窗口控制 ----
   "window.close": "关闭",
@@ -1070,6 +1072,7 @@ export const enUS: MessageDict = {
   "settings.toast.shareSet": "Shared Folder Set",
   "settings.toast.shareFail": "Failed to Set Shared Folder",
   "settings.toast.defaultsRestored": "Default Settings Restored",
+  "settings.toast.restoreFail": "Failed to Restore Defaults",
   "settings.toast.chatCleared": "Chat Data Cleared",
   "settings.toast.clearFail": "Clear Failed",
 
@@ -1229,6 +1232,7 @@ export const enUS: MessageDict = {
 
   // ---- About ----
   "settings.about.fingerprint": "Device Fingerprint",
+  "settings.about.fingerprintCopy": "Click to copy the device ID",
 
   // ---- Window controls ----
   "window.close": "Close",

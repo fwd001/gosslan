@@ -5,6 +5,7 @@ import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notif
 import { applyTheme } from "@/utils/color";
 import { reportError } from "@/utils/errors";
 import { debounce } from "@/utils/defer";
+import { isAndroid, isIOS, resolveMobileLayout } from "@/utils/platform";
 import {
   APPEARANCE_STORAGE_KEY,
   LEGACY_DARK_STORAGE_KEY,
@@ -368,7 +369,13 @@ export const useAppStore = defineStore("app", () => {
       // 用户明确关掉 ⇒ 永远不要自动拉起（本 bug 的修复点）。
       if (!ch.preferred) return;
       if (ch.running) return;
-      await api.requestBlePermissions().catch(() => {});
+      // ⚠️ 这里**不申请任何权限**：本函数会被"启动后 2s"那条自动路径调用，而
+      //   「移动端启动路径不申请任何权限、不碰任何平台专有代码」是硬规则（见 `init()` 末尾）。
+      //   权限一律**按需**：真正要用蓝牙的入口（「添加好友」/ 网络设置）会先显式
+      //   `api.requestBlePermissions()`（见 `AddFriendModal` / `NetworkSection`）。
+      //   启动这条只负责"权限已经给了就自动开"；没给就保持关闭，等用户去用蓝牙时再问 ——
+      //   否则首启会连弹两次权限框，而且第一次弹在**首次布局**前后，会把视口读坏
+      //   （用户 2026-09-21：安卓首启弹框后首页变成桌面三栏布局）。
       for (let attempt = 0; attempt < 2; attempt++) {
         if (channels.value.find((c) => c.channel === "bluetooth")?.running) return;
         try {
@@ -714,8 +721,22 @@ export const useAppStore = defineStore("app", () => {
     // 注册系统外观监听（跟随系统模式下，用户在系统设置里切换要即时生效，不必重启）
     watchSystemAppearance();
     const mq = window.matchMedia("(max-width: 767px)");
-    isMobile.value = mq.matches;
-    mq.addEventListener("change", (e) => (isMobile.value = e.matches));
+    /**
+     * 布局是否走移动端 —— 判据见 `platform.ts::resolveMobileLayout`（**平台优先，宽度兜底**）。
+     *
+     * ⚠️ 为什么不能"init 里读一次 matchMedia"就完事：真实事故（用户 2026-09-21，Android 首次启动）
+     * 里，启动时的系统权限弹框盖在 WebView 的**首次布局**上，那一次读到了兜底视口宽度（980px 档）
+     * ⇒ 手机上判成"桌面" ⇒ 首页渲染成三栏布局，而且**一直错下去**（"变窄"那次过渡早于监听注册）。
+     * 所以：① 平台优先（安卓/iOS 恒为移动布局，它们是竖屏锁定的）；② 再把 change / resize
+     * （首次布局落定、转屏、拖窗口都会触发）与首帧后的一次重判挂上兜底。
+     */
+    const applyIsMobile = () => {
+      isMobile.value = resolveMobileLayout({ android: isAndroid, ios: isIOS, narrow: mq.matches });
+    };
+    applyIsMobile();
+    mq.addEventListener("change", applyIsMobile);
+    window.addEventListener("resize", applyIsMobile);
+    requestAnimationFrame(applyIsMobile);
     watchKeyboard();
 
     await refreshEnvironment();
