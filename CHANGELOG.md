@@ -10,6 +10,86 @@
 
 ## [Unreleased]
 
+## [4.25.0] - 2026-09-22
+
+### Added (公网盲管道中继：局域网连不上时多一条链路 —— ADR-0020)
+
+家庭宽带与手机网络普遍在 CGNAT 后面，**两侧都没有可被对方直连的公网地址**，
+于是既有的"跨网段"这条路（`routed_endpoints` 填对端 `ip:port`）在这种场景下无路可走。
+本轮补的是"两边各自拨号到同一台服务器上会合"这条路：服务器**只管组网**，
+把两条登记了同一串通道哈希的 TCP 拼成双向字节管道，不解析帧、不落盘。
+定位仍是没有强制的官方后台 —— 无账号、无注册、官方不部署，用户自己填地址才有这条链路。
+
+三笔客户端提交各自独立：`9577a99` 配置面 → `a9ac515` 接线与记录层 → `911a6df` 设置页。
+服务器代码在独立仓库 [fwd001/gosslan-relay-server](https://github.com/fwd001/gosslan-relay-server)。
+
+**为什么改动面能这么小**（这是设计的全部价值，不是运气）：`connect_to_peer` 的链路 key
+来自**握手验签学到的 device_id**，不来自 socket 地址（`discovery/routed.rs` 的 P-A01），
+所以"穿过一台哑管道的字节流"对上层与一条直连 TCP 没有区别。于是
+`connect_to_peer` 只多一个 `Option<RelayCtx>` 参数，密封态挂在
+`TcpSender`/`TcpReceiver` 内部 —— `writer_loop` / `reader_loop` / `try_send` /
+`route_order` / 分片流钉链路的签名与行为一字未改，未启用时逐字节委托底层。
+**不新增任何 `Message` 变体或 `kind`** ⇒ 不触发 INV-P24 与 ADR-0007
+"先铺开再上新帧"的排队，老版本设备只是用不了这条路，其余一切照旧。
+`PathKind` 复用 `Routed`：选路优先级（`mesh/selection.rs` 的 LAN 恒优先、严格更优才替换）
+已经在保证"局域网能连上时这条链路自然闲置"，新增枚举换不来任何行为差异。
+
+**为什么必须加一层记录封装**（本轮的功能性目的，不是顺手加固）：正文本来就 E2EE，
+但帧的其余部分是明文 JSON —— `device_id`、昵称、群名册、文件名、帧类型、已读回执全可读；
+更关键的是 `Message::ChatMessage` 直连帧**没有信封签名**，只靠"链路对端 == `from`"兜
+（INV-P21），而一台能控制这条 TCP 的公网中继可以**注入 `Ack`**，`Ack` 会让发送方删掉
+outbox 行。所以中继电路在 `Hello` 之前先做一次带认证的协商（签名材料含双方 device_id +
+通道哈希 + 角色 + 临时公钥，验签只认 friends 表绑定值），此后每条帧
+`ChaCha20Poly1305(严格递增计数器 ‖ 内层帧)`，注入/重放/截断一律断链，
+**失败不降级为明文**（§19 Crypto Rules）。
+
+| 中继能看到 / 做不到 | |
+| --- | --- |
+| 做不到 | 读正文、读元数据（id/昵称/群名册/文件名/已读）、注入、重放、冒充好友、落盘 |
+| 看得到 | 连接时刻与时长、双向字节数、帧的精确长度、同一天内"这串通道哈希又出现了" |
+
+### Fixed (本轮测试抓掉的三个真 bug —— 都是"上线即炸"的级别)
+
+1. `poll_read` 把底层 `Pending` 误判成流被截断 ⇒ 一条记录合法地横跨多次 socket 读
+   （16KB 分片必然横跨），**每条大帧链路刚起步就自杀**。由 `duplex(1)` 的背压用例抓到。
+2. 把明文拷进 `ReadBuf` 后漏 `buf.advance(n)` ⇒ 消费方永远看到 0 字节并判 EOF，
+   **密封链路一帧都送不出去**。
+3. 协商线原本携带长期 Ed25519 公钥：它是冗余字段（校验方本地就有绑定值），
+   但一旦上线，中继就能反算出以后**每一天**的通道哈希 ⇒ 按天轮换白做。
+   现在线上只有 4 个字段，并有断言钉住"协商线不得出现 device_id / 长期公钥"。
+
+另：删掉我自己加的 5 个"以防万一"接口（`counter`/`expect`/`is_staged`/`mid_frame`/
+`has_plain` 与 `WrappedSession.peer_device_id`）。它们会让 `clippy -D warnings`
+报 5 条 dead_code 而把 main 弄红 —— 未接线的扩展点不该先落实现。
+
+### Tests
+
+- `cargo test --lib -- network::transport::relay transport::relay_seal transport::tcp`
+  → **33 passed / 0 failed**。含一条端到端：两个客户端 + 一个**照文档实现的最小假中继**
+  （读首行、按通道配对、之后只搬字节），协商成功后用既有 `write_bytes`/`read_bytes`
+  双向换帧，其中一趟 40KB 专走"一条记录横跨多次 socket 读"的路径。
+- 全量 `cargo test --features bluetooth --lib` → 628 passed / **1 failed**，
+  唯一失败 `tests::ble_file_transfer_respects_link_limits` 扫描的是并行会话
+  **未提交**的 `commands/group_file_dispatch.rs`（本轮未碰该文件），本轮前后同为红，
+  净效果 +10 条用例、0 条新增失败。
+- 服务器侧 `node selftest.mjs` 8/8、`node bench.mjs 15`（p50 0.16ms、空载 RSS 46MiB）。
+- 前端 `npm test` 514 passed（含 zh/en key 集合完全一致）；`vue-tsc --noEmit` 无错。
+
+### 已知边界与遗留（不是待办清单，是取舍）
+
+- 中继"看起来可达"，它静默丢包时 outbox 仍按有链路的 120s 口径判失败
+  （`should_fail_expired_outbox` 既有语义，本轮刻意不改）。
+- 多条中继电路的 `Link.endpoint` 都是同一个服务器地址；今天 `route_order` 只在单个
+  peer 的链路列表内按端点对齐，因此不受影响，但任何"按地址区分连接"的新逻辑要注意。
+- 只给已绑定公钥的好友建电路，且并发上限 8 条（已有电路计入）；超出者走 Gossip 多跳。
+- **安卓后台**：前台服务未实装 ⇒ 手机切后台这条链路就没了。
+- 只能真机验证、本轮**未打勾**：真实 CGNAT 下的连通与延迟、三端防火墙、
+  换口令后的提示是否读得懂。
+- Windows 用例基线（`test-baseline.windows.txt`）需要在一台 Windows 上补
+  `node scripts/check-test-manifest.mjs --update`；在 macOS 上跑会污染另一条腿。
+
+Version-Bump: minor
+
 ## [4.24.5] - 2026-09-21
 
 ### Fixed (写出记账按 (传输 × 收件人) 成键，群投递侧补上回收 —— #35)
