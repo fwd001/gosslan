@@ -252,6 +252,18 @@ export interface GroupReadInfo {
   last_read_ts: number;
 }
 
+/**
+ * 群发「受众预告」（事件 `content-audience`，见 Rust 侧 `protocol::kind_audience_hint`）。
+ *
+ * 消息**已经发出去了** —— 这条只解释"群里有谁会把这条看成一段原始文本"，不是失败通知。
+ * 文案整句由后端拼（判据与文案必须在同一处），前端不再自己组句子。
+ */
+export interface ContentAudience {
+  conv_id: string;
+  msg_id: string;
+  hint: string;
+}
+
 export interface TopologyInfo {
   node_count: number;
   relay_count: number;

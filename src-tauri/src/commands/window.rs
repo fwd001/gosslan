@@ -219,5 +219,41 @@ async fn send_group_payload(
 
     broadcast_gossip(s, env).await;
 
+    // INV-P24 的群侧：**只报事实，不拦发送**。这条 kind 若有成员**确知**渲染不了，
+    // 往前端发一句提示，消息照发。
+    //
+    // 为什么群不像 1:1 那样硬门控（本轮对 git 历史的考古结论，不是怕吵）：
+    //   · 群 kind 不在 `MsgKind` 枚举里，它在群密钥加密的 Gossip 载荷内，接收端
+    //     `parse_gossip_payload` 按**自由字符串**解析（同一份实现逐字存在于 v2.1.2 /
+    //     v4.3.9 / v4.8.2 / v4.20.0），DB 列 `kind TEXT` 也没有 CHECK ⇒ 老成员不丢帧、
+    //     不断链、不会假报"发送失败"，退化只发生在**渲染**（看成一段原始文本，
+    //     因为 V3b 那层兜底只修了我们这一侧）；
+    //   · 1:1 恰恰相反：老对端的 `ChatMessage.kind` 是枚举，不认识的 kind 整帧解析失败，
+    //     而它的读循环 `Err(_) => break` ⇒ 丢帧之外还断链 —— 那边才配"不门控不许发"。
+    // 接在**内核**而不是命令入口：文本/代码/合并/任务/投票/公告全走这里，将来新增受门控
+    // 的 kind 自动被覆盖，不必记得在第二个入口再挂一次。
+    let (missing_ids, unknown, gated) = {
+        let features = s
+            .peer_content_features
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::protocol::kind_audience(kind, |id| features.get(id).copied(), &group_members, &s.device_id)
+    };
+    if gated {
+        // 显示名要在位图锁**外**解析：`resolve_nickname` 自己会去锁 peers 表。
+        let names: Vec<String> = missing_ids
+            .iter()
+            .map(|id| resolve_nickname(s, id))
+            .collect();
+        let hint = crate::protocol::kind_audience_hint(kind, &names, unknown);
+        if !hint.is_empty() {
+            // `let _ =`：提示送不出去不该影响已经发出去的消息（它只是解释，不是结果）。
+            let _ = s.app.emit(
+                "content-audience",
+                json!({ "conv_id": conv_id, "msg_id": rec.msg_id, "hint": hint }),
+            );
+        }
+    }
+
     Ok(rec)
 }

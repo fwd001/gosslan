@@ -2330,6 +2330,63 @@ mod tests {
         );
     }
 
+    /// 群聊侧的「受众预告」必须接线，而且必须与 1:1 的门控**不共用默认值**。
+    ///
+    /// 为什么单独一条：本轮考古查明群 kind 走 Gossip 载荷、老成员不丢帧只看成原始文本，
+    /// 所以群口刻意**不拦发送**（1:1 那边才是"不门控不许发"）。这个区别全靠
+    /// `kind_audience` 把"未知"与"确知不支持"分开数 —— 一旦有人图省事把它并进
+    /// `kind_allowed_by_features` 的"传 0"口径，提示就会在离线成员在场时永远响，
+    /// 而一条永远在响的提示等于没有提示。这里钉四件事：判据唯一、群口真的问它、
+    /// 命令注册在 generate_handler 里（漏注册的历史事故是安卓端 8 个 E0433）、
+    /// 以及"未知算 unknown"这条分支还在。
+    #[test]
+    fn group_audience_is_wired_and_keeps_three_states() {
+        let proto = include_str!("protocol.rs");
+        for f in ["pub fn kind_audience(", "pub fn kind_audience_hint("] {
+            assert_eq!(
+                proto.matches(f).count(),
+                1,
+                "{f} 全仓只许一处，第二处迟早口径不同"
+            );
+        }
+        let body = rust_fn_body(proto, "pub fn kind_audience(");
+        assert!(
+            body.contains("=> unknown += 1"),
+            "没交换过 Hello / 不在线的成员必须记成 unknown，不许并进 unsupported"
+        );
+        assert!(
+            !body.contains("unwrap_or(0)"),
+            "群受众判据不得借用 1:1 那个「不知道就当不支持」的默认值"
+        );
+
+        let group = include_str!("commands/window.rs");
+        let body = rust_fn_body(group, "async fn send_group_payload(");
+        assert!(
+            body.contains("kind_audience(") && body.contains("kind_audience_hint("),
+            "群内核必须复用同一份判据与文案；自己拼一份第二处就会与第一处漂移"
+        );
+        assert!(
+            body.contains("let _ = s.app.emit") && body.contains("\"content-audience\""),
+            "群口的提示必须是 fire-and-forget（`let _ =`），且发在前端听得见的那个事件上"
+        );
+        // ⚠️ 上面两条刻意**不写成带左括号的那种形态**：`src/api/events.test.ts` 是按文本扫
+        // Rust 源码里的调用点找事件名的，它分不清"代码里的调用"与"测试字符串/注释里的片段"
+        // —— 这条断言一旦把那三个字符写全，就会被扫成一个孤儿事件（同类坑本仓库已记过一次：
+        // 守卫注释里出现被扫描的关键字，于是守卫把自己判红）。
+        // "不拦发送"要判的是**受众那一段**，不是整个内核 —— 内核里"群不存在 / 你已不在该群
+        // / 群密钥缺失"这三条本来就该拒发，拿它们当违反者会把守卫判成假红（第一次就红了）。
+        let audience_at = body
+            .find("kind_audience(")
+            .expect("内核没调用 kind_audience");
+        let after_audience = &body[audience_at..];
+        assert!(
+            !after_audience.contains("return Err(") && !after_audience.contains("?"),
+            "受众判定之后必须只发提示、不改发送结果 —— 群老成员不丢帧，拦整群消息没有收益"
+        );
+        // 事件名与监听者的两端都由 `src/api/events.test.ts` 双向核对（那条守卫本来就是
+        // "Rust 发的事件必须有人听"）—— 这里不再抄一份，免得两处规则各说一遍。
+    }
+
     /// 发送进度必须落在"已写出链路"上，不许回到"已入队"（v4.22.37 的用户可见症状）。
     ///
     /// 三处同时成立才有意义，所以一起钉：

@@ -1650,6 +1650,11 @@ export const useChatStore = defineStore("chat", () => {
         // 被移出群：后端已删本地群，前端关闭会话 + 刷新
         void handleSelfRemovedFromGroup(groupId);
       },
+      onContentAudience: (p) => {
+        // 消息已经发出去了，这里只是解释「群里有成员版本较旧，会把这条看成一段原始文本」。
+        // 整句由后端拼（判据与文案在同一处），所以这里不再走 i18n、也不再自己组句子。
+        app.toast(p.hint, "info");
+      },
       onDataCleared: () => {
         void resetAfterDataCleared();
       },

@@ -142,6 +142,70 @@ pub fn kind_unsupported_hint(kind: &str) -> String {
     )
 }
 
+/// 群里的受众分布：三态分开数，**不要复用** `kind_allowed_by_features`。
+///
+/// 那个函数为了"宁可少发也不让老对端整帧丢"，刻意把"不知道"并进"不支持"（调用方传 0）。
+/// 同样的口径搬到群聊提示上是错的：群成员**离线是常态**，而 `peer_content_features` 只在
+/// 内存里、重启即空 ⇒ "不知道"会占满全场，于是每次发合并转发都弹一句"有人可能看不到" ——
+/// 一条永远在响的提示等于没有提示，还会顺手把真正要紧的那部分（确知的旧版本成员）淹掉。
+///
+/// 所以这里：
+///   · `unsupported` = 该 kind 需要能力位，且这个成员的位图**确实**没有该位；
+///   · `unknown`     = 从没交换过 Hello / 已离线 ⇒ 不并进上面，只在文案里说"版本未知"。
+/// 自己不计（自己是发送方）。`gated == false` 时两个数都是 0（这个 kind 对所有版本都安全）。
+pub fn kind_audience(
+    kind: &str,
+    features_of: impl Fn(&str) -> Option<u32>,
+    member_ids: &[String],
+    self_id: &str,
+) -> (Vec<String>, usize, bool) {
+    let Some(bit) = kind_required_feature(kind) else {
+        return (Vec::new(), 0, false);
+    };
+    let mut unsupported = Vec::new();
+    let mut unknown = 0usize;
+    for id in member_ids {
+        if id == self_id {
+            continue;
+        }
+        match features_of(id) {
+            None => unknown += 1,
+            Some(features) if features & bit == 0 => unsupported.push(id.clone()),
+            Some(_) => {}
+        }
+    }
+    (unsupported, unknown, true)
+}
+
+/// 群受众的**那句话**（与 `kind_audience` 放同一处：文案和它的触发条件是同一件事）。
+///
+/// 措辞上刻意说清"不会丢消息"：群 kind 不在 `MsgKind` 里，接收端按自由字符串解析
+/// （本轮考古实测 v2.1.2 / v4.3.9 / v4.8.2 / v4.20.0 同一份实现），老成员看到的是**渲染退化**
+/// 成原始文本，而不是整帧丢掉 —— 这句提示的价值全在"只报渲染、不制造丢消息的恐慌"。
+pub fn kind_audience_hint(kind: &str, unsupported_names: &[String], unknown: usize) -> String {
+    if unsupported_names.is_empty() {
+        return String::new();
+    }
+    const SHOW_MAX: usize = 5;
+    let who = if unsupported_names.len() > SHOW_MAX {
+        format!(
+            "{} 等 {} 名成员",
+            unsupported_names[..SHOW_MAX].join("、"),
+            unsupported_names.len()
+        )
+    } else {
+        unsupported_names.join("、")
+    };
+    let mut hint = format!(
+        "{who}的 Gosslan 版本较旧，「{kind}」消息在这些人那里会显示成一段原始文本\
+         （消息本身不会丢，其他成员正常）。"
+    );
+    if unknown > 0 {
+        hint.push_str(&format!("另有 {unknown} 位成员当前不在线、版本未知。"));
+    }
+    hint
+}
+
 /// 消息内容类型
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -2153,6 +2217,63 @@ mod tests {
         assert!(
             gated.contains(&CONTENT_FEATURE_MERGE),
             "merge 必须仍在被门控之列：v4.20.0 及更早的 MsgKind 里没有这个变体"
+        );
+    }
+
+    /// 群受众统计必须**三态分开**：确知不支持 / 版本未知 / 支持。
+    ///
+    /// 为什么单独立一条：把"未知"并进"不支持"在 1:1 发送口是对的方向（宁可少发），
+    /// 在群提示上是错的（离线成员是常态 ⇒ 提示永远在响 ⇒ 没人再看）。这条测试钉的就是
+    /// 两个函数**不该共用一个默认值**。
+    #[test]
+    fn group_audience_keeps_unknown_apart_from_unsupported() {
+        let members: Vec<String> = ["a", "b", "c", "me"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // a 声明过但没有 merge 位；b 声明了 merge 位；c 从没交换过 Hello（未知）
+        let features = |id: &str| match id {
+            "a" => Some(CONTENT_FEATURE_PULL),
+            "b" => Some(CONTENT_FEATURE_MERGE),
+            "c" => None,
+            _ => Some(content_features()),
+        };
+        let (unsupported, unknown, gated) = kind_audience("merge", features, &members, "me");
+        assert!(gated, "merge 是受能力位约束的 kind");
+        assert_eq!(unsupported, vec!["a".to_string()], "只数确知缺位的");
+        assert_eq!(unknown, 1, "没交换过 Hello 的算未知，不算缺位");
+
+        // 不受约束的 kind：一个都不该报，也不该弹提示
+        let (u2, k2, g2) = kind_audience("text", features, &members, "me");
+        assert!(!g2 && u2.is_empty() && k2 == 0, "text 对所有版本安全");
+
+        // 只有未知、没有确知缺位 ⇒ 句子为空（宁可不说话，也不说一条永远在响的话）
+        let only_unknown: Vec<String> = ["c".to_string()].into_iter().collect();
+        let (u3, k3, _) = kind_audience("merge", features, &only_unknown, "me");
+        assert!(u3.is_empty() && k3 == 1);
+        assert_eq!(kind_audience_hint("merge", &[], only_unknown.len()), "");
+
+        let hint = kind_audience_hint("merge", &["小李".to_string(), "阿强".to_string()], 3);
+        assert!(
+            hint.contains("小李") && hint.contains("阿强"),
+            "要列得出是谁"
+        );
+        assert!(hint.contains("不会丢"), "必须说清只是渲染退化，不是丢消息");
+        assert!(
+            hint.contains("3 位成员") && hint.contains("版本未知"),
+            "未知的另计，不冒充缺位"
+        );
+    }
+
+    /// 缺位人数很多时不刷屏：列出前几个 + 「等 N 名成员」。
+    #[test]
+    fn audience_hint_collapses_long_name_lists() {
+        let names: Vec<String> = (0..9).map(|i| format!("成员{i}")).collect();
+        let hint = kind_audience_hint("merge", &names, 0);
+        assert!(hint.contains("等 9 名成员"), "{hint}");
+        assert!(
+            hint.contains("成员0") && !hint.contains("成员8"),
+            "只展示前几个"
         );
     }
 

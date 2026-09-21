@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 export const api = {
   /**
@@ -434,6 +434,8 @@ export type EventHandlers = {
   onGroupsUpdated: (groupId: string) => void;
   /** 自己被移出群（group_id） */
   onGroupMemberRemoved: (groupId: string) => void;
+  /** 群发受众预告：这条 kind 群里有成员版本较旧会看成原始文本（消息已发出，仅解释）。 */
+  onContentAudience: (p: ContentAudience) => void;
   /**
    * 用户点了系统通知（桌面端；移动端走插件的 `actionPerformed`）。
    * 后端已经顺手把主窗口唤起，这里只需把界面切到目标会话 / 「新的朋友」。
@@ -475,6 +477,7 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
     listen<string>("group-member-removed", (e) => h.onGroupMemberRemoved(e.payload)),
+    listen<ContentAudience>("content-audience", (e) => h.onContentAudience(e.payload)),
     // 「用户点了系统通知」：后端在 notify-rust 的点击回调里唤起主窗口后发出（见
     // notifications::on_notification_clicked）。桌面端**只有这一条**点击来源 ——
     // 插件的 actionPerformed 只有移动端会发。

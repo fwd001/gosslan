@@ -475,12 +475,14 @@ protocol::tests::announce_signing_bytes_sensitive_to_every_field
 protocol::tests::announce_verified_when_self_signed
 protocol::tests::announce_without_signature_is_legacy_not_rejected
 protocol::tests::chat_ack_and_read_receipt_plaintext_directed_envelope_integrity
+protocol::tests::audience_hint_collapses_long_name_lists
 protocol::tests::display_kind_maps_legacy_media_to_file
 protocol::tests::emoji_token_shape_is_validated_but_not_the_catalogue
 protocol::tests::envelope_encrypted_flag_roundtrip
 protocol::tests::every_gated_kind_is_advertised_by_us
 protocol::tests::friend_request_envelope_encrypt_sign_decrypt_and_target_integrity
 protocol::tests::gated_kind_needs_the_peers_own_declaration
+protocol::tests::group_audience_keeps_unknown_apart_from_unsupported
 protocol::tests::gossip_message_id_deterministic_and_sensitive_to_payload
 protocol::tests::group_ack_and_file_complete_ack_roundtrip
 protocol::tests::group_lifecycle_messages_roundtrip
@@ -528,6 +530,7 @@ tests::file_send_progress_counts_wire_not_queue
 tests::friend_request_from_existing_friend_auto_accepts
 tests::friend_request_survives_a_dropped_link
 tests::gossip_fanout_targets_reachable_links
+tests::group_audience_is_wired_and_keeps_three_states
 tests::group_file_cancel_registry_is_scoped_per_recipient
 tests::group_todos_window_label_derives_from_group_id
 tests::in_flight_media_is_not_reported_as_deleted
