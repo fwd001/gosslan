@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { contrastRatio, luma, toHsl } from "./color.ts";
 import { CHAT_PRESETS, formatTimeDivider, mentionHighlightColor, resolveChatColors } from "./chatStyle.ts";
 
@@ -131,6 +133,53 @@ test("mention 高亮色：明暗 × 全主题 × 自己/对方气泡底，对比
         const mine = bg === c.mineBubble;
         assert.notEqual(fg, mine ? c.mineText : c.otherText);
       }
+    }
+  }
+});
+
+test("mention 高亮色：底色读不到时不猜色，取梯度末端且不低于主题内任一底", () => {
+  for (const theme of THEME_COLORS) {
+    for (const dark of [false, true]) {
+      const c = resolveChatColors("theme", theme, dark);
+      for (const unknown of [undefined, ""]) {
+        const fg = mentionHighlightColor(theme, dark, unknown);
+        assert.ok(fg, `${theme} ${dark ? "暗" : "亮"}色底色未知时回退了 inherit`);
+        // 梯度末端 = 暗色最浅 / 亮色最深：对主题内的中性底必须仍是最高对比那一端
+        for (const bg of [c.mineBubble, c.otherBubble]) {
+          const ratio = contrastRatio(fg, bg);
+          assert.ok(
+            ratio >= 4.5,
+            `${theme} ${dark ? "暗" : "亮"}色未知底 → 对 ${bg} 只有 ${ratio.toFixed(2)}`,
+          );
+          // 且不得比试算结果更浅/更亮，否则说明末端选反了
+          const solved = mentionHighlightColor(theme, dark, bg);
+          const [, , lf] = toHsl(fg);
+          const [, , ls] = toHsl(solved);
+          assert.ok(dark ? lf >= ls : lf <= ls, `${theme} ${dark ? "暗" : "亮"}末端档选反了`);
+        }
+      }
+    }
+  }
+});
+
+// 底色兜底只能有一份事实：组件里再写一个 hex 字面量 = 抄走主题 token 的值，
+// token 一改这边静默失准（历史上气泡与全文弹窗两处抄的还是不同的值）。
+test("组件调 mentionHighlightColor 不得自带兜底色", () => {
+  for (const rel of [
+    "components/message/MessageTextBubble.vue",
+    "components/message/MessageContentModal.vue",
+    "components/chat/MessageComposer.vue",
+  ]) {
+    const src = readFileSync(join(import.meta.dirname, "..", rel), "utf8");
+    const calls = src
+      .split("\n")
+      .filter((l) => l.includes("mentionHighlightColor(") && !l.trim().startsWith("//"));
+    assert.ok(calls.length > 0, `${rel} 不再调用 mentionHighlightColor？守卫需重定位`);
+    for (const line of calls) {
+      assert.ok(
+        !line.includes("#"),
+        `${rel} 的调用里出现了硬编码兜底色（底色未知应把空串传下去）：${line.trim()}`,
+      );
     }
   }
 });

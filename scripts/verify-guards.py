@@ -413,6 +413,22 @@ CASES: list[Case] = [
         tags=["frontend", "new-guards"],
     ),
     Case(
+        name="@提及 兜底色不许被抄回组件（底色事实只有一份）",
+        why="v4.23.2 删掉的两处硬编码兜底（气泡 #1c2434/#eeeef0、全文弹窗 #1e293b/#ffffff）"
+            "抄的是主题 token 的值、且两处不一致 ⇒ token 一改组件静默失准。"
+            "这类退化不报错、不影响构建，只有扫源码的断言能拦住",
+        file=ROOT / "src" / "components" / "message" / "MessageTextBubble.vue",
+        injections=[(
+            "mentionHighlightColor(app.themeColor, app.dark, bg)",
+            'mentionHighlightColor(app.themeColor, app.dark, bg || "#1c2434")',
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/chatStyle.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="兜底色",
+        tags=["frontend", "new-guards"],
+    ),
+    Case(
         name="Presence 不得内联大头像（否则优先通道被堵）",
         why="Presence 每 10s 广播一次且走优先通道；一张 400KB 头像会让聊天/好友请求"
             "排在几百片分片后面（真机：加好友几分钟才到）",

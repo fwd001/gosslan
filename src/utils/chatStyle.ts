@@ -173,10 +173,20 @@ export function fontPx(size: FontSizeKey): number {
  * 对传入的气泡底逐步压深/提亮直到 WCAG ≥ 4.5。bubbleBg 传实际渲染的底色
  * （气泡 inline style 的 background / 输入框面板的近似底），预设差异天然被覆盖。
  * 返回空串表示极端底色下无解，调用方回退 inherit（退化为加粗+浅底，即旧行为）。
+ *
+ * bubbleBg 省略或为空（inline style 与 DOM 都读不到真实底色）时不做试算，直接取
+ * 梯度末端 —— 暗色最浅档 / 亮色最深档：梯度本身就是"离主题中性底越来越远"的排序，
+ * 末端对任何主题内底色对比度最高。反过来若由调用方自带兜底色，就等于把主题 token 的
+ * 值抄进组件（此前两处抄的还是不同的值），token 一改这边静默失准。
  */
-export function mentionHighlightColor(themeColor: string, dark: boolean, bubbleBg: string): string {
+export function mentionHighlightColor(
+  themeColor: string,
+  dark: boolean,
+  bubbleBg?: string,
+): string {
   const levels = dark ? [0.82, 0.86, 0.9, 0.94] : [0.32, 0.28, 0.24, 0.2, 0.16, 0.12];
   const sMax = dark ? 0.75 : 0.85;
+  if (!bubbleBg) return adjustHsl(themeColor, { l: levels[levels.length - 1], sMax });
   for (const l of levels) {
     const fg = adjustHsl(themeColor, { l, sMax });
     if (contrastRatio(fg, bubbleBg) >= 4.5) return fg;

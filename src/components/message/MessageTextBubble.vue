@@ -126,7 +126,7 @@ function resolveBgColor(style: CSSProperties | undefined, el: HTMLElement | null
 }
 const mentionFg = computed(() => {
   const bg = resolveBgColor(props.clamped ? props.cardStyle : props.bubbleStyle, contentEl.value);
-  return mentionHighlightColor(app.themeColor, app.dark, bg || (app.dark ? "#1c2434" : "#eeeef0"));
+  return mentionHighlightColor(app.themeColor, app.dark, bg);
 });
 
 /** @提及 淡背景：取 mentionFg（主题色派生）的低透明度，做成互联网公司式的浅色块。 */

@@ -40,7 +40,7 @@ const segments = computed<RenderSegment[]>(() => {
  *  从 CSS 变量读真实面板色，避免将来改了主题 token 这里忘记同步。 */
 const mentionFg = computed(() => {
   const panel = getComputedStyle(document.documentElement).getPropertyValue("--gosslan-panel").trim();
-  return mentionHighlightColor(app.themeColor, app.dark, panel || (app.dark ? "#1e293b" : "#ffffff"));
+  return mentionHighlightColor(app.themeColor, app.dark, panel);
 });
 
 /** @提及 淡背景：与气泡同款取法（mentionFg 的 16%）。
