@@ -81,6 +81,21 @@ impl RoutedEndpoint {
 /// 规范化都走它，避免「两处各解析一遍、行为还不一致」（曾真实发生：命令层接受
 /// 裸 IP 并告诉用户「只填 IP 即可」，而拨号侧只认 `ip:port`，于是裸 IP 静默失效）。
 pub fn parse_endpoint_addr(address: &str) -> Option<SocketAddr> {
+    parse_endpoint_addr_on(address, TCP_PORT)
+}
+
+/// 公网中转服务器的默认端口。
+///
+/// **刻意不等于** [`TCP_PORT`]（局域网内 Gosslan 自己的 TCP 监听端口）：同一台机器上
+/// 既跑着 LAN 服务、又恰好部署了中继时，两个默认端口相同会让"只填 IP"这条最自然的
+/// 用法直接连到错的进程上，而那恰好是最难判断的故障形状。服务器侧默认也是这个数。
+pub const RELAY_DEFAULT_PORT: u16 = 59993;
+
+/// 同 [`parse_endpoint_addr`]，但由调用方给出"省略端口时补哪个端口"。
+///
+/// 解析逻辑只有这一份 —— 中继端点与跨网段端点必须用同一个语法（历史上两处各写一遍，
+/// 结果命令层接受裸 IP、拨号侧只认 `ip:port`，用户看到"配成功了却永远连不上"）。
+pub fn parse_endpoint_addr_on(address: &str, default_port: u16) -> Option<SocketAddr> {
     let address = address.trim();
     if let Ok(addr) = address.parse::<SocketAddr>() {
         return Some(addr);
@@ -88,7 +103,7 @@ pub fn parse_endpoint_addr(address: &str) -> Option<SocketAddr> {
     address
         .parse::<IpAddr>()
         .ok()
-        .map(|ip| SocketAddr::new(ip, TCP_PORT))
+        .map(|ip| SocketAddr::new(ip, default_port))
 }
 
 /// 解析存储的 JSON 数组。**逐条跳过非法条目**，绝不因一条坏数据导致整体失败。

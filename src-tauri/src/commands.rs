@@ -46,7 +46,8 @@ const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 use crate::crypto;
 use crate::db;
 use crate::discovery::routed::{
-    encode_endpoints, parse_endpoint_addr, parse_endpoints, RoutedEndpoint, ROUTED_ENDPOINTS_KEY,
+    encode_endpoints, parse_endpoint_addr, parse_endpoint_addr_on, parse_endpoints,
+    RoutedEndpoint, RELAY_DEFAULT_PORT, ROUTED_ENDPOINTS_KEY,
 };
 use crate::export;
 use crate::logging::LogEntry;
@@ -133,6 +134,9 @@ include!("commands/favorites.rs");
 
 // ---- routed.rs ----
 include!("commands/routed.rs");
+
+// ---- relay.rs ----
+include!("commands/relay.rs");
 
 // ---- external_links.rs ----
 include!("commands/external_links.rs");

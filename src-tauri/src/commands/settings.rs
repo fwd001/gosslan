@@ -345,6 +345,12 @@ pub fn reset_settings(
         &RETENTION_KEY,
         &MAX_BYTES_KEY,
         &"bt_enabled",
+        // 公网中转（ADR-0020）：恢复默认时一并清掉，包括口令。
+        // 留着它比清掉更糟 —— 用户点"恢复默认"后机器上仍存着一个通往公网的准入口令，
+        // 而界面上已经看不到这个功能在哪儿配的。清掉的代价是重新填一次。
+        &RELAY_ENABLED_KEY,
+        &RELAY_SERVER_KEY,
+        &RELAY_TOKEN_KEY,
         &"chat_peer_styles",
         &"nickname",
         &"avatar",
