@@ -23,20 +23,27 @@ import { createBackStack, type HistoryPort } from "@/utils/backStack";
  * （表情面板、右键菜单）不压条目，否则返回键要按好几下才有反应。
  */
 
-/** 真实端口：`pushState` 在自定义协议下可能抛 SecurityError，退化用 hash（同样产生历史条目）。 */
+/**
+ * 真实端口。
+ *
+ * ⚠️ `push` 必须如实回报**落点**（`pushState` / `hash`）：退化的 `location.hash = …`
+ * 会**自己触发一次 `popstate`**（实测：设置 hash 同时触发 hashchange 与 popstate），
+ * 纯逻辑要靠这个信息把那次 pop 吃掉 —— 否则"刚压入的那一层"会被立刻关掉，
+ * 表现是弹窗一出现就消失（见 `utils/backStack.ts::HistoryPort.push`）。
+ */
 const browserPort: HistoryPort = {
-  push(state: unknown): boolean {
+  push(state: unknown): "pushState" | "hash" | null {
     try {
       history.pushState(state, "", location.href);
-      return true;
+      return "pushState";
     } catch {
       /* 落到 hash 方案 */
     }
     try {
       location.hash = `gosslan-layer-${(state as { gosslanBackLayer: number }).gosslanBackLayer}`;
-      return true;
+      return "hash";
     } catch {
-      return false; // 两个都不行：不压条目，返回键行为退化为"直接退出"（不比现状差）
+      return null; // 两个都不行：不压条目，返回键行为退化为"直接退出"（不比现状差）
     }
   },
   back() {

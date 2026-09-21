@@ -13,7 +13,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useChatStore } from "@/stores/useChatStore";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import GroupTasksBoard from "@/components/GroupTasksBoard.vue";
-import ToastHud from "@/components/ToastHud.vue";
 import { groupTodosGroupId } from "@/utils/auxWindowLabels";
 import { currentLocale, t } from "@/i18n";
 
@@ -49,8 +48,5 @@ watch(
     <div v-else class="min-h-0 flex-1 overflow-hidden p-4">
       <GroupTasksBoard :group-id="groupId" standalone />
     </div>
-
-    <!-- 独立窗口里的创建/更新失败也要看得见（否则是静默的） -->
-    <ToastHud />
   </AuxWindowShell>
 </template>

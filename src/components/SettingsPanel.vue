@@ -41,50 +41,58 @@ useBackLayer(
   () => emit("close"),
 );
 
-/** 二级页配置：key → 标题 + 渲染函数（用 h 避免模板里大 switch）。 */
+/**
+ * 二级页配置：key → 标题 + 渲染函数（用 h 避免模板里大 switch）。
+ *
+ * ⚠️ `titleKey` 一律用**条目名**（`settings.item.*`，与列表里那一条的文案同键），
+ * 不要用分组名（`settings.group.*`）：分组是"容器"（如「外观与通知」装着外观/聊天气泡/通知
+ * 三条），用它当二级页标题就会名不副实 —— 用户点进「外观」看到的标题却是「外观与通知」
+ * （用户 2026-09-21 报的正是这一类：桌面「外观与通知」里只有外观）。
+ * 唯一的例外是「重置」：它的页面标题就是分区自己的名字（`settings.group.reset`）。
+ */
 const SECTIONS: Record<string, { titleKey: string; render: () => any }> = {
   profile: {
-    titleKey: "settings.group.general",
+    titleKey: "settings.item.profile",
     render: () => ProfileSection,
   },
   general: {
-    titleKey: "settings.group.general",
+    titleKey: "settings.item.general",
     render: () => GeneralSection,
   },
   appearance: {
-    titleKey: "settings.group.appearance",
+    titleKey: "settings.item.appearance",
     render: () => AppearanceSection,
   },
   chatStyle: {
-    titleKey: "settings.group.appearance",
+    titleKey: "settings.item.chatStyle",
     render: () => ChatStyleSection,
   },
   notification: {
-    titleKey: "settings.group.appearance",
+    titleKey: "settings.item.notification",
     render: () => NotificationSection,
   },
   network: {
-    titleKey: "settings.group.data",
+    titleKey: "settings.item.network",
     render: () => NetworkSection,
   },
   files: {
-    titleKey: "settings.group.data",
+    titleKey: "settings.item.files",
     render: () => FilesSection,
   },
   storage: {
-    titleKey: "settings.group.data",
+    titleKey: "settings.item.storage",
     render: () => StorageSection,
   },
   security: {
-    titleKey: "settings.group.security",
+    titleKey: "settings.item.security",
     render: () => SecuritySection,
   },
   about: {
-    titleKey: "settings.group.about",
+    titleKey: "settings.item.about",
     render: () => AboutSection,
   },
   reset: {
-    titleKey: "settings.group.about",
+    titleKey: "settings.group.reset",
     render: () => ResetSection,
   },
 };

@@ -19,14 +19,19 @@ const read = (rel: string) => readFileSync(join(srcDir, rel), "utf8");
 const EXPECTED = [
   { key: "profile", labelKey: "settings.group.profile", component: "ProfileSection", firstGroupKey: "settings.group.profile" },
   // 「通用」是**容器**概念（iOS：通用里既有语言与地区也有还原）⇒ 不要求第一组标题同名
+  // ⚠️ 2026-09-21 起桌面的「通用」只剩语言与地区（还原独立成「重置」项）——它仍是容器型条目，
+  //    所以继续用 null 表达"不要求同名"。
   { key: "general", labelKey: "settings.group.general", component: "GeneralSection", firstGroupKey: null },
   { key: "notifications", labelKey: "settings.group.notifications", component: "NotificationSection", firstGroupKey: "settings.group.notifications" },
-  { key: "appearance", labelKey: "settings.group.appearance", component: "AppearanceSection", firstGroupKey: "settings.group.appearance" },
+  { key: "appearance", labelKey: "settings.item.appearance", component: "AppearanceSection", firstGroupKey: "settings.item.appearance" },
   { key: "network", labelKey: "settings.group.network", component: "NetworkSection", firstGroupKey: "settings.group.network" },
   { key: "files", labelKey: "settings.group.files", component: "FilesSection", firstGroupKey: "settings.group.files" },
   { key: "storage", labelKey: "settings.group.storage", component: "StorageSection", firstGroupKey: "settings.group.storage" },
   { key: "security", labelKey: "settings.group.security", component: "SecuritySection", firstGroupKey: "settings.group.security" },
-  { key: "about", labelKey: "settings.group.about", component: "AboutSection", firstGroupKey: "settings.group.about" },
+  // 「关于」/「重置」是两项（用户 2026-09-21：此前一项叫「关于与重置」却只渲染 AboutSection）。
+  // 标签统一用**条目名**，且各自与分区内第一组标题同名 —— 这就是本守卫要钉的"标签即内容"。
+  { key: "about", labelKey: "settings.item.about", component: "AboutSection", firstGroupKey: "settings.item.about" },
+  { key: "reset", labelKey: "settings.group.reset", component: "ResetSection", firstGroupKey: "settings.group.reset" },
 ] as const;
 
 test("每个导航项都渲染了与标签对应的分区组件（标签即内容）", () => {

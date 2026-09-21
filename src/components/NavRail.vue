@@ -4,7 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
-import { Compass, MoreHorizontal, Moon, ScrollText, Settings, Sun } from "lucide-vue-next";
+import { MoreHorizontal, Moon, ScrollText, Settings, Sun } from "lucide-vue-next";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { t } from "@/i18n";
 
@@ -235,7 +235,29 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
         :aria-label="t('nav.links')"
         @click="emit('update:navState', 'links')"
       >
-        <Compass class="h-[22px] w-[22px]" />      </button>
+        <!-- 指南针：**与「聊天 / 通讯录 / 收藏」同一套选中逻辑**（选中 = 实心 + 主题色）。
+             自绘而不是用 lucide 的 `Compass`：lucide 是描边图标，直接给它 fill 会变成一个墨团
+             （见上面「聊天/通讯录」的说明）。这里用**单条 path + evenodd**：外圆填充成实心时，
+             里面的指针自然成为镂空 —— 与通讯录那张"实心卡片里透着人形"同一手法；
+             未选中时只有描边，指针以线条呈现。
+             用户 2026-09-21：「链接这个指南针为什么选中的时候不是实心选中变色的」——
+             根因就是这里漏了 fill 绑定（前三个图标都有，只有它还是 lucide 原样）。 -->
+        <svg
+          viewBox="0 0 24 24"
+          class="h-[22px] w-[22px]"
+          :fill="navState === 'links' ? 'currentColor' : 'none'"
+          stroke="currentColor"
+          stroke-width="1.9"
+          stroke-linejoin="round"
+          fill-rule="evenodd"
+          clip-rule="evenodd"
+        >
+          <path
+            d="M12 2.6a9.4 9.4 0 1 0 0 18.8 9.4 9.4 0 0 0 0-18.8z
+               M17.5 6.5l-2.7 8.3-8.3 2.7 2.7-8.3z"
+          />
+        </svg>
+      </button>
     </div>
 
     <!-- 底部：深浅色切换 + 更多（设置/运行日志收进**二级菜单**，用户 2026-09-17） -->

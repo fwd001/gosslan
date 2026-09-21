@@ -24,7 +24,7 @@ import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
-import { UserRound, Palette, SlidersHorizontal, Wifi, HardDrive, Lock, Info, Bell, FolderOpen } from "lucide-vue-next";
+import { UserRound, Palette, SlidersHorizontal, Wifi, HardDrive, Lock, Info, Bell, FolderOpen, RotateCcw } from "lucide-vue-next";
 import { t } from "@/i18n";
 
 type SectionKey =
@@ -36,7 +36,8 @@ type SectionKey =
   | "files"
   | "storage"
   | "security"
-  | "about";
+  | "about"
+  | "reset";
 
 const section = ref<SectionKey>("profile");
 /** 各分区按需加载：恢复默认等改动后 bump 令牌触发重载（与 SettingsPanel 同一套语义）。 */
@@ -46,25 +47,36 @@ const devDiagOpen = ref(false);
 /** 导航项：图标 + 文案。`icon` 用组件引用，避免在模板里写一长串 v-if。 */
 /**
  * 导航项按 **iOS 设置的概念**排序（2026-09-12 用户反馈「分类不合理」后重排）：
- * 个人资料 → 通用 → 通知 → 外观 → 网络与连接 → 文件与共享 → 存储 → 隐私与安全 → 关于。
+ * 个人资料 → 通用 → 通知 → 外观 → 网络与连接 → 文件与共享 → 存储 → 隐私与安全 → 关于 → 重置。
  *
  * ⚠️ 教训：导航项的**标签必须与它打开的分区内容一致**。此前 `general` 这一项
  * 写着「通知」，点开却是「语言 + 通知 + 共享目录」—— 用户看到"通知里第一项是语言、
  * 第三项是共享目录"，这就是分类错误。现在每一项只放它字面意思里的东西：
- *   · 通用（iOS「通用」）＝ 语言与地区 + 还原；
+ *   · 通用（iOS「通用」）＝ 语言与地区；
  *   · 通知（iOS「通知」）＝ 允许通知 + 显示预览（消息正文）；
- *   · 文件与共享 ＝ 接收文件目录 + 共享目录（都是"文件放哪儿/给谁看"）。
+ *   · 文件与共享 ＝ 接收文件目录 + 共享目录（都是"文件放哪儿/给谁看"）；
+ *   · 外观 ＝ 显示模式 + 主题色 + 字体（**不含通知**：通知是上面独立的一项。
+ *     用户 2026-09-21：「桌面版的外观和通知里只有外观啊，为啥叫外观和通知」——
+ *     根因是这一项复用了**移动端分组**的标签 `settings.group.appearance`（那个分组里
+ *     真的装着「外观 / 聊天气泡 / 通知」三条，所以名字是对的），桌面端该用条目名「外观」）。
+ *
+ * ⚠️ 「关于」与「重置」必须**分成两项**（用户 2026-09-21：「桌面版的关于和重置里没有重置」）：
+ *   此前这一项叫「关于与重置」，点开却只有 `AboutSection`（iOS 把「还原」放「通用」里的做法
+ *   被搬到了这里）—— 标签说"与重置"、内容里没有重置，正是上面那条教训的翻版。
+ *   现在标签也用**条目名**（`settings.item.about` / `settings.group.reset`，与移动端列表同一批键），
+ *   与各自分区内的第一组标题一一对应（`settingsStructure` 守卫钉住）。
  */
 const navItems = computed<{ key: SectionKey; label: string; icon: unknown }[]>(() => [
   { key: "profile", label: t("settings.group.profile"), icon: UserRound },
   { key: "general", label: t("settings.group.general"), icon: SlidersHorizontal },
   { key: "notifications", label: t("settings.group.notifications"), icon: Bell },
-  { key: "appearance", label: t("settings.group.appearance"), icon: Palette },
+  { key: "appearance", label: t("settings.item.appearance"), icon: Palette },
   { key: "network", label: t("settings.group.network"), icon: Wifi },
   { key: "files", label: t("settings.group.files"), icon: FolderOpen },
   { key: "storage", label: t("settings.group.storage"), icon: HardDrive },
   { key: "security", label: t("settings.group.security"), icon: Lock },
-  { key: "about", label: t("settings.group.about"), icon: Info },
+  { key: "about", label: t("settings.item.about"), icon: Info },
+  { key: "reset", label: t("settings.group.reset"), icon: RotateCcw },
 ]);
 
 /**
@@ -115,10 +127,10 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         <AppearanceSection />
         <ChatStyleSection />
       </div>
-      <!-- iOS 的「通用」里同时有「语言与地区」与「还原」⇒ 这里把 ResetSection 一起放在本分区 -->
+      <!-- 「通用」= 语言与地区。**不含**重置：还原有自己的导航项（见下），
+           否则导航项写着「通用」、点开却带一段破坏性操作，与「标签即内容」相违。 -->
       <div v-else-if="section === 'general'" class="space-y-5">
         <GeneralSection />
-        <ResetSection @restored="reloadToken++" />
       </div>
       <NotificationSection v-else-if="section === 'notifications'" />
       <FilesSection v-else-if="section === 'files'" :active="true" :reload-token="reloadToken" />
@@ -130,6 +142,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       <div v-else-if="section === 'about'" class="space-y-5">
         <AboutSection @dev-open="devDiagOpen = true" />
       </div>
+      <ResetSection v-else-if="section === 'reset'" @restored="reloadToken++" />
     </div>
   </div>
 

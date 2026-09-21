@@ -4,7 +4,10 @@
          在那之前 WebView 只有一张白纸 —— 这就是用户反馈的"启动白屏"。
          这里只放首屏骨架必需的最小集合（底色 + 三栏骨架 + 微光动画），
          真实样式仍由 src/style.css 提供，不重复维护。
-         色值取自 style.css 的 :root / .dark（改主题色请同步这两处）。
+         色值取自 style.css 的 :root / .dark（改主题色请同步这两处）；
+         唯一例外是**主色**：它引用 `var(--gosslan-primary)`（由 theme-boot.js 按用户偏好
+         写在 html 的内联样式上），这样骨架里的"我"的气泡与各窗口高亮块会跟随主题色，
+         而不是永远默认蓝。详见 --boot-primary 处的注释。
          =================================================================== */
       html,
       body {
@@ -26,7 +29,12 @@
         --boot-chat: #fafafa;
         --boot-line: #dbe3ed;
         --boot-ink: #64748b;
-        --boot-primary: #3b82f6;
+        /* 主色 = **用户选的主题色**：
+           `theme-boot.js` 已把 localStorage 里的主题色写成 `<html>` 上的内联
+           `--gosslan-primary`（它先于本样式表执行；自定义属性在使用时求值，所以顺序无关）。
+           这里引用它、兜底才是默认蓝 —— 写死 #3b82f6 会让"我"的气泡与设置/日志/群任务
+           骨架的高亮块**永远是蓝色**，用户换了主题色后启动瞬间先闪一下蓝（用户 2026-09-21）。 */
+        --boot-primary: var(--gosslan-primary, #3b82f6);
         --boot-ring: rgba(15, 23, 42, 0.08);
       }
       html.dark {

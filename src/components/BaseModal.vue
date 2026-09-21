@@ -47,8 +47,25 @@ useBackLayer(
 </script>
 
 <template>
+  <!-- ⚠️ z 序是本组件最容易改坏的一处：HeadlessUI 的 `Dialog` 会把自己挂到
+       **`<body>` 下的 `#headlessui-portal-root`**（不是留在调用者的子树里，实测确认）。
+       也就是说弹窗的 z-index 是在**文档根层级**上与别的浮层比大小 —— 而移动端的整页下钻页
+       （设置 / 日志 / 收藏 / 链接 / 资料）是 `MobilePageFrame` 的 `fixed inset-0 z-[60]`。
+       原先这里写 `z-50`：弹窗虽然挂进了 DOM，却被 z-[60] 的整页框架**盖在后面**，
+       用户看到的就是"点了没反应、连弹窗都没出来"（用户 2026-09-21，移动端设置 → 重置与数据）。
+       桌面端没有 z-[60] 的整页框架，所以只有移动端复现。
+
+       `z-[65]` 是重新选的位置。应用现有阶梯：
+         整页框架 `z-[60]` < **弹窗 `z-[65]`** < 右键菜单 `z-[70]`
+         < 操作面板 / 图片预览 `z-[80]` < Toast `z-[90]`
+       即：盖住一切页面（含移动端那些整页下钻页），但不挡右键菜单、弹层里的图片预览，
+       也不挡 toast（失败提示必须能盖在弹窗上）。改这个值前先看这条阶梯。
+
+       `font-gosslan` 同理：弹窗挂在 portal root（应用根节点**之外**），拿不到根节点上的字体，
+       用户选的字体对弹窗不生效 —— 带上这个类才与界面其余部分一致。
+       主题色/暗色不受影响（那是 `:root`/`.dark` 上的 CSS 变量，本来就能继承）。 -->
   <TransitionRoot :show="open" as="template">
-    <Dialog as="div" class="relative z-50" @close="emit('close')">
+    <Dialog as="div" class="relative z-[65] font-gosslan" @close="emit('close')">
       <!-- 整页形态不画遮罩：整页面板本身不透明，遮罩只会在滑入的过程里
            给「上一页」糊一层黑（观感成了 modal，而不是页面推进）。卡片形态才需要遮罩。 -->
       <TransitionChild

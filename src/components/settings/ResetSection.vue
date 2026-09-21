@@ -31,9 +31,16 @@ const confirmRestore = ref(false);
 
 async function restoreDefaults() {
   confirmRestore.value = false;
-  await app.resetDefaults();
-  emit("restored");
-  app.toast(t("settings.toast.defaultsRestored"), "success");
+  // ⚠️ 必须自己接住异常：`resetDefaults()` 会打后端（`default_nickname` / `update_profile` /
+  //   `reset_settings`），任一步失败都会 reject。此前没有 catch ⇒ 弹窗先关、Promise 静默 reject，
+  //   用户看到的就是"点了没反应"（与旁边 `doClearAllData` 的口径也不一致，用户 2026-09-21）。
+  try {
+    await app.resetDefaults();
+    emit("restored");
+    app.toast(t("settings.toast.defaultsRestored"), "success");
+  } catch (e) {
+    app.toastError(e, t("settings.toast.restoreFail"));
+  }
 }
 
 /** 清除聊天数据：二次确认走**应用内弹窗**。

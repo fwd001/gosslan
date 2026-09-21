@@ -15,6 +15,7 @@
  */
 import { onMounted, watch } from "vue";
 import TitleBar from "@/components/TitleBar.vue";
+import ToastHud from "@/components/ToastHud.vue";
 import { useDocumentDark } from "@/composables/useDocumentDark";
 import { api } from "@/api";
 import { isMac } from "@/utils/platform";
@@ -45,5 +46,11 @@ watch(dark, applyShape);
   >
     <TitleBar :title="title" :show-maximize="false" :close-to-tray="false" />
     <slot />
+    <!-- Toast 宿主：**辅助窗口的统一反馈通道**。
+         `ToastHud` 是应用内唯一的轻量反馈层（成功/失败都靠它）。此前只在主窗口与群任务
+         窗口挂过，设置窗口**没有** ⇒ 里面的按钮（恢复默认 / 清除聊天数据 / 导出…）点下去
+         弹窗一关就再没有任何可见反馈，看起来就是"点了没反应"（用户 2026-09-21）。
+         放在外壳里而不是各窗口各挂一份：新增辅助窗口时不会再漏（`windowEntries` 守卫钉住）。 -->
+    <ToastHud />
   </div>
 </template>

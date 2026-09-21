@@ -11,12 +11,13 @@ import { test } from "node:test";
 import { createBackStack, type HistoryPort } from "./backStack.ts";
 
 /** 假端口：记录压入的条目，`back()` 立刻回调（真实浏览器是异步 popstate）。 */
-function makePort() {
+function makePort(landing: "pushState" | "hash" | null = "pushState") {
   const entries: unknown[] = [];
   const port: HistoryPort = {
     push(state) {
+      if (landing === null) return null;
       entries.push(state);
-      return true;
+      return landing;
     },
     back() {
       entries.pop();
@@ -96,7 +97,7 @@ test("关闭非栈顶层：只摘登记，不关错层、也不乱退条目", ()
 test("端口压条目失败时：层照常能关，只是没有历史条目（退化为现状）", () => {
   const entries: unknown[] = [];
   const port: HistoryPort = {
-    push: () => false,
+    push: () => null,
     back() {
       entries.pop();
     },
@@ -108,4 +109,35 @@ test("端口压条目失败时：层照常能关，只是没有历史条目（�
   // 这种环境下 popstate 不会由我们触发；直接调用时也应关掉层
   assert.equal(back.onPop(), true);
   assert.deepEqual(closed, ["a"]);
+});
+
+test("hash 落点：它自己引发的那次 pop 必须被吃掉（否则刚压入的层立刻被关）", () => {
+  // 真实机制：`location.hash = …` 会同时触发 hashchange 与 **popstate**（Chromium 实测）。
+  // 退化落点下若不预先吃掉这次 pop，压入即被弹掉 —— 症状是「弹窗一出现就消失」。
+  const { port } = makePort("hash");
+  const back = createBackStack(port);
+  const closed: string[] = [];
+
+  back.push(() => closed.push("dialog"));
+  assert.equal(back.depth(), 1, "层还在");
+  assert.equal(back.pushedCount(), 1);
+
+  // 模拟「设置 hash 引发的那次 popstate」到达
+  assert.equal(back.onPop(), true);
+  assert.deepEqual(closed, [], "这一次 pop 被吃掉，不能关掉刚压入的层");
+  assert.equal(back.depth(), 1, "层依然在");
+
+  // 之后用户真按返回：这一次才该关
+  assert.equal(back.onPop(), true);
+  assert.deepEqual(closed, ["dialog"]);
+  assert.equal(back.depth(), 0);
+});
+
+test("正常落点（pushState）不会多吃一次 pop", () => {
+  const { port } = makePort("pushState");
+  const back = createBackStack(port);
+  const closed: string[] = [];
+  back.push(() => closed.push("a"));
+  assert.equal(back.onPop(), true);
+  assert.deepEqual(closed, ["a"], "第一次 pop 就该关掉层（没有被误吞）");
 });

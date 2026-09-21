@@ -10,13 +10,22 @@
  * - UI 主动关闭栈顶那层 → 把对应历史条目**回退掉**（否则返回键要多按几次才有反应）；
  * - UI 主动关闭**非栈顶**那层（少见）→ 只摘登记、保留条目，避免关错层；
  * - `onPop` 时没有层 → 什么都不做，交给系统（Android 上就是退出应用）；
- * - 端口压条目失败（自定义协议下 pushState 可能抛错）→ 记 0 条，返回键行为退化为现状。
+ * - 端口压条目失败（自定义协议下 pushState 与 hash 都不可用）→ 记 0 条，返回键行为退化为现状；
+ * - 端口用 hash 退化落点压条目 → **吃掉它自己引发的那次 pop**（否则刚压入的层立刻被关掉）。
  */
 
 /** 历史操作端口：让纯逻辑与浏览器 API 解耦。 */
 export interface HistoryPort {
-  /** 压一条同 URL 的历史条目，返回是否成功。 */
-  push(state: unknown): boolean;
+  /**
+   * 压一条同 URL 的历史条目，返回**落点**：
+   * `"pushState"`（正常）/ `"hash"`（自定义协议下 pushState 抛错后的退化方案）/ `null`（失败，不压）。
+   *
+   * ⚠️ 为什么要把"怎么压的"告诉纯逻辑：退化的 `location.hash = …` **本身会触发一次 `popstate`**
+   * （Chromium 实测：设置 hash 会同时触发 `hashchange` 与 `popstate`；两边都要听就会重复处理）。
+   * 不告诉它就等于把"我们刚压的那一层"立刻当成"用户按了返回"关掉 —— 症状正是
+   * 「弹窗一出现就消失 / 点了没反应」，而且**只在 pushState 不可用的平台**上出现。
+   */
+  push(state: unknown): "pushState" | "hash" | null;
   /** 回退一条历史条目（会异步触发 pop）。 */
   back(): void;
 }
@@ -48,7 +57,11 @@ export function createBackStack(port: HistoryPort): BackStack {
     push(close: () => void): () => void {
       const id = ++seq;
       stack.push({ id, close });
-      if (port.push({ gosslanBackLayer: id })) pushed++;
+      const landed = port.push({ gosslanBackLayer: id });
+      if (landed) pushed++;
+      // ⚠️ 退化落点（hash）会**自己**引发一次 popstate，必须提前吃掉那一次 —— 否则它会把
+      //    刚压入的这层立刻关掉（弹窗一出现就消失）。见 `HistoryPort.push` 的说明。
+      if (landed === "hash") ignoreNextPop = true;
       let released = false;
       return () => {
         if (released) return; // 幂等：重复释放不能多退历史条目
