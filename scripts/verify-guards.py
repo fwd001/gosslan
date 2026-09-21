@@ -1009,6 +1009,27 @@ CASES: list[Case] = [
         tags=["frontend", "lifecycle"],
     ),
     Case(
+        name="预览 objectURL 的消费者不得就地 revoke（⑭守卫必须真能抓回来）",
+        why="PR #24 把 revoke 从四个消费组件里删掉，并在 `designGuards.test.ts` ⑭ 钉住：\n"
+        "     预览 URL 是缓存里同 cid/msg_id **共用的同一个字符串**，任何一处卸载 revoke 都会\n"
+        "     把别处的图一起打裂，而且缓存里那个 URL 已死仍被命中 ⇒ 连退避重试都救不回来。\n"
+        "     那条测试本身是他写的、当场能红，但它没进非空转用例集 —— 按本仓库的规矩\n"
+        "     （v4.22.31 那条假证明之后）新守卫必须证明「改坏一定 FAIL」。这里补上：\n"
+        "     注入 = 把历史上那行原样放回 TodoImageThumb 的卸载钩子，必须被 ⑭ 抓住。",
+        file=ROOT / "src" / "components" / "TodoImageThumb.vue",
+        injections=[(
+            "onBeforeUnmount(cancelRetry);",
+            "onBeforeUnmount(() => {\n"
+            "  cancelRetry();\n"
+            "  if (url.value) URL.revokeObjectURL(url.value);\n"
+            "});",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="里出现了 revokeObjectURL",
+        tags=["frontend", "lifecycle", "image"],
+    ),
+    Case(
         name="焦点可见（outline-none 必须有自己的焦点指示）",
         why="全局焦点环写在 `:where()` 里（特异性 0），会被 `.outline-none`（特异性 0,1,0）"
         "静默覆盖 —— 7 处输入框（含最高频的消息输入框）因此完全没有焦点指示，"

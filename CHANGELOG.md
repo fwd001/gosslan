@@ -10,6 +10,27 @@
 
 ## [Unreleased]
 
+## [4.24.4] - 2026-09-21
+
+### Tests (把 PR #24 的 ⑭ 静态守卫登记进非空转用例集；顺带撤回一条我自己报错的审查结论)
+
+**登记**：`designGuards.test.ts` ⑭「预览 objectURL 的消费者不得 revoke」（PR #24 加的）
+本身能红，但没进 `verify-guards.py` 的用例集 —— 而本仓库的规矩是**新源码守卫必须证明
+「改坏一定 FAIL」**（v4.22.31 那条"用注入 `cmd:cargo` 自证"的假证明之后立下的）。
+现在补上：注入 = 把历史上那行原样放回 `TodoImageThumb.vue` 的卸载钩子
+（`if (url.value) URL.revokeObjectURL(url.value);`），必须被 ⑭ 抓住。
+
+- 实测 `python3 scripts/verify-guards.py --only lifecycle` ⇒ **3/3 改坏 FAIL、恢复 PASS**
+  （⑭ 这条 + 上一版的 VirtualList 卸载出口 + 既有的写出记账回收守卫）。
+  hint 用的是守卫自己那句原文（`里出现了 revokeObjectURL`），不是"任何一条红"。
+- 顺手记一条**关于审查自身的教训**：我第一次报"PR #24 用 `let _ =` 静默吞掉 `record_local`
+  失败"是**判错了**。核对后：`let _ = record_local(...)` 是本仓库既有约定，共 4 处同形，
+  其中 3 处早于该 PR（`network/transport.rs:4899`、`commands/group_announcements.rs:235/278`）。
+  他那一行与约定一致 ⇒ 不改。**只改一处会让同一件事出现两种口径**，正是本仓库最贵的那类缺陷；
+  要动就得 4 处一起动，而那要碰文件传输主链路 ⇒ 按规矩先 RCA、单独立项（已进后续计划）。
+
+Version-Bump: patch
+
 ## [4.24.3] - 2026-09-21
 
 ### Fixed (PR #24 审查发现：滚动落定的轮询定时器没有卸载出口，组件死了它还在跑)
