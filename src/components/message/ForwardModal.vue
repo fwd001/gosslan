@@ -14,10 +14,17 @@ const props = defineProps<{
   /** 预览片段（截断后）。 */
   snippet: string;
   /**
-   * 待转发的条数。`> 1` 即"多选批量转发"：
-   * 会话列表点击只**选中目标**，底部再出现「逐条转发 / 合并转发」两个按钮（微信同款）。
+   * 待转发的条数。`> 1` 即"多选批量转发"。
+   *
+   * 批量时**转发方式由调用方预先定好**（见下面的 `mode`）：多选操作条上直接是
+   * 「逐条转发 / 合并转发」两个按钮（用户 2026-09-21：「不要先转发再选合并转发还是逐条转发」）。
    */
   count?: number;
+  /**
+   * 调用方已经定好的转发方式。给了它 ⇒ 点会话**直接转发**（与单条消息同一条路径，少一步）；
+   * 不给 ⇒ 沿用"先选会话、再在底部选方式"的老流程（保留给其它/将来的批量入口）。
+   */
+  mode?: "per-message" | "merged";
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -26,6 +33,8 @@ const emit = defineEmits<{
 
 /** 是否多选批量转发。 */
 const multi = computed(() => (props.count ?? 0) > 1);
+/** 批量、且调用方**没**给方式 ⇒ 才需要"先选会话再选方式"（见 `mode`）。 */
+const needsModeChoice = computed(() => multi.value && !props.mode);
 /** 多选时选中的目标会话（未选中时底部两个按钮不可点）。 */
 const picked = ref<string | null>(null);
 // 每次打开都清空选择：上一轮的选中态留到下一轮会让"点了转发直接发出去"。
@@ -37,8 +46,9 @@ watch(
 );
 
 function onPickConversation(id: string) {
-  if (multi.value) picked.value = id;
-  else emit("pick", id, "per-message");
+  // 方式已定（或本来就是单条）⇒ 点会话直接转发，少一步"再选方式"
+  if (needsModeChoice.value) picked.value = id;
+  else emit("pick", id, props.mode ?? "per-message");
 }
 
 const chat = useChatStore();
@@ -138,9 +148,10 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
         <div v-if="filtered.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">{{ t("msg.noMatch") }}</div>
       </div>
 
-      <!-- 多选：先选会话，再选转发方式（微信同款：逐条转发 / 合并转发）。
-           单条消息不出现这两个按钮 —— 点会话就直接转发，少一步。 -->
-      <div v-if="multi" class="flex justify-end gap-2">
+      <!-- 批量转发且**调用方没给方式**时的兜底：先选会话，再选转发方式（微信同款）。
+           正常入口（多选操作条）已经在条上把方式选好了 ⇒ 这里不出现，点会话直接转发。
+           单条消息同理不出现 —— 点会话就直接转发，少一步。 -->
+      <div v-if="needsModeChoice" class="flex justify-end gap-2">
         <button
           class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
           :disabled="!picked"

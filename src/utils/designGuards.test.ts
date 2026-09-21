@@ -1020,3 +1020,33 @@ test("可选中导航项：图标必须有 :fill 的选中绑定（漏一个就�
     `NavRail 里出现了清单外的可选中 key：${unknown.join(", ")} —— 请同步上面的 selectable 清单`,
   );
 });
+
+// ---------------- ⑭ 预览 objectURL 归缓存所有：消费者不得 revoke ----------------
+//
+// 真实缺陷（用户 2026-09-21）：「任务详情里的图片大概率加载失败」。
+// 根因不在"读不到字节"，而在**生命周期**：`loadContentPreview` 把 objectURL 缓存在模块级
+// Map 里，同一个 cid 的 URL 是**大家共用的同一个字符串**（一张待办描述图会同时存在于
+// 聊天时间线的任务卡、看板表单、任务详情）。`TodoImageThumb` 当时在卸载/换图时
+// `revokeObjectURL`，于是"关掉一次详情弹窗""虚拟列表回收一行"都会把所有其它视图的图
+// 一起打回裂图；而缓存里那个 URL 已经死了却仍被命中 ⇒ 退避重试也救不回来（只能重启）。
+// 判据：拿预览缓存 URL 的消费组件**一律不许出现 revokeObjectURL**（自己造 URL 的组件
+// 如 MergeCardModal / ProfileSection 不在此列，它们的 URL 没进任何共享缓存）。
+test("预览缓存 URL 的消费者不得 revokeObjectURL（会把同一张图的其它视图一起打裂）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const consumers = [
+    ["components", "TodoImageThumb.vue"],
+    ["components", "message", "MessageImageBubble.vue"],
+    ["components", "message", "ImageLightbox.vue"],
+    ["components", "FavoritePanel.vue"],
+  ];
+  for (const rel of consumers) {
+    const file = join(srcDir, ...rel);
+    const src = readFileSync(file, "utf8");
+    // 只认**调用**（`URL.revokeObjectURL(...)`）：注释里提到这个名字是允许的（本文件的说明就是要留痕）
+    assert.ok(
+      !/URL\.revokeObjectURL\s*\(/.test(src),
+      `${rel.join("/")} 里出现了 revokeObjectURL：预览 URL 归 filePreview/favoritePreview 的缓存所有，` +
+        `消费者 revoke 会连带杀掉同一 cid/msg_id 在别处的图，且缓存会一直返回那个死 URL`,
+    );
+  }
+});

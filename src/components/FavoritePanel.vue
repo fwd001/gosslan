@@ -37,16 +37,28 @@ import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, loadFavoritePreview } from "@/utils/favoritePreview";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
-import { isKnownKind, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
+import { isForwardableKind, isKnownKind, kindClass, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
+import { cardCopyText } from "@/utils/cardText";
+import {
+  TODO_STATUS_LABEL_KEY,
+  TODO_STATUS_PILL,
+  isTodoStatus,
+  type TodoImage,
+  type TodoStatus,
+} from "@/utils/todos";
+import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
   AlignLeft,
+  BarChart3,
   Code,
   Copy,
   CornerUpLeft,
   Download,
   FolderOpen,
   Image as ImageIcon,
+  ListTodo,
   Loader2,
+  Megaphone,
   MoreHorizontal,
   ScrollText,
   Share2,
@@ -84,13 +96,14 @@ useBackLayer(
   () => emit("close"),
 );
 
-type FilterKey = "all" | "text" | "image" | "file";
-/** 类型筛选（与 PC 微信一致：全部 / 文本 / 图片 / 文件）。 */
+type FilterKey = "all" | "text" | "image" | "file" | "card";
+/** 类型筛选（与 PC 微信一致：全部 / 文本 / 图片 / 文件；卡片类是我们自己的：待办/投票/公告）。 */
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "favorite.filterAll" },
   { key: "text", label: "favorite.filterText" },
   { key: "image", label: "favorite.filterImage" },
   { key: "file", label: "favorite.filterFile" },
+  { key: "card", label: "favorite.filterCard" },
 ];
 
 const loading = ref(false);
@@ -138,7 +151,23 @@ function searchText(f: FavoriteEntry): string {
     if (!p) return mergeSummary(f.content);
     return [p.title, ...p.items.map((i) => `${i.sender} ${mergeItemLine(i)}`)].join(" ");
   }
+  // 卡片类（待办/投票/公告）：按用户 2026-09-21 的"无害改法"放进了收藏，搜索也要覆盖
+  const card = cardText(f);
+  if (card !== null) return card;
   return metaOf(f)?.name ?? "";
+}
+
+/**
+ * 卡片类收藏（待办/投票/群公告）的**标题行**（列表行与详情标题共用）。
+ * 完整文字形态走 `cardCopyText`（与消息右键的「复制」同一份实现，见 utils/cardText）。
+ */
+function cardText(f: FavoriteEntry): string | null {
+  const full = cardCopyText(f.kind, f.content);
+  if (!full) return null;
+  // 去掉「群任务：」这类前缀与换行，给列表一行干净的标题
+  const first = full.split("\n")[0] ?? "";
+  const cut = first.indexOf("：");
+  return (cut >= 0 ? first.slice(cut + 1) : first).trim() || t("favorite.untitled");
 }
 
 /**
@@ -153,6 +182,8 @@ const filtered = computed(() => {
     if (filterKind.value === "all") return true;
     // 合并转发按"文本"归类：它的内容就是一段文字记录（筛选里没有单独的"聊天记录"档）
     if (filterKind.value === "text") return f.kind === "text" || f.kind === "code" || f.kind === "merge";
+    // 卡片类：待办/投票/群公告（与 forwardable/favoritable 的白名单同一判据）
+    if (filterKind.value === "card") return kindClass(f.kind) === "card";
     return f.kind === filterKind.value;
   };
   return items.value.filter((f) => {
@@ -187,6 +218,9 @@ function rowTitle(f: FavoriteEntry): string {
   // 未知 kind（对端 Gosslan 比本机新）的载荷是 JSON：既不能原样显示，也不能落到
   // `displayName()` 的兜底 —— 那等于给一条不认识的东西编一个"文件"身份。
   if (!isKnownKind(f.kind)) return UNSUPPORTED_KIND_LABEL;
+  // 卡片类（待办/投票/公告）：用户 2026-09-21 的"无害改法"放进收藏 ⇒ 这里要能正常显示
+  const card = cardText(f);
+  if (card !== null) return card.slice(0, 40) || t("favorite.untitled");
   if (f.kind === "text" || f.kind === "code") {
     const one = f.content.replace(/\s+/g, " ").trim();
     return one.slice(0, 40) || t("favorite.untitled");
@@ -195,10 +229,63 @@ function rowTitle(f: FavoriteEntry): string {
   return displayName(f);
 }
 
+/**
+ * 详情面板里那条收藏的"卡片文字形态"（待办=标题、投票=问题、公告=文本）；非卡片类为空。
+ * 与列表行共用同一份 `cardText`，避免两处漂移。
+ */
+const activeCardText = computed(() => (active.value ? cardText(active.value) : null));
+
+/** 卡片收藏的完整载荷（待办/投票/公告）；非卡片类为空对象。 */
+const activeCardPayload = computed<Record<string, unknown>>(() => {
+  const f = active.value;
+  if (!f || kindClass(f.kind) !== "card") return {};
+  try {
+    const p = JSON.parse(f.content) as unknown;
+    return p && typeof p === "object" ? (p as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+});
+
+/**
+ * 卡片收藏里带的图片（目前只有待办载荷有 `images`，每项是 `TodoImage`，字节按 sha256/cid 取）。
+ * ⚠️ 收藏**详情**此前只渲染了卡片的文字 ⇒ 群任务的图片不显示（用户 2026-09-21：
+ * 「收藏的详情里群任务图片不显示，你要做就做完整」）。这里复用 `TodoImageThumb`
+ * —— 它自带 cid 读取 + 退避重试，与聊天里任务卡的表现完全一致。
+ */
+const activeCardImages = computed<TodoImage[]>(() => {
+  const imgs = activeCardPayload.value.images;
+  if (!Array.isArray(imgs)) return [];
+  return imgs.filter(
+    (x): x is TodoImage => !!x && typeof x === "object" && typeof (x as TodoImage).sha256 === "string",
+  );
+});
+
+/** 待办的描述（没有就空串）；投票用不到。 */
+const activeCardDesc = computed(() => {
+  const d = activeCardPayload.value.description;
+  return typeof d === "string" ? d.trim() : "";
+});
+
+/** 待办的状态胶囊（没有 status 字段时为空）。 */
+const activeCardStatus = computed(() =>
+  active.value && active.value.kind === "todo" && isTodoStatus(activeCardPayload.value.status)
+    ? (activeCardPayload.value.status as TodoStatus)
+    : null,
+);
+
+/** 投票的选项（只读展示）。 */
+const activePollOptions = computed<string[]>(() => {
+  const opts = activeCardPayload.value.options;
+  return Array.isArray(opts) ? opts.filter((x): x is string => typeof x === "string") : [];
+});
+
 /** 列表行的摘要（标题之外再给一行，便于在列表里分辨）。 */
 function rowSubtitle(f: FavoriteEntry): string {
   // 与 rowTitle 同一判据：不认识就不给任何"看起来像内容"的东西（载荷是 JSON）
   if (!isKnownKind(f.kind)) return "";
+  const card = cardText(f);
+  if (card !== null) return card.length > 40 ? `…${card.slice(40, 100)}` : "";
   if (f.kind === "text" || f.kind === "code") {
     const one = f.content.replace(/\s+/g, " ").trim();
     return one.length > 40 ? `…${one.slice(40, 100)}` : "";
@@ -209,6 +296,9 @@ function rowSubtitle(f: FavoriteEntry): string {
 }
 
 function kindIcon(f: FavoriteEntry) {
+  if (f.kind === "todo") return ListTodo;
+  if (f.kind === "poll") return BarChart3;
+  if (f.kind === "announcement") return Megaphone;
   if (f.kind === "merge") return ScrollText;
   if (f.kind === "image" || f.kind === "file") return FILE_KIND_ICONS[fileKindOf(displayName(f))];
   return f.kind === "code" ? Code : AlignLeft;
@@ -280,6 +370,17 @@ async function copyItem(f: FavoriteEntry) {
       const text = p
         ? [p.title, ...p.items.map((i) => `${i.sender}：${mergeItemLine(i)}`)].join("\n")
         : mergeSummary(f.content);
+      const ok = await copyContent("favorite", text);
+      app.toast(t(ok ? "common.copied" : "favorite.copyFail"), ok ? "success" : "error");
+      return;
+    }
+    if (kindClass(f.kind) === "card") {
+      // 卡片收藏的"复制"= 它的完整文字形态（与消息右键的「复制」同一份实现）
+      const text = cardCopyText(f.kind, f.content);
+      if (!text) {
+        app.toast(t("favorite.copyFail"), "error");
+        return;
+      }
       const ok = await copyContent("favorite", text);
       app.toast(t(ok ? "common.copied" : "favorite.copyFail"), ok ? "success" : "error");
       return;
@@ -613,6 +714,59 @@ async function confirmDelete() {
               </div>
             </div>
 
+            <!-- 卡片类（待办/投票/群公告）：收藏**详情**按卡片自己的文字形态渲染。
+                 ⚠️ 必须排在下面"文件"的 `v-else` 之前 —— 否则卡片会落到文件分支，
+                 把 JSON 载荷当文件名/后缀显示（用户 2026-09-21：「收藏的卡片收藏详情里不显示」）。 -->
+            <div
+              v-else-if="activeCardText !== null"
+              class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3"
+            >
+              <div class="flex items-start gap-2">
+                <component
+                  :is="kindIcon(active)"
+                  class="mt-0.5 h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]"
+                  aria-hidden="true"
+                />
+                <div class="min-w-0 flex-1">
+                  <div class="break-words whitespace-pre-wrap text-[13px] leading-relaxed text-[var(--gosslan-text)]">
+                    {{ activeCardText }}
+                  </div>
+                  <!-- 待办的描述（卡片信息补全：之前只渲染了标题） -->
+                  <p
+                    v-if="activeCardDesc"
+                    class="mt-1 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-[var(--gosslan-text-2)]"
+                  >
+                    {{ activeCardDesc }}
+                  </p>
+                  <!-- 投票选项（只读） -->
+                  <ul v-if="activePollOptions.length" class="mt-1.5 space-y-0.5">
+                    <li
+                      v-for="(o, i) in activePollOptions"
+                      :key="i"
+                      class="break-words text-[12px] leading-relaxed text-[var(--gosslan-text-2)]"
+                    >
+                      {{ o }}
+                    </li>
+                  </ul>
+                  <!-- 群任务图片：与聊天里任务卡**同一组件**（按 cid 取字节 + 退避重试）。
+                       用户 2026-09-21：「收藏的详情里群任务图片不显示，你要做就做完整」。 -->
+                  <div v-if="activeCardImages.length" class="mt-2 flex flex-wrap gap-1.5">
+                    <TodoImageThumb v-for="img in activeCardImages" :key="img.sha256" :image="img" />
+                  </div>
+                </div>
+              </div>
+              <div class="mt-1.5 flex items-center gap-2 text-[11px] text-[var(--gosslan-text-2)]">
+                <span
+                  v-if="activeCardStatus"
+                  class="inline-flex h-5 items-center justify-center rounded-full px-2 font-medium leading-none"
+                  :class="TODO_STATUS_PILL[activeCardStatus]"
+                >
+                  {{ t(TODO_STATUS_LABEL_KEY[activeCardStatus]) }}
+                </span>
+                <span v-else>{{ t(`favorite.cardKind.${active.kind}`) }}</span>
+              </div>
+            </div>
+
             <div v-else class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3">
               <div class="truncate text-[13px] font-medium text-[var(--gosslan-text)]" :title="displayName(active)">
                 {{ displayName(active) }}
@@ -636,6 +790,7 @@ async function confirmDelete() {
               <span class="whitespace-nowrap">{{ t("favorite.copy") }}</span>
             </button>
             <button
+              v-if="isForwardableKind(active.kind)"
               class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="startForward(active)"
             >

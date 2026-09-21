@@ -25,8 +25,9 @@ import { MAX_MERGE_ITEMS, buildMergePayload } from "@/utils/mergeCard";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
 import { foldPinned, isPinned } from "@/utils/pins";
 import { kindClass } from "@/utils/messageKinds";
+import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
-import { ArrowDown, Bluetooth, X, Pin, Megaphone, Trash2, Share2, Star } from "lucide-vue-next";
+import { ArrowDown, Bluetooth, Layers, X, Pin, Megaphone, Trash2, Share2, Star } from "lucide-vue-next";
 import type { LinkState, MessageRecord, MsgKind } from "@/types";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
@@ -525,14 +526,38 @@ const forward = ref<{ kind: MsgKind; content: string; snippet: string; filePath?
 /** 点击引用块定位原消息：滚动 + 短暂高亮 */
 const highlightId = ref<string | number | null>(null);
 let highlightTimer = 0;
-/** `id` 用 String 比较：msg_id 是字符串，但历史数据/乐观记录里可能是数字 id，
- *  宽松比较能同时覆盖"引用定位"与"搜索定位"两条来源。 */
-function locateMessage(id: string | number) {
+/**
+ * `id` 用 String 比较：msg_id 是字符串，但历史数据/乐观记录里可能是数字 id，
+ * 宽松比较能同时覆盖"引用定位"与"搜索定位"两条来源。
+ *
+ * ⚠️ 目标**不在已加载范围**时要先向上翻历史（与搜索定位同一口径，见下面的 `locateRequest`）：
+ * 引用的往往是几十上百条之前的消息，而列表只加载了最近一页 ⇒ 直接找会找不到、只弹一句
+ * "原消息在更早的历史里"，用户看到的就是"定位不对/点了没反应"（用户 2026-09-21）。
+ */
+async function locateMessage(id: string | number) {
   const target = String(id);
-  const idx = messages.value.findIndex((m) => String(m.msg_id ?? m.id) === target);
+  const find = () => messages.value.findIndex((m) => String(m.msg_id ?? m.id) === target);
+  let idx = find();
+  let guard = 0;
+  let loaded = false;
+  while (idx < 0 && guard < 20) {
+    guard += 1;
+    const before = messages.value.length;
+    await chat.loadMoreMessages(chat.activeConv ?? "");
+    if (messages.value.length === before) break; // 没有更早的历史了
+    loaded = true;
+    idx = find();
+  }
   if (idx < 0) {
     app.toast(t("chat.toast.originalEarlier"), "info");
     return;
+  }
+  // ⚠️ 刚翻过页 ⇒ **必须等历史渲染进列表再滚**：`loadMoreMessages` 返回时 DOM 还是旧布局，
+  //    此刻滚过去会被旧 scrollHeight 夹住 ⇒ 落点偏（用户 2026-09-21：「定位还是错的」，
+  //    引用的往往是几十条之前的消息，走的正是这条路径）。与搜索定位同一口径：两次 nextTick。
+  if (loaded) {
+    await nextTick();
+    await nextTick();
   }
   listRef.value?.scrollToIndex(idx, "top");
   listRef.value?.setPinned(false);
@@ -622,6 +647,11 @@ const selectedIds = ref<Set<string>>(new Set());
 const selectedCount = computed(() => selectedIds.value.size);
 /** 多选转发：已选内容先存下来，选完会话再决定逐条还是合并。 */
 const forwardSelection = ref<MessageRecord[] | null>(null);
+/**
+ * 多选转发时**已经在操作条上定好**的转发方式（`null` = 还没定，走弹窗里的老流程）。
+ * 与 `forwardSelection` 同生命周期：关掉弹窗/转发完就一起清掉。
+ */
+const forwardMode = ref<"per-message" | "merged" | null>(null);
 /** 合并转发详情弹窗的载荷（null = 未打开）。 */
 /** 打开的合并转发卡片详情：content 是快照载荷；senderId 是**卡片发送者**，
  *  卡片里的图片按需拉取（ADR-0019 Phase 3）就以他为对端 —— 多数情况他就是字节持有者
@@ -642,9 +672,29 @@ function exitMultiSelect() {
   multiSelect.value = false;
   selectedIds.value = new Set();
   forwardSelection.value = null;
+  forwardMode.value = null;
   confirmBatchDelete.value = false;
   app.setMultiSelectActive(false);
 }
+
+/**
+ * ESC 退出多选（用户 2026-09-21：「我按 ESC 没取消选中啊」——多选是一键进入的，就该能一键退出）。
+ *
+ * 挂 window 而不是容器：多选态下焦点可能在选中覆盖层按钮、气泡里的链接或输入框里，
+ * 容器收不到这个键。监听常驻、只在多选态动作，所以不影响其它页面。
+ *
+ * 三层"不抢"的判据：① 已经有人处理过（`defaultPrevented`，如引用菜单）；
+ * ② 别的浮层正开着（右键菜单/表情面板走 `popupRegistry`，转发与删除确认是本组件的两个弹窗）
+ * —— 那一次 ESC 归它们，再按一次才退多选；③ 本来就 0 条选中也照样退（"退出"是纯 UI 动作）。
+ */
+function onGlobalKey(e: KeyboardEvent) {
+  if (e.key !== "Escape" || e.defaultPrevented || !multiSelect.value) return;
+  if (activePopupKey() !== null || forward.value || confirmBatchDelete.value) return;
+  exitMultiSelect();
+}
+
+onMounted(() => window.addEventListener("keydown", onGlobalKey));
+onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKey));
 
 function toggleSelect(msgId: string) {
   const next = new Set(selectedIds.value);
@@ -696,8 +746,16 @@ async function forwardOne(convId: string, m: MessageRecord) {
   await chat.send(convId, m.content, m.kind);
 }
 
-function startBatchForward() {
+/**
+ * 多选转发：**转发方式先选**（操作条上就是「逐条转发 / 合并转发」两个按钮），
+ * 进弹窗只剩"选会话"这一步。
+ *
+ * 用户 2026-09-21：「桌面版的合并转发和逐条转发放在外面，不要先转发再选合并转发还是逐条转发」
+ * —— 旧流程是 [转发] → 弹窗 → 选会话 → 再选方式，四步；现在方式在条上直选，弹窗直接落定。
+ */
+function startBatchForward(mode: "per-message" | "merged") {
   if (!selectedCount.value) return;
+  forwardMode.value = mode;
   forwardSelection.value = selectedMessages.value;
 }
 
@@ -708,6 +766,7 @@ function startBatchForward() {
 async function doBatchForward(convId: string, mode: "per-message" | "merged") {
   const items = forwardSelection.value ?? [];
   forwardSelection.value = null;
+  forwardMode.value = null;
   if (!items.length) return;
   if (mode === "merged" && items.length > MAX_MERGE_ITEMS) {
     app.toast(t("multi.tooMany", { n: MAX_MERGE_ITEMS }), "error");
@@ -1110,10 +1169,22 @@ function onLoadMore() {
           <button
             class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
             :disabled="!selectedCount"
-            @click="startBatchForward"
+            :title="t('multi.forwardPerMessage')"
+            :aria-label="t('multi.forwardPerMessage')"
+            @click="startBatchForward('per-message')"
           >
             <Share2 class="h-4 w-4" aria-hidden="true" />
-            {{ t("multi.forward") }}
+            <span class="hidden sm:inline">{{ t("multi.forwardPerMessage") }}</span>
+          </button>
+          <button
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            :disabled="!selectedCount"
+            :title="t('multi.forwardMerged')"
+            :aria-label="t('multi.forwardMerged')"
+            @click="startBatchForward('merged')"
+          >
+            <Layers class="h-4 w-4" aria-hidden="true" />
+            <span class="hidden sm:inline">{{ t("multi.forwardMerged") }}</span>
           </button>
           <button
             class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
@@ -1216,7 +1287,8 @@ function onLoadMore() {
       :kind="forward?.kind ?? 'text'"
       :snippet="forward?.snippet ?? ''"
       :count="forwardSelection?.length ?? 0"
-      @close="forward = null; forwardSelection = null"
+      :mode="forwardMode ?? undefined"
+      @close="forward = null; forwardSelection = null; forwardMode = null"
       @pick="onForwardPick"
     />
 

@@ -65,16 +65,29 @@ const offsets = computed(() => {
 });
 const totalHeight = computed(() => offsets.value[offsets.value.length - 1] ?? 0);
 
-/** 记录某槽位实测高度，图片加载或预览切换后由 ResizeObserver 及时更新。 */
+/**
+ * 记录某槽位实测高度，图片加载或预览切换后由 ResizeObserver 及时更新。
+ *
+ * ⚠️ **保留小数、不取整**（用户 2026-09-21 连报几轮的「两条选中消息之间一条白线」的根因）：
+ * 定位用的 `top` 是按这些高度累加出来的，而条目盒子的高度是**内容自然高**（可以是小数，
+ * 例如代码气泡的行高就不是整数 ⇒ 256.5px）。先前这里 `Math.round` 成整数，于是
+ * `下一格的 top` 比 `本条盒子的下边缘` 多出 0.5px，相邻两条之间就留下一条 0.5px 的缝。
+ * 平时整列都是白底、看不出来；一旦两条都铺了选中底色（多选 / 引用定位），那条缝就是白线。
+ *
+ * 真浏览器实测（VirtualList + MessageItem，代码气泡）：取整时缝 = 0.500px，
+ * 改成小数后缝 = 0.000px。若这里再改回 `Math.round`，白线会立刻回来 —— 别改。
+ * 抖动由下面的 `> 1` 阈值兜住（亚像素级变化不会触发重排），所以小数不会带来额外重渲染。
+ */
 function commitHeight(i: number, measured: number) {
   if (i < 0 || i >= props.items.length) return;
-  // 快速滚动时部分节点可能处于未布局/隐藏状态，offsetHeight 会短暂为 0 或异常值；
-  // 一旦把 0 写进 heightOverride，后续消息的 top 会全部塌缩到顶部，表现为消息堆叠。
+  // 快速滚动时部分节点可能处于未布局/隐藏状态，测量值会短暂为 0 或异常值；
+  // 一旦把 0 写进去，后续消息的 top 会全部塌缩到顶部，表现为消息堆叠。
   if (!Number.isFinite(measured) || measured <= 0) return;
   const it = props.items[i];
   const k = keyOf(it);
   const est = props.estimateHeight(it, i);
-  const h = Math.round(measured);
+  // 只抹掉浮点噪声（0.01px 以内），保留真实的小数高度
+  const h = Math.round(measured * 100) / 100;
   if (Math.abs((heightOverride.get(k) ?? est) - h) > 1) {
     heightOverride.set(k, h);
     heightVersion.value += 1;
@@ -118,9 +131,14 @@ function observeRenderedRows(nodes: NodeListOf<HTMLElement>) {
       const idx = Number(node.getAttribute("data-vlist-index"));
       const key = node.getAttribute("data-vlist-key");
       if (Number.isInteger(idx) && key === String(keyOf(props.items[idx]))) {
-        commitHeight(idx, node.offsetHeight);
+        // 取**小数**高度（`offsetHeight` 是四舍五入过的整数，会重新引入 0.5px 的缝，见 commitHeight）
+        const box = entry.borderBoxSize?.[0];
+        commitHeight(idx, box ? box.blockSize : node.getBoundingClientRect().height);
       }
     }
+    // 实测追上来之后，把挂起的「跳到指定消息」按最新 offsets 再落定一次
+    //（用户 2026-09-21：「第一次总是定位不对，第二次就是对的」）
+    if (pendingJump) applyJump();
   });
   nodes.forEach((node) => rowResizeObserver?.observe(node));
 }
@@ -134,9 +152,12 @@ function scheduleRemeasure() {
     const nodes = el.querySelectorAll<HTMLElement>("[data-vlist-index]");
     nodes.forEach((node) => {
       const idx = Number(node.getAttribute("data-vlist-index"));
-      commitHeight(idx, node.offsetHeight);
+      // 同上：要小数高度（否则相邻条目之间会留下半像素的白缝）
+      commitHeight(idx, node.getBoundingClientRect().height);
     });
     observeRenderedRows(nodes);
+    // 实测追上来之后，把挂起的「跳到指定消息」再落定一次（同 RO 回调，见上）
+    if (pendingJump) applyJump();
   });
 }
 
@@ -232,6 +253,17 @@ function onScroll() {
   });
 }
 
+/**
+ * 真实用户输入 ⇒ 放弃"待落定"。
+ *
+ * ⚠️ 判据必须是**输入事件**，不能是 scroll 事件：prepend 历史时浏览器原生滚动锚定
+ * （overflow-anchor）也会自动改 scrollTop 并触发 scroll ⇒ 用 scroll 判断会把这次
+ * 自动位移当成"用户滚了"，于是**刚跳过去就被放弃**、再也没人校正（实测差 353px）。
+ */
+function onUserInput() {
+  if (pendingJump) pendingJump = null;
+}
+
 function onResize() {
   if (container.value) viewport.value = container.value.clientHeight;
   // 尺寸变化同样瞬态影响 nearBottom，纳入静默
@@ -252,8 +284,67 @@ function scrollToBottom() {
   setScrollTop(el.scrollHeight);
 }
 
-/** 跳到指定消息。align=top：该消息出现在视口顶部（未读定位）；
- *  align=bottom：该消息出现在视口底部（向上引用跳转）。任意方向直接定位，无动画抖动。 */
+/**
+ * 「跳到指定消息」的**待落定**状态（用户 2026-09-21：「第一次总是定位不对，第二次就是对的」，
+ * 以及后续几轮"滚动还是错的"）。
+ *
+ * 两个坑叠在一起：
+ * ① 滚动位置按 `offsets` 算，而 offsets = 目标**之前所有条目**高度累加，那些条目跳转前
+ *    大多没渲染过（用估算值）⇒ 误差沿路径累加，落点必偏。⇒ 落定改成**以真实 DOM 位置为准**。
+ * ② 落定过程中**条目下标会整体位移**：跳过去之后 `scrollTop` 很小 ⇒ 触发 `loadMore` ⇒
+ *    更早的历史被 prepend 进来，同一个下标指向的已经是另一条消息了。⇒ 所以待落定记的是
+ *    **消息 key（msg_id）而不是下标**，每次校正都按 key 重新找节点；找不到就等（还没渲染）。
+ */
+let pendingJump: { key: string; align: "top" | "bottom"; tries: number; until: number } | null = null;
+let jumpTimer = 0;
+
+/**
+ * 落定窗口内**轮询校正**（100ms 一次，最多 1.5s / 10 次）。
+ *
+ * 为什么不能只靠 ResizeObserver 触发：跳转会让列表滚到接近顶部 ⇒ 触发一次 `loadMore` ⇒
+ * 更早的历史 prepend 进来 ⇒ 目标条目**整体下移**（实测能差 353px）。而目标那个 DOM 节点是
+ * 被复用/移动的，**尺寸没变 ⇒ ResizeObserver 不会为它触发** ⇒ 没人再校它，位置就永久偏了
+ * （用户 2026-09-21：「滚动还是错的」）。轮询与"谁触发了什么"无关，窗口内一定收敛。
+ * 用户自己滚（`onScroll` 里非程序化滚动）或窗口结束即停。
+ */
+function pollJump() {
+  if (jumpTimer) return;
+  jumpTimer = window.setInterval(() => {
+    if (!pendingJump) {
+      window.clearInterval(jumpTimer);
+      jumpTimer = 0;
+      return;
+    }
+    applyJump();
+  }, 100);
+}
+
+function applyJump() {
+  const j = pendingJump;
+  const el = container.value;
+  if (!j || !el) return;
+  // 落定窗口 1.5s：期间任何一次实测/重排（图片加载、历史 prepend 后的锚定、新消息）
+  // 都会再校一次，保证目标**最终仍是贴顶的**；窗口结束或用户自己滚了才放手。
+  if (Date.now() > j.until) {
+    pendingJump = null;
+    return;
+  }
+  // ⚠️ 按 **key** 找节点（不是下标）：prepend 历史/新消息都会让下标整体位移
+  const node = el.querySelector<HTMLElement>(`[data-vlist-key="${CSS.escape(j.key)}"]`);
+  if (!node) return; // 目标还没渲染出来（等下一次实测/渲染后再校）
+  const cRect = el.getBoundingClientRect();
+  const nRect = node.getBoundingClientRect();
+  // 期望：目标顶边距视口顶 8px；底对齐时距视口底 8px
+  const desiredTop =
+    j.align === "top" ? cRect.top + 8 : cRect.top + el.clientHeight - nRect.height - 8;
+  const delta = nRect.top - desiredTop;
+  if (Math.abs(delta) < 0.5) return; // 已经落准，继续留在窗口里盯着（可能又被重排挤偏）
+  setScrollTop(Math.max(0, el.scrollTop + delta));
+  computeScrollState();
+  j.tries += 1;
+  if (j.tries > 10) pendingJump = null;
+}
+
 function scrollToIndex(index: number, align: "top" | "bottom" = "top") {
   const el = container.value;
   if (!el || props.items.length === 0) return;
@@ -264,13 +355,13 @@ function scrollToIndex(index: number, align: "top" | "bottom" = "top") {
   }
   suppressTransient();
   const i = Math.max(0, Math.min(index, props.items.length - 1));
-  const top = offsets.value[i];
-  if (align === "top") {
-    setScrollTop(Math.max(0, top - 8));
-  } else {
-    setScrollTop(Math.max(0, top - el.clientHeight + itemHeight(i)));
-  }
+  // ① 先按当前 offsets 粗略滚过去（让目标进入渲染窗口）
+  setScrollTop(Math.max(0, offsets.value[i] - 8));
   computeScrollState();
+  // ② 再按真实 DOM 位置落准 + 窗口内轮询（见 pendingJump / pollJump 的说明）
+  pendingJump = { key: String(itemKey(props.items[i])), align, tries: 0, until: Date.now() + 1500 };
+  applyJump();
+  pollJump();
 }
 
 // ---------------- prepend 锚定（向上加载历史时视口不跳动） ----------------
@@ -377,6 +468,9 @@ defineExpose({ scrollToBottom, scrollToIndex, recentScrollUp, setPinned });
     :aria-live="live ? 'polite' : undefined"
     :aria-relevant="live ? 'additions' : undefined"
     @scroll.passive="onScroll"
+    @wheel.passive="onUserInput"
+    @touchstart.passive="onUserInput"
+    @pointerdown.passive="onUserInput"
   >
     <div :style="{ height: `${totalHeight}px`, position: 'relative' }">
       <div

@@ -4,6 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import { loadFilePreview } from "@/utils/filePreview";
+import { parseFileMeta } from "@/utils/fileMeta";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { shouldProbePresence } from "@/utils/mediaAvailability";
 import { isAndroid } from "@/utils/platform";
@@ -38,18 +39,17 @@ export function useMessageFile(
   /** 乐观上屏的文件/图片气泡可能缺 size/path，用传输记录补齐。 */
   const fileMeta = computed<FileMeta | null>(() => {
     if (msg.value.kind !== "file" && msg.value.kind !== "image") return null;
-    try {
-      const meta = JSON.parse(msg.value.content) as Partial<FileMeta>;
-      const t = transfer.value;
-      return {
-        name: meta.name ?? t?.name ?? $t("common.file"),
-        path: meta.path ?? t?.path ?? "",
-        size: meta.size ?? t?.size ?? 0,
-        subtype: meta.subtype ?? (msg.value.kind === "image" ? "image" : "file"),
-      };
-    } catch {
-      return null;
-    }
+    // 载荷解析走**唯一一份** `utils/fileMeta`（引用块也用同一份，见那里的说明）
+    const raw = parseFileMeta(msg.value.content);
+    if (!raw) return null;
+    const t = transfer.value;
+    return {
+      name: raw.name || t?.name || $t("common.file"),
+      path: raw.path || t?.path || "",
+      size: raw.size || t?.size || 0,
+      subtype: raw.subtype || (msg.value.kind === "image" ? "image" : "file"),
+      sha256: raw.sha256,
+    };
   });
 
   /** 进度 0~1；无记录（历史消息）返回 null 表示不显示进度条。 */

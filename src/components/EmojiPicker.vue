@@ -1,7 +1,17 @@
 <script setup lang="ts">
 import { EMOJIS } from "@/utils/emoji";
 
-defineProps<{ open: boolean }>();
+withDefaults(
+  defineProps<{
+    open: boolean;
+    /**
+     * 相对**定位父级**展开的方向：`above` 向上（输入框上方的表情按钮用），
+     * `below` 向下（消息上的表情回应入口用 —— 它在视口上半部分时要往下弹，否则会被顶出屏幕）。
+     */
+    placement?: "above" | "below";
+  }>(),
+  { placement: "above" },
+);
 const emit = defineEmits<{
   /** 选中表情 → 输出 token 语法（如 "[微笑]"），由输入框插入。 */
   (e: "select", displayName: string): void;
@@ -19,7 +29,8 @@ const emit = defineEmits<{
        8px 后留白翻倍，而可视高度 300 内仍是 7 行（36 + 44×6 = 300，正好 7 行）不损失行数。 -->
   <div
     v-if="open"
-    class="frost absolute bottom-full left-0 z-50 mb-2 w-[min(360px,calc(100vw-2rem))] select-none rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] shadow-xl"
+    class="frost absolute left-0 z-50 w-[min(360px,calc(100vw-2rem))] select-none rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] shadow-xl"
+    :class="placement === 'below' ? 'top-full mt-2' : 'bottom-full mb-2'"
     @click.stop
   >
     <div

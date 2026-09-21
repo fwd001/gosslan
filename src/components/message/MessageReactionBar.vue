@@ -5,6 +5,10 @@
  * 为什么单独成条而不是把回应做成"一条消息"：回应是**状态**不是内容 —— 它挂在被回应的
  * 那条下面，且同一个人反复点只应看到最终结果。协议层它确实是一条条独立事件消息
  * （见 utils/reactions.ts 的说明），但**渲染层必须折叠**，否则群里回三个赞就多三条消息。
+ *
+ * 添加回应的入口不在本组件：飞书式入口（悬停消息 → 气泡外侧笑脸按钮 → 完整表情选择器）
+ * 在 `MessageItem` 的消息行里 —— 入口必须挂在 `.group/msg` **之内**才能被悬停揭示，
+ * 而本条是它的兄弟节点（用户 2026-09-21 报「表情回应在哪儿？没看见」）。
  */
 import { t } from "@/i18n";
 import { emojiUrl } from "@/utils/emoji";
@@ -16,8 +20,6 @@ defineProps<{
   mine: boolean;
   /** 是否允许我添加/取消（单聊暂不开放，且自己的消息也允许自嘲式回应） */
   interactive: boolean;
-  /** 快捷表情：与 EmojiPicker 同一套目录，取前几个高频的 */
-  quick: string[];
 }>();
 const emit = defineEmits<{
   (e: "toggle", emoji: string): void;
@@ -50,20 +52,5 @@ const emit = defineEmits<{
       <span v-else class="text-[13px] leading-none">{{ c.emoji }}</span>
       <span class="tabular-nums font-medium">{{ c.count }}</span>
     </button>
-
-    <!-- 快捷回应：桌面悬停/触屏常显的一排高频表情（`hover-reveal` 提供触屏兜底） -->
-    <template v-if="interactive">
-      <button
-        v-for="e in quick"
-        :key="`q-${e}`"
-        class="hover-reveal tap-safe hidden h-7 w-7 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition hover:bg-[var(--gosslan-hover)] group-hover/msg:flex"
-        :title="t('msg.reactionAdd', { emoji: e })"
-        :aria-label="t('msg.reactionAdd', { emoji: e })"
-        @click="emit('toggle', e)"
-      >
-        <img v-if="emojiUrl(e)" :src="emojiUrl(e) ?? undefined" alt="" class="h-4 w-4 shrink-0" />
-        <span v-else class="text-[11px]">{{ e }}</span>
-      </button>
-    </template>
   </div>
 </template>

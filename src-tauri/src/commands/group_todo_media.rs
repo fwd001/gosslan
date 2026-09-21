@@ -5,8 +5,20 @@
 /// 读一张待办图片的**元数据**（不投递字节）：选图后先拿 `TodoImage` 写进任务定义，
 /// 字节随后经 `send_todo_image` 投递。`id = sha256` 与投递时 content store 的 cid 同源
 /// （同一份文件字节算出的 sha256 必然一致），缩略图才能按 cid 找回。
+///
+/// **副作用（2026-09-21 补，别再当它是纯读）**：顺手把这份文件登记为**本机持有的内容副本**
+/// （cid=sha256 → 原路径）。理由：表单是在**投递之前**就要显示缩略图的，而缩略图一律走
+/// `read_content_preview`（按 cid 找回本地副本）—— 不登记的话 `find_local_path` /
+/// `find_source` 两条路都查不到，新建任务时选好的图**永远**是空占位（用户 2026-09-21：
+/// 「新增群任务的时候图片无法预览」）。投递时 `send_todo_image` 里的 `record_local` 是
+/// **同一行**（按 cid+peer+direction upsert），不会重复记账。
+/// 记的是用户原路径，落在 `media_dirs`（downloads/cache/favorites）之外 ⇒ 缓存清理
+/// （`cache_cleaner` 只删那三个目录内的文件）**动不到**用户的原始文件。
 #[tauri::command(async)]
-pub fn todo_image_meta(path: String) -> Result<crate::protocol::TodoImage, String> {
+pub fn todo_image_meta(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+) -> Result<crate::protocol::TodoImage, String> {
     let p = std::path::Path::new(&path);
     let meta = std::fs::metadata(p).map_err(|e| format!("读取文件失败：{e}"))?;
     if !meta.is_file() {
@@ -21,13 +33,29 @@ pub fn todo_image_meta(path: String) -> Result<crate::protocol::TodoImage, Strin
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    Ok(crate::protocol::TodoImage {
+    let image = crate::protocol::TodoImage {
         id: sha256.clone(),
         name,
         size: meta.len(),
         sha256,
         subtype,
-    })
+    };
+    {
+        let s = state.inner();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = crate::content::store::record_local(
+            &dbc,
+            &image.sha256,
+            &s.device_id,
+            None,
+            &image.name,
+            image.size,
+            crate::content::model::Direction::Send,
+            &path,
+            db::now_ms(),
+        );
+    }
+    Ok(image)
 }
 
 /// 保存一张**粘贴**进任务表单的图片（截图 / 复制的位图没有本地路径）。

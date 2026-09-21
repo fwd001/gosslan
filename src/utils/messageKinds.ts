@@ -111,3 +111,28 @@ export function isTipKind(kind: string): boolean {
 export function isMultiSelectable(kind: string): boolean {
   return kind !== "todo";
 }
+
+/**
+ * 能否「转发」——**唯一一份判据**（消息右键菜单、长按面板、收藏详情操作条都从这里取）。
+ *
+ * 为什么必须收成一份（AI_RULES §32）：这三处的动作集合要**一致**，此前各写一份的结果是
+ * 「菜单里没有转发、收藏页却有」——用户 2026-09-21 报的正是这个（「收藏底下的操作和消息的
+ * 右键也不一样」），而且点下去必然失败：两条发送命令的 kind 白名单只收
+ * text/code(/file)/merge，卡片类会被直接拒。
+ *
+ * 合并转发卡片（merge）本身可以再转（微信允许"转发聊天记录"），它是自包含内容。
+ */
+export function isForwardableKind(kind: string): boolean {
+  return kind === "text" || kind === "code" || kind === "image" || kind === "file" || kind === "merge";
+}
+
+/**
+ * 能否「收藏」= 转发那几类 + **卡片类**（待办 / 投票 / 群公告）。
+ *
+ * 收藏走 `addFavorite(msgId)`、由**后端复制内容**，不重发、无副作用 ⇒ 卡片收藏是安全的
+ * （收藏夹已按卡片补了渲染分支：列表行 `cardText`、详情分支）。
+ * ⚠️ 转发**不含**卡片：那是个有副作用的动作（要做"把任务转给另一个群"得走专用发送路径）。
+ */
+export function isFavoritableKind(kind: string): boolean {
+  return isForwardableKind(kind) || kindClass(kind) === "card";
+}

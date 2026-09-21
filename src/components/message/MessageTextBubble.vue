@@ -8,7 +8,6 @@ import { linkify, type LinkSegment } from "@/utils/linkify";
 import MessageLinkText from "@/components/message/MessageLinkText.vue";
 import { splitEmoji } from "@/utils/emoji";
 import { mentionHighlightColor } from "@/utils/chatStyle";
-import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { parseQuote } from "@/utils/quote";
 import { Check, Copy } from "lucide-vue-next";
 
@@ -176,23 +175,6 @@ async function openLink(href: string) {
          带引用头的完整原文，同一个气泡两条复制路径结果不一样。
          ⚠️ 不挂在气泡根上：根里还有「展开/复制」操作条和尖角，全选会把按钮文字也框进去。 -->
     <div ref="contentEl">
-      <!-- 引用块：首行「引用 发送者：片段」，带 msg_id 时可点击跳转原消息 -->
-      <button
-        v-if="parsed.quote && parsed.msgId"
-        class="quote-block mb-1.5 block w-full cursor-pointer rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-left text-[12px] leading-4 transition hover:brightness-110"
-        :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
-        :title="t('msg.locateOriginal', { id: parsed.msgId })"
-        @click="emit('locate', parsed.msgId)"
-      >
-        <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
-      </button>
-      <div
-        v-else-if="parsed.quote"
-        class="quote-block mb-1.5 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-[12px] leading-4"
-        :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
-      >
-        <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
-      </div>
       <div
         class="gosslan-selectable whitespace-pre-wrap break-words"
         :style="{ wordBreak: 'break-word', ...clampStyle }"
@@ -221,6 +203,8 @@ async function openLink(href: string) {
         </template>
       </div>
     </div>
+    <!-- 引用块不再画在气泡里：按用户 2026-09-21 的微信口径，它挂在**气泡外的正文下方**
+         （见 MessageItem 的说明：点击=直接查看被引用内容，跳转在消息菜单里）。 -->
     <!-- 长文本操作条：高度固定，展开走独立 Modal，消息 DOM 不再变化 -->
     <div
       v-if="clamped"
