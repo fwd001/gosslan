@@ -13,6 +13,10 @@
   --gosslan-primary-hover: #60a5fa;
   --gosslan-primary-active: #2563eb;
   --gosslan-primary-light: rgba(59, 130, 246, 0.12);
+  /* 主题色半透明版（color-mix 运行时派生，跟随 applyTheme 换色自动变）。
+     /25 用于拖拽条 hover / unread 分隔线；/50 用于 ring/highlight 描边 */
+  --gosslan-primary-soft: color-mix(in srgb, var(--gosslan-primary) 25%, transparent);
+  --gosslan-primary-ring: color-mix(in srgb, var(--gosslan-primary) 50%, transparent);
   /* 主题色当「文字/图标」用时的可读版本（--gosslan-primary 只作填充面）。
      直接用主题色写字，亮色下 3.7 / 暗色下 4.0，都够不到正文 4.5——老坑见 chatStyle.ts。
      按 Apple 的做法「同色相、按外观调明度」：亮色压暗、暗色提亮，
@@ -78,7 +82,7 @@
   --gosslan-list-hover: rgba(15, 23, 42, 0.04);
   --gosslan-list-active: #dbe3ed;
   --gosslan-list-active-text: var(--gosslan-text);
-  --gosslan-chat: #f5f7fa;
+  --gosslan-chat: #ffffff;
   --gosslan-panel: #ffffff;
   --gosslan-bg: #f1f5f9;
   /* 输入类控件底色（搜索框 / 输入卡）：必须与所在面板拉开一档，
@@ -111,6 +115,8 @@
      压暗到 #cc2418 → 面板 5.48 / 列表 5.00 / 卡片 4.73，全部达标；填充档保持系统红不变。 */
   --gosslan-danger-ink: #cc2418;
   --gosslan-danger-soft: rgba(255, 59, 48, 0.12);
+  /* 危险按钮 hover：比主危险色亮一档（color-mix 派生，不硬编码） */
+  --gosslan-danger-hover: color-mix(in srgb, var(--gosslan-danger) 85%, #ffffff);
   --gosslan-warning: #ff9500;
   /* 警告色「图标档」：琥珀当图标只有 2.20（白底），连图形档 3.0 都不到（群主皇冠 / 文件夹图标）。
      压暗到 #c67600 → 面板 3.50 / 列表 3.20 / 卡片 3.02，跨过图形档；填充档仍是系统橙。 */
@@ -176,6 +182,8 @@
      亮色下深底浮在浅界面上最清楚；暗色下必须**抬亮一档**，
      否则深 toast 与深画布糊在一起（对比只剩 1.28，看不出是一块浮层）。 */
   --gosslan-hud: rgba(38, 38, 38, 0.9);
+  /* 模态/弹层遮罩：亮色 45% 黑（轻遮罩看得到底图），暗色抬到 60% 黑（否则暗色下遮罩不够深、层级模糊） */
+  --gosslan-overlay: rgba(0, 0, 0, 0.45);
   /* 毛玻璃浮层面板底色（配合 .glass 使用） */
   --gosslan-panel-frost: rgba(255, 255, 255, 0.85);
   /* 底层底色：接近列表灰，保证半透明浮层过渡自然 */
@@ -189,6 +197,8 @@
        app-bg #0b1220 < chat/bg #0f172a < caption/rail #16202f < list/panel #1e293b < list-active #334155
      越靠前越"深"（越靠近屏幕底），越靠后越"高"（越靠近用户），不允许倒置。 */
   color-scheme: dark;
+  /* 暗色遮罩：60% 黑（暗色主题下背景本来就深，遮罩需要更深才能形成层级） */
+  --gosslan-overlay: rgba(0, 0, 0, 0.6);
   /* 主题色的「文字档」暗色版：亮色下是压暗、暗色下必须**提亮**（+28% 白）。
      漏了这一条就会继承 :root 的压暗值 —— 深底上再压暗，方向正好反了。 */
   --gosslan-accent-ink: color-mix(in srgb, var(--gosslan-primary) 72%, #ffffff);
@@ -230,6 +240,7 @@
      不必像亮色那样再压暗。新增 :root 的 *-ink 时这里必须成对出现。 */
   --gosslan-danger-ink: #ff5548;
   --gosslan-danger-soft: rgba(255, 85, 72, 0.18);
+  --gosslan-danger-hover: color-mix(in srgb, var(--gosslan-danger) 85%, #ffffff);
   --gosslan-warning: #ff9f0a;
   /* 琥珀在暗底上本来就够亮（面板底 7.12），文字档与填充档同值。 */
   --gosslan-warning-ink: #ff9f0a;
@@ -894,6 +905,17 @@ select,
   font-size: 11px;
   line-height: 1.5;
   color: var(--gosslan-text-2);
+}
+
+/* 移动端详情页转场：从右滑入 / 滑出（统一框架返回图标的配套动效，用户 2026-09-20）。 */
+.page-slide-enter-active,
+.page-slide-leave-active {
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+.page-slide-enter-from,
+.page-slide-leave-to {
+  transform: translateX(100%);
+  opacity: 0.4;
 }
 
 @media (prefers-reduced-transparency: reduce) {

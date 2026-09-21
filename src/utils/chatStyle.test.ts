@@ -15,7 +15,7 @@ const THEME_COLORS = [
 ];
 
 /** 聊天区画布（亮色 --gosslan-chat，近白）。改 style.css 里这个值必须同步这里。 */
-const CHAT_BG = "#fafafa";
+const CHAT_BG = "#ffffff";
 
 test("亮色：自己的气泡按 luma 定标统一到微信重量档（207±11），文字对比达 AA", () => {
   for (const theme of THEME_COLORS) {

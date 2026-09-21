@@ -10,6 +10,8 @@
  */
 import { onMounted, ref } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
+import { useBackLayer } from "@/composables/useBackLayer";
+import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import { api } from "@/api";
 import { t } from "@/i18n";
 import { MAX_EXTERNAL_LINKS, MAX_LINK_NAME_CHARS, validateLinkInput } from "@/utils/externalLinks";
@@ -17,7 +19,11 @@ import { ExternalLink as ExternalLinkIcon, Pencil, Plus, Trash2 } from "lucide-v
 import type { ExternalLink } from "@/types";
 
 defineProps<{ opening?: boolean }>();
-const emit = defineEmits<{ (e: "open", link: ExternalLink): void }>();
+const emit = defineEmits<{
+  (e: "open", link: ExternalLink): void;
+  /** 移动端覆盖层返回（回到「我的」页）。桌面端内嵌时不会触发。 */
+  (e: "back"): void;
+}>();
 
 const app = useAppStore();
 const links = ref<ExternalLink[]>([]);
@@ -37,6 +43,12 @@ async function load() {
   }
 }
 onMounted(load);
+
+// 移动端链接页是覆盖层下钻页，系统返回键 / 框架返回键都走这里回到「我的」页。
+useBackLayer(
+  () => app.isMobile,
+  () => emit("back"),
+);
 
 function startAdd() {
   draft.value = { id: null, name: "", url: "" };
@@ -83,12 +95,16 @@ async function remove(l: ExternalLink) {
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col">
-    <!-- 顶部：标题 + 新增 -->
-    <div class="flex shrink-0 items-center gap-2 px-3 pb-2.5 pt-3">
-      <span class="min-w-0 flex-1 truncate text-[15px] font-medium" :title="t('links.title')">
-        {{ t("links.title") }}
-      </span>
+  <!-- 统一框架头部：标题 + 新增按钮（右上角）由 MobilePageFrame 提供；
+       移动端是覆盖层带返回键，桌面端内嵌在左列（无返回键，标题栏保留）。 -->
+  <MobilePageFrame
+    :mode="app.isMobile ? 'overlay' : 'inline'"
+    :header="true"
+    :show-back="app.isMobile"
+    :title="t('links.title')"
+    @back="emit('back')"
+  >
+    <template #actions>
       <button
         v-if="!draft"
         class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
@@ -98,7 +114,7 @@ async function remove(l: ExternalLink) {
       >
         <Plus class="h-[18px] w-[18px]" />
       </button>
-    </div>
+    </template>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
       <!-- 新增 / 编辑表单 -->
@@ -129,7 +145,7 @@ async function remove(l: ExternalLink) {
             {{ t("common.cancel") }}
           </button>
           <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:opacity-90 disabled:opacity-50"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
             :disabled="saving"
             @click="saveDraft"
           >
@@ -146,11 +162,13 @@ async function remove(l: ExternalLink) {
         {{ t("links.empty") }}
       </p>
 
-      <!-- 链接行：点名称打开独立窗口；右侧编辑 / 删除常显（触屏友好） -->
+      <!-- 链接行：点名称打开独立窗口；右侧编辑 / 删除常显（触屏友好）。
+           行样式与聊天 / 通讯录 / 收藏列表**同款**：满宽不圆角 + `--gosslan-list-hover` 悬停
+           + 行间内缩分隔线（用户 2026-09-20：「链接列表的也修一下」）。 -->
       <div
         v-for="l in links"
         :key="l.id"
-        class="flex items-center gap-0.5 rounded-[var(--gosslan-radius-md)] px-1 py-1 transition hover:bg-[var(--gosslan-hover)]"
+        class="relative flex items-center gap-0.5 px-2 py-1.5 transition hover:bg-[var(--gosslan-list-hover)]"
       >
         <button
           class="tap-safe flex min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-1.5 py-1.5 text-left"
@@ -180,7 +198,9 @@ async function remove(l: ExternalLink) {
         >
           <Trash2 class="h-3.5 w-3.5" />
         </button>
+        <!-- 行间内缩分隔线：从文本列起（px-2 + 按钮 px-1.5 + 16 图标 + gap-2 = 38px） -->
+        <div class="pointer-events-none absolute bottom-0 left-[38px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
       </div>
     </div>
-  </div>
+  </MobilePageFrame>
 </template>

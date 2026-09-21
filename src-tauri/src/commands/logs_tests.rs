@@ -771,13 +771,12 @@ mod tests {
         );
         // bob 同时改「指派人 + 标题」：结构部分被拒
         assert!(!super::may_update_todo(&def, "bob", "owner", true, true));
-        // 群主 owner：能改结构、能改指派人；但「仅改状态」不是他的特权
+        // 群主 owner：改什么都行 —— 含「仅改状态」（用户 2026-09-20「群主不能编辑群任务」：
+        // 此前描述/图片/状态被归到「被指派人」那档，群主改它们会被拒）
         assert!(super::may_update_todo(&def, "owner", "owner", false, true));
         assert!(super::may_update_todo(&def, "owner", "owner", true, false));
-        assert!(
-            !super::may_update_todo(&def, "owner", "owner", false, false),
-            "群主不得仅改状态（除非同时是被指派/创建者）"
-        );
+        assert!(super::may_update_todo(&def, "owner", "owner", false, false));
+        assert!(super::may_update_todo(&def, "owner", "owner", true, true));
         // 无关成员 carol：什么都不行
         assert!(!super::may_update_todo(
             &def, "carol", "owner", false, false

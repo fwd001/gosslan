@@ -215,7 +215,7 @@ onBeforeUnmount(() => {
               </span>
               <button
                 v-if="imageSlots[i]?.phase !== 'pulling'"
-                class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-2 py-1 text-xs text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
+                class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-2 py-1 text-xs text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
                 @click="pull(i, it)"
               >
                 {{ imageSlots[i]?.phase === 'failed' ? t("merge.retry") : t("merge.pull") }}

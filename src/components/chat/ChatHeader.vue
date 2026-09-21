@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {
-  ArrowLeft,
   ArrowUpCircle,
   Bluetooth,
   FolderOpen,
@@ -13,6 +12,7 @@ import {
   Smartphone,
   Users,
 } from "lucide-vue-next";
+import BackArrow from "@/components/ui/BackArrow.vue";
 import type { Conversation, LinkState } from "@/types";
 import { t } from "@/i18n";
 
@@ -79,7 +79,7 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
         :title="t('chat.header.back')" :aria-label="t('chat.header.back')"
         @click="emit('back')"
       >
-        <ArrowLeft class="h-5 w-5" />
+        <BackArrow />
       </button>
       <span class="truncate text-[15px] font-medium leading-6" :title="conv?.name || t('chat.header.conversation')">{{ conv?.name || t("chat.header.conversation") }}<template v-if="isGroup && memberCount > 0"> ({{ memberCount }})</template></span>
       <span

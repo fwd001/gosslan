@@ -27,7 +27,7 @@ const surface = computed(() => (props.dark ? CODE_SURFACE.dark : CODE_SURFACE.li
 /** 操作条与 CodeBlock 代码区同底色（分隔线颜色仍取同款描边色）。 */
 const actionsStyle = computed(() => ({
   background: surface.value,
-  borderColor: props.dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)",
+  borderColor: "var(--gosslan-border)",
 }));
 /** 尖角取代码卡片底色（代码气泡不走 bubbleStyle，得自己给 --bubble-bg 赋值）。 */
 const tailBg = computed(() => surface.value);

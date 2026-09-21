@@ -21,8 +21,9 @@ import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
-import { ArrowLeft, Copy, MessageCircle, UserMinus } from "lucide-vue-next";
+import { Copy, MessageCircle, UserMinus } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
+import BackArrow from "@/components/ui/BackArrow.vue";
 import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import type { Friend } from "@/types";
 
@@ -126,7 +127,7 @@ const confirmRemove = ref(false);
         :title="t('common.back')" :aria-label="t('common.back')"
         @click="app.mobileView = 'list'"
       >
-        <ArrowLeft class="h-5 w-5" />
+        <BackArrow />
       </button>
       <span class="truncate text-[15px] font-medium" :title="friend.nickname">{{ friend.nickname }}</span>
     </div>
@@ -289,7 +290,7 @@ const confirmRemove = ref(false);
             @click="confirmRemove = false"
           >{{ t("common.cancel") }}</button>
           <button
-            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
             @click="confirmRemove = false; emit('remove', friend)"
           >{{ t("common.delete") }}</button>
         </div>

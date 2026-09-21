@@ -97,7 +97,7 @@ async function doClearAllData() {
             @click="confirmRestore = false"
           >{{ t("common.cancel") }}</button>
           <button
-            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
             @click="restoreDefaults"
           >{{ t("settings.reset.restore") }}</button>
         </div>
@@ -128,7 +128,7 @@ async function doClearAllData() {
             @click="clearConfirmOpen = false"
           >{{ t("common.cancel") }}</button>
           <button
-            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
             @click="doClearAllData"
           >{{ t("common.clear") }}</button>
         </div>

@@ -206,7 +206,7 @@ async function confirmAction() {
           />
           <button
             type="button"
-            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-2 text-[13px] text-white transition hover:opacity-90 disabled:opacity-50"
+            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-2 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
             :disabled="renaming || !nameDraft.trim() || nameDraft.trim() === group.name"
             @click="saveName"
           >
@@ -230,7 +230,7 @@ async function confirmAction() {
         <div class="mt-2 flex justify-end">
           <button
             type="button"
-            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:opacity-90 disabled:opacity-50"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
             :disabled="publishing || !announceDraft.trim()"
             @click="publishAnnouncement"
           >
@@ -419,7 +419,7 @@ async function confirmAction() {
           {{ t("common.cancel") }}
         </button>
         <button
-          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-sm text-white transition hover:opacity-90"
+          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
           @click="confirmAction"
         >
           {{ t("common.confirm") }}

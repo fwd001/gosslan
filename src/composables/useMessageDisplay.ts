@@ -47,6 +47,9 @@ export function useMessageDisplay(opts: {
         borderRadius: "var(--gosslan-bubble-radius, 4px)",
         border: mine.value ? "1px solid transparent" : "1px solid var(--gosslan-border)",
         position: "relative",
+        // 真实底色（hex），供子组件 mentionHighlightColor 算对比度。
+        // CSS 变量字符串无法传入 contrastRatio，必须额外挂一个真实值。
+        "--bubble-bg-raw": mine.value ? colors.value.mineBubble : colors.value.otherBubble,
       }) as CSSProperties,
   );
 

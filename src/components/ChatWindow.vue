@@ -986,7 +986,7 @@ function onLoadMore() {
       <Bluetooth class="h-3.5 w-3.5 shrink-0" />
       <span class="min-w-0 flex-1">{{ t("chat.bt.slowHint") }}</span>
       <button
-        class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 transition hover:bg-black/5 dark:hover:bg-white/10"
+        class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 transition hover:bg-[var(--gosslan-hover)]"
         :title="t('chat.bt.dismiss')"
         :aria-label="t('chat.bt.dismiss')"
         @click="btHintDismissed = true"
@@ -1193,7 +1193,7 @@ function onLoadMore() {
               {{ t("common.cancel") }}
             </button>
             <button
-              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-[13px] text-white transition hover:opacity-90"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-danger-hover)]"
               @click="deleteAnnouncement"
             >
               {{ t("common.delete") }}
@@ -1241,7 +1241,7 @@ function onLoadMore() {
           {{ t("common.cancel") }}
         </button>
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:opacity-90"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
           @click="doBatchDelete"
         >
           {{ t("common.delete") }}

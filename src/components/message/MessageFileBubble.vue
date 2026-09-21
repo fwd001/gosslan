@@ -107,7 +107,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
         </span>
         <button
           v-else
-          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-black/10 dark:hover:bg-white/15"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t(contentRetry ? 'msg.imageReRequest' : 'msg.downloadFile')"
           :aria-label="t(contentRetry ? 'msg.imageReRequest' : 'msg.downloadFile')"
           @click="contentRetry ? emit('refetch') : emit('download')"
@@ -128,9 +128,9 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
     </div>
     <!-- 传输进度条（发送/接收中实时显示，完成后消失）。卡片是中性色，进度条用主题色做强调 -->
     <template v-if="progress !== null">
-      <div class="h-1 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+      <div class="h-1 overflow-hidden rounded-full bg-[var(--gosslan-divider)]">
         <div
-          class="h-full rounded-full bg-primary transition-all duration-200"
+          class="h-full rounded-full bg-[var(--gosslan-primary)] transition-all duration-200"
           :style="{ width: `${Math.round(progress * 100)}%` }"
         ></div>
       </div>

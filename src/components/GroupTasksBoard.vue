@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 /**
  * 群任务**看板**（无壳）：应用内弹窗（`GroupTasksPanel`）与独立窗口（`GroupTodosWindow`）
  * 共用这一份，区别只在 `standalone`（窗口形态：撑满高度、内部滚动占满剩余空间）。
@@ -18,8 +18,10 @@
  * 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { isAndroid } from "@/utils/platform";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
@@ -270,6 +272,17 @@ const dropZoneRef = ref<HTMLElement | null>(null);
 const imageDragOver = ref(false);
 let unlistenImageDrop: (() => void) | null = null;
 
+/** 图片区提示：桌面平台支持点击 / 粘贴 / 拖入；**Android 只有点击**（粘贴与拖放都不订阅，见下方 watch）。
+ *  ⚠️ 按**平台**（`isAndroid`）判，不是按 `app.isMobile` —— 后者是 `max-width:767px` 的视口宽度，
+ *  窄桌面窗口也会命中，会误把桌面当移动端、把粘贴/拖放一起关掉（用户 2026-09-20「桌面端也不能粘贴文件」）。 */
+const imageHintText = computed(() =>
+  imageDragOver.value
+    ? t("todo.imageDropHere")
+    : isAndroid
+      ? t("todo.imageHintMobile")
+      : t("todo.imageHint"),
+);
+
 /** 拖拽位置是否落在投放区上（Tauri 给的是物理像素，除以 DPR 才能跟 DOM 坐标比）。 */
 function hitDropZone(pos: { x: number; y: number }): boolean {
   const el = dropZoneRef.value;
@@ -281,25 +294,64 @@ function hitDropZone(pos: { x: number; y: number }): boolean {
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 
-/** 粘贴：把剪贴板里的**图片**直接加进图片区。文本粘贴不受影响（没有图片就不 preventDefault）。 */
+/** 图片扩展名（与文件选择器的 filters 一致）。 */
+const IMAGE_PATH_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+
+/**
+ * 粘贴：把剪贴板里的**图片**加进图片区。**文本粘贴不受影响**（没抓到图片就不 preventDefault）。
+ *
+ * 两条来源都要覆盖（与 `MessageComposer.onPaste` 同一套口径）：
+ *   ① 位图（截图）：先 `clipboardData.files`，拿不到再退 `items.getAsFile()`；
+ *   ② 资源管理器里复制的**图片文件**：Windows 走 CF_HDROP，`files` 里是个 **type 为空**的
+ *      占位 File —— 只按 `image/` 过滤会一个都不剩，必须靠 `read_clipboard_file_paths`
+ *      拿真实路径（用户 2026-09-20「桌面端也不能粘贴文件」）。
+ * ⚠️ 位图 File 必须在任何 await 之前**同步**抓下来（paste 返回后 clipboardData 会被清空）。
+ * ⚠️ 能力按**平台**（`isAndroid`）判，不按 `app.isMobile`（见 `imageHintText` 的说明）。
+ */
 function onDocPaste(e: ClipboardEvent) {
-  if (!draft.value || app.isMobile) return;
-  // ⚠️ 必须在任何 await 之前**同步**读 clipboardData（异步后它就失效了，见 MessageComposer.onPaste）。
-  const files = Array.from(e.clipboardData?.files ?? []);
-  const images = files.filter((f) => f.type.startsWith("image/"));
-  if (images.length === 0) return;
-  e.preventDefault();
-  void (async () => {
-    for (const f of images) {
+  if (!draft.value || isAndroid) return;
+  const cd = e.clipboardData;
+  if (!cd) return;
+  const files = Array.from(cd.files ?? []);
+  let image: File | null = files.find((f) => f.type.startsWith("image/")) ?? null;
+  if (!image) {
+    for (const it of Array.from(cd.items ?? [])) {
+      if (it.kind === "file" && it.type.startsWith("image/")) {
+        image = it.getAsFile();
+        if (image) break;
+      }
+    }
+  }
+  const hasFiles = Array.from(cd.types ?? []).includes("Files");
+
+  if (image) {
+    e.preventDefault();
+    const bitmap = image;
+    void (async () => {
       try {
-        const buf = await f.arrayBuffer();
+        const buf = await bitmap.arrayBuffer();
         const path = await api.saveTodoImageBytes(new Uint8Array(buf));
         await addImageFromPaths([path]);
       } catch (err) {
         app.toastError(err, t("todo.imagePasteFail"));
       }
-    }
-  })();
+    })();
+    return;
+  }
+
+  // 没有位图、但剪贴板里是「文件」（复制的图片文件）：走真实路径。
+  if (hasFiles) {
+    e.preventDefault();
+    void (async () => {
+      try {
+        const paths = await invoke<string[]>("read_clipboard_file_paths");
+        const imgs = paths.filter((p) => IMAGE_PATH_RE.test(p));
+        if (imgs.length) await addImageFromPaths(imgs);
+      } catch {
+        /* 非 Windows / 拿不到路径：静默（文本粘贴已放行） */
+      }
+    })();
+  }
 }
 
 async function subscribeImageDrop() {
@@ -336,11 +388,11 @@ function unsubscribeImageDrop() {
   imageDragOver.value = false;
 }
 
-// 草稿弹窗开/关：接上 / 退订 粘贴与拖放（移动端两者都不订阅）。
+// 草稿弹窗开/关：接上 / 退订 粘贴与拖放（**Android 两者都不订阅**；按平台判，不按视口宽度）。
 watch(
   () => !!draft.value,
   (open) => {
-    if (app.isMobile) return;
+    if (isAndroid) return;
     if (open) {
       document.addEventListener("paste", onDocPaste);
       void subscribeImageDrop();
@@ -494,28 +546,24 @@ watch(
       </button>
     </div>
 
-    <!-- 筛选：分段控件（与应用设置页的分段控件同一套观感），计数做成小圆片 -->
-    <div v-if="todos.length" class="flex shrink-0 gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] p-0.5">
+    <!-- 筛选：独立胶囊 chips（与收藏过滤 / 日志时间窗口同款） -->
+    <div v-if="todos.length" class="flex shrink-0 flex-wrap items-center gap-1">
       <button
         v-for="f in FILTERS"
         :key="f.key"
         type="button"
-        class="tap-safe flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--gosslan-radius-sm)] py-1.5 text-[12px] transition"
-        :class="
-          filter === f.key
-            ? 'bg-[var(--gosslan-panel)] font-medium text-[var(--gosslan-text)] shadow-sm'
-            : 'text-[var(--gosslan-text-2)] hover:text-[var(--gosslan-text)]'
-        "
+        class="tap-safe rounded-full px-2.5 py-1 text-xs transition"
+        :class="filter === f.key
+          ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]'
+          : 'border border-transparent text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         :aria-pressed="filter === f.key"
         @click="filter = f.key"
       >
         {{ t(f.labelKey) }}
         <span
-          class="rounded-full px-1.5 text-[11px] leading-4 tabular-nums"
-          :class="filter === f.key ? 'bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]' : 'text-[var(--gosslan-text-2)] opacity-70'"
-        >
-          {{ counts[f.key] }}
-        </span>
+          v-if="counts[f.key] !== undefined"
+          class="ml-1 rounded-full px-1 text-[11px] leading-4 tabular-nums opacity-70"
+        >{{ counts[f.key] }}</span>
       </button>
     </div>
 
@@ -745,7 +793,8 @@ watch(
         ></textarea>
       </div>
 
-      <!-- 图片：点击添加 / 粘贴 / 拖入（用户 2026-09-17）。虚线框是投放区，
+      <!-- 图片：桌面端点击 / 粘贴 / 拖入（用户 2026-09-17），虚线框是投放区；
+           移动端**只支持点击**，所以不画虚线（虚线在移动端没有可拖的东西，反而误导）。
            有图时缩略图排在区内；拖入命中时框体高亮。 -->
       <div>
         <div class="mb-1.5 flex items-center justify-between">
@@ -764,10 +813,12 @@ watch(
              会被拦掉，所以这里不写 @drop 之类的 HTML5 拖放属性。 -->
         <div
           ref="dropZoneRef"
-          class="rounded-[var(--gosslan-radius-md)] border border-dashed transition"
-          :class="imageDragOver
-            ? 'border-[var(--gosslan-primary)] bg-[var(--gosslan-hover)]'
-            : 'border-[var(--gosslan-border)]'"
+          class="rounded-[var(--gosslan-radius-md)] border transition"
+          :class="isAndroid
+            ? 'border-[var(--gosslan-border)]'
+            : imageDragOver
+              ? 'border-dashed border-[var(--gosslan-primary)] bg-[var(--gosslan-hover)]'
+              : 'border-dashed border-[var(--gosslan-border)]'"
         >
           <button
             v-if="draft.images.length === 0"
@@ -775,7 +826,7 @@ watch(
             class="w-full cursor-pointer px-3 py-6 text-center text-[11px] leading-relaxed text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
             @click="addImage"
           >
-            {{ imageDragOver ? t("todo.imageDropHere") : t("todo.imageHint") }}
+            {{ imageHintText }}
           </button>
           <div v-else class="flex flex-wrap gap-1.5 p-2">
             <div v-for="(img, i) in draft.images" :key="img.sha256" class="group relative">

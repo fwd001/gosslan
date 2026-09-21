@@ -3,7 +3,7 @@
 // 已连接节点：对方设备持久化后按「我的偏好」渲染我发出的消息气泡。
 
 import dayjs from "dayjs";
-import { adjustHsl, contrastRatio, luma, mixToLuma } from "./color.ts";
+import { adjustHsl, contrastRatio, hslToHex, mixToLuma, toHsl } from "./color.ts";
 
 export interface ChatPresetColors {
   mineBubble: string;
@@ -22,56 +22,60 @@ export interface ChatPreset {
 
 /** 气泡配色预设：每套均通过明暗双主题下的正文对比度检查（≥ 4.5:1）。
  *  "theme"（跟随主题）为默认：颜色运行时按主题色派生（resolveChatColors），
- *  表中 light/dark 仅作为回退值。 */
+ *  表中 light/dark 仅作为回退值。
+ *  亮色统一采用微信式浅底深字（对方气泡同为浅底，靠色相区分归属）；
+ *  暗色统一为实底白字（同 iOS/Telegram 风格，微信暗色也用实底）。 */
 export const CHAT_PRESETS: ChatPreset[] = [
   {
     key: "theme",
     label: "chatStyle.preset.theme",
-    light: { mineBubble: "#60a5fa", mineText: "#172554", otherBubble: "#eeeef0", otherText: "#0f172a" },
+    light: { mineBubble: "#bbd2ef", mineText: "#06182d", otherBubble: "#eeeef0", otherText: "#0f172a" },
     dark: { mineBubble: "#1d4ed8", mineText: "#ffffff", otherBubble: "#1e293b", otherText: "#e2e8f0" },
   },
   {
     key: "classic",
     label: "chatStyle.preset.classic",
-    light: { mineBubble: "#60a5fa", mineText: "#172554", otherBubble: "#eeeef0", otherText: "#1f2937" },
+    light: { mineBubble: "#bbd2ef", mineText: "#06182d", otherBubble: "#eeeef0", otherText: "#1f2937" },
     dark: { mineBubble: "#1d4ed8", mineText: "#ffffff", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "mint",
     label: "chatStyle.preset.mint",
-    light: { mineBubble: "#34d399", mineText: "#064e3b", otherBubble: "#eeeef0", otherText: "#1f2937" },
+    light: { mineBubble: "#a4ead0", mineText: "#092a1e", otherBubble: "#eeeef0", otherText: "#1f2937" },
     dark: { mineBubble: "#065f46", mineText: "#ecfdf5", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "amber",
     label: "chatStyle.preset.amber",
-    light: { mineBubble: "#fb923c", mineText: "#431407", otherBubble: "#eeeef0", otherText: "#1f2937" },
+    light: { mineBubble: "#eccaae", mineText: "#2d1806", otherBubble: "#eeeef0", otherText: "#1f2937" },
     dark: { mineBubble: "#9a3412", mineText: "#fff7ed", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "celadon",
     label: "chatStyle.preset.celadon",
-    light: { mineBubble: "#2dd4bf", mineText: "#134e4a", otherBubble: "#eeeef0", otherText: "#1f2937" },
+    light: { mineBubble: "#a4eae1", mineText: "#092a26", otherBubble: "#eeeef0", otherText: "#1f2937" },
     dark: { mineBubble: "#115e59", mineText: "#f0fdfa", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "rose",
     label: "chatStyle.preset.rose",
-    light: { mineBubble: "#f472b6", mineText: "#500724", otherBubble: "#eeeef0", otherText: "#1f2937" },
+    light: { mineBubble: "#f1c4dc", mineText: "#2d061a", otherBubble: "#eeeef0", otherText: "#1f2937" },
     dark: { mineBubble: "#9d174d", mineText: "#fdf2f8", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "slate",
     label: "chatStyle.preset.slate",
-    light: { mineBubble: "#9ca3af", mineText: "#111827", otherBubble: "#eeeef0", otherText: "#374151" },
+    light: { mineBubble: "#bed1f0", mineText: "#17191c", otherBubble: "#eeeef0", otherText: "#374151" },
     dark: { mineBubble: "#374151", mineText: "#f9fafb", otherBubble: "#1f2937", otherText: "#d1d5db" },
   },
 ];
 
 export const CHAT_FONT_SIZES = [
+  { key: "xs", label: "chatStyle.fontSize.xs", px: 12 },
   { key: "sm", label: "chatStyle.fontSize.sm", px: 13 },
   { key: "md", label: "chatStyle.fontSize.md", px: 14 },
   { key: "lg", label: "chatStyle.fontSize.lg", px: 16 },
+  { key: "xl", label: "chatStyle.fontSize.xl", px: 18 },
 ] as const;
 
 export type FontSizeKey = (typeof CHAT_FONT_SIZES)[number]["key"];
@@ -124,22 +128,7 @@ function softenMineForDark(c: ChatPresetColors): ChatPresetColors {
   };
 }
 
-/**
- * 亮色下"自己气泡"＝主色的浅调，按目标 luma 二分明度定标：
- * 暖色（琥珀）luma 天然高、冷色（蓝紫）天然低，各自找到自己的 HSL 明度，
- * 最终气泡的视觉重量保持一致（207 ± 2）。饱和度封顶 LIGHT_MINE_BUBBLE_S_MAX。
- */
-function lightMineBubble(themeColor: string): string {
-  let lo = 0.6;
-  let hi = 0.92;
-  for (let i = 0; i < 18; i++) {
-    const mid = (lo + hi) / 2;
-    const l = luma(adjustHsl(themeColor, { l: mid, sMax: LIGHT_MINE_BUBBLE_S_MAX }));
-    if (l < LIGHT_MINE_BUBBLE_LUMA) lo = mid;
-    else hi = mid;
-  }
-  return adjustHsl(themeColor, { l: (lo + hi) / 2, sMax: LIGHT_MINE_BUBBLE_S_MAX });
-}
+
 
 /**
  * 解析某预设的实际气泡配色。"theme" 预设按主题色运行时派生：
@@ -152,8 +141,14 @@ export function resolveChatColors(key: string, themeColor: string, dark: boolean
 
   // 亮色：微信式浅底深字——自己的气泡取主题色的浅调、字取同色相深调，
   // 与对方的浅灰气泡同为浅底，只靠色相区分归属。
+  // 两步派生：① adjustHsl 把主题色提到浅调（HSL L=0.78 保色相鲜度，限 S=0.62 避免糖果感），
+  //          ② mixToLuma 朝白色精确提亮到 luma 207（微信绿气泡同档）。
+  //            蓝/绿/橙/紫同 L 值下 luma 不同，按 luma 定标才能让每种主题色的气泡视觉重量一致。
+  // 文字：同色相深字（L=0.10，S 限 0.75），与浅底同色相只靠明度区分。
+  const [h] = toHsl(themeColor);
+  const lightBubbleBase = hslToHex(h, LIGHT_MINE_BUBBLE_S_MAX, 0.78);
   const light: ChatPresetColors = {
-    mineBubble: lightMineBubble(themeColor),
+    mineBubble: mixToLuma(lightBubbleBase, [255, 255, 255], LIGHT_MINE_BUBBLE_LUMA),
     mineText: adjustHsl(themeColor, { l: LIGHT_MINE_TEXT_L, sMax: LIGHT_MINE_TEXT_S_MAX }),
     otherBubble: LIGHT_OTHER_BUBBLE,
     otherText: "#0f172a",
@@ -208,9 +203,10 @@ export function formatTimeDivider(ts: number, now: number = Date.now()): string 
 export function parsePeerStyle(raw: string): ChatStyleConfig {
   try {
     const v = JSON.parse(raw) as Partial<ChatStyleConfig>;
+    const validKeys = CHAT_FONT_SIZES.map((f) => f.key);
     return {
       preset: typeof v.preset === "string" ? v.preset : DEFAULT_CHAT_STYLE.preset,
-      fontSize: (["sm", "md", "lg"] as const).includes(v.fontSize as FontSizeKey)
+      fontSize: validKeys.includes(v.fontSize as FontSizeKey)
         ? (v.fontSize as FontSizeKey)
         : DEFAULT_CHAT_STYLE.fontSize,
     };

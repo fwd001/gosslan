@@ -94,7 +94,7 @@ function peerIsNewer(p: PeerVersionDiag): boolean {
       <!-- 刷新 -->
       <div class="flex items-center justify-between">
         <button
-          class="inline-flex items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 transition hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/10"
+          class="inline-flex items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
           :disabled="loading"
           @click="refresh"
         >

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { ArrowLeft, Copy, RefreshCw, Search, Trash2, X } from "lucide-vue-next";
+import { Copy, RefreshCw, Search, Trash2, X } from "lucide-vue-next";
 import TitleBar from "@/components/TitleBar.vue";
+import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import { api } from "@/api";
 import { t } from "@/i18n";
 import { highlightText } from "@/utils/highlight";
@@ -195,49 +196,43 @@ function close() {
   emit("back");
 }
 
-const levelClass = (lv: string) =>
+/** 级别 → 文字色（仅 level 列彩色，message 不继承） */
+const levelTextClass = (lv: string) =>
   lv === "error"
     ? "text-[var(--gosslan-danger-ink)]"
     : lv === "warn"
       ? "text-[var(--gosslan-warning-ink)]"
       : "text-[var(--gosslan-text-2)]";
+
+/** 级别 → 整行浅底色（hover 时叠加，error=浅红、warn=浅黄、其他=透明） */
+const rowLevelBg = (lv: string) =>
+  lv === "error"
+    ? "bg-[var(--gosslan-danger-soft)]/60"
+    : lv === "warn"
+      ? "bg-[var(--gosslan-warning-soft)]/60"
+      : "";
 </script>
 
 <template>
-  <!-- 整页浮层在移动端会盖住外层那条 `.safe-top` 占位 ⇒ 自己补顶部安全区，
-       否则返回键/标题顶到刘海与状态栏下面（点不到、看不全）。 -->
+  <!-- 桌面独立窗口：自绘标题栏（功能名 + 最小化/关闭）承载关闭语义，工具栏含全部操作。 -->
   <div
-    :class="standalone
-      ? 'flex h-screen flex-col overflow-hidden bg-[var(--gosslan-app-bg)] font-gosslan text-[var(--gosslan-text)] ring-1 ring-inset ring-[var(--gosslan-window-ring)]'
-      : 'fixed inset-0 z-[70] flex flex-col bg-[var(--gosslan-app-bg)] pt-[env(safe-area-inset-top)] font-gosslan text-[var(--gosslan-text)]'"
+    v-if="standalone"
+    class="flex h-screen flex-col overflow-hidden bg-[var(--gosslan-app-bg)] font-gosslan text-[var(--gosslan-text)] ring-1 ring-inset ring-[var(--gosslan-window-ring)]"
   >
-    <!-- 桌面独立窗口：与主窗口/设置窗口共用同一套自绘标题栏（功能名 + 最小化/关闭；不给最大化）。
-         移动端整页形态不画它（系统状态栏 + 返回键）。 -->
     <TitleBar
-      v-if="standalone"
       :title="t('logs.title')"
       :show-maximize="false"
       :close-to-tray="false"
     />
 
-    <!-- 顶部工具栏：过滤/刷新/清空等操作。standalone 时不再重复标题与关闭键（标题栏已经有了）。 -->
+    <!-- 顶部工具栏：过滤/刷新/清空等操作。standalone 不再重复返回键（标题栏的关闭键承担语义）。 -->
     <div
       class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3"
-      :class="standalone ? 'bg-[var(--gosslan-app-bg)]' : 'bg-[var(--gosslan-caption)]'"
+      :class="'bg-[var(--gosslan-app-bg)]'"
       :style="{ height: 'var(--gosslan-header-h)' }"
     >
-      <button
-        v-if="!standalone"
-        class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        :title="t('logs.back')"
-        :aria-label="t('logs.back')"
-        @click="close"
-      >
-        <ArrowLeft class="h-5 w-5" />
-      </button>
-
       <div class="flex min-w-0 items-baseline gap-2">
-        <span v-if="!standalone" class="truncate text-[15px] font-medium" :title="t('logs.title')">{{ t("logs.title") }}</span>
+        <span class="truncate text-[15px] font-medium" :title="t('logs.title')">{{ t("logs.title") }}</span>
         <span class="shrink-0 text-xs text-[var(--gosslan-text-2)]">
           {{ t("logs.count", { n: logs.length }) }}
         </span>
@@ -301,35 +296,34 @@ const levelClass = (lv: string) =>
       <span class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">窗口</span>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
-        :class="timeWindow === null ? 'bg-[var(--gosslan-accent)] text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        :class="timeWindow === null ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = null; void load()"
       >全部</button>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
-        :class="timeWindow === 30 ? 'bg-[var(--gosslan-accent)] text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        :class="timeWindow === 30 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = 30; void load()"
       >30s</button>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
-        :class="timeWindow === 60 ? 'bg-[var(--gosslan-accent)] text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        :class="timeWindow === 60 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = 60; void load()"
       >1 分钟</button>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
-        :class="timeWindow === 120 ? 'bg-[var(--gosslan-accent)] text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        :class="timeWindow === 120 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = 120; void load()"
       >2 分钟</button>
       <span class="mx-1 h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
       <button
         class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
-        :class="mergeDup ? 'bg-[var(--gosslan-accent)] text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        :class="mergeDup ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         :title="mergeDup ? '展开相同日志' : '合并相同日志'"
         @click="mergeDup = !mergeDup"
       >合并重复</button>
     </div>
 
-    <!-- 过滤条：字面包含匹配，命中处高亮。
-         单独一行而不是塞进工具栏 —— 工具栏已有 4 个按钮，移动端会被挤爆。 -->
+    <!-- 过滤条：字面包含匹配，命中处高亮。 -->
     <div class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3 py-1.5">
       <Search class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
       <input
@@ -376,17 +370,18 @@ const levelClass = (lv: string) =>
           v-for="r in mergedRows"
           :key="r.key"
           v-memo="[r.time, r.levelText, r.target, r.message, r.level, r.count]"
-          class="flex gap-2 rounded px-1 py-0.5 hover:bg-[var(--gosslan-hover)]"
+          class="flex gap-2 rounded px-1 py-0.5 transition"
+          :class="[rowLevelBg(r.level), 'hover:bg-[var(--gosslan-hover)]']"
         >
           <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="r.time"></span>
-          <span class="w-12 shrink-0 select-none font-semibold" :class="levelClass(r.level)" v-html="r.levelText"></span>
+          <span class="w-12 shrink-0 select-none font-semibold" :class="levelTextClass(r.level)" v-html="r.levelText"></span>
           <span class="min-w-0 flex-1 break-all">
             <span class="text-[var(--gosslan-text-2)]" v-html="r.target"></span>
             <span v-html="r.message"></span>
           </span>
           <span
             v-if="r.count > 1"
-            class="shrink-0 rounded-full bg-[var(--gosslan-accent)] px-1.5 text-[11px] font-semibold leading-tight text-white"
+            class="ml-1 shrink-0 text-[11px] font-medium text-[var(--gosslan-text-2)]"
             :title="`已合并 ${r.count} 条相同日志`"
           >
             ×{{ r.count }}
@@ -395,4 +390,152 @@ const levelClass = (lv: string) =>
       </div>
     </div>
   </div>
+
+  <!-- 移动端整页：MobilePageFrame 统一头部（返回 + 标题）；工具栏操作进 #actions，
+       日志列表自管滚动（frame 的 scroll=false）。 -->
+  <Transition v-else name="page-slide">
+    <MobilePageFrame mode="overlay" :scroll="false" :title="t('logs.title')" @back="close">
+      <template #actions>
+        <span class="shrink-0 text-xs text-[var(--gosslan-text-2)]">
+          {{ t("logs.count", { n: logs.length }) }}
+        </span>
+        <button
+          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition hover:bg-[var(--gosslan-hover)]"
+          :class="autoRefresh ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
+          :title="t('logs.autoRefresh')"
+          :aria-label="t('logs.autoRefresh')"
+          :aria-pressed="autoRefresh"
+          @click="autoRefresh = !autoRefresh; syncTimer()"
+        >
+          <RefreshCw class="h-3.5 w-3.5" :class="autoRefresh ? 'animate-spin' : ''" />
+          <span class="hidden sm:inline">{{ t("logs.autoRefresh") }}</span>
+        </button>
+        <button
+          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          :title="t('logs.refresh')"
+          :aria-label="t('logs.refresh')"
+          @click="load"
+        >
+          <RefreshCw class="h-3.5 w-3.5" />
+          <span class="hidden sm:inline">{{ t("logs.refresh") }}</span>
+        </button>
+        <button
+          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition hover:bg-[var(--gosslan-hover)]"
+          :class="confirmClear ? 'text-[var(--gosslan-danger-ink)]' : 'text-[var(--gosslan-text-2)]'"
+          :title="t('logs.clear')"
+          :aria-label="t('logs.clear')"
+          @click="onClear"
+        >
+          <Trash2 class="h-3.5 w-3.5" />
+          <span class="hidden sm:inline">{{ confirmClear ? t("logs.clearConfirm") : t("logs.clear") }}</span>
+        </button>
+        <span class="sr-only" role="status" aria-live="polite">
+          {{ copied ? t("logs.copied") : confirmClear ? t("logs.clearConfirm") : "" }}
+        </span>
+        <button
+          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-white transition"
+          :class="copied ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-primary)] hover:bg-[var(--gosslan-primary-hover)]'"
+          :title="t('logs.copy')"
+          :aria-label="t('logs.copy')"
+          @click="copyAll"
+        >
+          <Copy class="h-3.5 w-3.5" />
+          <span>{{ copied ? t("logs.copied") : t("logs.copy") }}</span>
+        </button>
+      </template>
+
+      <div
+        class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3 py-1"
+      >
+        <span class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">窗口</span>
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+          :class="timeWindow === null ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          @click="timeWindow = null; void load()"
+        >全部</button>
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+          :class="timeWindow === 30 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          @click="timeWindow = 30; void load()"
+        >30s</button>
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+          :class="timeWindow === 60 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          @click="timeWindow = 60; void load()"
+        >1 分钟</button>
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+          :class="timeWindow === 120 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          @click="timeWindow = 120; void load()"
+        >2 分钟</button>
+        <span class="mx-1 h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+          :class="mergeDup ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          :title="mergeDup ? '展开相同日志' : '合并相同日志'"
+          @click="mergeDup = !mergeDup"
+        >合并重复</button>
+      </div>
+
+      <div class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3 py-1.5">
+        <Search class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
+        <input
+          v-model="filter"
+          type="text"
+          maxlength="200"
+          enterkeyhint="search"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+          class="min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] border border-transparent bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)] outline-none transition focus:border-transparent"
+          :placeholder="t('logs.filterPlaceholder')"
+          :aria-label="t('logs.filter')"
+        />
+        <span v-if="trimmedFilter" class="shrink-0 text-xs text-[var(--gosslan-text-2)]">
+          {{ t("logs.filterCount", { n: mergedRows.length, total: logs.length }) }}
+        </span>
+        <button
+          v-if="trimmedFilter"
+          class="tap-safe flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          :title="t('logs.filterClear')"
+          :aria-label="t('logs.filterClear')"
+          @click="filter = ''"
+        >
+          <X class="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[13px] leading-relaxed">
+        <div v-if="logs.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
+          {{ t("logs.empty") }}
+        </div>
+        <div v-else-if="mergedRows.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
+          {{ t("logs.filterEmpty") }}
+        </div>
+        <div v-else>
+          <div
+            v-for="r in mergedRows"
+            :key="r.key"
+            v-memo="[r.time, r.levelText, r.target, r.message, r.level, r.count]"
+            class="flex gap-2 rounded px-1 py-0.5 transition"
+            :class="[rowLevelBg(r.level), 'hover:bg-[var(--gosslan-hover)]']"
+          >
+            <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="r.time"></span>
+            <span class="w-12 shrink-0 select-none font-semibold" :class="levelTextClass(r.level)" v-html="r.levelText"></span>
+            <span class="min-w-0 flex-1 break-all">
+              <span class="text-[var(--gosslan-text-2)]" v-html="r.target"></span>
+              <span v-html="r.message"></span>
+            </span>
+            <span
+              v-if="r.count > 1"
+              class="ml-1 shrink-0 text-[11px] font-medium text-[var(--gosslan-text-2)]"
+              :title="`已合并 ${r.count} 条相同日志`"
+            >
+              ×{{ r.count }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </MobilePageFrame>
+  </Transition>
 </template>

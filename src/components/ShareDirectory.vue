@@ -90,7 +90,7 @@ watch(
         <span v-if="!e.is_dir" class="text-[11px] text-[var(--gosslan-text-2)]">{{ humanSize(e.size) }}</span>
         <button
           v-if="!e.is_dir"
-          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('common.download')" :aria-label="t('common.download')"
           @click="download(e)"
         >

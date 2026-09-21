@@ -135,7 +135,7 @@ function processAvatar(file: File): Promise<string> {
           >{{ avatarInitial(nickname) }}</span
         >
         <span
-          class="hover-reveal-op absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition group-hover:opacity-100"
+          class="hover-reveal-op absolute inset-0 flex items-center justify-center bg-[var(--gosslan-danger)] opacity-0 transition group-hover:opacity-100"
         >
           <Camera class="h-5 w-5" />
         </span>

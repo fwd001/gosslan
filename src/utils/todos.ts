@@ -210,9 +210,11 @@ export function isEffectivelyArchived(
  *
  * | 改动 | 允许谁 |
  * |---|---|
- * | 改标题 / 删除 | 创建者 **或** 群主 |
- * | 改指派人 | 创建者 **或** 群主 **或** 当前被指派人 |
- * | 只改状态（含完成/归档） | 创建者 **或** 被指派人 |
+ * | 改标题 / 删除（结构） | 创建者 **或** 群主 |
+ * | 其余改动（描述 / 图片 / 指派人 / 状态） | 创建者 **或** 群主 **或** 当前被指派人 |
+ *
+ * 群主**什么都能改**（用户 2026-09-20：「群主不能编辑群任务」—— 此前群主的改动被落到
+ * 「只改状态」那一档，描述 / 图片 / 状态都会被拒）。
  *
  * 判据与后端 `may_update_todo` 必须一致（后端是权威、这里是显示用的镜像）。
  */
@@ -222,8 +224,10 @@ export function canUpdateTodo(
   groupCreator: string,
   structural: boolean,
 ): boolean {
-  if (item.creator === actor) return true;
-  if (structural) return groupCreator === actor;
+  // 创建者 / 群主：改什么都行。
+  if (item.creator === actor || groupCreator === actor) return true;
+  // 被指派人：能改描述 / 图片 / 指派人 / 状态，但不能改结构（标题 / 删除）。
+  if (structural) return false;
   return item.assignees.includes(actor);
 }
 

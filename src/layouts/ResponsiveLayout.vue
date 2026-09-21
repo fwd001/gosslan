@@ -24,56 +24,114 @@ import LogViewer from "@/components/LogViewer.vue";
 import FavoritePanel from "@/components/FavoritePanel.vue";
 import ToastHud from "@/components/ToastHud.vue";
 import LinksList from "@/components/LinksList.vue";
-import { Compass, MessageCircle, MoreHorizontal, ScrollText, Settings, Star, Users } from "lucide-vue-next";
+import MobilePageFrame from "@/components/MobilePageFrame.vue";
+import ProfileSection from "@/components/settings/ProfileSection.vue";
+import { Compass, MessageCircle, ScrollText, Settings, Star, UserCircle, Users } from "lucide-vue-next";
 import type { ExternalLink, Friend, PendingRequest } from "@/types";
 const app = useAppStore();
 const chat = useChatStore();
 
-const view = ref<"chats" | "contacts" | "links">("chats");
 /**
- * 喂给 `ConversationList` 的视图：它只认 chats / contacts。`links` 视图时左列换成
- * `LinksList`，但 `ConversationList` 仍按 `chats` 挂着（不卸载 = 保留滚动位置与搜索框状态）。
+ * 导航状态——**单一数据源**，替代之前分散的 `view` + `favoritesOpen`。
+ *
+ * 之前的问题：`view = "chats"` 和 `favoritesOpen = true` 可以**同时为真**，
+ * 导致 NavRail 聊天按钮和收藏按钮一起高亮（用户反馈 2026-09-20「多选了侧边栏的按钮」）。
+ * 现在四个枚举值互斥，NavRail 只读这一个值决定高亮，不会再出现双选中。
+ *
+ * 收藏关闭后（如用户点其他 rail 按钮 / 打开会话）自动回到 `chats`，
+ * 确保左中右三列始终同步。
  */
-const listView = computed<"chats" | "contacts">(() => (view.value === "links" ? "chats" : view.value));
+type NavState = "chats" | "contacts" | "links" | "favorites" | "me";
+const navState = ref<NavState>("chats");
+
+/**
+ * 喂给 `ConversationList` 的视图：它只认 chats / contacts。
+ * `links` / `favorites` 时左列换成 `LinksList` / 整个隐藏，
+ * 但 `ConversationList` 仍按 `chats` 挂着（不卸载 = 保留滚动位置与搜索框状态）。
+ */
+const listView = computed<"chats" | "contacts">(() => {
+  const s = navState.value;
+  return s === "contacts" ? "contacts" : "chats";
+});
+/** 收藏打开时左列隐藏（整页态），links 时换成 LinksList。 */
+const favoritesOpen = computed(() => navState.value === "favorites");
+const isLinksView = computed(() => navState.value === "links");
+
+/**
+ * 移动端「列表 ↔ 详情」平移动画开关。
+ *
+ * ⚠️ 只在**同一个 tab 内** list↔detail（点会话 / 点好友进详情、再返回）时平移；
+ * **底部 tab 切换必须瞬时切换、不做转场**（用户 2026-09-20：「tab 切换不要转场啊，
+ * 我要的是从列表点进详情的这种」——上一版按 `mobileView` 无脑动画，切「我的 / 收藏」
+ * 也整屏滑，是错的）。
+ *
+ * 实现：所有 **tab 选择**都走 `selectMobileTab`（它会先在**本帧**关掉 transform 过渡、
+ * 让面板瞬时到位，下一帧再恢复）；其余 `mobileView` 改动（`openConversation` /
+ * `openFriendProfile` / `openRequests` / 各类返回）直接赋值，于是照常平移。
+ */
+const paneAnimate = ref(true);
+
+/**
+ * 移动端 tab 选择：瞬时切换面板，不做 list↔detail 平移。
+ * 双 `requestAnimationFrame` 保证「无过渡」的那一帧真的被绘制过 ——
+ * 单 rAF 可能与本次 DOM 改动合并到同一帧，过渡仍会被触发。
+ */
+function selectMobileTab(nav: NavState, mv: "list" | "chat") {
+  paneAnimate.value = false;
+  navState.value = nav;
+  app.mobileView = mv;
+  requestAnimationFrame(() => requestAnimationFrame(() => (paneAnimate.value = true)));
+}
 /** 正在查看资料的好友（通讯录点击好友 → 展示资料页，而非直接开会话） */
 const profileFriend = ref<Friend | null>(null);
 const settingsOpen = ref(false);
+/** 移动端资料页（可编辑资料，复用 ProfileSection）。桌面端无独立资料窗口，回落到设置。 */
+const profileOpen = ref(false);
+const profileReloadToken = ref(0);
 const addFriendOpen = ref(false);
 const groupOpen = ref(false);
 const shareOpen = ref(false);
 const logsOpen = ref(false);
-/** 移动端 TabBar "更多"菜单（设置 / 日志收进二级，TabBar 最多 4 项）。 */
-const mobileMoreOpen = ref(false);
+
 /**
- * 收藏页。
+ * 移动端底部 TabBar 是否显示 —— **单一事实来源**，模板里的 TabBar `v-if`
+ * 与主内容区的 `pb-[calc(4rem+…)]` 占位都读它（两处各写一份就会漂移：
+ * 一边隐藏、另一边还留着内边距 → 底部空一大截，用户 2026-09-19）。
  *
- * 刻意**不**把 `view` 扩成第三种取值（"chats" | "contacts" | "favorites"）：那会牵动
- * `NavRail` 的 view 联合类型、列表/主面板的平移条件、以及一串以 view 为判据的 watch。
- * 收藏是渲染在主内容区的**整页**（不再是弹窗），用独立布尔表达其开合即可；
- * 它跟 view 互斥：切到聊天/通讯录或打开会话都会把它关掉（见下方 watch / onNavView）。
+ * 只在**四个一级 tab** 上显示：聊天 / 通讯录列表（`mobileView === 'list'`）、收藏、我的。
+ * 进 Chat 详情、设置、日志、链接 等二级页时整个隐藏。收藏必须保留（用户 2026-09-20）。
  */
-const favoritesOpen = ref(false);
+const showMobileTabBar = computed(
+  () =>
+    app.isMobile &&
+    !app.keyboardOpen &&
+    !app.multiSelectActive &&
+    (app.mobileView === "list" || favoritesOpen.value || navState.value === "me") &&
+    !settingsOpen.value &&
+    !logsOpen.value,
+);
 
-/** 打开收藏页（整页，非弹窗）。
-     只改 favoritesOpen，**不碰 mobileView** — 否则 closeFavorites 把 mobileView 改回 'list' 时会触发
-     useBackLayer #1（mobileView==='chat'）的 release，多退一次历史条目（用户 2026-09-19 Android：
-     「点返回后 TabBar 不见了，要侧划第二次才回来」）。收藏页的 main 可见性由下面 main 元素的
-     translate 条件里 `favoritesOpen ? translate-x-0 : ...` 显式覆盖。 */
-function openFavorites() {
-  favoritesOpen.value = true;
-}
-
-/** 关闭收藏页。
-     只改 favoritesOpen，mobileView 保持打开收藏前的值（可能是 'chat' 也可能是 'list'）。
-     这样不会误触发 useBackLayer #1 的 release（那个只该由"关闭聊天会话"触发）。 */
+/** 关闭收藏页。**回到 chats 而不是任意之前的值**——收藏是临时整页，
+ * 微信关闭收藏后默认回到聊天列表，不猜用户之前在哪个 tab。 */
 function closeFavorites() {
-  favoritesOpen.value = false;
+  // 收藏是 tab，关闭走 tab 选择：瞬时切回聊天列表，不做平移（见 `selectMobileTab`）。
+  selectMobileTab("chats", "list");
 }
 
-/** 导航栏切到聊天/通讯录/链接：总是离开收藏页（即使 view 值没变，点导航也要关收藏）。 */
-function onNavView(v: "chats" | "contacts" | "links") {
-  favoritesOpen.value = false;
-  view.value = v;
+/** NavRail 切换：直接设 navState（四选一枚举）。 */
+function onUpdateNavState(v: NavState) {
+  navState.value = v;
+  // 移动端：切到发现页（links/favorites）→ 让 main 区全屏显示（aside 滑到左边）
+  // 切回 chats/contacts → 回到列表视图
+  if (app.isMobile) {
+    if (v === "links" || v === "favorites") {
+      app.mobileView = "chat";
+    } else {
+      app.mobileView = "list";
+    }
+  }
+  // 切到聊天时也清掉会话打开状态——避免"左侧聊天列表，右侧还停着旧会话"
+  if (v === "chats" && chat.activeConv) void chat.openConversation(chat.activeConv);
 }
 
 /**
@@ -109,6 +167,24 @@ function openLogs() {
   void launchAuxWindow("logs", () => api.openLogWindow()).catch((e) =>
     app.toastError(e, t("common.operationFail")),
   );
+}
+
+/**
+ * 打开资料页。
+ * 移动端：整页可编辑资料（头像 / 昵称 / 状态），复用 `ProfileSection`，从「我的」下钻进来。
+ * 桌面端没有独立的资料窗口——资料就是设置第一项（通用 → 资料），直接进设置即可。
+ */
+function openProfile() {
+  if (app.isMobile) {
+    profileOpen.value = true;
+    return;
+  }
+  openSettings();
+}
+
+/** 移动端链接页返回：链接是从「我的」下钻进来的，返回即回到「我的」页。 */
+function onLinksBack() {
+  navState.value = "me";
 }
 
 /**
@@ -172,7 +248,7 @@ function openRequests() {
  *  否则会出现右侧在聊、左侧还停在通讯录的错位。 */
 function closeRequests() {
   showRequests.value = false;
-  if (chat.activeConv) view.value = "chats";
+  if (chat.activeConv) navState.value = "chats";
   // 移动端返回会话列表（iOS push/pop 语义：申请页是从列表推进去的一层）
   if (app.isMobile) app.mobileView = "list";
 }
@@ -197,7 +273,7 @@ async function rejectRequest(r: PendingRequest) {
 /** 资料页「发消息」：回到消息视图并打开与该好友的会话 */
 async function sendMessageTo(id: string) {
   profileFriend.value = null;
-  view.value = "chats";
+  navState.value = "chats";
   // 「自己」的会话行可能还不存在：先 ensure（后端有 self 分支，会用本机昵称/头像命名），
   // 否则列表里会显示成一串 gosslan-xxxx。
   if (id === app.device?.device_id) await api.ensureConversation(id);
@@ -218,27 +294,40 @@ async function removeFriend(f: Friend) {
 // 打开会话/切走时收起资料页与新朋友页，避免右侧同时出现多个内容区；
 // 会话一旦打开（接受好友申请自动开会话 / 通知点击跳转等），主视图切回「聊天」tab，
 // 否则右侧在聊、左侧 tab 还停在通讯录，布局与底部高亮都错位。
+// navState 设为 chats 自动意味着 favoritesOpen = false（computed 派生）。
 watch(
   () => chat.activeConv,
   (convId) => {
     profileFriend.value = null;
     showRequests.value = false;
-    favoritesOpen.value = false;
-    if (convId) view.value = "chats";
-  },
-);
-
-// 从通讯录切回「聊天」视图时退出好友资料页与"新的朋友"页，否则旧页面占住主区
-watch(
-  view,
-  (v) => {
-    favoritesOpen.value = false;
-    if (v === "chats") {
-      profileFriend.value = null;
-      showRequests.value = false;
+    // 切到 links/favorites 时**不要**被强制拉回 chats——发现页是独立导航目标，
+    // 即使有活跃会话也应该让用户继续看发现内容。
+    if (convId && navState.value !== "links" && navState.value !== "favorites") {
+      navState.value = "chats";
     }
   },
 );
+
+/**
+ * 导航切换 —— 只决定渲染，不碰子状态值。
+ *
+ * 每个 navState 自带"记忆"：
+ *   chats     → activeConv （当前会话）
+ *   contacts  → profileFriend + showRequests （上次点开的好友/申请页）
+ *   links     → 独立面板，无子状态
+ *   favorites → 独立整页，无子状态
+ *
+ * 导航切换只改变 navState 这个枚举，右侧内容块的 `v-if/v-else-if` 守卫
+ * （已经全部加了 `navState === 'xxx' &&` 前缀）会自动决定显不显示。
+ * 值不清除 = 下次切回来自动恢复。
+ *
+ * 示例流程：
+ *   1. 在 chats，activeConv = group:abc → 右侧 ChatWindow
+ *   2. 切到 contacts，profileFriend = null → 右侧空态好友列表
+ *   3. 点好友张三 → profileFriend = 张三 → 右侧 FriendProfile
+ *   4. 切回 chats → activeConv 还在 → 右侧 ChatWindow 恢复
+ *   5. 再切到 contacts → profileFriend 还在 → 右侧 FriendProfile 张三
+ */
 
 // 桌面端默认选中：启动后会话列表就绪且当前无选中会话时，自动打开最近的一个会话，
 // 右侧直接进入聊天（对齐微信桌面版行为）；移动端保持列表优先，不自动跳转。
@@ -253,7 +342,7 @@ watch(
 
 // 通知点击跳转：好友申请通知 → 切换到联系人视图
 function onNavigateToContacts() {
-  view.value = "contacts";
+  navState.value = "contacts";
   if (app.isMobile) app.mobileView = "list";
 }
 
@@ -278,20 +367,22 @@ useBackLayer(
   },
 );
 
-// 移动端全屏二级页也需要系统返回键支持（Android 返回键 / 桌面后退导航）。
-// 这些 useBackLayer 必须**在 ChatWindow 那层之后**注册 —— 用户同时打开会话+收藏时，
-// 返回键应该先关收藏（最近打开的层），再关会话。
+// 「我的」页是一层：系统返回键先离开「我的」回到聊天列表（iOS push/pop 语义，与聊天页一致）。
 useBackLayer(
-  () => app.isMobile && favoritesOpen.value,
-  () => closeFavorites(),
+  () => app.isMobile && navState.value === "me",
+  () => {
+    navState.value = "chats";
+    app.mobileView = "list";
+  },
 );
+
+// 「资料」覆盖层（从「我的」下钻进来）是一层：系统返回键先关掉它，回到「我的」，
+// 再按一次才离开「我的」——层级关系与桌面侧"设置二级页"一致。
 useBackLayer(
-  () => app.isMobile && settingsOpen.value,
-  () => (settingsOpen.value = false),
-);
-useBackLayer(
-  () => app.isMobile && logsOpen.value,
-  () => (logsOpen.value = false),
+  () => app.isMobile && profileOpen.value,
+  () => {
+    profileOpen.value = false;
+  },
 );
 
 let unlistenMenu: UnlistenFn[] | null = null;
@@ -300,15 +391,15 @@ let unlistenMenu: UnlistenFn[] | null = null;
 // 为什么放在这里、且必须是 watchEffect：它立即执行一次，所以**必须**在所有浮层 ref 声明之后
 // （放在前面会撞上 const 的 TDZ）。只有布局层知道这些浮层开没开，store 只保留一个布尔。
 watchEffect(() => {
-  app.setMobileChatObscured(
-    app.isMobile &&
-      (settingsOpen.value ||
-        logsOpen.value ||
-        showRequests.value ||
-        profileFriend.value !== null ||
-        favoritesOpen.value ||
-        shareOpen.value),
-  );
+    app.setMobileChatObscured(
+      app.isMobile &&
+        (settingsOpen.value ||
+          logsOpen.value ||
+          profileOpen.value ||
+          showRequests.value ||
+          profileFriend.value !== null ||
+          shareOpen.value),
+    );
 });
 
 onMounted(() => {
@@ -334,18 +425,18 @@ const LIST_W_MAX = 420;
 const listW = ref(
   Math.min(LIST_W_MAX, Math.max(LIST_W_MIN, Number(localStorage.getItem("gosslan-list-w")) || 250)),
 );
-let resizing = false;
+const resizing = ref(false);
 
 function onResizeStart(e: PointerEvent) {
   // 只认鼠标左键：中键/右键拖拽不该改变列表宽度（右键还会弹系统菜单）
   if (e.button !== 0) return;
-  resizing = true;
+  resizing.value = true;
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   document.body.style.cursor = "col-resize";
   document.body.style.userSelect = "none";
 }
 function onResizeMove(e: PointerEvent) {
-  if (!resizing) return;
+  if (!resizing.value) return;
   listW.value = Math.min(LIST_W_MAX, Math.max(LIST_W_MIN, e.clientX - RAIL_W));
 }
 /**
@@ -354,8 +445,8 @@ function onResizeMove(e: PointerEvent) {
  * `col-resize` 与全局 `user-select: none`，用户会以为"界面卡住/选不中字了"。
  */
 function onResizeEnd() {
-  if (!resizing) return;
-  resizing = false;
+  if (!resizing.value) return;
+  resizing.value = false;
   document.body.style.cursor = "";
   document.body.style.userSelect = "";
   localStorage.setItem("gosslan-list-w", String(listW.value));
@@ -380,43 +471,51 @@ function onResizeEnd() {
     <!-- 顶部 caption：横贯整个窗口（盖在 rail + list + chat 三列之上），微信 4.0 顶部是整条浅灰拖拽条 -->
     <TitleBar :is-mobile="app.isMobile" />
 
-    <!-- 桌面：rail（左）| 列表（中）| 聊天（右）三列；移动端按 mobileView 抽屉切换 -->
-    <div class="relative flex min-h-0 flex-1 overflow-hidden">
+    <!-- 桌面：rail（左）| 列表（中）| 聊天（右）三列；移动端按 mobileView 抽屉切换。
+         把可拖拽的列表宽 `listW` 暴露成 CSS 变量：会话列表用内联 width，
+         收藏页的左列在 `FavoritePanel` 里（拿不到这个 ref），靠 `var(--gosslan-list-w)` 共享同一宽度
+         （`style.css` 里已有同名 token，默认 250px 兜底）。 -->
+    <div class="relative flex min-h-0 flex-1 overflow-hidden" :style="{ '--gosslan-list-w': `${listW}px` }">
     <!-- 左侧导航栏：顶格到 caption 之下，浅灰与 caption 一体 -->
     <NavRail
-      :view="view"
+      :nav-state="navState"
       :settings-opening="settingsOpening"
       :logs-opening="logsOpening"
-      :favorites-open="favoritesOpen"
-      @update:view="onNavView"
+      @update:nav-state="onUpdateNavState"
       @open-settings="openSettings"
       @open-logs="openLogs"
-      @open-favorites="openFavorites"
     />
 
-    <!-- 会话列表：桌面宽度可拖拽调（默认250px，持久化）；移动端整屏抽屉，靠 translate 滑动切换。
+    <!-- 会话列表：桌面宽度可拖拽调（默认250px，持久化）；移动端整屏抽屉。
          收藏是**整页**（参考 PC 微信：点收藏后左侧不再显示聊天/通讯录列表），
          所以桌面端收藏打开时把这一列整个收起，主区（收藏页）顶到 rail 右边。
-         ⚠️ 移动端 translate 与下方 main 镜像对称（同用 'list' && !favoritesOpen 作为列表态判据）。
-         收藏打开时 aside 必须 -translate-x-full 滑走，否则 z-20 会盖在 z-10 的 main 上
-         → FavoritePanel 被遮住看不见（用户 2026-09-19 Android 实测）。 -->
+         ⚠️ 移动端 translate 与下方 main 镜像对称（同用「'list' 且非收藏」作为列表态判据）。
+         收藏打开时 aside 必须滑走，否则会盖住 main 上的 FavoritePanel 看不见
+         （用户 2026-09-19 Android 实测）—— 本分支把 z 序**反过来**（main z-20 在 aside z-10 之上），
+         收藏/详情永远盖住列表，所以只滑 30% 做视差即可、不必整列滑出。
+         —— 列表 ↔ 详情用 iOS push/pop：两个面板**一起平移**（列表左移、详情从右滑入），
+         而**不是** `hidden` 硬切 —— 硬切在滑动窗口里会露出根节点底色，且只有单边在动，
+         观感像"网页换页"（用户 2026-09-20「会话列表点进聊天没转场、好友点资料也没有」）。
+         离屏面板用 `inert` 摘掉焦点与交互（键盘 Tab 不进不可见面板）。 -->
     <aside
       v-if="app.isMobile || !favoritesOpen"
-      class="h-full shrink-0 overflow-hidden rounded-tl-[var(--gosslan-radius-lg)] bg-[var(--gosslan-list)]"
+      class="h-full shrink-0 overflow-hidden bg-[var(--gosslan-list)]"
       :class="app.isMobile
-        ? 'absolute inset-y-0 left-0 z-20 w-full transition-transform duration-300 ' +
-          (app.mobileView === 'list' && !favoritesOpen ? 'translate-x-0' : '-translate-x-full')
+        ? 'absolute inset-y-0 left-0 z-10 w-full ' +
+          (paneAnimate ? 'transition-transform duration-[var(--gosslan-duration)] ease-[var(--gosslan-ease)] ' : '') +
+          (app.mobileView === 'list' && !favoritesOpen ? 'translate-x-0' : '-translate-x-[30%]')
         : ''"
+      :inert="app.isMobile && app.mobileView === 'chat'"
       :style="app.isMobile ? undefined : { width: `${listW}px` }"
     >
       <!-- 「链接」视图（仅桌面 rail 能切到）：整列换成链接列表；其余视图仍是会话列表。 -->
-      <LinksList v-if="!app.isMobile && view === 'links'" :opening="linksOpening" @open="openLink" />
+      <LinksList v-if="!app.isMobile && isLinksView" :opening="linksOpening" @open="openLink" />
       <ConversationList
         v-else
         :view="listView"
         :active-friend-id="profileFriend?.device_id ?? null"
         :requests-active="showRequests"
-        @update:view="view = $event"
+        @update:view="navState = $event"
         @open-add-friend="addFriendOpen = true"
         @open-group="groupOpen = true"
         @open-friend="openFriendProfile"
@@ -426,11 +525,12 @@ function onResizeEnd() {
     </aside>
 
     <!-- 拖拽分隔条：悬浮叠在列表/聊天交界上（负外边距抵消布局宽度），不留缝；
-         平时透明，悬停/拖拽时高亮。收藏打开时列表已收起，这条也该跟着消失。 -->
+         平时透明，悬停/拖拽时高亮。收藏打开时这一列已收起，这条跟着消失
+         （收藏页另有下面那条，见下）。 -->
     <div
       v-if="!app.isMobile && !favoritesOpen"
-      class="relative z-10 hidden w-2 cursor-col-resize transition-colors hover:bg-primary/25 md:block"
-      :class="resizing ? '-mx-1 bg-primary/40' : '-mx-1'"
+      class="relative z-10 hidden w-2 cursor-col-resize transition-colors hover:bg-[var(--gosslan-divider)] md:block"
+      :class="resizing ? '-mx-1 bg-[var(--gosslan-divider)]' : '-mx-1'"
       @pointerdown="onResizeStart"
       @pointermove="onResizeMove"
       @pointerup="onResizeEnd"
@@ -438,37 +538,106 @@ function onResizeEnd() {
       @lostpointercapture="onResizeEnd"
     ></div>
 
-    <!-- 右侧聊天区：白色面板，左上角圆角与列表相交（微信式），面板色差替代分割线 -->
-    <!-- 移动端 translate 与上方 aside 镜像对称（同判据），保证两者永远互补显示；
-         ⚠️ 不要改回 v-if/hidden：列表滑出的 300ms 右侧会露根节点底色（灰），而且滑动是单边的。
-         离屏时用 inert 摘掉焦点与交互（键盘用户 Tab 不进不可见面板）。 -->
+    <!-- 收藏页（整页态）的拖拽条：它的左列渲染在 `FavoritePanel` 里（不是上面的 `<aside>`），
+         所以要单独挂一条 —— 绝对定位到「rail + listW」处（main 的左缘就是 rail 右缘），
+         复用同一份 `listW` 与拖拽逻辑。这样收藏页的左列宽度与会话列表完全一致、且同样可拖
+         （用户 2026-09-20：「宽度和其他页面不一样，而且不能拖动调整」）。 -->
+    <div
+      v-if="!app.isMobile && favoritesOpen"
+      class="absolute inset-y-0 z-10 w-2 cursor-col-resize transition-colors hover:bg-[var(--gosslan-divider)]"
+      :class="resizing ? 'bg-[var(--gosslan-divider)]' : ''"
+      :style="{ left: `${RAIL_W + listW - 4}px` }"
+      @pointerdown="onResizeStart"
+      @pointermove="onResizeMove"
+      @pointerup="onResizeEnd"
+      @pointercancel="onResizeEnd"
+      @lostpointercapture="onResizeEnd"
+    ></div>
+
+    <!-- 右侧聊天区：面板色差替代分割线；移动端聊天区与列表**一起**平移（iOS push/pop 观感），
+         用 transform 而非 hidden。详情在上层（z-20）：列表→详情时从右滑入、列表在下层左移 30%；
+         详情→列表时反向。这样滑动窗口里始终有内容，不会露出根节点底色。
+         离屏时用 `inert` 摘掉焦点与交互（键盘用户 Tab 不进不可见面板）。
+         ⚠️ 主区**一律直角**，不加 `rounded-tl`（用户 2026-09-20：「最右边栏的左上角都有个圆角」）——
+         之前主区在非整页态带 `rounded-tl`，会在每个页面主区左上角留一个缺角。 -->
     <main
       class="flex h-full min-w-0 flex-1 flex-col bg-[var(--gosslan-chat)]"
       :class="[
-        favoritesOpen ? '' : 'rounded-tl-[var(--gosslan-radius-lg)]',
         app.isMobile
-          ? 'absolute inset-y-0 left-0 z-10 w-full transition-transform duration-300 ' +
-            (app.mobileView === 'list' && !favoritesOpen ? 'translate-x-full' : 'translate-x-0')
+          ? 'absolute inset-y-0 left-0 z-20 w-full ' +
+            (paneAnimate ? 'transition-transform duration-[var(--gosslan-duration)] ease-[var(--gosslan-ease)] ' : '') +
+            (app.mobileView === 'chat' || favoritesOpen ? 'translate-x-0' : 'translate-x-full')
           : '',
       ]"
       :inert="app.isMobile && app.mobileView === 'list' && !favoritesOpen"
     >
       <!-- pb-[calc(4rem+safe-area)] 是给 fixed 定位的 TabBar 留的占位，只有 TabBar 真正**显示**时才需要。
-           下面的 :class 条件必须与 TabBar 的 v-if 完全对齐：mobileView==='list' 且非 settings/logs/favorites 态。
-           否则在 chat 态 / 收藏态 TabBar 已隐藏，pb 还白留着 → 底部空一大截（用户 2026-09-19）。 -->
+           ⚠️ 这里与下面 TabBar 的 v-if **共用同一个 `showMobileTabBar`**（不要再各写一份条件）：
+           两边一旦不一致，TabBar 已隐藏时 pb 还白留着 → 底部空一大截（用户 2026-09-19）。 -->
       <div
-        class="min-h-0 flex-1 md:pb-0"
-        :class="app.isMobile && !app.keyboardOpen && app.mobileView === 'list' && !favoritesOpen && !settingsOpen && !logsOpen
-          ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]'
-          : ''"
+        class="min-h-0 flex flex-1 flex-col md:pb-0"
+        :class="showMobileTabBar ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : ''"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 8}px` }
           : undefined"
       >
-        <!-- 「链接」视图：右侧**不再保留会话**（用户 2026-09-17：切到链接后右边还挂着聊天，
-             视觉上像没切过去）。给一个引导态（与打开好友资料页一样会卸载聊天区，属既有模式）。 -->
+        <!-- 发现页（navState='discover'）：纯内容，无额外头部。
+             切换入口藏在内容右上角（FavoritePanel 里点 Compass 切链接，反之亦然）。 -->
+        <!-- 我的页面（navState='me'） -->
+        <template v-if="navState === 'me'">
+          <!-- 与聊天/通讯录列表**同族**：列表底 `--gosslan-list`、行悬停 `--gosslan-list-hover`、
+               行间内缩分隔线。此前是白底 + `--gosslan-hover` + 无分隔线，和别的列表对不上
+               （用户 2026-09-20：「我的也是一样的问题」）。 -->
+          <div class="flex h-full flex-col overflow-y-auto bg-[var(--gosslan-list)]">
+            <!-- 头部：头像 + 昵称（点进去编辑资料） -->
+            <button
+              class="flex w-full shrink-0 items-center gap-3 border-b border-[var(--gosslan-divider)] px-4 py-4 text-left transition hover:bg-[var(--gosslan-list-hover)]"
+              :aria-label="t('nav.profile')"
+              @click="openProfile()"
+            >
+              <div class="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--gosslan-primary)]/10 text-2xl text-[var(--gosslan-primary)]">
+                <img v-if="app.device?.avatar" :src="app.device.avatar" alt="" class="h-full w-full object-cover" />
+                <UserCircle v-else class="h-10 w-10" />
+              </div>
+              <div class="flex min-w-0 flex-1 flex-col">
+                <span class="truncate text-base font-medium" :title="app.device?.nickname || app.device?.device_id || t('nav.me')">{{ app.device?.nickname || app.device?.device_id || t("nav.me") }}</span>
+                <span class="truncate text-xs text-[var(--gosslan-text-2)]" :title="app.device?.device_id">{{ app.device?.device_id || "" }}</span>
+              </div>
+            </button>
+            <!-- 菜单列表。不再重复放「资料」：上方头像本身已是资料入口（用户 2026-09-20）。
+                 顺序：设置 → 链接 → 日志（链接在日志上面，用户 2026-09-20）。
+                 图标与桌面 NavRail 一致用 lucide 线性图标，不再用 📋 emoji（用户 2026-09-20「日志图标好奇怪」）。 -->
+            <div class="flex flex-col">
+              <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="openSettings()">
+                <Settings class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+                <span class="flex-1 text-sm">{{ t("nav.settings") }}</span>
+              </button>
+              <!-- 行间内缩分隔线（从文本列起 = px-4 + 20 图标 + gap-3 = 48px ⇒ ml-12），
+                   与聊天/通讯录列表同款；末行不加。
+                   ⚠️ 放成**兄弟节点**而不是塞进 `<button>` 里：`<div>` 不是 phrasing content，
+                   塞进 button 是非法 HTML。 -->
+              <div class="ml-12 h-px shrink-0 bg-[var(--gosslan-divider)]"></div>
+              <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="selectMobileTab('links', 'chat')">
+                <Compass class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+                <span class="flex-1 text-sm">{{ t("nav.links") }}</span>
+              </button>
+              <div class="ml-12 h-px shrink-0 bg-[var(--gosslan-divider)]"></div>
+              <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="openLogs()">
+                <ScrollText class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+                <span class="flex-1 text-sm">{{ t("nav.logs") }}</span>
+              </button>
+            </div>
+          </div>
+        </template>
+        <!-- 收藏页：桌面端在右栏整页渲染（左列表 + 右详情两栏）；
+             移动端作为普通底部 tab（保留 tab 栏），点具体收藏才在 FavoritePanel 内部新开详情页。
+             ⚠️ 这里必须是 `v-else-if`（接到上面「我的」那条 `v-if="navState === 'me'"`），
+             否则「我的」页会和链尾的兜底空态（「选择一个会话开始聊天」）**同时渲染**——
+             两条互不相干的条件链各自命中，用户会看到「我的」下面还挂着一个空会话页（用户 2026-09-20）。 -->
+        <FavoritePanel v-else-if="favoritesOpen && !app.isMobile" @close="closeFavorites" />
+        <FavoritePanel v-else-if="app.isMobile && navState === 'favorites'" />
         <div
-          v-if="!app.isMobile && view === 'links'"
+          v-else-if="!app.isMobile && isLinksView"
           class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
         >
           <Compass class="h-16 w-16 opacity-25" />
@@ -477,11 +646,8 @@ function onResizeEnd() {
             {{ t("layout.linksHint") }}
           </div>
         </div>
-        <template v-else>
-          <!-- 收藏页：整页渲染在主内容区（不再是弹窗） -->
-          <FavoritePanel v-if="favoritesOpen" @close="closeFavorites" />
         <!-- 新的朋友页：右侧展示好友申请列表（微信式） -->
-        <div v-else-if="showRequests" class="flex h-full flex-col">
+        <div v-else-if="navState === 'contacts' && showRequests" class="flex h-full flex-col">
           <div class="flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4" :style="{ height: 'var(--gosslan-header-h)' }">
             <span class="text-[15px] font-medium">{{ t("conv.newFriends") }}</span>
           </div>
@@ -499,12 +665,15 @@ function onResizeEnd() {
           </div>
         </div>
         <FriendProfile
-          v-else-if="profileFriend !== null"
+          v-else-if="navState === 'contacts' && profileFriend !== null"
           :friend="profileFriend"
           @send-message="sendMessageTo"
           @remove="removeFriend"
         />
-        <ChatWindow v-else-if="chat.activeConv" @open-share="shareOpen = true" />
+        <ChatWindow
+          v-else-if="navState === 'chats' && chat.activeConv"
+          @open-share="shareOpen = true"
+        />
         <div
           v-else
           class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
@@ -522,7 +691,7 @@ function onResizeEnd() {
           <button
             v-if="chat.friends.length"
             class="tap-safe mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
-            @click="view = 'contacts'"
+            @click="navState = 'contacts'"
           >
             {{ t("conv.startChat") }}
           </button>
@@ -537,26 +706,23 @@ function onResizeEnd() {
             {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
           </div>
         </div>
-        </template>
       </div>
     </main>
     </div>
 
-    <!-- 移动端底部导航（软键盘弹出时收起，避免浮在键盘上方遮挡输入）。
-         Chat Detail / 设置 / 日志 / 收藏 等全屏二级页时整个 TabBar 隐藏 ——
-         二级页不该有一级页的 TabBar，返回时才恢复（见规格 P6-P9）。 -->
+    <!-- 移动端底部导航：4 按钮（聊天 / 通讯录 / 收藏 / 我的）；软键盘弹出时收起（避免浮在键盘上方遮挡输入）。
+         显示条件**统一走 `showMobileTabBar`**（与上面内容区的 pb 占位同源，不要再各写一份）：
+         只在**四个一级 tab** 上显示 —— 聊天/通讯录列表（`mobileView === 'list'`）、收藏、我的；
+         进 Chat 详情 / 设置 / 日志 / 链接 等二级页时整个隐藏（二级页不该有一级页的 TabBar）。
+         ⚠️ 收藏 tab 必须**保留** TabBar（用户 2026-09-20 明确要求，「收藏 tab 不要新开页面」）。 -->
     <nav
-      v-if="app.isMobile
-        && !app.keyboardOpen
-        && !app.multiSelectActive
-        && app.mobileView === 'list'
-        && !settingsOpen && !logsOpen && !favoritesOpen"
+      v-if="showMobileTabBar"
       class="safe-bottom fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]"
     >
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
-        :class="view === 'chats' && app.mobileView === 'list' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
-        @click="app.mobileView = 'list'; view = 'chats'"
+        :class="navState === 'chats' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
+        @click="selectMobileTab('chats', 'list')"
       >
         <span class="relative">
           <MessageCircle class="h-5 w-5" />
@@ -570,8 +736,8 @@ function onResizeEnd() {
       </button>
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
-        :class="view === 'contacts' && app.mobileView === 'list' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
-        @click="app.mobileView = 'list'; view = 'contacts'"
+        :class="navState === 'contacts' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
+        @click="selectMobileTab('contacts', 'list')"
       >
         <span class="relative">
           <Users class="h-5 w-5" />
@@ -587,64 +753,24 @@ function onResizeEnd() {
            桌面端 NavRail 也有星标按钮，风格一致。 -->
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
-        :class="favoritesOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
-        @click="openFavorites"
+        :class="navState === 'favorites' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
+        @click="selectMobileTab('favorites', 'chat')"
       >
         <Star class="h-5 w-5" />
         <span class="text-[11px]">{{ t("nav.favorites") }}</span>
       </button>
-      <!-- 更多：设置 / 运行日志收进二级菜单，TabBar 最多 4 项（规格要求） -->
+      <!-- 我的：设置 / 链接 / 运行日志收进「我的」页的菜单（TabBar 最多 4 项）。
+           本分支用「我的」tab 取代了旧的「更多」弹出 sheet（用户 2026-09-20 的改版：
+           设置/链接/日志都进「我的」，不再需要二级 sheet）。 -->
       <button
-        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)]"
-        :class="mobileMoreOpen ? 'text-[var(--gosslan-primary)]' : ''"
-        @click="mobileMoreOpen = !mobileMoreOpen"
-        aria-haspopup="menu"
-        :aria-expanded="mobileMoreOpen || undefined"
+        class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
+        :class="navState === 'me' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
+        @click="selectMobileTab('me', 'chat')"
       >
-        <MoreHorizontal class="h-5 w-5" />
-        <span class="text-[11px]">{{ t("nav.more") }}</span>
+        <UserCircle class="h-5 w-5" />
+        <span class="text-[11px]">{{ t("nav.me") }}</span>
       </button>
     </nav>
-
-    <!-- 移动端 TabBar "更多"菜单：底部 sheet 样式，盖在 TabBar 上方。
-         里面是二级功能入口（设置 / 运行日志）。点击外部或 TabBar 更多按钮收回。 -->
-    <Transition name="sheet">
-      <div
-        v-if="app.isMobile && mobileMoreOpen"
-        class="fixed left-0 right-0 z-50 flex flex-col items-stretch bg-[var(--gosslan-panel)]"
-        :style="{ bottom: 'calc(var(--gosslan-mobile-tabbar-h) + env(safe-area-inset-bottom))' }"
-        role="menu"
-        @click.self="mobileMoreOpen = false"
-      >
-        <button
-          role="menuitem"
-          class="tap-safe flex items-center gap-3 border-b border-[var(--gosslan-divider)] px-5 py-4 text-left text-[var(--gosslan-text)] active:bg-[var(--gosslan-hover)]"
-          :aria-busy="settingsOpening"
-          @click="mobileMoreOpen = false; openSettings()"
-        >
-          <Settings class="h-5 w-5 text-[var(--gosslan-text-2)]" />
-          <span class="text-[15px]">{{ t("nav.settings") }}</span>
-        </button>
-        <button
-          role="menuitem"
-          class="tap-safe flex items-center gap-3 px-5 py-4 text-left text-[var(--gosslan-text)] active:bg-[var(--gosslan-hover)]"
-          :aria-busy="logsOpening"
-          @click="mobileMoreOpen = false; openLogs()"
-        >
-          <ScrollText class="h-5 w-5 text-[var(--gosslan-text-2)]" />
-          <span class="text-[15px]">{{ t("nav.logs") }}</span>
-        </button>
-      </div>
-    </Transition>
-
-    <!-- 点击遮罩关闭更多菜单：TabBar 可见区域外的点击都应收回菜单。
-         但不影响 TabBar 自身（上面那个 @click.self 只处理菜单内部点击）。 -->
-    <div
-      v-if="app.isMobile && mobileMoreOpen"
-      class="fixed inset-0 z-[45]"
-      @click="mobileMoreOpen = false"
-      aria-hidden="true"
-    ></div>
 
     <!-- 弹窗 -->
     <SettingsPanel :open="settingsOpen" @close="settingsOpen = false" />
@@ -661,7 +787,26 @@ function onResizeEnd() {
     <ShareDirectory :open="shareOpen" @close="shareOpen = false" />
 
     <!-- 移动端运行日志页：全屏覆盖、带返回（桌面端走独立窗口，见 open_log_window） -->
-    <LogViewer v-if="app.isMobile && logsOpen" @back="logsOpen = false" />
+    <Transition name="page-slide">
+      <LogViewer v-if="app.isMobile && logsOpen" @back="logsOpen = false" />
+    </Transition>
+
+    <!-- 移动端链接页：从「我的」下钻进来的全屏覆盖层（桌面端在左列渲染） -->
+    <Transition name="page-slide">
+      <LinksList v-if="app.isMobile && isLinksView" :opening="linksOpening" @open="openLink" @back="onLinksBack" />
+    </Transition>
+
+    <!-- 移动端资料页：可编辑资料，从「我的」下钻进来（桌面端回落到设置） -->
+    <Transition name="page-slide">
+      <MobilePageFrame
+        v-if="app.isMobile && profileOpen"
+        mode="overlay"
+        :title="t('nav.profile')"
+        @back="profileOpen = false"
+      >
+        <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
+      </MobilePageFrame>
+    </Transition>
 
     <!-- Toast：主窗口与独立窗口共用的 HUD（见 `ToastHud.vue` 的说明）。 -->
     <ToastHud />

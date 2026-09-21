@@ -91,6 +91,26 @@ function onTitlebarDblClick() {
 }
 
 /**
+ * 手动拖拽兜底（Windows 主方案，macOS 也能用）。
+ *
+ * Tauri v2 Windows WebView2 上 `data-tauri-drag-region` 有已知缺陷：
+ * 原生实现只在 drag-region 最顶部几像素响应拖拽，下半部分不触发。
+ * 改为监听 mousedown 显式调 `startDragging()`，绕开 WebView2 的 bug。
+ * macOS 上手动实现和原生等价，统一用这一套减少平台分叉。
+ *
+ * 按钮用 `data-no-drag-region` + `@mousedown.stop` 阻止冒泡到这里。
+ */
+function onDragStart(e: MouseEvent) {
+  if (props.isMobile) return;
+  if (e.button !== 0) return; // 只响应左键
+  try {
+    void getCurrentWindow().startDragging();
+  } catch {
+    /* 非 Tauri 环境忽略 */
+  }
+}
+
+/**
  * Ctrl+W 关闭窗口（仅 Windows/Linux）：与标题栏「×」一致。
  *
  * macOS **不在这里处理**：自绘标题栏 + `decorations:false` 下本无系统 ⌘W，
@@ -135,10 +155,10 @@ onBeforeUnmount(() => {
        辅助窗口只多一个功能名（`title`），其余与主窗口完全同一套。 -->
   <div
     v-if="!isMobile"
-    data-tauri-drag-region
     class="flex shrink-0 select-none items-center bg-[var(--gosslan-caption)]"
     :class="isMac ? 'justify-start pl-[13px]' : 'justify-end'"
     :style="{ height: 'var(--gosslan-title-h)' }"
+    @mousedown="onDragStart"
     @dblclick="onTitlebarDblClick"
   >
     <!-- macOS：红绿灯。按**原生度量与状态**绘制（用户 2026-09-12 反馈：
@@ -152,7 +172,7 @@ onBeforeUnmount(() => {
          组上加 @dblclick.stop：双击红绿灯不应冒泡成"双击标题栏"触发缩放。
          ⚠️ 绿灯在「不可最大化」的窗口（设置/日志/群任务）里**不渲染**。 -->
     <div v-if="isMac" class="group/traffic flex h-full items-center" style="gap: 8px" @dblclick.stop>
-      <button
+      <button data-no-drag-region @mousedown.stop
         class="traffic-hit flex h-3 w-3 items-center justify-center rounded-full transition-colors"
         :class="focused
           ? 'bg-[#ff5f57] shadow-[inset_0_0_0_1px_#e0443e]'
@@ -169,7 +189,7 @@ onBeforeUnmount(() => {
           <path d="M4.2 4.2l3.6 3.6M7.8 4.2L4.2 7.8" />
         </svg>
       </button>
-      <button
+      <button data-no-drag-region @mousedown.stop
         class="traffic-hit flex h-3 w-3 items-center justify-center rounded-full transition-colors"
         :class="focused
           ? 'bg-[#febc2e] shadow-[inset_0_0_0_1px_#dea123]'
@@ -186,7 +206,7 @@ onBeforeUnmount(() => {
           <path d="M4 6h4" />
         </svg>
       </button>
-      <button
+      <button data-no-drag-region @mousedown.stop
         v-if="showMaximize"
         class="traffic-hit flex h-3 w-3 items-center justify-center rounded-full transition-colors"
         :class="focused
@@ -235,7 +255,7 @@ onBeforeUnmount(() => {
          同理只加圆角不加宽度补偿也不行：那会让 hover 底与窗口边缘脱开。
          原生 Windows 的窗口按钮 hover 也是整块矩形、由窗口圆角裁切。 -->
     <div v-if="!isMac" class="flex h-full items-stretch">
-      <button
+      <button data-no-drag-region @mousedown.stop
         v-if="showMinimize"
         class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
         :title="t('window.minimize')" :aria-label="t('window.minimize')"
@@ -245,7 +265,7 @@ onBeforeUnmount(() => {
           <path d="M0.5 5h9" data-win-glyph="minimize" />
         </svg>
       </button>
-      <button
+      <button data-no-drag-region @mousedown.stop
         v-if="showMaximize"
         class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
         :title="maximized ? t('window.restore') : t('window.maximize')" :aria-label="maximized ? t('window.restore') : t('window.maximize')"
@@ -264,7 +284,7 @@ onBeforeUnmount(() => {
           </template>
         </svg>
       </button>
-      <button
+      <button data-no-drag-region @mousedown.stop
         class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-danger)] hover:text-white"
         :title="closeToTray ? t('window.closeToTray') : t('window.close')"
         :aria-label="closeToTray ? t('window.closeToTray') : t('window.close')"

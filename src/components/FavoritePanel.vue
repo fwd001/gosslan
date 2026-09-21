@@ -26,8 +26,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import { useBackLayer } from "@/composables/useBackLayer";
 import ContextMenu from "@/components/ContextMenu.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
+import BackArrow from "@/components/ui/BackArrow.vue";
 import { useClipboard } from "@/composables/useClipboard";
 import { fmtConversationTime } from "@/utils/time";
 import { humanSize, rgba } from "@/utils/color";
@@ -58,6 +60,29 @@ const emit = defineEmits<{ (e: "close"): void }>();
 const app = useAppStore();
 const chat = useChatStore();
 const { copyContent } = useClipboard();
+
+/** 头部标题：选中某条收藏时显示该条名称，否则显示收藏总数/标题。 */
+const favTitle = computed(() => (active.value ? displayName(active.value) : headerTitle.value));
+
+/** 统一返回：详情态先退回列表，列表态再关闭整个收藏层（与框架返回键一致）。 */
+function onFavBack() {
+  if (active.value) active.value = null;
+  else emit("close");
+}
+
+// 移动端两层返回（与框架返回键一致）：
+//   —— 详情态（active）先退回列表；列表态（tab）再关掉整个收藏 tab（回到 chats）。
+//   两条 active 互斥（一条看 active、一条看 !active），不会同时压栈，层级天然正确。
+useBackLayer(
+  () => app.isMobile && active.value !== null,
+  () => {
+    active.value = null;
+  },
+);
+useBackLayer(
+  () => app.isMobile && active.value === null,
+  () => emit("close"),
+);
 
 type FilterKey = "all" | "text" | "image" | "file";
 /** 类型筛选（与 PC 微信一致：全部 / 文本 / 图片 / 文件）。 */
@@ -388,26 +413,11 @@ async function confirmDelete() {
 </script>
 
 <template>
+  <!-- 普通整页内容（桌面端内嵌右栏、移动端作为底部 tab）。
+       详情是「点具体收藏」才新开的一页：移动端用 fixed 全屏覆盖层（盖住底部 tab 栏），
+       桌面端仍是左列表 + 右详情的两栏。详情页的 chevron 返回由下方移动端头部提供，
+       不再各自画返回键（用户 2026-09-20）。 -->
   <div class="flex h-full min-h-0 flex-col">
-    <!-- 页头：仅移动端需要（返回 + 标题）。桌面端参考 PC 微信收藏：搜索 + 筛选直接顶到顶部，
-         不再垫一条大空白标题栏（用户 2026-09-18：「顶部这个大空白的设计不好看」）。 -->
-    <header
-      v-if="app.isMobile"
-      class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4"
-      :style="{ height: 'var(--gosslan-header-h)' }"
-    >
-      <button
-        v-if="app.isMobile"
-        class="tap-safe -ml-1 flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]"
-        :aria-label="t('common.back')"
-        @click="emit('close')"
-      >
-        ←
-      </button>
-      <span class="min-w-0 truncate text-[15px] font-medium" :title="headerTitle">
-        {{ headerTitle }}
-      </span>
-    </header>
 
     <div
       v-if="loading"
@@ -431,33 +441,54 @@ async function confirmDelete() {
       {{ t("favorite.empty") }}
     </div>
 
-    <div v-else class="flex min-h-0 flex-1 flex-col gap-3 p-3">
-      <!-- 两栏：左列表（搜索+筛选+列表）+ 右详情；移动端退化成两级（列表 ↔ 详情）。
-           PC 微信收藏里搜索/筛选就收在左栏列表上方，不单独占一整条横栏。 -->
-      <div class="flex min-h-0 flex-1 gap-3">
+    <div v-else class="flex min-h-0 flex-1 flex-col">
+      <!-- 两栏：左列表（搜索+筛选+列表）+ 右详情；窄屏退化成两级（列表 ↔ 详情）。
+           PC 微信收藏里搜索/筛选就收在左栏列表上方，不单独占一整条横栏。
+           ⚠️ 整页**铺满、外层不留外边距**：`p-3` 会在左栏（列表底）外露出一圈白边，
+           且左栏顶部缩进 12px，左上角就不是圆角了（用户 2026-09-20）。
+           搜索框 / 筛选自己留内边距，列表行仍满宽。 -->
+      <div class="flex min-h-0 flex-1">
+        <!-- 左栏 = 列表底 `--gosslan-list`（与聊天/通讯录/搜索列表同族）：
+             此前用 main 的白色 `--gosslan-chat` 打底，整栏发白，和其它列表不一致（用户 2026-09-20）。 -->
+        <!-- ⚠️ `sm:flex-none` 不能省：`flex-1` 把 `flex-basis` 设成 0%，会让下面的 width 失效、
+             左列被拉伸成「和详情各占一半」，宽度就和别处的列表列对不上了（用户 2026-09-20）。
+             宽度走 `var(--gosslan-list-w)`（= 布局里可拖拽的列表宽），与聊天/通讯录列表一致。 -->
+        <!-- ⚠️ 只在**移动端**才在选中后收起左列（两级：列表 ↔ 详情）：桌面端详情的返回头部是
+             `v-if="app.isMobile"`，收起左列后**没有返回入口**、没法再选下一条，所以桌面端保持两栏。
+             ⚠️ 更正（用户 2026-09-20 指出）：早先这条注释把「这里怎么有圆角」的根因写成这个，是**错的** ——
+             那个圆角来自主区 `<main>` 自身的 `rounded-tl`，与是否收起左列无关，已单独删除。 -->
+        <!-- ⚠️ 这里**不加** `sm:border-r`：两栏靠底色分栏（列表底 vs 详情白），与聊天/通讯录页一致；
+             加一条竖线反而是别的页面没有的东西（用户 2026-09-20：「收藏页两栏中间多个分割线」）。 -->
         <div
-          class="min-h-0 border-[var(--gosslan-divider)] pr-1 sm:w-64 sm:shrink-0 sm:flex sm:flex-col sm:gap-2 sm:border-r"
-          :class="active ? 'hidden' : 'flex flex-1 flex-col gap-2'"
+          class="min-h-0 bg-[var(--gosslan-list)] sm:flex sm:w-[var(--gosslan-list-w)] sm:flex-none sm:flex-col"
+          :class="app.isMobile && active ? 'hidden' : 'flex flex-1 flex-col'"
         >
-          <input
-            v-model="keyword"
-            maxlength="50"
-            autocomplete="off"
-            :placeholder="t('favorite.searchPlaceholder')"
-            class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
-          />
-          <div class="flex items-center gap-1">
-            <button
-              v-for="f in FILTERS"
-              :key="f.key"
-              class="tap-safe rounded-full px-2.5 py-1 text-xs transition"
-              :class="filterKind === f.key
-                ? 'bg-primary text-white'
-                : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-              @click="filterKind = f.key"
-            >
-              {{ t(f.label) }}
-            </button>
+          <div class="flex shrink-0 flex-col gap-2 px-2 pt-2">
+            <input
+              v-model="keyword"
+              maxlength="50"
+              autocomplete="off"
+              :placeholder="t('favorite.searchPlaceholder')"
+              class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-3 py-2 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+            />
+            <!-- 类型筛选：独立胶囊 chips，与「群任务过滤 / 日志时间窗口」同款
+                 （此前激活态写了不存在的 `bg-primary` 类导致选中没底色，用户 2026-09-20；
+                 这里对齐 GroupTasksBoard 的标准 chip 配方）。 -->
+            <div class="flex shrink-0 flex-wrap items-center gap-1">
+              <button
+                v-for="f in FILTERS"
+                :key="f.key"
+                type="button"
+                class="tap-safe rounded-full px-2.5 py-1 text-xs transition"
+                :class="filterKind === f.key
+                  ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]'
+                  : 'border border-transparent text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+                :aria-pressed="filterKind === f.key"
+                @click="filterKind = f.key"
+              >
+                {{ t(f.label) }}
+              </button>
+            </div>
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto">
           <!-- 每行：行本身是 <button>（可聚焦、可回车），移动端的「⋯」放在**兄弟层**用绝对定位
@@ -465,8 +496,10 @@ async function confirmDelete() {
                表现是"⋯ 点了没反应"或整行都被点）。 -->
           <div v-for="f in filtered" :key="f.id" class="relative">
             <button
-              class="flex w-full items-start gap-2.5 rounded-[var(--gosslan-radius-md)] px-2 py-2 text-left transition"
-              :class="active?.id === f.id ? 'bg-[var(--gosslan-hover)]' : 'hover:bg-[var(--gosslan-hover)]'"
+              class="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition"
+              :class="active?.id === f.id
+                ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
+                : 'hover:bg-[var(--gosslan-list-hover)]'"
               @click="selectItem(f)"
               @contextmenu.prevent="openMenuAt($event, f)"
             >
@@ -493,6 +526,9 @@ async function confirmDelete() {
                 </span>
               </span>
             </button>
+            <!-- 微信式行间细分隔线：从文本列起（图标后缩进 = px-3 + 32 图标 + gap-2.5），
+                 与聊天/通讯录列表同款（用户 2026-09-20：收藏列表的风格要和别的列表统一）。 -->
+            <div class="pointer-events-none absolute bottom-0 left-[54px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
             <button
               v-if="app.isMobile"
               type="button"
@@ -512,17 +548,38 @@ async function confirmDelete() {
         <!-- 右侧详情：全文 / 大图 / 文件卡片 + 底部操作条（PC 微信的收藏详情同样如此）。
              操作条**钉在详情底部**而不是跟在正文后面：正文长短不一，跟排会忽上忽下；
              且旧版内联按钮排一半带图标一半不带，flex-wrap 一换行就参差不齐
-             （用户 2026-09-17："这个操作的样式不行"）。 -->
-        <div v-if="active" class="flex min-h-0 flex-1 flex-col">
-          <div class="min-h-0 flex-1 overflow-y-auto">
+             （用户 2026-09-17："这个操作的样式不行"）。
+             移动端：详情是「点具体收藏」才新开的一页 —— 用 fixed 全屏覆盖层（盖住底部 tab 栏），
+             顶部带框架式 chevron 返回（覆盖层自己带头部，不再依赖外部框架）。 -->
+        <!-- 转场：只有移动端详情是「新开的一页」，才走 page-slide；桌面端是内嵌右栏，不转场。 -->
+        <Transition :name="app.isMobile ? 'page-slide' : ''">
+        <div
+          v-if="active"
+          :class="app.isMobile
+            ? 'fixed inset-0 z-[60] flex flex-col bg-[var(--gosslan-bg)] pt-[env(safe-area-inset-top)]'
+            : 'flex min-h-0 flex-1 flex-col'"
+        >
+          <!-- 移动端详情头部：与 MobilePageFrame **完全一致**的框架返回键
+               （同款 BackArrow / h-8 w-8 热区 / panel 底 / px-3）。
+               此前自绘了 stroke-width=2 + 圆角端点 + bg-bg，与其他转场页的返回箭头不一致
+               （用户 2026-09-20「头部标题的返回箭头也不一样」，统一走 BackArrow 按平台适配）。 -->
+          <header
+            v-if="app.isMobile"
+            class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-3"
+            :style="{ height: 'var(--gosslan-header-h)' }"
+          >
             <button
-              v-if="app.isMobile"
-              class="tap-safe mb-2 text-[13px] text-[var(--gosslan-accent-ink)]"
-              @click="active = null"
+              class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              :title="t('common.back')"
+              :aria-label="t('common.back')"
+              @click="onFavBack"
             >
-              ← {{ t("common.back") }}
+              <BackArrow />
             </button>
+            <span class="min-w-0 truncate text-[15px] font-medium text-[var(--gosslan-text)]" :title="favTitle">{{ favTitle }}</span>
+          </header>
 
+          <div class="min-h-0 flex-1 overflow-y-auto p-3">
             <div class="mb-2 flex items-center gap-2 text-[11px] text-[var(--gosslan-text-2)]">
               <span class="truncate" :title="senderName(active)">{{ senderName(active) }}</span>
               <span>·</span>
@@ -570,7 +627,7 @@ async function confirmDelete() {
           <!-- 底部操作条：图标在上、11px 字在下、等宽分布（微信 PC 收藏详情同款）。
                每项**必带图标** —— 旧版"查看图片/另存为"是裸文字，跟带图标项混排就是参差感的主因。
                min-w-14 保证字不挤压截断；真放不下时横向滚动兜底，绝不折行。 -->
-          <div class="mt-2 flex shrink-0 items-stretch gap-0.5 overflow-x-auto border-t border-[var(--gosslan-divider)] pt-1">
+          <div class="mt-2 flex shrink-0 items-stretch gap-0.5 overflow-x-auto border-t border-[var(--gosslan-divider)] px-2 pb-2 pt-1">
             <button
               class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="copyItem(active)"
@@ -625,13 +682,14 @@ async function confirmDelete() {
             </button>
           </div>
         </div>
-        <div v-else class="hidden flex-1 items-center justify-center text-xs text-[var(--gosslan-text-2)] sm:flex">
+        </Transition>
+        <div v-if="!active" class="hidden flex-1 items-center justify-center text-xs text-[var(--gosslan-text-2)] sm:flex">
           {{ t("favorite.pickOne") }}
         </div>
       </div>
 
       <!-- 删除二次确认（内联块，不再叠一个 Dialog） -->
-      <div v-if="pendingDelete" class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger-soft)] p-3">
+      <div v-if="pendingDelete" class="m-3 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger-soft)] p-3">
         <p class="text-sm leading-relaxed text-[var(--gosslan-text)]">
           {{ t("favorite.deleteConfirm") }}
         </p>

@@ -447,14 +447,14 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           <template v-if="!query.trim()">
             <button
               v-if="chat.friends.length"
-              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-primary px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
               @click="emit('update:view', 'contacts')"
             >
               {{ t("conv.startChat") }}
             </button>
             <button
               v-else
-              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-primary px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
               @click="emit('open-add-friend')"
             >
               {{ t("common.addFriend") }}
@@ -579,7 +579,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             @click="pendingRemoveFriend = null"
           >{{ t("common.cancel") }}</button>
           <button
-            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
             @click="confirmDeleteFriend"
           >{{ t("common.deleteFriend") }}</button>
         </div>
@@ -603,7 +603,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             @click="pendingDelete = null"
           >{{ t("common.cancel") }}</button>
           <button
-            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
             @click="confirmDeleteConv"
           >{{ t("common.delete") }}</button>
         </div>
