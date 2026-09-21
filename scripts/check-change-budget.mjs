@@ -12,11 +12,15 @@
  *   2. **敏感文件**:碰核心协议/密码学/DB schema 的改动无论多小都要显式声明;
  *   3. **重复犯案**:同一领域连续被打补丁 ⇒ 说明缺不变量或单一事实来源,
  *      4.18.7→4.18.10 就是标准样本(四个"小修复"互相修)。
+ *   4. **版本声明一致性**:`Version-Bump` 写了就必须真 bump 四个版本清单文件,反之亦然
+ *      —— trailer 不只是仪式:判据 3 拿它判"这次是不是修补"。
  *
  * ## 判据(对范围内每个 commit)
  *
  * 先算**计入文件** = 改动文件 − 豁免文件(见下)。计入文件为空 ⇒ 整个 commit
- * 是纯工程/文档 commit ⇒ PASS。
+ * 是纯工程/文档 commit ⇒ PASS。判据 4 **不看豁免**(版本清单文件本就在豁免之外),
+ * 但 git 模式下读不到完整 message 时判据 3/4 一律**停用并计一条失败** ——
+ * 停用与通过打印不同,不会悄悄变绿。
  *
  * | 级别 | 条件 | 要求 |
  * |---|---|---|
@@ -37,9 +41,25 @@
  * Cargo.toml / Cargo.lock / tauri.conf.json。每次发版固定动这 6 个文件,不豁免
  * 会每个版本撞门。
  *
- * **重复犯案**:取 `<merge-base>..HEAD` 内最近 5 个 `fix` 提交,各自映射领域
+ * **重复犯案**:取 `<merge-base>..HEAD` 内最近 5 个「**修补形状**」提交,各自映射领域
  * (豁免文件不计);任一领域出现 ≥3 次 ⇒ FAIL。窗口**只看本分支独有**的提交
  * —— main 上历史上已经有 BLE 连修的旧案,向前看,不审判历史。
+ *
+ * 「修补形状」**不看前缀怎么写**:前缀是手打的、可以写成 `feat` 躲窗口(真实形状:
+ * `feat(ui): 主题色体系 + …… + 群任务编辑权限修复`)。改看 **`Version-Bump` 声明**:
+ * 声明 `patch` = 作者断言"这次没有新能力" ⇒ 无论前缀是 fix 还是 feat 都进窗口;
+ * 没有声明的旧提交退回按 `^fix` 前缀判(不缩小既有窗口)。
+ *
+ * **判据 4 —— 版本声明必须落地**(2026-09-21 加,PR #22/#23 的真实缺口):
+ * message 里写了 `Version-Bump: patch|minor|major`,提交里就必须**同时**动这四个版本
+ * 清单文件 —— `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、
+ * `src-tauri/tauri.conf.json`(`scripts/version.mjs` 一次写这四个;`Cargo.lock` 归 cargo
+ * 管、可能延后同步,所以不要求)。反方向同样:四个都动了却没声明 ⇒ 红
+ * (`chore(release)` 例外:那条流的声明就在 subject 里)。
+ * 为什么两个方向都要:判据 3 现在**消费这个 trailer**,一个不成立的 trailer 就等于
+ * "窗口可以靠不写 trailer 躲开" —— 装饰性声明比没有声明更糟。
+ * 近 200 个提交实测:命中红线的只有 PR #22/#23 那两条(声明了 bump、四个文件一个没动,
+ * 版本最后是 v4.23.0 手工补账的),其余形状全部一致 ⇒ 不会误伤历史。
  *
  * ## 领域归属
  *
@@ -65,10 +85,13 @@
  *   —— 那靠测试与不变量;
  * · **commit 切分 gaming**:把一个大改动拆成多个小 commit 就绕过了规模判据
  *   —— 但重复犯案判据仍会盯住"同一领域反复改";两道闸互为补充;
- * · **fix 前缀 gaming**:把 fix 写成 feat 就躲开犯案窗口 —— 这属于"门禁被绕过
- *   一次就永久失效"的流程问题,review 兜底。
+ * · **不写 trailer**:判据 4 管的是"写了就得真做",不管"该写却没写"。不声明
+ *   `Version-Bump` 的提交会退回按 `^fix` 前缀进犯案窗口 ⇒ 把一条真修复写成
+ *   `feat` 且**同时**删掉 trailer,仍能躲开窗口。这一步不做硬要求的原因:近 200 个提交里
+ *   「无 trailer 无版本文件」有 56 条(旧的"多 commit 攒一版"流),现在强令每 commit 必
+ *   bump 会把门禁变成对历史的审判。真发生了靠 review + `[plan]` 说明兜底。
  *
- * 退出码:0 = 全部通过;1 = 有 commit 超预算未声明,或重复犯案。
+ * 退出码:0 = 全部通过;1 = 有 commit 超预算未声明、版本声明未落地,或重复犯案。
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -109,10 +132,58 @@ const RELEASE_WHITELIST = new Set([
   "src-tauri/tauri.conf.json",
 ]);
 
-/** 重复犯案窗口:最近 N 个 fix 提交。 */
+/** 重复犯案窗口:最近 N 个修补形状提交。 */
 const OFFENDER_WINDOW = 5;
 /** 同一领域在窗口内出现 ≥ N 次 ⇒ FAIL。依据:4.18.7→4.18.10 是 4 次;第 3 次就拦。 */
 const OFFENDER_LIMIT = 3;
+
+/**
+ * 一次真 bump 必定同时出现的四个版本清单文件(`scripts/version.mjs` 直接写这四个)。
+ * 不含 `Cargo.lock`:那个由 cargo 在构建时同步,可以合法地晚一版。
+ */
+const VERSION_FILES = [
+  "package.json",
+  "package-lock.json",
+  "src-tauri/Cargo.toml",
+  "src-tauri/tauri.conf.json",
+];
+
+/** `Version-Bump: patch|minor|major` trailer(整行,允许行首尾空白)。 */
+const BUMP_DECL = /^Version-Bump:[ \t]*(patch|minor|major)[ \t]*$/im;
+
+/** 取 commit 的完整 message(fixture 里就是 message 本身)。 */
+function fullMessage(commit) {
+  return commit.full ?? commit.message;
+}
+
+/** 声明的 bump 类型;没声明返回 null。 */
+function declaredBump(commit) {
+  const m = fullMessage(commit).match(BUMP_DECL);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** 四个版本清单文件里这个 commit 没动的那些。 */
+function missingVersionFiles(commit) {
+  const have = new Set(commit.files.map((f) => f.path.replaceAll("\\", "/")));
+  return VERSION_FILES.filter((p) => !have.has(p));
+}
+
+/** merge 提交不参与版本声明判定(bump 由被合并的那条 commit 或 release commit 承担)。 */
+function isMerge(commit) {
+  return /^Merge\b/.test(commit.message.split("\n")[0].trim());
+}
+
+/**
+ * 「修补形状」= 这次没有新能力,只是在补已有的东西。
+ * 判据优先看**声明**而不是前缀:前缀是手打的,`feat(ui): …… + 权限修复` 这种
+ * 把修复塞进 feat 的形状会躲开只看 `^fix` 的窗口(判据 3 的犯案窗口曾因此漏判)。
+ */
+function isPatchShaped(commit) {
+  if (isMerge(commit)) return false;
+  const bump = declaredBump(commit);
+  if (bump) return bump === "patch";
+  return /^fix/.test(commit.message.split("\n")[0].trim());
+}
 
 // ---------------- 参数 ----------------
 
@@ -259,9 +330,8 @@ function parseCommits(raw) {
   return commits;
 }
 
-/** 取重复犯案窗口:`merge-base(HEAD, origin/main)..HEAD` 的最近 N 个 fix 提交。 */
 /**
- * 重复犯案的观察窗口 = **本次受检范围内**的 `fix` 提交（= "本分支独有"，与文件头声明的语义一致）。
+ * 重复犯案的观察窗口 = **本次受检范围内**的「修补形状」提交（= "本分支独有"，与文件头声明的语义一致）。
  *
  * ⚠️ 为什么不用 `merge-base(HEAD, origin/main)..HEAD`：在 fork + rebase 的工作流下，
  * merge-base 之后的提交里**包含 main 自己**的 fix ⇒ 只要某领域最近被 main 修过，
@@ -275,35 +345,51 @@ function parseCommits(raw) {
  *
  * 改成按受检范围取窗口后，语义变成："**这一批提交里**同一领域反复修 ⇒ 说明该收敛了"，
  * 既能拦住 4.18.7→4.18.10 那种"一个分支里连打四个补丁"，又不会因为 main 的历史而误伤。
+ *
+ * ⚠️ 2026-09-21：窗口不再自己跑一次 `git log --grep=^fix`，而是从**已经拿到的**受检提交里
+ * 用 `isPatchShaped` 选。两个原因：① 判据要靠 trailer，而 trailer 在 message 正文里，
+ * `--grep=^fix` 那种 subject 锚定的过滤根本看不见它；② 同一批数据两处各取一遍 = 两条
+ * 口径会漂移，而"窗口和受检范围不是同一批提交"正是上面那次误伤的成因。
  */
-function buildOffenderWindow(range) {
-  try {
-    const fixLog = git(
-      "log",
-      range,
-      "--grep=^fix",
-      "-n",
-      String(OFFENDER_WINDOW),
-      "--numstat",
-      "-M",
-      "--format=%H%x00%s",
-    );
-    const fixes = parseCommits(fixLog);
-    console.log(`重复犯案窗口:${range} 内最近 ${fixes.length} 个 fix`);
-    return fixes;
-  } catch (e) {
-    console.log(`⚠️ 取得重复犯案窗口失败,跳过该检查(理由:${e.message.split("\n")[0]})`);
-    return null;
+function buildOffenderWindow(candidates) {
+  // git log 输出新→旧，取前 N 个 = 最近 N 个（与旧的 `-n 5` 语义一致）
+  return candidates.filter(isPatchShaped).slice(0, OFFENDER_WINDOW);
+}
+
+/**
+ * 取范围内每个 commit 的**完整** message（判据 4 要读 trailer，trailer 在正文里）。
+ *
+ * 单独一趟 `git log`、用 \x01 收尾：`parseCommits` 是逐行状态机（见其注释），
+ * 把 %B 塞进同一趟输出会让正文里恰好长成 numstat 形状的行被误认成文件 —— 不为省一次
+ * git 调用去冒"门禁悄悄读错数据"的险。
+ */
+function fullMessagesInRange(range) {
+  const raw = git("log", range, "--format=%H%x00%B%x01");
+  const out = new Map();
+  for (const chunk of raw.split("\x01")) {
+    if (!chunk.includes("\0")) continue;
+    const [rawSha, ...msg] = chunk.split("\0");
+    // ⚠️ 必须 trim：git 在每条记录后补的换行会留在**下一块**的 sha 前面（实测 —— 不 trim
+    // 时只有第一条记录能对上 key，其余 commit 全被当成"没有 trailer"而误报）。
+    const sha = rawSha.trim();
+    if (sha.length < 7) continue;
+    out.set(sha.slice(0, 7), msg.join("\0").replace(/^\n+|\n+$/g, ""));
   }
+  return out;
 }
 
 /** @type {{commits: {sha: string, message: string, files: {path: string, add: number, del: number}[]}[], recentFixes: ?Array}} */
 let data;
 let usedRange = null;
+/** 完整 message 是否读到了（判据 4 与犯案窗口的前置；读不到 = 停用，不是通过）。 */
+let messagesReadable = true;
 
 if (fromJson) {
   data = JSON.parse(readFileSync(path.resolve(ROOT, fromJson), "utf8"));
   console.log(`数据源:fixture ${fromJson}(${data.commits.length} 个 commit)`);
+  // fixture 没有 git range 可取，窗口由 `recentFixes` 显式喂；**同一个谓词**照跑，
+  // 所以判据 3 的"看声明不看前缀"这条新口径在 fixture 模式下是真的被测到的。
+  data.recentFixes = buildOffenderWindow(data.recentFixes ?? []);
 } else {
   // 范围:显式 --range > CI push event(before..sha)> 未推送(origin/<branch>..HEAD)> HEAD~1..HEAD
   //
@@ -334,18 +420,36 @@ if (fromJson) {
 
   // 空范围(全部已推送)= 没有要检查的新 commit —— 显式说清(commits 为空自然通过)
   let commitsRaw = "";
+  let rangeReadable = true;
   try {
     commitsRaw = git("log", range, "--numstat", "-M", "--format=%H%x00%s");
   } catch {
-    console.log(`检查范围:${range}(空或不可达)—— 没有未推送的新 commit,判据 1/2 自然通过`);
+    rangeReadable = false;
+    console.log(`检查范围:${range}(空或不可达)—— 没有未推送的新 commit,判据 1/2/4 自然通过`);
   }
   console.log(`检查范围:${usedRange}`);
 
   // 解析:逐行状态机(见 parseCommits 注释 —— 不能按空行切块)
   data = { commits: parseCommits(commitsRaw) };
 
-  // 重复犯案窗口:merge-base(HEAD, origin/main)..HEAD 的最近 N 个 fix
-  data.recentFixes = buildOffenderWindow(range);
+  // 判据 4 与犯案窗口都要读 message 正文里的 trailer ⇒ 补一趟完整 message。
+  // 拿不到就**显式失败并停用这两道**：静默退回"只有 subject"会让判据 4 把每一条真 bump
+  // 误报成"动了版本文件却没声明" —— 一条读错数据的门禁比没有门禁更糟。
+  if (rangeReadable && data.commits.length > 0) {
+    try {
+      const full = fullMessagesInRange(range);
+      for (const c of data.commits) c.full = full.get(c.sha) ?? c.message;
+    } catch (e) {
+      messagesReadable = false;
+      fail(
+        `  ✗ 读取 commit 完整 message 失败 ⇒ 判据 4 与犯案窗口都判不了（已停用，不是通过）：` +
+          `${e.message.split("\n")[0]}`,
+      );
+    }
+  }
+
+  // 重复犯案窗口:同一批受检提交里的最近 N 个「修补形状」
+  data.recentFixes = rangeReadable && messagesReadable ? buildOffenderWindow(data.commits) : null;
 }
 
 // ---------------- 判据 1/2:逐 commit 分级 ----------------
@@ -367,10 +471,51 @@ for (const commit of data.commits) {
 }
 if (ok) console.log("  ✓ 全部 commit 在预算内或已声明");
 
+// ---------------- 判据 4:版本声明必须落地 ----------------
+// trailer 现在是有消费者的（判据 3 拿它判"这次是不是修补"）。一个可以随便写、也可以
+// 随便不写的声明 = 门禁的输入是装饰 ⇒ 两个方向一起判。
+console.log("\n判据 4:版本声明与版本清单文件必须一致");
+if (!messagesReadable) {
+  console.log("  (完整 message 没读到 ⇒ 本判据**未运行**；上面已计一条失败)");
+} else {
+  let checked = 0;
+  for (const commit of data.commits) {
+    if (isMerge(commit)) continue;
+    const bump = declaredBump(commit);
+    const missing = missingVersionFiles(commit);
+    const allPresent = missing.length === 0;
+    const releaseSubject = /^chore\(release\)/.test(commit.message.split("\n")[0].trim());
+    checked += 1;
+    if (bump && !allPresent) {
+      fail(
+        `  ✗ ${commit.sha} 声明了 \`Version-Bump: ${bump}\`，但 ${missing.length}/${VERSION_FILES.length} ` +
+          `个版本清单文件没动：${missing.join(", ")} —— 声明没落地就是没 bump。` +
+          `跑 \`npm run version:${bump}\` 把这四个文件一起提上来；删掉 trailer 不是解法 —— ` +
+          `真 bump 缺声明同样判红，而且犯案窗口会看不见这一版。`,
+      );
+    } else if (!bump && allPresent && !releaseSubject) {
+      fail(
+        `  ✗ ${commit.sha} 动了全部 ${VERSION_FILES.length} 个版本清单文件（一次真 bump）` +
+          `却没声明 \`Version-Bump: patch|minor|major\` —— 缺声明 ⇒ 犯案窗口无法判断这次是不是修补。`,
+      );
+    } else {
+      console.log(
+        `  ✓ ${commit.sha} ${bump ? `Version-Bump: ${bump}` : "无声明"}${allPresent ? " / 版本文件 4/4" : ""}` +
+          `${!bump && allPresent && releaseSubject ? "（chore(release) 豁免声明）" : ""}`,
+      );
+    }
+  }
+  if (checked === 0) console.log("  (范围内没有需要判定的 commit)");
+}
+
 // ---------------- 判据 3:重复犯案 ----------------
 
 if (data.recentFixes) {
-  console.log(`\n判据 3:重复犯案(窗口内最近 ${data.recentFixes.length} 个 fix,同领域 ≥${OFFENDER_LIMIT} 次即红)`);
+  console.log(
+    `\n判据 3:重复犯案(受检范围内的修补形状提交最近 ${OFFENDER_WINDOW} 个里,同领域 ≥${OFFENDER_LIMIT} 次即红)` +
+      `—— 本次窗口 ${data.recentFixes.length} 个`,
+  );
+  if (data.recentFixes.length === 0) console.log("  (窗口里一个修补形状提交都没有 —— 无可判定的重复)");
   /** @type {Map<string, string[]>} 领域 → [sha...] */
   const byDomain = new Map();
   for (const fix of data.recentFixes) {

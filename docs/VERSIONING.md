@@ -1,7 +1,9 @@
 # 版本号规则（从 2026-09-12 起强制执行）
 
 > 结论先说：**未发布的一批提交里最高档是什么，这次发布就提升哪一位**；
-> 每个提交必须在提交信息里声明自己的档位（`Version-Bump:`），由 `npm run version:check` 把门。
+> 每个提交必须在提交信息里声明自己的档位（`Version-Bump:`）**并在同一个提交里把版本提上去**。
+> CI 上把门的是 `check-change-budget.mjs` 判据 4（声明与四个版本清单文件必须一致，见 §3.3–3.4）；
+> `npm run version:check` 是同一件事的**记账口径**，历史上是红的、没进 CI。
 > 依据：SemVer 的"一次发布取最高档" + conventional commits 的类型约定。
 
 ## 1. 三档判据（小 / 中 / 大）
@@ -35,12 +37,25 @@
 1. 按上表给自己的改动定档；
 2. 提交信息末尾加一行 **`Version-Bump: patch|minor|major`**（这就是"版本号提升约束"的落点：
    它让每个提交都被记账，而不是靠人记得去改版本）；
-3. 提交前跑 **`npm run version:check`**：它会
+3. **同一个提交里就把版本提上去**：跑 `npm run version:patch|minor|major`。
+   ⚠️ 这一条是 2026-09 起的实际口径（也是 Change Budget 判据 4 的判据来源）：**声明与落地
+   必须在同一个提交**。旧写法"提交只写 trailer、攒一批再 `version:release`"已经不用了 ——
+   它留过一个真实缺口：PR #22/#23 两条提交按旧写法写了 trailer 却没动版本文件，版本最后
+   靠 v4.23.0 手工补账；而且 trailer 现在是 `check-change-budget.mjs` 判据 3 的输入
+   （用它判"这次是不是修补"），一条不成立的 trailer 会让那道闸读到装饰。
+4. 提交前跑 **`npm run version:check`**：它会
    - 从**上一次版本提升提交**起，收集所有提交并计算最高档；
    - 若 `当前版本 < bump(当前版本, 最高档)` ⇒ 失败，提示你跑 `npm run version:release`；
    - 若某个提交缺 `Version-Bump:` 或写错档位 ⇒ 失败并逐条指出。
-4. 攒够一批（或要发版时）跑 **`npm run version:release`**：按最高档一次性提升
+   ⚠️ **这条没有进 CI**：它的 ① 是"记账"口径（按批次取最高档），在"每提交自带 bump"的新
+   口径下会周期性误报，且历史上两个提交（`29ee060`、`7c03341`）确实缺声明 —— 门禁变红对
+   历史的审判不是闸。CI 上真正生效的是同一份一致性里可成立的那一半：
+   `check-change-budget.mjs` 判据 4（写了 trailer 必须动满四个版本清单文件，反之亦然；
+   `chore(release)` 前缀豁免声明），以及它前面那三道规模/敏感/犯案判据。
+5. 攒够一批（或要发版时）跑 **`npm run version:release`**：按最高档一次性提升
    `package.json` / `Cargo.toml` / `tauri.conf.json` / `package-lock.json` 并落 CHANGELOG 版本小节。
+   （新口径下这步通常已经在每个提交里做掉了，留作补账与发版用。）
+
 
 ## 4. 现在的台账与数字
 

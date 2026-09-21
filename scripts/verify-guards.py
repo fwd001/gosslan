@@ -2500,6 +2500,57 @@ CASES: list[Case] = [
         expect_fail_hint="没有 [plan] 标记",
         tags=["change-budget", "new-guards"],
     ),
+    Case(
+        name="Change Budget:声明了 Version-Bump 却没动版本文件 → FAIL",
+        why="真实缺口：PR #22/#23 的 e5770ce、f6bb81c 两条都写了 `Version-Bump:` trailer，"
+        "但四个版本清单文件一个没动 —— 版本最后是 v4.23.0 手工补的账。trailer 从 4.23.2 起"
+        "是判据 3 的输入（用它判「这次是不是修补」），一个可以随便写的声明 = 门禁读的是装饰。"
+        "fixture 里 a000001 只动 3 个文件、没有 trailer ⇒ 默认 PASS；注入 trailer 后守门必须红。",
+        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        injections=[(
+            '"message": "fix(chat): 复制长链接",',
+            '"message": "fix(chat): 复制长链接\\nVersion-Bump: patch",',
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="声明没落地",
+        tags=["change-budget", "new-guards"],
+    ),
+    Case(
+        name="Change Budget:四个版本文件都动了却没声明 → FAIL(反向也判)",
+        why="只判『声明了没做』会留一个洞：不写 trailer 就能同时躲开判据 4 和判据 3 的窗口。"
+        "所以反方向一起判。fixture 里 a000004 动满四个版本文件、靠 `chore(release)` 前缀豁免声明；"
+        "本用例把它改成 `chore(deps)` + 带 [plan][impact] —— 规模判据此时仍然放行(它是 L2 且有标记)，"
+        "因此红只可能来自『真 bump 缺声明』这一条，是判据 4 反向分支的干净判别器。",
+        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        injections=[(
+            '"message": "chore(release): v4.19.0",',
+            '"message": "chore(deps): v4.19.0 [plan] [impact]",',
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="却没声明",
+        tags=["change-budget", "new-guards"],
+    ),
+    Case(
+        name="Change Budget:`feat` 前缀 + patch 声明照样进犯案窗口",
+        why="窗口原先按 `--grep=^fix` 选提交 ⇒ 把一条修复写成 `feat(...)` 就永久看不见它"
+        "(真实形状：`feat(ui): 主题色体系 + …… + 群任务编辑权限修复`)。现在按声明选："
+        "`Version-Bump: patch` = 作者断言没有新能力 ⇒ 无论前缀是什么都算修补形状。"
+        "本用例注入的第 3 条 ble 提交**故意写成 feat** —— 若有人把窗口改回只看前缀，"
+        "上面那条 `fix(ble)` 注入用例照样会红，只有这条会不红，所以它守的是这条新口径本身。",
+        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        injections=[(
+            '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    }\n  ]',
+            '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    },\n'
+            '    {\n      "sha": "b000004",\n      "message": "feat(ble): 又调了一档预算\\nVersion-Bump: patch",\n'
+            '      "files": [{ "path": "src-tauri/src/transport/tcp.rs", "add": 5, "del": 1 }]\n    }\n  ]',
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="出现了 3 次",
+        tags=["change-budget", "new-guards"],
+    ),
 ]
 
 

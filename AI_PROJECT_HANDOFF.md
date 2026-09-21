@@ -27,7 +27,7 @@
 | 蓝牙（BLE）传输的完整设计与平台边界 | **`docs/adr/0015-ble-transport.md`**（含 §7.7 Android 外设、§7.9 Windows central） |
 | 蓝牙真机排查的过程与判据 | `docs/notes/ble-audit-2026-09-13.md`（架构图 / 根因 / Test A~F） |
 | 多路径选路、中继授权、窗口架构 | `docs/adr/0014`（多路径选路）· `0016`（中继授权）· `0018`（窗口架构）· `0017`（外部线格式） |
-| 版本号怎么升（强制流程） | `docs/VERSIONING.md` + `npm run version:check` |
+| 版本号怎么升（强制流程） | `docs/VERSIONING.md`（CI 把门的是 `check-change-budget.mjs` 判据 4：`Version-Bump` 声明与四个版本清单文件必须一致；`version:check` 是记账口径、**未进 CI**） |
 | UI 规范 | `docs/design-guidelines.md` |
 
 本文仍有价值的部分：§1 定位、§4 核心机制（E2EE 状态机 / 已读回执 / 前端消息管线）、

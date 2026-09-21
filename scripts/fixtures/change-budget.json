@@ -1,5 +1,5 @@
 {
-  "_comment": "check-change-budget.mjs 的非空转测试 fixture(verify-guards.py --from-json 喂入)。默认状态必须全 PASS:① a000001 是 L1(计入文件 ≤5 且 1 领域);② a000002 是 L2(8 文件超 L1)但带 [plan];③ a000003 碰敏感文件 protocol.rs 是 L3 但带 [impact];④ a000004 是 chore(release),白名单文件全部豁免;recentFixes 只有 2 条 transport(犯案阈值 3)。verify-guards.py 的用例通过注入破坏其中一个条件来验证守门会红。",
+  "_comment": "check-change-budget.mjs 的非空转测试 fixture(verify-guards.py --from-json 喂入)。默认状态必须全 PASS:① a000001 是 L1(计入文件 ≤5 且 1 领域);② a000002 是 L2(8 文件超 L1)但带 [plan];③ a000003 碰敏感文件 protocol.rs 是 L3 但带 [impact];④ a000004 是 chore(release),白名单文件全部豁免、且判据 4 的『真 bump 必须声明』对它豁免;recentFixes 只有 2 条 transport(犯案阈值 3)。⚠️ 四条 commit 都**不带** Version-Bump trailer 且 a000001~a000003 不动版本文件 —— 这是判据 4 默认 PASS 的前提,给它们加 trailer 会让默认状态变红。verify-guards.py 的用例通过注入破坏其中一个条件来验证守门会红。",
   "commits": [
     {
       "sha": "a000001",

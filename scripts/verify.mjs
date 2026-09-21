@@ -193,7 +193,7 @@ const steps = [
   {
     group: "frontend",
     name: "Change Budget 守门",
-    why: "挡住「改动半径不声明 + 同领域反复打补丁」——L2 需 [plan]、L3/敏感文件需 [impact]、同领域 3 次 fix 即红",
+    why: "挡住「改动半径不声明 + 同领域反复打补丁 + 版本声明不成立」——L2 需 [plan]、L3/敏感文件需 [impact]、同领域 3 次修补即红（按 Version-Bump 声明判「修补」，不看 feat/fix 前缀）、声明与四个版本清单文件必须双向一致",
     cwd: ROOT,
     cmd: NODE_EXE,
     args: ["scripts/check-change-budget.mjs"],
