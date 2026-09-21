@@ -377,6 +377,23 @@ CASES: list[Case] = [
         expect_fail_hint="分层自检失败",
         tags=["gates", "frontend", "new-guards"],
     ),
+    Case(
+        name="每个门禁步骤都必须声明 CI 归属（漏声明 = 这条门禁 CI 永远不跑）",
+        why="「跑哪些检查」以前在 verify.mjs 的步骤表与 verify.yml 的 run: 列表里**各写一份**，\n"
+        "     于是必然腐烂（verify.yml 头部那句「457 条前端断言 / 503 条 Rust 用例 / 93 条护栏」\n"
+        "     早就对不上实际）。单源化后 CI 只说跑哪个组，所以每个步骤必须声明 group；\n"
+        "     漏声明的静默后果比写错更糟：本地照跑、CI 从不跑，两边看都是绿的。\n"
+        "     注入：摘掉某一条的 group ⇒ --list 必须退出码 1",
+        file=ROOT / "scripts" / "verify.mjs",
+        injections=[(
+            '    group: "frontend",\n    name: "不变量例外守卫",',
+            '    name: "不变量例外守卫",',
+        )],
+        cmd=["node", "scripts/verify.mjs", "--list"],
+        cwd=ROOT,
+        expect_fail_hint="没声明 CI 归属",
+        tags=["gates", "frontend", "new-guards"],
+    ),
     # ---------------- 本地新增护栏（2026-09-14）----------------
 
     Case(

@@ -13,7 +13,7 @@
  *   · `check-ble-constants`             挡住"BLE 载荷预算多处各算一遍"
  *   · `check-domain-map`                挡住"领域图变成虚构"
  *   · `version:changelog`               CHANGELOG 结构（发布脚本的插入锚点）
- *   · `verify-guards.py`                非空转验证（100 条护栏）
+ *   · `verify-guards.py`                护栏非空转验证（条数由该工具自己打印）
  *   · `npm run build`                   前端构建
  *   · `check-mobile.sh`                 Android 编译门禁（Android 专属代码只有它看得见）
  *
@@ -32,11 +32,13 @@
  *
  *     npm run verify              # 快速层：不碰 cargo，秒级~20s（日常迭代就跑这个）
  *     npm run verify:full         # 全量层：加 cargo fmt/clippy/test + Rust 清单 + 护栏扫描 + Android
- *     npm run verify:full -- --full   # 再加**完整**护栏（123 条逐条改坏验证，10 分钟以上）
+ *     npm run verify:full -- --full   # 再加**全量**护栏（含 Rust 用例，每条都要重编译，10 分钟以上）
  *                                     #   （`--full` 也会自动拉起重门禁层，不会静默跑成快速层）
  *     npm run verify:full -- --no-guards  # 全量层但跳过护栏扫描（护栏工具缺失时的临时绕过，会留痕）
  *                                     #   （快速层本来就不含护栏扫描，那里加这个参数是无操作）
  *     npm run verify -- --list    # 只列出会跑哪些步骤（加 -- --full-gate 看全量层）
+ *     node scripts/verify.mjs --group frontend|rust|android
+ *                                 # 只跑某一个 CI job 的步骤（CI 用这个，见下面「CI 归属」）
  *
  * ### 为什么分两层（实测数据，不是猜的）
  *
@@ -145,9 +147,11 @@ const fullGate = argv.includes("--full-gate") || full;
 // 快速检查会因为找不到解释器直接红（分层时很容易顺手漏掉这一条）。
 const python = noGuards || !fullGate ? null : findPython();
 
-/** @type {{name: string, cwd: string, cmd: string, args: string[], why: string}[]} */
+/** @type {{name: string, why: string, cwd: string, cmd: string, args: string[],
+ *          group: "frontend"|"rust"|"android", skipReason?: string|null}[]} */
 const steps = [
   {
+    group: "frontend",
     name: "测试清单守卫（前端）",
     why: "挡住「新增 .test.ts 忘了登记进 package.json」这类静默不跑",
     cwd: ROOT,
@@ -155,6 +159,7 @@ const steps = [
     args: ["scripts/check-test-manifest.mjs", "--only", "frontend"],
   },
   {
+    group: "frontend",
     name: "不变量例外守卫",
     why: "挡住「例外只写在实现旁边、没写进 protocol-invariants.md」导致的照文档误修",
     cwd: ROOT,
@@ -162,6 +167,7 @@ const steps = [
     args: ["scripts/check-invariant-exceptions.mjs"],
   },
   {
+    group: "frontend",
     name: "BLE 常量单一事实来源",
     why: "挡住「同一个概念多处各算一遍」——CHANGELOG 4.18.7→4.18.10 连着四版修的就是它",
     cwd: ROOT,
@@ -169,6 +175,7 @@ const steps = [
     args: ["scripts/check-ble-constants.mjs"],
   },
   {
+    group: "frontend",
     name: "领域图守门",
     why: "挡住「地图变成虚构」——路径存在 / 一文件不属两域 / 无文件漏归属 / enforce 只能开在单家",
     cwd: ROOT,
@@ -176,6 +183,7 @@ const steps = [
     args: ["scripts/check-domain-map.mjs"],
   },
   {
+    group: "frontend",
     name: "领域依赖方向守门",
     why: "挡住「跨域 use 不声不响」——每个域的 use crate::xxx 必须落在 self 或 consumes 里（生产代码，不扫测试块）",
     cwd: ROOT,
@@ -183,6 +191,7 @@ const steps = [
     args: ["scripts/check-domain-deps.mjs"],
   },
   {
+    group: "frontend",
     name: "Change Budget 守门",
     why: "挡住「改动半径不声明 + 同领域反复打补丁」——L2 需 [plan]、L3/敏感文件需 [impact]、同领域 3 次 fix 即红",
     cwd: ROOT,
@@ -190,6 +199,7 @@ const steps = [
     args: ["scripts/check-change-budget.mjs"],
   },
   {
+    group: "frontend",
     name: "CHANGELOG 结构",
     why: "发布脚本按行首 `## [Unreleased]` 插小节；锚点被吞/顺序错乱不报错，只有结构检查能拦",
     cwd: ROOT,
@@ -197,13 +207,15 @@ const steps = [
     args: ["run", "version:changelog"],
   },
   {
+    group: "frontend",
     name: "前端测试（npm test）",
-    why: "457 条前端断言",
+    why: "前端全部断言。条数交给 npm test 自己打印 —— 写死在这里一定会腐烂",
     cwd: ROOT,
     cmd: NPM,
     args: ["test"],
   },
   {
+    group: "frontend",
     name: "前端静态检查 + 构建（npm run build）",
     why:
       "vue-tsc 类型检查 + vite 产物。留在快速层：它**不碰 cargo**，而且是前端唯一的类型门禁" +
@@ -213,6 +225,7 @@ const steps = [
     args: ["run", "build"],
   },
   {
+    group: "rust",
     name: "cargo fmt --check --all",
     why: "格式统一。2026-09-17 一次性全量重排后零差异，作为门禁防漂移",
     cwd: TAURI,
@@ -220,6 +233,7 @@ const steps = [
     args: ["fmt", "--check", "--all"],
   },
   {
+    group: "rust",
     name: "cargo clippy（-D warnings，--features bluetooth）",
     why: "2026-09-17 清理 26 条 warning 后零红。--features bluetooth 不能省，否则 BLE 模块不编译",
     cwd: TAURI,
@@ -227,13 +241,15 @@ const steps = [
     args: ["clippy", "--features", "bluetooth", "--", "-D", "warnings"],
   },
   {
+    group: "rust",
     name: "Rust 单测（--features bluetooth）",
-    why: "505 条用例。--features bluetooth 不能省：漏了会让 16 条 BLE 用例静默消失",
+    why: "--features bluetooth 不能省：漏了会让整批 BLE 用例连同被测代码一起消失（清单守卫兜底）。条数交给 cargo test 与下一步的清单守卫打印",
     cwd: TAURI,
     cmd: "cargo",
     args: ["test", "--features", "bluetooth"],
   },
   {
+    group: "rust",
     name: "测试清单守卫（Rust）",
     why: "比对基线名单与实际 --list，缺名即红（正是上一步那个风险的兜底）",
     cwd: ROOT,
@@ -246,6 +262,7 @@ if (!noGuards) {
   // 条数与耗时都交给该步自己打印（`verify-guards.py` 有 `[n/m]` 进度）——
   // 写死在这里的数字一定会腐烂：这里曾经同时错过"97 条"和"十几秒"两个旧值。
   steps.push({
+    group: "frontend",
     name: full ? "护栏非空转（全量，慢）" : "护栏非空转（前端子集）",
     why: full
       ? "全部护栏逐条「改坏必须 FAIL、恢复必须 PASS」；含 Rust 用例 ⇒ 每条都要重编译，比子集慢得多"
@@ -260,6 +277,7 @@ if (!noGuards) {
 // CI 里是独立 job、无条件跑；本地缺 NDK / rust target 时**显式跳过并说明**，
 // 而不是失败 —— 但也不静默（跳过会记进汇总，且说清 CI 上仍然覆盖）。
 steps.push({
+  group: "android",
   name: "移动端编译门禁（Android）",
   why: "cargo check --target aarch64-linux-android（0 warning）—— 拦住「移动端整包编不出来」",
   cwd: ROOT,
@@ -289,9 +307,14 @@ function mobileSkipReason() {
 /**
  * 「重门禁层」= 需要 cargo 编译、或本身耗时在分钟级的步骤。
  *
- * 判据按**名字与命令**认，不给 15 个步骤各加字段（那会演化成第二份清单，加一步就得记得
+ * 判据按**名字与命令**认，不给步骤各加 tier 字段（那会演化成第二份清单，加一步就得记得
  * 同步、漏一个就静默不跑）。新增步骤时如果它要编译，名字里带上 `cargo` / `（Rust）` /
  * `移动端编译门禁` / `护栏非空转` 即可自动归层。
+ *
+ * ⚠️ 别把 `group`（下一步要讲的 CI 归属）当成本函数的替代品 —— 两者不是一回事：
+ * 「护栏非空转（前端子集）」按这里是**重门禁层**（全量子集要重编译 Rust 用例），
+ * 但 CI 把它放在 **frontend job**（子集只扫前端护栏，秒级到一分多钟，不碰 cargo）。
+ * 合成一个字段就会两头都判错，所以分层继续派生、归属显式声明。
  */
 function isHeavyStep(s) {
   return (
@@ -302,8 +325,64 @@ function isHeavyStep(s) {
   );
 }
 
-const active = fullGate ? steps : steps.filter((s) => !isHeavyStep(s));
+/**
+ * CI 归属：这一步由哪个 job 跑（`frontend` / `rust` / `android`）。
+ *
+ * 为什么要显式写在这一列上：以前"跑哪些检查"这件事在**两处各写一遍**
+ * （`scripts/verify.mjs` 的步骤表 + `.github/workflows/verify.yml` 的 `run:` 列表），
+ * 于是必然腐烂 —— 现成的证据：verify.yml 头部那句"457 条前端断言 + 503 条 Rust 用例 +
+ * 93 条非空转护栏"早就与实际不符（今天 Rust 用例是 500 多条起步、护栏条数也在长）。
+ * 单源化之后 CI 只说"跑哪个组"，清单只在这里有一份。
+ *
+ * 归属**不派生**自名字：它表达的是"该由哪台机器、带着什么工具链去跑"，
+ * 与"快不快/要不要编译"是两条正交的轴（见上面 isHeavyStep 的 ⚠️）。
+ *
+ * 强制声明：漏写 `group` 的步骤会在下面当场红 —— 因为静默漏掉的后果正是
+ * "本地有这条门禁、CI 永远不跑"，那比没有更危险。
+ */
+const GROUPS = ["frontend", "rust", "android"];
+
+/** `--group <frontend|rust|android>`：CI 的三个 job 各自只说"跑哪个组"，清单不再抄一份。 */
+const groupFlag = (() => {
+  const i = argv.indexOf("--group");
+  return i >= 0 ? argv[i + 1] : null;
+})();
+if (groupFlag && !GROUPS.includes(groupFlag)) {
+  console.error(`✗ --group 只接受 ${GROUPS.join(" / ")}，收到 "${groupFlag}"`);
+  process.exit(1);
+}
+
+/** 列出"不属于本组"的步骤：组模式下也必须点名未跑项，不许用一片绿暗示"全跑过了"。 */
+function printNotRun(title) {
+  const others = steps.filter((s) => s.group !== groupFlag);
+  console.log(`  ── ${title}，共 ${others.length} 项：`);
+  for (const s of others) console.log(`     · [${s.group}] ${s.name}`);
+}
+
+const active = groupFlag
+  ? steps.filter((s) => s.group === groupFlag)
+  : fullGate
+    ? steps
+    : steps.filter((s) => !isHeavyStep(s));
 const heldOut = steps.length - active.length;
+
+/**
+ * 每个步骤都必须声明 CI 归属。
+ *
+ * 漏声明的后果不是"少了一行配置"，而是**这条门禁本地跑、CI 永远不跑** —— 而且没人会
+ * 注意到，因为两边的清单看起来都是绿的。归属与分层是两条正交的轴（见 isHeavyStep 的 ⚠️），
+ * 所以这一列不能从名字派生，只能显式写、并强制检查。
+ */
+{
+  const missing = steps.filter((s) => !GROUPS.includes(s.group));
+  if (missing.length > 0) {
+    console.error(`✗ 以下步骤没声明 CI 归属（group ∈ ${GROUPS.join("/")}）：`);
+    for (const s of missing) console.error(`   · ${s.name}`);
+    console.error("  后果：CI 的 `run:` 清单与这里各写一份 ⇒ 必然腐烂（verify.yml 头部那串");
+    console.error("        “457/503/93 条”就是烂掉的样子）；漏声明 = 这条门禁 CI 从不执行。");
+    process.exit(1);
+  }
+}
 
 /**
  * 会不会拉起 Rust 工具链（`bash` 与 `python` 也算：`check-mobile.sh` 与 `verify-guards.py`
@@ -341,7 +420,12 @@ function mayTouchToolchain(s) {
  *     那是**无效注入** —— cargo 步骤本来就被归走，永远不会漏，那次"通过"什么也没证明。）
  */
 {
-  const leaked = !fullGate && active.filter((s) => mayTouchToolchain(s) && !isHeavyStep(s));
+  // 组模式跳过这条：它判的是"快速层有没有混进碰工具链的步骤"，而 `--group` 是按 CI job
+  // 选步骤（frontend 组**故意**含护栏非空转那条重门禁），拿分层尺子去量会假红。
+  const leaked =
+    !fullGate && !groupFlag
+      ? active.filter((s) => mayTouchToolchain(s) && !isHeavyStep(s))
+      : [];
   if (leaked && leaked.length > 0) {
     console.error("✗ 门禁分层自检失败：以下步骤会碰 Rust 工具链，却没被归进重门禁层：");
     for (const s of leaked) console.error(`   · ${s.name}（cmd=${s.cmd}）`);
@@ -353,14 +437,18 @@ function mayTouchToolchain(s) {
 }
 
 if (listOnly) {
-  console.log(`npm run verify${fullGate ? " -- --full-gate" : ""} 会按顺序跑：`);
+  console.log(
+    `npm run verify${groupFlag ? ` -- --group ${groupFlag}` : fullGate ? " -- --full-gate" : ""} 会按顺序跑：`,
+  );
   active.forEach((s, i) =>
     console.log(
       `  ${i + 1}. ${s.name} —— ${s.why}` +
         (s.skipReason ? `\n      ⏭ 本机将跳过：${s.skipReason}` : ""),
     ),
   );
-  if (!fullGate) {
+  if (groupFlag) {
+    printNotRun(`其它 CI job 的组（--group ${groupFlag} 不跑）`);
+  } else if (!fullGate) {
     console.log("  ── 以下重门禁层默认不跑（`npm run verify:full` 全跑，CI 每次 push 全跑）：");
     steps.filter(isHeavyStep).forEach((s) => console.log(`     · ${s.name}`));
   }
@@ -436,9 +524,14 @@ for (const r of results) {
 for (const s of active.slice(results.length)) {
   console.log(`  ⏭   ${s.name}（未跑）`);
 }
-// ⚠️ 快速层必须**点名**它没跑什么：本项目最忌讳的就是"没守却当作守了"。
-// 绿色只表示"这一层的门禁过了"，不表示"代码编得过"。
-if (!fullGate && failed.length === 0) {
+// ⚠️ 快速层/组模式都必须**点名**它没跑什么：本项目最忌讳的就是"没守却当作守了"。
+// 绿色只表示"这一层的门禁过了"，不表示"代码编得过"，也不表示"别的 job 那组过了"。
+if (groupFlag && failed.length === 0) {
+  printNotRun(`不属于 --group ${groupFlag}`);
+  console.log(
+    "     → 本组绿 ≠ 全套绿：CI 三个 job 各跑一组，本地一把跑全用 `npm run verify:full`。",
+  );
+} else if (!groupFlag && !fullGate && failed.length === 0) {
   console.log(`  ── ${heldOut} 项重门禁**本次未跑**：`);
   for (const s of steps.filter(isHeavyStep)) console.log(`     · ${s.name}`);
   console.log(
@@ -452,7 +545,9 @@ const ran = results.filter((r) => !r.skipped).length;
 
 if (failed.length === 0) {
   console.log(
-    `\n✅ ${fullGate ? "全部门禁" : "快速层门禁"}通过（${ran} 步${skipped ? `，跳过 ${skipped} 步` : ""}，共 ${total}s）`,
+    `\n✅ ${
+      groupFlag ? `--group ${groupFlag} 那一组` : fullGate ? "全部门禁" : "快速层门禁"
+    }通过（${ran} 步${skipped ? `，跳过 ${skipped} 步` : ""}，共 ${total}s）`,
   );
   if (skipped) console.log("   ⚠️ 被跳过的步骤在 CI 上仍会跑 —— 别把本地的 ⏭ 当成通过。");
   process.exit(0);
