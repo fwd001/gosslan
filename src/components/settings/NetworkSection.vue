@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { Trash2 } from "lucide-vue-next";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
@@ -8,7 +8,7 @@ import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import { t } from "@/i18n";
-import type {RelayPolicy, RoutedEndpoint} from "@/types";
+import type {RelayConfig, RelayPolicy, RoutedEndpoint} from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -50,6 +50,8 @@ watch(
     await app.refreshInterfaces();
     await loadChannels();
     await loadEndpoints();
+    // 不 await：这一项失败只影响这一块控件的初始值，不该拖住整个网络设置页的打开。
+    void loadRelayConfig();
   },
   { immediate: true },
 );
@@ -148,6 +150,49 @@ async function toggleBluetooth() {
 // ---- 跨网段（Routed）端点配置 ----
 const endpoints = ref<RoutedEndpoint[]>([]);
 const newAddress = ref("");
+
+// ---- 公网中转（盲管道，ADR-0020）----
+// 界面文案必须讲清这条链路的定位，因为它最容易被误解成"开了就一律走公网"：
+// 只有局域网连不上时它才会被用上（选路 LAN 恒优先），关掉开关则一条电路都不建。
+const relayCfg = reactive<RelayConfig>({ enabled: false, server: "", token: "" });
+/** 已落库的那一份，只用来判"有没有改动"；显示源始终是 `relayCfg`。 */
+const relayLoaded = ref<RelayConfig | null>(null);
+const relayBusy = ref(false);
+
+async function loadRelayConfig() {
+  try {
+    const cfg = await api.getRelayConfig();
+    Object.assign(relayCfg, cfg);
+    relayLoaded.value = { ...cfg };
+  } catch (e) {
+    // 读不到就留空值 + 明确提示：设置页**不许**因为一个 IPC 失败而白屏或静默骗人
+    // （空表单会被读成"还没配"，所以必须说一声它其实是被后端挡了）。
+    app.toastError(e, t("settings.network.relayServer.toast.loadFailed"));
+  }
+}
+
+const relayDirty = computed(
+  () =>
+    !!relayLoaded.value &&
+    JSON.stringify(relayLoaded.value) !== JSON.stringify({ ...relayCfg }),
+);
+
+async function saveRelayConfig() {
+  relayBusy.value = true;
+  try {
+    // 后端返回**规范化后**的值（裸 IP 会被补成 `ip:59993`），直接回显：
+    // 用户因此看到"实际会连哪儿"，而不是他手打的原始串。
+    const saved = await api.saveRelayConfig(relayCfg.enabled, relayCfg.server, relayCfg.token);
+    Object.assign(relayCfg, saved);
+    relayLoaded.value = { ...saved };
+    app.toast(t("settings.network.relayServer.toast.saved"), "success");
+  } catch (e) {
+    // 错误文案是后端给出的中文判据（地址格式 / 口令含空格 / 口令过长），原样显示。
+    app.toastError(e, t("settings.network.relayServer.toast.saveFailed"));
+  } finally {
+    relayBusy.value = false;
+  }
+}
 
 async function loadEndpoints() {
   endpoints.value = await api.listRoutedEndpoints();
@@ -278,6 +323,60 @@ async function removeEndpoint(address: string) {
         {{ t("settings.network.routed.add") }}
       </button>
     </div>
+  </SettingsGroup>
+
+  <!-- 公网中转（ADR-0020）：一台用户自己部署的哑管道，只在局域网连不上时补一条链路。
+       刻意不做"实时连接状态"指示灯 —— 状态在那台机器上是内存里的配对表，客户端这边
+       能确定的只有"配了什么"和"有没有电路"，硬做一个绿灯只会给出错误的安心感。 -->
+  <SettingsGroup
+    :title="t('settings.network.relayServer')"
+    :footer="t('settings.network.relayServer.desc')"
+  >
+    <SettingsRow :label="t('settings.network.relayServer.enable')">
+      <SettingsToggle
+        :model-value="relayCfg.enabled"
+        :label="t('settings.network.relayServer.enable')"
+        @update:model-value="(v: boolean) => (relayCfg.enabled = v)"
+      />
+    </SettingsRow>
+
+    <SettingsRow :label="t('settings.network.relayServer.server')">
+      <input
+        v-model="relayCfg.server"
+        type="text"
+        inputmode="url"
+        autocomplete="off"
+        spellcheck="false"
+        :placeholder="t('settings.network.relayServer.serverPlaceholder')"
+        class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+        @keyup.enter="saveRelayConfig"
+      />
+    </SettingsRow>
+
+    <SettingsRow :label="t('settings.network.relayServer.token')">
+      <input
+        v-model="relayCfg.token"
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        :placeholder="t('settings.network.relayServer.tokenPlaceholder')"
+        class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+        @keyup.enter="saveRelayConfig"
+      />
+    </SettingsRow>
+
+    <SettingsRow
+      :label="t('settings.network.relayServer.save')"
+      :description="t('settings.network.relayServer.saveHint')"
+    >
+      <button
+        class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
+        :disabled="relayBusy || !relayDirty"
+        @click="saveRelayConfig"
+      >
+        {{ t("settings.network.relayServer.save") }}
+      </button>
+    </SettingsRow>
   </SettingsGroup>
 
     <!-- 中继授权（P2 / M4）——「我愿不愿意替别人转发消息」是本机策略，不读远端自报 -->

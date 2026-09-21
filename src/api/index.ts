@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 export const api = {
   /**
@@ -284,6 +284,14 @@ export const api = {
     invoke<RoutedEndpoint[]>("add_routed_endpoint", { deviceId: null, address }),
   removeRoutedEndpoint: (address: string) =>
     invoke<RoutedEndpoint[]>("remove_routed_endpoint", { address }),
+  /**
+   * 公网中转（盲管道，ADR-0020）：读配置 / 存配置。
+   * 后端会规范化地址并在非法值时抛错 —— 调用方必须把错误原样显示给用户，
+   * 这里刻意不 catch：静默吞掉就会变成"点了保存、什么也没发生"。
+   */
+  getRelayConfig: () => invoke<RelayConfig>("get_relay_config"),
+  saveRelayConfig: (enabled: boolean, server: string, token: string) =>
+    invoke<RelayConfig>("save_relay_config", { enabled, server, token }),
   getCacheInfo: () => invoke<CacheInfo>("get_cache_info"),
   setCachePolicy: (retentionDays: number | null, maxBytes: number | null) =>
     invoke<void>("set_cache_policy", { retentionDays, maxBytes }),

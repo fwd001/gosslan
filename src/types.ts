@@ -351,6 +351,18 @@ export interface AppSettings {
 /** 中继授权策略（与后端 `mesh::relay_policy::RelayPolicy` 一一对应）。 */
 export type RelayPolicy = "off" | "friends" | "allowlist" | "all";
 
+/**
+ * 公网中转（盲管道）配置，与后端 `commands::RelayConfigView` 一一对应（ADR-0020）。
+ *
+ * `server` 是**后端规范化后**的 `ip:port`（省略端口时补 59993）—— 界面回显这个值，
+ * 用户因此能立刻看到"实际会连哪儿"，而不是他手打的原始串。
+ */
+export interface RelayConfig {
+  enabled: boolean;
+  server: string;
+  token: string;
+}
+
 /** 缓存目录占用与策略 */
 export interface CacheInfo {
   /** 已接收的图片 / 文件（落在「文件存储目录」）：文件数与合计占用 */
