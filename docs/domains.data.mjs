@@ -222,6 +222,7 @@ export default {
         "src-tauri/src/network/transport.rs", // TCP 数据面（活，主文件；正按 include! 分册中）
         "src-tauri/src/network/transport/outbound.rs", // 分册：出站投递 + 链路选路（同模块，非新领域）
         "src-tauri/src/network/transport/gossip.rs", // 分册：Gossip 消费判据与 handle_gossip（同模块）
+        "src-tauri/src/network/transport/relay.rs", // 分册：公网盲管道中继的会合循环与协商接线（ADR-0020，同模块）
         "src-tauri/src/network/dispatch.rs", // 三优先级调度 + BLE yield + 发送状态定义（新建，2026-09）
         "src-tauri/src/transport", // 新栈（部分接线）
       ],
