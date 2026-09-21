@@ -1,0 +1,19 @@
+{
+  "name": "gosslan-relay-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Gosslan 公网中转（哑管道）：只把两条连接拼成字节管道，不解析、不存储、读不到内容。零依赖。",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "gosslan-relay": "./server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "selftest": "node selftest.mjs",
+    "bench": "node bench.mjs"
+  },
+  "license": "MIT"
+}

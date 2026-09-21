@@ -1,0 +1,7 @@
+# 口令与日志绝不进仓库
+.env
+/etc/
+logs/
+*.log
+node_modules/
+.DS_Store
