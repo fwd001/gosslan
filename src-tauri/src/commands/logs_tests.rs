@@ -739,8 +739,10 @@ mod tests {
         );
     }
 
-    /// 任务改动的鉴权判据（用户 2026-09-17 口径）：
-    /// 创建者/群主/被指派人可改指派人；创建者/群主可改标题/删除；创建者/被指派人可改状态。
+    /// 任务改动的鉴权判据 —— 只有两档（口径来自用户 2026-09-17 与 2026-09-20）：
+    /// · 结构（改标题 / 删除）：创建者 **或** 群主
+    /// · 其余（描述 / 图片 / 指派人 / 状态 / 归档）：创建者 **或** 群主 **或** 当前被指派人
+    /// 外加一条自洽检查：无关成员两档都不行（放宽群主权限不该顺带放进第三人）。
     #[test]
     fn todo_update_permission_matrix() {
         use crate::protocol::TodoPayload;
@@ -756,34 +758,29 @@ mod tests {
             archived: false,
             done_at: None,
         };
-        // 参数顺序：(def, actor, group_creator, edits_assignees, edits_structure)
-        // 创建者 alice：改状态 / 改指派人 / 改结构 全可以
-        assert!(super::may_update_todo(&def, "alice", "owner", false, false));
-        assert!(super::may_update_todo(&def, "alice", "owner", true, false));
-        assert!(super::may_update_todo(&def, "alice", "owner", false, true));
-        assert!(super::may_update_todo(&def, "alice", "owner", true, true));
-        // 被指派人 bob：能改状态、能改指派人；不能改标题/删除（结构）
-        assert!(super::may_update_todo(&def, "bob", "owner", false, false));
-        assert!(super::may_update_todo(&def, "bob", "owner", true, false));
+        // 参数顺序：(def, actor, group_creator, edits_structure)
+        // 档位只有两档（结构 = 改标题/删除；其余 = 描述/图片/指派人/状态/归档），
+        // 所以每条断言都是**不同的行为** —— 旧矩阵里那些只换 `edits_assignees` 的行
+        // 判的是同一件事（那个入参根本不参与判权，v4.23.1 已删）。
+        // 创建者 alice：两档都可以
+        assert!(super::may_update_todo(&def, "alice", "owner", false));
+        assert!(super::may_update_todo(&def, "alice", "owner", true));
+        // 被指派人 bob：能改状态 / 指派人 / 描述；不能改标题 / 删除。
+        // 后一条就是"同时改指派人 + 标题"必须被拒的形状（旧实现先判指派人会放行它）。
+        assert!(super::may_update_todo(&def, "bob", "owner", false));
         assert!(
-            !super::may_update_todo(&def, "bob", "owner", false, true),
+            !super::may_update_todo(&def, "bob", "owner", true),
             "被指派人不得改标题 / 删除任务"
         );
-        // bob 同时改「指派人 + 标题」：结构部分被拒
-        assert!(!super::may_update_todo(&def, "bob", "owner", true, true));
-        // 群主 owner：改什么都行 —— 含「仅改状态」（用户 2026-09-20「群主不能编辑群任务」：
-        // 此前描述/图片/状态被归到「被指派人」那档，群主改它们会被拒）
-        assert!(super::may_update_todo(&def, "owner", "owner", false, true));
-        assert!(super::may_update_todo(&def, "owner", "owner", true, false));
-        assert!(super::may_update_todo(&def, "owner", "owner", false, false));
-        assert!(super::may_update_todo(&def, "owner", "owner", true, true));
-        // 无关成员 carol：什么都不行
-        assert!(!super::may_update_todo(
-            &def, "carol", "owner", false, false
-        ));
-        assert!(!super::may_update_todo(&def, "carol", "owner", true, false));
-        assert!(!super::may_update_todo(&def, "carol", "owner", false, true));
-        assert!(!super::may_update_todo(&def, "carol", "owner", true, true));
+        // 群主 owner：两档都可以（用户 2026-09-20「群主不能编辑群任务」）
+        assert!(super::may_update_todo(&def, "owner", "owner", false));
+        assert!(super::may_update_todo(&def, "owner", "owner", true));
+        // 无关成员 carol：两档都不行（放宽群主权限**没有**顺带放进第三人）
+        assert!(!super::may_update_todo(&def, "carol", "owner", false));
+        assert!(!super::may_update_todo(&def, "carol", "owner", true));
+        // 自洽检查：actor 恰好等于群主时才算群主，别人冒充群主无效
+        assert!(super::may_update_todo(&def, "dave", "dave", true));
+        assert!(!super::may_update_todo(&def, "carol", "dave", true));
     }
 
     /// 完成 / 归档字段的权威推导（用户 2026-09-17：「完成以后手动归档」）。

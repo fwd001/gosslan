@@ -141,16 +141,22 @@ fn latest_todo_def(
 
 /// 谁能改一条任务 —— **纯函数**，便于单测。
 ///
+/// 档位只有两档，判据是"这次改动**是不是**结构改动"（结构 = 改标题 / 删除，
+/// 见调用点的 `edits_structure`）：
+///
 /// | 改动 | 允许谁 |
 /// |---|---|
 /// | 改标题 / 删除（结构） | 创建者 **或** 群主 |
-/// | 其余改动（描述 / 图片 / 指派人 / 状态） | 创建者 **或** 群主 **或** 当前被指派人 |
+/// | 其余（描述 / 图片 / 指派人 / 状态 / 归档） | 创建者 **或** 群主 **或** 当前被指派人 |
 ///
-/// **顺序很重要**：`edits_structure` 先判（最严），否则「被指派人改指派人」这一步
-/// 若排在前面，会被指派人在「同时改标题 + 指派人」时一并放行标题改动。
-/// 为什么指派人能改这些（用户 2026-09-17）：被 @ 的人也该能把自己手上的活转派 / 加人 /
-/// 补描述与截图，否则「创建者请假了、指派的人干不了」就成了死结。标题与删除是**任务归属**，
-/// 仍只归创建者或群主。
+/// 只需这一个输入 ⇒ 参数里没有 `edits_assignees`（v4.23.1 删的）：放宽群主权限之后，
+/// "改指派人"与"只改状态"落在同一档，那个入参一次都没被读过，而表上还在单独讲它
+/// ⇒ 说明与实现各说一份。
+///
+/// 为什么被指派人能改指派人（用户 2026-09-17）：被 @ 的人也该能把自己手上的活转派 / 加人 /
+/// 补描述与截图，否则「创建者请假了、指派的人干不了」就成了死结。但标题与删除是
+/// **任务归属**，仍只归创建者或群主 —— 所以判定必须**先问是不是结构改动**，否则
+/// 「同时改指派人 + 标题」会被被指派人那一档一并放行。
 ///
 /// 为什么群主「什么都能改」（用户 2026-09-20：「群主不能编辑群任务」）：此前群主只被允许
 /// 改标题 / 删除 / 改指派人，而**描述 / 图片 / 状态**落进了「被指派人」那一档 ——
@@ -160,7 +166,6 @@ fn may_update_todo(
     def: &crate::protocol::TodoPayload,
     actor: &str,
     group_creator: &str,
-    _edits_assignees: bool,
     edits_structure: bool,
 ) -> bool {
     if def.creator == actor || group_creator == actor {
@@ -259,19 +264,14 @@ pub async fn update_group_todo(
     if !deleted && description.chars().count() > MAX_TODO_DESC_LEN {
         return Err(format!("任务描述不能超过 {MAX_TODO_DESC_LEN} 字"));
     }
-    // 把改动拆成三档分别判权（见 `may_update_todo`）：
-    //   · 改指派人：创建者 / 群主 / 当前被指派人
-    //   · 改标题 / 删除：仅创建者或群主
-    //   · 其余（状态、描述、图片、归档）走"只改状态"档（创建者或被指派人）
+    // 两档判权（见 `may_update_todo` 上方那张表）：
+    //   · 结构（改标题 / 删除）：仅创建者或群主
+    //   · 其余（描述 / 图片 / 指派人 / 状态 / 归档）：创建者 / 群主 / 当前被指派人
+    // `edits_assignees` 在这里**只用来挑错误文案**（同一档里三种角色各自的提示不同），
+    // 不参与判权 —— 判权只需要"是不是结构改动"这一个输入。
     let edits_assignees = assignees != def.assignees;
     let edits_structure = deleted || title != def.title;
-    if !may_update_todo(
-        &def,
-        &s.device_id,
-        &group_creator,
-        edits_assignees,
-        edits_structure,
-    ) {
+    if !may_update_todo(&def, &s.device_id, &group_creator, edits_structure) {
         return Err(if edits_assignees {
             "只有任务创建者、群主或被指派人可以修改指派人".to_string()
         } else if edits_structure {
