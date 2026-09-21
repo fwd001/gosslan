@@ -308,15 +308,46 @@ CASES: list[Case] = [
         "单测只能证明 Drop 本身对，删掉这行装守卫的代码它照样绿 —— 所以必须机器钉接线",
         file=TAURI / "src" / "network" / "file.rs",
         injections=[(
-            "    let _wire_ledger = WireLedger {\n"
-            "        table: &state.file_wire_progress,\n"
-            "        transfer_id: transfer_id.to_string(),\n"
-            "    };",
-            "    let _ = &state.file_wire_progress;",
+            "    let _wire_ledger = WireLedger::install(state, transfer_id, peer_id);",
+            "    let _ = (&state, transfer_id, peer_id);",
         )],
         cmd=cargo("test", "--lib", "file_send_progress_counts_wire_not_queue"),
         cwd=TAURI,
         expect_fail_hint="回收守卫",
+        tags=["rust", "file", "lifecycle"],
+    ),
+    Case(
+        name="写出记账必须按 (传输 × 收件人) 成键（群发 N 个任务共用一个 transfer_id）",
+        why="#35：键只按 `transfer_id` 记时，一次群文件投递里 N 个成员任务共用同一条记录 ——\n"
+        "     甲还在链路上走的字节会把乙的「最近有写出」一直刷新，真卡死的乙永远判不出停滞；\n"
+        "     `chunks` 也会把别人走过的量算进这一条链路。两种坏行为都是静默的。\n"
+        "     注入方式：把 writer 证据点的键退回裸 transfer_id —— 能编译、601 条用例全跑，\n"
+        "     只有「写侧与读侧必须同一个键」这条接线断言会红",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "        &crate::network::file::file_peer_key(transfer_id, recipient),",
+            "        transfer_id.as_str(),",
+        )],
+        cmd=cargo("test", "--lib", "file_send_progress_counts_wire_not_queue"),
+        cwd=TAURI,
+        expect_fail_hint="成键",
+        tags=["rust", "file", "lifecycle"],
+    ),
+    Case(
+        name="群投递侧必须自己装写出记账的回收守卫（不得只修单聊那一半）",
+        why="v4.22.38 给单聊装了 `WireLedger`，群侧一直没装 ⇒ 每发一次群文件，每个成员各留下\n"
+        "     一条永不回收的记录（清理按守卫只许有 Drop 一处）。两笔账：表随历史传输无界增长；\n"
+        "     同一 transfer_id 的补发/重试进门就不是 0，第一次停滞判定被上一轮残留的时刻推迟\n"
+        "     —— 正是 v4.22.37 在单聊侧修掉的那个形状，只是换了条路。\n"
+        "     注入方式：删掉群投递里那行装守卫的调用（发送照跑、编译照过）",
+        file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
+        injections=[(
+            "    let _wire_ledger = file::WireLedger::install(state, transfer_id, recipient);",
+            "    let _ = (&state, transfer_id, recipient);",
+        )],
+        cmd=cargo("test", "--lib", "file_send_progress_counts_wire_not_queue"),
+        cwd=TAURI,
+        expect_fail_hint="群文件投递必须回收",
         tags=["rust", "file", "lifecycle"],
     ),
     # ---------------- INV-P24 第 4 条：发送侧门控 ----------------
@@ -825,7 +856,16 @@ CASES: list[Case] = [
         "摘掉检查是**无声**的：功能测试全绿、进度条照走",
         file=TAURI / "src" / "network" / "file.rs",
         injections=[(
-            "|| stall_tick(state, transfer_id, stream_started_ms, &mut stalled_shown),",
+            # ⚠️ 这段字面量跟着 `stall_tick` 的调用形状走：v4.24.5 给它加了 `peer_id`
+            # （记账键按收件人拆），rustfmt 把它拆成多行 —— 签名再变时这里必须同步，
+            # 否则就是"锚点已经不匹配、用例却静默不注入"的那种假绿。
+            "|| stall_tick(\n"
+            "                    state,\n"
+            "                    transfer_id,\n"
+            "                    peer_id,\n"
+            "                    stream_started_ms,\n"
+            "                    &mut stalled_shown,\n"
+            "                ),",
             "|| crate::network::transport::Tick::Wait,",
         )],
         cmd=cargo(

@@ -10,6 +10,56 @@
 
 ## [Unreleased]
 
+## [4.24.5] - 2026-09-21
+
+### Fixed (写出记账按 (传输 × 收件人) 成键，群投递侧补上回收 —— #35)
+
+`file_wire_progress` 过去**只按 `transfer_id` 成键**，而一次群文件投递是**每个成员各 spawn
+一个任务、共用同一个 `transfer_id`**（`group_file_dispatch.rs` 的注释里写着这件事，
+当年 cancel 表正是因此改成按人成键 —— 只修了那一半）。两种坏行为都是静默的：
+
+| 消费者 | 读的是 | 一把键时的后果 |
+| --- | --- | --- |
+| `stall_tick`（群侧 `dispatch:148` 也在用） | `at_ms` | 甲还在链路上走的字节会把乙的"最近有写出"一直刷新 ⇒ **真卡死的乙永远判不出停滞** |
+| `wait_complete_ack` | `at_ms` | 等确认的 30s 安静窗口被别人的写出续命 |
+| `wire_progress_bytes` | `chunks` | 别人走过的片数算进这一条链路的进度 |
+
+回收侧更直接：单聊 v4.22.38 装了 `WireLedger`（Drop 覆盖十余处提前 return），**群侧从来没装**，
+而守卫规定清理只许有 `WireLedger::drop` 一处 ⇒ 每发一次群文件，每个成员各留下一条永不回收的
+记录（表无界增长），同一 `transfer_id` 的补发/重试进门也不是 0（第一次停滞判定被上轮残留推迟）。
+
+- 键：新增 `file_peer_key(transfer_id, recipient)` 作为**唯一**格式，`file_cancel_key` /
+  `file_cancel_prefix` 改为委托它 —— 不出现第二种分隔符拼法（"同一件事两处各算一遍"是本仓库
+  反复付过钱的那类缺陷）。
+- 证据点：`mark_file_wire_progress(state, msg, recipient)`，`recipient` 取**这条链路在 `links`
+  表里的归属 id**（writer_loop 自己的 `peer_id`），TCP 与 BLE 两条写循环各传一次。拆出
+  `bump_file_wire_progress_in(table, key, now)` 只为让"按人分开"能被单测直接喂表验。
+- 读侧全部改读同一把键：`file_wire_progress_at` / `file_wire_chunks_at` / `stall_tick` /
+  `wait_complete_ack` 的参数语义变成"键"，`stall_tick` 发给前端的 `file-stalled` 事件仍带
+  **裸 `transfer_id`**（界面按它认传输，键里带收件人只会让它认不出来）。
+- 群侧：`dispatch_group_file_to_peer` 开头装 `file::WireLedger::install(state, transfer_id,
+  recipient)`，`stall_tick` 带上 `recipient`。
+- **1:1 行为等价**（这就是"不能出问题"的根据）：单聊一个 transfer 只有一个收件人，
+  键从 `t` 变成 `t\0peer` 是同一个桶换了个名字，`at_ms`/`chunks` 的数值路径一字未动；
+  而 `resolve_stream_link(state, peer_id)` 取的链路其 `peer_id` 就是当初传进来的收件人
+  ⇒ 写侧与读侧必然同名。
+- ⚠️ **中继帧 `RelayChunk` 故意不记账**，不是漏：那种帧"送给谁"由帧自己的 `to` 决定、
+  与写它的链路无关。按 `to` 记 ⇒ 每个**转发节点**都替别人的传输留一条记录，而转发侧没有
+  `WireLedger`，谁都不会去删；按下一跳记 ⇒ 共用同一中继的两个成员被并成一个数。
+  这条决定用断言钉住（`!mark.contains("RelayChunk")`），要改必须先解决"转发侧谁回收"。
+  中继侧的进度记账是另一件事，不并进本条口径。
+- 守卫：`file_send_progress_counts_wire_not_queue` 从三条扩到六条（⑤ 读写同键、⑥ 群侧装守卫 +
+  中继不记账被钉住）；`verify-guards.py` 相应**更新一条注入文本**（旧写法已不匹配）并**新增两条**
+  注入用例：键退回裸 `transfer_id`、删掉群侧那行 `install` —— 两者都必须让接线断言红。
+- 新单测 `wire_progress_is_counted_per_recipient_within_one_group_transfer`（登记进 macos 基线）：
+  同 transfer 的两个收件人各自记 `chunks`/`at_ms`，甲收尾只删甲那条。
+  ⚠️ **没往 windows 基线加**：那边仍缺约百条（#23 要的是在 Windows 上 dump 一份真 `--list`），
+  多写没命中 = windows job 直接红，而"未纳入保护"只是 warn —— 两害相权留给 #23 一次做对。
+- 覆盖边界：**多成员群文件发送只能真机验**（要看的是"卡死的那个人终于被判停滞、进度不再抢先"），
+  本机这套是单测 + 接线断言 + 非空转注入，不等于真机行为已确认；中继侧本条未动。
+
+Version-Bump: patch
+
 ## [4.24.4] - 2026-09-21
 
 ### Tests (把 PR #24 的 ⑭ 静态守卫登记进非空转用例集；顺带撤回一条我自己报错的审查结论)

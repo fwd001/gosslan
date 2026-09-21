@@ -1454,7 +1454,7 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                 // 见 `transport.rs::mark_file_wire_progress` 的注释）。BLE 上这一步尤其关键：
                 // 一个 4KiB 文件块要 399 片 × 12ms ≈ 5.5s，判据必须落在"写出去"上。
                 if res.is_ok() {
-                    mark_file_wire_progress(&state, &msg);
+                    mark_file_wire_progress(&state, &msg, &peer_id);
                 }
                 if let Err(e) = &res {
                     // 「帧无法分片」是**这一帧**太大/MTU 异常，不是链路坏了：拆链路会让

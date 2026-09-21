@@ -91,13 +91,31 @@ pub fn chunk_size_for_path(path: &str) -> usize {
 ///
 /// 为什么用 NUL 不用 `:`：`transfer_id`（uuid）与 `device_id` 都不会含 NUL，
 /// 前缀匹配因此不可能误伤「id 恰好以另一个 id 开头」的兄弟条目。
-pub fn file_cancel_key(transfer_id: &str, recipient: &str) -> String {
+/// 「一条传输 × 一个收件人」的**唯一**键格式。
+///
+/// 为什么按收件人：一次群文件投递是**每个成员各 spawn 一个任务、共用同一个 `transfer_id`**
+/// （`commands/group_file_dispatch.rs`），单聊+续传也可能同 id 多次尝试。只按 `transfer_id`
+/// 记的话，甲还在链路上走的字节会让乙的"最近有写出"一直刷新 ⇒ 真卡死的乙永远判不出停滞。
+///
+/// 分隔符只此一份：取消登记（`file_cancel_key`）与写出记账用的是同一个格式，
+/// 出现第二种拼法就是"同一件事两处各算一遍"——本仓库反复付过钱的那类缺陷。
+pub fn file_peer_key(transfer_id: &str, recipient: &str) -> String {
     format!("{transfer_id}\u{0}{recipient}")
+}
+
+/// 同一 `transfer_id` 下所有收件人键的公共前缀。
+pub fn file_peer_prefix(transfer_id: &str) -> String {
+    format!("{transfer_id}\u{0}")
+}
+
+/// 取消登记的键（= `file_peer_key`，保留这个名字是给既有调用点与守卫用）。
+pub fn file_cancel_key(transfer_id: &str, recipient: &str) -> String {
+    file_peer_key(transfer_id, recipient)
 }
 
 /// 取消入口用的前缀：同一 `transfer_id` 下所有收件人的键都以它开头。
 pub fn file_cancel_prefix(transfer_id: &str) -> String {
-    format!("{transfer_id}\u{0}")
+    file_peer_prefix(transfer_id)
 }
 
 /// SHA-256 hex 表示校验（64 位 hex，大小写均可；比较时统一小写）。
@@ -677,13 +695,18 @@ pub const FILE_STALL_TICK: Duration = Duration::from_secs(5);
 ///
 /// `started_ms` 必须是**本次尝试**的起点：上一轮 attempt 留下的 writer 时间戳会让
 /// 第一个 tick 就被判成停滞（`max` 兜住这个下界）。
+///
+/// `recipient` 参与的是**查哪条记账**（`file_peer_key`），不参与发给前端的那个 id ——
+/// 界面按 `transfer_id` 认这条传输，键里带收件人只会让它认不出来。
 pub(crate) fn stall_tick(
     state: &AppState,
     transfer_id: &str,
+    recipient: &str,
     started_ms: i64,
     shown: &mut bool,
 ) -> crate::network::transport::Tick {
-    let idle = db::now_ms() - file_wire_progress_at(state, transfer_id).max(started_ms);
+    let idle = db::now_ms()
+        - file_wire_progress_at(state, &file_peer_key(transfer_id, recipient)).max(started_ms);
     let abort = stall_verdict(idle) == StallVerdict::Abort;
     if abort {
         state.logger.warn(
@@ -720,14 +743,31 @@ pub(crate) fn stall_tick(
 /// 重试时读到上一次尝试残留的 `chunks`，进度会悄悄退回"按入队算"（v4.22.37 那条
 /// 修复等于白做，而且现场只在"发失败又重试"时才出现）。`Drop` 覆盖 `?`、提前
 /// return 与 panic 展开，只此一处，所以也不会有第二份"什么时候删"。
-struct WireLedger<'a> {
+///
+/// 键是 `file_peer_key(transfer_id, recipient)` 而不是 `transfer_id`：群发是 N 个任务共用
+/// 一个 id，按 id 回收会互相删（甲先收尾就把还在写的乙的记账清了）。
+pub(crate) struct WireLedger<'a> {
     table: &'a std::sync::Mutex<std::collections::HashMap<String, crate::state::FileWireProgress>>,
-    transfer_id: String,
+    wire_key: String,
+}
+
+impl<'a> WireLedger<'a> {
+    /// 装上回收守卫（单聊 `stream_file` 与群发投递各调一次，别自己拼结构体）。
+    pub(crate) fn install(
+        state: &'a AppState,
+        transfer_id: &str,
+        recipient: &str,
+    ) -> WireLedger<'a> {
+        WireLedger {
+            table: &state.file_wire_progress,
+            wire_key: file_peer_key(transfer_id, recipient),
+        }
+    }
 }
 
 impl Drop for WireLedger<'_> {
     fn drop(&mut self) {
-        clear_file_wire_progress_in(self.table, &self.transfer_id);
+        clear_file_wire_progress_in(self.table, &self.wire_key);
     }
 }
 
@@ -769,10 +809,9 @@ async fn stream_file(
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
     // 本次尝试的写出记账，离开作用域（含所有提前 return）自动回收。见 `WireLedger`。
-    let _wire_ledger = WireLedger {
-        table: &state.file_wire_progress,
-        transfer_id: transfer_id.to_string(),
-    };
+    // 按 (transfer, 收件人) 成键：单聊这里只有一个收件人，与旧口径等价。
+    let _wire_ledger = WireLedger::install(state, transfer_id, peer_id);
+    let wire_key = file_peer_key(transfer_id, peer_id);
 
     let mut f = tokio::fs::File::open(&path)
         .await
@@ -868,7 +907,13 @@ async fn stream_file(
                 &link,
                 &chunk,
                 FILE_STALL_TICK,
-                || stall_tick(state, transfer_id, stream_started_ms, &mut stalled_shown),
+                || stall_tick(
+                    state,
+                    transfer_id,
+                    peer_id,
+                    stream_started_ms,
+                    &mut stalled_shown,
+                ),
             ) => {
                 r.map_err(SendFileError::retryable)?;
             }
@@ -884,7 +929,7 @@ async fn stream_file(
                 from_bytes,
                 chunk_size,
                 sent,
-                file_wire_chunks_at(state, transfer_id),
+                file_wire_chunks_at(state, &wire_key),
                 size,
             );
             let progress = if size == 0 {
@@ -951,7 +996,7 @@ async fn stream_file(
     let completed = tokio::select! {
         biased;
         _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
-        done = wait_complete_ack(state, transfer_id, ack_rx) => done,
+        done = wait_complete_ack(state, transfer_id, peer_id, ack_rx) => done,
     };
     state
         .pending_file_complete
@@ -1405,16 +1450,20 @@ const FILE_ACK_IDLE: Duration = Duration::from_secs(30);
 async fn wait_complete_ack(
     state: &Arc<AppState>,
     transfer_id: &str,
+    recipient: &str,
     mut rx: tokio::sync::oneshot::Receiver<bool>,
 ) -> bool {
-    let mut last_progress = file_wire_progress_at(state, transfer_id);
+    // 与 writer 记账同键（见 `mark_file_wire_progress`）：读错键等于永远"没有进展"，
+    // 30s 安静窗口会提前把还在正常传输的链路判死。
+    let wire_key = file_peer_key(transfer_id, recipient);
+    let mut last_progress = file_wire_progress_at(state, &wire_key);
     loop {
         match tokio::time::timeout(FILE_ACK_IDLE, &mut rx).await {
             // 明确收到确认（true）/ 明确的否定或发送端被 drop（false）
             Ok(Ok(true)) => return true,
             Ok(_) => return false,
             Err(_) => {
-                let now_progress = file_wire_progress_at(state, transfer_id);
+                let now_progress = file_wire_progress_at(state, &wire_key);
                 if now_progress > last_progress {
                     last_progress = now_progress;
                     continue; // 还有分块在真的往链路上走 ⇒ 继续等，不算失败
@@ -1911,8 +1960,9 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_seq_decision, classify_file_subtype, derive_file_name, safe_file_name,
-        safe_transfer_id, unique_path, wire_progress_bytes, ChunkSeq, WireLedger,
+        chunk_seq_decision, classify_file_subtype, clear_file_wire_progress_in, derive_file_name,
+        file_peer_key, safe_file_name, safe_transfer_id, unique_path, wire_progress_bytes,
+        ChunkSeq, WireLedger,
     };
 
     /// 写出记账必须**随发送尝试一起回收**（v4.22.38）。
@@ -1921,6 +1971,8 @@ mod tests {
     /// 旧写法只在成功路径清一次 ⇒ 失败后重试会读到上一次的 `chunks`，进度悄悄退回
     /// "按入队算"，也就是把 v4.22.37 那条修复抹掉。这里用本地表复现同一个 Drop 语义
     /// （造不出也不需要造 AppState —— 要验的就是"离开作用域就没残留"）。
+    ///
+    /// 键用的是 `file_peer_key(transfer, 收件人)`：回收的单位是"这一次给这个人的尝试"。
     #[test]
     fn wire_ledger_is_reclaimed_on_every_exit_path() {
         use crate::state::FileWireProgress;
@@ -1928,19 +1980,14 @@ mod tests {
         use std::sync::Mutex;
 
         let table: Mutex<HashMap<String, FileWireProgress>> = Mutex::new(HashMap::new());
+        let key = file_peer_key("t1", "peer-a");
         let attempt = |early: bool| -> Result<(), ()> {
             let _ledger = WireLedger {
                 table: &table,
-                transfer_id: "t1".to_string(),
+                wire_key: key.clone(),
             };
             // 模拟 writer 记账：这一片真的写出去了
-            table.lock().unwrap().insert(
-                "t1".to_string(),
-                FileWireProgress {
-                    at_ms: 1,
-                    chunks: 9,
-                },
-            );
+            crate::network::transport::bump_file_wire_progress_in(&table, &key, 1);
             if early {
                 return Err(());
             }
@@ -1954,6 +2001,54 @@ mod tests {
             table.lock().unwrap().is_empty(),
             "提前 return 也必须回收 —— 旧写法漏的就是这一条"
         );
+    }
+
+    /// 同一次群投递里，每个收件人必须有**自己那份**写出记账（#35）。
+    ///
+    /// 为什么单独立一条：群发是 N 个任务共用一个 `transfer_id`（`group_file_dispatch.rs`），
+    /// 键只按 id 记时两种坏行为都是静默的 ——
+    ///   · `at_ms` 被任何一个人的写出刷新 ⇒ 真卡死的那个人永远判不出停滞；
+    ///   · 进度按 `chunks` 折算 ⇒ 别人走过的量算进这一条链路，界面比实际快。
+    /// 回收同理：谁先收尾就把整条传输的记录删掉，剩下还在写的人从此没有记账。
+    #[test]
+    fn wire_progress_is_counted_per_recipient_within_one_group_transfer() {
+        use crate::state::FileWireProgress;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+
+        let table: Mutex<HashMap<String, FileWireProgress>> = Mutex::new(HashMap::new());
+        let a = file_peer_key("t1", "peer-a");
+        let b = file_peer_key("t1", "peer-b");
+        assert_ne!(a, b, "同一个 transfer 的两个收件人必须各自成键");
+        assert_ne!(
+            a,
+            "t1".to_string(),
+            "裸 transfer_id 不能是合法键 —— 否则新旧口径会互相读到"
+        );
+
+        for i in 0..3 {
+            crate::network::transport::bump_file_wire_progress_in(&table, &a, i + 1);
+        }
+        crate::network::transport::bump_file_wire_progress_in(&table, &b, 9);
+
+        let snap = table.lock().unwrap();
+        assert_eq!(snap.get(&a).unwrap().chunks, 3);
+        assert_eq!(
+            snap.get(&b).unwrap().chunks,
+            1,
+            "甲走过的片数不许算到乙头上（进度与停滞判定都会偏）"
+        );
+        assert_eq!(snap.get(&b).unwrap().at_ms, 9, "各自的时刻也必须各自记");
+        drop(snap);
+
+        // 甲先收尾：只许删甲自己那一条。
+        clear_file_wire_progress_in(&table, &a);
+        let after = table.lock().unwrap();
+        assert!(
+            after.contains_key(&b),
+            "回收必须按收件人，否则先结束的成员会把还在写的成员的记账删掉"
+        );
+        assert_eq!(after.get(&b).unwrap().chunks, 1);
     }
 
     /// 发送进度必须按"**已写出链路**"算，不按入队算（v4.22.37）。

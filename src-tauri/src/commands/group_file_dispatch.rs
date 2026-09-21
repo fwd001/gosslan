@@ -11,6 +11,11 @@ async fn dispatch_group_file_to_peer(
     recipient: &str,
     source_path: &str,
 ) -> Result<(), String> {
+    // 写出记账的回收守卫：与单聊 `stream_file` 同一条理由（`Drop` 覆盖取消 / 超时 /
+    // 十余处提前 return），键**必须带收件人** —— 这里 N 个成员各一个任务、共用同一个
+    // `transfer_id`，按 id 记会让甲的写出把乙的"最近有写出"一直刷新（真卡死的成员
+    // 判不出停滞），按 id 收更会让先收尾的甲删掉还在写的乙的记录。
+    let _wire_ledger = file::WireLedger::install(state, transfer_id, recipient);
     let gf = db::get_group_file(
         &state.db.lock().unwrap_or_else(|e| e.into_inner()),
         transfer_id,
@@ -145,7 +150,13 @@ async fn dispatch_group_file_to_peer(
                     &link,
                     &chunk,
                     file::FILE_STALL_TICK,
-                    || file::stall_tick(state, transfer_id, stream_started_ms, &mut stalled_shown),
+                    || file::stall_tick(
+                        state,
+                        transfer_id,
+                        recipient,
+                        stream_started_ms,
+                        &mut stalled_shown,
+                    ),
                 ) => {
                     r.map_err(|e| format!("分片发送失败：{e}"))?;
                 }

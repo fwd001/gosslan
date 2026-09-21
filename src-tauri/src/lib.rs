@@ -1296,8 +1296,10 @@ mod tests {
         let stream_f = code_flat(&stream);
         assert!(
             stream_f.contains("send_on_link_with_tick(&link,&chunk,FILE_STALL_TICK,")
-                && stream_f
-                    .contains("stall_tick(state,transfer_id,stream_started_ms,&mutstalled_shown)"),
+                // ⚠️ 第二段判据刻意**不写到右括号**：参数一多 rustfmt 会拆行并补尾随逗号，
+                // 把 `)` 写进判据等于把断言绑在排版上（本轮实测踩过：拆行后判据永不匹配，
+                // 红的是护栏自己，不是它保护的代码）。
+                && stream_f.contains("stall_tick(state,transfer_id,peer_id,stream_started_ms,&mutstalled_shown"),
             "分片必须投到钉住的那条链路，且等待期间必须做停滞检查 —— 对端不收时发送就挂在\
              背压上，这里是唯一的观测点（摘掉检查 = 界面冻在同一个百分比直到 deadline）"
         );
@@ -2402,11 +2404,15 @@ mod tests {
 
     /// 发送进度必须落在"已写出链路"上，不许回到"已入队"（v4.22.37 的用户可见症状）。
     ///
-    /// 三处同时成立才有意义，所以一起钉：
+    /// 六处同时成立才有意义，所以一起钉：
     ///   ① writer 那唯一的证据点必须**累加片数**（只记时刻的话进度算不出来）；
     ///   ② 状态表的值必须是带 `chunks` 的结构，而不是裸时间戳；
     ///   ③ `stream_file` 的进度与 `file-progress` 事件必须用换算后的 `on_wire` ——
     ///      旧写法 `received: sent` 就是那个"262MB 还在队列里就 100%"的假象。
+    ///   ④ 生命周期：装了回收守卫，且清理只此一处；
+    ///   ⑤ 键按 (传输 × 收件人)：写侧与读侧必须同一个 `file_peer_key`（#35 —— 群发是 N 个
+    ///      任务共用一个 `transfer_id`，退回裸 id 就是"甲的写出替乙续命"）；
+    ///   ⑥ 群投递侧同样装守卫、同样按收件人判停滞，且**中继帧不记账**这条决定被钉住。
     /// 判据都取**函数体**而不是全文：`received: sent` 在中继发文件那条路径里是合法的
     /// （另一套语义），全文一扫会误伤。
     #[test]
@@ -2429,18 +2435,55 @@ mod tests {
         //    只测 `WireLedger` 的 Drop 语义不够 —— 把 stream_file 里那行装守卫的代码删掉，
         //    Drop 测试照样全绿（它测的是辅助类型，不是接线）。
         assert!(
-            body.contains("WireLedger {"),
+            body.contains("WireLedger::install("),
             "stream_file 必须装写出记账的回收守卫，否则失败路径的残留会让重试退回入队口径"
         );
         assert!(
             !body.contains("clear_file_wire_progress"),
             "清理只许有 WireLedger::drop 一处，第二处迟早与它口径不同"
         );
+        // ⑤ 键必须按收件人（#35）。读侧只要有一处退回裸 `transfer_id`，读到的就是
+        //    "别人的写出"或"永远没有写出" —— 两者都静默。
+        assert!(
+            body.contains("file_wire_chunks_at(state, &wire_key)"),
+            "进度换算必须读 (传输 × 收件人) 那一条记账，裸 transfer_id 是旧口径"
+        );
+        assert!(
+            !body.contains("file_wire_chunks_at(state, transfer_id)"),
+            "stream_file 里出现裸 transfer_id 读记账 = 与 writer 的键不一致，进度会永远 0"
+        );
+
+        // ⑥ 群发投递侧同样要装回收守卫并按收件人查停滞（N 个任务共用一个 transfer_id）。
+        let dispatch = include_str!("commands/group_file_dispatch.rs");
+        assert!(
+            dispatch.contains("file::WireLedger::install("),
+            "群文件投递必须回收自己的写出记账，否则每个成员一条记录永久留在表里"
+        );
+        assert!(
+            dispatch.contains("file::stall_tick(") && dispatch.contains("recipient,"),
+            "群侧停滞判定必须带上收件人，不然甲的写出会把乙的卡死盖住"
+        );
 
         let transport = crate::network::transport_src_for_guards();
         let mark = rust_fn_body(&transport, "pub(crate) fn mark_file_wire_progress(");
         assert!(
-            code_flat(&mark).contains("p.chunks=p.chunks.saturating_add(1)"),
+            code_flat(&mark).contains("bump_file_wire_progress_in(&state.file_wire_progress,&"),
+            "writer 的写出证据点必须落进记账表（拆成 bump_* 是为了单测能直接喂一张表）"
+        );
+        assert!(
+            code_flat(&mark).contains("file_peer_key(transfer_id,recipient)"),
+            "证据点必须按 (传输 × 收件人) 成键 —— 群发 N 个任务共用一个 transfer_id"
+        );
+        // 中继帧**故意**不记账（见 `mark_file_wire_progress` 的注释）。这条断言不是装饰：
+        // 没有它，下一个"顺手补上 RelayChunk"的改动会让每个转发节点都为别人的传输留一条
+        // 没人回收的记录 —— 转发侧没有 WireLedger，那是比"进度不准"更糟的形状。
+        assert!(
+            !mark.contains("RelayChunk"),
+            "RelayChunk 不进入写出记账是**已登记的决定**；要改必须先解决\"谁回收转发侧的记录\""
+        );
+        let bump = rust_fn_body(&transport, "pub(crate) fn bump_file_wire_progress_in(");
+        assert!(
+            code_flat(&bump).contains("p.chunks=p.chunks.saturating_add(1)"),
             "writer 的写出证据点必须累加片数"
         );
         let state = include_str!("state.rs");
