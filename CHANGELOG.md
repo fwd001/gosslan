@@ -10,6 +10,37 @@
 
 ## [Unreleased]
 
+## [4.24.3] - 2026-09-21
+
+### Fixed (PR #24 审查发现：滚动落定的轮询定时器没有卸载出口，组件死了它还在跑)
+
+`scrollToIndex` 的"1.5s 落定窗口"（PR #24 为修「第一次定位总是不准」加的，每 100ms 校正一次）
+**自动收口只写在 `applyJump` 内部**，而它开头是：
+
+```ts
+const el = container.value;
+if (!j || !el) return;          // ← 卸载后必然从这里返回
+if (Date.now() > j.until) { pendingJump = null; return; }   // ← 只有走到这里才会清 pendingJump
+```
+
+组件卸载后 Vue 把模板 ref 置 null ⇒ 每次轮询都从 `!el` 那一支早退，**永远走不到**过窗收口，
+而清表的唯一出口在那之后 ⇒ 定时器以 10Hz 常驻在一个已死的组件上，不会自愈。
+触发条件不是边缘场景：关掉带列表的辅助窗口、或跳转后立刻切会话，只要落在 1.5s 窗口里就漏一条。
+
+- 修法是一行归属：`onBeforeUnmount` 里显式 `clearInterval(jumpTimer)`（与它已经在清的
+  `raf` / `remeasureRaf` / `settleTimer` 同一处、同一口径）。轮询逻辑本身没动。
+- 静态守卫：`designGuards.test.ts` 新增 ⑮，钉「卸载钩子里必须有 `clearInterval(jumpTimer)`」。
+- 非空转：`verify-guards.py` 新增用例，注入方式是把那三行清理缩成一句自赋值 —— 行为照常、
+  类型照过，只有守卫会红。实测**改坏 FAIL、恢复 PASS**，且失败输出里确实是守卫那句
+  （`100ms 轮询不会停`）—— 上一版现场学到的：hint 必须对得上实际报错，否则"绿了但不知道
+  是谁报的"等于没证明。
+- 覆盖边界：**这是逻辑推导 + 静态守卫，不是运行时实测**。本仓库的前端测试是 `node --test`
+  扫 utils 层，没有组件挂载设施，所以"卸载后定时器仍在跑"没有在真机/浏览器里量出来过；
+  要真验证得给 VirtualList 加一层挂载测试（已记进后续计划）。修复本身是纯清理，最坏情况
+  是"没修好但也没弄坏别的"，不会引入新行为。
+
+Version-Bump: patch
+
 ## [4.24.2] - 2026-09-21
 
 ### Changed (补 PR #24 的记账：版本、CHANGELOG、Rust 用例清单)

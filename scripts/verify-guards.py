@@ -988,6 +988,27 @@ CASES: list[Case] = [
         tags=["frontend", "a11y"],
     ),
     Case(
+        name="跨窗口的定时器必须有卸载出口（VirtualList 落定轮询）",
+        why="PR #24 给 `scrollToIndex` 加了 1.5s 的落定轮询（100ms 一次），而自动收口只写在\n"
+        "     `applyJump` 内部，它开头是 `if (!j || !el) return;` —— `el` 是容器 ref，组件卸载后\n"
+        "     Vue 把它置 null ⇒ 那条过窗自清的分支永远走不到，定时器以 10Hz 常驻在已死的组件上，\n"
+        "     且不会自愈（关掉带列表的辅助窗口、切会话正好落在窗口里就漏一条）。\n"
+        "     注入方式：把 `onBeforeUnmount` 里那三行显式清理缩成一句赋值 —— 行为照常、类型照过，\n"
+        "     只有静态守卫会红（它钉的是「卸载必须有出口」这件事，不是那段轮询代码怎么写）",
+        file=ROOT / "src" / "components" / "VirtualList.vue",
+        injections=[(
+            "  if (jumpTimer) {\n"
+            "    window.clearInterval(jumpTimer);\n"
+            "    jumpTimer = 0;\n"
+            "  }",
+            "  jumpTimer = jumpTimer;",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="100ms 轮询不会停",
+        tags=["frontend", "lifecycle"],
+    ),
+    Case(
         name="焦点可见（outline-none 必须有自己的焦点指示）",
         why="全局焦点环写在 `:where()` 里（特异性 0），会被 `.outline-none`（特异性 0,1,0）"
         "静默覆盖 —— 7 处输入框（含最高频的消息输入框）因此完全没有焦点指示，"

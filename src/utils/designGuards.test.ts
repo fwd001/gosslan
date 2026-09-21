@@ -1050,3 +1050,26 @@ test("预览缓存 URL 的消费者不得 revokeObjectURL（会把同一张图�
     );
   }
 });
+
+// ---------------- ⑮ 滚动落定的轮询定时器必须在卸载时清掉 ----------------
+//
+// 真实缺陷（PR #24 审查发现）：`scrollToIndex` 会开一个 1.5s 落定窗口，里面用 `setInterval`
+// 每 100ms 校正一次（`pollJump`）。窗口的**自动收口只发生在 `applyJump` 内部**，而它开头就是
+// `if (!j || !el) return;` —— `el` 是容器 ref，组件卸载后 Vue 会把它置 null，于是
+// "过窗就 clearInterval"那一支永远走不到 ⇒ 定时器以 10Hz 常驻在一个已经死掉的组件上。
+// 只要"关掉带列表的辅助窗口 / 切会话"正好落在落定窗口里就漏一条，且不会自愈。
+// 判据：`onBeforeUnmount` 里必须**显式**清 `jumpTimer`（将来把落定逻辑改成别的形态时，
+// 只要还留着一个跨窗口的定时器，这条就得跟着改，不能默默失效）。
+test("VirtualList：落定轮询定时器必须在 onBeforeUnmount 里清理", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "components", "VirtualList.vue"), "utf8");
+  const start = src.indexOf("onBeforeUnmount(() => {");
+  assert.notEqual(start, -1, "VirtualList 的卸载钩子不见了 ⇒ 这条判据失去锚点");
+  const end = src.indexOf("\n});", start);
+  assert.notEqual(end, -1, "VirtualList 的卸载钩子没有正常闭合");
+  const cleanup = src.slice(start, end);
+  assert.ok(
+    cleanup.includes("clearInterval(jumpTimer)"),
+    "onBeforeUnmount 没清 jumpTimer：组件在落定窗口内卸载后，100ms 轮询不会停" +
+      "（applyJump 在 `!el` 处就返回了，走不到过窗自清那一支）",
+  );
+});

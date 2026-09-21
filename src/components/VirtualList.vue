@@ -401,6 +401,12 @@ onBeforeUnmount(() => {
   if (raf) cancelAnimationFrame(raf);
   if (remeasureRaf) cancelAnimationFrame(remeasureRaf);
   if (settleTimer) window.clearTimeout(settleTimer);
+  // 落定窗口的轮询也必须在这里停：`applyJump` 开头就是 `if (!j || !el) return;`，
+  // 卸载后容器 ref 已是 null ⇒ 那条"过窗自动清表"的分支永远走不到 ⇒ 不显式清就是 10Hz 常驻。
+  if (jumpTimer) {
+    window.clearInterval(jumpTimer);
+    jumpTimer = 0;
+  }
 });
 
 // 数据或可见窗口变化后重测可见行，收敛估算与实测偏差
