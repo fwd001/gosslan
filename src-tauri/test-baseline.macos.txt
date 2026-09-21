@@ -478,7 +478,9 @@ protocol::tests::chat_ack_and_read_receipt_plaintext_directed_envelope_integrity
 protocol::tests::display_kind_maps_legacy_media_to_file
 protocol::tests::emoji_token_shape_is_validated_but_not_the_catalogue
 protocol::tests::envelope_encrypted_flag_roundtrip
+protocol::tests::every_gated_kind_is_advertised_by_us
 protocol::tests::friend_request_envelope_encrypt_sign_decrypt_and_target_integrity
+protocol::tests::gated_kind_needs_the_peers_own_declaration
 protocol::tests::gossip_message_id_deterministic_and_sensitive_to_payload
 protocol::tests::group_ack_and_file_complete_ack_roundtrip
 protocol::tests::group_lifecycle_messages_roundtrip
@@ -535,6 +537,7 @@ tests::link_badge_and_presence_are_live
 tests::link_window_is_not_capability_covered
 tests::main_window_label_matches_tray_constant
 tests::never_awaits_while_holding_the_links_lock
+tests::new_message_kinds_are_gated_at_the_send_path
 tests::no_whole_file_scan_before_the_file_bubble
 tests::notifications_are_observable_and_respect_the_switch
 tests::offline_peer_stays_listed_but_is_not_online

@@ -2281,6 +2281,55 @@ mod tests {
         );
     }
 
+    /// INV-P24 第 4 条的**接线**：门控判据存在、唯一，而且 1:1 发送路径真的问它。
+    ///
+    /// 为什么不能只测判据函数：判据写得再对，发送点不调用 = 没有门控。这条守卫
+    /// 就是为了让"忘了接"这件事变成编译期之后立刻能看到的红。
+    /// 背景（本轮 RCA 查出来的真实现场，不是假想需求）：`MsgKind::Merge` 是 V1 期间
+    /// （`9b26006`）才加的，v4.8.2 / v4.18.10 / v4.20.0 三个已发布版本里没有这个变体 ——
+    /// 它们的 `ChatMessage.kind` 仍是枚举，收到 `kind:"merge"` 会整帧丢掉。
+    #[test]
+    fn new_message_kinds_are_gated_at_the_send_path() {
+        let proto = include_str!("protocol.rs");
+        for f in [
+            "pub fn kind_required_feature(",
+            "pub fn kind_allowed_by_features(",
+        ] {
+            assert_eq!(
+                proto.matches(f).count(),
+                1,
+                "{f} 全仓只许一处，第二处迟早口径不同"
+            );
+        }
+        let table = rust_fn_body(proto, "pub fn kind_required_feature(");
+        assert!(
+            table.contains("\"merge\""),
+            "merge 必须仍在门控表里：v4.20.0 及更早的 MsgKind 没有这个变体"
+        );
+
+        let chat = include_str!("commands/chat.rs");
+        let body = rust_fn_body(chat, "pub async fn send_message(");
+        let gate = body
+            .find("kind_allowed_by_features(")
+            .expect("1:1 发送路径必须问门控判据，否则老对端会静默丢帧");
+        // 给自己发的那条分支在前 —— 自聊不经过网络，不该被判"对方版本不支持"。
+        let self_branch = body
+            .find("insert_self_message(")
+            .expect("自发消息分支不见了，顺序判据失去锚点");
+        assert!(
+            self_branch < gate,
+            "门控必须排在自发消息分支之后，否则给自己发合并转发也会被挡"
+        );
+        // 挡在公钥查找之前：这条根本不会发出去，不该再触发 who_has 探测白等 1.2s。
+        let probe = body
+            .find("let pubkey = {")
+            .expect("公钥查找块不见了，顺序判据失去锚点");
+        assert!(
+            gate < probe,
+            "门控要早于公钥探测，白探测一次会卡用户 1.2 秒"
+        );
+    }
+
     /// 发送进度必须落在"已写出链路"上，不许回到"已入队"（v4.22.37 的用户可见症状）。
     ///
     /// 三处同时成立才有意义，所以一起钉：

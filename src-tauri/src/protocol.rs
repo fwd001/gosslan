@@ -87,10 +87,59 @@ pub fn peer_protocol_is_newer(declared: Option<u32>) -> bool {
 /// 内容能力位：支持按 cid 拉取（ContentRequest / 拥有即授权服务）。
 pub const CONTENT_FEATURE_PULL: u32 = 1 << 0;
 
+/// 能力位：**能收 `kind:"merge"`（合并转发卡片）**。
+///
+/// 为什么需要单独一个位而不是"看 protocol_version"：`merge` 是在 V1 期间
+/// （`9b26006`，最早出现在 v4.22.30 这条线上）才加进 `MsgKind` 的，而
+/// v4.8.2 / v4.18.10 / v4.20.0 这些**已发布**的包里根本没有这个变体。它们的
+/// `ChatMessage.kind` 还是嵌套枚举 ⇒ 收到 `kind:"merge"` 时整帧解析失败被丢掉
+/// （INV-P24 第 2 条那个 bug 我们只修了自己这一侧，老版本里它仍然成立），
+/// 于是发送方 outbox 反复重投、最后显示"发送失败"，双方都不知道为什么。
+/// 这段历史也是"V1 内部并不单调"的证据：**别把 protocol_version 当能力清单用**。
+pub const CONTENT_FEATURE_MERGE: u32 = 1 << 1;
+
 /// 本机支持的内容能力位图。**不参与 Hello 签名**（见 hello_signing_bytes）：
 /// 老端忽略该字段、新端据此决定能不能对它发拉取帧。
 pub fn content_features() -> u32 {
-    CONTENT_FEATURE_PULL
+    CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE
+}
+
+/// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
+///
+/// 新增 kind 时如果它不是所有已发布版本都认得，**必须**在这里登记 ——
+/// `every_gated_kind_is_advertised_by_us` 会盯着"加了门控却忘了声明能力"这个组合。
+pub fn kind_required_feature(kind: &str) -> Option<u32> {
+    match kind {
+        "merge" => Some(CONTENT_FEATURE_MERGE),
+        _ => None,
+    }
+}
+
+/// INV-P24 第 4 条的判据本身：**不门控不许发**。
+///
+/// `peer_features` 是**对端声明过**的位图；从没交换过 Hello / 节点已离线时，调用方传 `0`
+/// —— 也就是"不知道就当不支持"。这个默认方向是刻意的：宁可少发一条新类型消息，
+/// 也不要让老对端整帧丢掉、发送方还以为是网络问题。
+/// （"离线时先入队、等 Hello 到货再决定"是更好的体验，但它要求 outbox 能改载荷，
+/// 那是另一件事，见待办里的 flush 期降级。）
+pub fn kind_allowed_by_features(kind: &str, peer_features: u32) -> bool {
+    match kind_required_feature(kind) {
+        None => true,
+        Some(bit) => peer_features & bit != 0,
+    }
+}
+
+/// 被门控挡下时给用户的那句话（与判据放在一起，免得文案与规则分两处腐烂）。
+///
+/// 刻意**不报具体版本号**：能力位才是事实来源，版本号只是它恰好对应的现象；
+/// 而且"多少版以上"这种话一旦写死就会腐烂。要查对方到底什么版本，
+/// 联系人详情页的「对方版本」那一行（v4.22.35）已经有。
+pub fn kind_unsupported_hint(kind: &str) -> String {
+    format!(
+        "对方的 Gosslan 版本较旧，不支持「{kind}」类型的消息，已停止发送。\
+         请让对方升级后再发 —— 硬发过去会被对方的程序整条丢掉，\
+         最后只会显示「发送失败」，两边都看不出原因。"
+    )
 }
 
 /// 消息内容类型
@@ -2062,6 +2111,49 @@ mod tests {
         );
         assert!(!peer_protocol_is_newer(Some(0)), "0 也不猜成更高");
         assert!(peer_protocol_is_newer(Some(PROTOCOL_VERSION + 1)));
+    }
+
+    /// 发送侧门控的四种输入 —— 关键是 `0`（没交换过 Hello / 对端已离线）判**不许发**。
+    /// 方向选"不知道就当不支持"是刻意的：宁可少发一条新类型，也不要让老对端整帧丢掉、
+    /// 发送方还以为是网络问题。
+    #[test]
+    fn gated_kind_needs_the_peers_own_declaration() {
+        assert!(
+            kind_allowed_by_features("text", 0),
+            "V1 词表内的 kind 对所有对端都安全，不该被门控挡住"
+        );
+        assert!(
+            !kind_allowed_by_features("merge", 0),
+            "对端没声明能力 ⇒ 不许发 merge"
+        );
+        assert!(kind_allowed_by_features("merge", CONTENT_FEATURE_MERGE));
+        // 只认自己那一位：对方有别的 capability 不算数（防"位图非零就放行"这种糊法）
+        assert!(
+            !kind_allowed_by_features("merge", CONTENT_FEATURE_PULL),
+            "按位判定，不是按非零判定"
+        );
+    }
+
+    /// 加了门控却忘了在 Hello 里声明 ⇒ 这种消息永远发不出去，而且是静默的。
+    /// 这条测试盯的就是"门控表与广播的能力对不上"这个组合。
+    #[test]
+    fn every_gated_kind_is_advertised_by_us() {
+        let ours = content_features();
+        let mut gated = Vec::new();
+        for (kind, _) in WIRE_KINDS {
+            if let Some(bit) = kind_required_feature(kind) {
+                assert_ne!(
+                    ours & bit,
+                    0,
+                    "kind `{kind}` 要求能力位 {bit:#b}，但本机 Hello 没声明它 —— 门控会把我们自己的功能锁死"
+                );
+                gated.push(bit);
+            }
+        }
+        assert!(
+            gated.contains(&CONTENT_FEATURE_MERGE),
+            "merge 必须仍在被门控之列：v4.20.0 及更早的 MsgKind 里没有这个变体"
+        );
     }
 
     #[test]

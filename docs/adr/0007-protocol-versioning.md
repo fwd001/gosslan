@@ -128,6 +128,13 @@ protocol version bump
                                    ✅ 另一半 v4.22.34：`ChatMessage.kind` 改回 `String` —— 未知 kind 不再在帧层
                                    被丢掉，单聊与群聊两条路径都会显示占位
 ③      新帧 / HKDF v2 派生       ⬜（且必须等 ① 在网里铺开后才允许）
+                                    但"不门控不许发"这个前置件已就位（v4.22.39）：
+                                    capability 位 + `kind_allowed_by_features` 唯一判据 +
+                                    1:1 发送侧接线。以后每上一样新东西，是"登记一位 +
+                                    在表里映射"，不需要再造门控。
+                                    ⚠️ 门控用 capability 而不是 protocol_version：
+                                    merge 这类 kind 是在 V1 期间加的，说明 V1 内部并不单调，
+                                    拿版本号当能力清单会骗人。
 ```
 
 决策 1 的"这一步不断老版本互通"已经在测试里坐实：老格式 Hello（没有这两个字段）必须照样

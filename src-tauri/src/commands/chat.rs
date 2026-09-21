@@ -42,6 +42,25 @@ pub async fn send_message(
     // 长度保护：text/code 等普通内容超限直接报错（UTF-8 安全，按字符数计）。
     let content = check_message_content(content)?;
 
+    // INV-P24 第 4 条：**不门控不许发**。老对端（v4.20.0 及更早）的 `ChatMessage.kind`
+    // 还是嵌套枚举，收到不认识的 kind 会**整帧丢掉** —— v4.22.34 只修了我们这一侧的容忍，
+    // 那边没有，所以只能由发送侧挡下来，并给用户一句能照着做的话。
+    // 判据只有 `protocol::kind_allowed_by_features` 一处；对端从没交换过 Hello 或已离线
+    // ⇒ 位图按 0 处理 = "不知道就当不支持"（宁可少发一条，也不要静默丢帧）。
+    // 放在公钥探测**之前**：这条本来就不会发出去，不该再触发一次 who_has 探测白等 1.2s。
+    if crate::protocol::kind_required_feature(&kind).is_some() {
+        let peer_features = s
+            .peer_content_features
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&friend_id)
+            .copied()
+            .unwrap_or(0);
+        if !crate::protocol::kind_allowed_by_features(&kind, peer_features) {
+            return Err(crate::protocol::kind_unsupported_hint(&kind));
+        }
+    }
+
     // E2EE 恒开（v0.11.0 起默认且不可关闭）：发送必须拿到对端 X25519 公钥。
     // 好友表优先，回退在线节点表；都缺失时主动探测一次（who_has）等对方/中继
     // announce 落库（约 1.2s）后再查，仍缺失则报错指引。

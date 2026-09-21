@@ -319,6 +319,41 @@ CASES: list[Case] = [
         expect_fail_hint="回收守卫",
         tags=["rust", "file", "lifecycle"],
     ),
+    # ---------------- INV-P24 第 4 条：发送侧门控 ----------------
+    Case(
+        name="1:1 发送路径必须真的问门控判据（不门控不许发）",
+        why="门控判据函数写得再对，发送点不调用它就等于没有门控 —— 而这条不是假想需求：\n"
+        "     MsgKind::Merge 是 V1 期间（9b26006）才加的，v4.8.2/v4.18.10/v4.20.0 三个已发布版本\n"
+        "     的 ChatMessage.kind 仍是枚举，收到 kind:merge 会**整帧丢掉**（v4.22.34 只修了我们\n"
+        "     这一侧），发送方 outbox 反复重投最后显示「发送失败」。这条用例证明「把发送点那行\n"
+        "     门控删掉」一定会被抓 —— 注入方式就是删掉那次调用（不是改成 if false，那仍然算调用）",
+        file=TAURI / "src" / "commands" / "chat.rs",
+        injections=[(
+            "        if !crate::protocol::kind_allowed_by_features(&kind, peer_features) {\n"
+            "            return Err(crate::protocol::kind_unsupported_hint(&kind));\n"
+            "        }",
+            "        let _ = (&kind, peer_features);",
+        )],
+        cmd=cargo("test", "--lib", "new_message_kinds_are_gated_at_the_send_path"),
+        cwd=TAURI,
+        expect_fail_hint="必须问门控判据",
+        tags=["rust", "protocol", "gating"],
+    ),
+    Case(
+        name="门控表里的能力位必须本机自己声明（否则功能把自己锁死）",
+        why="新增 kind 时登记了「对方需要什么能力」却忘了在 Hello 里声明同一个位 ⇒\n"
+        "     所有对端看起来都不支持 ⇒ 这个功能我们自己永远发不出去，而且是静默的。\n"
+        "     注入方式：把 CONTENT_FEATURE_MERGE 从本机广播的位图里摘掉",
+        file=TAURI / "src" / "protocol.rs",
+        injections=[(
+            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE\n}",
+            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL\n}",
+        )],
+        cmd=cargo("test", "--lib", "every_gated_kind_is_advertised_by_us"),
+        cwd=TAURI,
+        expect_fail_hint="没声明",
+        tags=["rust", "protocol", "gating"],
+    ),
     # ---------------- 本地新增护栏（2026-09-14）----------------
 
     Case(
