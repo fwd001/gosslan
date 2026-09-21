@@ -329,14 +329,31 @@ CASES: list[Case] = [
         "     门控删掉」一定会被抓 —— 注入方式就是删掉那次调用（不是改成 if false，那仍然算调用）",
         file=TAURI / "src" / "commands" / "chat.rs",
         injections=[(
-            "        if !crate::protocol::kind_allowed_by_features(&kind, peer_features) {\n"
-            "            return Err(crate::protocol::kind_unsupported_hint(&kind));\n"
+            "        if !crate::protocol::kind_allowed_by_features(&kind, peer_features.unwrap_or(0)) {\n"
+            "            return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));\n"
             "        }",
             "        let _ = (&kind, peer_features);",
         )],
         cmd=cargo("test", "--lib", "new_message_kinds_are_gated_at_the_send_path"),
         cwd=TAURI,
         expect_fail_hint="必须问门控判据",
+        tags=["rust", "protocol", "gating"],
+    ),
+    Case(
+        name="1:1 挡下时的文案必须走三态入口（不许把\"不知道\"说成\"版本旧\"）",
+        why="判据把\"从没交换过 Hello\"并进 0 是对的方向（宁可少发一条），但文案沿用\"对方的\n"
+        "     Gosslan 版本较旧\"就成了一次假指控：`peer_content_features` 是内存表，对方一离线\n"
+        "     就被 sweep 掉、本机重启即空 ⇒ 缺条目通常只代表\"此刻不知道\"，用户照着去催对方\n"
+        "     升级，而真正要做的只是等对方上线（#37② 的\"小半\"）。\n"
+        "     注入方式：把三态入口退回旧那句 —— 门控方向没变、编译没坏，只有接线断言会红",
+        file=TAURI / "src" / "commands" / "chat.rs",
+        injections=[(
+            "            return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));",
+            "            return Err(crate::protocol::kind_unsupported_hint(&kind));",
+        )],
+        cmd=cargo("test", "--lib", "new_message_kinds_are_gated_at_the_send_path"),
+        cwd=TAURI,
+        expect_fail_hint="分两句说",
         tags=["rust", "protocol", "gating"],
     ),
     Case(

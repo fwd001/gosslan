@@ -47,6 +47,9 @@ pub async fn send_message(
     // 那边没有，所以只能由发送侧挡下来，并给用户一句能照着做的话。
     // 判据只有 `protocol::kind_allowed_by_features` 一处；对端从没交换过 Hello 或已离线
     // ⇒ 位图按 0 处理 = "不知道就当不支持"（宁可少发一条，也不要静默丢帧）。
+    // 但"不知道"与"它自己声明过不支持"要分开说：这张表是内存态、离线就被 sweep 回收，
+    // 所以缺条目绝大多数时候只意味着对方此刻不在线，把两种情况混成一句"版本较旧"是假指控
+    // （文案本身仍只住在 `protocol.rs`，这里只做选择）。
     // 放在公钥探测**之前**：这条本来就不会发出去，不该再触发一次 who_has 探测白等 1.2s。
     if crate::protocol::kind_required_feature(&kind).is_some() {
         let peer_features = s
@@ -54,10 +57,9 @@ pub async fn send_message(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&friend_id)
-            .copied()
-            .unwrap_or(0);
-        if !crate::protocol::kind_allowed_by_features(&kind, peer_features) {
-            return Err(crate::protocol::kind_unsupported_hint(&kind));
+            .copied();
+        if !crate::protocol::kind_allowed_by_features(&kind, peer_features.unwrap_or(0)) {
+            return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));
         }
     }
 

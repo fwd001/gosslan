@@ -142,6 +142,25 @@ pub fn kind_unsupported_hint(kind: &str) -> String {
     )
 }
 
+/// 1:1 门控挡下时的那句话：**确知不支持**与**能力未知**是两件事，别混成一句。
+///
+/// 挡下这个动作两种情况都一样（判据仍是 `kind_allowed_by_features`，未知按 0 处理），
+/// 只有解释不同。之前两种共用 `kind_unsupported_hint` ⇒ 对端只是不在线时，我们照样
+/// 断言它"版本较旧"：那是句假话，用户会照着去催对方升级，而真正要做的只是等对方上线。
+/// 依据是两张表（`peer_content_features` / `peer_versions`）都只在内存里、重启即空、
+/// 节点离线时被 `sweep_peers` 回收，而老端发的 Hello 缺省会落成 `Some(0)` ——
+/// 所以**有条目**才是"它自己声明过不支持"，**没条目**只是"我们不知道"。
+pub fn kind_blocked_hint(kind: &str, peer_features: Option<u32>) -> String {
+    match peer_features {
+        Some(_) => kind_unsupported_hint(kind),
+        None => format!(
+            "还不知道对方的 Gosslan 支持哪些内容类型，「{kind}」已停止发送。\
+             对方此刻不在线，或本机还没和它握过手 —— 这不代表它版本旧。\
+             等对方上线、消息恢复能收发之后，用那条失败消息上的「重新发送」再发一次就行。"
+        ),
+    }
+}
+
 /// 群里的受众分布：三态分开数，**不要复用** `kind_allowed_by_features`。
 ///
 /// 那个函数为了"宁可少发也不让老对端整帧丢"，刻意把"不知道"并进"不支持"（调用方传 0）。
@@ -2195,6 +2214,34 @@ mod tests {
         assert!(
             !kind_allowed_by_features("merge", CONTENT_FEATURE_PULL),
             "按位判定，不是按非零判定"
+        );
+    }
+
+    /// 门控挡下时的两句话必须分得开：**没条目**只是"不知道"，不该被说成"它版本旧"。
+    ///
+    /// 为什么单独立一条：`kind_allowed_by_features` 把"不知道"并进 0 是对的方向（宁可少发），
+    /// 但那句"对方的 Gosslan 版本较旧"于是会在对方只是不在线时变成一次假指控 —— 用户照着
+    /// 去催对方升级，而真正要做的只是等对方上线。**分开的只是解释，不是决策。**
+    #[test]
+    fn blocked_hint_distinguishes_unknown_from_declared_unsupported() {
+        let unknown = kind_blocked_hint("merge", None);
+        let declared = kind_blocked_hint("merge", Some(CONTENT_FEATURE_PULL));
+        assert!(
+            !unknown.contains("版本较旧"),
+            "能力未知时不许断言对方版本旧：缺条目多半只是它此刻不在线"
+        );
+        assert!(
+            unknown.contains("不在线") && unknown.contains("重新发送"),
+            "未知那句要说清下一步能做什么（失败气泡上有「重新发送」），而不是只报个失败"
+        );
+        assert_eq!(
+            declared,
+            kind_unsupported_hint("merge"),
+            "对端自己声明过缺位时沿用原句，不许出现第二份文案"
+        );
+        assert!(
+            !kind_allowed_by_features("merge", 0),
+            "两种情况都得先挡下来：这里改的是说法，不是门控方向"
         );
     }
 

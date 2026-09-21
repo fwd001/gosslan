@@ -396,6 +396,7 @@ protocol::tests::announce_rejects_tampering_on_every_signed_field
 protocol::tests::announce_signing_bytes_sensitive_to_every_field
 protocol::tests::announce_verified_when_self_signed
 protocol::tests::announce_without_signature_is_legacy_not_rejected
+protocol::tests::blocked_hint_distinguishes_unknown_from_declared_unsupported
 protocol::tests::chat_ack_and_read_receipt_plaintext_directed_envelope_integrity
 protocol::tests::emoji_token_shape_is_validated_but_not_the_catalogue
 protocol::tests::envelope_encrypted_flag_roundtrip

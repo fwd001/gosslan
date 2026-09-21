@@ -2281,7 +2281,8 @@ mod tests {
         );
     }
 
-    /// INV-P24 第 4 条的**接线**：门控判据存在、唯一，而且 1:1 发送路径真的问它。
+    /// INV-P24 第 4 条的**接线**：门控判据存在、唯一，1:1 发送路径真的问它，
+    /// 而且挡下时走的是三态文案入口（判据唯一 + 文案唯一是同一件事的两半）。
     ///
     /// 为什么不能只测判据函数：判据写得再对，发送点不调用 = 没有门控。这条守卫
     /// 就是为了让"忘了接"这件事变成编译期之后立刻能看到的红。
@@ -2294,6 +2295,7 @@ mod tests {
         for f in [
             "pub fn kind_required_feature(",
             "pub fn kind_allowed_by_features(",
+            "pub fn kind_blocked_hint(",
         ] {
             assert_eq!(
                 proto.matches(f).count(),
@@ -2312,6 +2314,17 @@ mod tests {
         let gate = body
             .find("kind_allowed_by_features(")
             .expect("1:1 发送路径必须问门控判据，否则老对端会静默丢帧");
+        // 挡下时走的是**三态**文案入口。绕过它直接引用旧那句的后果不是排版，是假指控：
+        // `peer_content_features` 是内存表，对方一离线就被 sweep 掉 ⇒ 缺条目通常只代表
+        // "此刻不知道"，而旧那句说的是"它版本较旧"。
+        assert!(
+            body.contains("kind_blocked_hint("),
+            "门控挡下时要按\"对端声明过缺位\"与\"能力未知\"分两句说"
+        );
+        assert!(
+            !body.contains("kind_unsupported_hint("),
+            "1:1 发送口不许绕过 kind_blocked_hint 自己去挑文案"
+        );
         // 给自己发的那条分支在前 —— 自聊不经过网络，不该被判"对方版本不支持"。
         let self_branch = body
             .find("insert_self_message(")
