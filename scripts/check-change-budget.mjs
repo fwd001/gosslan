@@ -92,9 +92,12 @@
  *   bump 会把门禁变成对历史的审判。真发生了靠 review + `[plan]` 说明兜底。
  *
  * 退出码:0 = 全部通过;1 = 有 commit 超预算未声明、版本声明未落地、重复犯案,
- *         或 **CI 上 push 到 main 却零覆盖**(= 范围没拿到 before,门禁在空转);
+ *         或（**仅当调用方声明了 `GOSSLAN_BUDGET_STRICT=1`**，目前只有 verify.yml）
+ *         CI push→main 的范围不是事件里的 before..sha ⇒ 门禁在空转;
  *         2 = **零覆盖**(跑了但范围内没有 commit 可判,常见于本地"已 push 之后重跑")。
- *         ⇒ 2 不是 0:`verify.mjs` 会把它单列成"未覆盖项",而不是 ✅。
+ *         ⇒ 2 不是 0:`verify.mjs` 会把它单列成"未覆盖项",而不是 ✅;
+ *         ⇒ 出包脚本(build-android-releases.sh)把 2 当**警告**继续 —— 门禁判不到范围
+ *           不该打断出包,那是另一件事。
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -594,8 +597,12 @@ if (data.recentFixes) {
 
 const ciPushMain =
   process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_NAME === "main";
+// 硬失败只对**门禁自己的 workflow** 开（verify.yml 显式声明 GOSSLAN_BUDGET_STRICT=1）。
+// 其它消费方（build-android-releases.sh 的守卫清单、发布脚本）只是顺带跑一下这道门禁，
+// 让它们因为"拿不到范围"而打断出包 = 将门禁的作用域扩到它管不着的地方。
+const strict = process.env.GOSSLAN_BUDGET_STRICT === "1";
 
-if (ok && ciPushMain && !rangeFromEventBefore) {
+if (ok && strict && ciPushMain && !rangeFromEventBefore) {
   // CI 上 push 到 main，唯一**正确**的范围是 `github.event.before..github.sha`。走到这里
   // 说明它没拿到（env 没映射 / before 不可达 / 候选全空）⇒ 这一步看的不是本次推送的内容。
   // 必须红，而且要红得能被 `ci-run.sh` 转成注解（匿名可读渠道）—— 否则"CI 全绿"会被当成

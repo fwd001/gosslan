@@ -10,6 +10,37 @@
 
 ## [Unreleased]
 
+## [4.23.5] - 2026-09-21
+
+### Fixed (上一条把安卓出包 CI 打断了 —— 门禁的"空转硬失败"只属于门禁自己的 workflow)
+
+v4.23.4 加的那条"CI push→main 拿不到 before..sha ⇒ 退出码 1"是**越界的**：main 上
+`0d151f2` 之后 `build-android` 的第 12 步「Build release APK」红了。
+
+机制（本地按 CI 环境复现过，不是猜）：`scripts/build-android-releases.sh` 的守卫清单里也
+跑 `check-change-budget.mjs`，而那个 workflow 从没映射 `GITHUB_EVENT_BEFORE` ⇒ 新加的硬失败
+在**出包**流程里触发 ⇒ 循环 `exit 1` ⇒ 整条构建中止。复现命令与结果：同一串守卫在
+`GITHUB_EVENT_NAME=push GITHUB_REF_NAME=main`（无 before）下逐条跑到
+`check-change-budget.mjs` 退出 1，前四条全过。
+
+判错的地方不是"要不要暴露空转"，而是**由谁承担**：判不到范围，对门禁 workflow 是"你在骗我
+说绿了"，对出包脚本只是"这道门禁这次没看过东西"。把前者套到后者身上，等于让一个静态检查有
+能力打断发布。
+
+- 硬失败改成**显式 opt-in**：只有 `GOSSLAN_BUDGET_STRICT=1`（verify.yml 声明）时
+  push→main 拿不到 before 才退 1。其它消费方最多拿到 2（零覆盖）。
+- `build-android-releases.sh`：守卫循环把退出码 2 当**警告并继续**（打印"零覆盖 ≠ 放行，是
+  它无对象可判"），其余非 0 照旧中止。
+- `build-android.yml` 也补上 `GITHUB_EVENT_BEFORE`：它的守卫清单既然包含这道门禁，就该喂
+  给它真正的范围 —— 但**不开** strict，出包与门禁的职责分开。
+- 三场景退出码实测：`before 有 + 非 strict` ⇒ 0；`before 无 + 非 strict` ⇒ 0（旧形状不再打断
+  出包）；`before 有 + strict` ⇒ 0；（`before 无 + strict` ⇒ 1，v4.23.4 已测）。守卫循环单独
+  跑真实零覆盖：打印 ⚠️ 后继续，整段 exit 0。
+- ⚠️ 证据边界：v4.23.4 那次"CI 全绿 ⇒ env 映射生效"的推论只对 **verify.yml 的 frontend job**
+  成立（那里确实绿了，Change Budget 第一次判到 `before..sha`）；同一次 push 的
+  `build-android` 红被我漏看了 —— 汇总时只核了 verify 的三条 job。这条修复的最终证据是
+  下一次 push 的 `build-android` 变绿。
+
 ## [4.23.4] - 2026-09-21
 
 ### Fixed (Change Budget 在 CI 上其实是零覆盖 —— 「空范围即绿」现在单独成一类)

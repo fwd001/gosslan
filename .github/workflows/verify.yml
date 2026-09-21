@@ -102,6 +102,9 @@ permissions:
 # =============================================================================
 env:
   GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+  # 只有**门禁自己的 workflow** 把"范围没拿到 before"判成硬失败（见 check-change-budget.mjs
+  # 的退出码说明）。出包脚本也跑这道门禁，但那里空转不该打断出包 ⇒ 不开 strict。
+  GOSSLAN_BUDGET_STRICT: "1"
 
 jobs:
   # ---------------------------------------------------------------------------

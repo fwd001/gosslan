@@ -82,7 +82,16 @@ for guard in \
   scripts/check-change-budget.mjs \
   ; do
   echo "==> $guard"
-  if ! node "$guard"; then
+  st=0
+  node "$guard" || st=$?
+  # 退出码 2 = Change Budget 的「零覆盖」：跑了，但受检范围内一个 commit 都没有
+  # （本地 push 之后再跑必然是空集）。**出包不该被"门禁没东西可判"打断** ——
+  # 判范围是 verify.yml 的职责（那边用 GOSSLAN_BUDGET_STRICT=1 把空转判成红）。
+  if [ "$st" -eq 2 ]; then
+    echo "   ⚠️ 零覆盖：这道门禁这次没判到东西，继续出包（不是放行，是它无对象可判）"
+    st=0
+  fi
+  if [ "$st" -ne 0 ]; then
     echo "❌ 守卫失败：$guard" >&2
     exit 1
   fi

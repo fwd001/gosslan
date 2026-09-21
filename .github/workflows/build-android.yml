@@ -9,6 +9,14 @@ on:
 permissions:
   contents: write
 
+# 这一步的守卫清单里含 `check-change-budget.mjs`（scripts/build-android-releases.sh），
+# 而它在 push 事件上要判的范围是 `github.event.before..github.sha` —— 该变量**不是** Actions
+# 默认提供的，不映射就只能退到 `HEAD~1..HEAD`（判的不是"本次推送"）。
+# 这里**不开** `GOSSLAN_BUDGET_STRICT`：出包不该因为门禁判不到范围而被打断，
+# 那个硬失败属于 verify.yml。
+env:
+  GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+
 jobs:
   build-android:
     runs-on: ubuntu-latest
