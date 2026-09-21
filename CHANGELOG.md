@@ -10,6 +10,48 @@
 
 ## [Unreleased]
 
+## [4.24.2] - 2026-09-21
+
+### Changed (补 PR #24 的记账：版本、CHANGELOG、Rust 用例清单)
+
+`337cfc6`（yann9，经 PR #24 合入 `fd5a477`）带了一整批真机缺陷修复，但**版本记账没落地**：
+message 里写了 `Version-Bump: patch`，实际只动了 `package.json`，而且填的是它分支基线上的
+旧号 `4.22.41`（main 当时已经是 4.24.0）。合并时版本文件按 main 保留 ⇒ 这批功能在 main 上
+**既没有版本号也没有 CHANGELOG 条目**。判据 4（v4.23.3 加的那条"声明必须落地"）在 CI 上
+把这次点名了 —— 守卫按设计红了，不是误报：
+`frontend` 组 fail-fast 之后，**CHANGELOG 结构 / `npm test` / `vue-tsc` 三步在他的代码上
+从没跑过**。所以本次记账同时把这三步在合并后的树上补齐：全绿（`npm test`、
+`npm run build` 的 vue-tsc 类型检查、以及合并后整棵树的 `verify:full` 15 步）。
+条数按仓库惯例由各工具自己打印，不写进文档。
+
+这批修了什么（细节与根因见 `337cfc6` 的 commit message，此处只记账不重述）：
+
+- **群任务图片**三个互不相干的根因：表单选图后无法预览（`todo_image_meta` 顺手登记本机内容
+  副本）、详情图大概率裂（`TodoImageThumb` 卸载时 revoke 了**缓存共用的那个 objectURL**，
+  改为不 revoke + 静态守卫 ⑭ 钉住）、图片点不开大图（`ImageLightbox` 按 cid 解析相册条目）。
+- **群任务独立窗口**：设计尺寸 560×620 → 780×620；只记大小不记位置，几何落地后按 label
+  还原尺寸并重新居中，夹在 `[min, design]` 之间（新用例
+  `restored_aux_window_size_is_clamped_between_min_and_design`，本次登记进 macos + windows 两份基线）。
+- **选中框与相邻条目白线**：多选/引用定位统一为整行满宽浅底同色；白线真根因是虚拟列表按
+  **取整后**高度定位而条目盒子是内容自然高（代码气泡 256.5px）⇒ 相邻差 0.5px，改为保留小数。
+- **表情回应桌面入口**：飞书式悬停笑脸 → 气泡外侧选择器，`absolute`/`Teleport` 不改消息高度；
+  选择器自算 fixed 坐标，且**自己内部的滚动不再把自己收起**。
+- **引用消息**：顺序与样式按微信；点击=直接查看被引用内容，原消息不在本机时明确提示而不
+  无脑跳转；「定位到引用的消息」进右键菜单与长按面板。
+- **列表定位**："第一次总是不准"落定改为以**真实 DOM 位置**为准 + 按 **msg_id（不是下标）**
+  在 1.5s 窗口内轮询校正（历史 prepend 会让同一整体下标指向另一条消息）。
+- **卡片消息可复制/可收藏**：判据收成单源（`utils/messageKinds` 的 `isForwardableKind` /
+  `isFavoritableKind`、`utils/cardText`、`utils/fileMeta`），右键菜单、长按面板、收藏页
+  三处从此共用 —— 消除的正是"同一件事多份实现互相漂移"这一类根因。
+
+⚠️ 本次记账同时记下审查里发现的三件事，其中两件随后各起一版修掉（VirtualList 落定轮询的
+定时器未在卸载时清理、`todo_image_meta` 用 `let _ =` 吞掉登记失败），一件留作后续：
+预览 objectURL 收归缓存所有之后，`invalidateFilePreview` 只 `cache.delete` 不 revoke 且缓存
+无上限 ⇒ 长会话里每条图片（上限 15MB）的 Blob 永不释放 —— 需要的是缓存自己的 LRU 出口，
+不是把 revoke 加回消费者。
+
+Version-Bump: patch
+
 ## [4.24.1] - 2026-09-21
 
 ### Fixed (好友只是不在线，却被说成"版本较旧" —— 1:1 门控的两种挡下原因分成两句话)

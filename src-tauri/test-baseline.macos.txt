@@ -1,4 +1,5 @@
 commands::tests::aux_window_fits_inside_the_main_window_and_is_centered
+commands::tests::restored_aux_window_size_is_clamped_between_min_and_design
 commands::tests::bt_switch_plan_coalesces_intent_and_keeps_the_cooldown
 commands::tests::clear_is_batched_so_the_db_lock_is_held_only_briefly
 commands::tests::content_uri_yields_a_real_file_name_when_it_encodes_one
