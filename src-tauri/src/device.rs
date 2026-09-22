@@ -1,56 +1,116 @@
-//! 设备指纹：用机器码（MachineGuid / machine-id / IOPlatformUUID）生成稳定的设备 ID。
-//! 同一台电脑重启后仍是同一 ID，从而在“无登录”前提下识别同一用户。
+//! 设备 ID（界面与日志里那行"设备指纹"）。
+//!
+//! ## 为什么不是从设备属性算出来的（2026-09-22 真机事故后重写）
+//!
+//! 旧实现是 `SHA256(机器码)` 或 `SHA256(主机名)`，而且**机器码优先于库里已存的值**。
+//! 两台设备因此会拿到同一个 ID，现场是"局域网里互相打架"：`peers` / `links` / `friends` /
+//! `conv_id` 全按 `device_id` 索引 ⇒ 两个节点互相覆盖对方的条目；Hello 是
+//! "`device_id` → 绑定 Ed25519"，于是第二台来连就是一次 INV-P11 的**密钥冲突 ⇒ 硬拒**；
+//! 而「大 id 主动拨、小 id 只接受」的镜像规则在 id **相等**时直接退化。撞号的来源有两类，
+//! 都不是"熵不够"：① 克隆/未 sysprep 的 Windows 镜像、VM 模板、迁移助理保下来的
+//! `IOPlatformUUID` ⇒ 机器码相同；② 安卓走主机名兜底，而两台新机的默认主机名常常一样。
+//!
+//! ## 现在的规则
+//!
+//! `id = gosslan- + hex( SHA256( 16 字节首启随机 ‖ 设备属性快照 )[..8] )`
+//!
+//! - **唯一性由那次随机数保证**：属性全一样也不撞（克隆镜像正是属性全一样的场景）；
+//! - **属性参与计算**（按用户要求）：机器码 / 主机名 / 网卡名，作为熵与"同镜像可识别"的线索；
+//! - **稳定性由"只认持久化值"保证**：只在第一次启动生成一次，此后绝不重新派生 ——
+//!   换网卡、开随机 MAC、升级系统都不会悄悄改掉身份。
+//!
+//! MAC 与蓝牙地址**刻意不进哈希**：`if-addrs` 不跨平台提供 MAC（要写 Win/BSD/Linux 三套
+//! 系统调用 + Android JNI），而 Android/iOS/Win11 默认开 MAC 随机化 ⇒ 它加不了唯一性，
+//! 只会加不稳定与"换网络就变身份"。将来要加也只是往属性快照里添一项。
+//!
+//! 长度与形状保持不变（24 字符、`gosslan-` 前缀）：`nickname.rs` 由 id 派生默认昵称、
+//! 镜像规则要 ASCII 可排序、UI 与日志宽度都按这个形状写着。
 
+use rand_core::RngCore;
 use sha2::{Digest, Sha256};
+
+/// ID 前缀。全链路只有这一个前缀（多套一层会把排序压成"恒最小 id"，见 `strip_legacy_dev_prefix`）。
+pub const DEVICE_ID_PREFIX: &str = "gosslan-";
+/// 前缀之后的十六进制位数（64 bit）—— 与旧的派生值同长。
+pub const DEVICE_ID_HEX_LEN: usize = 16;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// 由硬件指纹派生的稳定设备 ID（取哈希前 16 位）。
-/// 无法获取机器码时返回 None，由上层回退为持久化的 UUID。
+/// 参与派生的设备属性快照。
 ///
-/// 移动端（Android/iOS）无机器码概念，且 `machine-uid` 上游不支持移动目标，
-/// 故直接返回 None，由 `state.rs` 用持久化 UUID / 主机名指纹兜底。
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub fn hardware_fingerprint() -> Option<String> {
-    None
+/// ⚠️ 这些只是**熵的来源**，不是唯一性的来源：拿不到（容器、移动端、权限受限）就留空，
+/// 生成的 ID 依然随机、依然唯一。
+pub struct DeviceAttrs {
+    pub machine_uid: Option<String>,
+    pub hostname: String,
+    /// 网卡名（排序后），不含地址
+    pub interfaces: Vec<String>,
 }
 
-/// 桌面端实现：MachineGuid / machine-id / IOPlatformUUID。
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub fn hardware_fingerprint() -> Option<String> {
-    // machine-uid 0.5 不支持 Android（其 `machine_id` 模块无 android 分支），
-    // 故该依赖仅对非 Android 目标引入（见 Cargo.toml），Android 上直接返回 None，
-    // 由 state.rs 回退到持久化的 device_id / 主机名指纹。
-    #[cfg(target_os = "android")]
-    {
-        return None;
-    }
-
-    #[cfg(not(target_os = "android"))]
-    {
-        let uid = machine_uid::get().ok()?;
-        let uid = uid.trim();
-        if uid.is_empty() {
-            return None;
-        }
-        let mut h = Sha256::new();
-        h.update(b"gosslan-machine:");
-        h.update(uid.as_bytes());
-        Some(format!("gosslan-{}", &hex(&h.finalize())[..16]))
-    }
-}
-
-/// 回退：基于主机名派生（稳定性弱于机器码，仅作兜底）。
-pub fn hostname_fingerprint() -> String {
-    let host = hostname::get()
+/// 尽力采集设备属性；任何一项失败都只是少一项，不影响生成。
+pub fn collect_device_attrs() -> DeviceAttrs {
+    let hostname = hostname::get()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_default();
+    let interfaces = if_addrs::get_if_addrs()
+        .map(|list| {
+            let mut names: Vec<String> = list.iter().map(|i| i.name.clone()).collect();
+            names.sort();
+            names.dedup();
+            names
+        })
+        .unwrap_or_default();
+    DeviceAttrs {
+        machine_uid: machine_uid_opt(),
+        hostname,
+        interfaces,
+    }
+}
+
+/// 机器码（Windows `MachineGuid` / Linux `machine-id` / macOS `IOPlatformUUID`）。
+///
+/// 移动端上游 `machine-uid` 没有 android/ios 分支 ⇒ 该依赖只对非移动目标引入，这里整体返回
+/// `None`，让移动设备只靠"随机数 + 主机名 + 网卡名"派生。
+fn machine_uid_opt() -> Option<String> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        None
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        machine_uid::get()
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+}
+
+/// 生成设备 ID：首启随机数主导，设备属性混入。
+pub fn generate_device_id(attrs: &DeviceAttrs) -> String {
+    let mut nonce = [0u8; 16];
+    rand_core::OsRng.fill_bytes(&mut nonce);
     let mut h = Sha256::new();
-    h.update(b"gosslan-host:");
-    h.update(host.as_bytes());
-    format!("gosslan-{}", &hex(&h.finalize())[..16])
+    h.update(b"gosslan-device-v2:");
+    h.update(nonce);
+    for field in attrs.machine_uid.iter().map(|s| s.as_str()) {
+        h.update(b"m");
+        h.update(field.as_bytes());
+        h.update([0u8]);
+    }
+    h.update(b"h");
+    h.update(attrs.hostname.as_bytes());
+    h.update([0u8]);
+    for name in &attrs.interfaces {
+        h.update(b"i");
+        h.update(name.as_bytes());
+        h.update([0u8]);
+    }
+    format!(
+        "{DEVICE_ID_PREFIX}{}",
+        &hex(&h.finalize())[..DEVICE_ID_HEX_LEN]
+    )
 }
 
 /// 剥掉历史遗留的 `dev-` 前缀（返回 `None` = 不需要迁移）。
@@ -74,43 +134,63 @@ pub fn strip_legacy_dev_prefix(id: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
+    /// 形状与前缀不许变（2026-09-13 那轮的教训还在）：多套一层 `dev-` 会让 id 在 ASCII 排序里
+    /// 恒为最小，而镜像规则是「大 id 拨、小 id 只接受」⇒ 那台设备永远不主动拨任何人。
     #[test]
-    fn fingerprint_has_prefix() {
-        if let Some(id) = hardware_fingerprint() {
-            assert!(id.starts_with("gosslan-"));
-            assert_eq!(id.len(), 24); // "gosslan-" + 16 hex
+    fn generated_id_keeps_the_one_prefix_and_length() {
+        let id = generate_device_id(&collect_device_attrs());
+        assert!(
+            id.starts_with(DEVICE_ID_PREFIX),
+            "必须有且只有一个 gosslan- 前缀，实际：{id}"
+        );
+        assert!(
+            !id.starts_with("dev-"),
+            "不许再套 dev- 前缀（会让排序恒最小、永远不主动拨号）：{id}"
+        );
+        assert_eq!(
+            id.len(),
+            DEVICE_ID_PREFIX.len() + DEVICE_ID_HEX_LEN,
+            "长度必须固定：昵称由 id 派生、UI 与日志都按这个形状写着：{id}"
+        );
+        let body = id.strip_prefix(DEVICE_ID_PREFIX).unwrap();
+        assert!(
+            body.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "十六进制部分必须是小写 hex，且只含 hex：{body}"
+        );
+    }
+
+    /// **本次事故的正向回归**：两台克隆出来的设备（机器码、主机名、网卡名全都一样）必须拿到
+    /// 不同的 ID。旧实现恰恰在这里 100% 撞 —— `SHA256(机器码)` 是确定的。
+    #[test]
+    fn identical_attributes_still_produce_different_ids() {
+        let attrs = DeviceAttrs {
+            machine_uid: Some("the-cloned-image-guid".into()),
+            hostname: "DESKTOP-SAME".into(),
+            interfaces: vec!["eth0".into(), "wlan0".into()],
+        };
+        // 64 bit 随机下 200 次里撞一次的概率约 1e-12 —— 这条不是碰运气的摆设。
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            assert!(
+                seen.insert(generate_device_id(&attrs)),
+                "属性完全相同时撞了 ⇒ 唯一性又去依赖设备属性了"
+            );
         }
     }
 
-    /// **所有派生路径都必须产出同一个前缀**（真机 2026-09-13 第七轮）。
-    ///
-    /// 真机证据：安卓的 device_id 是 `dev-gosslan-f3d6b7dddf73aab2`，而 Mac/Windows 是
-    /// `gosslan-…`。原因是 `state.rs` 的兜底路径又套了一层 `dev-` 前缀
-    /// （`format!("dev-{}", hostname_fingerprint())`），而 `hostname_fingerprint()`
-    /// **本身已经带前缀**。后果不只是难看：`'d' < 'g'` 让安卓**在三端里恒为最小 id**，
-    /// 而镜像规则是「大 id 拨、小 id 只接受」⇒ **安卓永远不主动拨任何人**。
-    ///
-    /// 这条护栏把"前缀只有一个"钉死：任何人再套一层前缀都会立刻 FAIL。
+    /// 属性拿不到（容器、移动端、权限受限）不是失败：留空也要能生成合法且互不相同的 ID。
     #[test]
-    fn every_fingerprint_path_shares_one_prefix() {
-        let host = hostname_fingerprint();
-        assert!(
-            host.starts_with("gosslan-"),
-            "主机名兜底也必须带 gosslan- 前缀，实际：{host}"
-        );
-        assert!(
-            !host.starts_with("dev-"),
-            "不许再套 dev- 前缀 —— 那会让设备 id 的排序恒为最小、永远不主动拨号：{host}"
-        );
-        assert_eq!(host.len(), 24, "兜底指纹长度必须与机器码路径一致：{host}");
-        // 单测里拿不到机器码时（CI/容器）也要满足同一形状
-        if let Some(hw) = hardware_fingerprint() {
-            assert_eq!(
-                hw.len(),
-                host.len(),
-                "机器码路径与主机名兜底路径的 id 长度必须一致，否则前缀约定会被打断"
-            );
-        }
+    fn empty_attributes_still_yield_valid_distinct_ids() {
+        let empty = DeviceAttrs {
+            machine_uid: None,
+            hostname: String::new(),
+            interfaces: Vec::new(),
+        };
+        let a = generate_device_id(&empty);
+        let b = generate_device_id(&empty);
+        assert!(a.starts_with(DEVICE_ID_PREFIX) && a.len() == 24, "{a}");
+        assert_ne!(a, b, "属性全空时也必须靠随机数分开（否则移动端回到撞号）");
     }
 
     /// 历史 `dev-` 前缀必须能被就地剥掉（否则已装设备永远是最小 id）。

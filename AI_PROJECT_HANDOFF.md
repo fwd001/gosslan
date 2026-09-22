@@ -119,7 +119,7 @@
 | 公钥同步 | announce / FriendAccept / 好友建链路径自动同步公钥并持久化到 friends 表 |
 | 公钥缺失兜底 | 发送时查 friends → peers → 主动 `who_has` 探测等 1.2s 重试 → 仍缺则报明确错误 |
 | 解密失败兜底 | 收到 `enc1:` 解密失败（缺公钥/公钥已更新）→ 写入系统消息提示，**不静默丢消息** |
-| 设备指纹 | 前缀 `gosslan-`（桌面 machine-uid，移动端 UUID/主机名兜底）；私钥持久化本地 SQLite，重启身份不变 |
+| 设备 ID（界面叫「设备指纹」） | **首启生成一次**：`gosslan-` + hex(SHA256(16 字节随机 ‖ 机器码 ‖ 主机名 ‖ 网卡名))，此后**只认库里持久化值、绝不重新派生**（ADR-0021：派生式 id 在克隆镜像 / 默认主机名下会撞，撞了就是互相顶号 + Hello 密钥冲突硬拒）；私钥同样持久化本地 SQLite |
 | 隐私 | 数据只存本机；SQLite 不存 BLOB（图片/文件落 Cache 目录）；共享目录路径规范化校验 |
 
 ---
@@ -174,7 +174,7 @@ gosslan/
     ├── commands.rs          # Tauri 命令层（40+ 命令：send_message / delete_conversation / …）
     ├── state.rs             # AppState：identity/db/peers/gossip/group_keys/outbox 等
     ├── db.rs                # SQLite 存储层（SCHEMA 常量 + 全部 CRUD + 事务）
-    ├── device.rs            # 设备指纹（gosslan- 前缀；桌面 machine-uid，移动端兜底）
+    ├── device.rs            # 设备 ID 生成（gosslan- 前缀；随机数主导 + 设备属性混合，见 ADR-0021）
     ├── crypto.rs            # ★ E2EE 原语：Identity / shared_secret / seal / open / 签名验签
     ├── protocol.rs          # 线格式：UDP 包 / TCP 帧 / Message 枚举 / GossipEnvelope
     ├── gossip_engine.rs     # Bloom+LRU 去重 / fanout / 信封构建与验签

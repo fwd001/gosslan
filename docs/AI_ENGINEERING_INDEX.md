@@ -49,6 +49,10 @@
   服务器代码**不在本仓库** → <https://github.com/fwd001/gosslan-relay-server>；
   本仓只有客户端侧的 `src-tauri/src/transport/relay_seal.rs`。
   ⚠️ 改到中继线格式要**同一轮改两个仓库**，两边各有一份规格文字，漂移没有测试提醒）
+- `0021-device-id-is-generated-not-derived.md`（**Accepted 2026-09-22**：设备 ID 改为首启随机生成
+  + 设备属性混合、此后只认持久化值。真机事故：克隆镜像的机器码 / 新机的默认主机名相同 ⇒ 两台设备
+  同一个 id ⇒ `peers`/`links`/`friends` 互相顶 + Hello 密钥冲突硬拒 + 镜像规则在 id 相等时退化。
+  含「已装设备不迁移、撞号那台换 id 并重加好友、旧会话只读」的迁移决定与自定义后缀的字符集约束）
 
 > Earlier ADRs `0001`–`0006` (message idempotency, outbox+ACK, E2EE, transport, no-Web-Worker,
 > device fingerprint) were removed; their normative content now lives in

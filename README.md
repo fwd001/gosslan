@@ -107,7 +107,7 @@ gosslan/
     └── src/
         ├── main.rs / lib.rs
         ├── tray.rs           # 桌面托盘：关窗驻留、仅托盘退出（#[cfg(desktop)]）
-        ├── device.rs         # 设备指纹（gosslan- 前缀；桌面 machine-uid）
+        ├── device.rs         # 设备 ID 生成（gosslan- 前缀；随机数主导 + 设备属性混合，见 ADR-0021）
         ├── crypto.rs         # E2EE：X25519 + Ed25519 + ChaCha20-Poly1305
         ├── gossip_engine.rs  # Gossip 广播 + Bloom/LRU 去重 + 扇出
         ├── file_relay.rs  # 大文件切片 + 并行分发 + 重组

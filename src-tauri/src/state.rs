@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, watch, Notify};
 
 use crate::crypto::Identity;
 use crate::db;
-use crate::device::{hardware_fingerprint, hostname_fingerprint};
+use crate::device::{collect_device_attrs, generate_device_id};
 use crate::file_relay::RelayManager;
 use crate::gossip_engine::GossipEngine;
 use crate::logging::Logger;
@@ -1084,37 +1084,34 @@ impl AppState {
             .unwrap_or(default_downloads);
         std::fs::create_dir_all(&downloads_dir).ok();
 
-        // 设备指纹：优先机器码，回退持久化 UUID
-        let base_device = if let Some(id) = hardware_fingerprint() {
-            id
-        } else if let Some(id) = db::get_setting(&conn, "device_id") {
-            // ⚠️ **历史值迁移**（2026-09-13 合并评审补）：那时候的兜底路径多套了一层前缀，
-            // 已装的安卓库里存的是 `dev-gosslan-…`。光改生成代码**治不了已经装上的设备** ——
-            // 它们的 id 还是"三端里恒最小、永远不主动拨号"的那个值，
-            // 除非用户清一次应用数据（丢聊天/好友）。所以这里把废弃前缀**就地剥掉**再写回。
-            match crate::device::strip_legacy_dev_prefix(&id) {
-                Some(migrated) => {
-                    db::set_setting(&conn, "device_id", migrated).ok();
-                    migrated.to_string()
+        // 设备 ID：**只认已持久化的值，没有才生成一次**（派生式身份为什么会撞，见 `device.rs` 头）。
+        //
+        // 这条改动对**已装设备是惰性的**，这是刻意的：旧代码每次启动都把派生值写回 settings，
+        // 所以已存的值就等于派生值 ⇒ 换优先级不会改变任何现存设备的 ID，也就不会打断任何已有
+        // 好友绑定。今天已经撞上号的设备走"检测到同 ID 不同密钥 ⇒ 提示换新 ID"那条路
+        // （换 ID 的代价：好友要重加、旧会话变只读，聊天记录不迁移 —— 用户 2026-09-22 拍板）。
+        let base_device = match db::get_setting(&conn, "device_id") {
+            Some(stored) => {
+                // ⚠️ **历史值迁移**（2026-09-13 合并评审补）：那时的兜底路径多套了一层前缀，
+                // 已装的安卓库里存的是 `dev-gosslan-…`。光改生成代码治不了已装设备 —— 它们的
+                // id 还是"三端里恒最小、永远不主动拨号"的那个值，除非清一次应用数据（丢聊天与
+                // 好友）。所以这里把废弃前缀**就地剥掉**再写回。
+                match crate::device::strip_legacy_dev_prefix(&stored) {
+                    Some(migrated) => {
+                        db::set_setting(&conn, "device_id", migrated).ok();
+                        migrated.to_string()
+                    }
+                    None => stored,
                 }
-                None => id,
             }
-        } else {
-            // ⚠️ 这里**不能**再套一层前缀（真机 2026-09-13 第七轮发现）。
-            //
-            // 旧写法是 `format!("dev-{}", hostname_fingerprint())`，而
-            // `hostname_fingerprint()` 本身已经产出 `gosslan-xxxxxxxxxxxxxxxx`，
-            // 于是安卓的 device_id 变成 **`dev-gosslan-…`**，而桌面端（有机器码）是
-            // **`gosslan-…`**。两个后果都是真的：
-            //   ① **身份不一致**：同一个 `gosslan-` 命名约定被打断，日志/库/UI 里出现两种形状；
-            //   ② **永远是"较小 id"**：`'d' < 'g'` ⇒ 安卓在三端里恒为最小
-            //      ⇒ 按「大 id 拨、小 id 只接受」的镜像规则，**安卓永远不主动拨任何人**。
-            //      它只能等别人来连它，而"别人能不能连到它"取决于对方的扫描 —— 这正是
-            //      2026-09-13 那几轮"安卓搜不到 Windows"里最容易被忽略的一层。
-            // `hostname_fingerprint()` 已带前缀，这里直接用。
-            let id = hostname_fingerprint();
-            db::set_setting(&conn, "device_id", &id).ok();
-            id
+            None => {
+                // ⚠️ 生成函数自己带 `gosslan-` 前缀，这里**不能再套一层**：真机 2026-09-13 那轮
+                // 多套了个 `dev-`，于是 `'d' < 'g'` ⇒ 安卓在三端里恒为最小 id，而镜像规则是
+                // 「大 id 拨、小 id 只接受」⇒ 那台设备永远不主动拨任何人，只能等别人来连它。
+                let fresh = generate_device_id(&collect_device_attrs());
+                db::set_setting(&conn, "device_id", &fresh).ok();
+                fresh
+            }
         };
         // 多开时给不同实例不同 device_id，使其成为互相可发现的独立节点
         let device_id = if instance > 0 {

@@ -10,6 +10,62 @@
 
 ## [Unreleased]
 
+## [4.25.5] - 2026-09-22
+
+### Fixed (两台设备的"设备指纹"能完全相同 —— 身份改成首启生成，不再从机器属性派生)
+
+真机事故（2026-09-22 早上）：同一局域网两台新装设备的 `device_id` 一模一样，随后互相顶号、
+连不上、日志看着像网络故障。
+
+根因不是熵不够，是**身份被派生出来、而且派生优先级压过持久化值**（旧 `state.rs:1087-1127`）：
+
+```text
+1. gosslan- + SHA256("gosslan-machine:" ‖ 机器码)[..16]   ← 有机器码就不看库里存了什么
+2. 库里持久化的 device_id
+3. gosslan- + SHA256("gosslan-host:" ‖ 主机名)[..16]      ← 安卓恒走这条
+```
+
+机器码路径在**克隆 / 未 `sysprep /generalize` 的 Windows 镜像、VM 模板、PVE 完整克隆、容器、
+迁移助理保下来的 `IOPlatformUUID`** 下相同；主机名路径在**两台新机的默认主机名相同**
+（`MacBook-Pro.local`、`DESKTOP-ABC123`）下相同。"机器码优先"还多一层坏：手动改库也改不掉。
+
+撞了以后是"打架"而不是"难看"，因为这些全都按 `device_id` 索引：`peers` / `links` / `friends`
+/ `conv_id` 互相覆盖；Hello 的锚点是"`device_id` → 绑定的 Ed25519"（INV-P21/P11），第二台来连
+就是一次**密钥冲突 ⇒ 硬拒 + 只提示一次**；「大 id 主动拨、小 id 只接受」的镜像规则在 id
+**相等**时直接退化（拨号处有 `peer_id == self.device_id` 过滤，它以为"那是我自己"）；
+ADR-0020 的中继准入判据也按 id 索引 ⇒ id 可撞则"锚点绑对了"无从谈起。
+
+- 改成：`gosslan-` + hex(SHA256(**首启 16 字节随机** ‖ 机器码 ‖ 主机名 ‖ 排序后的网卡名))。
+  **唯一性由随机数保证**（属性全等也不撞），**稳定性由"只认持久化值、绝不重新派生"保证**
+  （换网卡、开随机 MAC、升系统都不动身份）。设备属性按用户要求继续参与计算，但降级为熵与
+  "同镜像可识别"的线索。
+- 形状一字未动（24 字符、`gosslan-` 前缀、小写 hex）：昵称由 id 派生、镜像规则要 ASCII 可排序、
+  UI 与日志宽度都按这个形状写着；`device.rs` 里那三条护栏（前缀唯一 + 长度固定 + 只含小写 hex）
+  把 2026-09-13"多套一层 `dev-` 导致安卓恒为最小 id、永不主动拨号"的教训继续钉住。
+- ⚠️ **MAC 与蓝牙地址刻意不进哈希**（已与用户对齐）：`if-addrs` 不跨平台给 MAC（要写
+  Win/BSD/Linux 三套系统调用 + Android JNI），而 Android/iOS/Win11 默认开 MAC 随机化 ⇒
+  它加不了唯一性，只会加"换网络就换身份"的不稳定。要加也就是往属性快照里添一项。
+- 迁移策略是**刻意保守**的：旧代码每次启动都把派生值写回 `settings` ⇒ 已存的值就等于派生值 ⇒
+  换优先级**不改变任何现存设备的 ID、不打断任何已有好友绑定**。已经撞上号的那两台光改生成代码
+  治不了，按用户决定处理：**其中一台换新 ID，聊天历史不迁移，好友重新添加，旧会话留在本机但
+  只读**。判据不靠猜 —— 只有当本机观察到"同一个 `device_id` 带着不同的已验签 Ed25519"才提示
+  （走 INV-P11 已有的 `key_conflict` 路径），谁先动手谁换，另一台之后不再看到冲突。
+- 已装设备侧的换新 ID / 自定义后缀 / 冲突提示**是下一片**（要动 commands + 设置页 + 重启语义，
+  所以没混进这一版）。自定义后缀的约束已经写进 ADR：字符集限小写字母数字、上限 = 默认长度 + 3、
+  **不接受空格 / `:` / `/` / `\` / 引号**（id 会进日志、进 `peer:{id}` 这类拼接键、进诊断面板），
+  自由文本只给昵称不给 id。
+- 新 ADR：`docs/adr/0021-device-id-is-generated-not-derived.md`（含事故、两条派生路径的撞法、
+  为什么不引 attestation、迁移决定）。同步 `AI_PROJECT_HANDOFF.md` 的设备指纹行、
+  `README.md` 与 handoff 的 `device.rs` 注释、`docs/AI_ENGINEERING_INDEX.md` 的 ADR 清单 ——
+  这几处以前描述的是"桌面 machine-uid、移动端主机名兜底"，留着就是一份和实现各说一份的说明。
+- 测试：`device.rs` 里旧的 `fingerprint_has_prefix` / `every_fingerprint_path_shares_one_prefix`
+  随函数一起删除，换成三条 —— `generated_id_keeps_the_one_prefix_and_length`（形状/前缀不变量）、
+  **`identical_attributes_still_produce_different_ids`**（本次事故的正向回归：属性完全相同生成
+  200 次必须两两不同；旧实现在这里 100% 撞）、`empty_attributes_still_yield_valid_distinct_ids`
+  （容器/移动端拿不到属性也不失败）。两份用例基线同步增删（旧名留着会让清单守卫判"静默消失"而红）。
+
+Version-Bump: patch
+
 ## [4.25.4] - 2026-09-22
 
 ### Fixed (中继在 UTC 换天前后配不上对端 —— 接入指南要求 5 的最后一格)

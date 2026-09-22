@@ -138,9 +138,10 @@ db::tests::update_friend_pubkeys_never_overwrites_a_bound_key
 db::tests::update_message_content_backfills_path_for_preview
 db::tests::update_one_recipient_does_not_affect_others
 db::tests::upsert_group_file_receive_reestablishes_session
-device::tests::every_fingerprint_path_shares_one_prefix
-device::tests::fingerprint_has_prefix
 device::tests::legacy_dev_prefix_is_stripped_exactly_once
+device::tests::empty_attributes_still_yield_valid_distinct_ids
+device::tests::generated_id_keeps_the_one_prefix_and_length
+device::tests::identical_attributes_still_produce_different_ids
 discovery::lan::tests::empty_device_id_is_ignored
 discovery::lan::tests::endpoint_uses_source_ip_and_declared_tcp_port
 discovery::lan::tests::identity_comes_from_packet_not_source_ip
