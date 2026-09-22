@@ -2293,17 +2293,23 @@ async fn connect_to_peer(
     // 经中继时：先与服务器完成准入、再与对端完成协商密封，然后才走下面那段一模一样的
     // 握手。**协商失败直接断链，不降级为明文**（AI_RULES §19：不得静默绕过加密）。
     if let Some(ctx) = relay {
-        if let Err(e) = relay_negotiate(&mut w, &mut r, ctx.device_id, ctx.signing, ctx.dial).await
+        if let Err((kind, e)) =
+            relay_negotiate(&mut w, &mut r, ctx.device_id, ctx.signing, ctx.dial).await
         {
+            // 档位进诊断事件：三类失败的处置动作完全不同（改地址 / 核口令 / 等对方开开关），
+            // 混成一句"建链未成功"就会让人去查错的那一头（INTEGRATION.md §1.1）。
             state.push_diag_event(
                 "relay_negotiate",
-                &format!("{}; server={}", e, ctx.dial.server),
+                &format!("[{}] {}; server={}", kind.as_str(), e, ctx.dial.server),
             );
             state.logger.warn(
                 "relay",
                 format!(
-                    "协商失败 peer={} server={}：{}",
-                    ctx.dial.peer_id, ctx.dial.server, e
+                    "协商失败[{}] peer={} server={}：{}",
+                    kind.as_str(),
+                    ctx.dial.peer_id,
+                    ctx.dial.server,
+                    e
                 ),
             );
             return DialOutcome::Failed(e);

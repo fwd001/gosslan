@@ -8,7 +8,7 @@ import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import { t } from "@/i18n";
-import type {RelayConfig, RelayPolicy, RoutedEndpoint} from "@/types";
+import type {RelayConfig, RelayPolicy, RelayProbe, RoutedEndpoint} from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -185,12 +185,59 @@ async function saveRelayConfig() {
     const saved = await api.saveRelayConfig(relayCfg.enabled, relayCfg.server, relayCfg.token);
     Object.assign(relayCfg, saved);
     relayLoaded.value = { ...saved };
+    relayProbe.value = null; // 上一份结论属于上一个地址，留着就是骗人
     app.toast(t("settings.network.relayServer.toast.saved"), "success");
   } catch (e) {
     // 错误文案是后端给出的中文判据（地址格式 / 口令含空格 / 口令过长），原样显示。
     app.toastError(e, t("settings.network.relayServer.toast.saveFailed"));
+    return;
   } finally {
     relayBusy.value = false;
+  }
+  // 存好之后**立刻真拨一次**（开了关才测：没开就没有一条电路，测了也是误导）。
+  // 刻意放在 save 的 try 之外：探测失败绝不能让用户以为"没保存成功"。
+  if (relayCfg.enabled) void runRelayProbe(true);
+}
+
+/** 最近一次真拨的结论；`null` = 还没测过（不预设任何"应该能连"的暗示）。 */
+const relayProbe = ref<RelayProbe | null>(null);
+const relayProbing = ref(false);
+
+/** 三档各一句人话（`kind` 是机器可读串，文案在 i18n 里，不拿中文去匹配）。 */
+const relayProbeLine = computed(() => {
+  if (relayProbing.value) return t("settings.network.relayServer.checking");
+  const p = relayProbe.value;
+  if (!p) return "";
+  const head = t(`settings.network.relayServer.probe.${p.kind}`);
+  // 技术细节挂在同一行：抄给"部署服务器的那个人"看时，只有这句有用。
+  return `${head}（${t("settings.network.relayServer.probe.triedLabel")} ${p.tried}·${p.detail}）`;
+});
+
+/**
+ * 真拨一次。`autofillPort` = 探到别的端口能用时**回填并再存一次**。
+ *
+ * 这一步才是"少配置"的落点：用户只填 IP 时后端会依次试候选端口，试通的那个
+ * 必须写回 `relay_server`，否则每次启动都从默认端口重新猜一遍。
+ * 回填走同一个 `save_relay_config`（规范化与校验只有一份实现），不新开命令。
+ */
+async function runRelayProbe(autofillPort = false) {
+  if (!relayCfg.server.trim() || !relayCfg.token.trim()) return;
+  relayProbing.value = true;
+  try {
+    const r = await api.checkRelayServer(relayCfg.server, relayCfg.token);
+    relayProbe.value = r;
+    if (autofillPort && r.kind !== "unreachable" && r.server && r.server !== relayCfg.server) {
+      relayCfg.server = r.server;
+      const saved = await api.saveRelayConfig(relayCfg.enabled, relayCfg.server, relayCfg.token);
+      Object.assign(relayCfg, saved);
+      relayLoaded.value = { ...saved };
+      app.toast(`${t("settings.network.relayServer.toast.probePortFixed")} ${r.server}`, "success");
+    }
+  } catch (e) {
+    relayProbe.value = null;
+    app.toastError(e, t("settings.network.relayServer.probe.failed"));
+  } finally {
+    relayProbing.value = false;
   }
 }
 
@@ -367,15 +414,26 @@ async function removeEndpoint(address: string) {
 
     <SettingsRow
       :label="t('settings.network.relayServer.save')"
-      :description="t('settings.network.relayServer.saveHint')"
+      :description="relayProbeLine || t('settings.network.relayServer.saveHint')"
     >
-      <button
-        class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
-        :disabled="relayBusy || !relayDirty"
-        @click="saveRelayConfig"
-      >
-        {{ t("settings.network.relayServer.save") }}
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
+          :disabled="relayBusy || !relayDirty"
+          @click="saveRelayConfig"
+        >
+          {{ t("settings.network.relayServer.save") }}
+        </button>
+        <!-- 「测一下」：服务器可能是**后**部署的，所以重测不该要求用户先改一遍字段。 -->
+        <button
+          v-if="relayCfg.enabled"
+          class="shrink-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3.5 py-1.5 text-[13px] font-medium text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-surface-2)] disabled:opacity-40"
+          :disabled="relayProbing || !relayCfg.server.trim() || !relayCfg.token.trim()"
+          @click="runRelayProbe(true)"
+        >
+          {{ t("settings.network.relayServer.check") }}
+        </button>
+      </div>
     </SettingsRow>
   </SettingsGroup>
 

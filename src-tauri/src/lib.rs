@@ -479,6 +479,7 @@ pub fn run() {
             commands::remove_routed_endpoint,
             commands::get_relay_config,
             commands::save_relay_config,
+            commands::check_relay_server,
             commands::get_logs,
             commands::clear_logs,
             commands::open_log_window,

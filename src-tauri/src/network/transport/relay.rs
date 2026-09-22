@@ -277,21 +277,58 @@ pub struct RelayCtx<'a> {
     pub signing: &'a ed25519_dalek::SigningKey,
 }
 
+/// 一次"经服务器"的尝试落在哪一档（`INTEGRATION.md` §1.1 的两种命运 + 纯本端可判的 TCP 失败）。
+///
+/// 服务器的行为是确定的两种，而且**差两个数量级、跨公网也分辨得清**：首行非法 ⇒ 立刻
+/// `destroy()`；首行被接受 ⇒ 放进等待表（默认 30s）。加上"连不上"，用户能分开的就是
+/// `Unreachable` / `Rejected` / `Held` 三档 —— **不存在第四档**："对方没开中转"和
+/// "对方不在线"对哑管道是同一个观测（这个哈希没人登记），别在 UI 上承诺它。
+///
+/// `PeerIdentity` 不是服务器的观测，是**准入与配对都成功之后**协商验签的结果。单列一档
+/// 是因为它的处置动作完全不同（核对口令是否被外人共用 / 对方重装过要重新加好友），
+/// 混进 `Rejected` 会把"该重新加好友"的人指引去改口令。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayProbeKind {
+    /// TCP 层就没连上：地址、端口或安全组。
+    Unreachable,
+    /// 首行写出后**毫秒级**被关闭：口令 / 协议版本 / 格式三者之一（精确原因只有服务器日志有）。
+    Rejected,
+    /// 首行被接受、连接一直开着到本端超时：服务器可达且口令正确，只是对端这一轮没来。
+    Held,
+    /// 已配对，但对端身份验签不符。
+    PeerIdentity,
+}
+
+impl RelayProbeKind {
+    /// 给前端与日志用的稳定串（**机器可读**：界面按它取文案，不按中文串匹配）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unreachable => "unreachable",
+            Self::Rejected => "rejected",
+            Self::Held => "held",
+            Self::PeerIdentity => "peer_identity",
+        }
+    }
+}
+
 /// 在 `Hello` 之前完成：服务器准入首行 + 两端协商 + 开启记录层密封。
 ///
 /// 参数刻意**不含 `AppState`**（只要读写半 + 本机 device_id/签名私钥）：协商本身不需要
 /// 别的运行时状态，而 `AppState` 要 `AppHandle` 才能构造 —— 换成现在这个签名，它就能被
 /// duplex 上的真实端到端测试驱动（见下面的用例）。
 ///
-/// 任一步失败一律 `Err`，调用方直接断开这条 socket。**没有"退回明文继续"这条路**
+/// 任一步失败一律 `Err((档位, 说明))`，调用方直接断开这条 socket。**没有"退回明文继续"这条路**
 /// （`AI_RULES.md` §19：不得静默绕过/降级加密；失败要么明确报错要么明确重试）。
+/// 档位是 `RelayProbeKind` —— 它与设置页"保存时测一次"用的是同一套判据，
+/// 所以"三类失败"只有一份定义（那条真拨的实现见 `commands/relay.rs` 的 `probe_relay_addr`）。
+#[allow(clippy::type_complexity)]
 pub async fn relay_negotiate(
     w: &mut TcpSender,
     r: &mut TcpReceiver,
     my_device_id: &str,
     my_signing: &ed25519_dalek::SigningKey,
     dial: &RelayDial,
-) -> Result<(), String> {
+) -> Result<(), (RelayProbeKind, String)> {
     // 只写的一侧需要这个 trait；读在 `read_bounded_line` 里，它自己 import。
     use tokio::io::AsyncWriteExt;
 
@@ -299,7 +336,7 @@ pub async fn relay_negotiate(
     let preamble = format!("GSRL1 {} {}\n", dial.token, dial.channel_hex);
     w.write_all(preamble.as_bytes())
         .await
-        .map_err(|e| format!("中继首行写入失败: {e}"))?;
+        .map_err(|e| (RelayProbeKind::Unreachable, format!("中继首行写入失败: {e}")))?;
 
     // ② 协商线：**双向同时发**，因此不存在"谁先谁后"的死锁，也不依赖谁先连上服务器。
     let kp = relay_seal::generate_eph_keypair();
@@ -312,18 +349,44 @@ pub async fn relay_negotiate(
     );
     w.write_all(offer.to_line().as_bytes())
         .await
-        .map_err(|e| format!("协商线写入失败: {e}"))?;
+        .map_err(|e| (RelayProbeKind::Held, format!("协商线写入失败: {e}")))?;
 
-    // ③ 读对端协商线（超时 + 长度闸门）。
-    let line = tokio::time::timeout(
+    // ③ 读对端协商线（超时 + 长度闸门）。**这一读的两种失败形状就是 §1.1 那两种命运**：
+    //    立刻拿到 EOF/重置 ⇒ 我们的首行被拒；撑到超时没人说话 ⇒ 首行已被接受、对端这轮没来。
+    //    ⚠️ 对端**自己**被拒不会走到这里 —— 那台服务器只是关掉了它那一条，我们这条仍会
+    //    留在等待表里直到超时 ⇒ 归 `Held`，不会误报成"口令错"。
+    let line = match tokio::time::timeout(
         Duration::from_secs(RELAY_NEGOTIATE_TIMEOUT_SECS),
         read_bounded_line(r),
     )
     .await
-    .map_err(|_| format!("等待对端协商线超时（{}s）", RELAY_NEGOTIATE_TIMEOUT_SECS))?
-    .map_err(|e| format!("读取协商线失败: {e}"))?;
+    {
+        Err(_) => {
+            return Err((
+                RelayProbeKind::Held,
+                format!(
+                    "已连上中转服务器（口令已被接受），但对方 {RELAY_NEGOTIATE_TIMEOUT_SECS}s 内没接入 —— \
+                     通常是对方没开中转开关，或两端这一轮没对上"
+                ),
+            ));
+        }
+        Ok(Err(e)) => {
+            return Err((
+                RelayProbeKind::Rejected,
+                format!(
+                    "服务器拒绝准入：首行被立刻关闭（口令 / 协议版本 / 首行格式三者之一，\
+                     精确原因只有服务器日志有）: {e}"
+                ),
+            ));
+        }
+        Ok(Ok(line)) => line,
+    };
 
-    let peer_offer = relay_seal::WrapOffer::parse_line(&line).ok_or("对端协商线格式非法")?;
+    let peer_offer =
+        relay_seal::WrapOffer::parse_line(&line).ok_or((
+            RelayProbeKind::PeerIdentity,
+            "对端协商线格式非法".to_string(),
+        ))?;
     let session = relay_seal::accept_wrap_offer(
         &peer_offer,
         my_device_id,
@@ -335,9 +398,12 @@ pub async fn relay_negotiate(
     .ok_or_else(|| {
         // 整条链路上最值得看的一行日志：它意味着"服务器上配对我的不是那位好友"——
         // 要么口令被外人共用（同一台服务器上串了线），要么对方重装过（公钥已变）。
-        format!(
-            "协商验签失败：对端不是 {}（或通道不符）。核对服务器口令是否只在这批人之间共享；若对方重装过 Gosslan，需删除后重新添加好友",
-            dial.peer_id
+        (
+            RelayProbeKind::PeerIdentity,
+            format!(
+                "协商验签失败：对端不是 {}（或通道不符）。核对服务器口令是否只在这批人之间共享；若对方重装过 Gosslan，需删除后重新添加好友",
+                dial.peer_id
+            ),
         )
     })?;
 
@@ -591,7 +657,14 @@ mod relay_wiring_tests {
         assert!(ra.is_err(), "A 侧必须失败：{:?}", ra.ok());
         assert!(rb.is_err(), "B 侧必须失败：{:?}", rb.ok());
         // 两边的失败理由要能各自读出来（用户要按这个决定"改口令"还是"重新加好友"）
-        assert!(ra.unwrap_err().contains("协商"));
+        let (ka, ea) = ra.unwrap_err();
+        let (kb, eb) = rb.unwrap_err();
+        assert!(ea.contains("协商"), "A 侧理由该说协商：{ea}");
+        assert!(eb.contains("协商"), "B 侧理由该说协商：{eb}");
+        // 档位必须是 `PeerIdentity`：**准入与配对都成功了、只是身份不符** —— 把它报成
+        // `Rejected` 会把该"重新加好友"的人指引去改口令（那两个动作互斥）。
+        assert_eq!(ka, RelayProbeKind::PeerIdentity, "A 侧档位错了：{ea}");
+        assert_eq!(kb, RelayProbeKind::PeerIdentity, "B 侧档位错了：{eb}");
         relay.abort();
     }
 

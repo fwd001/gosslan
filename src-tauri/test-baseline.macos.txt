@@ -1,4 +1,8 @@
+commands::relay_config_tests::explicit_port_is_not_second_guessed
 commands::relay_config_tests::load_relay_runtime_is_fail_closed
+commands::relay_config_tests::longest_allowed_token_still_fits_the_server_line_limit
+commands::relay_config_tests::probe_report_never_carries_the_token
+commands::relay_config_tests::probe_splits_the_two_server_fates
 commands::relay_config_tests::relay_server_accepts_ip_and_ip_port_and_rejects_junk
 commands::relay_config_tests::relay_server_default_port_is_not_the_lan_port
 commands::relay_config_tests::relay_token_rejects_whitespace_because_the_preamble_is_space_separated
@@ -174,10 +178,10 @@ db::tests::update_friend_pubkeys_never_overwrites_a_bound_key
 db::tests::update_message_content_backfills_path_for_preview
 db::tests::update_one_recipient_does_not_affect_others
 db::tests::upsert_group_file_receive_reestablishes_session
-device::tests::legacy_dev_prefix_is_stripped_exactly_once
 device::tests::empty_attributes_still_yield_valid_distinct_ids
 device::tests::generated_id_keeps_the_one_prefix_and_length
 device::tests::identical_attributes_still_produce_different_ids
+device::tests::legacy_dev_prefix_is_stripped_exactly_once
 discovery::lan::tests::empty_device_id_is_ignored
 discovery::lan::tests::endpoint_uses_source_ip_and_declared_tcp_port
 discovery::lan::tests::identity_comes_from_packet_not_source_ip
@@ -394,6 +398,7 @@ network::transport::relay_wiring_tests::negotiate_times_out_when_peer_never_spea
 network::transport::relay_wiring_tests::negotiation_fails_closed_when_identity_does_not_match
 network::transport::relay_wiring_tests::picks_only_friends_without_any_link
 network::transport::relay_wiring_tests::two_peers_negotiate_and_exchange_frames_through_the_pipe
+network::transport::tests::accept_binds_encryption_key_but_defers_unverified_anchor
 network::transport::tests::ack_local_sender_marks_delivered_and_clears_outbox
 network::transport::tests::ack_relay_node_does_not_process_locally
 network::transport::tests::ack_relay_preserves_original_fields
@@ -417,7 +422,6 @@ network::transport::tests::flush_success_clears_pending
 network::transport::tests::frame_roundtrip
 network::transport::tests::frame_roundtrip_large_payload
 network::transport::tests::friend_accept_backfills_pubkeys_from_peers
-network::transport::tests::accept_binds_encryption_key_but_defers_unverified_anchor
 network::transport::tests::friend_accept_flush_is_bounded_and_spaced
 network::transport::tests::friend_chat_message_accepted
 network::transport::tests::friend_message_blocked_has_original_sender
@@ -528,7 +532,6 @@ tests::aux_windows_open_their_own_document
 tests::ble_connect_cheap_path_requires_an_existing_connection
 tests::ble_dial_is_deduplicated_and_disconnects_on_failure
 tests::ble_file_transfer_respects_link_limits
-tests::friend_identity_anchor_has_one_binding_rule
 tests::ble_handshake_skips_leading_frames_without_processing_them
 tests::ble_link_has_a_designated_dialer
 tests::ble_start_does_not_block_on_the_peripheral_state_wait
@@ -543,6 +546,7 @@ tests::content_pull_requires_capability_negotiation
 tests::every_friend_accept_path_forgets_the_pending_request
 tests::external_link_rejects_non_http_schemes
 tests::file_send_progress_counts_wire_not_queue
+tests::friend_identity_anchor_has_one_binding_rule
 tests::friend_request_from_existing_friend_auto_accepts
 tests::friend_request_survives_a_dropped_link
 tests::gossip_fanout_targets_reachable_links

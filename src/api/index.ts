@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 export const api = {
   /**
@@ -292,6 +292,13 @@ export const api = {
   getRelayConfig: () => invoke<RelayConfig>("get_relay_config"),
   saveRelayConfig: (enabled: boolean, server: string, token: string) =>
     invoke<RelayConfig>("save_relay_config", { enabled, server, token }),
+  /**
+   * 保存前真拨一次，拿回三档结论（`unreachable` / `rejected` / `held`）。
+   * 它**不改配置**，也不经过拨号器（不会登记链路）：只在裸 socket 上发一行首字，
+   * 看服务器是"立刻关"还是"挂着"。口令只在参数里过一次，后端不写进日志与报告。
+   */
+  checkRelayServer: (server: string, token: string) =>
+    invoke<RelayProbe>("check_relay_server", { server, token }),
   getCacheInfo: () => invoke<CacheInfo>("get_cache_info"),
   setCachePolicy: (retentionDays: number | null, maxBytes: number | null) =>
     invoke<void>("set_cache_policy", { retentionDays, maxBytes }),

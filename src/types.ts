@@ -363,6 +363,26 @@ export interface RelayConfig {
   token: string;
 }
 
+/**
+ * 一次"保存前真拨"的结论（后端 `check_relay_server`）。
+ *
+ * `kind` 是三档 **机器可读**串，与 Rust 侧 `RelayProbeKind::as_str` 同一套
+ * （`INTEGRATION.md` §1.1：服务器的两种命运差两个数量级，加上纯本端可判的 TCP 失败）：
+ * · `unreachable` 连不上（地址 / 端口 / 安全组）
+ * · `rejected`    首行被立刻拒绝（口令 / 版本 / 格式，精确原因只在服务器日志里）
+ * · `held`        首行已被接受、口令正确，只是对方这一轮没接入
+ * 刻意**没有**第四种："对方没开中转"与"对方不在线"对哑管道是同一个观测，分不出来。
+ */
+export interface RelayProbe {
+  kind: "unreachable" | "rejected" | "held";
+  /** 探到的那个 `ip:port`（全不可达时是第一个候选）。与已存值不同时界面应回填。 */
+  server: string;
+  /** 试过哪些端口，逗号分隔 —— 供用户抄给部署服务器的人看。 */
+  tried: string;
+  /** 技术细节。**不含口令**。 */
+  detail: string;
+}
+
 /** 缓存目录占用与策略 */
 export interface CacheInfo {
   /** 已接收的图片 / 文件（落在「文件存储目录」）：文件数与合计占用 */

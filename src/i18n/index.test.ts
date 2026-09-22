@@ -192,3 +192,39 @@ test("app.init() 必须把解析后的语言推给后端（后端系统消息文
       "群成员变更 / 文件下载等系统消息会显示英文（Rust 侧的 is_zh() 详见 state.rs 的 resolve_is_zh）。",
   );
 });
+
+// ---------------- 后端机器可读枚举 ↔ 界面文案 ----------------
+
+/**
+ * 中继探测的三档结论（`unreachable` / `rejected` / `held`）是**按串取文案**的：
+ * `t(\`settings.network.relayServer.probe.${kind}\`)`。所以两头任一漂移都会变成
+ * "那一档什么都不显示" —— 而它是三档里唯一告诉用户"配置是对的、问题在对方"的那一档。
+ *
+ * 这条断言把三件事钉在一起：Rust 的 `as_str` 产出的串、TS 里的联合类型、两种语言的键。
+ * 任何一处改名，这里必须红（不是"少一行翻译"那么轻）。
+ */
+test("中继探测档位的三个名字在 Rust / TS / 两种语言里是同一套", () => {
+  const root = join(import.meta.dirname, "../..");
+  const rust = readFileSync(join(root, "src-tauri/src/network/transport/relay.rs"), "utf8");
+  // `Self::Held => "held"` 这种臂，只在 `as_str` 那个 match 里出现
+  const asStr = rust.slice(rust.indexOf("pub fn as_str"));
+  const kinds = [...asStr.matchAll(/Self::\w+\s*=>\s*"([a-z_]+)"/g)].map((m) => m[1]).sort();
+  assert.ok(kinds.length >= 3, `没从 Rust 里扫到档位串，护栏要失效了：${kinds}`);
+
+  const tsTypes = readFileSync(join(root, "src/types.ts"), "utf8");
+  const iface = tsTypes.slice(tsTypes.indexOf("export interface RelayProbe"));
+  const union = [...iface.matchAll(/kind:\s*"([a-z_|"\s]+)"/g)][0][1];
+  const tsKinds = union.split("|").map((s) => s.replace(/["\s]/g, "")).filter(Boolean).sort();
+  assert.ok(tsKinds.length >= 3, `RelayProbe.kind 的联合类型没解析出来：${iface.slice(0, 80)}`);
+
+  // TS 侧必须是 Rust 侧的子集（Rust 多出来的档位 = 前端不会遇到的分支，允许）
+  for (const k of tsKinds) {
+    assert.ok(kinds.includes(k), `前端声明了 Rust 不产生的档位：${k}`);
+    for (const [name, dict] of [["zh-CN", zhCN], ["en-US", enUS]] as const) {
+      assert.ok(
+        dict[`settings.network.relayServer.probe.${k}`],
+        `${name} 缺 settings.network.relayServer.probe.${k} —— 界面上那一档会变成空白`,
+      );
+    }
+  }
+});
