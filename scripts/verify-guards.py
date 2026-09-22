@@ -2650,6 +2650,48 @@ CASES: list[Case] = [
         expect_fail_hint="出现了 3 次",
         tags=["change-budget", "new-guards"],
     ),
+    Case(
+        name="身份锚点的打标点必须留在 handle_message 的 Hello 分支（删掉即红）",
+        why="v4.25.3 只在三处**握手**后打标，而 `mark_peer_keys_verified` 在 `peers` 条目不存在时\n"
+        "     是空操作、`upsert_peer` 新建条目又恒标 `keys_verified: false` ⇒ 出站拨号与 BLE 两条\n"
+        "     路径第一次连接的对方整个会话都绑不上锚点（安全码算不出、公网中继永不准入，且无报错）。\n"
+        "     修法是把打标补在 `handle_message` 的 Hello 分支（TCP/BLE 通用的那一个写入点）。\n"
+        "     注入方式：删掉那一行 —— 计数 5→4，接线断言必须红",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "            mark_peer_keys_verified(state, &device_id, &hello_x, &hello_e);\n",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "friend_identity_anchor_has_one_binding_rule"),
+        cwd=TAURI,
+        expect_fail_hint="四处打标",
+        tags=["rust", "identity", "relay"],
+    ),
+    Case(
+        name="打标必须排在 `upsert_peer` **之后**（换序即红，计数不变所以只有次序断言会响）",
+        why="这条守的是次序而不是数量：把那一行挪到 `upsert_peer` 之前，`mark_peer_keys_verified(`\n"
+        "     仍然是 5 处 ⇒ 计数断言照样绿，但条目此刻还不存在 ⇒ 空操作 ⇒ 静默回到同一个缺陷。\n"
+        "     两条注入合起来正好是「同一行换个位置」，所以这条用例证明的是次序断言本身非空转",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[
+            (
+                "            let (hello_x, hello_e) = (x25519_pubkey.clone(), ed25519_pubkey.clone());\n"
+                "            upsert_peer(",
+                "            let (hello_x, hello_e) = (x25519_pubkey.clone(), ed25519_pubkey.clone());\n"
+                "            mark_peer_keys_verified(state, &device_id, &hello_x, &hello_e);\n"
+                "            upsert_peer(",
+            ),
+            (
+                "            mark_peer_keys_verified(state, &device_id, &hello_x, &hello_e);\n"
+                "            // 对齐单聊逻辑时钟",
+                "            // 对齐单聊逻辑时钟",
+            ),
+        ],
+        cmd=cargo("test", "--lib", "friend_identity_anchor_has_one_binding_rule"),
+        cwd=TAURI,
+        expect_fail_hint="打标必须排在 upsert_peer 之后",
+        tags=["rust", "identity", "relay"],
+    ),
 ]
 
 

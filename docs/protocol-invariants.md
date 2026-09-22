@@ -333,13 +333,21 @@ warn
 - 为什么要收紧写入侧：锚点此后有三个消费者 —— Hello 验签（INV-P21）、安全码、
   **公网中继的准入判据**（`list_bound_friend_identities` 只看它非空，ADR-0020 称那把钥匙
   为"整个设计的支点"）。绑错的后果从"消息被加密给攻击者"扩到"我们主动跨公网给对方建电路"。
-- 留 NULL 不是死路：任何一次验签通过的 Hello（**入站、出站拨号、BLE 三条都算**，
-  2026-09-22 起出站与 BLE 也补上了打标）都会经 `upsert_peer` 把它绑上。
-  收紧来源必须同时补齐这三条打标，否则"只靠蓝牙/拨号连上的好友"会永久没有锚点 ——
-  那是把安全改动做成可用性回退。
+- 留 NULL 不是死路，但**自愈的机制只有一处**：验签通过的 Hello 最终都会落进
+  `handle_message` 的 Hello 分支，那里在 `upsert_peer` **之后**调 `mark_peer_keys_verified`
+  （TCP 入站 / 出站拨号 / BLE 三条 transport 共用这一个写入点）。
+  ⚠️ 别把这句话理解成"`upsert_peer` 会自己打标"——它不会，它新建条目时**恒标
+  `keys_verified: false`**（`announce` 与 Hello 共用同一个函数，必须保守）；握手处那三次打标
+  也只覆盖"`peers` 条目已经由 announce 建好"的情形，条目还不存在时那次调用是空操作。
+  2026-09-22 补上 Hello 分支这一处之前，出站拨号与蓝牙**第一次**连上的好友整个会话都绑不上
+  锚点（安全码算不出、中继永不准入，且没有任何报错）—— 收紧来源必须同时把打标点补齐，
+  否则就是把安全改动做成可用性回退。次序也是判据的一部分：打标在 `upsert_peer` 之前 = 空操作。
 - 守卫：`friend_identity_anchor_has_one_binding_rule`（三处 accept 都走同一 helper、
-  `upsert_peer` 那道闸不许拆、Gossip 那处只准绑 x25519）+
+  `upsert_peer` 那道闸不许拆、Gossip 那处只准绑 x25519、**打标点的数量与"在 `upsert_peer`
+  之后"这条次序**）+
   `accept_binds_encryption_key_but_defers_unverified_anchor`（两列的差别与 NULL 自愈）。
+  两条非空转用例登记在 `scripts/verify-guards.py`：删掉打标点、以及把打标挪到 `upsert_peer`
+  之前（换序不改计数，只有次序断言会响）。
 
 ### 为什么原来"必须重启"（真机 2026-09-13，已修）
 

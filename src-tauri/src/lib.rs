@@ -2650,8 +2650,24 @@ mod tests {
         );
         assert_eq!(
             src.matches("mark_peer_keys_verified(").count(),
-            4,
-            "1 处定义 + 入站首帧 / 出站握手 / BLE 包装三处打标"
+            5,
+            "1 处定义 + 四处打标：入站首帧 / 出站握手 / BLE 包装 / **Hello 落进 handle_message \
+             时 upsert_peer 之后那一次**。最后这条才是全 transport 通用的锚点升级点，\
+             删掉它 = 第一次连上的好友永远绑不上身份（安全码算不出、中继永不准入且无报错）"
+        );
+        // 顺序判据：打标必须在 `upsert_peer` **之后**。`mark_peer_keys_verified` 在
+        // `peers` 条目不存在时是空操作，而 `upsert_peer` 新建条目恒标 `keys_verified: false`，
+        // 所以"先 upsert 再 mark"是唯一成立的次序 —— 反过来写不会报错，只会静默绑不上。
+        let hello_branch = rust_fn_body(&src, "async fn handle_message(");
+        let upsert_at = hello_branch
+            .find("upsert_peer(")
+            .expect("handle_message 的 Hello 分支必须经 upsert_peer 登记 peers");
+        let mark_at = hello_branch
+            .find("mark_peer_keys_verified(")
+            .expect("handle_message 的 Hello 分支必须给验签通过的 Hello 打标");
+        assert!(
+            upsert_at < mark_at,
+            "打标必须排在 upsert_peer 之后：条目还不存在时 mark 是空操作（见其 ⚠️ 注释）"
         );
         // 写 friends 钥匙的**生产**调用点全集：accept helper、`upsert_peer`（自带闸）、
         // Gossip 那处以"这一封能解密"为持有证明的补齐（只准绑 x25519）。

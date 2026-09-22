@@ -613,13 +613,6 @@ fn bound_ed25519_from_peer(peer: Option<&Peer>) -> Option<String> {
         .and_then(|p| p.ed25519_pubkey.clone())
 }
 
-/// 把某节点的公钥标记为**已验证**（Hello 验签通过后调用）。
-///
-/// 为什么必须有这个显式升级点：`peers` 表由两条信任级别完全不同的路径共同维护 ——
-/// 未签名的 UDP announce（可伪造）与验签通过的 Hello（可信）。只靠「表里有值」无法区分
-/// 二者，于是未验证的公钥会被当成身份绑定用（详见 `verify_hello` 与 `upsert_peer` 的注释）。
-/// 这里用一对公钥的**实际值**再核对一次：只有与 Hello 自报值一致时才升级，
-/// 避免在验签与本次写入之间被另一条 announce 插空改动。
 /// `peers` 里这对钥匙是不是**被证明过**的 —— 只有验签通过的 Hello 能打上 `keys_verified`
 /// （见 `mark_peer_keys_verified`），未签名的 UDP announce 带来的不算。
 ///
@@ -631,8 +624,9 @@ fn bound_ed25519_from_peer(peer: Option<&Peer>) -> Option<String> {
 /// 非空），一次伪造广播把它抢先填上，后果从"消息被加密给攻击者"扩到"我们主动跨公网
 /// 给攻击者建电路、并把协商验签锚在它的钥匙上"（ADR-0020 自己称那把钥匙为"整个设计的支点"）。
 ///
-/// 留 NULL 不是死路：任何一次验签通过的 Hello（含出站拨号与 BLE）都会经 `upsert_peer`
-/// 把它补上 —— 而 `update_friend_pubkeys` 只填空、不覆盖，所以"晚一点绑"安全，"绑错"永久。
+/// 留 NULL 不是死路：验签通过的 Hello 会经 `handle_message` 的 Hello 分支打上
+/// `keys_verified`（见 `mark_peer_keys_verified` 那条 ⚠️），下一条 announce 就补得进来 ——
+/// 而 `update_friend_pubkeys` 只填空、不覆盖，所以"晚一点绑"安全，"绑错"永久。
 fn peer_keys_trusted(state: &AppState, device_id: &str) -> bool {
     state
         .peers
@@ -687,6 +681,20 @@ pub(crate) fn bind_friend_keys_on_accept(
     }
 }
 
+/// 把某节点的公钥标记为**已验证**（Hello 验签通过后调用）。
+///
+/// 为什么必须有这个显式升级点：`peers` 表由两条信任级别完全不同的路径共同维护 ——
+/// 未签名的 UDP announce（可伪造）与验签通过的 Hello（可信）。只靠「表里有值」无法区分
+/// 二者，于是未验证的公钥会被当成身份绑定用（详见 `verify_hello` 与 `upsert_peer` 的注释）。
+/// 这里用一对公钥的**实际值**再核对一次：只有与 Hello 自报值一致时才升级，
+/// 避免在验签与本次写入之间被另一条 announce 插空改动。
+///
+/// ⚠️ **条目不存在时它是空操作**（下面的 `let Some(p) = ... else { return }`），所以"在握手
+/// 验签通过后立刻调一次"**不够**：出站拨号与 BLE 那两条路径的 `peers` 条目是稍后才由
+/// `handle_message` 的 Hello 分支经 `upsert_peer` 建的（`upsert_peer` 新建时恒标
+/// `keys_verified: false`）。只在握手处调，则"第一次连接的对方"整个会话都是未验证 ⇒
+/// `friends.ed25519` 补不上 ⇒ 安全码算不出、公网中继永不准入。所以 Hello 分支在
+/// `upsert_peer` **之后**再调一次（那里条目必然已带着这对刚验过的钥匙）。
 fn mark_peer_keys_verified(state: &AppState, device_id: &str, x25519: &str, ed25519: &str) {
     let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
     // ⚠️ **只给已存在的记录打标，绝不凭空造记录**。
@@ -2740,6 +2748,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 .get(&device_id)
                 .map(|p| p.ip.clone())
                 .unwrap_or_default();
+            // 打标要留一份钥匙：下面 `upsert_peer` 会把这两个绑定 move 进去。
+            let (hello_x, hello_e) = (x25519_pubkey.clone(), ed25519_pubkey.clone());
             upsert_peer(
                 state,
                 &device_id,
@@ -2753,6 +2763,13 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 None,
             )
             .await;
+            // ⚠️ 这一句必须排在 `upsert_peer` **之后**，而且是**唯一**一条对所有 transport
+            // 都成立的打标点（TCP 入站 / 出站拨号 / BLE 建链后都把已验签的 Hello 交回这里）。
+            // 握手处那三次打标只覆盖"`peers` 条目已经由 announce 建好"的情形：条目不存在时
+            // `mark_peer_keys_verified` 是空操作，而 `upsert_peer` 新建条目恒标
+            // `keys_verified: false` ⇒ 只靠握手处打标，第一次连上的好友整个会话都绑不上
+            // 身份锚点（表现为安全码算不出、公网中继永不准入 —— 且没有任何报错）。
+            mark_peer_keys_verified(state, &device_id, &hello_x, &hello_e);
             // 对齐单聊逻辑时钟：避免离线期间的时钟落差让后续新消息序号偏小。
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());

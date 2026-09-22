@@ -10,6 +10,52 @@
 
 ## [Unreleased]
 
+## [4.25.7] - 2026-09-22
+
+### Fixed (4.25.3 的打标漏在了一条 transport 通用路径上 —— 第一次连上的好友绑不上身份锚点)
+
+自查 4.25.3（`17b6329`，"锚点只认被证明过的来源"）时发现：那一次把三处握手后的打标补齐了，
+但**打标点放错了位置**，出站拨号与蓝牙这两条路径上它等于没做。
+
+`mark_peer_keys_verified` 在 `peers` 条目不存在时是**空操作**（这是刻意设计：不凭空造条目，
+否则"搜得到节点却加不上好友"）。而 `upsert_peer` 新建条目时**恒标 `keys_verified: false`**。
+于是：
+
+- 入站连接：对方先 announce 过 ⇒ 条目已存在 ⇒ 握手处那次打标生效（这条一直是好的）。
+- **出站拨号**：握手处先打标，`peers` 条目要等 Hello 落进 `handle_message` 才由 `upsert_peer`
+  建出来 ⇒ 打标跑在条目存在之前 ⇒ 空操作。
+- **BLE**：同一个次序问题（`verify_hello_for_ble` 在 `handle_message` 之前）。
+
+后果是静默的：那一次会话里 `friends.ed25519_pubkey` 一直是 NULL ⇒ **安全码算不出、公网中继
+永不准入**（`list_bound_friend_identities` 只看它非空），而 4.25.3 的提交信息、代码注释和
+INV-P11 那条"留 NULL 不是死路"都把它写成"任何一次验签通过的 Hello 都会经 `upsert_peer`
+把它绑上" —— **`upsert_peer` 并不会打标**，那句话把机制说错了。只有下一次重连（条目已存在）
+才自愈，所以现象是"有时候能连有时候不能"，正是本仓库最不该留的那类形状。
+
+- 改法（一行 + 一份留存的钥匙）：在 `handle_message` 的 Hello 分支里、`upsert_peer` **之后**
+  补一次 `mark_peer_keys_verified`。这是 TCP 入站 / 出站 / BLE 三条 transport **共用**的那个
+  写入点（能这么写是因为 INV-P21：身份先于链路，落到这里的 Hello 必然已验签）。
+  握手处那三次保留 —— 它们覆盖"announce 已建条目"的情形，是最早的升级点。
+- 次序是判据的一部分：**打标写在 `upsert_peer` 之前不会报错，只会静默绑不上**。所以守卫不只数
+  数量，还钉次序：`friend_identity_anchor_has_one_binding_rule` 现在断言
+  `mark_peer_keys_verified(` 共 **5 处**（1 定义 + 4 打标），并断言 `handle_message` 函数体里
+  `upsert_peer(` 的下标 **小于** 打标的下标。
+- 两条非空转用例已登记进 `scripts/verify-guards.py`（名字都含"打标"）：
+  ①删掉那一行 ⇒ 计数断言红；②把它挪到 `upsert_peer` 之前 ⇒ 计数不变、只有次序断言红。
+  两条都实测过"改坏即 FAIL、恢复即 PASS"。
+- 顺带把说错的机制改准：`mark_peer_keys_verified` 的函数文档（原来整段被挤到
+  `peer_keys_trusted` 的文档里，函数自己在裸奔）、`peer_keys_trusted`/`bind_friend_keys_on_accept`
+  里"自愈经 upsert_peer"那句、以及 `docs/protocol-invariants.md` INV-P11 的那一条。
+- ⚠️ 覆盖边界：**没有端到端行为用例**（那要造一个带签名 Hello 的 `handle_message` 异步夹具，
+  本仓库现在没有这类夹具）。这次补的是"文本次序 + 数量"两条断言加变异证明；真机上要验的是
+  ①只靠蓝牙连上的好友能算出安全码、②只靠出站拨号连上的好友在 4.25.x 中继设置页里被准入。
+- ⚠️ 自查另外两处**没有**跟着改，已单独记账：`get_safety_number`（`commands/friends.rs:32-49`）
+  读 `peers` 里的公钥时不看 `keys_verified`（与"锚点只认被证明过的来源"不对称，是显示侧缺口，
+  不是本次改出来的）；`a6fbbf1`（v4.25.5）承诺的"撞号后提示换新 ID"仍未实现（那是设备身份的
+  切片 2，本轮另开一条记账）。
+
+Version-Bump: patch
+
 ## [4.25.6] - 2026-09-22
 
 ### Reverted (回退 4.25.4 的"换天窗口按轮交替"：它没有修好问题，而且提交信息里的保证不成立)
