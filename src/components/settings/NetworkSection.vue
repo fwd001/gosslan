@@ -202,6 +202,8 @@ async function saveRelayConfig() {
 /** 最近一次真拨的结论；`null` = 还没测过（不预设任何"应该能连"的暗示）。 */
 const relayProbe = ref<RelayProbe | null>(null);
 const relayProbing = ref(false);
+/** 口令输入框是否明文显示（默认掩码，理由见模板里的注释）。 */
+const tokenVisible = ref(false);
 
 /** 三档各一句人话（`kind` 是机器可读串，文案在 i18n 里，不拿中文去匹配）。 */
 const relayProbeLine = computed(() => {
@@ -400,16 +402,39 @@ async function removeEndpoint(address: string) {
       />
     </SettingsRow>
 
-    <SettingsRow :label="t('settings.network.relayServer.token')">
-      <input
-        v-model="relayCfg.token"
-        type="text"
-        autocomplete="off"
-        spellcheck="false"
-        :placeholder="t('settings.network.relayServer.tokenPlaceholder')"
-        class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
-        @keyup.enter="saveRelayConfig"
-      />
+    <SettingsRow
+      :label="t('settings.network.relayServer.token')"
+      :description="t('settings.network.relayServer.tokenHint')"
+    >
+      <div class="flex items-center gap-1.5">
+        <!--
+          默认掩码。`INTEGRATION.md` 要求 7 列的是"不写日志 / 不进上报 / 不出现在诊断截图里"，
+          这三条后端都成立（日志只记长度，见 `save_relay_config` 与 `check_relay_server`）。
+          但**用户为求助截图设置页**是最常见的一张截图，所以这一格按敏感信息处理：
+          默认掩码 + 显式"显示"。刻意不做"只写不可读"——那会让"我到底填的哪个口令"变成
+          只能重填才知道，而口令本身就在服务器部署文件里，藏它没有意义。
+        -->
+        <input
+          v-model="relayCfg.token"
+          :type="tokenVisible ? 'text' : 'password'"
+          autocomplete="off"
+          spellcheck="false"
+          :aria-label="t('settings.network.relayServer.token')"
+          :placeholder="t('settings.network.relayServer.tokenPlaceholder')"
+          class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+          @keyup.enter="saveRelayConfig"
+        />
+        <button
+          class="shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-1 text-[12px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-surface-2)]"
+          :aria-pressed="tokenVisible"
+          :aria-label="tokenVisible
+            ? t('settings.network.relayServer.token.hide')
+            : t('settings.network.relayServer.token.show')"
+          @click="tokenVisible = !tokenVisible"
+        >
+          {{ tokenVisible ? t("settings.network.relayServer.token.hide") : t("settings.network.relayServer.token.show") }}
+        </button>
+      </div>
     </SettingsRow>
 
     <SettingsRow

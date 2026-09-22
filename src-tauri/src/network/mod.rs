@@ -226,6 +226,11 @@ pub(crate) fn transport_src_for_guards() -> String {
     src.push_str(include_str!("transport/outbound.rs"));
     src.push('\n');
     src.push_str(include_str!("transport/gossip.rs"));
+    // `transport/relay.rs` 也是同一模块的分册（`transport.rs:50` 的 `include!`）。
+    // 2026-09-22 补登记：4.25.0 接线时只把它记进了 `docs/domains.data.mjs`，漏了这里 ⇒
+    // 所有以"transport 全集"为判据的守卫**看不见拨号器本身**（假绿，不是假红 —— 更危险的那种）。
+    src.push('\n');
+    src.push_str(include_str!("transport/relay.rs"));
     src
 }
 

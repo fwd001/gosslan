@@ -572,6 +572,11 @@ mod tests {
             include_str!("commands/group_file_dispatch.rs"),
             "\n",
             include_str!("commands/group_file_keys.rs"),
+            "\n",
+            // `commands/relay.rs` 之前漏在这里（4.25.0 接线时只登记了 `commands.rs` 的 `include!`
+            // 与领域图），后果不是报错而是**假绿**：任何以"全部命令面"为判据的守卫都看不见
+            // 中继那三个命令。补登记，让下面那条口令守卫能覆盖到它。
+            include_str!("commands/relay.rs"),
         )
     }
 
@@ -2616,6 +2621,75 @@ mod tests {
     /// 三件判据：① 三处都走同一个 helper（闸只有一份）；② 写钥匙的直调只许出现在
     /// "自己问过闸"的那几处；③ 三条"验签通过"的握手都必须打标 —— 漏一条就是
     /// "验过签却不标"，让收紧后的锚点永远补不上（安全改动做成可用性回退）。
+    /// **口令值不许进日志、也不许进诊断事件**（`INTEGRATION.md` 要求 7 的硬部分）。
+    ///
+    /// 这条链路上"服务器口令"是唯一准入手段，而调试时最容易手滑写出的就是
+    /// `format!("token={}", cfg.token)` 那一行 —— 日志会被导出、会被贴进求助帖。
+    /// 判据按**语句**切（`;` 分隔）而不是按行：日志调用普遍跨行，逐行扫会漏掉真正插值的
+    /// 那一行，那样这条守卫就成了摆设。
+    ///
+    /// 允许的唯一形态是"只报长度"（`token_len={}` + `chars().count()`），
+    /// `save_relay_config` 与 `check_relay_server` 就是这么写的。
+    #[test]
+    fn relay_token_never_reaches_logs_or_diagnostics() {
+        const VALUE_EXPRS: [&str; 2] = [".token", "token_norm"];
+        const COUNT_ONLY: [&str; 2] = ["token_len", "chars().count()"];
+        let sources = [
+            ("transport", crate::network::transport_src_for_guards()),
+            ("commands", all_commands_src().to_string()),
+        ];
+        // 先自证"这两份视图真的看得见中继"。`transport/relay.rs` 与 `commands/relay.rs` 都是
+        // `include!` 进同一模块的分册，而守卫读的是**文件文本** —— 漏登记不会报错，
+        // 只会让这条守卫扫描不到任何中继代码，于是**永远绿**（假绿比假红危险）。
+        assert!(
+            sources[0].1.contains("fn relay_negotiate("),
+            "transport 视图里没有 `transport/relay.rs` 分册 ⇒ 这条守卫扫不到拨号器，会假绿。\
+             新增分册时要在 `network::transport_src_for_guards()` 里同步登记一行。"
+        );
+        assert!(
+            sources[1].1.contains("fn check_relay_server("),
+            "commands 视图里没有 `commands/relay.rs` 分册 ⇒ 这条守卫扫不到中继命令，会假绿。\
+             新增分册时要在 `all_commands_src()` 里同步登记一行。"
+        );
+        let mut offenders: Vec<String> = Vec::new();
+        for (name, src) in sources {
+            for stmt in src.split(';') {
+                if !(stmt.contains("logger.") || stmt.contains("push_diag_event")) {
+                    continue;
+                }
+                if !VALUE_EXPRS.iter().any(|p| stmt.contains(p)) {
+                    continue;
+                }
+                if COUNT_ONLY.iter().any(|p| stmt.contains(p)) {
+                    continue;
+                }
+                offenders.push(format!(
+                    "[{name}] {}",
+                    stmt.trim().replace('\n', " ").trim()
+                ));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "把口令**值**写进了日志或诊断事件（要求 7：不写日志、不进上报、不出现在诊断截图里）。\
+             要留痕就只报长度：{}{}",
+            "token_len={}",
+            ", …chars().count()"
+        );
+    }
+
+    /// 好友身份锚点的**绑定来源**必须问同一道闸（#32 第一片）。
+    ///
+    /// 后果链：`friends.ed25519_pubkey` 是 Hello 的验签锚点（INV-P21）与安全码的输入，
+    /// 现在还是公网中继电路的准入判据（`list_bound_friend_identities` 只看它非空）；
+    /// 而写入是 fill-only —— 首写者永久胜出。此前 `upsert_peer` 要求 `keys_verified`，
+    /// 三条"成为好友"的路径读的却是**同一张 `peers` 表**且不过闸 ⇒ 一次伪造的 UDP announce
+    /// 就能永久钉死锚点（E2EE 被击穿之外，还多了一条"我们主动跨公网给它建电路"）。
+    ///
+    /// 三件判据：① 三处都走同一个 helper（闸只有一份）；② 写钥匙的直调只许出现在
+    /// "自己问过闸"的那几处；③ **验签通过的握手都要打标，且打标要排在 `upsert_peer` 之后**
+    /// —— 漏一条或排错序就是"验过签却不标"，让收紧后的锚点永远补不上
+    /// （4.25.7 那次修的就是这个：三条握手打标不够，第四条在 `handle_message` 的 Hello 分支）。
     #[test]
     fn friend_identity_anchor_has_one_binding_rule() {
         let src = crate::network::transport_src_for_guards();

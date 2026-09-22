@@ -2736,6 +2736,50 @@ CASES: list[Case] = [
         expect_fail_hint="real-after-raw",
         tags=["frontend", "new-guards", "ipc-events"],
     ),
+    Case(
+        name="公网中转的口令不许被写进日志或诊断事件（INTEGRATION.md 要求 7）",
+        why="这条链路上「服务器口令」是唯一准入手段，而调试时最容易手滑写出的就是\n"
+        "     `format!(\"token={}\", cfg.token)` 那一行 —— 日志会被导出、会被贴进求助帖。\n"
+        "     守卫 `relay_token_never_reaches_logs_or_diagnostics` 按**语句**（`;` 切）扫\n"
+        "     transport 与 commands 全集里的 logger/push_diag_event 调用，命中口令值表达式\n"
+        "     且不是「只报长度」就红。注入方式就是这个功能真上线时最可能出现的那一行改动：\n"
+        "     把探测日志里的 token_len={} 改成 token={}（顺手把 chars().count() 换成裸值，\n"
+        "     保持可编译 —— 不然红的是编译器而不是判据）。",
+        file=TAURI / "src" / "commands" / "relay.rs",
+        injections=[
+            (
+                '            "探测 kind={} server={} tried={} token_len={}",',
+                '            "探测 kind={} server={} tried={} token={}",',
+            ),
+            (
+                "            report.kind, report.server, report.tried, token_norm.chars().count()",
+                "            report.kind, report.server, report.tried, token_norm",
+            ),
+        ],
+        cmd=cargo("test", "--lib", "relay_token_never_reaches_logs_or_diagnostics"),
+        cwd=TAURI,
+        expect_fail_hint="把口令",
+        tags=["rust", "relay", "secret"],
+    ),
+    Case(
+        name="中继分册必须留在守卫的 transport 全集视图里（漏登记 = 假绿）",
+        why="`transport/relay.rs` 是 `transport.rs` 用 `include!` 并进同一模块的分册，而源码守卫\n"
+        "     是拿 `transport_src_for_guards()` 读**文件文本**的。4.25.0 接线时只把它登记进了\n"
+        "     `docs/domains.data.mjs`，漏了这份视图 ⇒ 所有以「transport 全集」为判据的守卫\n"
+        "     **看不见拨号器本身**。这种漏法不报错，只是永远绿（比假红危险）。\n"
+        "     注入方式：把那一行登记去掉，口令守卫必须红（它要扫 relay 分册里的日志调用）。",
+        file=TAURI / "src" / "network" / "mod.rs",
+        injections=[
+            (
+                '    src.push_str(include_str!("transport/relay.rs"));\n',
+                "",
+            ),
+        ],
+        cmd=cargo("test", "--lib", "relay_token_never_reaches_logs_or_diagnostics"),
+        cwd=TAURI,
+        expect_fail_hint="假绿",
+        tags=["rust", "relay", "new-guards"],
+    ),
 ]
 
 
