@@ -172,7 +172,7 @@ async fn probe_relay_addr(
         Ok(Ok(s)) => s,
     };
     // 首行格式与真拨一模一样（`GSRL1 <token> <64hex>\n`），否则测的就不是同一条判据。
-    let preamble = format!("GSRL1 {} {}\n", token, probe_channel_hex());
+    let preamble = crate::network::transport::relay_preamble(token, &probe_channel_hex());
     let mut w = stream;
     if let Err(e) = w.write_all(preamble.as_bytes()).await {
         // 连上了却写不出去 = 对方在我们写之前就把写半关了 —— 那正是"首行被拒"的形状。

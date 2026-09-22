@@ -332,6 +332,17 @@ pub struct RelayCtx<'a> {
     pub signing: &'a ed25519_dalek::SigningKey,
 }
 
+/// 中继首行的**唯一**构造点：`GSRL1 <token> <64hex>\n`。
+///
+/// 抽出来不是为了好看 —— 设置页的"保存前真拨"（`commands::relay::probe_relay_addr`）与真拨
+/// 必须发**同一串字节**，否则测出来的就不是同一条判据（服务器对首行是三合一拒绝：口令 /
+/// 版本 / 格式，一个字符的差异就会把"探测通过、真拨被拒"变成无法解释的现象）。
+/// 也正因为只有一个构造点，`pre_pairing_writes_stay_far_below_the_pending_cap`
+/// 量到的才是产品真正写出去的字节数。
+pub fn relay_preamble(token: &str, channel_hex: &str) -> String {
+    format!("GSRL1 {token} {channel_hex}\n")
+}
+
 /// 一次"经服务器"的尝试落在哪一档（`INTEGRATION.md` §1.1 的两种命运 + 纯本端可判的 TCP 失败）。
 ///
 /// 服务器的行为是确定的两种，而且**差两个数量级、跨公网也分辨得清**：首行非法 ⇒ 立刻
@@ -388,7 +399,7 @@ pub async fn relay_negotiate(
     use tokio::io::AsyncWriteExt;
 
     // ① 服务器准入。首行之后服务器不再解析任何字节，所以写完就往下走 —— 它没有回复协议。
-    let preamble = format!("GSRL1 {} {}\n", dial.token, dial.channel_hex);
+    let preamble = relay_preamble(&dial.token, &dial.channel_hex);
     w.write_all(preamble.as_bytes())
         .await
         .map_err(|e| (RelayProbeKind::Unreachable, format!("中继首行写入失败: {e}")))?;
@@ -537,6 +548,44 @@ mod relay_wiring_tests {
             RELAY_RENDEZVOUS_SECS <= 5,
             "每轮重读配置的周期 {}s 太长的话，改完设置要等很久才生效",
             RELAY_RENDEZVOUS_SECS
+        );
+    }
+
+    /// 配对前我们写出去的字节必须**远远小于**服务器的 `PENDING_MAX`（1 MiB）。
+    ///
+    /// 为什么要钉这个数字：`INTEGRATION.md` §1.1 的"第三种命运"是"首行放过、但配对前写的
+    /// 载荷攒到 1 MiB 就 `destroy()`"，而它对客户端的表现和"口令错"**完全一样**（都是首行之后
+    /// 被关）。我们的 `rejected` 文案说"口令或版本不匹配"，只有在"我们配对前根本没写多少东西"
+    /// 时才不是假指控 —— 而这件事今天靠巧合成立：首行（≤202 B）+ 一条协商线，约 0.5 KB。
+    ///
+    /// 所以这条测试守的不是当前大小，是**未来那hand**：谁往配对前塞心跳、塞首片、塞头像，
+    /// 它就先红，届时 `rejected` 必须按**累计字节数**分叉成两档（不是"写过没有"——
+    /// 口令错时我们那次协商线写入通常也会成功，"写过没有"会把真·口令错说成暂存超限，
+    /// 那是判据本身的另一个假指控）。
+    #[test]
+    fn pre_pairing_writes_stay_far_below_the_pending_cap() {
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let kp = relay_seal::generate_eph_keypair();
+        let dial = dial_for(&"ab".repeat(32), "gosslan-bbbbbbbbbbbbbbb", &"B".repeat(44));
+        let offer = relay_seal::build_wrap_offer(
+            "gosslan-aaaaaaaaaaaaaaaa",
+            &dial.peer_id,
+            &dial.channel_hex,
+            &sk,
+            &kp,
+        )
+        .to_line();
+        // 最长合法口令（128 字符）时的首行，与真拨完全同形
+        let preamble =
+            relay_preamble(&"x".repeat(crate::commands::RELAY_TOKEN_MAX_LEN), &dial.channel_hex);
+        let written = (preamble.len() + offer.len()) as u64;
+        // 留 100 倍余量：不是"今天没超"，是"以后顺手加一点也不会悄悄变成假指控"
+        assert!(
+            written * 100 < 1_048_576,
+            "配对前写了 {written} B（首行 {} + 协商线 {}），离服务器 PENDING_MAX=1MiB 已不足 100 倍 ⇒ \
+             必须把 rejected 按累计字节数分叉成两档，否则暂存超限会被说成口令错",
+            preamble.len(),
+            offer.len()
         );
     }
 
