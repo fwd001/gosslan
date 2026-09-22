@@ -18,10 +18,26 @@
 
 use crate::transport::relay_seal;
 
-/// 会合循环周期。与 `routed_endpoints` 的拨号周期同值、同一个理由：每轮重读配置 ⇒
-/// 运行时改配置免重启即生效；换天时两端各算一天靠"下一轮再来"自愈，不需要边界协商代码。
-const RELAY_RENDEZVOUS_SECS: u64 = 10;
-/// 协商线交换的超时。已配对的两端通常毫秒级；10s 覆盖跨境链路的一轮 RTT。
+/// 会合循环周期。
+///
+/// ⚠️ 这个值与下面那条协商窗口之间有一条**占空比**约束（判据写在 `relay_window_covers_round_period`
+/// 里），改任何一个都要一起看。以前是 10s（与 `routed_endpoints` 的拨号周期同值），但那是
+/// "每轮排空拨号"的写法下的值 —— 排空会把周期撑成 `tick + 协商窗口 ≈ 20s`，窗口只有 10s
+/// ⇒ 占空比 50%，两端相位互补时**每一轮都正好错开、永久配不上**（INTEGRATION.md 要求 3
+/// 那一格说的就是这个）。现在轮次不等拨号（见 `relay_rendezvous_task`），周期就是 tick 本身；
+/// 2s 的代价是每轮多两次本机 SQLite 读 + 一次链路锁快照，量级可以忽略。
+const RELAY_RENDEZVOUS_SECS: u64 = 2;
+/// 协商线交换的超时，同时是**一次登记在服务器上的停留时长**（我们把 socket 保持这么久）。
+/// 已配对的两端通常毫秒级完成；10s 覆盖跨境链路的一轮 RTT。
+///
+/// 两条硬约束，方向相反：
+/// - **`≥ 2 × 周期`** ⇒ 占空比 ≥ 2/3 ⇒ 两端任意相位都存在重叠区间（两个各占不到 1/3 周期的
+///   空隙不可能盖满一整周期）。取等号或更小就是确定性反相：两端周期相同、相位互补，
+///   每一轮都擦身而过 —— 与已被回退的 7e8be76「按轮交替」属于同一类缺陷，只是这次反相的是
+///   节奏而不是计数器。
+/// - **`< 服务器 WAIT_TIMEOUT_MS`（30s）** ⇒ 永远由我们先丢 socket。反过来的话，服务器
+///   到 30s 主动关闭时我们的读会拿到 EOF，而 `relay_negotiate` 把"首行之后被关"归成
+///   `Rejected`（口令/版本不匹配）—— 那是一张彻头彻尾的假指控单。
 const RELAY_NEGOTIATE_TIMEOUT_SECS: u64 = 10;
 /// 同时持有的中继电路上限。
 ///
@@ -153,12 +169,43 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // 上一轮生效的服务器地址：只有它变化（含变回"未配置"）才需要撤旧电路。
     let mut prev_server: Option<SocketAddr> = None;
+    // 拨号集合**跨轮持有**，而且轮次**不等**它。
+    //
+    // 旧写法是在轮尾 `while dials.join_next().await` 排空 —— 看上去干净，实际把每一轮的周期
+    // 撑成 `tick + 协商窗口`（≈20s），而窗口只有 10s ⇒ 占空比 50%。两端周期相同、相位互补时
+    // 每一轮都正好擦身而过，**永久配不上**（不是"偶尔慢一点"）。这与已被回退的 7e8be76
+    // 是同一类缺陷：反相的东西从计数器换成了节奏。
+    // ⚠️ 排空本身是必要的教训（`JoinSet` 被 drop 会 abort 未完成任务），所以这里把集合
+    // 提到循环**外面**持有，而不是删掉排空了事：外面这份永远活着，只有任务退出时才被摘掉。
+    let mut dials: tokio::task::JoinSet<String> = tokio::task::JoinSet::new();
+    // 已拨出、还没回来的对端。`relay_link_snapshot` 只看得见**已建成**的链路，少了这一份，
+    // 上一条还没成的时候下一轮就会把同一个对端再拨一次（`DialGuard` 会挡住真正的第二条
+    // socket，但`pick_relay_targets` 的上限判据会失守 ⇒ 电路上限被突破成 2×N）。
+    let mut inflight: HashSet<String> = HashSet::new();
 
     loop {
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
             _ = tick.tick() => {}
+        }
+
+        // 非阻塞回收（`try_join_next` 不等待）：完成的把名字从在途里摘掉。
+        while let Some(done) = dials.try_join_next() {
+            match done {
+                Ok(peer) => {
+                    inflight.remove(&peer);
+                }
+                // 任务 panic 时拿不到 peer ⇒ 那一格会一直占着配额。兜底在下面那条不变式里。
+                Err(e) => state
+                    .logger
+                    .warn("relay", format!("拨号任务异常退出，不回收其在途名额: {e}")),
+            }
+        }
+        // 不变式：没有在跑的任务 ⇒ 不可能有在途拨号。它同时兜住上面那个 panic 分支，
+        // 也保证这里不会误摘掉"还在跑"的条目（有任务在跑时一个都不清）。
+        if dials.is_empty() {
+            inflight.clear();
         }
 
         let cfg = {
@@ -198,11 +245,14 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
             }
         };
         let (connected, via_relay) = relay_link_snapshot(&state, cfg.addr).await;
+        // 在途的与"已有电路"同等对待：`pick_relay_targets` 那条判据的本意就是"不重复开 +
+        // 计入上限"，而在途的那条既不该重开、也确实占着一个名额。
+        let held: HashSet<String> = via_relay.union(&inflight).cloned().collect();
         let targets = pick_relay_targets(
             &identities,
             &state.device_id,
             &connected,
-            &via_relay,
+            &held,
             MAX_RELAY_CIRCUITS,
         );
         if targets.is_empty() {
@@ -214,7 +264,7 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
         let my_signing = state.identity.ed25519_signing.clone();
 
         // 并发拨号：一条卡住不能把同一轮里其他好友一起拖住（同 routed_task 的理由）。
-        let mut dials = tokio::task::JoinSet::new();
+        // `dials` 是外面那份**跨轮持有**的集合，这里只往里加，轮尾不排空（理由见其声明处）。
         for (peer_id, peer_pk) in targets {
             let channel =
                 relay_seal::channel_hash(&my_pk, &peer_pk, &my_id, &peer_id, day);
@@ -228,6 +278,7 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
             let state = state.clone();
             let shutdown = shutdown.clone();
             let (my_id, my_signing) = (my_id.clone(), my_signing.clone());
+            inflight.insert(dial.peer_id.clone());
             dials.spawn(async move {
                 let peer = dial.peer_id.clone();
                 let outcome = connect_to_peer(
@@ -248,7 +299,7 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
                         "relay",
                         format!("电路已建立 peer={} server={}", peer, dial.server),
                     ),
-                    // 每 10s 一轮的常态：已有链路 / 在途 / 并发满 / 停机，静默。
+                    // 每轮（`RELAY_RENDEZVOUS_SECS`）的常态：已有链路 / 在途 / 并发满 / 停机，静默。
                     DialOutcome::AlreadyConnected
                     | DialOutcome::AlreadyDialing
                     | DialOutcome::DialBusy
@@ -261,10 +312,14 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
                             .warn("relay", format!("建链未成功 peer={}：{}", peer, e));
                     }
                 }
+                // 把 peer 交回去：外面那份在途集合要摘掉这一格，否则它会永久占着配额。
+                peer
             });
         }
-        // 必须排空：JoinSet 被 drop 会立刻 abort 掉未完成任务（routed_task 的同一条教训）。
-        while dials.join_next().await.is_some() {}
+        // ⚠️ 这里**刻意不排空** `dials`。排空（旧写法）会让一轮的耗时等于协商窗口，于是
+        // 周期 = `tick + 窗口` > 窗口 ⇒ 占空比掉到一半 ⇒ 两端反相时永久错开。
+        // 集合提到函数作用域持有就是为了"不等它"；`shutdown` 分支 break 之后它随作用域
+        // 被 drop（未完成的拨号被 abort），那正是停机时想要的行为。
     }
 }
 
@@ -455,8 +510,37 @@ mod relay_wiring_tests {
     use ed25519_dalek::SigningKey;
     use tokio::io::{copy_bidirectional, duplex, split, AsyncReadExt, DuplexStream};
 
-    fn id_set(ids: &[&str]) -> HashSet<String> {
-        ids.iter().map(|s| s.to_string()).collect()
+    /// **会合占空比的两条不等式**（INTEGRATION.md 要求 3 那一格；为什么必须钉成用例见
+    /// `RELAY_RENDEZVOUS_SECS` / `RELAY_NEGOTIATE_TIMEOUT_SECS` 的注释）。
+    ///
+    /// 这不是"参数偏好"，是**会不会连上**的判据：窗口 < 周期时，两端周期相同、相位互补的
+    /// 确定性反相会每一轮都擦身而过，永久配不上。而窗口 ≥ 服务器 `WAIT_TIMEOUT_MS` 时，
+    /// 服务器那次主动关闭会被我们读成 EOF ⇒ 被归类成"口令/版本不匹配"的假指控。
+    #[test]
+    fn relay_window_covers_round_period() {
+        // ① 占空比 ≥ 2/3 ⇒ 两端任意相位都有重叠区间（两个各占不到 1/3 周期的空隙盖不满一周）
+        assert!(
+            RELAY_NEGOTIATE_TIMEOUT_SECS >= 2 * RELAY_RENDEZVOUS_SECS,
+            "登记窗口 {}s 必须 ≥ 2× 轮周期 {}s，否则两端反相时每一轮都错开",
+            RELAY_NEGOTIATE_TIMEOUT_SECS,
+            RELAY_RENDEZVOUS_SECS
+        );
+        // ② 必须短于服务器的等待窗口（30s），且要留出公网 RTT 的余量
+        assert!(
+            RELAY_NEGOTIATE_TIMEOUT_SECS + 5 < 30,
+            "窗口 {}s 必须明显小于服务器 WAIT_TIMEOUT_MS(30s)，\
+             否则服务器那次主动关闭会被判成 Rejected（口令错的假指控）",
+            RELAY_NEGOTIATE_TIMEOUT_SECS
+        );
+        // ③ 周期也不能大到一个"重拨"变成用户可感知的等待（配置改了要在一轮内生效）
+        assert!(
+            RELAY_RENDEZVOUS_SECS <= 5,
+            "每轮重读配置的周期 {}s 太长的话，改完设置要等很久才生效",
+            RELAY_RENDEZVOUS_SECS
+        );
+    }
+
+    fn id_set(ids: &[&str]) -> HashSet<String> {        ids.iter().map(|s| s.to_string()).collect()
     }
 
     fn ident() -> (SigningKey, String) {

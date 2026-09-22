@@ -397,6 +397,7 @@ network::transport::relay_wiring_tests::epoch_day_is_day_granular
 network::transport::relay_wiring_tests::negotiate_times_out_when_peer_never_speaks
 network::transport::relay_wiring_tests::negotiation_fails_closed_when_identity_does_not_match
 network::transport::relay_wiring_tests::picks_only_friends_without_any_link
+network::transport::relay_wiring_tests::relay_window_covers_round_period
 network::transport::relay_wiring_tests::two_peers_negotiate_and_exchange_frames_through_the_pipe
 network::transport::tests::accept_binds_encryption_key_but_defers_unverified_anchor
 network::transport::tests::ack_local_sender_marks_delivered_and_clears_outbox
