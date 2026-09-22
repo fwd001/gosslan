@@ -319,6 +319,28 @@ warn
 **用户可行动路径**（提示里必须写出来，否则等于把用户扔在原地）：
 `删掉该好友 → 重新添加`（聊天记录保留、**不需要重启**）。
 
+### 反过来的一面：这把锚点**是被谁写进去的**（2026-09-22 实装）
+
+上表管"绑好之后不一致怎么办"，这条管"绑下去的那一刻可不可信"。`update_friend_pubkeys`
+只填空、首写者永久胜出 ⇒ **写入侧的信任等级决定锚点本身**，而这此前是不对称的：
+`upsert_peer` 要求 `peers.keys_verified`（只有验签通过的 Hello 能打上），而三条"成为好友"
+的路径（直连 `FriendAccept` / 跨跳 Gossip `FriendAccept` / 本机点同意）读**同一张 `peers` 表**
+却不过这道闸 ⇒ 一次伪造的 UDP announce 抢先把 `friends.ed25519_pubkey` 填上，就是永久的。
+
+- 现在的规则（判据只有一份：`peer_keys_trusted` + `acceptable_friend_keys`）：
+  **`x25519`（加密钥匙）照旧早绑** —— 晚了就是"首次加密发送失败"，而 Gossip 那处补齐以
+  "这一封能解密"为持有证明；**`ed25519`（身份锚点）只认被证明过的来源**。
+- 为什么要收紧写入侧：锚点此后有三个消费者 —— Hello 验签（INV-P21）、安全码、
+  **公网中继的准入判据**（`list_bound_friend_identities` 只看它非空，ADR-0020 称那把钥匙
+  为"整个设计的支点"）。绑错的后果从"消息被加密给攻击者"扩到"我们主动跨公网给对方建电路"。
+- 留 NULL 不是死路：任何一次验签通过的 Hello（**入站、出站拨号、BLE 三条都算**，
+  2026-09-22 起出站与 BLE 也补上了打标）都会经 `upsert_peer` 把它绑上。
+  收紧来源必须同时补齐这三条打标，否则"只靠蓝牙/拨号连上的好友"会永久没有锚点 ——
+  那是把安全改动做成可用性回退。
+- 守卫：`friend_identity_anchor_has_one_binding_rule`（三处 accept 都走同一 helper、
+  `upsert_peer` 那道闸不许拆、Gossip 那处只准绑 x25519）+
+  `accept_binds_encryption_key_but_defers_unverified_anchor`（两列的差别与 NULL 自愈）。
+
 ### 为什么原来"必须重启"（真机 2026-09-13，已修）
 
 对方重装应用 → 换了密钥 → 用户按提示删好友 → `friends` 表那一行确实没了，

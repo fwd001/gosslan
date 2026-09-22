@@ -620,6 +620,73 @@ fn bound_ed25519_from_peer(peer: Option<&Peer>) -> Option<String> {
 /// 二者，于是未验证的公钥会被当成身份绑定用（详见 `verify_hello` 与 `upsert_peer` 的注释）。
 /// 这里用一对公钥的**实际值**再核对一次：只有与 Hello 自报值一致时才升级，
 /// 避免在验签与本次写入之间被另一条 announce 插空改动。
+/// `peers` 里这对钥匙是不是**被证明过**的 —— 只有验签通过的 Hello 能打上 `keys_verified`
+/// （见 `mark_peer_keys_verified`），未签名的 UDP announce 带来的不算。
+///
+/// 这是"能不能拿它当身份锚点"的**唯一**判据。此前只有 `upsert_peer` 问它，而三条
+/// 成为好友的路径（直连 FriendAccept / 跨跳 Gossip FriendAccept / 本机点同意）读的是
+/// **同一张 `peers` 表**却不过这道闸 —— 同一个概念两处规矩，就是本仓库反复付钱的那类缺陷。
+/// 收紧的理由：`friends.ed25519_pubkey` 此后既是 Hello 的验签锚点（INV-P21），又是
+/// **公网中继电路的准入判据**（`db/friends.rs` 的 `list_bound_friend_identities` 只看它
+/// 非空），一次伪造广播把它抢先填上，后果从"消息被加密给攻击者"扩到"我们主动跨公网
+/// 给攻击者建电路、并把协商验签锚在它的钥匙上"（ADR-0020 自己称那把钥匙为"整个设计的支点"）。
+///
+/// 留 NULL 不是死路：任何一次验签通过的 Hello（含出站拨号与 BLE）都会经 `upsert_peer`
+/// 把它补上 —— 而 `update_friend_pubkeys` 只填空、不覆盖，所以"晚一点绑"安全，"绑错"永久。
+fn peer_keys_trusted(state: &AppState, device_id: &str) -> bool {
+    state
+        .peers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(device_id)
+        .map(|p| p.keys_verified)
+        .unwrap_or(false)
+}
+
+/// 这一刻允许绑哪些钥匙（纯函数 —— 把"两列两套规矩"这条判据单独钉住，不必造 AppState）。
+///
+/// `verified` 来自 `peer_keys_trusted`：**加密钥匙照绑，身份锚点只认被证明过的来源**。
+/// 未 verified 时把 `ed25519` 收成 `None` 不是"漏了一步"，而是刻意留 NULL 等一次验签通过的
+/// Hello 来补（`upsert_peer` 那条路本来就做这件事）—— 因为 `update_friend_pubkeys` 只填空、
+/// 首写者永久胜出，"晚一点绑"安全，"绑错"永久。
+fn acceptable_friend_keys(
+    verified: bool,
+    x25519: Option<String>,
+    ed25519: Option<String>,
+) -> (Option<String>, Option<String>) {
+    (x25519, if verified { ed25519 } else { None })
+}
+
+/// 成为好友那一刻把公钥补进 `friends`：**加密钥匙照旧早绑，身份锚点只认被证明过的来源**。
+///
+/// 为什么两列区别对待（这是 #32 这一片的全部要点）：
+///   · `x25519` 是功能性钥匙 —— 不绑就是"首次加密发送失败"（三条调用点原本各写一遍的注释
+///     说的都是这件事），而 Gossip 那条补齐路径以"这一封能解密"作持有证明，收紧它只会把
+///     可靠性修回去；
+///   · `ed25519` 是**身份锚点** —— Hello 验签（INV-P21）、安全码、以及公网中继的准入判据
+///     （`list_bound_friend_identities` 只看它非空）全都读它，而 `update_friend_pubkeys`
+///     只填空、首写者永久胜出 ⇒ 一次伪造广播就能把它永久钉死。
+///
+/// 未 verified 时留 NULL 不是死路：任何一次验签通过的 Hello 都会经 `upsert_peer` 补上。
+/// 调用方必须**已经持有** `state.db` 的锁（本函数不再取锁 —— 同锁重入会当场死锁）。
+pub(crate) fn bind_friend_keys_on_accept(
+    state: &AppState,
+    conn: &rusqlite::Connection,
+    friend_id: &str,
+) {
+    let (x, e) = {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        peers
+            .get(friend_id)
+            .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
+            .unwrap_or((None, None))
+    };
+    let (x, e) = acceptable_friend_keys(peer_keys_trusted(state, friend_id), x, e);
+    if x.is_some() || e.is_some() {
+        db::update_friend_pubkeys(conn, friend_id, x.as_deref(), e.as_deref()).ok();
+    }
+}
+
 fn mark_peer_keys_verified(state: &AppState, device_id: &str, x25519: &str, ed25519: &str) {
     let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
     // ⚠️ **只给已存在的记录打标，绝不凭空造记录**。
@@ -1901,7 +1968,7 @@ pub(crate) fn verify_hello_for_ble(
     ed25519_pubkey: &str,
     sig_b64: &str,
 ) -> Result<(), String> {
-    verify_hello(
+    let r = verify_hello(
         state,
         device_id,
         tcp_port,
@@ -1909,7 +1976,12 @@ pub(crate) fn verify_hello_for_ble(
         x25519_pubkey,
         ed25519_pubkey,
         sig_b64,
-    )
+    );
+    // 蓝牙这条也一样：验签通过才算"被证明过"（理由见出站握手那处的注释）。
+    if r.is_ok() {
+        mark_peer_keys_verified(state, device_id, x25519_pubkey, ed25519_pubkey);
+    }
+    r
 }
 
 /// 入站去重判据（BLE 侧复用；TCP 侧在 `handle_incoming` 内联调用同一个函数）。
@@ -2309,6 +2381,12 @@ async fn connect_to_peer(
         );
         return DialOutcome::Failed(format!("握手失败: {reason}"));
     }
+    // 验签通过 ⇒ 这对钥匙已被证明由该 device_id 的持有者使用 —— 与入站首帧同一个升级点。
+    // 此前只有入站那条打标：出站与 BLE 两条**同样验过签**的路径不打标，`peer_keys_trusted`
+    // 就永远为假 ⇒ 只靠拨号或蓝牙连上的好友，`friends.ed25519` 再也补不上（`upsert_peer`
+    // 与 accept 两侧都要求 verified）⇒ 安全码算不出、公网中继永不准入。收紧绑定来源
+    // 必须同时把这三条补齐，否则就是把安全改动做成可用性回退。
+    mark_peer_keys_verified(state, device_id, x25519_pubkey, ed25519_pubkey);
     let peer_id: String = device_id.clone();
     let learned_hello: Option<Message> = Some(first);
 
@@ -2924,17 +3002,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::add_friend(&dbc, &from, &name, None).ok();
-                // 同步公钥（否则首次加密发送会失败）
-                let (x, e) = {
-                    let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-                    peers
-                        .get(&from)
-                        .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
-                        .unwrap_or((None, None))
-                };
-                if x.is_some() || e.is_some() {
-                    db::update_friend_pubkeys(&dbc, &from, x.as_deref(), e.as_deref()).ok();
-                }
+                bind_friend_keys_on_accept(state, &dbc, &from);
             }
             // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）
             forget_pending_request(state, &from);
@@ -5688,13 +5756,7 @@ pub async fn upsert_peer(
     // 若不加这道闸，局域网内一个伪造 announce 就能把攻击者的公钥写进持久化的 friends 表，
     // 覆盖好友的真实公钥：此后我发给该好友的消息都用攻击者公钥加密，而消息是广播给
     // 所有已连接节点的 ⇒ 攻击者用自己的私钥即可解开（E2EE 被击穿，且重启不恢复）。
-    let verified = {
-        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers
-            .get(device_id)
-            .map(|p| p.keys_verified)
-            .unwrap_or(false)
-    };
+    let verified = peer_keys_trusted(state, device_id);
     if key_changed && verified {
         let (x, e) = {
             let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
@@ -5968,21 +6030,12 @@ pub(crate) fn maybe_update_friend(
     nickname: &str,
     avatar: Option<String>,
 ) {
-    let (x, e) = {
-        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers
-            .get(device_id)
-            .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
-            .unwrap_or((None, None))
-    };
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     if db::get_friend(&dbc, device_id).is_some() {
         db::add_friend(&dbc, device_id, nickname, avatar.as_deref()).ok();
-        // 好友行常在公钥落库之后才创建（好友申请通过才 add_friend），
-        // 此处每次同步公钥，保证 E2EE 加密始终能取到对方公钥。
-        if x.is_some() || e.is_some() {
-            db::update_friend_pubkeys(&dbc, device_id, x.as_deref(), e.as_deref()).ok();
-        }
+        // 好友行常在公钥落库之后才创建（好友申请通过才 add_friend），此处每次补一次绑定：
+        // x25519 保证 E2EE 取得到对方公钥，ed25519 只认被证明过的来源（见 helper 的注释）。
+        bind_friend_keys_on_accept(state, &dbc, device_id);
     }
 }
 
@@ -8750,6 +8803,51 @@ mod tests {
         // 重复补写幂等（maybe_update_friend 每次都可能调用）
         db::update_friend_pubkeys(&conn, "b", Some("xk-b"), Some("ek-b")).ok();
         assert_eq!(db::get_friend_x25519(&conn, "b").as_deref(), Some("xk-b"));
+    }
+
+    /// 成为好友那一刻：**加密钥匙照绑，身份锚点只认被证明过的来源**（#32 这一片的核心判据）。
+    ///
+    /// 为什么值得单独钉：`friends.ed25519_pubkey` 此后既是 Hello 的验签锚点（INV-P21）、
+    /// 安全码的输入，又是**公网中继电路的准入判据**（`list_bound_friend_identities` 只看它
+    /// 非空），而 `update_friend_pubkeys` 只填空、首写者永久胜出 —— 一次伪造的 UDP announce
+    /// 抢先写进来就是永久的。反过来留 NULL 不是死路，见下面第三段。
+    #[test]
+    fn accept_binds_encryption_key_but_defers_unverified_anchor() {
+        let (x, e) = acceptable_friend_keys(false, Some("xk-b".into()), Some("ek-evil".into()));
+        assert_eq!(
+            x.as_deref(),
+            Some("xk-b"),
+            "加密钥匙必须照旧早绑，否则首次加密发送失败（那三条路径原本各写一遍的理由）"
+        );
+        assert_eq!(
+            e, None,
+            "未 verified 的来源不得成为身份锚点：写进去就再也改不掉"
+        );
+
+        let (x2, e2) = acceptable_friend_keys(true, Some("xk-b".into()), Some("ek-b".into()));
+        assert_eq!(
+            (x2, e2),
+            (Some("xk-b".into()), Some("ek-b".into())),
+            "验签通过的来源两列都照绑"
+        );
+
+        // 留 NULL 的自愈路径：这一轮只绑到加密钥匙，下一轮一次 verified 的写入补上锚点，
+        // 且不许把先绑上的 x25519 换掉（两列各自 COALESCE，互不牵连）。
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        db::add_friend(&conn, "b", "Bob", None).unwrap();
+        db::update_friend_pubkeys(&conn, "b", Some("xk-b"), None).ok();
+        assert!(
+            db::get_friend_ed25519(&conn, "b").is_none(),
+            "未 verified 的这一轮就该没有锚点"
+        );
+        db::update_friend_pubkeys(&conn, "b", Some("xk-other"), Some("ek-b")).ok();
+        assert_eq!(db::get_friend_ed25519(&conn, "b").as_deref(), Some("ek-b"));
+        assert_eq!(
+            db::get_friend_x25519(&conn, "b").as_deref(),
+            Some("xk-b"),
+            "先绑上的加密钥匙不许被后来的值改掉（fill-only 是最后一道闸）"
+        );
     }
 
     // ---------------- P0：TCP 监听端口生命周期（生产 1.0 重启掉线） ----------------

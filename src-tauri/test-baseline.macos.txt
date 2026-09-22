@@ -416,6 +416,7 @@ network::transport::tests::flush_success_clears_pending
 network::transport::tests::frame_roundtrip
 network::transport::tests::frame_roundtrip_large_payload
 network::transport::tests::friend_accept_backfills_pubkeys_from_peers
+network::transport::tests::accept_binds_encryption_key_but_defers_unverified_anchor
 network::transport::tests::friend_accept_flush_is_bounded_and_spaced
 network::transport::tests::friend_chat_message_accepted
 network::transport::tests::friend_message_blocked_has_original_sender
@@ -526,6 +527,7 @@ tests::aux_windows_open_their_own_document
 tests::ble_connect_cheap_path_requires_an_existing_connection
 tests::ble_dial_is_deduplicated_and_disconnects_on_failure
 tests::ble_file_transfer_respects_link_limits
+tests::friend_identity_anchor_has_one_binding_rule
 tests::ble_handshake_skips_leading_frames_without_processing_them
 tests::ble_link_has_a_designated_dialer
 tests::ble_start_does_not_block_on_the_peripheral_state_wait

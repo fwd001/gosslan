@@ -10,6 +10,50 @@
 
 ## [Unreleased]
 
+## [4.25.3] - 2026-09-22
+
+### Security (#32 第一片：好友身份锚点的**绑定来源**从此只认被证明过的握手，公网中继的准入因此变严)
+
+不对称在哪：`upsert_peer` 把钥匙写进 `friends` 时要求 `peers.keys_verified`（只有验签通过的
+Hello 能打这个标，注释里写清了它防的是"未签名 UDP announce 伪造 device_id + 公钥 ⇒ E2EE 被
+击穿且重启不恢复"）；而**三条"成为好友"的路径读的是同一张 `peers` 表，却不过这道闸** ——
+直连 `FriendAccept`、跨跳 Gossip `FriendAccept`、本机点"同意"，各写一遍、各自 `update_friend_pubkeys`。
+因为那个写入是 **fill-only（首写者永久胜出）**，"谁先来"就永久决定了锚点。
+
+为什么现在必须收：`friends.ed25519_pubkey` 的消费者从两个变成三个 —— Hello 验签锚点（INV-P21）、
+安全码输入，加上刚接线的**公网中继准入判据**（`list_bound_friend_identities` 只看它非空，
+ADR-0020 自己称这把钥匙为"整个设计的支点"）。绑错的后果于是从"消息被加密给攻击者"扩到
+"**我们主动跨公网给攻击者建电路、并把协商验签锚在它的钥匙上**"。它没有制造新洞，但把
+fill-race 的代价抬高了一档。
+
+- 规则改成两列区别对待，且**判据只有一份**：新增 `peer_keys_trusted`（把 `upsert_peer` 里
+  内联的闸提成函数）+ `acceptable_friend_keys(verified, x, e)`；三条 accept 路径合并成同一个
+  `bind_friend_keys_on_accept(state, conn, id)`。`x25519` 照旧早绑（不绑就是"首次加密发送失败"，
+  那三处原注释说的都是这件事；Gossip 的补齐更以"这一封能解密"作持有证明），
+  **`ed25519` 只认 verified 来源**，否则留 NULL。
+- ⚠️ 同一片必须一起做的第二半：`mark_peer_keys_verified` 此前全仓**只有一处调用**
+  （入站首帧）。出站拨号与 BLE 两条同样验过签的路径不打标 ⇒ 收紧后"只靠蓝牙/拨号连上的好友"
+  锚点永远补不上（安全码算不出、中继永不准入）—— 那会把安全改动做成可用性回退。现在三条握手
+  都打标，NULL 于是是**暂时的**：任何一次验签通过的 Hello 都会经 `upsert_peer` 自愈。
+- 守卫：`friend_identity_anchor_has_one_binding_rule`（三处 accept 必须都走同一个 helper、
+  `upsert_peer` 那道闸不许拆、Gossip 那处**只准**绑 x25519 —— 全部用函数体 + `code_flat` 判，
+  不用全文计数）；单测 `accept_binds_encryption_key_but_defers_unverified_anchor`（两列的差别、
+  NULL 的自愈路径、以及"先绑上的加密钥匙不许被后来者改掉"）。两条已登记进 **macos + windows**
+  两份用例基线。
+- 文档同步：`docs/protocol-invariants.md` INV-P11 新增「锚点是被谁写进去的」一节（上表管绑定
+  之后，这节管绑定那一刻）；`ADR-0020` 那条"支点"补上成立前提与收紧后的行为。
+- 计数踩坑记两条（都是"守卫自己骗自己"那一类）：① `mark_peer_keys_verified(` 含
+  `peer_keys_verified(` 这个子串，全文计数把它算成 7 次 ⇒ 把闸改名 `peer_keys_trusted`，
+  而不是把断言写绕；② 单测也会调 `acceptable_friend_keys`，全文计数会误判"逻辑重复" ⇒
+  改成"函数体 + 定义处"计数。
+- ⚠️ 覆盖边界与真机：这是**行为变化**，不是纯重构。本机侧 630 条用例 + 两条新用例全过
+  （唯一红的 `ble_file_transfer_respects_link_limits` 是隔壁工作区那行未提交的群 Offer 造成的，
+  与本片无关）。需要真机确认的是：**新加好友后安全码是否照常出得来**、群密钥分发/文件首发的
+  "取不到公钥"有没有变多（x25519 路径没动，理论上不该变），以及跨网新配对时中继是否会在
+  锚点补齐后才放行（预期如此）。
+
+Version-Bump: patch
+
 ## [4.25.2] - 2026-09-22
 
 ### Fixed (IPC 契约扫描器会把自己源码里的注释当成"后端在发事件" —— #33③ 第一片)

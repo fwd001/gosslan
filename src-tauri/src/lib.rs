@@ -2604,6 +2604,83 @@ mod tests {
 
     /// **解除好友关系必须同时解除内存里的身份绑定**（用户 2026-09-13 真机：不然"必须重启"）。
     ///
+    /// 好友身份锚点的**绑定来源**必须问同一道闸（#32 第一片）。
+    ///
+    /// 后果链：`friends.ed25519_pubkey` 是 Hello 的验签锚点（INV-P21）与安全码的输入，
+    /// 现在还是公网中继电路的准入判据（`list_bound_friend_identities` 只看它非空）；
+    /// 而写入是 fill-only —— 首写者永久胜出。此前 `upsert_peer` 要求 `keys_verified`，
+    /// 三条"成为好友"的路径读的却是**同一张 `peers` 表**且不过闸 ⇒ 一次伪造的 UDP announce
+    /// 就能永久钉死锚点（E2EE 被击穿之外，还多了一条"我们主动跨公网给它建电路"）。
+    ///
+    /// 三件判据：① 三处都走同一个 helper（闸只有一份）；② 写钥匙的直调只许出现在
+    /// "自己问过闸"的那几处；③ 三条"验签通过"的握手都必须打标 —— 漏一条就是
+    /// "验过签却不标"，让收紧后的锚点永远补不上（安全改动做成可用性回退）。
+    #[test]
+    fn friend_identity_anchor_has_one_binding_rule() {
+        let src = crate::network::transport_src_for_guards();
+        assert_eq!(
+            src.matches("bind_friend_keys_on_accept(").count(),
+            4,
+            "helper 定义 1 + 三条成为好友的路径各 1 = 4；少一处就是有人又写了一遍绑定逻辑"
+        );
+        assert_eq!(
+            src.matches("peer_keys_trusted(").count(),
+            3,
+            "这道闸只许一份定义，被 `upsert_peer` 与 accept helper 各复用一次\
+             （名字刻意不含 `mark_peer_keys_verified` 的子串，否则计数会被骗）"
+        );
+        // "哪一列能绑"这条判据只许一份定义、且只被 accept helper 用一次。
+        // （不能用全文出现次数：新加的单测也会调用它，那会把计数骗成"重复定义"。）
+        assert_eq!(
+            src.matches("fn acceptable_friend_keys(").count(),
+            1,
+            "两列两套规矩的判据只许一处定义"
+        );
+        let helper = rust_fn_body(&src, "fn bind_friend_keys_on_accept(");
+        assert_eq!(
+            code_flat(&helper)
+                .matches("acceptable_friend_keys(")
+                .count(),
+            1,
+            "accept helper 必须把判据委托给那一份定义，而不是自己再算一遍"
+        );
+        assert!(
+            code_flat(&helper).contains("peer_keys_trusted(state,friend_id)"),
+            "accept helper 必须现问这道闸（不缓存 verified 结果，也不绕过）"
+        );
+        assert_eq!(
+            src.matches("mark_peer_keys_verified(").count(),
+            4,
+            "1 处定义 + 入站首帧 / 出站握手 / BLE 包装三处打标"
+        );
+        // 写 friends 钥匙的**生产**调用点全集：accept helper、`upsert_peer`（自带闸）、
+        // Gossip 那处以"这一封能解密"为持有证明的补齐（只准绑 x25519）。
+        // 刻意不用全文计数 —— 单测也会调它，那会把"测试多了"误判成"逻辑重复了"。
+        assert!(
+            code_flat(&helper).contains("db::update_friend_pubkeys(conn,friend_id,"),
+            "accept helper 必须经唯一的写入函数落库，不许自己拼 SQL"
+        );
+        let upsert = rust_fn_body(&src, "fn upsert_peer(");
+        assert_eq!(
+            code_flat(&upsert)
+                .matches("db::update_friend_pubkeys(")
+                .count(),
+            1,
+            "`upsert_peer` 只许一处写钥匙"
+        );
+        assert!(
+            code_flat(&upsert).contains("peer_keys_trusted(state,device_id)"),
+            "`upsert_peer` 那道闸不许拆 —— 它和 accept helper 问的是同一个判据"
+        );
+        let gossip = code_flat(include_str!("network/transport/gossip.rs"));
+        assert!(
+            gossip.contains(
+                "db::update_friend_pubkeys(&dbc,&env.sender_id,Some(&env.sender_pubkey),None)"
+            ),
+            "Gossip 那处补齐只准绑 x25519；哪天改成也写 ed25519，就等于给未验签的来源开锚点"
+        );
+    }
+
     /// 真机链路：对方重装后公钥变了 → 我们的身份表只补空、不覆盖（INV-P11）→
     /// 用户按提示删好友重新加，`friends` 表那行没了，但 `verify_hello` 还会回落到
     /// **内存 `peers` 表**里广播学来的旧公钥 ⇒ Hello 一直被硬拒 ⇒ 消息与好友申请都进不来，

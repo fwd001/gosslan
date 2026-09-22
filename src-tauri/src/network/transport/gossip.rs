@@ -479,17 +479,11 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     db::add_friend(&dbc, &from, &name, None).ok();
-                    // 同步公钥（否则首次加密发送会失败）—— 与 Message::FriendAccept 路径一致。
-                    let (x, e) = {
-                        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-                        peers
-                            .get(&from)
-                            .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
-                            .unwrap_or((None, None))
-                    };
-                    if x.is_some() || e.is_some() {
-                        db::update_friend_pubkeys(&dbc, &from, x.as_deref(), e.as_deref()).ok();
-                    }
+                    // 同步公钥 —— 与 `Message::FriendAccept` 路径同一条规则（同一个 helper）：
+                    // x25519 照旧早绑，ed25519 只认 verified 来源。这条路径尤其要紧：跨跳
+                    // 到达的 FriendAccept 允许 TOFU（`gossip_trust_for_unpeer_sender`），
+                    // 此时 `peers` 里那对钥匙可能就是未签名广播带来的。
+                    bind_friend_keys_on_accept(state, &dbc, &from);
                 }
                 forget_pending_request(state, &from);
                 // emit 每次都发：前端 store 只是据此重拉好友列表（幂等），
