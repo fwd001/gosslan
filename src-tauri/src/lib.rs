@@ -1328,9 +1328,19 @@ mod tests {
         );
 
         let transport = crate::network::transport_src_for_guards();
+        // 重复 offer 必须幂等回 accept（旧行为 reject ⇒ 对端停止重试、文件永远收不到）。
+        // ⚠️ 但幂等**不等于**无条件 Accept：判据只许有一份（`file::decide_offer`），
+        // 而位置对得上时还必须把段号归零 —— 少这一步，续传段（按 seq 0 重编）会被
+        // 当成"迟到的重复片"整段丢掉。2026-09-22 那次 160MB 永不收敛就是这么来的。
         assert!(
-            transport.contains("file::has_receiver(state, &transfer_id)"),
-            "重复的 FileOffer 必须幂等回 accept（旧行为 reject ⇒ 对端停止重试、文件永远收不到）"
+            transport.contains("file::decide_offer(")
+                && transport.contains("file::OfferDecision::AcceptResumeSegment")
+                && transport.contains("file::restart_segment(state, &transfer_id)"),
+            "重复 FileOffer 的答复必须走那一份判据，且续传段的「段号归零」不许在处理器里另写一遍"
+        );
+        assert!(
+            !transport.contains("retained != from_bytes"),
+            "位置比对不许在处理器里再写一遍（两处规矩必然漂移，判据只许 `decide_offer` 一份）"
         );
 
         // 群路径同理：Offer / Chunk / Done 三类帧必须全在同一条链路上。
@@ -2111,9 +2121,17 @@ mod tests {
             "服务端必须支持从偏移续发（from_bytes）"
         );
         // 审计 §7 风险 1：接收端必须把"我已有多少字节"回给发送端，发送端据此续发（不重头覆盖）。
+        // 判据改成"经过那一份 `decide_offer`" —— 变量名允许变，**把真实位置回出去**这件事不许变。
         assert!(
-            transport.contains("retained_part_len") && transport.contains("received: retained"),
-            "接收端必须按真实前缀长度回 FileReject.received，发送端据此续发"
+            transport.contains("file::decide_offer(")
+                && transport.contains("file::OfferDecision::ResumeFrom(held)")
+                && transport.contains("received: held"),
+            "接收端必须按真实已收字节回 FileReject.received，发送端据此续发"
+        );
+        assert!(
+            transport.contains("file::receiver_progress(state, &transfer_id)")
+                && transport.contains("file::retained_part_len(state, &transfer_id)"),
+            "`held` 的两个来源都要在场：有活跃接收器时用内存计数，没有时才是磁盘前缀"
         );
         // 审计 §7 风险 2：必须有过期 .part 的定期清扫。
         assert!(

@@ -10,6 +10,73 @@
 
 ## [Unreleased]
 
+## [4.27.3] - 2026-09-22
+
+### Fixed (1:1 大文件永远传不完 —— 接收端有活跃接收器时不回真实位置，续传形同失效)
+
+用户第一次跨网真机测试报：4–5MB 文件正常，**160MB 永远停在"发送中、进度 0%"，最后报分片失败**；
+文字能到但转圈很久。查下来不是中继不稳，是我们自己的续传协议只做了一半。
+
+**根因（不需要任何丢包假设）**：这里曾经有**两套**位置规矩 ——
+
+```text
+没有活跃接收器  →  比对 .part 磁盘前缀，不符就回 FileReject{received}   ✅ 一直是对的
+有活跃接收器    →  一律裸回 FileAccept，完全不看 from_bytes             ❌ 事故就在这半
+```
+
+发送端每一轮重试都从 `from_bytes = 0` 起步（`flush_pending_files` 走的是不带位置的
+`send_file_from_path`），它只能靠 `FileReject.received` 知道该从哪儿续。于是第二轮 offer 到达时，
+接收器手里已经有 40MB、`next_seq` 停在上一段末尾，却回了个裸 Accept：发送端从头重灌，那 40MB
+被 `chunk_seq_decision` 的 `Duplicate` 分支**静默丢掉**（不报错）⇒ **每一轮都要重传一遍已收前缀**
+⇒ 慢链路上净推进永远不够 ⇒ 恒 0%、最后超时判死。4–5MB 之所以"没问题"，是因为它一轮就传完了，
+根本走不到重试。
+
+- 判据收敛成**一份纯函数** `file::decide_offer(has_active, active_received, disk_retained, from_bytes)`，
+  三档答复：`ResumeFrom(held)` / `AcceptResumeSegment` / `Accept`。
+  `held` 的权威取法也一起定死：**有活跃接收器时用内存里的 `received`**（每片 `write_all` 后即更新），
+  没有时才退回 `.part` 长度 —— 报小了会让发送端重灌已落盘字节（文件超长、SHA-256 必不匹配），
+  报大了会让它以为对端有它没有的东西（永远等不齐）。
+- **幂等 Accept 修的那条真机缺陷保留**（"两边都显示成功、接收侧列表里没有"）：位置一致时仍然回
+  Accept，绝不退回 reject。
+- ⚠️ **段号归零必须做，但只在续传段做**，这一条是我自己第一版改错后收紧的：
+  少归零 ⇒ 新数据被当成迟到重复片丢掉（差一截、不报错）；
+  **无条件**归零 ⇒ 上一轮 attempt 被 timeout 丢掉时它**已入队的分片还在 writer_loop 里往外排**
+  （队列 1024 槽 ≈ 262MB，丢 future 不排空队列），那些片的 seq 已到 160+，被拍回 0 就成「跳号」
+  ⇒ `Err(文件分片顺序错误)` ⇒ 整单死。两个方向现在都有用例钉着。
+- 顺带删掉 `has_receiver()` —— 判据收拢后它没有调用者了（留着会被只编 lib 的 clippy 判死码，
+  4.25.1 那次 CI 红就是这个形状）。
+- **跨版本兼容**：没有任何新帧、没有字段变更。新接收器 + 老发送器 ⇒ 老发送器早就听得懂
+  `FileReject.received`（那条分支就是为它写的）；老接收器 + 新发送器 ⇒ 行为与今天一致（浪费但能完成）。
+  不构成交织期风险（INV-P24 意义上"新功能静默失效"的那类不出现，这里只是接收端答复更准）。
+
+### Docs
+`docs/protocol-invariants.md` INV-P17（"分片必须可 identify/order/dedupe/validate/reassemble，
+不能仅依赖 arrival order"）补了一段续推断言：`order` 对续传同样成立，且**两个方向都要做**，
+只做一个就是这次的事故。
+
+### Tests
+- 三条新用例（TDD：先看着它们在"照搬今天行为"的桩上按预期红，再实现到绿）：
+  `live_receiver_must_tell_the_sender_where_it_actually_is`（红→绿，本次的主判据）、
+  `the_active_receiver_is_the_authority_not_the_disk_prefix`（红→绿，钉住 `held` 的权威来源）、
+  `matching_position_still_accepts_idempotently`（一开始就绿——它的职责是**防止过度纠正**，
+  把"同起点重复 offer 不许归零"也钉住）。
+- `cargo test --features bluetooth --lib` ⇒ **641 passed / 0 failed**；fmt ✓；
+  `clippy -- -D warnings` 0 条；基线 638 → **641** 全部在跑。
+- 两条变异用例登记进 `verify-guards.py`，实测"改坏即 FAIL、恢复即 PASS"：
+  ①删掉 `restart_segment` 那一句 ⇒ 接线守卫红；②把 `held` 退回"永远等于 from_bytes"
+  （等价于旧的"一律 Accept"）⇒ 三条纯函数用例红。
+- ⚠️ 覆盖边界：**这三条是纯函数与接线判据，没有端到端**——本仓库没有能驱动
+  `handle_file_offer` + `stream_file` 的异步夹具（造它需要 AppState + 真链路 + 双端任务），
+  所以"160MB 在 1Mbps 链路上真的能续完"仍只在真机上能验。已挂进 #8：
+  **两台设备、跨网、经中继，发一个 160MB 文件，看进度是否连续上升、断点是否能续、
+  以及日志里是否出现"接收端已有 N 字节，要求发送端从此续发"**。
+- ⚠️ 未修的相关项（另开，不混进本提交）：**A** `FileCompleteAck{false}` / `FileReject` 这类
+  否定确认在队满时被 `let _ = try_send(...)` 静默丢掉；**B** `send_deadline_for` 按明文估算，
+  漏了 Base64 的 ×1.334；**C** `ble_file_transfer_respects_link_limits` 这个名字已经盖不住它
+  现在守的东西（本次它红过一次，就是因为里面藏着中继接线断言）。
+
+Version-Bump: patch
+
 ## [4.27.2] - 2026-09-22
 
 ### Security (要求 7 落地：口令默认掩码、加一条"口令值不许进日志/诊断"的守卫，并把做不到的那条写明)

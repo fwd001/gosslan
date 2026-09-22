@@ -3422,17 +3422,29 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 .await;
                 return;
             };
-            // 断点续传统一入口（接收端是"我有什么"的唯一权威）：本地已保留 .part 且发送端的
-            // from_bytes 与之不符时，回 FileReject.received，让发送端以**真实进度**续发，
-            // 而不是重头覆盖前缀 —— 这是 outbox 全量重试与续传撞车的正解。
-            // 仅在没有活跃接收器时判：活跃中的重复 offer 仍走下面的"幂等 accept"（那修过真机缺陷）。
-            if !file::has_receiver(state, &transfer_id) {
-                let retained = file::retained_part_len(state, &transfer_id);
-                if retained != from_bytes {
+            // 位置判据**只有一份**（`file::decide_offer`）：有活跃接收器时以它的内存计数为准，
+            // 没有时以磁盘 `.part` 前缀为准。
+            //
+            // 以前这里是两套规矩：`!has_receiver` 才比对前缀、`has_receiver` 一律裸 Accept。
+            // 后者在真机上把 160MB 判了死刑 —— 发送端每轮重试都从 `from_bytes = 0` 重发
+            // （`flush_pending_files` 走不带位置的 `send_file_from_path`），接收端回 Accept 后
+            // 把已收的几十 MB 当"迟到的重复片"静默丢掉 ⇒ 每轮都重传一遍前缀 ⇒ 永不收敛、
+            // 界面恒 0%、最后报"分片失败"。回真实位置才是正解（发送端 `file.rs` 那一侧
+            // 早就听得懂 `FileReject.received`，它只是从来没被这样告诉过）。
+            let active = file::receiver_progress(state, &transfer_id);
+            let disk_retained = file::retained_part_len(state, &transfer_id);
+            let decided = file::decide_offer(
+                active.is_some(),
+                active.unwrap_or(0),
+                disk_retained,
+                from_bytes,
+            );
+            match decided {
+                file::OfferDecision::ResumeFrom(held) => {
                     state.logger.info(
                         "file",
                         format!(
-                            "接收端已有 {retained} 字节，要求发送端从此续发 transfer={transfer_id}"
+                            "接收端已有 {held} 字节，要求发送端从此续发 transfer={transfer_id}"
                         ),
                     );
                     let _ = try_send(
@@ -3440,33 +3452,50 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                         peer_id,
                         &Message::FileReject {
                             transfer_id: transfer_id.clone(),
-                            received: retained,
+                            received: held,
                         },
                     )
                     .await;
                     return;
                 }
+                file::OfferDecision::Accept | file::OfferDecision::AcceptResumeSegment => {
+                    if active.is_some() {
+                        // **重复的 offer 必须幂等接受**：对端没收到我们的 accept 时会重发同一个
+                        // transfer_id，旧行为回 `FileReject("重复的文件传输")` ⇒ 对端判定失败、
+                        // 停止重试 ⇒ 文件永远到不了（真机：大图两边都显示成功、接收侧列表里没有）。
+                        let resumed = matches!(decided, file::OfferDecision::AcceptResumeSegment);
+                        state.logger.info(
+                            "file",
+                            format!(
+                                "重复的文件请求 ⇒ 幂等回 accept{} transfer={transfer_id}",
+                                if resumed {
+                                    "（续传段：段号归零）"
+                                } else {
+                                    ""
+                                }
+                            ),
+                        );
+                        // 段号归零：发送端续传时按段从 `seq = 0` 重编，而归零后那些**新数据**
+                        // 会被 `write_chunk` 判成"迟到的重复片"静默丢掉 ⇒ 文件永远差一截。
+                        // 判据（只有续传段才归零，`from_bytes = 0` 的重复 offer 不归零）在
+                        // `file::decide_offer` 里 —— 那边写了为什么：无条件归零会把上一轮
+                        // 还在排空的分片打成「跳号」，那是一整单死的另一种死法。
+                        if resumed {
+                            file::restart_segment(state, &transfer_id);
+                        }
+                        let _ = try_send(
+                            state,
+                            peer_id,
+                            &Message::FileAccept {
+                                transfer_id: transfer_id.clone(),
+                            },
+                        )
+                        .await;
+                        return;
+                    }
+                    // 位置对得上、且没有活跃接收器 ⇒ 落到下面照常建/续接收器。
+                }
             }
-            // **重复的 offer 必须幂等接受**：对端没收到我们的 accept 时会重发同一个
-            // transfer_id，旧行为回 `FileReject("重复的文件传输")` ⇒ 对端判定失败、停止重试
-            // ⇒ 文件永远到不了（真机：大图两边都显示成功、接收侧列表里没有）。这里直接
-            // 再回一次 accept，让对端继续把剩下的分片发完。
-            if file::has_receiver(state, &transfer_id) {
-                state.logger.info(
-                    "file",
-                    format!("重复的文件请求 ⇒ 幂等回 accept transfer={transfer_id}"),
-                );
-                let _ = try_send(
-                    state,
-                    peer_id,
-                    &Message::FileAccept {
-                        transfer_id: transfer_id.clone(),
-                    },
-                )
-                .await;
-                return;
-            }
-            // 续传：from_bytes > 0 且本地有对应 .part ⇒ 从断点继续；否则整份重收。
             let received = if from_bytes > 0 {
                 file::resume_receive(
                     state,

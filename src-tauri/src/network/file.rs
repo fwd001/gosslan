@@ -1263,13 +1263,86 @@ pub fn begin_receive(
 }
 
 /// 构造接收端状态（路径安全 + `.part` 创建 + 插入对应接收表），
-/// 该 transfer 是否已经在接收中（用于把"重复的 offer"幂等化成 re-accept）。
-pub fn has_receiver(state: &AppState, transfer_id: &str) -> bool {
+/// 收到 `FileOffer` 时接收端的答复。
+#[derive(Debug, PartialEq, Eq)]
+pub enum OfferDecision {
+    /// 回 `FileAccept`，其它什么都不动（全新，或"同一起点的重复 offer"）。
+    Accept,
+    /// 回 `FileAccept`，**并且**把活跃接收器切到"新段从 `seq = 0` 重编"。
+    ///
+    /// 为什么必须有这一档：发送端续传时分片编号是按段从 0 重编的（`FileOffer.from_seq` 恒为 0）。
+    /// 活跃接收器的 `next_seq` 还停在上一段末尾 ⇒ 不重置就会把这些**新数据**判成"迟到的重复片"
+    /// 静默丢掉，文件永远差一截，而且不报错。
+    AcceptResumeSegment,
+    /// 回 `FileReject { received = 本端真实已收字节 }`：让发送端从真实位置续发。
+    ResumeFrom(u64),
+}
+
+/// 「收到 offer 时该怎么答」的**唯一**判据（纯函数，能被单测直接钉住）。
+///
+/// 一句话：**接收端是"我有什么"的唯一权威，而且每次都要把这个回答出去。**
+/// 之前这里有两套规矩 —— 没有活跃接收器时比对 `.part` 前缀、有活跃接收器时**一律** `Accept`
+/// —— 后者在真机上把 160MB 的大文件判了死刑：发送端每一轮重试都从 `from_bytes = 0` 重发
+/// （`flush_pending_files` 走的就是不带位置的 `send_file_from_path`），接收端回 Accept
+/// 之后把那 40MB 已收前缀当"迟到的重复片"静默丢掉（`chunk_seq_decision` 的 `Duplicate` 分支），
+/// 于是**每一轮都要重传一遍已收部分**，慢链路上永远跑不完 ⇒ 界面恒 0%、最后报"分片失败"。
+///
+/// `held` 的取法也是判据的一部分：有活跃接收器时用**内存里的 `received`**（每片 `write_all`
+/// 之后就更新），没有时才退回磁盘 `.part` 的大小 —— 报小了会让发送端重灌已写进文件的字节，
+/// 文件超长、SHA-256 必不匹配；报大了会让发送端以为对端有它没有的东西，永远等不齐。
+///
+/// ⚠️ 归零只在 `from_bytes > 0` 时做，无条件归零会引入另一个故障：上一轮 attempt 被 timeout
+/// 丢掉时它**已入队的分片还在 writer_loop 里往外排**（队列 1024 槽 ≈ 262MB，丢 future 不排空
+/// 队列），那些片的 seq 已到 160+，此时因一个 `from_bytes = 0` 的重复 offer 把 `next_seq`
+/// 拍回 0 ⇒ 它们变成「跳号」⇒ `Err(文件分片顺序错误)` ⇒ 整单被判死。
+pub fn decide_offer(
+    has_active: bool,
+    active_received: u64,
+    disk_retained: u64,
+    from_bytes: u64,
+) -> OfferDecision {
+    let held = if has_active {
+        active_received
+    } else {
+        disk_retained
+    };
+    if from_bytes != held {
+        return OfferDecision::ResumeFrom(held);
+    }
+    if has_active && from_bytes > 0 {
+        return OfferDecision::AcceptResumeSegment;
+    }
+    OfferDecision::Accept
+}
+
+/// 该 transfer 当前是否有活跃接收器，以及它真实收下了多少字节。
+///
+/// 返回 `None` = 没有活跃接收器（此时 `.part` 磁盘前缀才是唯一事实）。
+pub fn receiver_progress(state: &AppState, transfer_id: &str) -> Option<u64> {
     state
         .file_receivers
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .contains_key(transfer_id)
+        .get(transfer_id)
+        .map(|r| r.received)
+}
+
+/// 把活跃接收器切到"新的一段从 `seq = 0` 重新编号"，**不动**已收字节、文件位置与增量哈希。
+///
+/// 为什么必须做：发送端续传时分片编号是**按段**从 0 重编的（`FileOffer.from_seq` 恒为 0，
+/// `stream_file` 也只按 `from_bytes` 定位文件偏移）。接收器如果还留着上一段推进到的
+/// `next_seq = 160`，新段那些从 0 开始、内容其实是**新数据**的分片会被
+/// `chunk_seq_decision` 判成"迟到的重复片"静默丢掉 ⇒ 文件永远差一截。
+/// 只在"位置对得上、决定 Accept 而接收器已推进过"的情况下调用；重置的是段号，不是进度。
+pub fn restart_segment(state: &AppState, transfer_id: &str) {
+    if let Some(r) = state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_mut(transfer_id)
+    {
+        r.next_seq = 0;
+    }
 }
 
 /// 一对一与群文件共用；差异只在写入哪个接收 map 与是否记录 file_transfers。
@@ -3172,5 +3245,64 @@ mod tests {
                 _ => panic!("应为 GroupFileCompleteAck"),
             }
         }
+    }
+
+    // ---------------- 续传：offer 位置判据（`decide_offer`）----------------
+
+    /// 真机事故形状（2026-09-22 跨网首测，160MB 永远传不完）：接收器**还活着**、已收 40MB，
+    /// 而发送端每一轮重试都从 `from_bytes = 0` 重发（`flush_pending_files` 就是调
+    /// `send_file_from_path`，不携带位置）。这时接收端必须把真实位置回给它，
+    /// 而不是回 `Accept` 再把前 40MB 当"迟到的重复片"静默丢掉 ——
+    /// 后者等于"每一轮都要重新传一遍已收前缀"，慢链路上永远跑不完。
+    #[test]
+    fn live_receiver_must_tell_the_sender_where_it_actually_is() {
+        use super::{decide_offer, OfferDecision};
+        let held = 40 * 1024 * 1024;
+        assert_eq!(
+            decide_offer(true, held, held, 0),
+            OfferDecision::ResumeFrom(held),
+            "活跃接收器已收 40MB、对方却从 0 重发 ⇒ 必须回真实位置，不能裸 Accept"
+        );
+    }
+
+    /// 位置本来就对得上 ⇒ 仍然要 `Accept`。这条不许被上一条"顺手改坏"：
+    /// 幂等 Accept 修的是真机缺陷（"两边都显示成功、接收侧列表里没有"），
+    /// 对端没收到我们的 accept 时会**重发同一个 offer**，那时 from_bytes 是一致的。
+    #[test]
+    fn matching_position_still_accepts_idempotently() {
+        use super::{decide_offer, OfferDecision};
+        let held = 40 * 1024 * 1024;
+        // 位置对得上 ⇒ 答复仍然属于"接受"这一族，绝不退回 reject（那是被真机教育过的旧行为：
+        // 两边都显示成功、接收侧列表里没有）。但**续传段**必须连带把段号归零 ⇒ 判据要能区分。
+        assert_eq!(
+            decide_offer(true, held, held, held),
+            OfferDecision::AcceptResumeSegment,
+            "位置一致的续传段：接受 + 段号归零"
+        );
+        // 同一起点的重复 offer ⇒ **不许**归零：上一轮 attempt 已入队的分片还在排空，
+        // 归零会把它们判成「跳号」⇒ `Err(文件分片顺序错误)` ⇒ 整单死。
+        assert_eq!(decide_offer(true, 0, 0, 0), OfferDecision::Accept);
+        // 全新传输：什么都没有，对方也从 0 开始
+        assert_eq!(decide_offer(false, 0, 0, 0), OfferDecision::Accept);
+    }
+
+    /// 权威是"**我有什么**"，而活跃接收器的内存计数比磁盘 `.part` 更靠前
+    /// （`write_chunk` 每片都 `write_all`，但进度落库是 500ms 节流）。
+    /// 回一个偏小的位置会让发送端重灌已写进文件的字节 ⇒ 文件超长、校验必失败。
+    #[test]
+    fn the_active_receiver_is_the_authority_not_the_disk_prefix() {
+        use super::{decide_offer, OfferDecision};
+        let (live, disk) = (30 * 1024 * 1024, 20 * 1024 * 1024);
+        assert_eq!(
+            decide_offer(true, live, disk, 0),
+            OfferDecision::ResumeFrom(live),
+            "有活跃接收器时必须报内存里的真实值，不是 .part 大小"
+        );
+        // 没有活跃接收器（断链后进程没重启）⇒ 磁盘前缀才是唯一事实
+        assert_eq!(
+            decide_offer(false, 0, disk, 0),
+            OfferDecision::ResumeFrom(disk),
+            "无活跃接收器时仍以 .part 前缀为准（这条是既有行为，锁住别退回去）"
+        );
     }
 }

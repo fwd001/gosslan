@@ -2780,6 +2780,44 @@ CASES: list[Case] = [
         expect_fail_hint="假绿",
         tags=["rust", "relay", "new-guards"],
     ),
+    Case(
+        name="幂等 accept 时必须重置段号（少这一句，续传段会被当成迟到重复片整段丢掉）",
+        why="2026-09-22 跨网首测：160MB 永远停在 0%，最后报分片失败。\n"
+        "     发送端续传时分片**按段从 seq 0 重编**，而活跃接收器的 next_seq 已推进到上一段末尾\n"
+        "     ⇒ 新数据被 write_chunk 的 Duplicate 分支静默吞掉，文件永远差一截，且**不报任何错**。\n"
+        "     注入方式就是那个看起来无害的改动：删掉 restart_segment 那一句\n"
+        "     （有人会觉得「幂等嘛，回个 Accept 就够了」—— 差的就是这一句）。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "                            file::restart_segment(state, &transfer_id);\n",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "ble_file_transfer_respects_link_limits"),
+        cwd=TAURI,
+        expect_fail_hint="那一份判据",
+        tags=["rust", "file", "resume"],
+    ),
+    Case(
+        name="offer 位置判据不许退回「有活跃接收器就一律 Accept」",
+        why="那半套规矩就是本次事故的根因：接收端不回真实位置 ⇒ 发送端每轮从 0 重发 ⇒\n"
+        "     每轮重传一遍已收前缀 ⇒ 慢链路上永不收敛。三条纯函数用例（decide_offer）是第一道闸，\n"
+        "     本用例证明它们不是装饰：把判据退回旧形状（让 held 直接等于 from_bytes，\n"
+        "     等价于「永远认为位置对得上」），它们必须红。",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            """    let held = if has_active {
+        active_received
+    } else {
+        disk_retained
+    };""",
+            "    let _ = (active_received, disk_retained);\n    let held = from_bytes;",
+        )],
+        cmd=cargo("test", "--lib", "network::file::tests"),
+        cwd=TAURI,
+        expect_fail_hint="必须回真实位置",
+        tags=["rust", "file", "resume"],
+    ),
+
 ]
 
 

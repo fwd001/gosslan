@@ -372,7 +372,9 @@ network::file::tests::group_receive_rejects_wrong_file_key
 network::file::tests::group_receive_seq_progress_and_part_writes
 network::file::tests::image_extensions
 network::file::tests::invalid_sha256_format_is_rejected
+network::file::tests::live_receiver_must_tell_the_sender_where_it_actually_is
 network::file::tests::markdown_is_a_document_not_code
+network::file::tests::matching_position_still_accepts_idempotently
 network::file::tests::other_files
 network::file::tests::progress_counts_written_chunks_not_enqueued_bytes
 network::file::tests::receiver_hash_lifecycle_success
@@ -385,6 +387,7 @@ network::file::tests::send_deadline_scales_with_size
 network::file::tests::sha256_file_hex_matches_in_memory_hash
 network::file::tests::stall_verdict_boundaries
 network::file::tests::tampered_chunk_fails_to_decrypt
+network::file::tests::the_active_receiver_is_the_authority_not_the_disk_prefix
 network::file::tests::unique_path_never_returns_existing_path
 network::file::tests::wire_ledger_is_reclaimed_on_every_exit_path
 network::file::tests::wire_progress_is_counted_per_recipient_within_one_group_transfer
