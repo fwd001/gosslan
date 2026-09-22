@@ -62,6 +62,37 @@ export function linkLabelParams(info: PeerInfoInput): Record<string, string | nu
 }
 
 /**
+ * 连接图标的标识（**与 `linkLabelKey` 同源判据、同一顺序**，只是输出图标名而不是文案 key）。
+ *
+ * 为什么要它：图标选择此前只内联在 `ChatHeader.linkIcon` 一处，好友列表想显示同款图标就得
+ * 再抄一遍 —— 用户 2026-09-22 要求"四种通道的图标各界面全局统一"，所以把判据收在这里，
+ * 各组件只负责把图标名映射到 lucide 组件（见 `components/conversation/LinkIcon.vue`）。
+ *
+ * 五种真实链路 + 一种"无链路"：
+ * `relay`=经 N 跳 mesh 转发（Share2）、`relayServer`=公网中转直连电路（Globe）、
+ * `routed`=跨网段/VPN（Network）、`bluetooth`=蓝牙（Bluetooth）、`lan`=局域网（Router）、
+ * `discovered`=发现了但没建链（**调用方不应为它画图标**，画了就是骗）。
+ */
+export type LinkIconName =
+  | "lan"
+  | "routed"
+  | "relayServer"
+  | "relay"
+  | "bluetooth"
+  | "discovered";
+
+export function linkIconName(info: PeerInfoInput): LinkIconName {
+  const hop = info.hop ?? 0;
+  if (info.link === "bluetooth") return "bluetooth";
+  if (hop > 0) return "relay";
+  if (info.link === "relay") return "relayServer";
+  if (info.link === "routed") return "routed";
+  if (info.link === "lan") return "lan";
+  if (info.online) return "lan";
+  return "discovered";
+}
+
+/**
  * 该不该显示"地址"这一行。
  *
  * **蓝牙链路一律不显示**：蓝牙上没有 IP，显示 `IP 地址：—` 只会让人以为"信息缺失"。

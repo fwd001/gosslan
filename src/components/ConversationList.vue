@@ -69,6 +69,21 @@ const selfFriend = computed<Friend | null>(() => {
   };
 });
 
+/**
+ * device_id → 当前链路类型（取自节点表 `chat.peers` 的 `link` 字段）。
+ * 好友记录本身不带链路，连接图标要靠这张表关联 —— 与聊天头、资料页、添加好友页**同源**
+ * （都读后端 `Peer.link`，再经 `peerConnectionInfo` 的唯一判据出图标/文案）。
+ * 「自己」不在节点表里 ⇒ 关联不到 ⇒ 不画图标（合理：自己没有"到自己的链路"）。
+ */
+const peerLinkById = computed(() => {
+  const m = new Map<string, string | null>();
+  for (const p of chat.peers) m.set(p.device_id, p.link ?? null);
+  return m;
+});
+function linkOf(id: string): string | null {
+  return peerLinkById.value.get(id) ?? null;
+}
+
 const filteredFriends = computed(() => {
   const all = selfFriend.value ? [selfFriend.value, ...chat.friends] : chat.friends;
   const kw = query.value.trim().toLowerCase();
@@ -498,8 +513,9 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           <FriendListItem
             v-for="f in filteredFriends"
             :key="f.device_id"
-            v-memo="[f.nickname, f.avatar, f.online, props.activeFriendId === f.device_id]"
+            v-memo="[f.nickname, f.avatar, f.online, linkOf(f.device_id), props.activeFriendId === f.device_id]"
             :friend="f"
+            :link="linkOf(f.device_id)"
             :active="props.activeFriendId === f.device_id"
             compact
             @open="openFriend"
@@ -517,8 +533,9 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             <FriendListItem
               v-for="f in g.items"
               :key="f.device_id"
-              v-memo="[f.nickname, f.avatar, f.online, props.activeFriendId === f.device_id]"
+              v-memo="[f.nickname, f.avatar, f.online, linkOf(f.device_id), props.activeFriendId === f.device_id]"
               :friend="f"
+              :link="linkOf(f.device_id)"
               :active="props.activeFriendId === f.device_id"
               compact
               @open="openFriend"

@@ -159,6 +159,35 @@ test("「添加好友」空状态：跨网通道在线时不许笼统说「都�
   assert.ok(!/getRelayConfig/.test(modal), "加好友页不得拉取含口令的中转配置（只读快照里的可公开字段）");
 });
 
+/**
+ * 连接类型图标必须**只有一处映射**（用户 2026-09-22：四种通道的图标各界面全局统一）。
+ *
+ * 此前图标选择内联在 ChatHeader 一处；好友列表要显示同款图标就得再抄一遍 v-if 链 ——
+ * 抄出来的第二份迟早和第一份漂移（少一种通道、或图标对错）。判据：图标名由
+ * `peerConnectionInfo::linkIconName` 唯一给出、渲染由 `components/ui/LinkIcon.vue` 唯一负责，
+ * 聊天头与好友列表都**引用**这两者，而不是各自再写 lucide 图标的 v-if 链。
+ */
+test("连接图标全局统一：linkIconName 唯一判据 + LinkIcon.vue 唯一渲染，聊天头/好友列表都引用", () => {
+  const info = read("utils/peerConnectionInfo.ts");
+  assert.match(info, /export function linkIconName\(/, "图标名判据必须收在 peerConnectionInfo（单一真相源）");
+  const linkIcon = read("components/ui/LinkIcon.vue");
+  assert.match(linkIcon, /name === 'relayServer'/, "LinkIcon 必须能渲染公网中转图标（与桥接区分）");
+  assert.match(linkIcon, /name === 'relay'/, "LinkIcon 必须能渲染 mesh 桥接图标");
+  for (const f of ["components/chat/ChatHeader.vue", "components/conversation/FriendListItem.vue"]) {
+    const src = read(f);
+    assert.match(src, /import LinkIcon from "@\/components\/ui\/LinkIcon\.vue"/, `${f} 必须用共享 LinkIcon`);
+    assert.match(src, /linkIconName\(/, `${f} 的图标名必须走 linkIconName 唯一判据，不许自己再写 v-if 链`);
+  }
+  // 好友列表的链路来自节点表关联（Friend 不带 link），且 v-memo 必须带上它，否则链路变了图标不刷新
+  const list = read("components/ConversationList.vue");
+  assert.match(list, /:link="linkOf\(f\.device_id\)"/, "好友列表必须把节点表里的链路类型传给行");
+  assert.match(
+    list,
+    /v-memo="\[f\.nickname, f\.avatar, f\.online, linkOf\(f\.device_id\)/,
+    "v-memo 必须含链路类型，否则链路变化时图标不刷新（v-memo 会跳过重渲染）",
+  );
+});
+
 test("移动端「新的朋友」必须切到主面板（否则点了像没反应）", () => {
   const layout = read("layouts/ResponsiveLayout.vue");
   const open = layout.slice(

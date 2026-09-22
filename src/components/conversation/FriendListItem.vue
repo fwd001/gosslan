@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { onUnmounted } from "vue";
+import { computed, onUnmounted } from "vue";
 import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { haptic } from "@/utils/haptics";
+import LinkIcon from "@/components/ui/LinkIcon.vue";
+import { linkIconName, linkLabelKey } from "@/utils/peerConnectionInfo";
 import type { Friend } from "@/types";
 
-defineProps<{
+const props = defineProps<{
   friend: Friend;
   active: boolean;
   /**
@@ -15,7 +17,23 @@ defineProps<{
    * 只是省掉「在线/离线」文字行把列表压得更紧凑。
    */
   compact?: boolean;
+  /**
+   * 该好友**当前的链路类型**（来自 `peers-updated` 的 `Peer.link`：lan/routed/relay/bluetooth）。
+   * 好友记录本身不带链路（`Friend` 没有 link 字段），由列表层按 device_id 关联节点表后传进来。
+   * 无链路（离线 / 只发现未建链）时为空 ⇒ 不画图标。
+   */
+  link?: string | null;
 }>();
+
+/** 连接图标名；无真实链路时返回 null（模板据此不画图标 —— 画了就是骗）。判据与聊天头同源。 */
+const linkIcon = computed(() => {
+  const name = linkIconName({ link: props.link ?? null });
+  return name === "discovered" ? null : name;
+});
+/** 图标的悬停/读屏文案（与资料页、聊天头同一套 `peer.link.*` 判据）。 */
+const linkLabel = computed(() =>
+  linkIcon.value ? t(linkLabelKey({ link: props.link ?? null })) : "",
+);
 const emit = defineEmits<{
   (e: "open", friend: Friend): void;
   /** 右键 / 移动端长按：上报坐标，由父组件定位菜单（x/y 为视口坐标）。 */
@@ -141,12 +159,23 @@ onUnmounted(clearPress);
     </div>
     <div class="min-w-0 flex-1">
       <!-- 名字同样会被截断，补 title（读屏有整行 aria-label，但悬停要能看全名）。 -->
-      <div
-        class="truncate text-[13px] leading-5"
-        :class="active ? 'font-medium text-[var(--gosslan-text)]' : 'text-[var(--gosslan-text)]'"
-        :title="friend.nickname"
-      >
-        {{ friend.nickname }}
+      <div class="flex min-w-0 items-center gap-1">
+        <!-- 连接类型图标（与聊天头/资料页同源判据，见 utils/peerConnectionInfo）：只在有真实链路时画。 -->
+        <span
+          v-if="linkIcon"
+          class="inline-flex shrink-0 items-center text-[var(--gosslan-text-2)]"
+          :title="linkLabel"
+          aria-hidden="true"
+        >
+          <LinkIcon :name="linkIcon" class="h-3.5 w-3.5" />
+        </span>
+        <div
+          class="truncate text-[13px] leading-5"
+          :class="active ? 'font-medium text-[var(--gosslan-text)]' : 'text-[var(--gosslan-text)]'"
+          :title="friend.nickname"
+        >
+          {{ friend.nickname }}
+        </div>
       </div>
       <div
         v-if="!compact"

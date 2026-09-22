@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import {
   addressText,
   deviceTypeKey,
+  linkIconName,
   linkLabelKey,
   shouldShowAddress,
 } from "./peerConnectionInfo.ts";
@@ -79,4 +80,17 @@ test("设备类型：desktop/mobile → 可读标签，其余一律「未知设�
   assert.equal(deviceTypeKey(""), "peer.device.unknown");
   assert.equal(deviceTypeKey(null), "peer.device.unknown");
   assert.equal(deviceTypeKey("tablet"), "peer.device.unknown", "不认识的值不许原样透给用户");
+});
+
+test("连接图标名与文案同源：五种真实链路各一个图标，无链路=discovered（调用方不画）", () => {
+  assert.equal(linkIconName({ link: "lan" }), "lan");
+  assert.equal(linkIconName({ link: "routed" }), "routed");
+  assert.equal(linkIconName({ link: "relay" }), "relayServer", "公网中转直连电路 → Globe");
+  assert.equal(linkIconName({ link: "bluetooth" }), "bluetooth");
+  // 经 N 跳 mesh 转发与"公网中转服务器直连"是两回事：前者 Share2、后者 Globe，绝不能混
+  assert.equal(linkIconName({ link: "lan", hop: 2 }), "relay", "hop>0 → 桥接图标（与中转服务器区分）");
+  assert.equal(linkIconName({ link: null }), "discovered", "无链路：调用方据此不画图标");
+  // 图标判据必须与文案判据**同序**：同一输入下两者指向同一种链路
+  assert.equal(linkLabelKey({ link: "relay" }), "peer.link.relayServer");
+  assert.equal(linkLabelKey({ link: "lan", hop: 2 }), "peer.link.relay");
 });

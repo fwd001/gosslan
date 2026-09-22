@@ -1,19 +1,16 @@
 <script setup lang="ts">
 import {
   ArrowUpCircle,
-  Bluetooth,
   FolderOpen,
-  Globe,
   ListChecks,
   Monitor,
-  Network,
   Pencil,
-  Router,
-  Share2,
   Smartphone,
   Users,
 } from "lucide-vue-next";
 import BackArrow from "@/components/ui/BackArrow.vue";
+import LinkIcon from "@/components/ui/LinkIcon.vue";
+import { linkIconName, type LinkIconName } from "@/utils/peerConnectionInfo";
 import type { Conversation, LinkState } from "@/types";
 import { t } from "@/i18n";
 
@@ -49,25 +46,16 @@ const emit = defineEmits<{
   (e: "open-share"): void;
 }>();
 
-/** 连接图标：桥接（跳数>0）→ Share2；公网中转直连电路 → Globe；其余按 path 选 Router/Network/Bluetooth。 */
-function linkIcon(path: string, hop: number): { icon: string; label: string } {
-  // hop>0 = 经多个中间节点 mesh 转发（桥接），与"公网中转服务器的直连电路"是两回事。
-  if (hop > 0) {
-    return {
-      icon: "relay",
-      label: t("chat.header.linkRelay", { n: hop }),
-    };
-  }
-  if (path === "bluetooth") {
-    return { icon: "bluetooth", label: t("chat.header.linkBluetooth") };
-  }
-  if (path === "relay") {
-    return { icon: "relayServer", label: t("chat.header.linkRelayServer") };
-  }
-  if (path === "routed") {
-    return { icon: "routed", label: t("chat.header.linkRouted") };
-  }
-  return { icon: "lan", label: t("chat.header.linkLan") };
+/** 连接图标名走 `peerConnectionInfo` 的唯一判据（与好友列表/资料页同源）；文案仍用聊天头自己那套 key。 */
+function linkIcon(path: string, hop: number): { icon: LinkIconName; label: string } {
+  const icon = linkIconName({ link: path, hop });
+  let label: string;
+  if (hop > 0) label = t("chat.header.linkRelay", { n: hop });
+  else if (path === "bluetooth") label = t("chat.header.linkBluetooth");
+  else if (path === "relay") label = t("chat.header.linkRelayServer");
+  else if (path === "routed") label = t("chat.header.linkRouted");
+  else label = t("chat.header.linkLan");
+  return { icon, label };
 }
 </script>
 
@@ -118,13 +106,7 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
         :title="linkIcon(linkState.path, linkState.hop).label"
         :aria-label="linkIcon(linkState.path, linkState.hop).label"
       >
-        <Share2 v-if="linkIcon(linkState.path, linkState.hop).icon === 'relay'" class="h-4 w-4" />
-        <Globe v-else-if="linkIcon(linkState.path, linkState.hop).icon === 'relayServer'" class="h-4 w-4" />
-        <Bluetooth v-else-if="linkIcon(linkState.path, linkState.hop).icon === 'bluetooth'" class="h-4 w-4" />
-        <Network v-else-if="linkIcon(linkState.path, linkState.hop).icon === 'routed'" class="h-4 w-4" />
-        <!-- 局域网直连：用「路由器」而不是 WiFi 扇形（用户 2026-09-17：WiFi 图标会让人
-             以为走的是无线上网，而这里表达的是"同一局域网内直连"）。 -->
-        <Router v-else class="h-4 w-4" />
+        <LinkIcon :name="linkIcon(linkState.path, linkState.hop).icon" class="h-4 w-4" />
         <span v-if="linkState.hop > 0" class="text-[11px] font-medium leading-none">{{ linkState.hop }}</span>
       </span>
     </div>
