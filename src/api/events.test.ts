@@ -38,6 +38,102 @@ const ALLOWED_EMIT_WITHOUT_LISTENER: Record<string, string> = {
 /** 只发给特定窗口、由该窗口自己监听的事件不算漏接（这里是菜单事件，前端已监听）。 */
 const IGNORED_PREFIXES = ["menu://"];
 
+/**
+ * 只保留 Rust 源码里的**代码**，把注释换成等长空白（保留换行，行号不偏移）。
+ *
+ * 为什么必须有：这条护栏扫的是 `emit(` 这个形态，而形态出现在注释里并不等于"后端在发事件"。
+ * v4.24.0 现场被咬两次 —— 先在断言文本里写全那三个字符加左括号，再在注释里解释
+ * "为什么不能写全"，第二次照样被扫成一个没人听的孤儿事件；当时的处理是**改写文案绕开**，
+ * 那是在躲症状。真正要补的是"扫描前先分清水份"，所以这里按语法边界剥注释。
+ *
+ * ⚠️ 已知残留，刻意不在本次顺手做：**字符串字面量里**出现完整的 `emit("x"` 形态仍会被扫到。
+ * 不能把字符串一起抹掉 —— 我们要找的恰恰就是 `emit("x")` 里那个字符串本身。要做对得先把
+ * 事件名收进常量表、再按名比对（那属 #33③ 的另一片），而不是在这里加一条"看到引号就砍"。
+ */
+function stripRustComments(src: string): string {
+  let out = "";
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    const d = src[i + 1] ?? "";
+    // 字符串 / raw 字符串 / byte 字符串：整段原样跳过，否则串里的 `//` 会被当成注释吃掉后半文件
+    if (c === '"' || (c === "b" && d === '"') || /^r#*"/.test(src.slice(i, i + 6))) {
+      const end = skipString(src, i);
+      out += src.slice(i, end);
+      i = end;
+      continue;
+    }
+    // 字符字面量（`'a'` / `'\n'`）整段跳过；生命周期 `'a` 后面没有闭合引号 ⇒ 不会被误吃
+    const charLit = /^'(?:\\.|[^'\\])'/.exec(src.slice(i));
+    if (charLit) {
+      out += charLit[0];
+      i += charLit[0].length;
+      continue;
+    }
+    if (c === "/" && d === "/") {
+      let j = src.indexOf("\n", i);
+      if (j === -1) j = src.length;
+      out += " ".repeat(j - i);
+      i = j;
+      continue;
+    }
+    if (c === "/" && d === "*") {
+      // 块注释可嵌套（Rust 允许），深度归零前一路都当注释；换行保留以稳住行号
+      let depth = 0;
+      let j = i;
+      while (j < src.length) {
+        if (src[j] === "/" && src[j + 1] === "*") {
+          depth += 1;
+          j += 2;
+          continue;
+        }
+        if (src[j] === "*" && src[j + 1] === "/") {
+          depth -= 1;
+          j += 2;
+          if (depth === 0) break;
+          continue;
+        }
+        j += 1;
+      }
+      out += src.slice(i, j).replace(/[^\n]/g, " ");
+      i = j;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+  function skipString(s: string, from: number): number {
+    const raw = /^r#*"/.exec(s.slice(from));
+    if (raw) {
+      const closer = `"${"#".repeat(raw[0].length - 2)}`;
+      const hit = s.indexOf(closer, from + raw[0].length);
+      return hit === -1 ? s.length : hit + closer.length;
+    }
+    let j = from + 1;
+    while (j < s.length) {
+      if (s[j] === "\\") {
+        j += 2;
+        continue;
+      }
+      if (s[j] === '"') return j + 1;
+      j += 1;
+    }
+    return s.length;
+  }
+}
+
+/** 从一份 Rust 源码里取出「后端真的在发」的事件名（纯函数 ⇒ 能被 fixtures 直接喂）。 */
+function emittedNamesFrom(src: string, consts: Map<string, string>): Set<string> {
+  const out = new Set<string>();
+  // emit("name"            / emit(CONST
+  for (const m of stripRustComments(src).matchAll(/\bemit\w*\(\s*(?:"([^"]+)"|([A-Z][A-Z0-9_]*))/g)) {
+    const name = m[1] ?? consts.get(m[2] ?? "");
+    if (name) out.add(name);
+  }
+  return out;
+}
+
 function collectRustFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
@@ -51,7 +147,7 @@ function collectRustFiles(dir: string, out: string[] = []): string[] {
 function collectStringConsts(files: string[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const f of files) {
-    const src = readFileSync(f, "utf8");
+    const src = stripRustComments(readFileSync(f, "utf8"));
     for (const m of src.matchAll(/const\s+([A-Z][A-Z0-9_]*)\s*:\s*&str\s*=\s*"([^"]+)"/g)) {
       map.set(m[1], m[2]);
     }
@@ -65,12 +161,7 @@ function rustEmittedEvents(): Set<string> {
   const consts = collectStringConsts(files);
   const out = new Set<string>();
   for (const f of files) {
-    const src = readFileSync(f, "utf8");
-    // emit("name"            / emit(CONST
-    for (const m of src.matchAll(/\bemit\w*\(\s*(?:"([^"]+)"|([A-Z][A-Z0-9_]*))/g)) {
-      const name = m[1] ?? consts.get(m[2] ?? "");
-      if (name) out.add(name);
-    }
+    for (const name of emittedNamesFrom(readFileSync(f, "utf8"), consts)) out.add(name);
   }
   return out;
 }
@@ -82,6 +173,37 @@ function frontendListenedEvents(): Set<string> {
   for (const m of src.matchAll(/listen(?:<[^>]*>)?\(\s*"([^"]+)"/g)) out.add(m[1]);
   return out;
 }
+
+/// 扫描器的"水分判据"：一份喂料同时含真发送与各种注释里的假形态，
+/// 结果必须**只**有真的那几个 —— 单向断言（只查"注释不算"）会被"整段都被抹掉"
+/// 这种过度剥离糊过去，所以正反两面都钉在这里。
+test("事件扫描器不被注释骗，也不误伤代码（含串内 // 与生命周期、嵌套块注释）", () => {
+  const sample = [
+    'app.emit("real-line", &p); // 行尾注释里写 emit("phantom-trailing") 也不算',
+    '// emit("phantom-line") —— 解释"为什么不能把那三个字符连左括号写全"的那条注释',
+    '/// 文档里提 emit("phantom-doc") 一样不是发送',
+    '/* emit("phantom-block") */',
+    '/* 外层 /* 内层 emit("phantom-nested") */ 还在注释里 */',
+    'let s = "字符串里的 // 不是注释"; app.emit("real-after-string", &p);',
+    'let r = r#"原始串里的 // 和 " 都不算注释"#; app.emit("real-after-raw", &p);',
+    "fn probe<'a>(x: &'a str) { app.emit(\"real-with-lifetime\", x) }",
+  ].join("\n");
+  const found = [...emittedNamesFrom(sample, new Map())].sort();
+  assert.deepEqual(found, ["real-after-raw", "real-after-string", "real-line", "real-with-lifetime"]);
+  // ⚠️ 这条顺带钉住扫描器的**已知边界**：只认"事件名是第一个实参"的形态
+  // （`emit("x")` / `emit_filter("x")`）。本仓 `emit_to` 用了 0 次 ⇒ 不为此扩正则；
+  // 哪天有人开始用 `emit_to(target, "x")`，这里会漏扫，得连这个 fixtures 一起改。
+  assert.deepEqual([...emittedNamesFrom('app.emit_to(w, "not-scanned", p);', new Map())], []);
+  // 反向对照：样例里必须**仍然含有**假形态 —— 否则哪天有人把 `stripRustComments` 的调用删掉，
+  // 这条测试也不会红（"证明有效的夹具退化成不证明"是本项目反复付过钱的形状）。
+  const raw = [
+    ...sample.matchAll(/\bemit\w*\(\s*(?:"([^"]+)"|([A-Z][A-Z0-9_]*))/g),
+  ].map((m) => m[1]);
+  assert.ok(
+    raw.some((x) => x !== undefined && x.startsWith("phantom-")),
+    "夹具失效：不剥注释时扫不到任何 phantom-* ⇒ 样例里的假形态该补回来了",
+  );
+});
 
 test("每个 Rust 事件都必须有前端消费者，或写在例外清单里并说明理由", () => {
   const emitted = rustEmittedEvents();
