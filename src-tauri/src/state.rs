@@ -92,6 +92,25 @@ pub struct RuntimeSnapshot {
     /// 用户也应该显示"在线"——用 `online` 会在这种场景下把用户标成离线。
     /// `online` 仍然保留（它是"局域网在跑"，界面里"局域网：N 个节点"那类 LAN 专属文案要用）。
     pub present: bool,
+    /// 已配置的「跨网段 / VPN」端点数（**不是发现通道**，配置在设置页；这里只给"有没有"，
+    /// 不给地址）。供「添加好友」页如实告知"还有哪些通道在线"。
+    pub routed_endpoints: usize,
+    /// 公网中转状态（同上：只给可公开的事实，**不含口令、不含服务器地址**）。
+    pub relay: RelayRuntimeStatus,
+}
+
+/// 公网中转的运行状态（`ChannelStatus` 那套发现通道装不下它，且**绝不能带口令/地址**）。
+///
+/// 为什么单独一个结构、且只放两个 bool：快照既作为命令返回值、又作为 `runtime-changed`
+/// 事件载荷发给所有窗口，还会被诊断读到 —— 口令与服务器地址属于"设置页才该出现"的敏感值
+/// （见守卫 `relay_token_never_reaches_logs_or_diagnostics`），这里只放"开没开 / 通没通"。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayRuntimeStatus {
+    /// 用户是否启用了公网中转（持久化偏好，不看是否真的连通）
+    pub enabled: bool,
+    /// 当前是否至少有一条中继电路（`path_kind == Relay` 的活跃链路）
+    pub connected: bool,
 }
 
 /// 蓝牙运行时事实（`ChannelStatus` 表达不了的部分）。

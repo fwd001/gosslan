@@ -69,6 +69,26 @@ pub async fn build_runtime_snapshot(s: &Arc<AppState>) -> RuntimeSnapshot {
     // 我的在线状态 = **任一通道在跑**（用户规则：两个都关才是离线）。
     // 注意用 `running` 而不是 `enabled`：开关打开但起不来（如权限被拒）不该算在线。
     let present = list.iter().any(|c| c.running);
+    // 跨网可达性（**不是发现通道**，配置在设置页）：只取"有没有 / 通没通"，绝不取口令与服务器地址。
+    // 「添加好友」页据此如实告知"局域网/蓝牙之外还开着什么"（用户 2026-09-22）。
+    let (routed_endpoints, relay_enabled) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            crate::discovery::routed::parse_endpoints(
+                &db::get_setting(&dbc, crate::discovery::routed::ROUTED_ENDPOINTS_KEY)
+                    .unwrap_or_default(),
+            )
+            .len(),
+            db::get_setting(&dbc, RELAY_ENABLED_KEY).is_some_and(|v| v == "1"),
+        )
+    };
+    // 中继是否真的连通：有任意一条 `path_kind==Relay` 的活跃链路即算（用枚举判，不按服务器地址）。
+    let relay_connected = {
+        let links = s.links.lock().await;
+        links
+            .values()
+            .any(|ls| ls.iter().any(|l| l.path_kind == crate::mesh::PathKind::Relay))
+    };
     RuntimeSnapshot {
         present,
         channels: list,
@@ -78,6 +98,11 @@ pub async fn build_runtime_snapshot(s: &Arc<AppState>) -> RuntimeSnapshot {
             feature_compiled: cfg!(feature = "bluetooth"),
         },
         peer_count,
+        routed_endpoints,
+        relay: crate::state::RelayRuntimeStatus {
+            enabled: relay_enabled,
+            connected: relay_connected,
+        },
     }
 }
 

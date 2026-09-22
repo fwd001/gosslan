@@ -290,6 +290,10 @@ export interface RuntimeSnapshot {
   peerCount: number;
   /** **我自己的在线状态**：任一通道在跑 = 在线；两个都关才是离线（用户 2026-09-12 定的规则） */
   present: boolean;
+  /** 已配置的「跨网段 / VPN」端点数（不是发现通道，配置在设置页；只给"有没有"，不给地址） */
+  routedEndpoints: number;
+  /** 公网中转状态（只有可公开的事实，**不含口令、不含服务器地址**） */
+  relay: { enabled: boolean; connected: boolean };
 }
 
 export interface ChannelStatus {

@@ -121,6 +121,15 @@ function peerAddress(p: Peer): string {
 }
 
 const channels = computed(() => app.channels ?? []);
+/**
+ * 跨网通道（VPN / 公网中转）状态：**不是发现通道**，开关与配置都在设置页。
+ * 这里只读后端快照里的可公开事实（端点数 / 中转开没开 / 通没通），用来在"什么都没发现"时
+ * 如实告诉用户"局域网/蓝牙之外还开着什么"，并说清它们只连通**已是好友**的人
+ * （公网首次加好友需经一位共同好友 —— 中转是哑管道，不为陌生人配对，见 ADR-0020 D4）。
+ */
+const routedCount = computed(() => app.runtime?.routedEndpoints ?? 0);
+const relay = computed(() => app.runtime?.relay ?? null);
+const hasCrossNet = computed(() => !!relay.value?.enabled || routedCount.value > 0);
 const channelBusy = ref<string | null>(null);
 
 /**
@@ -167,7 +176,13 @@ async function toggleChannel(ch: ChannelStatus, next: boolean) {
 const emptyReason = computed(() => {
   const lan = channels.value.find((c) => c.channel === "lan");
   const bt = channels.value.find((c) => c.channel === "bluetooth");
-  if (!lan?.enabled && !bt?.enabled) return t("friend.add.empty.noChannel");
+  if (!lan?.enabled && !bt?.enabled) {
+    // 两条**发现**通道都关了。若还有跨网通道在线，必须说清"它只连通已是好友的人"，
+    // 不能笼统说"通道都关了"——否则用户在中转场景下会以为"中转坏了搜不到人"（实为设计如此）。
+    return hasCrossNet.value
+      ? t("friend.add.empty.onlyCrossNet")
+      : t("friend.add.empty.noChannel");
+  }
   if (bt?.enabled) return t("friend.add.empty.bleScanning");
   return t("friend.add.empty.lanNoPeer");
 });
@@ -277,6 +292,32 @@ async function add(peerId: string) {
             @update:model-value="(v: boolean) => toggleChannel(ch, v)"
           />
         </div>
+      </div>
+
+      <!-- 跨网通道（VPN / 公网中转）：**不是发现通道**，开关与配置都在设置页。这里只如实告知
+           "局域网/蓝牙之外还开着什么"，并说清它们只连通**已是好友**的人 —— 避免用户在中转场景
+           误以为"中转能搜到陌生人"（哑管道不为陌生人配对，公网首次加好友需经共同好友）。 -->
+      <div class="mt-3 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2">
+        <div class="text-xs font-medium text-[var(--gosslan-text-2)]">
+          {{ t("friend.add.crossNet.title") }}
+        </div>
+        <div class="mt-1.5 flex items-center justify-between gap-3">
+          <span class="text-sm text-[var(--gosslan-text)]">{{ t("friend.add.crossNet.routed") }}</span>
+          <span class="text-xs text-[var(--gosslan-text-2)]">
+            {{ routedCount > 0 ? t("friend.add.crossNet.routed.on", { n: routedCount }) : t("friend.add.crossNet.routed.off") }}
+          </span>
+        </div>
+        <div class="mt-1 flex items-center justify-between gap-3">
+          <span class="text-sm text-[var(--gosslan-text)]">{{ t("friend.add.crossNet.relay") }}</span>
+          <span class="text-xs text-[var(--gosslan-text-2)]">
+            {{ relay?.enabled
+              ? (relay.connected ? t("friend.add.crossNet.relay.connected") : t("friend.add.crossNet.relay.connecting"))
+              : t("friend.add.crossNet.relay.off") }}
+          </span>
+        </div>
+        <p class="mt-1.5 text-xs leading-relaxed text-[var(--gosslan-text-2)] opacity-80">
+          {{ t("friend.add.crossNet.hint") }}
+        </p>
       </div>
 
       <button

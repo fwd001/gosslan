@@ -137,6 +137,28 @@ test("「添加好友」页的通道开关：走 store、用开关给的目标�
   );
 });
 
+/**
+ * 「添加好友」空状态必须把**跨网通道**（VPN / 公网中转）也算进去（用户 2026-09-22）。
+ *
+ * 现场：用户不在局域网、只开了公网中转，关掉局域网/蓝牙两个开关后界面只说"两条通道都关了"，
+ * 于是以为"中转坏了搜不到人"。真相是中转**本就不为陌生人配对**（哑管道，ADR-0020 D4）——
+ * 所以空状态必须改口说清"跨网通道只连通已是好友的人"，而不是笼统地报"都关了"。
+ * 这条退化不会报错（界面照常显示一句话），只能静态钉住。
+ */
+test("「添加好友」空状态：跨网通道在线时不许笼统说「都关了」，且不得搬入口令/地址", () => {
+  const modal = read("components/AddFriendModal.vue");
+  assert.match(
+    modal,
+    /hasCrossNet\.value\s*\?\s*t\("friend\.add\.empty\.onlyCrossNet"\)/,
+    "LAN/BT 都关但 VPN/中转在线时，必须走 onlyCrossNet 这条诚实文案（说清只连通已是好友的人）",
+  );
+  assert.match(modal, /app\.runtime\?\.routedEndpoints/, "VPN 端点数必须读自运行快照（唯一真相源）");
+  assert.match(modal, /app\.runtime\?\.relay/, "中转状态必须读自运行快照（唯一真相源）");
+  // 口令与服务器地址只属于设置页：快照里压根没有它们，加好友页也不许去别处捞。
+  assert.ok(!/\.token\b/.test(modal), "加好友页绝不许出现中转口令");
+  assert.ok(!/getRelayConfig/.test(modal), "加好友页不得拉取含口令的中转配置（只读快照里的可公开字段）");
+});
+
 test("移动端「新的朋友」必须切到主面板（否则点了像没反应）", () => {
   const layout = read("layouts/ResponsiveLayout.vue");
   const open = layout.slice(
