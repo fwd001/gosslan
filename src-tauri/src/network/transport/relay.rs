@@ -56,38 +56,17 @@ pub fn relay_epoch_day(now_ms: i64) -> u64 {
     }
 }
 
-/// 换天窗口内**本轮该试哪一天**的哈希（INTEGRATION.md 要求 5）。
-///
-/// UTC 00:00 前后两端可能各算"今天"和"昨天"，只拨一个哈希就配不上，而且现场是"两端都显示
-/// 已连接却始终配不成" —— 最难查的那种。指南给的主动方案是窗口内同时拨两个哈希；**这里做不到
-/// "同时"**：在途守卫键是 `peer:{id}`（`transport.rs:2241`），同一个对端的第二条拨号会被它挡掉。
-/// 所以按轮**交替** —— 每轮 10 秒，两端各自交替 ⇒ 最多两轮必然落在同一天上。
-/// 这不违反要求 1（那条禁的是"同一个 ch 同时存在两条自己的连接"；任一时刻只有一个 ch 在拨）。
-///
-/// 抽成纯函数（`now_ms` + `round`）是为了能被测试钉住：窗口边界与交替序都不依赖真实时钟。
-pub fn relay_day_to_try(now_ms: i64, round: u64) -> u64 {
-    let day = relay_epoch_day(now_ms);
-    if !relay_in_day_rollover_window(now_ms) {
-        return day;
-    }
-    // 偶数轮今天、奇数轮昨天。`day` 为 0 时 saturating 停在 0 —— 那本来就是"时钟没同步、
-    // 两侧都按第 0 天"的退化情形，两端仍然一致。
-    match round % 2 {
-        0 => day,
-        _ => day.saturating_sub(1),
-    }
-}
-
-/// 是否落在 UTC 换天前后各一小时的窗口里（窗口外不必多此一举）。
-fn relay_in_day_rollover_window(now_ms: i64) -> bool {
-    if now_ms <= 0 {
-        return false;
-    }
-    let sec_of_day = (now_ms % 86_400_000) / 1_000;
-    // 窗口 = 一天里首尾各一小时；写成"不在中间那段"而不是 `a || b`，
-    // 是因为后者会被 clippy 判成手写 range contains（而且前者更少写错边界）。
-    !(3_600..86_400 - 3_600).contains(&sec_of_day)
-}
+// 换天（INTEGRATION.md 要求 5）走**被动自愈**，不做主动双拨 —— 这段是回退 7e8be76 留下的理由。
+//
+// 7e8be76 用一个**进程内的轮次计数器**在今日/昨日之间交替，理由是"两端各自交替 ⇒ 最多两轮
+// 必然落在同一天"。**那句是错的**：两端计数器都从 0 起算、相位互相独立，反相时整个窗口内
+// 每一轮都各拨一天，一次也配不上 —— 它没有修好问题，还把一个不成立的保证写进了提交信息。
+//
+// 重新算过之后结论是这里根本不需要主动方案：只有"两端时钟在零点两侧对不齐"时才会算出不同的
+// day，而对不齐的时长就等于**两端时钟偏差**（NTP 下秒级），不是指南说的 1 小时；两侧各自跨过
+// 零点后自然重新一致，最坏卡十几秒到一轮重拨。要做"真同时拨两个 ch"的代价是要把在途拨号守卫
+// 从 `peer:{id}`（`transport.rs:2241`）拆到按通道键 —— 为一个秒级窗口改并发守卫，不划算。
+// 留这段注释是为了下一个读到的人别再顺手"修"成按轮交替。
 
 /// 挑出这一轮该建中继电路的好友。三条排除规则都是**判据**，不是偏好：
 ///
@@ -174,8 +153,6 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // 上一轮生效的服务器地址：只有它变化（含变回"未配置"）才需要撤旧电路。
     let mut prev_server: Option<SocketAddr> = None;
-    // 轮次计数：只用来决定换天窗口内这一轮试哪一天的哈希（见 `relay_day_to_try`）。
-    let mut round: u64 = 0;
 
     loop {
         tokio::select! {
@@ -183,7 +160,6 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
             _ = shutdown.changed() => break,
             _ = tick.tick() => {}
         }
-        round = round.wrapping_add(1);
 
         let cfg = {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -232,8 +208,7 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
         if targets.is_empty() {
             continue;
         }
-        // 换天窗口内按轮交替试今日/昨日（要求 5；为什么不能"同时"见 `relay_day_to_try`）。
-        let day = relay_day_to_try(db::now_ms(), round);
+        let day = relay_epoch_day(db::now_ms());
         let my_pk = state.identity.ed25519_public_b64();
         let my_id = state.device_id.clone();
         let my_signing = state.identity.ed25519_signing.clone();
@@ -413,38 +388,6 @@ mod relay_wiring_tests {
     use crate::transport::tcp::{read_bytes, write_bytes, TcpReceiver, TcpSender};
     use ed25519_dalek::SigningKey;
     use tokio::io::{copy_bidirectional, duplex, split, AsyncReadExt, DuplexStream};
-
-    /// 换天窗口（INTEGRATION.md 要求 5）：窗口外永远今日；窗口内按轮交替，
-    /// 且**相邻两轮必然覆盖到另一天** —— 两端各自交替时，最多两轮就必然落在同一天上。
-    #[test]
-    fn rollover_window_alternates_the_day_per_round() {
-        const DAY: u64 = 7_000;
-        const MS: i64 = (DAY as i64) * 86_400_000;
-
-        // 窗口外（UTC 正午）：奇偶轮都试今天，不该多此一举
-        let noon = MS + 43_200_000;
-        assert_eq!(relay_day_to_try(noon, 1), DAY);
-        assert_eq!(relay_day_to_try(noon, 2), DAY);
-
-        // 窗口内（刚过 00:00）：交替，并且第二轮必须回到今天，不能一路往前退
-        let just_after = MS + 30 * 60_000;
-        assert_eq!(relay_day_to_try(just_after, 0), DAY);
-        assert_eq!(relay_day_to_try(just_after, 1), DAY - 1);
-        assert_eq!(relay_day_to_try(just_after, 2), DAY, "交替必须回到今天");
-
-        // 窗口内（差 1 秒到 00:00）：同样交替
-        let just_before = MS + 86_399_000;
-        assert_eq!(relay_day_to_try(just_before, 0), DAY);
-        assert_eq!(relay_day_to_try(just_before, 1), DAY - 1);
-
-        // 边界两侧对同一判据必须一致（否则一端算窗口内、另一端算外，等于没修）
-        assert!(relay_in_day_rollover_window(MS + 3_599_000));
-        assert!(!relay_in_day_rollover_window(MS + 3_600_000));
-
-        // 时钟未同步：两侧都停在第 0 天且**不参与交替** —— 各算一个不相干的值才是真配不上
-        assert_eq!(relay_day_to_try(-5, 1), 0);
-        assert!(!relay_in_day_rollover_window(0));
-    }
 
     fn id_set(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|s| s.to_string()).collect()
