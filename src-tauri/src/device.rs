@@ -12,7 +12,7 @@
 //!
 //! ## 现在的规则
 //!
-//! `id = gosslan- + hex( SHA256( 16 字节首启随机 ‖ 设备属性快照 )[..8] )`
+//! `id = gosslan- + hex( SHA256( 16 字节首启随机 ‖ 设备属性快照 ) )[..13]`（共 21 字符）
 //!
 //! - **唯一性由那次随机数保证**：属性全一样也不撞（克隆镜像正是属性全一样的场景）；
 //! - **属性参与计算**（按用户要求）：机器码 / 主机名 / 网卡名，作为熵与"同镜像可识别"的线索；
@@ -23,16 +23,29 @@
 //! 系统调用 + Android JNI），而 Android/iOS/Win11 默认开 MAC 随机化 ⇒ 它加不了唯一性，
 //! 只会加不稳定与"换网络就变身份"。将来要加也只是往属性快照里添一项。
 //!
-//! 长度与形状保持不变（24 字符、`gosslan-` 前缀）：`nickname.rs` 由 id 派生默认昵称、
-//! 镜像规则要 ASCII 可排序、UI 与日志宽度都按这个形状写着。
+//! 长度与形状（21 字符 = `gosslan-` + 13 位小写 hex）保持稳定：`nickname.rs` 由 id 派生默认昵称、
+//! 镜像规则要 ASCII 可排序、UI 与日志宽度都按这个形状写着。**已装设备保持它原来的 24 字符**
+//! （只认持久化值），所以系统里长短两种 id 会并存 —— 没有任何一处按等长假设写过。
 
 use rand_core::RngCore;
 use sha2::{Digest, Sha256};
 
 /// ID 前缀。全链路只有这一个前缀（多套一层会把排序压成"恒最小 id"，见 `strip_legacy_dev_prefix`）。
 pub const DEVICE_ID_PREFIX: &str = "gosslan-";
-/// 前缀之后的十六进制位数（64 bit）—— 与旧的派生值同长。
-pub const DEVICE_ID_HEX_LEN: usize = 16;
+/// 前缀之后的十六进制位数。
+///
+/// **13 位 = 52 bit**（用户 2026-09-22 定的形状：整机 21 字符，自定义后缀上限 +3 正好回到 24）。
+/// 比旧的 16 位少 12 bit，这是**明知故犯**：唯一性本来就由首启那 16 字节随机数提供，
+/// 52 bit 在"百万台设备"量级下的生日碰撞概率仍在 1e-4 以下，而这个产品的对手不是注册机。
+/// 换来的是界面与日志里那一行短三个字符，以及"默认长度 + 自定义 3 位"这条规格自洽。
+pub const DEVICE_ID_HEX_LEN: usize = 13;
+/// 整机 ID 的固定长度 = 前缀 + hex，**只在测试里当形状判据用**。
+///
+/// 刻意写成 `#[cfg(test)]` 而不是 `pub`：`cargo clippy -- -D warnings` 只编 lib（不带
+/// `--tests`，见 `.github/workflows/verify.yml` 的 rust 组），一个只给测试用的 `pub` 常量
+/// 在生产构建里就是 dead code ⇒ 直接把 CI 打红。上一条 4.25.1 修的就是同一形状的坑。
+#[cfg(test)]
+pub(crate) const DEVICE_ID_LEN: usize = DEVICE_ID_PREFIX.len() + DEVICE_ID_HEX_LEN;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
@@ -149,8 +162,14 @@ mod tests {
         );
         assert_eq!(
             id.len(),
-            DEVICE_ID_PREFIX.len() + DEVICE_ID_HEX_LEN,
+            DEVICE_ID_LEN,
             "长度必须固定：昵称由 id 派生、UI 与日志都按这个形状写着：{id}"
+        );
+        // 这个字面量是**故意的**，不许换成常量：换成常量后"把 hex 位数从 13 改到 8"
+        // 就再也报不出红（上面那条断言会跟着一起变绿）。形状变更必须显式改这里。
+        assert_eq!(
+            DEVICE_ID_LEN, 21,
+            "整机 id 长度是 21 字符（用户 2026-09-22 定的规格）"
         );
         let body = id.strip_prefix(DEVICE_ID_PREFIX).unwrap();
         assert!(
@@ -189,7 +208,10 @@ mod tests {
         };
         let a = generate_device_id(&empty);
         let b = generate_device_id(&empty);
-        assert!(a.starts_with(DEVICE_ID_PREFIX) && a.len() == 24, "{a}");
+        assert!(
+            a.starts_with(DEVICE_ID_PREFIX) && a.len() == DEVICE_ID_LEN,
+            "{a}"
+        );
         assert_ne!(a, b, "属性全空时也必须靠随机数分开（否则移动端回到撞号）");
     }
 

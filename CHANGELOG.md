@@ -10,6 +10,44 @@
 
 ## [Unreleased]
 
+## [4.27.0] - 2026-09-22
+
+### Changed (设备 ID 形状 24 → 21 字符：`gosslan-` + 13 位小写 hex)
+
+用户 2026-09-22 定的规格是"默认 15–20 字符、撞号时自定义最多 +3"，而现网形状是 24。
+取 **21** 而不是硬压到 20 的理由不是省那四个字符：**21 + 3 = 24 正好回到旧形状** ——
+"撞了号又不想等"的人手工加三位后缀后，长度与今天所有设备一致，UI/日志宽度不用特判。
+
+- `DEVICE_ID_HEX_LEN` 16 → 13，`generate_device_id` 的取值随之变成 `hex(...)[..13]`。
+- **熵 64 bit → 52 bit 是明知故犯**，理由写进 `device.rs` 与 ADR-0021 §4：唯一性由首启那
+  16 字节随机数提供（不是由截断后的位数提供），52 bit 在百万台设备量级下的生日碰撞概率
+  仍低于 1e-4，而这个产品的对手不是注册机。**如果哪天要做"服务端注册/设备认证"，这条要重估。**
+- **已装设备一个字都不变**：启动时"只认持久化值"，所以库里那 24 字符会一直留着 ⇒
+  系统里长短两种 id **并存是预期状态**。核对过没有任何一处按"等长"写过
+  （`nickname.rs` 取的是哈希**字节** `h[0] / h[1]`，不是字符位置；镜像规则是 ASCII 字典序，
+  不同长度照样可比）。
+- 护栏：`device.rs` 里那条形状断言现在**同时**断言"长度 = 常量"和"常量 = 21"（字面量）。
+  后者是刻意的 —— 只写前者的话，把 hex 位数从 13 改成 8 会跟着一起变绿。
+
+### Fixed (顺手挡掉一个自己刚踩过的坑)
+
+新增的 `DEVICE_ID_LEN` 一开始写成 `pub const`，而它只被测试用 ⇒ `cargo clippy -- -D warnings`
+**只编 lib、不带 `--tests`**（CI 的 rust 组就是这个形状），于是报 `constant is never used` 直接红。
+改成 `#[cfg(test)] pub(crate) const` 并把原因写在注释里 —— 与 4.25.1 那次
+`parse_channel_hex` 是同一类坑（"只给测试用的东西"在生产构建里就是死码）。
+
+### Tests
+- `cargo test --features bluetooth --lib` ⇒ **636 passed / 0 failed**（含 `generated_id_keeps_the_one_prefix_and_length`
+  钉住"前缀只有一个、长度 21、只含小写 hex"，以及 `identical_attributes_still_produce_different_ids`
+  那 200 次连发生成互不相同 —— 截断到 13 位之后这条依然是判据，不是运气）。
+- `cargo fmt -- --check` ✓；`cargo clippy --features bluetooth -- -D warnings` 0 条；
+  `check-test-manifest --only rust` ⇒ 基线 636 条全部在跑（用例数没变，只改了断言）。
+- ⚠️ 覆盖边界：**没跑真机升级路径**。已装设备"保持 24"这条是靠"启动只读持久化值"的代码路径
+  成立的（`state.rs` 的 `match db::get_setting(...)`），而不是靠迁移 —— 真机上要验的是
+  老设备升级后 id 一字未变、好友与链路都不受影响（新装才会看到 21 字符）。
+
+Version-Bump: minor
+
 ## [4.26.0] - 2026-09-22
 
 ### Added (公网中转：保存时真拨一次 + 三类失败分开说 + 只填 IP 时自动试端口)
