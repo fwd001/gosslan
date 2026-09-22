@@ -2781,6 +2781,23 @@ CASES: list[Case] = [
         tags=["rust", "relay", "new-guards"],
     ),
     Case(
+        name="中继电路必须登记成 PathKind::Relay（改回 Routed = 界面把中转标成 VPN）",
+        why="四种通道全局统一（用户 2026-09-22）：中转电路此前复用 Routed，被界面标成「跨网段 / VPN」\n"
+        "     并与 VPN 直达挤同一选路优先级。只钉枚举的单测（path_rank / best_link_kind /\n"
+        "     path_kind_names_are_stable）在拨号改回 Routed 时**照样全绿** —— 接线没人守。\n"
+        "     注入方式就是那处唯一拨号构造点：PathKind::Relay 改回 PathKind::Routed（仍可编译，\n"
+        "     不然红的是编译器而不是判据），守卫 relay_circuit_is_tagged_relay_not_routed 必须红。",
+        file=TAURI / "src" / "network" / "transport" / "relay.rs",
+        injections=[(
+            "PathKind::Relay,",
+            "PathKind::Routed,",
+        )],
+        cmd=cargo("test", "--lib", "relay_circuit_is_tagged_relay_not_routed"),
+        cwd=TAURI,
+        expect_fail_hint="中继会合拨号",
+        tags=["rust", "relay", "mesh", "new-guards"],
+    ),
+    Case(
         name="幂等 accept 时必须重置段号（少这一句，续传段会被当成迟到重复片整段丢掉）",
         why="2026-09-22 跨网首测：160MB 永远停在 0%，最后报分片失败。\n"
         "     发送端续传时分片**按段从 seq 0 重编**，而活跃接收器的 next_seq 已推进到上一段末尾\n"

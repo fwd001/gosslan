@@ -10,6 +10,14 @@
 
 ## [Unreleased]
 
+## [4.29.1] - 2026-09-23
+
+### Added (守卫非空转记账)
+
+- 给 4.28.0 那条源码守卫 `relay_circuit_is_tagged_relay_not_routed` 在 `verify-guards.py` 登记变异
+  用例：把 `relay.rs` 拨号处的 `PathKind::Relay` 注入回 `Routed`（仍可编译，否则红的是编译器不是判据），
+  守卫必须红。已 `--only` 实跑证明「改坏即 FAIL、恢复即 PASS」。test-only，无运行时行为变化。
+
 ## [4.29.0] - 2026-09-22
 
 ### Changed (四种通道全局统一②：连接图标收到唯一一处，好友列表也显示链路类型)
