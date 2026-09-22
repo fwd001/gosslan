@@ -2696,6 +2696,30 @@ mod tests {
         );
     }
 
+    /// 中继会合拨号必须把电路登记成 `PathKind::Relay`，**不能复用 `Routed`**。
+    ///
+    /// 为什么钉接线而不是只钉枚举：`path_rank` / `best_link_kind` / `path_kind_names_are_stable`
+    /// 的单测只证明"枚举里有 Relay、优先级对、串名对"。把 relay.rs 那处拨号改回
+    /// `PathKind::Routed`，它们**照样全绿** —— 而后果是用户能看见的：中转电路又会被界面标成
+    /// 「跨网段 / VPN」、并和真正的 VPN 直达路径挤进同一个选路优先级（用户 2026-09-22 要求
+    /// "局域网 / VPN / 蓝牙 / 公网中转四种通道全局统一"）。判据落在**唯一的那处拨号构造点**。
+    #[test]
+    fn relay_circuit_is_tagged_relay_not_routed() {
+        let src = crate::network::transport_src_for_guards();
+        // 自证视图里真的有中继分册（漏登记 ⇒ 扫不到拨号点 ⇒ 永远绿 = 假绿）。
+        assert!(
+            src.contains("fn relay_rendezvous_task("),
+            "transport 视图里没有 `transport/relay.rs` 分册 ⇒ 这条守卫扫不到拨号点，会假绿。\
+             新增分册时要在 `network::transport_src_for_guards()` 里同步登记一行。"
+        );
+        let body = rust_fn_body(&src, "pub async fn relay_rendezvous_task(");
+        assert!(
+            body.contains("PathKind::Relay"),
+            "中继会合拨号必须用 PathKind::Relay 登记电路；改回 Routed 会让中转被标成「跨网段 / VPN」、\
+             并与 VPN 直达路径同优先级（四种通道必须可区分）"
+        );
+    }
+
     /// 好友身份锚点的**绑定来源**必须问同一道闸（#32 第一片）。
     ///
     /// 后果链：`friends.ed25519_pubkey` 是 Hello 的验签锚点（INV-P21）与安全码的输入，

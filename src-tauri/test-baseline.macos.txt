@@ -299,6 +299,7 @@ mesh::selection::tests::all_unhealthy_falls_back_to_first_keeps_usable
 mesh::selection::tests::empty_candidates_returns_none
 mesh::selection::tests::failures_within_threshold_still_healthy
 mesh::selection::tests::path_priority_lan_beats_routed_and_bluetooth
+mesh::selection::tests::path_priority_relay_beats_bluetooth_but_loses_to_routed
 mesh::selection::tests::path_priority_routed_beats_bluetooth
 mesh::selection::tests::path_rank_order_is_explicit
 mesh::selection::tests::same_priority_keeps_earliest_for_stability
@@ -574,6 +575,7 @@ tests::pending_requests_exclude_existing_friends
 tests::peripheral_reconnect_hello_replaces_the_stale_route
 tests::peripheral_subscribe_resets_that_centrals_reassembler
 tests::receiver_abort_notifies_the_sender_inside_the_loop
+tests::relay_circuit_is_tagged_relay_not_routed
 tests::relay_data_plane_respects_policy
 tests::relay_token_never_reaches_logs_or_diagnostics
 tests::release_keeps_every_kotlin_method_called_from_rust

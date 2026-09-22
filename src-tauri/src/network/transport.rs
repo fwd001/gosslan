@@ -1613,8 +1613,8 @@ pub(crate) async fn inbound_path_kind(state: &AppState, peer_id: &str) -> String
     );
     // ③ 徽标显示「实际会走的那条」= 选路结果的第一条（见 `badge_path_kind`）。
     //
-    // 为什么不能用 `first()`（旧实现）：一个 peer 可能同时有 LAN + Routed(+BLE) 多条连接，
-    // `first()` 是**插入顺序**，与 `pick_link`（LAN > Routed > Bluetooth + 活性过滤）
+    // 为什么不能用 `first()`（旧实现）：一个 peer 可能同时有 LAN + Routed(+Relay/BLE) 多条连接，
+    // `first()` 是**插入顺序**，与 `pick_link`（LAN > Routed > Relay > Bluetooth + 活性过滤）
     // 可能不一致 ⇒ 界面显示"桥接 N"，消息实际走的是 LAN（用户 2026-09-12 反馈过徽标不符）。
     // 选路函数返回空只可能发生在"全部候选都不可用"，此时退回首条（与发送时的兜底一致）。
     badge_path_kind(&links, &order).as_str().to_string()
@@ -2010,7 +2010,7 @@ fn generation_is_current(captured: u64, current: u64) -> bool {
 
 /// 单个 peer 允许并存的最大链路数（防御"同 peer 反复建链"的无界增长）。
 ///
-/// 正常拓扑一个 peer 最多 3 条（LAN + Routed + BLE），取 6 留余量（例如换网瞬间新旧并存）。
+/// 正常拓扑一个 peer 最多 4 条（LAN + Routed + Relay + BLE），取 6 留余量（例如换网瞬间新旧并存）。
 pub(crate) const MAX_LINKS_PER_PEER: usize = 6;
 
 /// **入站去重判据**（D6-2/D6-3 的核心，纯函数便于钉住）。

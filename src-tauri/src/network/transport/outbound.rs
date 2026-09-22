@@ -425,7 +425,7 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
         // M3-d（2026-09-14 全 Windows 局域网真机）：按**路径优先级**选一条发送链路，
         // 而不是 v.first()（插入顺序）。旧写法在同一 peer 同时有 LAN 与 BLE 链路时，
         // Gossip/控制帧可能走 BLE——表现为「同局域网却走了蓝牙/中继」。
-        // best_link_kind 给出 LAN > Routed > Bluetooth，再取该链路；同时保留 peer_id + endpoint
+        // best_link_kind 给出 LAN > Routed > Relay > Bluetooth，再取该链路；同时保留 peer_id + endpoint
         // 以便 timeout 时能定位到具体 Connection 并标记 congestion。
         picked
             .iter()

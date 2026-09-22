@@ -11,7 +11,7 @@
 //! ## 策略（ADR-0014 §3.2）
 //!
 //! 1. 先按**活性**过滤：不健康的连接不参与（`ConnectionHealth::is_healthy`）；
-//! 2. 再按**路径优先级**：LAN > Routed > Bluetooth；
+//! 2. 再按**路径优先级**：LAN > Routed > Relay > Bluetooth；
 //! 3. 同优先级用**建链顺序**打破平局 —— 稳定、可复现，不引入随机性（便于复现问题）；
 //! 4. 全部不健康 → **退回第一条**，而不是返回 `None` 让调用方报错。
 //!    保持可用优于报错，且与改造前「首个成功即返回」的兜底行为一致。
@@ -27,13 +27,18 @@ use super::path::PathKind;
 
 /// 路径优先级：数值越小越优先。
 ///
-/// 语义排序（LAN 直连最快 > 已路由 IP > 蓝牙）**不依赖 `PathKind` 的声明顺序** ——
-/// 枚举顺序是巧合，不能当语义用（那样以后往中间插一个变体就会静默改变选路优先级）。
+/// 语义排序（LAN 直连最快 > 已路由 IP 直达 > 公网中转电路 > 蓝牙）
+/// **不依赖 `PathKind` 的声明顺序** —— 枚举顺序是巧合，不能当语义用
+/// （那样以后往中间插一个变体就会静默改变选路优先级）。
+///
+/// 为什么 `Relay` 排在 `Routed` 之后、`Bluetooth` 之前：中转电路是经服务器转发的密封 TCP，
+/// 比对端真实 IP 直达的 VPN（`Routed`）多一跳、依赖第三方，但带宽远高于近场 BLE。
 fn path_rank(kind: PathKind) -> u8 {
     match kind {
         PathKind::Lan => 0,
         PathKind::Routed => 1,
-        PathKind::Bluetooth => 2,
+        PathKind::Relay => 2,
+        PathKind::Bluetooth => 3,
     }
 }
 
@@ -197,6 +202,22 @@ mod tests {
     fn path_rank_order_is_explicit() {
         // 直接钉住语义顺序，防止有人把枚举声明顺序当语义用
         assert!(path_rank(PathKind::Lan) < path_rank(PathKind::Routed));
-        assert!(path_rank(PathKind::Routed) < path_rank(PathKind::Bluetooth));
+        assert!(path_rank(PathKind::Routed) < path_rank(PathKind::Relay));
+        assert!(path_rank(PathKind::Relay) < path_rank(PathKind::Bluetooth));
+    }
+
+    #[test]
+    fn path_priority_relay_beats_bluetooth_but_loses_to_routed() {
+        // 中转电路（经服务器的密封 TCP）优先于近场 BLE，但让位给对端 IP 直达的 VPN/Routed。
+        let relay_vs_bt = vec![
+            healthy("p", 1, PathKind::Bluetooth),
+            healthy("p", 2, PathKind::Relay),
+        ];
+        assert_eq!(pick_link(&relay_vs_bt, NOW, TIMEOUT, MAX_FAIL), Some(1));
+        let routed_vs_relay = vec![
+            healthy("p", 1, PathKind::Relay),
+            healthy("p", 2, PathKind::Routed),
+        ];
+        assert_eq!(pick_link(&routed_vs_relay, NOW, TIMEOUT, MAX_FAIL), Some(1));
     }
 }

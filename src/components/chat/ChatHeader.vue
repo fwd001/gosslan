@@ -3,6 +3,7 @@ import {
   ArrowUpCircle,
   Bluetooth,
   FolderOpen,
+  Globe,
   ListChecks,
   Monitor,
   Network,
@@ -48,8 +49,9 @@ const emit = defineEmits<{
   (e: "open-share"): void;
 }>();
 
-/** 连接图标：桥接（跳数>0）→ Share2；直连按 path 选 Wifi/Network/Bluetooth。 */
+/** 连接图标：桥接（跳数>0）→ Share2；公网中转直连电路 → Globe；其余按 path 选 Router/Network/Bluetooth。 */
 function linkIcon(path: string, hop: number): { icon: string; label: string } {
+  // hop>0 = 经多个中间节点 mesh 转发（桥接），与"公网中转服务器的直连电路"是两回事。
   if (hop > 0) {
     return {
       icon: "relay",
@@ -58,6 +60,9 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
   }
   if (path === "bluetooth") {
     return { icon: "bluetooth", label: t("chat.header.linkBluetooth") };
+  }
+  if (path === "relay") {
+    return { icon: "relayServer", label: t("chat.header.linkRelayServer") };
   }
   if (path === "routed") {
     return { icon: "routed", label: t("chat.header.linkRouted") };
@@ -114,6 +119,7 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
         :aria-label="linkIcon(linkState.path, linkState.hop).label"
       >
         <Share2 v-if="linkIcon(linkState.path, linkState.hop).icon === 'relay'" class="h-4 w-4" />
+        <Globe v-else-if="linkIcon(linkState.path, linkState.hop).icon === 'relayServer'" class="h-4 w-4" />
         <Bluetooth v-else-if="linkIcon(linkState.path, linkState.hop).icon === 'bluetooth'" class="h-4 w-4" />
         <Network v-else-if="linkIcon(linkState.path, linkState.hop).icon === 'routed'" class="h-4 w-4" />
         <!-- 局域网直连：用「路由器」而不是 WiFi 扇形（用户 2026-09-17：WiFi 图标会让人

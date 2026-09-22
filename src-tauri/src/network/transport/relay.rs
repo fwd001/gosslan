@@ -285,7 +285,7 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
                     &state,
                     Some(&peer),
                     dial.server,
-                    PathKind::Routed,
+                    PathKind::Relay,
                     shutdown,
                     Some(RelayCtx {
                         dial: &dial,

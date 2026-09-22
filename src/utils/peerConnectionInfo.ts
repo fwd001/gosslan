@@ -7,20 +7,27 @@
  * `IP 地址：—`，而 `设备类型` 直接显示后端的 `desktop` / `mobile` 英文原值。用户的要求是：
  * **不同链路进来的设备，标注的信息应当不一样** —— 蓝牙根本没有 IP，不该拿一个空行敷衍。
  *
- * ## 约定（三种链路各说各的事实）
+ * ## 约定（各链路各说各的事实）
  *
  * | 链路 | 连接方式 | 地址行 | 例子 |
  * |---|---|---|---|
  * | 蓝牙直连 | 蓝牙直连（近距离） | **不显示** —— 蓝牙链路上没有 IP 这个概念 | — |
  * | 同一局域网 | 同一局域网 | `ip:port` | `192.168.31.32:59992` |
- * | 跨网段/中继 | 跨网段 / VPN（或"经 N 跳中继"） | `ip:port`；中继时**不显示**直连地址 | `100.101.221.60:59992` |
+ * | 跨网段/VPN | 跨网段 / VPN（对端真实 IP 直达） | `ip:port` | `100.101.221.60:59992` |
+ * | 公网中转 | 公网中转（经自备服务器的密封电路） | **不显示** —— 只有服务器地址，不是对端地址 | — |
+ * | 经 N 跳转发 | 经 {n} 跳中继（mesh 多跳，无直连链路） | 不显示 | — |
  * | 已发现未建链 | 已发现（未建链） | 不显示 | — |
  *
  * 判据全部是纯函数 ⇒ 可单测、可护栏（这类"显示错了"的退化不会报错，只会误导用户）。
  */
 
-/** 与后端 `PathKind::as_str()` 对齐（`lan` / `routed` / `bluetooth`）。 */
-export type PeerLink = "bluetooth" | "lan" | "routed" | string | null | undefined;
+/**
+ * 与后端 `PathKind::as_str()` 对齐（`lan` / `routed` / `relay` / `bluetooth`）。
+ *
+ * ⚠️ `relay` 是**公网中转服务器的直连密封电路**（后端 `PathKind::Relay`），
+ * 与 `hop > 0` 的「经 N 跳 mesh 转发」是两回事 —— 后者没有直连链路、只有跳数。
+ */
+export type PeerLink = "bluetooth" | "lan" | "routed" | "relay" | string | null | undefined;
 
 export interface PeerInfoInput {
   /** 后端填的**真实链路类型**（`Peer.link`）；null/缺失 = 只有发现、没有链路 */
@@ -38,7 +45,10 @@ export interface PeerInfoInput {
 export function linkLabelKey(info: PeerInfoInput): string {
   const hop = info.hop ?? 0;
   if (info.link === "bluetooth") return "peer.link.bluetooth";
+  // hop>0 = 经多个中间节点 mesh 转发（无直连链路），与"公网中转服务器直连电路"是两回事，先判它。
   if (hop > 0) return "peer.link.relay";
+  // 公网中转服务器的密封电路（后端 PathKind::Relay）：与"跨网段/VPN 对端 IP 直达"区分开。
+  if (info.link === "relay") return "peer.link.relayServer";
   if (info.link === "routed") return "peer.link.routed";
   if (info.link === "lan") return "peer.link.lan";
   if (info.online) return "peer.link.lan";
@@ -55,10 +65,13 @@ export function linkLabelParams(info: PeerInfoInput): Record<string, string | nu
  * 该不该显示"地址"这一行。
  *
  * **蓝牙链路一律不显示**：蓝牙上没有 IP，显示 `IP 地址：—` 只会让人以为"信息缺失"。
- * 中继链路也不显示直连地址（我们只有跳数，没有中继节点地址，写了就是编）。
+ * **公网中转链路也不显示**：那条电路的 endpoint 是**中转服务器地址**，不是对端地址，
+ * 显示出来等于把服务器 IP 冒充成对方 IP（写了就是骗）。
+ * mesh 多跳（hop>0）同样不显示直连地址（我们只有跳数，没有中继节点地址）。
  */
 export function shouldShowAddress(info: PeerInfoInput): boolean {
   if (info.link === "bluetooth") return false;
+  if (info.link === "relay") return false;
   if ((info.hop ?? 0) > 0) return false;
   return !!info.ip;
 }

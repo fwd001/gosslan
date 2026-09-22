@@ -371,6 +371,7 @@ export const zhCN: MessageDict = {
   "chat.header.linkRouted": "跨网段直连",
   "chat.header.linkBluetooth": "蓝牙直连",
   "chat.header.linkRelay": "桥接 · {n} 个中间节点",
+  "chat.header.linkRelayServer": "公网中转直连",
   // 蓝牙链路的传输速度提示（用户 2026-09-13 要求）：真机日志显示每片有效载荷约
   // 508~514 字节（MTU 517/512），按外设 12ms/片节流估算约 30~40 KB/s。
   // 必须让用户在大文件传输前就有预期，并说明"头像可能延迟同步"。
@@ -707,6 +708,7 @@ export const zhCN: MessageDict = {
   "peer.link.lan": "同一局域网",
   "peer.link.routed": "跨网段 / VPN",
   "peer.link.relay": "经 {n} 跳中继",
+  "peer.link.relayServer": "公网中转",
   "peer.link.discovered": "已发现（还没建链）",
   "peer.link.label": "连接方式",
   "peer.device.desktop": "电脑",
@@ -1317,6 +1319,7 @@ export const enUS: MessageDict = {
   "chat.header.linkRouted": "Cross-subnet direct",
   "chat.header.linkBluetooth": "Bluetooth",
   "chat.header.linkRelay": "Relayed · {n} hops",
+  "chat.header.linkRelayServer": "Public relay direct",
   "chat.bt.slowHint": "Bluetooth is slow (measured ~30–40 KB/s, link-dependent); large avatars may sync late and big files take much longer. Use the same Wi-Fi for large transfers.",
   "chat.bt.dismiss": "Got it",
 
@@ -1648,6 +1651,7 @@ export const enUS: MessageDict = {
   "peer.link.lan": "Same LAN",
   "peer.link.routed": "Routed / VPN",
   "peer.link.relay": "Relayed ({n} hop)",
+  "peer.link.relayServer": "Public relay",
   "peer.link.discovered": "Discovered (not linked yet)",
   "peer.link.label": "Link",
   "peer.device.desktop": "Computer",

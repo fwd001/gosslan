@@ -24,7 +24,7 @@ export interface Peer {
   ed25519_pubkey: string | null;
   /** 首次发现该节点的时间戳 */
   first_seen: number | null;
-  /** 当前实际链路类型：`lan` / `routed` / `bluetooth`（无链路时缺省） */
+  /** 当前实际链路类型：`lan` / `routed` / `relay`（公网中转）/ `bluetooth`（无链路时缺省） */
   link?: string | null;
 }
 
@@ -151,7 +151,8 @@ export interface GroupFileEntry {
 
 /** 会话的「当前链路」快照：最近一条消息走的链路 + 中间节点数。 */
 export interface LinkState {
-  path: "lan" | "routed" | "bluetooth";
+  /** `lan` / `routed`（跨网段·VPN 直达）/ `relay`（公网中转电路）/ `bluetooth`。 */
+  path: "lan" | "routed" | "relay" | "bluetooth";
   hop: number;
 }
 

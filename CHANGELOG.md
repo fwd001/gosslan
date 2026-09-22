@@ -10,6 +10,31 @@
 
 ## [Unreleased]
 
+## [4.28.0] - 2026-09-22
+
+### Changed (四种通道全局统一①：公网中转成为独立链路类型 `PathKind::Relay`)
+
+用户 2026-09-22 要求「局域网 / VPN 跨网段 / 蓝牙 / 公网中转」四种通道在各界面各处的枚举全局统一。
+此前**公网中转电路复用 `PathKind::Routed`**（`relay_rendezvous_task` 的拨号处），后果是用户能看见的：
+中转链路被界面标成「跨网段 / VPN」，并和真正的 VPN 直达路径挤进同一个选路优先级。
+
+- **新增 `PathKind::Relay`**（`mesh/path.rs`，`as_str()` = `"relay"`）；中转会合拨号改用它登记电路。
+- **选路优先级显式排成 LAN(0) > Routed(1) > Relay(2) > Bluetooth(3)**（`mesh/selection.rs::path_rank`
+  + `state.rs::best_link_kind`）：VPN 对端 IP 直达优于经服务器转发的中转，中转带宽又远高于近场 BLE。
+  `best_link_kind` 是**手写优先级数组、不是穷尽 match** —— 加变体时编译器不提醒，已补注释钉住这个静默缺口。
+- **前端区分「公网中转直连电路」与「经 N 跳 mesh 转发」**：`peerConnectionInfo.ts` 新增
+  `link === "relay"` → `peer.link.relayServer`（「公网中转」），与 `hop > 0` 的 `peer.link.relay`
+  （「经 N 跳中继」）分开；聊天头新增 Globe 图标 + `chat.header.linkRelayServer`。中转电路的 endpoint
+  是**服务器地址**，`shouldShowAddress` 对它返回 false（绝不把服务器 IP 冒充成对端 IP）。
+- 接线守卫 `relay_circuit_is_tagged_relay_not_routed`：钉住「唯一那处拨号构造点必须用 `PathKind::Relay`」。
+  只钉枚举的单测在拨号改回 `Routed` 时照样全绿，故接线单独断言。新用例
+  `path_priority_relay_beats_bluetooth_but_loses_to_routed`；`path_kind_names_are_stable` /
+  `path_rank_order_is_explicit` 扩到含 Relay。
+
+> 边界：**不改**中继电路的识别口径（`relay_link_snapshot` / `drop_relay_circuits` 仍按「endpoint == 服务器
+> 地址」判 —— relay 链路同时满足 `path_kind==Relay` 与 `endpoint==server`，行为不变）。发版前不动这条敏感路径。
+> `chunk_size_for_path` 只特判 `"bluetooth"`，relay 由 `"routed"` 改 `"relay"` 后仍取 `FILE_CHUNK`，分片大小不变。
+
 ## [4.27.4] - 2026-09-22
 
 ### Added (中继首行抽成唯一构造点，并钉住"`rejected` 文案不是假指控"的那个前提)

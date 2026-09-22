@@ -55,6 +55,18 @@ test("中继链路：说「经 N 跳中继」，且不显示直连地址（没�
   assert.equal(addressText(relay), null);
 });
 
+test("公网中转电路（link=relay, hop=0）：说「公网中转」，且**不显示服务器地址**", () => {
+  // 与上一条「经 N 跳 mesh 转发」是两回事：这是经自备中转服务器的**直连密封电路**。
+  const relayServer = { link: "relay", ip: "1.2.3.4", tcp_port: 59992, hop: 0, online: true };
+  assert.equal(linkLabelKey(relayServer), "peer.link.relayServer");
+  assert.equal(
+    shouldShowAddress(relayServer),
+    false,
+    "中转电路的 endpoint 是**服务器地址**，把它当对端 IP 显示就是骗人",
+  );
+  assert.equal(addressText(relayServer), null);
+});
+
 test("只有发现、还没建链：说「已发现（未建链）」，不显示地址", () => {
   const discovered = { link: null, ip: "192.168.31.32", tcp_port: 59992, online: false };
   assert.equal(linkLabelKey(discovered), "peer.link.discovered");

@@ -157,14 +157,17 @@ fn event_target_label(target: &tauri::EventTarget) -> Option<&str> {
     }
 }
 
-/// 对端当前"**实际会走**"的链路类型（与 `pick_link` 的优先级一致：LAN > Routed > Bluetooth）。
+/// 对端当前"**实际会走**"的链路类型（与 `pick_link` 的优先级一致：LAN > Routed > Relay > Bluetooth）。
 ///
 /// 为什么要它：界面上的「蓝牙直连」以前是**反推**出来的（`p.ip || 蓝牙直连`），
 /// 于是同一 Tailscale 网段（`Routed`）的设备也会被标成"蓝牙直连"（用户 2026-09-12 实测）。
 /// 链路类型只有后端知道（`Link::path_kind` 由**来路**决定，不能从 IP 段反推），所以在这里判。
+///
+/// ⚠️ 这是一份**手写优先级数组**，不是穷尽 `match` —— 往 `PathKind` 加新变体时编译器
+/// **不会**提醒这里，必须手动补（否则新变体永远选不上、静默退化成更低优先级）。
 pub fn best_link_kind(kinds: &[crate::mesh::PathKind]) -> Option<crate::mesh::PathKind> {
     use crate::mesh::PathKind::*;
-    [Lan, Routed, Bluetooth]
+    [Lan, Routed, Relay, Bluetooth]
         .into_iter()
         .find(|&want| kinds.contains(&want))
 }
