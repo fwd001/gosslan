@@ -2692,6 +2692,50 @@ CASES: list[Case] = [
         expect_fail_hint="打标必须排在 upsert_peer 之后",
         tags=["rust", "identity", "relay"],
     ),
+    Case(
+        name="事件扫描器必须剥掉 Rust 行注释（v4.25.2 那处修复的非空转证明）",
+        why="e8b335a 之前，契约扫描器把 Rust **注释里**写的 `emit(\"…\")` 扫成\"后端在发的事件\"，\n"
+        "     于是前端「没有消费者」的例外清单被凭空多出来的假事件牵着走。修法是 `stripRustComments`，\n"
+        "     但当时只用手改注入证明过一次，没登记进本脚本 ⇒ 违反「每条护栏都要被证明会失败」。\n"
+        "     注入方式就是**回到修好之前的形状**：删掉行注释那一段（块注释仍然剥，所以不是全盘失效）。\n"
+        "     夹具 `事件扫描器不被注释骗` 必须红：样例里 `// emit(\"phantom-line\")` 会被扫出来。",
+        file=ROOT / "src" / "api" / "events.test.ts",
+        injections=[(
+            "    if (c === \"/\" && d === \"/\") {\n"
+            "      let j = src.indexOf(\"\\n\", i);\n"
+            "      if (j === -1) j = src.length;\n"
+            "      out += \" \".repeat(j - i);\n"
+            "      i = j;\n"
+            "      continue;\n"
+            "    }\n",
+            "",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/api/events.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="phantom-line",
+        tags=["frontend", "new-guards", "ipc-events"],
+    ),
+    Case(
+        name="剥注释时 Rust 的 raw 字符串必须整段跳过（`r#\"…\"#` 里的 `//` 不是注释）",
+        why="这条守的是 raw 字符串**整段跳过**这件事。变异点必须在 `skipString` 内部那一句\n"
+        "     `const raw = /^r#*\"/`：把它简化成 `/^r\"/`（看着等价，都叫 raw 字符串），\n"
+        "     `r#\"…\"#` 就不再被识别 ⇒ 从 `r` 的下一个引号开始配对，串里那个 `//` 落到代码里\n"
+        "     ⇒ 整行被当行注释吃掉 ⇒ 真事件**少报**（少报比多报危险：它会放行本该报警的漂移）。\n"
+        "     ⚠️ 外层 `/^r#*\"/.test(src.slice(i, i + 6))` 改坏**不会**红：那是与 skipString 冗余的\n"
+        "     第二处识别，实测被 skipString 的回落救回来（整组仍 11/11 绿）—— 这条用例本身就是\n"
+        "     这个发现的产物：第一版注入选了外层，跑出来是\"护栏空转\"，换成内层才真正咬住。",
+        file=ROOT / "src" / "api" / "events.test.ts",
+        injections=[(
+            "    const raw = /^r#*\"/.exec(s.slice(from));",
+            "    const raw = /^r\"/.exec(s.slice(from));",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/api/events.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="real-after-raw",
+        tags=["frontend", "new-guards", "ipc-events"],
+    ),
 ]
 
 

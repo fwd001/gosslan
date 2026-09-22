@@ -186,14 +186,39 @@ test("事件扫描器不被注释骗，也不误伤代码（含串内 // 与生�
     '/* 外层 /* 内层 emit("phantom-nested") */ 还在注释里 */',
     'let s = "字符串里的 // 不是注释"; app.emit("real-after-string", &p);',
     'let r = r#"原始串里的 // 和 " 都不算注释"#; app.emit("real-after-raw", &p);',
+    // 原始串里引号数**为奇数**：不认识 `r#"` 的扫描器会从第一个 `"` 起两两配对配错相位，
+    // 于是串里那个 `//` 落到"代码"里，把整行（含真 emit）当行注释吃掉 ⇒ **少报真事件**。
+    // ⚠️ 这条的变异点在 `skipString` 里那一句 `const raw = /^r#*"/`，**不在**外层那段：
+    // 外层 `/^r#*"/.test(...)` 与 `skipString` 内部的 raw 识别是**冗余的两处**，
+    // 单独改坏外层那处它会被 `skipString` 的回落救回来（实测整组仍绿）——
+    // 所以"改了外层会不会红"这种直觉在这里是错的，别拿它当护栏存在与否的证据。
+    'let q = r#"引号 " 和斜杠 // 都在原始串里"#; app.emit("real-after-raw-odd-quote", &p);',
     "fn probe<'a>(x: &'a str) { app.emit(\"real-with-lifetime\", x) }",
   ].join("\n");
   const found = [...emittedNamesFrom(sample, new Map())].sort();
-  assert.deepEqual(found, ["real-after-raw", "real-after-string", "real-line", "real-with-lifetime"]);
+  assert.deepEqual(found, [
+    "real-after-raw",
+    "real-after-raw-odd-quote",
+    "real-after-string",
+    "real-line",
+    "real-with-lifetime",
+  ]);
   // ⚠️ 这条顺带钉住扫描器的**已知边界**：只认"事件名是第一个实参"的形态
-  // （`emit("x")` / `emit_filter("x")`）。本仓 `emit_to` 用了 0 次 ⇒ 不为此扩正则；
-  // 哪天有人开始用 `emit_to(target, "x")`，这里会漏扫，得连这个 fixtures 一起改。
+  // （`emit("x")` / `emit_filter("x")`）。本仓 `emit_to` 用了 0 次 ⇒ 不为此扩正则。
+  // 注意：**下面那条 `[]` 断言自己不会响**（它断言的就是"扫不到"）—— 会响的是紧随其后的绊线。
   assert.deepEqual([...emittedNamesFrom('app.emit_to(w, "not-scanned", p);', new Map())], []);
+  // 绊线：把"边界只写在注释里"换成"边界会红"。哪天 Rust 侧真的开始用 emit_to(target, "x")，
+  // 扫描器会**静默少报**事件 ⇒ 契约测试把真实事件当成"前端独有的监听"放过。
+  // 这条断言存在的意义就是让那种改动必须显式处理（扩正则 + 同步改上面那条 `[]` 夹具）。
+  const emitToSites = collectRustFiles(RUST_SRC).filter((f) =>
+    /\bemit_to\s*\(/.test(stripRustComments(readFileSync(f, "utf8"))),
+  );
+  assert.deepEqual(
+    emitToSites,
+    [],
+    "Rust 侧出现了 emit_to(...)：扫描器只认「事件名是第一个实参」，会静默少报。" +
+      "要么扩 `emittedNamesFrom` 的正则并同步改上面那条 `[]` 夹具，要么改回 `emit`",
+  );
   // 反向对照：样例里必须**仍然含有**假形态 —— 否则哪天有人把 `stripRustComments` 的调用删掉，
   // 这条测试也不会红（"证明有效的夹具退化成不证明"是本项目反复付过钱的形状）。
   const raw = [
