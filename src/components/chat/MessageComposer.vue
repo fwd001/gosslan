@@ -3,6 +3,7 @@ import { t } from "@/i18n";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
+import { MAX_PASTED_IMAGE_BYTES, PASTED_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
@@ -27,7 +28,10 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   (e: "send", payload: { content: string; kind: MsgKind }): void;
-  (e: "send-image", dataUrl: string): void;
+  // 交出去的是 **File 本身**，不是 data URL：读文件是异步的，若在组件里 await 完再 emit，
+  // 接收方只能在"读完之后"才知道要发给谁 —— 期间用户切了会话，图片就发到别的会话去了。
+  // 读取挪到发送方，让会话 id 在粘贴的那一刻被同步捕获（审计阶段 4 · 4.1-5）。
+  (e: "send-image", file: File): void;
   (e: "attach"): void;
   (e: "close-quote"): void;
   (e: "paste-files", paths: string[]): void;
@@ -537,7 +541,15 @@ async function onPaste(e: ClipboardEvent) {
       app.toast(t("chat.selfChatTextOnly"), "error");
       return;
     }
-    emit("send-image", await fileToDataUrl(imageFile));
+    // 前置体积闸（同一判据的 TS 侧镜像，见 utils/imageBytes 的注释）：后端要解完 base64
+    // 才知道超限，而那时 JS 堆 + IPC JSON + Rust Vec 已经各分配了一份。
+    if (imageFile.size > MAX_PASTED_IMAGE_BYTES) {
+      app.toast(t("chat.imageTooLarge", { max: PASTED_IMAGE_LIMIT_MB }), "error");
+      return;
+    }
+    // ⚠️ 同步 emit，不许 await：`emit` 之前一旦挂起，ChatWindow 捕获到的就是"切走之后"的
+    // 会话。读取与发送都在那侧完成，粘贴发生在哪个会话就发给哪个会话。
+    emit("send-image", imageFile);
     return;
   }
 
@@ -580,14 +592,6 @@ async function onPaste(e: ClipboardEvent) {
   document.execCommand("insertText", false, text.slice(0, room));
 }
 
-function fileToDataUrl(f: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result as string);
-    r.onerror = reject;
-    r.readAsDataURL(f);
-  });
-}
 </script>
 
 <template>

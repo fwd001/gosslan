@@ -368,6 +368,7 @@ export const zhCN: MessageDict = {
   "chat.eventBindFail": "实时消息监听启动失败，新消息可能收不到；请重启应用",
   // 自聊只支持文本（用户 2026-09-16）：粘贴/拖入图片或文件时给明确提示，不静默吞掉
   "chat.selfChatTextOnly": "和自己聊天暂不支持图片或文件",
+  "chat.imageTooLarge": "图片太大（超过 {max}MB），请压缩后再粘贴",
   "chat.header.deviceDesktop": "对方设备：电脑",
   "chat.header.deviceMobile": "对方设备：手机",
   "chat.header.linkLan": "局域网直连",
@@ -1328,6 +1329,7 @@ export const enUS: MessageDict = {
   "chat.selfChatHint": "Notes & files to yourself",
   "chat.eventBindFail": "Failed to start live message listeners; new messages may not arrive. Please restart the app.",
   "chat.selfChatTextOnly": "Chat-with-myself doesn't support images or files yet",
+  "chat.imageTooLarge": "Image too large (over {max}MB) — compress it before pasting",
   "chat.header.deviceDesktop": "Peer device: Desktop",
   "chat.header.deviceMobile": "Peer device: Mobile",
   "chat.header.linkLan": "LAN direct",

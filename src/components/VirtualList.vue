@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { trimOldest } from "@/utils/bounded";
 
 // 基于"估算高度"的虚拟滚动列表：适合消息列表（高度可变但有上限）。
 // 通过前缀和 + 二分查找定位可视区间，仅渲染可视项，支持向上滚动触发加载更多。
@@ -41,6 +42,11 @@ const viewport = ref(600);
 // 每个已渲染项的「实测高度」覆盖：图片、附件预览和字体布局都以真实 DOM 为准。
 // offsets 用实测值重算，既避免真实内容变高时重叠，也避免估算过大造成假间距。
 // 以 msg_id/id 为键（而非数组下标），向上加载历史（prepend）导致下标偏移时覆盖仍对应正确消息。
+// ⚠️ 只加不删（审计阶段 4 · 4.2 顺带发现）：每实测过一条消息就留一项，且 store 收缩
+// 会话缓存时不会清这里的对应键 ⇒ 长时间滚动的会话里单调增长。上 FIFO 闸：
+// 淘汰的是**最早测过**的那批（= 早就滚出屏幕的），在屏的最近测量必然活着，
+// 所以最坏后果只是"很久以前看过的消息重测一次高度"，不是当前视口抖动。
+const HEIGHT_OVERRIDE_MAX = 2000;
 const heightOverride = new Map<string | number, number>();
 const heightVersion = ref(0);
 
@@ -90,6 +96,7 @@ function commitHeight(i: number, measured: number) {
   const h = Math.round(measured * 100) / 100;
   if (Math.abs((heightOverride.get(k) ?? est) - h) > 1) {
     heightOverride.set(k, h);
+    trimOldest(heightOverride, HEIGHT_OVERRIDE_MAX);
     heightVersion.value += 1;
   }
 }

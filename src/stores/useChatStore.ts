@@ -15,11 +15,13 @@ import {
   selectCachedConversations,
   sortConversations,
   syncProfileFromPeers,
+  unreadAnchorIndex,
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
+import { trimOldest } from "@/utils/bounded";
 import { actionableRequests } from "@/utils/friendRequests";
 import { notificationBody } from "@/utils/notifications";
-import { isSilentKind } from "@/utils/messageKinds";
+import { isRenderedInTimeline, isSilentKind } from "@/utils/messageKinds";
 import { todoCompletedForCreator, todoMentionsMe, type TodoImage } from "@/utils/todos";
 import { invalidateFilePreview } from "@/utils/filePreview";
 import { t } from "@/i18n";
@@ -100,7 +102,11 @@ export const useChatStore = defineStore("chat", () => {
   // ---------------- 系统通知（后台 / 非当前会话才触发） ----------------
   const app = useAppStore();
   let notifSeq = 1;
+  // ⚠️ 只加不删（审计阶段 4 · 4.2 顺带发现）：删除点只有"通知被点击"和"动作按钮命中"两处，
+  // 用户直接把通知划掉时条目永久留着，而 `notifSeq` 单调递增 ⇒ 每条通知必进一份。
+  // 比 pendingAcks 更确定性地增长，所以同样上闸；上限 128 远大于一屏可见的通知数。
   const notifMap = new Map<number, string>();
+  const NOTIF_MAP_MAX = 128;
 
   function nicknameOf(id: string): string {
     const f = friends.value.find((x) => x.device_id === id);
@@ -158,6 +164,7 @@ export const useChatStore = defineStore("chat", () => {
           // 移动端：plugin 通知（Android 有 actionPerformed 点击事件桥）
           const id = notifSeq++;
           notifMap.set(id, convId);
+          trimOldest(notifMap, NOTIF_MAP_MAX);
           void sendNotification({
             id,
             title,
@@ -322,7 +329,12 @@ export const useChatStore = defineStore("chat", () => {
   // 乐观记录还在队列里未落地时到达的「真实记录」：tmp msg_id → 后端记录
   const pendingReplace = new Map<string, MessageRecord>();
   // Ack 先于乐观→真实替换到达：msg_id 已知但 store 里还没有该条目。
+  // ⚠️ 必须有容量上限（审计阶段 4 · 4.2）：`found` 只扫 `messages.value`（LRU 保留 4 个会话），
+  // 所以「会话被淘汰 / 文件回执 / outbox 补投」这三类 Ack 永远命中不了消费点，条目
+  // 只会加不会删 ⇒ 跟着运行时长单调增长。这里用 FIFO 兜住最坏情况；真正的删除
+  // 仍由 `send()` 消费时做（下面 `pendingAcks.delete`），淘汰只清那些本来就没人要的。
   const pendingAcks = new Set<string>();
+  const PENDING_ACKS_MAX = 512;
 
   function scheduleFlush() {
     if (flushScheduled) return;
@@ -514,6 +526,11 @@ export const useChatStore = defineStore("chat", () => {
     favorites.value = [];
     activeConv.value = null;
     pending = [];  // 后台滞留待冲刷的消息批次（`let pending`，见上）
+    // 这三张表存的都是"内存里的过渡态"：库已经清了，留着它们会让后续 flush 给已经不存在的
+    // 记录重建条目（审计阶段 4 · 4.3）。`clearAllData` 走的是另一条路径，两边必须同口径。
+    pendingReplace.clear();
+    pendingAcks.clear();
+    notifMap.clear();
     await Promise.all([
       refreshConversations(),
       refreshGroups(),
@@ -570,7 +587,15 @@ export const useChatStore = defineStore("chat", () => {
     topology.value = await api.getTopology();
   }
 
-  /** 打开会话时的未读定位：记录第一条未读消息索引（-1 = 无未读，贴底显示）。 */
+  /**
+   * 打开会话时的未读定位：第一条未读在**已渲染时间线**里的下标
+   * （-1 = 有未读但还没算出来，交给贴底兜底）。
+   *
+   * ⚠️ 坐标系是 `ChatWindow.messages`（过滤后的列表），不是 `messages[convId]` 原始列表 ——
+   * 分割线和 `scrollToIndex` 都在那个列表里消费这个数。换算收在
+   * `utils/messages.ts:unreadAnchorIndex()`，过滤判据与 ChatWindow 共用
+   * `isRenderedInTimeline`，不留第二份真相源（审计阶段 4 · 4.1-1）。
+   */
   const unreadJump = ref<{ convId: string; index: number } | null>(null);
 
   /**
@@ -670,14 +695,14 @@ export const useChatStore = defineStore("chat", () => {
     await Promise.all([loadMessages(id), ensureConv]);
     await readReceipt;
     if (unreadBefore > 0) {
-      const list = messages.value[id] ?? [];
-      const idx = list.length - Math.min(unreadBefore, list.length);
-      if (idx >= 0 && idx < list.length) {
-        unreadJump.value = { convId: id, index: idx };
-      } else {
-        // 无可定位的未读（空列表等异常）→ 不跳，交给贴底兜底
-        unreadJump.value = null;
-      }
+      // ⚠️ 换算必须发生在**过滤后的列表**里：`unread` 是后端计数，而分割线落在
+      // ChatWindow 渲染出来的那些行上（判据两边共用 `isRenderedInTimeline`，
+      // 见 utils/messageKinds）。旧写法在原始列表里取下标、到过滤后列表里用，
+      // 而"占下标不占未读"（静默/`system`）与"占未读不占下标"（`announcement`/`poll`）
+      // 两个方向的偏差同时存在 ⇒ 分割线画错消息、`scrollToIndex` 跳错位置。
+      const rendered = (messages.value[id] ?? []).filter((m) => isRenderedInTimeline(m.kind));
+      const idx = unreadAnchorIndex(rendered, unreadBefore);
+      unreadJump.value = idx >= 0 ? { convId: id, index: idx } : null;
     }
     // 未读已在上面乐观清零；这里只做一次兜底（若期间又来了新消息把 unread 加回去，
     // 说明是"打开之后"到达的，此时不该再清）。
@@ -689,6 +714,14 @@ export const useChatStore = defineStore("chat", () => {
   const PAGE_SIZE = 100;
   const MAX_PAGES = 10;
   const pagesLoaded = new Map<string, number>();
+  /** 正在翻历史页的会话（同一会话同时只允许一个在飞，见 `loadMoreMessages`）。 */
+  const loadingMore = new Set<string>();
+  /**
+   * 已知"这个会话已翻到最早一页"的会话：不再为它付任何翻页 IPC。
+   * ⚠️ 必须在每次 `loadMessages` 重新加载该会话时作废 —— 重新打开只取最新一页，
+   * 若沿用旧标记，500 条的会话就再也翻不到第 101 条以前（"翻不动历史"就是这么来的）。
+   */
+  const historyTops = new Set<string>();
   // 加载竞态守卫：快速切换会话时丢弃过期响应。**按会话分桶**：
   // 全局单计数会让「非活跃会话的重查」把此刻飞行中的活跃会话加载/翻页
   // 一并判为过期（onMessageStatusChanged 会对任意含该 msg_id 的会话触发
@@ -775,25 +808,55 @@ export const useChatStore = defineStore("chat", () => {
       ? appendLocalOnly(preserveDeliveryStatus(list, prev), prev)
       : list;
     pagesLoaded.set(convId, 1);
+    // 重新加载 = 手里只剩最新一页，"已翻到顶"这个结论当场失效。
+    // 不清这里就会出现"看过的会话重开后翻不动历史"（见 historyTops 的注释）。
+    historyTops.delete(convId);
   }
 
   /** 向上翻页加载更早的历史消息（VirtualList 触顶时调用）。 */
   async function loadMoreMessages(convId: string) {
+    // 两道闸门都必须有（审计阶段 4 · 4.1-2）：`VirtualList` 在"停在距顶 60px 内"期间
+    // 每一次重测都会 emit `loadMore`（滚动 / resize / applyJump 轮询 / scrollToIndex /
+    // items 变化 / 总高变化共 6 个入口），所以本函数会被**每帧**调用。
+    //   · loadingMore：没有它，并发的两次调用都过得了下面的页数判据、各自 `getMessages`
+    //     拉一页，却把 `pagesLoaded` 写成同一个值 ⇒ "前进一页、拉了两页数据"。
+    //   · historyTops：没有它，已经翻到最早一页的会话（绝大多数会话都不满 MAX_PAGES）
+    //     每帧都要白付一次 `getMessageCount` IPC。
+    // 刻意**不做**边沿触发式的一次性开关：那样用户停在顶部时只会翻出一页，必须"往下滚
+    // 一点再滚回来"才能继续翻 —— 那是拿一个真实可用的行为去换一个噪声，不划算。
+    if (loadingMore.has(convId) || historyTops.has(convId)) return;
     const pages = pagesLoaded.get(convId) ?? 1;
     if (pages >= MAX_PAGES) return;
-    const seq = loadSeqs.get(convId) ?? 0;
-    const total = await api.getMessageCount(convId);
-    if (pages * PAGE_SIZE >= total) return;
-    // 当前已加载最新 pages 页，继续向更早方向取一页。
-    const offset = Math.max(0, total - (pages + 1) * PAGE_SIZE);
-    const older = await api.getMessages(convId, PAGE_SIZE, offset);
-    if (seq !== (loadSeqs.get(convId) ?? 0) || older.length === 0) return;
-    const existing = messages.value[convId] ?? [];
-    messages.value[convId] = mergeMessages(existing, older);
-    pagesLoaded.set(convId, pages + 1);
-    // prepend 历史后，「第一条未读」的索引整体后移（index=-1 占位态不参与）
-    if (unreadJump.value?.convId === convId && unreadJump.value.index >= 0) {
-      unreadJump.value = { ...unreadJump.value, index: unreadJump.value.index + older.length };
+    loadingMore.add(convId);
+    try {
+      const seq = loadSeqs.get(convId) ?? 0;
+      const total = await api.getMessageCount(convId);
+      if (seq !== (loadSeqs.get(convId) ?? 0)) return;
+      if (pages * PAGE_SIZE >= total) {
+        historyTops.add(convId);
+        return;
+      }
+      // 当前已加载最新 pages 页，继续向更早方向取一页。
+      const offset = Math.max(0, total - (pages + 1) * PAGE_SIZE);
+      const older = await api.getMessages(convId, PAGE_SIZE, offset);
+      if (seq !== (loadSeqs.get(convId) ?? 0) || older.length === 0) return;
+      const existing = messages.value[convId] ?? [];
+      messages.value[convId] = mergeMessages(existing, older);
+      pagesLoaded.set(convId, pages + 1);
+      // 拿不满一页就是到头了，不必再问一次 `getMessageCount`
+      if (older.length < PAGE_SIZE) historyTops.add(convId);
+      // prepend 历史后，「第一条未读」的下标整体后移 —— 位移量必须是**会渲染的那几行**：
+      // 老页里含表情/撤回/置顶这类静默行，它们不进 ChatWindow 的列表，按 `older.length`
+      // 补偿就是"每翻一页再累积一次误差"（审计阶段 4 · 4.1-1 的第二处实例）。
+      // index=-1 是"还在加载"的占位态，不参与位移。
+      if (unreadJump.value?.convId === convId && unreadJump.value.index >= 0) {
+        const shift = older.reduce((n, m) => n + (isRenderedInTimeline(m.kind) ? 1 : 0), 0);
+        unreadJump.value = { ...unreadJump.value, index: unreadJump.value.index + shift };
+      }
+    } finally {
+      // 无论成功、被过期作废还是 IPC 抛错，都必须放行下一次 —— 漏掉这一步就是
+      // "翻一次页之后再也翻不动"（那道闸永远不会再开）。
+      loadingMore.delete(convId);
     }
   }
 
@@ -1365,7 +1428,12 @@ export const useChatStore = defineStore("chat", () => {
     groupReads.value = {};
     activeConv.value = null;
     mentionedConvs.value = new Set();
+    // 与 `resetAfterDataCleared` **同一组**（那边清的是同三张表）：后端把库清了，
+    // 这些"等落地/等点击"的过渡态再留着就是给已不存在的记录重建条目。
+    // 少清任何一张，两条清除路径就会走出两种不同的残留表现。
     pendingAcks.clear();
+    pendingReplace.clear();
+    notifMap.clear();
     void refreshTransfers();
   }
 
@@ -1596,7 +1664,10 @@ export const useChatStore = defineStore("chat", () => {
         }
         // Ack 先于乐观→真实替换到达（store 里找不到 real msg_id）：
         // 暂存 Ack，send() 拿到真实记录后立即消费。
-        if (!found) pendingAcks.add(msgId);
+        if (!found) {
+          pendingAcks.add(msgId);
+          trimOldest(pendingAcks, PENDING_ACKS_MAX);
+        }
       },
       onPeerRead: (p) => {
         // 对方已读到 last_read_ts：我发出的、ts ≤ 该值的消息 → read（绿勾）

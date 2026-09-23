@@ -127,3 +127,59 @@ for (const store of STORES) {
     );
   });
 }
+
+// ---------------- 会话级 UI 收尾与慢响应回填（审计阶段 4 · 4.1-3 / 4.1-4 / 4.1-7） ----------
+
+/**
+ * 这三处都是"少写一行不会报错、只会让用户看见**别的会话**的状态"的缺陷，
+ * 编译器与 `vue-tsc` 都管不着 ⇒ 只能按源码结构钉。
+ *
+ * ⚠️ 判据一律取**代码形状**（`x.value = false`、`if (id !== chat.activeConv) return`），
+ * 不取中文描述 —— 本文件读的是原始源码（含注释），拿文案当判据会变成"注释替代码通过"。
+ */
+test("切会话必须收尾会话级浮层；离开聊天视图必须退多选", () => {
+  const cw = readFileSync(join(ROOT, "components", "ChatWindow.vue"), "utf8");
+  const from = cw.indexOf("() => chat.activeConv");
+  const to = cw.indexOf("() => app.mobileView");
+  assert.ok(from >= 0, "找不到 activeConv 的 watcher");
+  assert.ok(to > from, "找不到 mobileView 的 watcher —— 4.1-4 会回归（TabBar 被永久藏掉）");
+  const convWatch = cw.slice(from, to);
+  for (const flag of [
+    "membersOpen",
+    "filesOpen",
+    "tasksOpen",
+    "lightboxOpen",
+    "announceViewOpen",
+  ]) {
+    assert.ok(
+      convWatch.includes(`${flag}.value = false`),
+      `切会话时没清 ${flag}：面板会带着上一个会话的内容继续显示`,
+    );
+  }
+  assert.ok(
+    cw.slice(to).includes("exitMultiSelect()"),
+    "mobileView watcher 里没退多选：返回会话列表后 multiSelectActive 会永久挂着",
+  );
+});
+
+test("跨 IPC 的回填必须核对「数据还是不是当前会话/群」", () => {
+  const cw = readFileSync(join(ROOT, "components", "ChatWindow.vue"), "utf8");
+  const start = cw.indexOf("async function refreshLinkState");
+  assert.ok(start >= 0, "找不到 refreshLinkState —— 改名要同步这条守卫");
+  const end = cw.indexOf("\n}", start);
+  assert.ok(end > start, "refreshLinkState 的函数体边界没找到");
+  assert.ok(
+    cw.slice(start, end).includes("if (id !== chat.activeConv) return"),
+    "refreshLinkState 缺过期守卫：上一个对端的链路会写进当前聊天头（4.1-3）",
+  );
+
+  const gfp = readFileSync(join(ROOT, "components", "GroupFilesPanel.vue"), "utf8");
+  assert.ok(
+    gfp.includes("() => props.groupId"),
+    "GroupFilesPanel 不 watch groupId：换群后面板仍是上一个群的清单（4.1-7）",
+  );
+  assert.ok(
+    gfp.includes("gid !== props.groupId"),
+    "GroupFilesPanel.load() 缺过期守卫：切群瞬间的旧响应仍会把 A 群清单回填进 B 群",
+  );
+});

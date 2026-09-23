@@ -1,6 +1,11 @@
 import type { Conversation, MessageRecord } from "@/types";
 import { MENTION_AFTER, MENTION_BEFORE, escapeRe } from "./linkify.ts";
-import { isKnownKind, isSilentKind, UNSUPPORTED_KIND_LABEL } from "./messageKinds.ts";
+import {
+  countsTowardUnread,
+  isKnownKind,
+  isSilentKind,
+  UNSUPPORTED_KIND_LABEL,
+} from "./messageKinds.ts";
 import { mergeSummary } from "./mergeCard.ts";
 
 /**
@@ -318,4 +323,36 @@ export function applyIncomingToConversations(
     if (convId !== activeConvId) conv.unread += msgs.length;
   }
   return sortConversations(next);
+}
+
+/**
+ * 「以下是未读消息」分割线该画在**已渲染时间线列表**的哪个下标（返回 -1 = 没有可画的行）。
+ *
+ * ⚠️ 入参刻意是"过滤后的时间线"而不是原始 `messages[convId]`：`unread` 是后端的计数，
+ * 分割线却要落在用户看得见的那些行里 —— 这两件事必须在**同一个坐标系**里换算。
+ * 旧实现拿原始列表算下标、到过滤后列表里用，而两个集合的差异是**双向**的
+ * （静默行占下标不占未读；`announcement`/`poll` 占未读却不显示），所以偏差方向随机
+ * （审计阶段 4 · 4.1-1）。
+ *
+ * 从末尾倒数时还要跳过「显示但**不**计未读」的行（`system`）：它占下标不占未读，
+ * 不跳就会把已读行算成未读。
+ *
+ * 残余误差（已知、不在本函数解决）：`announcement`/`poll` 计未读但不在传进来的列表里，
+ * 所以未读中含这类行时分割线会偏上几行。偏差方向单一、且不超过 `unread`，
+ * 比"两个方向随机偏"安全；要精确得让后端按可见性给数（协议改动）。
+ */
+export function unreadAnchorIndex(
+  rendered: readonly { kind: string }[],
+  unread: number,
+): number {
+  if (rendered.length === 0 || unread <= 0) return -1;
+  let seen = 0;
+  let anchor = -1;
+  for (let i = rendered.length - 1; i >= 0; i--) {
+    if (!countsTowardUnread(rendered[i].kind)) continue;
+    seen += 1;
+    anchor = i;
+    if (seen >= unread) break;
+  }
+  return anchor;
 }

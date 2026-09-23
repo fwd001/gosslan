@@ -45,6 +45,7 @@ import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
 import { Check, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Smile, Star, TextSelect, Undo2 } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
+import { urlToBase64 } from "@/utils/imageBytes";
 
 const props = withDefaults(
   defineProps<{
@@ -713,13 +714,9 @@ async function saveImage() {
     const picked: unknown = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
     const destination = saveDestinationOf(picked);
     if (!destination) return; // 用户取消
-    const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
-    let binary = "";
-    const chunk = 0x8000;
-    for (let i = 0; i < buf.length; i += chunk) {
-      binary += String.fromCharCode(...buf.subarray(i, i + chunk));
-    }
-    await invoke("save_data_file", { base64Data: btoa(binary), destination });
+    // 取字节 + base64 收在 utils/imageBytes（与 ImageLightbox 的「另存图片」共用一份）
+    const base64Data = await urlToBase64(url);
+    await invoke("save_data_file", { base64Data, destination });
     app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
     if (isDialogCancelled(e)) return; // Android 取消是 reject，不是返回 null

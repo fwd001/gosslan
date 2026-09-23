@@ -80,6 +80,35 @@ export function isKnownKind(kind: string): boolean {
 }
 
 /**
+ * 这个 kind 会出现在**聊天时间线**里吗（`ChatWindow.vue` 的 `messages` 过滤判据）。
+ *
+ * 必须与 ChatWindow 共用一份而不是各写一遍：未读分割线的锚点是在 store 里算的
+ * （store 才知道 `conversation.unread`），却要拿去**过滤后的列表**里当下标用。
+ * 两边判据一旦漂移（比如这里加了 `announcement`、那边没加），表现就是分割线画错消息，
+ * 而且**方向随消息种类变化**——静默行占下标不占未读、card 行占未读不占下标。
+ */
+export function isRenderedInTimeline(kind: string): boolean {
+  return kindClass(kind) === "bubble" || kind === "todo";
+}
+
+/**
+ * 这个 kind **计入未读/触发通知**吗 —— 与 Rust `is_non_notifying_kind`
+ * （`src-tauri/src/protocol.rs:377-379`，= `is_silent_kind(kind) || kind == "system"`）同口径。
+ *
+ * 为什么不能直接用 `!isSilentKind(kind)`：`system` 归 **bubble**（要显示在时间线里，
+ * 例如「对方改了昵称」「下载了你的文件」），但后端明确**不给它记未读**。两者相差的正好是
+ * "渲染集合 \ 计未读集合"，所以凡是要把 `conversation.unread` 换算成时间线里某个位置的
+ * 判据（未读分割线的锚点就是这一个），都必须用本函数而不是 `isSilentKind` 的反面。
+ *
+ * ⚠️ 已知漂移**未**在此收敛：`utils/messages.ts` 的 `applyIncomingToConversations` 目前只
+ * 滤 `isSilentKind`，即收到本地系统消息时前端会 +1 而后端不记。那条属阶段 4 P2 的独立条目
+ * （要先证明哪条路径真会走到这里、以及收敛后的期望行为），不在未读定位这次改动里顺手改。
+ */
+export function countsTowardUnread(kind: string): boolean {
+  return !isSilentKind(kind) && kind !== "system";
+}
+
+/**
  * 未知 kind 的占位文案。**必须与 Rust 的 `UNSUPPORTED_PREVIEW_LABEL` 一字不差** ——
  * 会话列表（Rust 算）与气泡（前端算）说的必须是同一句话，`messageKinds.test.ts` 直接
  * 读 `protocol.rs` 比对这个字面量。

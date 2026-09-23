@@ -21,10 +21,11 @@ import { estimateMessageHeight } from "@/utils/messageHeight";
 import { launchAuxWindow, isWindowOpening } from "@/composables/useWindowLauncher";
 import { groupTodosLabel } from "@/utils/auxWindowLabels";
 import { MENTION_ALL_TOKEN } from "@/utils/messages";
+import { fileToDataUrl } from "@/utils/imageBytes";
 import { MAX_MERGE_ITEMS, buildMergePayload } from "@/utils/mergeCard";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
 import { foldPinned, isPinned } from "@/utils/pins";
-import { kindClass } from "@/utils/messageKinds";
+import { isRenderedInTimeline } from "@/utils/messageKinds";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
 import { ArrowDown, Bluetooth, Layers, X, Pin, Megaphone, Trash2, Share2, Star } from "lucide-vue-next";
@@ -57,9 +58,7 @@ const isSelfChat = computed(() => chat.activeConv === app.device?.device_id);
  * （Card 口径），且卡片里有「查看任务」直接开面板，不会与面板重复。
  */
 const messages = computed(() =>
-  (chat.messages[chat.activeConv ?? ""] ?? []).filter(
-    (m) => kindClass(m.kind) === "bubble" || m.kind === "todo",
-  ),
+  (chat.messages[chat.activeConv ?? ""] ?? []).filter((m) => isRenderedInTimeline(m.kind)),
 );
 
 /**
@@ -96,7 +95,12 @@ async function refreshLinkState() {
     linkState.value = null;
     return;
   }
-  linkState.value = await api.getConvLink(id);
+  const next = await api.getConvLink(id);
+  // ⚠️ 过期守卫（审计阶段 4 · 4.1-3）：`getConvLink` 是 IPC，慢响应可能晚于用户切会话。
+  // 没有这道判断时，上一个对端的链路会被写进**当前**聊天头 —— 与下方注释立的契约
+  // （"提示必须和现在这条链路一致"）直接冲突，表现是"连着 Wi-Fi 却显示蓝牙/中继"。
+  if (id !== chat.activeConv) return;
+  linkState.value = next;
 }
 watch(
   () => {
@@ -146,6 +150,27 @@ watch(
     // 切会话必须退出多选：已选集合里是对**上一个会话**的消息，留着会让"已选 N 条"
     // 与实际可见内容对不上（批量删除/转发会作用到看不见的消息上）。
     exitMultiSelect();
+    // ⚠️ 会话级浮层也要一起收尾（审计阶段 4 · 4.1-7）：上面那三样是"会把内容发错会话"才修的，
+    // 而这五样是"会把内容**看成**别的会话的" —— 点系统通知会直接换掉 activeConv 而不经任何
+    // UI 收尾（`useChatStore.handleNotificationClick`），于是"挂着 A 群的文件/成员/任务面板、
+    // 标题却是 B"是真的会发生的路径，不是理论。lightbox/公告视图同理。
+    membersOpen.value = false;
+    filesOpen.value = false;
+    tasksOpen.value = false;
+    lightboxOpen.value = false;
+    announceViewOpen.value = false;
+  },
+);
+// 移动端「返回会话列表」是**布局层**改 `app.mobileView` 的导航动作：它既不卸载 ChatWindow
+// （挂载条件只看 `navState === 'chats' && activeConv`），也不会触发上面那个 activeConv
+// watcher —— 于是多选态一直挂着。而 `app.multiSelectActive` 同时是底部 TabBar 的显示条件
+// 之一，用户看到的就是"返回之后 TabBar 永久消失，而它正是唯一的导航出口"（审计阶段 4 · 4.1-4）。
+// 在这里收尾 = 离开聊天视图即放弃选择，与"切会话退出多选"同一口径；不改 TabBar 的判据
+// （它为什么把 multiSelectActive 算进去没有取证，动等于改别处的既有意图）。
+watch(
+  () => app.mobileView,
+  (v) => {
+    if (v !== "chat" && multiSelect.value) exitMultiSelect();
   },
 );
 const isPeerFriend = computed(() => {
@@ -427,7 +452,11 @@ const mentionNames = computed(() => {
   return [...g.members.map((id) => (id === me ? myName || id : chat.nicknameOf(id))), MENTION_ALL_TOKEN];
 });
 
-/** 当前会话的第一条未读索引（后端 markRead 前已记录，随历史 prepend 偏移）。 */
+/**
+ * 当前会话第一条未读在**本列表（已过滤）**里的下标。
+ * store 侧算它时用的就是上面这个 `messages` 的同一条判据（`isRenderedInTimeline`），
+ * 所以这里直接拿来用，不再二次换算 —— 坐标系只有一份（审计阶段 4 · 4.1-1）。
+ */
 const unreadIndex = computed(() => {
   const uj = chat.unreadJump;
   if (!uj || uj.convId !== chat.activeConv) return -1;
@@ -510,10 +539,21 @@ async function onSend({ content, kind }: { content: string; kind: MsgKind }) {
 }
 
 /** 粘贴图片：走 save_outgoing_image → 文件传输，data URL 不进入 SQLite。 */
-async function onSendImage(dataUrl: string) {
+async function onSendImage(file: File) {
+  // ⚠️ 会话必须在**任何 await 之前**取：粘贴发生在哪个会话，图片就该发到哪个会话。
+  // 旧实现是 Composer 先 await 完 FileReader 再 emit，这里读到的 `activeConv`
+  // 已经是"读取期间被切走之后"的那个会话 ⇒ 图片发给了另一个人（审计阶段 4 · 4.1-5）。
   const convId = chat.activeConv;
   if (!convId || !isPeerFriend.value) return;
-  await chat.sendImage(convId, dataUrl);
+  try {
+    // 读取与落盘都在这一侧做；`sendImage` 内部只把**发送**两段包了 try，
+    // `save_outgoing_image` 的 reject（超 8MiB / 非法 MIME / 解码失败）以前会一路无人
+    // 接手 —— 用户看到的就是"按了 Ctrl+V 什么也没发生"。
+    const dataUrl = await fileToDataUrl(file);
+    await chat.sendImage(convId, dataUrl);
+  } catch (e) {
+    app.toastError(e, t("msg.sendFailed"));
+  }
 }
 
 // ---------------- 引用 / 转发 ----------------

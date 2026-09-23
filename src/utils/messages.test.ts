@@ -14,6 +14,7 @@ import {
   selectCachedConversations,
   sortConversations,
   syncProfileFromPeers,
+  unreadAnchorIndex,
 } from "./messages.ts";
 import type { Conversation, MessageRecord } from "../types";
 
@@ -663,4 +664,53 @@ test("消息缓存上界：上限大于已缓存数量时全保留；activeId �
   assert.deepEqual([...selectCachedConversations(["c1", "c2"], null, 1)], ["c2"]);
   assert.deepEqual([...selectCachedConversations(["c1"], undefined, 2)], ["c1"]);
   assert.deepEqual([...selectCachedConversations([], null, 2)], []);
+});
+
+// ---------------- 未读分割线锚点（审计阶段 4 · 4.1-1） ----------------
+
+test("未读锚点：全是 text 时就是「从末尾数第 N 条」", () => {
+  const list = [1, 2, 3, 4, 5].map((i) => msg({ msg_id: `m${i}` }));
+  assert.equal(unreadAnchorIndex(list, 2), 3);
+  assert.equal(unreadAnchorIndex(list, 1), 4);
+});
+
+test("未读锚点：system 占下标但不占未读 —— 不能被算进额度", () => {
+  // 后端 is_non_notifying_kind 把 system 排除在未读之外，而它会渲染进时间线。
+  // 若把它当一条未读消耗额度，分割线就会少盖住一条真正的未读（这里 2 vs 1 可区分）。
+  const list = [
+    msg({ msg_id: "m1" }),
+    msg({ msg_id: "m2" }),
+    msg({ msg_id: "s", kind: "system" }),
+    msg({ msg_id: "m3" }),
+  ];
+  assert.equal(unreadAnchorIndex(list, 2), 1, "倒数第 2 条**计未读**的是 m2（index 1）");
+});
+
+test("未读锚点：额度用不完时 clamp 到「最早的计未读行」，不是粗暴的 0", () => {
+  // 首行是 system（不计未读）⇒ 锚点必须是 m1（index 1）；返回 0 会把分割线画到
+  // 一条本来就已读的系统消息上面。
+  const list = [msg({ msg_id: "s", kind: "system" }), msg({ msg_id: "m1" })];
+  assert.equal(unreadAnchorIndex(list, 5), 1);
+});
+
+test("未读锚点：没有一行计未读 ⇒ -1（宁可不画，别画错）", () => {
+  const list = [msg({ msg_id: "s1", kind: "system" }), msg({ msg_id: "s2", kind: "system" })];
+  assert.equal(unreadAnchorIndex(list, 3), -1);
+});
+
+test("未读锚点：空列表与 unread<=0 都返回 -1", () => {
+  assert.equal(unreadAnchorIndex([], 3), -1);
+  assert.equal(unreadAnchorIndex([msg({ msg_id: "m1" })], 0), -1);
+  assert.equal(unreadAnchorIndex([msg({ msg_id: "m1" })], -2), -1);
+});
+
+test("未读锚点：静默行被误传进来也不消耗额度（判据只有一份）", () => {
+  // 调用方按理应已经用 isRenderedInTimeline 过滤过；这里钉的是"即便没过滤，
+  // 静默类也绝不参与未读换算"，这样两处判据漂移时最坏也只是画的位置保守。
+  const list = [
+    msg({ msg_id: "m1" }),
+    msg({ msg_id: "r", kind: "reaction" }),
+    msg({ msg_id: "m2" }),
+  ];
+  assert.equal(unreadAnchorIndex(list, 1), 2);
 });

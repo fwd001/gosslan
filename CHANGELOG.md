@@ -10,6 +10,161 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-23 稳定性审计 阶段 4 · UI/交互 批次 a —— 未读定位与历史翻页)
+
+清单 §4.1 的 7 条 P1 逐条重跑原文复核后：4 条**仍成立**、3 条与描述不符（按复核结论改）。
+本批是其中两条，同属"打开会话 → 定位/翻页"这一条链。
+
+- **4.1-1 未读分割线的坐标系**（`useChatStore.ts` + `ChatWindow.vue` + `utils/`）：锚点下标在
+  `messages[convId]` **原始列表**里算，却在 `ChatWindow` **过滤后列表**里当偏移用。两个集合的
+  差异是**双向**的 —— 静默行与 `system` 占下标却不占未读，`announcement`/`poll` 占未读却根本不
+  显示 ⇒ "以下是未读消息"画在错的那条消息上、`scrollToIndex` 跳错位置，且群里有表情/置顶时
+  偏移常非零。**第二处实例**：prepend 历史后按 `older.length` 平移锚点，而老页里的静默行不进
+  渲染列表 ⇒ 每翻一页误差再累积一次。
+  修法：判据收敛成 `isRenderedInTimeline()`（`ChatWindow` 的过滤与 store 的换算共用一份），
+  锚点计算抽成纯函数 `unreadAnchorIndex(renderedList, unread)`：从末尾数第 N 条
+  **既渲染又计未读**的行，数不完则 clamp 到最早的计未读行（不是粗暴的 0 —— 首行可能是 system），
+  一行都数不出则返回 -1（宁可不画）。`countsTowardUnread()` 显式对齐 Rust
+  `is_non_notifying_kind`（`protocol.rs:377`）。
+  残余误差已写进注释、刻意不在本次解决：未读含"不渲染的 card"时分割线会偏上几行，
+  方向单一且不超过 `unread`，比原来"两个方向随机偏"安全；要精确需后端按可见性给数。
+- **4.1-2 历史翻页的每帧 IPC 与并发双拉**：`VirtualList` 的 `scrollTop < 60` 是**纯状态判断不是
+  边沿触发**，而 `computeScrollState()` 有 6 个入口（滚动 / resize / applyJump 轮询 /
+  `scrollToIndex` / items 变化 / 总高变化）⇒ `loadMore` 被每帧调用。store 侧只有同步的页数判据，
+  "已翻满"那条在 IPC **之后**才判 ⇒ 已翻到顶但不足 10 页的会话（绝大多数）每帧白付一次
+  `getMessageCount`。更要紧的是并发的两次 `loadMore` 互相判不出过期：都过得了判据、各自
+  `getMessages` 拉一页，却把 `pagesLoaded` 写成同一个值 ⇒ **前进一页、拉了两页数据**
+  （不只是多付 IPC，是正确性问题）。
+  修法：`loadMoreMessages` 加两道闸 —— `loadingMore`（同会话同时只允许一个在飞，`finally`
+  必放行，否则就是"翻一次之后再也翻不动"）与 `historyTops`（已知到顶的会话不再付 IPC；
+  ⚠️ 必须在每次 `loadMessages` 重新加载时作废，否则"看过的会话重开后翻不动历史"）。
+  **刻意没有**改成边沿触发：那会让用户停在顶部时只翻得出一页、必须"往下滚一点再滚回来"
+  才能继续 —— 拿一个真实可用的行为去换噪声，不划算（成因与取舍写进代码注释）。
+- 复核纠正（记录，不改）：`applyIncomingToConversations` 的前端"不计未读"判据只滤
+  `isSilentKind`、**漏了 `system`**，与后端 `is_non_notifying_kind` 不一致 ⇒ 本地系统消息会让
+  前端未读 +1 而后端不记。不在这批顺手改：要先证明哪条路径真会走到这里、以及收敛后的期望
+  行为，已列为 §4.2 的独立条目。
+
+### Tests (阶段 4 · 批次 a)
+
+- `unreadAnchorIndex` 6 条纯函数用例（`system` 不消耗额度 / clamp 到最早的计未读行而非 0 /
+  全 system 返回 -1 / 空列表与 `unread<=0` / 静默行被误传进来也不参与换算）。
+  第 2、3 条正是"旧公式 `len - min(unread,len)`"会红的那两种形状。
+- 前端测试 525 → 531；`vue-tsc --noEmit` 0；快速层 9 步全绿。
+- 已知取证缺口：`loadMoreMessages` 的并发与 `historyTops` 时序**没有**运行时守卫 ——
+  本仓没有能驱动 store 异步竞态的夹具（与阶段 1.4 的 `loadSeqs` 同一处境），判据与后果写在
+  代码注释里；能在浏览器外证的部分（不重复 IPC、不双拉页）依赖这两道闸本身。
+
+### Fixed (2026-09-23 稳定性审计 阶段 4 · UI/交互 批次 b —— 会话级状态泄漏)
+
+- **4.1-3 `refreshLinkState` 缺过期守卫**：`getConvLink` 是 IPC，回来后无条件写进共享的
+  `linkState` ⇒ 快速切会话时**上一个对端的链路状态被显示在当前聊天头**上（"连着 Wi-Fi 却
+  显示蓝牙/中继"），与同文件注释立的契约"提示必须和现在这条链路一致"直接冲突。
+  → 回填前核对 `id !== chat.activeConv` 则丢弃。
+- **4.1-4 移动端多选中返回会话列表 → 底部 TabBar 永久消失**：`app.multiSelectActive` 只有
+  ChatWindow 的 `enter/exitMultiSelect` 两个写点，而"返回"是**布局层改 `app.mobileView`** 的导航
+  动作 —— 它既不卸载 ChatWindow（挂载条件只看 `navState === 'chats' && activeConv`），也不触发
+  `activeConv` 的 watcher，于是标志一直挂着、TabBar 一直隐藏，而 TabBar 恰是唯一的导航出口
+  （多选操作条在被平移出屏的面板内，列表页看不到也点不到）⇒ 事实上不可自愈。
+  → 在 ChatWindow 里 watch `mobileView`：离开聊天视图就退出多选（与"切会话退多选"同一口径）。
+  **刻意没有**改 TabBar 的判据（把 `multiSelectActive` 限定在聊天视图）—— 它当初为什么被算进
+  显示条件我没有取证，动它等于顺手改别处的既有意图。
+- **4.1-7 切会话不清会话级浮层**：`activeConv` 的 watcher 只清了 quote / forward / 多选
+  （那三样是"会把内容**发错**会话"才修的），而 `membersOpen`/`filesOpen`/`tasksOpen`/
+  `lightboxOpen`/`announceViewOpen` 全都不收尾。可达路径不是"点列表"（BaseModal 会模态阻断），
+  而是**点系统通知**：`useChatStore.handleNotificationClick` 会程序化 `openConversation(B)` 而
+  不通知任何浮层 ⇒ "挂着 A 群的面板、标题是 B"。`GroupFilesPanel` 还把自己的清单缓存进
+  `files` ref 且**只 watch `open` 不 watch `groupId`**，所以换群后整张清单仍是上一个群的。
+  → 五个标志进同一个 watcher；`GroupFilesPanel` 补 `watch(groupId)`（清空 + 重拉），
+  并给 `load()` 加慢响应过期判据 —— 只补 watch 不补这里，切群瞬间的旧响应仍会回填。
+  **复核纠正**：清单说"refetch 会打到 B 群"**不成立** —— `refetch`/`openFile` 全部从行数据自取
+  `f.sender_id` / `f.transfer_id`，不读 `props.groupId`；错的是"展示"，不是"发请求"。
+- 复核新发现（**记为 §4.2 独立条目，本批不改**）：前端 `applyIncomingToConversations` 的
+  "不计未读"判据只滤 `isSilentKind`、**漏了 `system`**，与后端 `is_non_notifying_kind`
+  （`protocol.rs:377`，= 静类 `|| system`）不一致 ⇒ 本地系统消息会让前端未读 +1 而后端不记，
+  两边从此对不上。不改的理由：要先证明哪条路径真会走到这里、以及收敛后用户期望的行为。
+
+### Tests (阶段 4 · 批次 b)
+
+- `storeContract.test.ts` 加 2 条结构性守卫（本文件就是"读源码断结构契约"的既有先例）：
+  ① 切会话必须清那五个浮层标志、离开聊天视图必须退多选；② 跨 IPC 的回填必须核对
+  "数据还是不是当前会话/群"（`refreshLinkState` 与 `GroupFilesPanel.load` 各一处）。
+  判据一律取**代码形状**（`x.value = false` / `if (id !== chat.activeConv) return`），
+  且逐条 grep 确认没落在注释行里 —— 本文件读的是含注释的原始源码，拿文案当判据会变成
+  "注释替代码通过"（阶段 3 的 A5 变异用例就是这么骗过一次自己的）。
+  守卫自身也红过一次：区间上限拿成"到文件尾"导致恒判失败，已改为按函数结束边界切。
+- 前端测试 531 → 533；`vue-tsc` 0；`npm run build` 通过；快速层 9 步全绿。
+
+### Fixed (2026-09-23 稳定性审计 阶段 4 · UI/交互 批次 c —— 图片两条路径)
+
+- **4.1-5 粘贴图片**（`MessageComposer.vue` + `ChatWindow.vue` + 新 `utils/imageBytes.ts`）：
+  - **发错会话（成因与清单不同）**：Composer 里 `emit("send-image", await fileToDataUrl(f))`
+    —— `await` 在 emit **之前**，所以 ChatWindow 只能在"文件读完之后"才决定发给谁；
+    粘贴一张大图的那几百毫秒里用户切了会话，图片就发进了**切到之后**的那个会话。
+    → 改成 Composer **同步 emit `File` 本身**、读取挪到 ChatWindow，并在函数第一行就
+    `const convId = chat.activeConv` 捕获。这同时保住另一条约束：`imageFile` 必须在任何
+    await 之前从 `clipboardData` 取出（Chromium/WebKit 在 paste 事件返回后清空它），
+    所以捕获点只能在 Composer 内、异步工作只能在被调方做。
+  - **超限图片先把内存打满**：后端其实**有** 8 MiB 硬上限（`commands.rs:41`），但它在
+    `base64::decode` **之后**才比长度 ⇒ 一张超限图会先在 JS 堆整读成 data URL、再作为 JSON
+    字符串跨 IPC、再在 Rust 侧解回 `Vec<u8>`，**三端各分配一份**之后才被拒绝。
+    Android 的 ART 堆通常只有 256MB（同仓注释记载：5 张图一起发直接 FATAL OOM）。
+    → 前端加一道同数值的前置闸；`MAX_PASTED_IMAGE_BYTES` 与 Rust 常量由**契约测试比对**
+    （不比对就是"改了那边忘了这边"的标准剧本）。
+  - **失败静默**：`onSendImage` 全程无 catch，而 `sendImage` 把 `save_outgoingImage` 留在
+    自己的 try **之外** ⇒ 超上限 / 非法 MIME / 解码失败三类 reject 一路无人接手，
+    用户看到的是"按了 Ctrl+V 什么也没发生"。→ ChatWindow 侧 try/catch + `toastError`。
+- **4.1-6 另存图片**（`MessageItem.vue` + `ImageLightbox.vue` → `utils/imageBytes.ts`）：
+  两处**逐字重复**的 7 行（`fetch` → `arrayBuffer` → `binary += String.fromCharCode(...)` →
+  `btoa`）同时持有约 4 份文件内容。改成共用一份工具，并拿掉其中两份浪费：
+  ① 源本身是 data URL 时**直接摘出 base64 段** —— 旧写法等于把 base64 解码成字节再编码回
+  **同一个字符串**，纯属白做；② 分块编码后一次 `join`，而不是 `+=` 每 32 KiB 重建整个字符串。
+  ⚠️ `dataUrlBase64()` 只认 `;base64,` 那一种：不带该标记的 data URL 是**百分号编码原文**，
+  直接切尾巴会产出"看着像 base64、解出来是乱码"的坏文件，而后端只会照单解码写盘 —— 错得很安静。
+  **已知取舍（写进模块头注释）**：正解是 `tauri-plugin-fs` 的 `writeFile(path, Uint8Array)`
+  走二进制、彻底不产 base64。Rust 侧其实已注册（`Cargo.toml:33` + `lib.rs:153`），但前端包
+  `@tauri-apps/plugin-fs` 不在依赖里、装上还要改 `capabilities` 的 fs scope —— 发版收尾阶段
+  引新依赖 + 扩权限面的风险大于收益，所以本批只收敛浪费、不改传输形状。
+
+### Tests (阶段 4 · 批次 c)
+
+- 新增 `src/utils/imageBytes.test.ts`（6 条）：分块边界的 8191/8192/8193 三个长度是刻意挑的
+  （分块写错只会在那一个长度上错，随机大样本反而容易盖过去）；填充位单独一条；
+  百分号编码 data URL 必须返回 null；以及与 Rust `MAX_OUTGOING_IMAGE_BYTES` 的跨语言比对。
+- 踩到并修掉一处"运气测试"：原本有一条用 `urlToBase64("data:text/plain,abc")` 断言 reject，
+  其结果取决于 Node 的 `fetch` 是否支持 `data:` URL ⇒ 换成只断言"决策"而不真去 fetch。
+- **清单守卫立了一功**：新增 `.test.ts` 后 `check-test-manifest` 直接报"它不会被执行，而
+  `npm test` 依然全绿"，并要求手工登记进 `package.json` 的 `scripts.test`。
+  这正是该守卫存在的理由（与"漏 `--features`"同类：退出码 0 的空转）。
+- 前端测试 533 → 539（55 个测试文件全部已登记）；`vue-tsc` 0；`npm run build` 通过；快速层 9 步绿。
+- 顺带记录（**未改**）：同文件里 `paste-files` 分支的 emit 也发生在 `await invoke(...)` 之后，
+  属同一形状的窄窗口（一次 IPC 而非整文件读取）；已列入 §4.2 待办，不在本批夹带。
+
+### Fixed (2026-09-23 稳定性审计 阶段 4 · 批次 d —— 只增不减的模块级集合)
+
+复核 §4.2 十四条的过程中发现：泄漏不是个别现象，而是同一形状的四处。
+新增 `src/utils/bounded.ts` 的 `trimOldest(coll, max)`（Map/Set 的迭代序即插入序 ⇒ FIFO），
+四处共用一份；淘汰的都是最早写入、早就不在屏上的条目，在屏的最近测量必然活着。
+
+- **`pendingAcks`**（上限 512）：消费点只有 `send()` 一处，而它的"是否已存在"判据只扫
+  `messages.value`（LRU 保留 4 个会话）⇒「会话被淘汰 / 文件回执 / outbox 补投」这三类 Ack
+  永远命中不了消费点，条目只进不出。上闸只清本来就没人要的，真删除仍由 `send()` 做。
+- **`notifMap`**（上限 128）：删除点只有"通知被点击"与"动作按钮命中"两处 ⇒ 用户直接把通知
+  划掉时条目永久留着，而 `notifSeq` 单调递增，**每条通知必进一份**（比 `pendingAcks` 更确定）。
+- **`heightOverride`**（上限 2000，`VirtualList.vue`）：每实测过一条消息高度留一项，
+  store 收缩会话缓存时清掉了 `pagesLoaded/loadSeqs` 却不清这里 ⇒ 长时间滚动的会话单调增长。
+- **两条清除路径同口径**：`clearAllData` 只清了 `pendingAcks`，而 `resetAfterDataCleared`
+  谁都没清 ⇒ 两条路径走出两种残留。现在两边一起清 `pendingAcks` / `pendingReplace` / `notifMap`。
+
+### 已知限制（阶段 4 · 批次 d，明确记录不修的理由）
+
+- **`filePreview` / `favoritePreview` 的模块级缓存不加容量闸**：它握的是 **objectURL**，
+  而 `filePreview.ts:7-12` 钉着「objectURL 生命周期归缓存所有，消费者不得 revoke」
+  （2026-09-21 真根因：同一个 cid/msg_id 的 URL 被任务卡、看板表单、任务详情三处共用，
+  任何一处 revoke 就把其它视图一起打回裂图，且缓存里那个死 URL 仍会被命中）。
+  所以给它加"超容量淘汰"要么不 revoke（blob 内存根本没释放，闸白装），要么 revoke
+  （重演那次事故）。**正确修法是引用计数，属设计变更**，不在稳定性清单里顺手做。
+
 ## [4.29.7] - 2026-09-23
 
 ### Fixed (审计 A1 · 中继发送端假成功 —— L1 那一半)

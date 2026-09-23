@@ -10,6 +10,7 @@ import { ChevronLeft, ChevronRight, RotateCcw, Save, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/useAppStore";
 import { loadContentPreview, loadFilePreview, type PreviewResult } from "@/utils/filePreview";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
+import { urlToBase64 } from "@/utils/imageBytes";
 import { useBackLayer } from "@/composables/useBackLayer";
 
 /**
@@ -99,13 +100,9 @@ async function saveImage() {
     const picked: unknown = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
     const destination = saveDestinationOf(picked);
     if (!destination) return; // 用户取消
-    const buf = new Uint8Array(await (await fetch(src.value)).arrayBuffer());
-    let binary = "";
-    const chunk = 0x8000;
-    for (let i = 0; i < buf.length; i += chunk) {
-      binary += String.fromCharCode(...buf.subarray(i, i + chunk));
-    }
-    await invoke("save_data_file", { base64Data: btoa(binary), destination });
+    // 取字节 + base64 收在 utils/imageBytes（与 MessageItem 的「另存图片」共用一份）
+    const base64Data = await urlToBase64(src.value);
+    await invoke("save_data_file", { base64Data, destination });
     app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
     if (isDialogCancelled(e)) return; // Android 取消是 reject，不是返回 null
