@@ -10,6 +10,35 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-23 稳定性审计 · A1 的 L2 第一段 —— 中继推送不再宣称未经证明的成功)
+
+`relay_push_file`（`network/file.rs`）写完最后一片就无条件 `status=done, progress=1.0` 并广播
+`file-done`。L1 只补上了"0 个邻居接住"那条 Err 出口，**成功出口仍然是无证据的断言**：循环跑完
+只代表"每一片都被至少一个邻居接住"，邻居不保证与对端有直连，更没有"对端收全 + SHA 校验通过 +
+落盘"的任何证据。命中 `docs/acceptance/1.0-release.md` 禁止事项两条 —— "不要因为 TCP write
+成功就认为消息已送达"、"不要让界面显示成功和对端实际收到不一致"。
+
+- 终态改 **`sent`**（新增值，含义"已写出、未获回执"），并**去掉 `file-done` 广播**、保留
+  `file-progress`（后者说的是本机写出进度，属实）。留 `file-done` 不行的理由很具体：前端
+  `onFileDone` 会把内存里那行写成 done ⇒ 直接造成"库里 sent、界面上 ✓"这条新分裂。
+- 词表两处同步（`src-tauri/src/schema.sql:107` 与 `db.rs:435`，两份 DDL 必须逐字一致）。
+  `file_transfers.status` 是裸 TEXT **无 CHECK** ⇒ 加值不需要迁移。
+- **`sent` 必须是终态** —— 这是选它而不是"停在 active 等回执"的硬理由：A2 的回收
+  `mark_transfer_failed_if_active` 只改 `status='active'`，所以 `sent` 不会被一小时回收扫成
+  `failed`（那等于把"对方可能已收到"判成失败，用户于是去重推一份本已成功的文件）。
+  DB 测试把三条边界一起钉住：`sent` 不被回收改写、`is_transfer_done` 不认 `sent`、
+  第二次回收回报 false（不重复 emit）。
+- 守卫：`relay_send_does_not_claim_unproven_success` 加两条断言（终态只能是 sent、体内不得出现
+  `file-done` 事件名），`verify-guards.py` 加两条变异用例（tag `a1-l2`），两条都实测"改坏即
+  FAIL、恢复即 PASS"；第二条注入刻意**只换事件名、载荷结构不动**，保证红的是判据而不是编译器。
+- **未做的那一半，连理由一起记**：接收端回执（给 `FileCompleteAck` 加 `from`/`to` 走定向一跳
+  中继 + `content_features()` 能力位门控 + 发送端有界等待，把 `sent` 升成 `done`）没做。
+  实测依据：这条链在**发送方没有任何 UI 消费者** —— `chat.transfers` 全仓只有
+  `useMessageFile.ts:36` 按消息 id 查用一处，而中继共享下载不产生发出方气泡
+  （`send_file_via_relay` 只服务共享目录下载）。为一条没有消费者的状态新增协议帧，等于同时踩
+  "不要新增未来特性"与"新帧必须能力位门控"两条红线，收益为零而协议面是实的。
+  假成功已经去掉了；要真做出"对方已收到"，得连带发送方的可见界面一起做，那属新功能范围。
+
 ## [4.29.13] - 2026-09-23
 
 ### Fixed (2026-09-23 稳定性审计 阶段 4 · 批次 i —— `app.init()` 的注册配对)

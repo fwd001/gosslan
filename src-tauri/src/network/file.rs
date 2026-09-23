@@ -720,14 +720,14 @@ async fn relay_push_file(
                 &name,
                 size,
                 "send",
-                "done",
+                "sent",
                 Some(path.to_string_lossy().as_ref()),
                 1.0,
             )
             .ok();
         }
-        // 最后一片可能因节流(250ms)跳过了 emit，收尾必须发完整进度 100% + done 事件，
-        // 否则前端可能卡在 "发送中 0%"（DB 已 done 但前端没收到事件推进）。
+        // 最后一片可能因节流(250ms)跳过了 emit，收尾必须补一次完整进度，
+        // 否则前端可能卡在"发送中 63%"（DB 已终态但前端没收到事件推进）。
         let _ = state.app.emit(
             "file-progress",
             &crate::state::FileProgress {
@@ -736,15 +736,12 @@ async fn relay_push_file(
                 total: size,
             },
         );
-        let _ = state.app.emit(
-            "file-done",
-            &crate::state::FileDoneInfo {
-                transfer_id: transfer_id.to_string(),
-                name: name.clone(),
-                size,
-                path: path.to_string_lossy().to_string(),
-            },
-        );
+        // ⚠️ **刻意不发 `file-done`**（2026-09-23 审计 A1 的 L2 那一半）：走到这里只代表
+        // "每一片都被至少一个邻居接住"，**不代表**对端收全、SHA 校验通过、落了盘。而 `file-done`
+        // 的语义是"本机这条传输已完成"，前端 `onFileDone` 会把内存里那行写成 done ——
+        // 发它就是"库里 sent、界面上 ✓"，正撞验收红线「界面显示成功与对端实际收到不一致」。
+        // 这条链没有接收端回执（`file.rs` 开头自述：中继无握手无回执），所以终态只能停在 `sent`；
+        // 要把它升成 done，得给 `FileCompleteAck` 加 `to` 走定向一跳中继并按能力位门控。
         Ok(())
     })
     .await;

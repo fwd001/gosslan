@@ -3099,6 +3099,52 @@ CASES: list[Case] = [
         tags=["rust", "relay", "file", "stability", "new-guards", "a1-l1"],
     ),
 
+    Case(
+        name="中继推送写完分片只能落 sent，不许直接写 done",
+        why="审计 A1 的 L2 那一半（L1 只修了「0 个邻居接住」这条 Err 出口）。\n"
+        "     循环跑完仅代表每一片都被**至少一个邻居**接住，邻居不保证与对端有直连，\n"
+        "     更没有「对端收全 + SHA 校验通过 + 落盘」的证据 —— 写 done 就是无证据的成功，\n"
+        "     直接命中验收红线「不要因为 TCP write 成功就认为消息已送达」。\n"
+        "     注入方式 = 把终态改回修好之前的 done（一行，形状与修好前完全一致）。",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            """                "send",
+                "sent",
+                Some(path.to_string_lossy().as_ref()),""",
+            """                "send",
+                "done",
+                Some(path.to_string_lossy().as_ref()),""",
+        )],
+        cmd=cargo("test", "--lib", "relay_send_does_not_claim_unproven_success"),
+        cwd=TAURI,
+        expect_fail_hint="中继推送写完分片必须落 sent",
+        tags=["rust", "relay", "file", "stability", "new-guards", "a1-l2"],
+    ),
+    Case(
+        name="没有回执的推送不许广播完成事件",
+        why="事件名从 file-progress 改成 file-done：DB 那行仍是 sent，但前端 `onFileDone`\n"
+        "     会把内存里那行写成 done ⇒ 「库里 sent、界面上 ✓」，正是要防的那条不一致。\n"
+        "     注入刻意**只换事件名**、载荷结构不动（emit 对载荷是泛型，编译照过），\n"
+        "     这样红的一定是判据而不是编译器。",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            """        let _ = state.app.emit(
+            "file-progress",
+            &crate::state::FileProgress {
+                transfer_id: transfer_id.to_string(),
+                received: size,""",
+            """        let _ = state.app.emit(
+            "file-done",
+            &crate::state::FileProgress {
+                transfer_id: transfer_id.to_string(),
+                received: size,""",
+        )],
+        cmd=cargo("test", "--lib", "relay_send_does_not_claim_unproven_success"),
+        cwd=TAURI,
+        expect_fail_hint="没有回执的推送不许广播完成事件",
+        tags=["rust", "relay", "file", "stability", "new-guards", "a1-l2"],
+    ),
+
 ]
 
 

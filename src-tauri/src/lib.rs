@@ -2951,6 +2951,20 @@ mod tests {
              得到一句弱确认（2026-09-23 真踩过）。"
         );
 
+        // L2 那一半：写出 ≠ 送达。走完分片循环只证明"每一片被至少一个邻居接住"，
+        // 所以终态只能是 `sent`，也不能广播"本机这条已完成"的事件。
+        assert!(
+            flat_push.contains("\"send\",\"sent\",") && !flat_push.contains("\"send\",\"done\","),
+            "中继推送写完分片必须落 sent：直接写 done 就是无证据的成功\
+             （验收红线「不要因为 TCP write 成功就认为消息已送达」）"
+        );
+        assert!(
+            !flat_push.contains("\"file-done\""),
+            "没有回执的推送不许广播完成事件：前端 onFileDone 会把内存里那行写成 done，\
+             于是「库里 sent、界面上 ✓」。只准发 file-progress（那说的是本机写出进度）。\
+             探针带引号，避开的正是本函数注释里那句反引号包裹的同名事件。"
+        );
+
         let wrap = rust_fn_body(file, "pub async fn send_file_via_relay(");
         assert!(
             wrap.contains("mark_transfer_failed_if_active("),

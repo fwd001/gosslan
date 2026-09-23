@@ -1983,7 +1983,11 @@ mod tests {
     #[test]
     fn transfer_terminal_helpers_touch_only_their_own_rows() {
         let conn = mem();
-        for (id, status) in [("t-active", "active"), ("t-done", "done")] {
+        for (id, status) in [
+            ("t-active", "active"),
+            ("t-done", "done"),
+            ("t-sent", "sent"),
+        ] {
             upsert_transfer(&conn, id, "b", "x.bin", 10, "receive", status, None, 0.5).unwrap();
         }
 
@@ -2006,9 +2010,21 @@ mod tests {
         // 库里没有的行（只登记在中继内存表里）⇒ false，不 panic
         assert!(!mark_transfer_failed_if_active(&conn, "t-missing").unwrap());
 
+        // `sent`（中继推送写完分片、无对端回执）必须是**终态**：回收若把它扫成 failed，
+        // 就等于把"对方可能已经收到"判成"失败"，用户于是去重推一份本已成功的文件。
+        assert!(
+            !mark_transfer_failed_if_active(&conn, "t-sent").unwrap(),
+            "sent 必须已被排除在 active 集合外，否则一小时回收会改写它"
+        );
+        assert_eq!(transfer_status(&conn, "t-sent").as_deref(), Some("sent"));
+
         // is_transfer_done 只认 done
         assert!(is_transfer_done(&conn, "t-done").unwrap());
         assert!(!is_transfer_done(&conn, "t-active").unwrap());
+        assert!(
+            !is_transfer_done(&conn, "t-sent").unwrap(),
+            "sent 不是 done：它只证明字节写出去了，没有送达证据"
+        );
         assert!(!is_transfer_done(&conn, "t-missing").unwrap());
     }
 

@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     name       TEXT NOT NULL,
     size       INTEGER NOT NULL,
     direction  TEXT NOT NULL,          -- 'send' | 'receive'
-    status     TEXT NOT NULL,          -- 'pending' | 'active' | 'done' | 'failed'
+    status     TEXT NOT NULL,          -- 'pending'|'active'|'done'|'failed'|'sent'（sent=send 侧已写出但无对端回执，终态）
     path       TEXT,
     progress   REAL NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
