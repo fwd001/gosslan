@@ -532,6 +532,7 @@ state::tests::ui_language_prefers_preference_then_frontend_hint_then_env
 storage::cache_cleaner::tests::no_policy_removes_nothing
 storage::cache_cleaner::tests::quota_removes_oldest_first
 storage::cache_cleaner::tests::retention_removes_expired_only
+storage::cache_cleaner::tests::walk_files_never_follows_symlinks
 tests::android_jni_signatures_match_kotlin
 tests::android_peripheral_paces_its_notifications
 tests::aux_window_open_is_singleton_serialized_and_resident
@@ -546,6 +547,7 @@ tests::ble_write_failure_retries_then_tears_the_link_down
 tests::blocking_commands_run_off_the_main_thread
 tests::boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking
 tests::bt_defaults_on_everywhere
+tests::cache_cleaner_walk_never_follows_symlinks
 tests::capability_covers_every_window_label
 tests::channel_status_exposes_persisted_preference
 tests::cmd_w_is_handled_by_our_own_menu_item
@@ -579,9 +581,11 @@ tests::peripheral_subscribe_resets_that_centrals_reassembler
 tests::receiver_abort_notifies_the_sender_inside_the_loop
 tests::relay_circuit_is_tagged_relay_not_routed
 tests::relay_data_plane_respects_policy
+tests::relay_receive_hashes_assembled_plaintext_once
 tests::relay_token_never_reaches_logs_or_diagnostics
 tests::release_keeps_every_kotlin_method_called_from_rust
 tests::removing_a_friend_also_drops_the_in_memory_identity_binding
+tests::resend_message_sets_sending_only_after_all_failure_paths
 tests::resend_reseals_before_enqueue
 tests::runtime_snapshot_reports_real_bluetooth_runtime
 tests::runtime_state_has_a_single_source

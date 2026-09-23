@@ -2785,6 +2785,91 @@ mod tests {
         );
     }
 
+    /// 缓存清理器的目录遍历**绝不跟随符号链接**（2026-09-23 审计 1.1）。
+    ///
+    /// 后果链：缓存目录是远端输入可达面（收到的文件名/目录名不受信）。旧实现用
+    /// `e.path().metadata()` 判类型 —— 它**跟随软链**：缓存里一个指向任意位置的软链
+    /// （文件或目录）会让其目标被收集进清理列表并 `remove_file` **永久删除**，
+    /// 报告里只算"清理了多少缓存"。这是全仓唯一确认的数据丢失点。
+    ///
+    /// 判据：`walk_files` 体内必须用 `DirEntry::file_type()`（不跟随链接）判真身，
+    /// 且不得出现 `e.path().metadata()`（跟随链接的旧写法）。
+    #[test]
+    fn cache_cleaner_walk_never_follows_symlinks() {
+        let src = include_str!("storage/cache_cleaner.rs");
+        let body = rust_fn_body(src, "pub fn walk_files(");
+        assert!(
+            body.contains("e.file_type()"),
+            "walk_files 必须用 DirEntry::file_type()（不跟随软链）判文件真身（审计 1.1）"
+        );
+        assert!(
+            !body.contains("e.path().metadata()"),
+            "walk_files 里出现 e.path().metadata()：它跟随符号链接，软链目标会被当缓存删除（审计 1.1）\
+             —— 数据丢失，不是清理"
+        );
+    }
+
+    /// `resend_message` 只在**所有可失败步骤通过之后**才把状态置为 sending（审计 1.2）。
+    ///
+    /// 后果链：旧顺序先 `set_message_status("sending")` 再判群聊/取公钥/密钥交换/加密，
+    /// 这些路径失败时不回滚 ⇒ 状态永久卡 sending，而重发入口的守卫
+    /// （`"sending" | "sent" => Err`）又把它挡死 ⇒ 这条消息**永远发不出去**，
+    /// outbox 也从未写入。触发条件是对任何失败的群消息点重发（必现）。
+    ///
+    /// 判据：函数体内所有报错返回的锚点（群消息提示 / 只能重发自己 / 公钥缺失 /
+    /// 密钥交换失败 / 加密失败 / to_string）都必须排在 `set_message_status("sending")`
+    /// **之前** —— 置位之后不允许再有任何失败返回。
+    #[test]
+    fn resend_message_sets_sending_only_after_all_failure_paths() {
+        let src = include_str!("commands/chat.rs");
+        let body = rust_fn_body(src, "pub async fn resend_message(");
+        let sending_write = body
+            .find("set_message_status(&dbc, &msg_id, \"sending\")")
+            .expect("resend_message 必须仍有一次 sending 写入");
+        for anchor in [
+            "群消息重发请删除后重新发送",
+            "只能重发自己发出的消息",
+            "尚未获取",
+            "密钥交换失败",
+            "加密失败",
+            "serde_json::to_string",
+        ] {
+            let pos = body
+                .find(anchor)
+                .unwrap_or_else(|| panic!("resend_message 里找不到锚点 `{anchor}` —— 护栏需同步"));
+            assert!(
+                pos < sending_write,
+                "`{anchor}` 出现在置 sending 之后：这条失败路径会把消息永久卡在 sending\
+                 （重试入口又被 sending 守卫挡死）—— 审计 1.2"
+            );
+        }
+    }
+
+    /// 中继收文件的完整性校验必须对**按 seq 组装出的明文一次性**计算（审计 1.8）。
+    ///
+    /// 后果链：旧实现逐片"到达即喂"增量哈希 —— 但中继链路分片天然**重复**（多邻居
+    /// 泛洪各送一份）且**乱序**（多路径时延不同），喂哈希发生在 add_chunk 去重/排序
+    /// 之前 ⇒ 分片收齐却必然校验失败：接收端报"文件完整性校验失败"、发送端却显示
+    /// 成功（无回执），两端状态互相矛盾且无重试路径。
+    ///
+    /// 判据：`handle_relay_chunk` 体内不得出现 `.hasher`（增量喂哈希的旧写法）；
+    /// 校验点必须是 `Sha256::digest(&full)`（对组装结果一次算）。
+    #[test]
+    fn relay_receive_hashes_assembled_plaintext_once() {
+        let src = crate::network::transport_src_for_guards();
+        let body = rust_fn_body(&src, "async fn handle_relay_chunk(");
+        assert!(
+            !body.contains(".hasher"),
+            "handle_relay_chunk 里出现增量哈希：分片按到达顺序喂、在去重/排序之前，\
+             重复与乱序都会算错 ⇒ 收齐了也报校验失败（审计 1.8）。\
+             改为重组完成后对 full 一次性 Sha256::digest"
+        );
+        assert!(
+            body.contains("sha2::Sha256::digest(&full)"),
+            "完整性校验必须对按 seq 组装出的明文一次性计算（Sha256::digest(&full)，审计 1.8）"
+        );
+    }
+
     /// 好友身份锚点的**绑定来源**必须问同一道闸（#32 第一片）。
     ///
     /// 后果链：`friends.ed25519_pubkey` 是 Hello 的验签锚点（INV-P21）与安全码的输入，

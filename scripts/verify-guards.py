@@ -2840,6 +2840,62 @@ CASES: list[Case] = [
         tags=["rust", "transport", "stability", "locks", "new-guards"],
     ),
     Case(
+        name="缓存清理器不得跟随符号链接（审计 1.1：软链目标会被当缓存永久删除）",
+        why="缓存目录是远端输入可达面（收到的文件名/目录名不受信）。旧实现用 e.path().metadata()\n"
+        "     判类型——它**跟随软链**：缓存里一个指向任意位置的软链会让其目标被收集进清理列表并\n"
+        "     remove_file 永久删除，报告里只算「清理了多少缓存」—— 全仓唯一确认的数据丢失点。\n"
+        "     注入方式：把 DirEntry::file_type()（不跟随链接）换回「path().metadata().map(|m|\n"
+        "     m.file_type())」（类型对得上、仍可编译，语义回到跟随链接），\n"
+        "     守卫 cache_cleaner_walk_never_follows_symlinks 扫到 e.path().metadata() 必须红。",
+        file=TAURI / "src" / "storage" / "cache_cleaner.rs",
+        injections=[(
+            "            let Ok(ft) = e.file_type() else {",
+            "            let Ok(ft) = e.path().metadata().map(|m| m.file_type()) else {",
+        )],
+        cmd=cargo("test", "--lib", "cache_cleaner_walk_never_follows_symlinks"),
+        cwd=TAURI,
+        expect_fail_hint="不跟随软链",
+        tags=["rust", "storage", "stability", "data-loss", "new-guards"],
+    ),
+    Case(
+        name="resend_message 的群聊判废必须在置 sending 之前（审计 1.2：否则消息永久卡 sending）",
+        why="旧顺序先 set_message_status(\"sending\") 再判群聊/取公钥/加密，失败路径不回滚 ⇒ 状态永久卡\n"
+        "     sending，而重发入口的守卫（sending => Err）又把它挡死 ⇒ 这条消息永远发不出去。\n"
+        "     触发条件是对任何失败的群消息点重发（必现）。\n"
+        "     注入方式：删掉函数开头那段群聊判废（有人会觉得「后面单聊分支反正会走」——\n"
+        "     差的就是这段顺序保证），守卫 resend_message_sets_sending_only_after_all_failure_paths\n"
+        "     的锚点（群消息重发提示）找不到必须红。",
+        file=TAURI / "src" / "commands" / "chat.rs",
+        injections=[(
+            "    if rec.conv_id.strip_prefix(\"group:\").is_some() {\n"
+            "        return Err(\"群消息重发请删除后重新发送\".to_string());\n"
+            "    }\n"
+            "\n",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "resend_message_sets_sending_only_after_all_failure_paths"),
+        cwd=TAURI,
+        expect_fail_hint="找不到锚点",
+        tags=["rust", "chat", "stability", "new-guards"],
+    ),
+    Case(
+        name="中继收文件的哈希必须对组装后的明文算（审计 1.8：乱序/重复分片必错）",
+        why="中继链路分片天然重复（多邻居泛洪各送一份）且乱序（多路径时延不同）。旧实现逐片「到达\n"
+        "     即喂」增量哈希、喂在 add_chunk 去重/排序之前 ⇒ 分片收齐却必然校验失败：接收端报\n"
+        "     「文件完整性校验失败」、发送端却显示成功（无回执），两端状态互相矛盾且无重试路径。\n"
+        "     注入方式：把校验点从 digest(&full)（组装结果）改成 digest(&name)（哈希错了对象，\n"
+        "     仍可编译），守卫 relay_receive_hashes_assembled_plaintext_once 必须红。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "let actual_hex: String = sha2::Sha256::digest(&full)",
+            "let actual_hex: String = sha2::Sha256::digest(&name)",
+        )],
+        cmd=cargo("test", "--lib", "relay_receive_hashes_assembled_plaintext_once"),
+        cwd=TAURI,
+        expect_fail_hint="组装出的明文",
+        tags=["rust", "relay", "files", "stability", "new-guards"],
+    ),
+    Case(
         name="幂等 accept 时必须重置段号（少这一句，续传段会被当成迟到重复片整段丢掉）",
         why="2026-09-22 跨网首测：160MB 永远停在 0%，最后报分片失败。\n"
         "     发送端续传时分片**按段从 seq 0 重编**，而活跃接收器的 next_seq 已推进到上一段末尾\n"
