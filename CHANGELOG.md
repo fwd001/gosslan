@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.29.14] - 2026-09-23
+
 ### Fixed (2026-09-23 稳定性审计 · A1 的 L2 第一段 —— 中继推送不再宣称未经证明的成功)
 
 `relay_push_file`（`network/file.rs`）写完最后一片就无条件 `status=done, progress=1.0` 并广播
