@@ -10,6 +10,42 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-24 真机 600MB 复核 · 批次 m —— attempt epoch：接收端不再被上一轮的分片打死)
+
+这是 RC1 的根治（用户拍板选 B，直接上 attempt epoch，不做"容忍重试"的折中版）。
+机制一句话：**一轮超时后 outbox 重投，但上一轮已经塞进链路队列的分片不会被撤回**
+（Low 队列每链路 1024 槽 ≈ 262MB 明文）。每轮的 `seq` 都从 0 重编，于是旧轮的高 `seq`
+落到新轮上就被 `chunk_seq_decision` 判成"跳号"⇒ `fail_receive` 摘掉整个接收器、整单死。
+旧代码注释里"重传 seq 从 0 ⇒ 残片算 Duplicate 会被忽略"这条推理，只在残片**先到**、
+新 Offer 把 `next_seq` 归零**之后"才成立 —— 队列里还压着几百 MB 时顺序恰恰是反的。
+
+- 协议：`FileOffer` / `FileChunk` / `FileDone` 各加 `attempt: Option<u32>`
+  （`serde(default, skip_serializing_if = "Option::is_none")`），新能力位
+  `CONTENT_FEATURE_FILE_EPOCH = 1 << 2`。**三帧必须一起带**：少带一类，那一类就逃过过滤。
+- 接收侧：`FileReceiver` 记 `attempt` 与 `stale_dropped`；分片与完成帧先过
+  `file::frame_is_current`，非当前轮次的**安静丢掉**（不再判死），并在第一次丢弃时留一条
+  日志 + 计数 —— 没有计数，"进度怎么不动了"就又成了一桩无解释的事故。
+  `FileDone` 的判定必须在 `finish_receive` **之前**：那份函数一进来就把接收器摘走，
+  摘完再判就分不清"陈旧"与"重复"（重复那条会补一个莫须有的成功 Ack）。
+- **Offer 不参与过滤，反而是设定轮次的那一步**（两条接受路径各设一次）。
+  这是刻意的设计而不是疏漏：如果 Offer 也被"比本机旧就丢掉"，本机重启后计数器回到小值时，
+  新的一轮会被接收端永久判成陈旧 ⇒ 那份文件饿死。`send_attempt` 因此**必须**取持久化的
+  `file_outbox.attempts`，绝不能用进程内计数器（守卫里把这条钉死了）。
+- 兼容：老端不声明该位 ⇒ 本机一个字段都不带（`skip_serializing_if` 保证字节层面与旧版本
+  完全一致，不去赌对方的反序列化器容不容得下未知字段）；老端发来的帧读成 `None` ⇒
+  `frame_is_current(None, _) = true` ⇒ **完全旧语义**。升级不改变任何现存行为。
+- 范围：只含 1:1 那三帧。**群文件（`GroupFileChunk`）与中继（`RelayChunk`）本轮刻意不动** ——
+  群侧比单聊更脆（`seq != next_seq` 一律判死、且没有续传语义），要统一得连带它的
+  段/attempt 语义一起设计，混进来会让这一版的取证面翻倍。已单独记为后续项。
+- 测试与守卫：`stale_attempt_frames_are_filtered_but_legacy_frames_never_are`（三条设计各自钉住，
+  含"未来轮次也不算当前"）、`file_frame_attempt_field_is_wire_compatible_both_ways`
+  （不带字段的老 JSON 能读 + `None` 时字段整个消失）、`file_epoch_feature_is_advertised`
+  （门控用了哪一位就必须声明哪一位 —— 这条不在 `kind_required_feature` 的覆盖范围里）、
+  以及源码守卫 `file_attempt_epoch_is_wired_on_both_sides`（三帧带轮次 / 门控 / 取持久化
+  attempts / 接收侧两处过滤 / Offer 两条路径各设一次）。
+  `verify-guards.py` +3 条变异用例（tag `file-epoch`），**全部用"写死 None"这种编译得过、
+  判据才红的注入**（删字段红的是编译器，那种确认证明不了接线）。Rust lib 662 → **666**。
+
 ## [4.29.16] - 2026-09-23
 
 ### Fixed (2026-09-23 真机 600MB 复核 · 批次 l —— 不含协议变更的那三条)

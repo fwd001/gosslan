@@ -3406,6 +3406,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             sealed_file_key,
             file_sha256,
             from_bytes,
+            attempt,
             ..
         } => {
             if from != peer_id || from == state.device_id {
@@ -3555,6 +3556,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                         if resumed {
                             file::restart_segment(state, &transfer_id);
                         }
+                        // Offer 是权威：它带来的轮次就是"当前轮次"，此后只有同轮次的
+                        // 分片/完成帧会被处理（`file::frame_is_current`）。
+                        file::note_offer_attempt(state, &transfer_id, attempt);
                         let _ = try_send(
                             state,
                             peer_id,
@@ -3592,6 +3596,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             };
             match received {
                 Ok(_) => {
+                    // 新建/续建的接收器一律以这份 Offer 的轮次为准（Offer 是权威，见
+                    // `file::frame_is_current` 第 3 条）。
+                    file::note_offer_attempt(state, &transfer_id, attempt);
                     // Phase 1：接收一开始就登记一条 Active 记录（cid → 暂无 path）。
                     // 中途断链 / 超时由 record_failure 标成 Incomplete ⇒ 建链时自动重取。
                     {
@@ -3703,12 +3710,14 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             transfer_id,
             seq,
             data,
+            attempt,
         } => {
             match STANDARD
                 .decode(&data)
                 .map_err(|e| e.to_string())
-                .and_then(|bytes| file::write_chunk(state, &transfer_id, peer_id, seq, &bytes))
-            {
+                .and_then(|bytes| {
+                    file::write_chunk(state, &transfer_id, peer_id, seq, &bytes, attempt)
+                }) {
                 Ok(received) => {
                     // 节流：每 250ms 至多上报一次进度，避免大文件 IPC 事件风暴
                     let (total, should_emit) = {
@@ -3759,7 +3768,19 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 }
             }
         }
-        Message::FileDone { transfer_id } => {
+        Message::FileDone {
+            transfer_id,
+            attempt,
+        } => {
+            // 上一轮残留的完成帧：这一轮才刚开始，拿它去 finish_receive 会把整单
+            // 判成"文件传输未完成"打死（或补一个莫须有的成功 Ack）。先按轮次挡掉。
+            if !file::done_is_current(state, &transfer_id, attempt) {
+                state.logger.info(
+                    "file",
+                    format!("丢掉非当前轮次的完成帧 transfer={transfer_id}"),
+                );
+                return;
+            }
             match file::finish_receive(state, &transfer_id, peer_id) {
                 Err(e) => {
                     let _ = state.app.emit(
@@ -7555,6 +7576,7 @@ mod tests {
             transfer_id: "t1".to_string(),
             seq,
             data: "AA".to_string(),
+            attempt: None,
         }
     }
 
@@ -8076,6 +8098,7 @@ mod tests {
             transfer_id: "t1".into(),
             seq: 0,
             data: "abc".into(),
+            attempt: None,
         };
         assert!(is_bulk(&file_chunk));
         let group_file_chunk = Message::GroupFileChunk {
@@ -8089,6 +8112,7 @@ mod tests {
         // 文件终止帧必须走 bulk，避免跑到未写完的分片前面。
         let file_done = Message::FileDone {
             transfer_id: "t1".into(),
+            attempt: None,
         };
         assert!(is_bulk(&file_done));
         let group_file_done = Message::GroupFileDone {

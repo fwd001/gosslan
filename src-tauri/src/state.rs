@@ -704,6 +704,13 @@ pub struct FileReceiver {
     pub received: u64,
     /// 直连 TCP 虽然有序，但仍校验序号，避免错误/恶意帧把文件静默拼坏。
     pub next_seq: u32,
+    /// 当前这接收器属于**哪一轮**发送尝试（attempt epoch；0 = 未知/老端不带）。
+    /// 由 FileOffer 设定（Offer 是权威，见 `file::frame_is_current` 第 3 条），
+    /// 分片与完成帧用它过滤"上一轮还堵在链路队列里的残留"。
+    pub attempt: u32,
+    /// 已丢掉多少片"上一轮 attempt 的残留"。只用于诊断：没有这个计数，
+    /// 界面上"进度不动了"就完全没有可解释的痕迹（而它恰恰是 epoch 在起作用）。
+    pub stale_dropped: u32,
     pub tmp_path: PathBuf,
     pub final_path: PathBuf,
     pub peer_id: String,

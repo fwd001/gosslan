@@ -98,10 +98,22 @@ pub const CONTENT_FEATURE_PULL: u32 = 1 << 0;
 /// 这段历史也是"V1 内部并不单调"的证据：**别把 protocol_version 当能力清单用**。
 pub const CONTENT_FEATURE_MERGE: u32 = 1 << 1;
 
+/// 能力位：**能收发带 `attempt` 的文件帧**（`FileOffer` / `FileChunk` / `FileDone`）。
+///
+/// 为什么必须门控（2026-09-23 真机 600MB 复核，用户拍板选 attempt epoch 根治）：
+/// 一轮发送超时后 outbox 会重投，而**上一轮已经塞进链路队列的分片不会被撤回**
+/// （Low 队列 1024 槽 ≈ 262MB）。新旧两轮的分片在接收端混在一起时，旧轮的高 `seq`
+/// 会被判成"跳号"⇒ 整单判死。有了 attempt，接收端能把非当前轮的片子安静丢掉而不是被打死。
+///
+/// 老端不认这个字段（serde 忽略未知字段），所以**只能对声明过这一位的对端带它**；
+/// 新端收到 `None` 时按旧语义走 ⇒ 双向天然兼容。这也是"别把 protocol_version 当能力清单"
+/// 的又一次应用：V1 内部并不单调。
+pub const CONTENT_FEATURE_FILE_EPOCH: u32 = 1 << 2;
+
 /// 本机支持的内容能力位图。**不参与 Hello 签名**（见 hello_signing_bytes）：
 /// 老端忽略该字段、新端据此决定能不能对它发拉取帧。
 pub fn content_features() -> u32 {
-    CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE
+    CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE | CONTENT_FEATURE_FILE_EPOCH
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -1060,6 +1072,10 @@ pub enum Message {
         /// 断点续传：从第几字节开始发（接收端已持有的前缀字节数）。
         #[serde(default)]
         from_bytes: u64,
+        /// 第几次发送尝试（从 1 开始；`None` = 对端未声明 `CONTENT_FEATURE_FILE_EPOCH`）。
+        /// 见该常量的文档：它存在的唯一理由是"上一轮还堵在链路队列里的分片必须可识别"。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
     },
     FileAccept {
         transfer_id: String,
@@ -1076,9 +1092,16 @@ pub enum Message {
         transfer_id: String,
         seq: u32,
         data: String,
+        /// 与 `FileOffer.attempt` 同源：接收端据此把**上一轮**残留的分片安静丢掉。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
     },
     FileDone {
         transfer_id: String,
+        /// 同上。完成帧也必须可被识别为陈旧 —— 否则上一轮的 FileDone 会在这一轮
+        /// 刚开头时到达，把一份只收了几个分片的文件判成"未完成"并打死。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
     },
     /// 接收方对文件传输的最终确认（成功持久化并校验完成后才允许回 success=true）。
     /// 发送方只有收到 success=true 才能把本地文件消息推进到 delivered。
@@ -2389,5 +2412,68 @@ mod tests {
             }
             _ => panic!("expect file_complete_ack"),
         }
+    }
+
+    /// `attempt` 必须是**双向都不破坏**的可选字段（2026-09-23 attempt epoch）。
+    ///
+    /// 两个方向分开钉，因为它们的失效模式完全不同：
+    /// · 老端 → 新端：JSON 里根本没有这个键 ⇒ 解析必须成功（`serde(default)`）；
+    /// · 新端 → 老端：本机没声明能力时**整个字段必须消失**（`skip_serializing_if`）⇒
+    ///   字节层面与旧版本一致，不去赌老端的反序列化器容不容得下未知字段。
+    #[test]
+    fn file_frame_attempt_field_is_wire_compatible_both_ways() {
+        let legacy_shape = Message::FileChunk {
+            transfer_id: "t1".into(),
+            seq: 3,
+            data: "AA==".into(),
+            attempt: None,
+        };
+        let json = serde_json::to_string(&legacy_shape).unwrap();
+        assert!(
+            !json.contains("attempt"),
+            "不带轮次时字段必须整个消失，否则新端发出去的帧老端可能整帧解析失败：{json}"
+        );
+        // 上面这份 JSON 就是"老端发来的形状"，能读回来即证明向后兼容
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::FileChunk { seq, attempt, .. } => {
+                assert_eq!(seq, 3);
+                assert_eq!(
+                    attempt, None,
+                    "缺键必须读成 None（= 旧语义），不能读成第 0 轮"
+                );
+            }
+            _ => panic!("expect file_chunk"),
+        }
+        // 带轮次时新字段必须原样往返
+        let with_epoch = Message::FileDone {
+            transfer_id: "t1".into(),
+            attempt: Some(9),
+        };
+        let json2 = serde_json::to_string(&with_epoch).unwrap();
+        assert!(json2.contains("\"attempt\":9"), "{json2}");
+        match serde_json::from_str::<Message>(&json2).unwrap() {
+            Message::FileDone { attempt, .. } => assert_eq!(attempt, Some(9)),
+            _ => panic!("expect file_done"),
+        }
+    }
+
+    /// 门控用了哪一位，`content_features()` 就必须声明哪一位。
+    ///
+    /// `every_gated_kind_is_advertised_by_us` 只管"按 kind 门控"的那批；`attempt` 是
+    /// **按帧字段**门控、不落在 `kind_required_feature` 里，所以它必须在这里单独钉 ——
+    /// 漏声明的表现是"epoch 静默不生效"，测试与真机都不容易第一时间看出来。
+    #[test]
+    fn file_epoch_feature_is_advertised() {
+        assert_ne!(
+            content_features() & CONTENT_FEATURE_FILE_EPOCH,
+            0,
+            "声明了 FILE_EPOCH 门控却没 advertise ⇒ 对端永远收不到 attempt"
+        );
+        // 新位必须独占一个 bit（撞车的表现是"两个门控互相误开"，编译器不会报）
+        assert_eq!(
+            CONTENT_FEATURE_FILE_EPOCH & (CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE),
+            0,
+            "能力位撞车：FILE_EPOCH 复用了已经被占用的 bit"
+        );
     }
 }

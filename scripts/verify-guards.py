@@ -3144,6 +3144,62 @@ CASES: list[Case] = [
         expect_fail_hint="没有回执的推送不许广播完成事件",
         tags=["rust", "relay", "file", "stability", "new-guards", "a1-l2"],
     ),
+    # ---------------- attempt epoch 接线（2026-09-23 真机 600MB，用户选 B） ----------------
+    Case(
+        name="分片帧写死 attempt:None —— 编译得过、判据必须红",
+        why="上一轮还压在链路队列里的分片（Low 队列 1024 槽 ≈ 262MB）落到新一轮上时，\n"
+        "     旧代码把它判成「跳号」⇒ 整单打死，这就是 600MB 反复失败的直接机制。\n"
+        "     注入刻意用 `attempt: None`（字段仍在、类型仍对）而不是删掉：删字段红的是编译器，\n"
+        "     那种「确认」证明不了接线（A5 那轮踩过一次，教训写在 a1-l2 的用例注释里）。",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            """            seq,
+            data,
+            attempt,
+        };""",
+            """            seq,
+            data,
+            attempt: None,
+        };""",
+        )],
+        cmd=cargo("test", "--lib", "file_attempt_epoch_is_wired_on_both_sides"),
+        cwd=TAURI,
+        expect_fail_hint="FileChunk 必须带 attempt",
+        tags=["rust", "file", "stability", "new-guards", "file-epoch"],
+    ),
+    Case(
+        name="Offer 只有一条接受路径设定轮次（半边没接）",
+        why="FileOffer 有两条接受出口：幂等 accept（含续传段归零）与新建/续建接收器。\n"
+        "     漏一条 = 那条路径上接收器停在第 0 轮 ⇒ 此后**所有**新轮分片都被当陈旧丢掉，\n"
+        "     表现是「进度条走到一半再也不动、也不报错」——比原来的跳号判死更难查。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "                        file::note_offer_attempt(state, &transfer_id, attempt);\n",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "file_attempt_epoch_is_wired_on_both_sides"),
+        cwd=TAURI,
+        expect_fail_hint="幂等 accept 与新建/续建接收器两条路径各一次",
+        tags=["rust", "file", "stability", "new-guards", "file-epoch"],
+    ),
+    Case(
+        name="attempt 不门控能力位就对老端发新语义",
+        why="ADR-0007 / INV-P24 的硬要求：新帧新语义必须先按对端能力门控。\n"
+        "     老端虽然会忽略未知字段，但「忽略」是**依赖对方 serde 配置**的赌注；\n"
+        "     门控之后新端不发、老端不收，兼容面回到字节层面一致。注入 = 删掉早退分支。",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            """    if caps & crate::protocol::CONTENT_FEATURE_FILE_EPOCH == 0 {
+        return None;
+    }
+""",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "file_attempt_epoch_is_wired_on_both_sides"),
+        cwd=TAURI,
+        expect_fail_hint="不门控就等于对老端发新语义",
+        tags=["rust", "file", "stability", "new-guards", "file-epoch"],
+    ),
 
 ]
 

@@ -410,6 +410,9 @@ pub async fn send_file_from_path_at(
     // 现在 timeout 包住 Offer 循环全部（3 次 attempt + 每次 accept 后的 stream_file），
     // 从第一次发 Offer 开始计时，确保 E2E 有硬上限。
     let send_deadline = send_deadline_for(size);
+    // 整轮（含 Offer 循环里的 3 次重投）共用同一个 attempt 号：Offer 只在**未被接受**时才会重来，
+    // 那时链路上还没有任何分片，所以不需要区分；真正需要区分的是"这一整轮 vs 上一整轮"。
+    let attempt = send_attempt(state, peer_id, transfer_id);
     let result = tokio::time::timeout(send_deadline, async {
         // 发送 Offer → 等接受。接收端若回 FileReject.received = N（它已有 N 字节），
         // 就从该偏移续发 —— 发送端永远以接收端的真实进度为准，绝不重头覆盖。
@@ -430,6 +433,7 @@ pub async fn send_file_from_path_at(
                 file_sha256: file_sha256.clone(),
                 from_seq: 0,
                 from_bytes: resume_from,
+                attempt,
             };
             if let Err(e) = try_send(state, peer_id, &offer).await {
                 state
@@ -471,6 +475,7 @@ pub async fn send_file_from_path_at(
                         file_key,
                         0,
                         resume_from,
+                        attempt,
                         &mut cancel_rx,
                     )
                     .await;
@@ -912,6 +917,8 @@ async fn stream_file(
     file_key: [u8; 32],
     from_seq: u32,
     from_bytes: u64,
+    // 本轮发送的轮次号（`None` = 对端不支持 ⇒ 帧里不带，行为与旧版完全一致）。
+    attempt: Option<u32>,
     cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), SendFileError> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -1005,6 +1012,7 @@ async fn stream_file(
             transfer_id: transfer_id.to_string(),
             seq,
             data,
+            attempt,
         };
         // 投递到**这条**链路：队列满时原地等背压，绝不换链路（换路 = 分片失序 = 整条传输判死）。
         // 等待期间每 `FILE_STALL_TICK` 醒一次做停滞检查 —— 对端不收时这里就是唯一的观测点。
@@ -1093,6 +1101,7 @@ async fn stream_file(
     // 真机症状：多文件并发时 600MB 的大文件跑到 100% 报分片/接收失败，单发同一文件必成功。
     let done = Message::FileDone {
         transfer_id: transfer_id.to_string(),
+        attempt,
     };
     tokio::select! {
         biased;
@@ -1336,6 +1345,8 @@ pub fn resume_receive(
                 size,
                 received: from_bytes,
                 next_seq: 0,
+                attempt: 0,
+                stale_dropped: 0,
                 tmp_path,
                 final_path: final_path.clone(),
                 peer_id: peer_id.to_string(),
@@ -1537,6 +1548,8 @@ fn make_receiver(
             size,
             received: 0,
             next_seq: 0,
+            attempt: 0,
+            stale_dropped: 0,
             tmp_path: tmp_path.clone(),
             final_path: final_path.clone(),
             peer_id: peer_id.to_string(),
@@ -1712,6 +1725,87 @@ pub(crate) fn chunk_seq_decision(seq: u32, next_seq: u32) -> ChunkSeq {
     }
 }
 
+/// 这一帧属于**当前这一轮**发送尝试吗（attempt epoch 判据，2026-09-23 真机 600MB 复核）。
+///
+/// 病根：一轮超时后 outbox 重投，但**上一轮已经塞进链路队列的分片不会被撤回**
+/// （Low 队列 1024 槽 ≈ 262MB）。接收端每段的 `seq` 都是从 0 重编的，于是旧轮的高 `seq`
+/// 落在新轮的 `next_seq` 之上 ⇒ 判成"跳号"⇒ 整单被打死。有了轮次号就能把它安静丢掉。
+///
+/// 三条刻意的设计：
+/// 1. `None`（老端不带这个字段，或对方没声明 `CONTENT_FEATURE_FILE_EPOCH`）⇒ **恒真**，
+///    完全退回旧语义 —— 新 behaviour 只在两端都支持时才生效。
+/// 2. 用 `==` 而不是 `>=`：**比本机新的轮次也算"不是我的"**。"未来的分片"只可能是它的
+///    Offer 还在另一条链路上排队；先收下会把文件拼坏，而拼坏由末尾 SHA 兜住 ⇒ 宁可丢这一片，
+///    等它自己的 Offer 到达后由发送端从 `.part` 前缀续发（自愈，最多多一轮）。
+/// 3. **Offer 永远照单全收并借此设定轮次**（不走这个判据）：否则本机重启后计数器回到 1，
+///    而接收端存的是上一轮的 5 ⇒ 新 Offer 被判陈旧 ⇒ 这份文件永久饿死。Offer 是权威，
+///    分片/完成帧才是被过滤的对象。
+pub(crate) fn frame_is_current(frame: Option<u32>, current: u32) -> bool {
+    match frame {
+        Some(a) => a == current,
+        None => true,
+    }
+}
+
+/// `None`（老端不带 attempt）在本机记作这一轮。
+pub const LEGACY_ATTEMPT: u32 = 0;
+
+/// Offer 一到达就把接收器的"当前轮次"设成它带来的值 —— **Offer 是权威，不参与过滤**
+/// （见 `frame_is_current` 第 3 条：否则本机重启后计数器回到小值，新 Offer 会被自己判成陈旧，
+/// 那份文件就永久饿死）。
+pub fn note_offer_attempt(state: &AppState, transfer_id: &str, attempt: Option<u32>) {
+    if let Some(r) = state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_mut(transfer_id)
+    {
+        r.attempt = attempt.unwrap_or(LEGACY_ATTEMPT);
+    }
+}
+
+/// `FileDone` 是否属于当前轮次（只读，不摘接收器）。
+///
+/// 为什么必须在 `finish_receive` **之前**判：那份函数一进来就把接收器摘掉了，
+/// 陈旧完成帧会被当成"重复 FileDone"去补一个成功 Ack，或更糟 —— 拿这一轮刚开头的
+/// `received ≠ size` 把整单打死。没有接收器时返回 true，交给原有"未知传输"分支处理。
+pub fn done_is_current(state: &AppState, transfer_id: &str, attempt: Option<u32>) -> bool {
+    let recv = state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match recv.get(transfer_id) {
+        Some(r) => frame_is_current(attempt, r.attempt),
+        None => true,
+    }
+}
+
+/// 本轮发送的 attempt 号（返回 `None` = 对端没声明能力 ⇒ 一个字段都不带，退回旧语义）。
+///
+/// 值**必须取自持久化的 `file_outbox.attempts`**，不能用进程内计数器：重启后 outbox 会重投，
+/// 而计数器从 1 重新开始 ⇒ 比接收端已存的轮次还小，配上"`==` 才算当前"的判据，
+/// 这份文件的每一轮都会被自己判成陈旧（就是上面第 3 条要避开的那个坑）。
+fn send_attempt(state: &Arc<AppState>, peer_id: &str, transfer_id: &str) -> Option<u32> {
+    let caps = {
+        state
+            .peer_content_features
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(peer_id)
+            .copied()
+            .unwrap_or(0)
+    };
+    if caps & crate::protocol::CONTENT_FEATURE_FILE_EPOCH == 0 {
+        return None;
+    }
+    let attempts = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_file_outbox_attempts(&dbc, transfer_id)
+    };
+    // 没有 outbox 行（直发路径）按第 1 轮算：此刻链路上不可能有上一轮的残留。
+    Some(attempts.and_then(|a| u32::try_from(a).ok()).unwrap_or(1))
+}
+
 /// 接收方：写入一个分片，返回累计字节数。
 /// 入参 `data` 为 AEAD 密文（nonce || ciphertext）：先解密再写盘，
 /// 解密失败直接报错——密文绝不落盘。
@@ -1721,6 +1815,7 @@ pub fn write_chunk(
     peer_id: &str,
     seq: u32,
     data: &[u8],
+    attempt: Option<u32>,
 ) -> Result<u64, String> {
     use std::io::Write;
     // 锁作用域：先算完，把要落库的进度取出来，**释放 file_receivers 锁之后**再动 db
@@ -1733,6 +1828,23 @@ pub fn write_chunk(
         let r = recv.get_mut(transfer_id).ok_or("未知传输")?;
         if r.peer_id != peer_id {
             return Err("文件传输来源不匹配".to_string());
+        }
+        // **上一轮 attempt 的残留分片**安静丢掉（2026-09-23 真机 600MB 的根治，attempt epoch）。
+        // 不丢会怎样：它们带着上一轮的高 `seq`，落到下面的判据里就是"跳号"⇒ 整单打死 ——
+        // 而旧注释里"重传时 seq 从 0 重来 ⇒ 残片算 Duplicate"那条推理，只在残片**先到**、
+        // 新轮 Offer 把 next_seq 归零**之后**才成立；队列里还压着最多 262MB 时顺序是反的。
+        if !frame_is_current(attempt, r.attempt) {
+            if r.stale_dropped == 0 {
+                state.logger.info(
+                    "file",
+                    format!(
+                        "丢掉非当前轮次的分片（本机在接收第 {} 轮）transfer={transfer_id}",
+                        r.attempt
+                    ),
+                );
+            }
+            r.stale_dropped += 1;
+            return Ok(r.received);
         }
         // 重复/迟到的分片必须**忽略**，而不是整单失败：发送方一次 attempt 超时后会**从头重传**
         // （seq 从 0 重来），而上一轮的残片可能仍在链路上。只挡"跳号"（真缺片，只能重传）；
@@ -2487,8 +2599,8 @@ mod tests {
     use super::super::super::crypto;
     use super::chunk_size_for_path;
     use super::{
-        refuse_reason_for_best_link, send_deadline_for, sha256_file_hex, stall_verdict,
-        valid_sha256_hex, StallVerdict, BLE_FILE_SIZE_LIMIT, FILE_SEND_DEADLINE,
+        frame_is_current, refuse_reason_for_best_link, send_deadline_for, sha256_file_hex,
+        stall_verdict, valid_sha256_hex, StallVerdict, BLE_FILE_SIZE_LIMIT, FILE_SEND_DEADLINE,
         FILE_STALL_ABORT_MS, FILE_STALL_WARN_MS,
     };
     use crate::protocol::FILE_CHUNK;
@@ -2730,7 +2842,37 @@ mod tests {
 
     // ---------- 文件级 SHA-256 完整性校验 ----------
 
-    /// 只剩蓝牙链路时，不许启动一件"注定完不成"的大文件（2026-09-23 真机 600MB 复核）。
+    /// attempt epoch 的过滤判据（2026-09-23 真机 600MB 的根治点，用户拍板选 B）。
+    ///
+    /// 病根形状：一轮超时后 outbox 重投，而**上一轮已经塞进链路队列的分片不会被撤回**
+    /// （Low 队列 1024 槽 ≈ 262MB）。它们带着上一轮的序号落到新一轮上，旧代码会判成
+    /// "跳号"⇒ 整单打死。三条设计各自都要钉住：老端不带字段 ⇒ 恒真（升级不许改行为）、
+    /// 只有相等才算当前轮、**比本机新的轮次也不算当前**。
+    #[test]
+    fn stale_attempt_frames_are_filtered_but_legacy_frames_never_are() {
+        // 老端 / 对端没声明能力 ⇒ 字段缺席 ⇒ 完全旧语义
+        assert!(frame_is_current(None, 0), "legacy 帧永远是当前轮");
+        assert!(
+            frame_is_current(None, 7),
+            "本机已经在第 7 轮时，legacy 帧也不许被丢掉 —— 那是「升级就把对端发死」"
+        );
+        assert!(frame_is_current(Some(7), 7), "同轮 = 当前");
+        assert!(
+            !frame_is_current(Some(6), 7),
+            "上一轮的残留必须丢：不丢就被下面的序号判据打成跳号、整单判死"
+        );
+        assert!(
+            !frame_is_current(Some(8), 7),
+            "未来轮次的帧也不能写：它的 Offer 还在另一条链路上排队。丢掉由「Offer + 续传」自愈，\
+             写进文件里才是真事故（末尾 SHA 只能判死，救不回内容）"
+        );
+        assert!(
+            frame_is_current(Some(0), 0),
+            "0 不是哨兵，就是第一轮/未知轮的同值"
+        );
+    }
+
+    /// 大文件在只剩蓝牙时不启动（详见 `BLE_FILE_SIZE_LIMIT` 的推导）。
     ///
     /// 钉的是**判据**而不是接线：BLE 上分片被压到 4KiB、带宽 ≈14KB/s，600MB 要十几小时，
     /// 而单轮 deadline 封顶 1h ⇒ 必然反复超窗重投 ⇒ 重新选路 + 重新编号 ⇒ 接收端 Gap 判死，
@@ -2904,6 +3046,8 @@ mod tests {
             size: original.len() as u64,
             received: 0,
             next_seq: 0,
+            attempt: 0,
+            stale_dropped: 0,
             tmp_path: part_path.clone(),
             final_path: part_path.clone(),
             peer_id: "a".into(),
@@ -2940,6 +3084,8 @@ mod tests {
             size: original.len() as u64,
             received: 0,
             next_seq: 0,
+            attempt: 0,
+            stale_dropped: 0,
             tmp_path: part_path.clone(),
             final_path: part_path.clone(),
             peer_id: "a".into(),
@@ -3148,6 +3294,8 @@ mod tests {
             size,
             received: 0,
             next_seq: 0,
+            attempt: 0,
+            stale_dropped: 0,
             tmp_path: part_path.clone(),
             final_path: part_path,
             peer_id: "dev-a".into(),

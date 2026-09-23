@@ -614,6 +614,7 @@ async fn main() {
             file_sha256: file_sha256.clone(),
             from_seq: 0,
             from_bytes: 0,
+            attempt: None,
         },
     )
     .await;
@@ -642,6 +643,7 @@ async fn main() {
                 transfer_id: TRANSFER_ID.into(),
                 seq,
                 data: STANDARD.encode(sealed_chunk),
+                attempt: None,
             },
         )
         .await;
@@ -651,6 +653,7 @@ async fn main() {
         &mut w,
         &Message::FileDone {
             transfer_id: TRANSFER_ID.into(),
+            attempt: None,
         },
     )
     .await;
@@ -749,6 +752,7 @@ async fn main() {
                 file_sha256: image_sha256.clone(),
                 from_seq: 0,
                 from_bytes: 0,
+                attempt: None,
             },
         )
         .await;
@@ -777,6 +781,7 @@ async fn main() {
                     transfer_id: IMAGE_TRANSFER_ID.into(),
                     seq: image_seq,
                     data: STANDARD.encode(sealed_chunk),
+                    attempt: None,
                 },
             )
             .await;
@@ -786,6 +791,7 @@ async fn main() {
             &mut w,
             &Message::FileDone {
                 transfer_id: IMAGE_TRANSFER_ID.into(),
+                attempt: None,
             },
         )
         .await;
@@ -1020,7 +1026,7 @@ async fn main() {
             let mut parts: Vec<(u32, Vec<u8>)> = Vec::new();
             loop {
                 let m = waiter.expect(15_000, "FileChunk/FileDone", &|m| {
-                    matches!(m, Message::FileChunk { transfer_id, .. } | Message::FileDone { transfer_id } if transfer_id == DL_TRANSFER_ID)
+                    matches!(m, Message::FileChunk { transfer_id, .. } | Message::FileDone { transfer_id, .. } if transfer_id == DL_TRANSFER_ID)
                 }).await?;
                 match m {
                     Message::FileChunk { seq, data, .. } => {

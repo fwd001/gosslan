@@ -2944,6 +2944,68 @@ mod tests {
         }
     }
 
+    /// attempt epoch 的**接线**（2026-09-23 真机 600MB 根治，用户拍板选 B）。
+    ///
+    /// 判据本身有单测（`frame_is_current`、协议双向兼容），这里钉的是接线是否四处都在：
+    /// ① 三帧都带上轮次；② 轮次来自持久化的 outbox.attempts 且必须门控；
+    /// ③ 接收侧分片与完成帧都过判据；④ Offer 那两条接受路径都设定轮次。
+    /// 为什么用源码守卫：要跑通"上一轮分片还压在链路队列里、新一轮已经开始"需要双链路夹具
+    /// 加真实背压，本仓没有这种夹具；而接错任何一处的表现都是真机上那份大文件又死了。
+    #[test]
+    fn file_attempt_epoch_is_wired_on_both_sides() {
+        let file = include_str!("network/file.rs");
+        let tv = crate::network::transport_src_for_guards();
+        // ① 三帧都必须带轮次（少一处 = 那一类帧逃过过滤，病根原样保留）
+        let stream = code_flat(&rust_fn_body(file, "async fn stream_file("));
+        assert!(
+            stream.contains(
+                "Message::FileChunk{transfer_id:transfer_id.to_string(),seq,data,attempt,}"
+            ),
+            "FileChunk 必须带 attempt"
+        );
+        assert!(
+            stream.contains("Message::FileDone{transfer_id:transfer_id.to_string(),attempt,}"),
+            "FileDone 必须带 attempt —— 陈旧完成帧会把这一轮刚开头的传输判成\"未完成\"并打死"
+        );
+        assert!(
+            code_flat(&rust_fn_body(file, "pub async fn send_file_from_path_at("))
+                .contains("from_bytes:resume_from,attempt,}"),
+            "FileOffer 必须带 attempt（它是接收端设定当前轮次的唯一来源）"
+        );
+        // ② 轮次必须门控，且必须来自**持久化**的 attempts
+        let gate = code_flat(&rust_fn_body(file, "fn send_attempt("));
+        assert!(
+            gate.contains("CONTENT_FEATURE_FILE_EPOCH==0{returnNone;}"),
+            "不门控就等于对老端发新语义（违反 ADR-0007 / INV-P24：新帧新语义必须先按能力位门控）"
+        );
+        assert!(
+            gate.contains("get_file_outbox_attempts("),
+            "轮次必须取持久化的 outbox.attempts：进程内计数器重启后回到 1，会比接收端已存的轮次还小 ⇒              这份文件的每一轮都被自己判成陈旧（永久饿死）"
+        );
+        assert!(
+            !gate.contains("static") && !gate.contains("AtomicU32"),
+            "同上：绝不允许改用进程内计数器当轮次"
+        );
+        // ③ 接收侧两处过滤
+        assert!(
+            code_flat(&rust_fn_body(file, "pub fn write_chunk("))
+                .contains("!frame_is_current(attempt,r.attempt)"),
+            "write_chunk 必须先挡非当前轮次的分片，且必须排在 chunk_seq_decision 之前"
+        );
+        assert!(
+            tv.contains("file::done_is_current(state, &transfer_id, attempt)"),
+            "FileDone 必须在 finish_receive 摘走接收器之前判轮次（摘完就分不清\"陈旧\"与\"重复\")"
+        );
+        // ④ Offer 的两条接受路径都要设定轮次：漏一条 = 那条路径上接收器停在第 0 轮，
+        //    于是**所有**新轮分片都被当陈旧丢掉 ⇒ 文件永远差一截且不报错。
+        assert_eq!(
+            tv.matches("file::note_offer_attempt(state, &transfer_id, attempt)")
+                .count(),
+            2,
+            "幂等 accept 与新建/续建接收器两条路径各一次，少一次就是半边没接"
+        );
+    }
+
     /// 中继发送不许宣称「未经证明的成功」（2026-09-23 审计 A1 的 L1 那一半）。
     ///
     /// 四处必须同时成立，拆掉任何一处就退回"写出 = 送达"那个假成功：

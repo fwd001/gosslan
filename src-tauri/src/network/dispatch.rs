@@ -109,6 +109,7 @@ mod tests {
             transfer_id: "t".into(),
             seq: 0,
             data: "a".into(),
+            attempt: None,
         };
         assert_eq!(message_priority(&msg), MessagePriority::Low);
     }
@@ -144,6 +145,7 @@ mod tests {
             file_sha256: "s".into(),
             from_seq: 0,
             from_bytes: 0,
+            attempt: None,
         };
         assert_eq!(message_priority(&msg), MessagePriority::Normal);
     }
@@ -188,6 +190,7 @@ mod tests {
             transfer_id: "t".into(),
             seq,
             data: format!("chunk-{seq}"),
+            attempt: None,
         }
     }
     fn make_ack(id: &str) -> Message {
