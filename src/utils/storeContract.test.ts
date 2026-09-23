@@ -361,3 +361,44 @@ test("chat.init() 必须先拆掉上一轮注册，且每条注册都要配对�
   const removes = (initBody.match(/\.removeEventListener\(/g) ?? []).length;
   assert.equal(adds, removes, "init 里的 addEventListener 必须与 removeEventListener 一一对应");
 });
+
+test("app.init() 的注册必须全部配对（不许退回「只解绑 settings-changed」那半套守卫）", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useAppStore.ts"), "utf8"));
+  const storeStart = st.indexOf("export const useAppStore");
+  assert.ok(storeStart > 0, "找不到 useAppStore 定义");
+  assert.ok(
+    /let appInitScope: InitScope \| null = null;/.test(st.slice(0, storeStart)),
+    "appInitScope 必须声明在 defineStore 之外（模块作用域），否则换实例后拆不到上一轮",
+  );
+  // 旧的那半套守卫（两个 setup 级变量）不得复活：它们随实例一起被 HMR 丢掉
+  assert.ok(!st.includes("settingsUnlisten"), "settingsUnlisten 回来了 = 又变成「按变量各自解绑」");
+  assert.ok(!st.includes("runtimeUnlisten"), "runtimeUnlisten 同上");
+
+  const initStart = st.indexOf("async function init()");
+  // 注意：st 已经剥过注释，切片只能切**代码**（切 `/** …` 里的文案会得到空函数体）
+  const initBody = st.slice(initStart, st.indexOf("async function resetDefaults()", initStart));
+  assert.ok(initStart > 0 && initBody.length > 500, "找不到 init() 函数体");
+  assert.ok(
+    initBody.indexOf("appInitScope?.dispose()") > -1 &&
+      initBody.indexOf("appInitScope?.dispose()") < initBody.indexOf("await api.getSettings()"),
+    "必须在任何注册之前拆掉上一轮",
+  );
+  // 六类注册逐一配对
+  assert.ok(/scope\.onDispose\(\s*await api\.onSettingsChanged/.test(initBody), "settings-changed");
+  assert.ok(/scope\.onDispose\(\s*await api\.onRuntimeChanged/.test(initBody), "runtime-changed");
+  assert.ok(/scope\.onDispose\(watchSystemAppearance\(\)\)/.test(initBody), "系统外观监听");
+  assert.ok(/scope\.onDispose\(watchKeyboard\(\)\)/.test(initBody), "键盘高度监听");
+  assert.ok(/clearTimeout\(bluetoothTimer\)/.test(initBody), "2s 蓝牙兜底定时器");
+  assert.ok(/clearTimeout\(runtimeTimer\)/.test(initBody), "500ms 运行状态兜底定时器");
+  const adds = (initBody.match(/\.addEventListener\(/g) ?? []).length;
+  const removes = (initBody.match(/\.removeEventListener\(/g) ?? []).length;
+  assert.equal(adds, removes, "init 里的 addEventListener 必须与 removeEventListener 一一对应");
+
+  // 两个 watch* 必须真的返回卸载函数（返回 void 的话上面那两条断言是空的）。
+  // 切片必须**止于下一个 function**：给固定长度会溢到相邻函数身上，白拿一个 removeEventListener。
+  for (const fn of ["watchSystemAppearance", "watchKeyboard"]) {
+    const at = st.indexOf(`function ${fn}`);
+    const body = st.slice(at, st.indexOf("function ", at + fn.length + 10));
+    assert.ok(at > 0 && body.length > 50 && body.includes("removeEventListener"), `${fn} 必须返回真正的卸载函数`);
+  }
+});

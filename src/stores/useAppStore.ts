@@ -5,6 +5,7 @@ import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notif
 import { applyTheme } from "@/utils/color";
 import { reportError } from "@/utils/errors";
 import { debounce } from "@/utils/defer";
+import { createInitScope, type InitScope } from "@/utils/initScope";
 import { isAndroid, isIOS, resolveMobileLayout } from "@/utils/platform";
 import {
   APPEARANCE_STORAGE_KEY,
@@ -42,6 +43,16 @@ function loadLocalChatStyle(): ChatStyleConfig {
   }
   return { ...DEFAULT_CHAT_STYLE };
 }
+
+/**
+ * 上一轮 `app.init()` 的注册容器（与 `useChatStore` 同一套理由，见 `utils/initScope`）：
+ * 句柄必须在**模块作用域**，因为 `acceptHMRUpdate` 换的是整个 store 实例 —— 放在 setup 里的
+ * 状态对"下一轮 init"是一片空白，拆不到上一轮注册的东西。
+ * 后果是系统外观 / 键盘高度 / 移动布局这几个监听每次热替换叠一份，写的是同一个值但各跑一遍
+ * IPC（跟随系统时切一次外观，落库会被连写 N 次）。
+ * 各窗口是独立 JS 上下文 ⇒ 模块级变量天然按窗口分开，不会互相拆掉对方的监听。
+ */
+let appInitScope: InitScope | null = null;
 
 export const useAppStore = defineStore("app", () => {
   const device = ref<DeviceInfo | null>(null);
@@ -274,9 +285,9 @@ export const useAppStore = defineStore("app", () => {
    */
   const keyboardInset = ref(0);
 
-  function watchKeyboard() {
+  function watchKeyboard(): () => void {
     const vv = window.visualViewport;
-    if (!vv) return;
+    if (!vv) return () => {};
     const onChange = () => {
       // 视觉视口底部（offsetTop + height）以上的部分才是可见区，其余被键盘/工具栏盖住
       const covered = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
@@ -286,6 +297,10 @@ export const useAppStore = defineStore("app", () => {
     vv.addEventListener("resize", onChange);
     vv.addEventListener("scroll", onChange);
     onChange();
+    return () => {
+      vv.removeEventListener("resize", onChange);
+      vv.removeEventListener("scroll", onChange);
+    };
   }
 
   function applyThemeNow() {
@@ -524,10 +539,10 @@ export const useAppStore = defineStore("app", () => {
    * 跟随系统：监听系统外观变化。
    * 只有 appearance === "system" 时才需要改界面；强制模式下系统怎么变都不该影响用户的选择。
    */
-  function watchSystemAppearance() {
+  function watchSystemAppearance(): () => void {
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     systemDark.value = mq.matches;
-    mq.addEventListener("change", (e) => {
+    const onChange = (e: MediaQueryListEvent) => {
       systemDark.value = e.matches;
       if (appearance.value !== "system") return;
       const root = document.documentElement;
@@ -535,7 +550,9 @@ export const useAppStore = defineStore("app", () => {
       applyDarkNow();
       window.setTimeout(() => root.classList.remove("theme-switching"), 250);
       void persistSettings(); // 解析结果变了，顺手把 darkMode 刷新到位
-    });
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
   }
 
   /**
@@ -651,10 +668,6 @@ export const useAppStore = defineStore("app", () => {
       if (!opts.partial || has("chatStyle") || has("peerStyles")) applyChatStyleNow();
   }
 
-  /** `settings-changed` 的取消函数（init 可能被调用多次，避免重复绑定）。 */
-  let settingsUnlisten: (() => void) | null = null;
-  let runtimeUnlisten: (() => void) | null = null;
-
   /** 「另一个窗口改了设置」→ 完整重拉一次（只用于"恢复默认"这类**全量**变更）。 */
   async function resyncFromBackend() {
     const [st, dev, share] = await Promise.allSettled([
@@ -700,9 +713,11 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function init() {
-    // init 可能被调用多次：先解绑上一次的设置事件监听，避免重复触发
-    settingsUnlisten?.();
-    settingsUnlisten = null;
+    // 重复初始化守卫：先拆掉上一轮注册的一切（IPC 监听 / DOM 监听 / 定时器）再注册本轮。
+    // 原先只在开头解绑了 settings-changed 一条，其余四条**只增不减**。
+    appInitScope?.dispose();
+    const scope = createInitScope();
+    appInitScope = scope;
     // 平台标记：供 CSS 按平台差异化（如 macOS 恢复系统 overlay 滚动条）
     if (typeof document !== "undefined") {
       document.documentElement.classList.toggle("platform-mac", isMac);
@@ -718,19 +733,22 @@ export const useAppStore = defineStore("app", () => {
     pushUiLanguage();
 
     // 「另一个窗口改了设置」→ 重新拉取并应用（独立设置窗口 ↔ 主窗口必须同步外观/语言/资料）
-    settingsUnlisten = await api.onSettingsChanged((patch) => {
-      void applySettingsPatch(patch);
-    });
+    scope.onDispose(
+      await api.onSettingsChanged((patch) => {
+        void applySettingsPatch(patch);
+      }),
+    );
 
     // 「运行状态变了」（任何一处开了/关了通道）⇒ 重拉通道状态与在线状态。
     // 这一步是"外面开了、里面还是关的"的正解：两处 UI 都只读后端这一份真相。
-    runtimeUnlisten?.();
-    runtimeUnlisten = await api.onRuntimeChanged((snap) => {
-      applyRuntimeSnapshot(snap);
-    });
+    scope.onDispose(
+      await api.onRuntimeChanged((snap) => {
+        applyRuntimeSnapshot(snap);
+      }),
+    );
 
     // 注册系统外观监听（跟随系统模式下，用户在系统设置里切换要即时生效，不必重启）
-    watchSystemAppearance();
+    scope.onDispose(watchSystemAppearance());
     const mq = window.matchMedia("(max-width: 767px)");
     /**
      * 布局是否走移动端 —— 判据见 `platform.ts::resolveMobileLayout`（**平台优先，宽度兜底**）。
@@ -747,8 +765,12 @@ export const useAppStore = defineStore("app", () => {
     applyIsMobile();
     mq.addEventListener("change", applyIsMobile);
     window.addEventListener("resize", applyIsMobile);
+    scope.onDispose(() => {
+      mq.removeEventListener("change", applyIsMobile);
+      window.removeEventListener("resize", applyIsMobile);
+    });
     requestAnimationFrame(applyIsMobile);
-    watchKeyboard();
+    scope.onDispose(watchKeyboard());
 
     await refreshEnvironment();
     // Android 首次启动申请「附近的设备」等运行时权限（系统弹框）。
@@ -757,7 +779,8 @@ export const useAppStore = defineStore("app", () => {
     // 首帧之后自动确保蓝牙通道开启（用户规则：有蓝牙就默认开，不要手动开关）。
     // 放在 2s 之后：此刻界面已经画出来，且**不再位于启动关键路径**上；
     // 失败只记日志/保持关闭（`ensureBluetoothOn` 自身幂等、绝不抛）。
-    window.setTimeout(() => void ensureBluetoothOn(), 2000);
+    const bluetoothTimer = window.setTimeout(() => void ensureBluetoothOn(), 2000);
+    scope.onDispose(() => clearTimeout(bluetoothTimer));
 
     // ⚠️ 移动端**启动路径不申请任何权限、不碰任何平台专有代码**。
     //    原因：安卓 release 包"打开就闪退"极可能发生在这类调用里（JNI/Kotlin 路径），
@@ -767,7 +790,8 @@ export const useAppStore = defineStore("app", () => {
 
     // 自动启动在后台异步执行：init 读取时可能尚未完成，导致 online=false
     // 而实际网络已经在运行。延迟刷新一次以修正 UI 状态。
-    setTimeout(() => void refreshRuntime(), 500);
+    const runtimeTimer = setTimeout(() => void refreshRuntime(), 500);
+    scope.onDispose(() => clearTimeout(runtimeTimer));
   }
 
   /** 恢复默认：后端清除偏好键，前端回落默认值（默认蓝色主题 / 系统字体 / **跟随系统** / 自动网卡）。 */

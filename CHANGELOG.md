@@ -10,6 +10,36 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-23 稳定性审计 阶段 4 · 批次 i —— `app.init()` 的注册配对)
+
+- **`app.init()` 复用批次 h 的 `utils/initScope`**（清单 4.3-8 的现身）：一次 init 注册六类资源，
+  此前**只有一条**有解绑 —— `settingsUnlisten?.()`，而且那两个变量是 setup 级的，
+  `acceptHMRUpdate` 换掉整个 store 实例后连句柄都丢了，等于没有守卫。
+  → 现在六类全部配对：`onSettingsChanged` / `onRuntimeChanged` 的 unlisten、系统外观 mq 监听、
+  键盘高度的 `visualViewport` resize+scroll、移动布局的 mq+window resize、
+  以及两个兜底定时器（2s `ensureBluetoothOn`、500ms `refreshRuntime`）。
+  `watchSystemAppearance()` / `watchKeyboard()` 改为**返回卸载函数**，`settingsUnlisten` /
+  `runtimeUnlisten` 两个变量删除（守卫里钉住"那半套不许复活"）。
+  症状不炸但真实：跟随系统时切一次系统外观，`persistSettings` 会被连写 N 次 IPC。
+- 测试：`storeContract.test.ts` +1 条结构守卫（模块作用域声明 / dispose 早于注册 / 六类注册各自配对 /
+  两个 `watch*` 必须真返回卸载函数 / add-remove 数量相等）。6 个变异逐条验过只红这一条。前端 570 → **571**。
+
+### 复核结论（清单 §4.3 P3 八条 → 只有一条是真的）
+
+清单行号基于 2026-09-22 前的代码，逐条重跑原文后：**六条已不成立或已被既有设计覆盖**，
+记在这里免得下一个人去修不存在的 bug。
+
+| 条目 | 复核结果 |
+|---|---|
+| 4.3-1 `locateMessage` 的 from/to 用未过滤索引 | **形状已消失**：`locateMessageInConv` 不再算下标，只写 `locateRequest`，落点由 `VirtualList` 按 `itemKey` 从**真实 DOM 位置**校正 |
+| 4.3-2 回前台不重建会话数据 | 监听配对已在批次 h 收口；"回前台补拉全量"属**新增行为**且与"不新增功能"冲突，判为不做（现有兜底：5s 拓扑轮询 + `pending` 批次强制冲刷 + 补发已读） |
+| 4.3-3 `pendingScrollTarget` 在 onActivated 不被消费 | **符号全仓不存在**（`grep` 零命中）；跳转已由 `pendingJump` 的"重试直到落定 + 1500ms 上界"接管 |
+| 4.3-4 连续 `loadMore` 的 200ms 节流对超长消息无效 | **没有 200ms 节流**；真正的闸门是 store 里 `loadingMore` 的单飞（批次 e 修成"合并进在飞的那次"）+ `MAX_PAGES` 上界 |
+| 4.3-5 `resetInflight` 永不复位 | **符号不存在**：整套 `settingsDirty`/`lastLocalWriteAt`/grace 状态机已删 —— 后端 `emit_filter` 不把 `settings-changed` 回发给发起窗口，本窗口根本收不到自己写的变更（见 `useAppStore.ts` 该处注释） |
+| 4.3-6 用户上滚中断自动跟随后不复位 | **已被设计覆盖**：`scrollToBottom()` 显式 `pinned = true` 并 emit `nearBottom`，注释写明"显式贴底 = 贴底意图" |
+| 4.3-7 `saveJson` 的在途去重丢弃用户新改动 | **符号不存在**：设置落库改走 `persistSoon = debounce(persistSettings, 300)`，而 `persistSettings` 在**执行时**读 store ⇒ 后写那次必是最新值，另有两个 flush 出口兜住退出 |
+| 4.3-8 主题 watcher 只增不减 | **成立**（换了位置：`watchSystemAppearance()` 在 init 里，每次 init 加一份），本批已修 |
+
 ## [4.29.12] - 2026-09-23
 
 ### Fixed (2026-09-23 稳定性审计 阶段 4 · 批次 h —— `chat.init()` 的重复初始化)
