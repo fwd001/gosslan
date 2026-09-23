@@ -79,6 +79,37 @@ pub fn chunk_size_for_path(path: &str) -> usize {
     }
 }
 
+/// 只有蓝牙链路可用时，**超过这个体积的文件不启动发送**：保持 pending，等 LAN/Routed/Relay 回来。
+///
+/// 为什么必须有这道闸（2026-09-23 真机 600MB 复核）：BLE 上分片被压到 [`BLE_FILE_CHUNK`]，
+/// 600MB = 153,600 片；按 `FILE_SEND_DEADLINE` 注释里的 BLE 实测速率（≈14KB/s）算要十几小时，
+/// 而单轮 deadline 封顶 1h ⇒ **必然反复超窗重投**。重投又会重新选路、重新从 0 编号分片，
+/// 撞上接收端"陈旧分片 ⇒ `ChunkSeq::Gap` ⇒ 整单判死"（见 `chunk_seq_decision`）。
+/// 更糟的是 `file_sending` 按 **peer** 去重、一次只跑一个发送任务（`commands/files.rs`）⇒
+/// 一个大文件在 BLE 上爬，会把同 peer 的**其它所有文件**一起堵在队列里。
+///
+/// 16MiB 的取值：14KB/s 下 ≈ 20min，落在 10min 下限与 1h 上限之间 —— 再大就注定要跨 attempt
+/// 接力，而接力正是上面那条判死链的入口。
+pub const BLE_FILE_SIZE_LIMIT: u64 = 16 * 1024 * 1024;
+
+/// 「这个文件在当前可用链路上该不该发」的判据（纯函数，便于钉住）。
+/// 返回 `Some(原因)` = 先别发：调用方保持 pending（不消耗 attempts、不落 failed），
+/// 并把原因显示给用户 —— 否则界面只会停在"发送中 0%"，正是要消灭的形状。
+///
+/// 只认**最佳链路**：只要还有 LAN/Routed/Relay 可用，大文件照发。这道闸不是"BLE 上一律不发"，
+/// 而是"只剩 BLE 时不要开始一件注定完不成的事"。
+pub fn refuse_reason_for_best_link(
+    best: Option<crate::mesh::PathKind>,
+    size: u64,
+) -> Option<&'static str> {
+    match best {
+        Some(crate::mesh::PathKind::Bluetooth) if size > BLE_FILE_SIZE_LIMIT => {
+            Some("文件过大，蓝牙链路不适合；等局域网恢复后自动重试")
+        }
+        _ => None,
+    }
+}
+
 /// `AppState::file_send_cancels` 的键：`transfer_id` + 收件人，用 NUL 连接。
 ///
 /// 为什么不能只用 `transfer_id`（真机：三成员以上群文件只有一人收得到）：
@@ -143,11 +174,18 @@ pub const FILE_SEND_DEADLINE: Duration = Duration::from_secs(10 * 60);
 /// 为什么原来敢给 2h、现在敢压到 1h：真正该管"对端不收"的是下面的**停滞判定**
 /// （`stall_verdict`，以 writer 实发为准），它 60s 就退出。deadline 只负责
 /// "整件事最多占多久资源"，不再兼任停滞兜底。
+///
+/// ⚠️ 估算必须按**线上字节**而不是明文（2026-09-23 真机 600MB 复核）：每片 256KiB 明文上线
+/// 要过 ChaCha20-Poly1305（+28B）再 Base64（×4/3）⇒ **×1.334**。按明文算等于给每条链路少发
+/// 25% 的窗口 —— 600MB 明文口径只给 21min，而 512KiB/s 的链路实需 26.7min ⇒ **单轮注定超窗**，
+/// 只能靠 5 次重投 + `.part` 续传接力；而"接力"正是跨链路重试 ⇒ 陈旧分片 ⇒ 接收端 Gap 判死的入口。
 pub fn send_deadline_for(size: u64) -> Duration {
     const MIN: Duration = FILE_SEND_DEADLINE;
     const CAP: Duration = Duration::from_secs(60 * 60);
     const BYTES_PER_SEC: u64 = 512 * 1024;
-    let est = Duration::from_secs(size / BYTES_PER_SEC + 60);
+    // 线上字节 ≈ 明文 × 4/3（每片 AEAD 的 28B 在这个量级可忽略，且 ×4/3 本身已偏保守）
+    let wire = size.saturating_mul(4).div_ceil(3);
+    let est = Duration::from_secs(wire / BYTES_PER_SEC + 60);
     est.clamp(MIN, CAP)
 }
 
@@ -794,6 +832,7 @@ pub(crate) fn stall_tick(
                 transfer_id: transfer_id.to_string(),
                 stalled: should_show,
                 idle_ms: idle,
+                reason: None,
             },
         );
     }
@@ -1040,6 +1079,7 @@ async fn stream_file(
                 transfer_id: transfer_id.to_string(),
                 stalled: false,
                 idle_ms: 0,
+                reason: None,
             },
         );
     }
@@ -1805,18 +1845,27 @@ pub fn finish_receive(
     transfer_id: &str,
     peer_id: &str,
 ) -> Result<Option<(String, u64, PathBuf, String)>, String> {
-    let mut recv = state
-        .file_receivers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let r = match recv.remove(transfer_id) {
-        Some(r) => r,
-        None => return Ok(None),
+    // ⚠️ 锁只用来"把接收器摘出来"，摘完立刻放（2026-09-23 真机 600MB 复核）：
+    // 下面这段是 SHA finalize + `sync_all()` + rename —— 600MB 的 fsync 是秒级慢活，
+    // 而它跑在 reader_loop 里；持锁期间**同一时刻其它并发文件的 `write_chunk` 全部堵在同一把锁上**
+    // ⇒ 那些传输不再写出 ⇒ 发送端 60s 停滞判据（`FILE_STALL_ABORT_MS`）把它们判死。
+    // 摘出来之后这份接收器已经不在表里，锁外独占使用它是安全的。
+    let r = {
+        let mut recv = state
+            .file_receivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match recv.remove(transfer_id) {
+            Some(r) => {
+                if r.peer_id != peer_id {
+                    recv.insert(transfer_id.to_string(), r);
+                    return Err("文件传输来源不匹配".to_string());
+                }
+                r
+            }
+            None => return Ok(None),
+        }
     };
-    if r.peer_id != peer_id {
-        recv.insert(transfer_id.to_string(), r);
-        return Err("文件传输来源不匹配".to_string());
-    }
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -2438,8 +2487,9 @@ mod tests {
     use super::super::super::crypto;
     use super::chunk_size_for_path;
     use super::{
-        send_deadline_for, sha256_file_hex, stall_verdict, valid_sha256_hex, StallVerdict,
-        FILE_SEND_DEADLINE, FILE_STALL_ABORT_MS, FILE_STALL_WARN_MS,
+        refuse_reason_for_best_link, send_deadline_for, sha256_file_hex, stall_verdict,
+        valid_sha256_hex, StallVerdict, BLE_FILE_SIZE_LIMIT, FILE_SEND_DEADLINE,
+        FILE_STALL_ABORT_MS, FILE_STALL_WARN_MS,
     };
     use crate::protocol::FILE_CHUNK;
     use std::time::Duration;
@@ -2680,7 +2730,40 @@ mod tests {
 
     // ---------- 文件级 SHA-256 完整性校验 ----------
 
-    /// 大文件的发送期限必须随体积伸缩（600MB 固定 10min 窗口 = 真机必失败的根因）。
+    /// 只剩蓝牙链路时，不许启动一件"注定完不成"的大文件（2026-09-23 真机 600MB 复核）。
+    ///
+    /// 钉的是**判据**而不是接线：BLE 上分片被压到 4KiB、带宽 ≈14KB/s，600MB 要十几小时，
+    /// 而单轮 deadline 封顶 1h ⇒ 必然反复超窗重投 ⇒ 重新选路 + 重新编号 ⇒ 接收端 Gap 判死，
+    /// 并且 `file_sending` 按 peer 去重，会把同 peer 的其它文件一起堵死。
+    #[test]
+    fn ble_only_link_must_not_start_a_hopeless_large_file() {
+        use crate::mesh::PathKind::*;
+        let mb = 1024 * 1024;
+        // 阈值内照发：这道闸不是"BLE 上一律不发文件"，那会牺牲既有的小图能力。
+        assert_eq!(refuse_reason_for_best_link(Some(Bluetooth), 4 * mb), None);
+        assert_eq!(
+            refuse_reason_for_best_link(Some(Bluetooth), BLE_FILE_SIZE_LIMIT),
+            None,
+            "边界取「不超过就发」，别把阈值当成开区间悄悄改语义"
+        );
+        // 超阈值 ⇒ 不启动，且原因是给用户看的句子（要能看出是"等更好的链路"不是故障）
+        let reason = refuse_reason_for_best_link(Some(Bluetooth), 600 * mb);
+        assert!(reason.is_some(), "600MB 在只有蓝牙时必须拒绝启动");
+        assert!(
+            reason.unwrap().contains("蓝牙"),
+            "原因必须点名是哪条链路不适合，不能只说“发送失败”"
+        );
+        // 只要还有别的链路可选就与蓝牙无关（判据只看**最佳**链路，不看是否存在蓝牙）
+        assert_eq!(refuse_reason_for_best_link(Some(Lan), 600 * mb), None);
+        assert_eq!(refuse_reason_for_best_link(Some(Routed), 2048 * mb), None);
+        assert_eq!(refuse_reason_for_best_link(Some(Relay), 2048 * mb), None);
+        // 完全没有链路时这里不表态（调用方另有 has_link 分支，两处不许互相抢判据）
+        assert_eq!(refuse_reason_for_best_link(None, 600 * mb), None);
+    }
+
+    /// 大文件的发送期限必须随体积伸缩，**且按线上字节估**（2026-09-23 真机 600MB 复核）。
+    /// 两个真机根因都钉在这里：固定 10min 窗口 = 必失败；按明文估 = 少给 25% 窗口 ⇒
+    /// 慢链路上单轮注定超窗 ⇒ 只能靠重投 + `.part` 接力 ⇒ 撞上接收端的 Gap 判死。
     #[test]
     fn send_deadline_scales_with_size() {
         assert_eq!(
@@ -2688,8 +2771,17 @@ mod tests {
             FILE_SEND_DEADLINE,
             "小文件保持 10min 下限"
         );
-        assert!(send_deadline_for(600 * 1024 * 1024) > Duration::from_secs(15 * 60));
-        assert!(send_deadline_for(600 * 1024 * 1024) < Duration::from_secs(25 * 60));
+        // 600MiB：线上 = ×4/3 = 800MiB ⇒ 800MiB ÷ 512KiB/s = 1600s，+60s 余量 = 1660s。
+        // 明文口径只会给 1260s（21min），所以这个精确值同时钉住了"不许退回明文估算"。
+        assert_eq!(
+            send_deadline_for(600 * 1024 * 1024),
+            Duration::from_secs(1660),
+            "600MiB 的窗口必须按线上字节算（明文口径是 1260s）"
+        );
+        assert!(
+            send_deadline_for(600 * 1024 * 1024) > Duration::from_secs(25 * 60),
+            "512KiB/s 下 600MiB 实需 26.7min，窗口必须容得下"
+        );
         assert_eq!(
             send_deadline_for(u64::MAX),
             Duration::from_secs(60 * 60),

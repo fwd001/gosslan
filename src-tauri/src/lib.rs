@@ -2911,6 +2911,39 @@ mod tests {
         );
     }
 
+    /// 接收端 `finish_receive`：慢活必须在**放锁之后**（2026-09-23 真机 600MB + 多文件复核）。
+    ///
+    /// 为什么钉形状而不是钉行为：要复现"持锁 fsync 堵住别的并发传输"需要两条在途传输 +
+    /// 真实磁盘 + 计时，单元层拿不住；而形状一旦退化（锁挪回函数作用域），表现是
+    /// "多文件里有一个大文件时其它文件莫名停滞判死"，回查成本极高。
+    /// 判据用**位置比较**而不是"调用了几次"：退化前后 `sync_all()` / `finalize()` 的次数一模一样。
+    #[test]
+    fn receive_finalize_slow_work_happens_outside_the_receiver_lock() {
+        let file = include_str!("network/file.rs");
+        let body = rust_fn_body(file, "pub fn finish_receive(");
+        let flat = code_flat(&body);
+        assert!(
+            flat.contains("letr={letmutrecv=state.file_receivers.lock()"),
+            "接收器必须在块内摘出（块尾即放锁）。函数作用域的锁守卫会把 SHA+fsync+rename \
+             全包进锁里 —— 600MB 的 fsync 期间，其它并发文件的 write_chunk 全堵在同一把锁上，\
+             它们不再写出 ⇒ 发送端 60s 停滞判据把它们判死"
+        );
+        assert!(
+            !flat.contains("letmutrecv=state.file_receivers.lock().unwrap_or_else(|e|e.into_inner());letr=matchrecv.remove"),
+            "旧的函数作用域形状不许回来（那份守卫横跨全部慢活）"
+        );
+        // 来源不符时的"塞回去"必须留在锁内；摘出之后的慢活必须留在锁外
+        let block_end = flat
+            .find("returnErr(\"文件传输来源不匹配\".to_string());}")
+            .expect("找不到来源不符分支 —— 护栏需要同步更新");
+        for slow in [".sync_all()", "hasher.clone().finalize()"] {
+            let at = flat
+                .find(slow)
+                .unwrap_or_else(|| panic!("找不到慢活锚点 {slow}"));
+            assert!(at > block_end, "{slow} 必须发生在锁块结束之后");
+        }
+    }
+
     /// 中继发送不许宣称「未经证明的成功」（2026-09-23 审计 A1 的 L1 那一半）。
     ///
     /// 四处必须同时成立，拆掉任何一处就退回"写出 = 送达"那个假成功：

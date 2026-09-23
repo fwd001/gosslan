@@ -345,6 +345,7 @@ network::dispatch::tests::stress_mixed_priorities_no_starvation
 network::file::tests::accepts_real_world_transfer_ids
 network::file::tests::all_recipients_share_one_session_key
 network::file::tests::ble_file_chunk_actually_fits_the_ble_fragment_layer
+network::file::tests::ble_only_link_must_not_start_a_hopeless_large_file
 network::file::tests::case_insensitive_and_multidot_and_chinese
 network::file::tests::chunk_seq_rule_only_rejects_real_gaps
 network::file::tests::code_extensions
@@ -584,6 +585,7 @@ tests::peer_version_is_declared_not_signed_and_reclaimed
 tests::pending_requests_exclude_existing_friends
 tests::peripheral_reconnect_hello_replaces_the_stale_route
 tests::peripheral_subscribe_resets_that_centrals_reassembler
+tests::receive_finalize_slow_work_happens_outside_the_receiver_lock
 tests::receiver_abort_notifies_the_sender_inside_the_loop
 tests::relay_circuit_is_tagged_relay_not_routed
 tests::relay_data_plane_respects_policy

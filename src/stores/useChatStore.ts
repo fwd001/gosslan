@@ -1570,24 +1570,35 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
-   * 处于「网络停滞」的 transfer（按 writer 实发判定，后端只在状态翻转时发一次事件）。
+   * 处于「停滞/等待」的 transfer → 原因文案（按 writer 实发判定，后端只在状态翻转时发一次事件）。
    *
    * 为什么单独存而不下到 `transfers[]` 行上：`refreshTransfers()` 会用后端快照**整体替换**
    * 那个数组，行上的临时标记会被无声冲掉；停滞是"这次尝试"的状态，必须活得比快照久。
+   *
+   * 值就是原因（`undefined` = 普通的链路静默，界面回退到既有的「网络停滞」文案）。
+   * 用 Map 而不是 Set：只有蓝牙链路时大文件会"保持 pending 等 LAN"（后端
+   * `refuse_reason_for_best_link`），那句原因必须落在同一个集合里 —— 分两处存就一定会有
+   * 一边忘了清（表现为"停滞"标签一直挂着）。
    */
-  const stalledTransfers = ref<Set<string>>(new Set());
+  const stalledTransfers = ref<Map<string, string | undefined>>(new Map());
   function isTransferStalled(id: string) {
     return stalledTransfers.value.has(id);
   }
-  function setTransferStalled(id: string, stalled: boolean) {
-    if (stalledTransfers.value.has(id) === stalled) return;
-    const next = new Set(stalledTransfers.value);
-    if (stalled) next.add(id);
-    else next.delete(id);
-    stalledTransfers.value = next;
+  function transferStallReason(id: string): string | undefined {
+    return stalledTransfers.value.get(id);
+  }
+  function setTransferStalled(id: string, stalled: boolean, reason?: string) {
+    const next = reason ?? undefined;
+    // 幂等：后端在每次心跳 flush 都会重发这条（"只有蓝牙"是持续状态），值没变就不触发响应式
+    if (stalledTransfers.value.has(id) === stalled && (!stalled || stalledTransfers.value.get(id) === next))
+      return;
+    const m = new Map(stalledTransfers.value);
+    if (stalled) m.set(id, next);
+    else m.delete(id);
+    stalledTransfers.value = m;
   }
   function onFileStalled(p: FileStalledInfo) {
-    setTransferStalled(p.transfer_id, p.stalled);
+    setTransferStalled(p.transfer_id, p.stalled, p.reason ?? undefined);
   }
 
   function updateTransferProgress(p: FileProgress) {
@@ -2021,6 +2032,7 @@ export const useChatStore = defineStore("chat", () => {
     refreshTransfers,
     stalledTransfers,
     isTransferStalled,
+    transferStallReason,
     refreshTopology,
     favorites,
     refreshFavorites,

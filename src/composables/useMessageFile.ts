@@ -63,7 +63,9 @@ export function useMessageFile(
     if (!t || t.status === "done") return null;
     // 链路停滞：后端按 writer **实发**判定（对端长时间没再收任何一片）。不显示出来的话，
     // 用户看到的是"进度条冻在 63%"，只能猜是软件死了 —— 而后端其实还在背压里等。
-    if (chat.isTransferStalled(t.id)) return $t("send.stalled");
+    // 停滞原因优先：「只有蓝牙链路、这个文件在等局域网」和「网络卡住了」是两件不同的事，
+    // 说错会把用户引去查网络（而网络没问题）。后端没给原因时回退既有的通用文案。
+    if (chat.isTransferStalled(t.id)) return chat.transferStallReason(t.id) ?? $t("send.stalled");
     const pct = Math.round((t.progress ?? 0) * 100);
     return t.direction === "send" ? $t("send.sendingPct", { pct }) : $t("send.receivingPct", { pct });
   });

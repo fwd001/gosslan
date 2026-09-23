@@ -620,11 +620,18 @@ pub struct FileDoneInfo {
 /// 为什么需要它：`send_on_link` 在对端不收时会一直挂在背压上 —— 既不再发进度也不报错，
 /// 界面就冻在同一个百分比最长到 deadline（1h）。用户需要知道"卡在网络上"而不是"软件死了"。
 /// `idle_ms` = 距最近一次真正写出分片的毫秒数（以 writer 实发为准，不是投进队列）。
+///
+/// `reason`：**为什么停**（可空 = 就是普通的链路静默）。加它是为了不把"策略上暂时不发"
+/// 说成"网络卡住"——只有蓝牙链路时超过 `BLE_FILE_SIZE_LIMIT` 的文件会保持 pending 等 LAN
+/// 回来（2026-09-23 真机 600MB 复核），界面上必须能看出这是"在等更好的链路"而不是故障。
+/// 老前端忽略这个字段（serde 跳过 None），新前端有它就显示它、没有就回退既有的「网络停滞」。
 #[derive(Serialize, Clone, Debug)]
 pub struct FileStalledInfo {
     pub transfer_id: String,
     pub stalled: bool,
     pub idle_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]

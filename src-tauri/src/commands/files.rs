@@ -331,6 +331,39 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
             if !st.has_link(&peer).await {
                 break;
             }
+            // 只剩蓝牙链路时，超过 `BLE_FILE_SIZE_LIMIT` 的文件**不启动**（2026-09-23 真机 600MB）：
+            // 保持 pending、不消耗 attempts、不落 failed —— LAN 一回来，下一次 flush 就会发。
+            // 判据是纯函数（`file::refuse_reason_for_best_link`），这里只负责取链路种类与体积。
+            // 必须排在 `mark_file_outbox_sending` 之前：那一步会把 attempts +1，
+            // 5 次上限一到就永久 failed，"等 LAN 回来自动重试"就成了空话。
+            let best_kind = {
+                let links = st.links.lock().await;
+                links.get(peer.as_str()).and_then(|ls| {
+                    let kinds: Vec<crate::mesh::PathKind> =
+                        ls.iter().map(|l| l.path_kind).collect();
+                    crate::state::best_link_kind(&kinds)
+                })
+            };
+            let size = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+            if let Some(reason) = file::refuse_reason_for_best_link(best_kind, size) {
+                st.logger.warn(
+                    "file",
+                    format!(
+                        "只有蓝牙链路，{size} 字节超过 BLE_FILE_SIZE_LIMIT ⇒ 暂不发送，保持 pending 等 LAN transfer={transfer_id}"
+                    ),
+                );
+                // 让用户看见原因：不发的话界面只会停在"发送中 0%"，与"卡死"无法区分。
+                let _ = st.app.emit(
+                    "file-stalled",
+                    &crate::state::FileStalledInfo {
+                        transfer_id: transfer_id.clone(),
+                        stalled: true,
+                        idle_ms: 0,
+                        reason: Some(reason.to_string()),
+                    },
+                );
+                continue;
+            }
             {
                 let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::mark_file_outbox_sending(&dbc, &transfer_id, 0).ok();

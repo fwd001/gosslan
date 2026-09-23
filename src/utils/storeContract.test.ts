@@ -429,3 +429,25 @@ test("「不打扰」判据只许有一份：未读记账与通知闸门都必�
     "通知闸门不许退回旧的 isSilentKind 单判据",
   );
 });
+
+test("「停滞」必须带得上原因：file-stalled 的 reason 要一路走到气泡文案", () => {
+  // 只有蓝牙链路时大文件"保持 pending 等 LAN"，那句原因必须落到界面上 ——
+  // 否则用户看到的是一句"网络停滞"，会去查网络，而网络没问题。
+  const types = readFileSync(join(ROOT, "types.ts"), "utf8");
+  const store = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const msg = stripComments(readFileSync(join(ROOT, "composables", "useMessageFile.ts"), "utf8"));
+  assert.ok(/reason\?:\s*string/.test(types), "FileStalledInfo 必须带可选 reason（与 Rust 同形）");
+  assert.ok(
+    store.includes("setTransferStalled(p.transfer_id, p.stalled, p.reason"),
+    "事件里的 reason 不许在半路被丢掉",
+  );
+  assert.ok(
+    msg.includes("transferStallReason(t.id)"),
+    "气泡必须优先显示原因、没有原因才回退通用「网络停滞」",
+  );
+  // 单一集合：停滞标记与原因必须存在同一个 Map 里（分两处存就一定有一边忘清）
+  assert.ok(
+    /const stalledTransfers = ref<Map<string, string \| undefined>>/.test(store),
+    "stalledTransfers 必须是「id → 原因」的 Map，不许退回 Set + 另一张原因表",
+  );
+});

@@ -221,11 +221,13 @@ export interface FileProgress {
 }
 
 /** 链路停滞状态翻转（与 Rust `state::FileStalledInfo` 同形）。
- *  `idle_ms` 是距最近一次**真正写出**分片的毫秒数，不是投进队列的时间。 */
+ *  `idle_ms` 是距最近一次**真正写出**分片的毫秒数，不是投进队列的时间。
+ *  `reason` = 为什么停（缺省 = 普通链路静默，界面用既有的「网络停滞」文案）。 */
 export interface FileStalledInfo {
   transfer_id: string;
   stalled: boolean;
   idle_ms: number;
+  reason?: string;
 }
 
 export interface FileDoneInfo {

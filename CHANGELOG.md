@@ -10,6 +10,42 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-23 真机 600MB 复核 · 批次 l —— 不含协议变更的那三条)
+
+用户真机复报：macOS↔Android 同千兆 LAN、LAN+蓝牙都开，一次发多个文件（含一个 600MB+）⇒
+Android 报"分片接收失败"、macOS 显示成功且无错误提示、之后**群聊新建/新增内容也同步不了**、单聊文字正常。
+完整 RCA（四路只读调查 + 逐条 sed/grep 复核）写在 HANDOFF §9；本批先落**不需要改协议**的三条，
+"接收端 Gap 立即判死"那条根治要用 attempt epoch（协议变更），单独一版。
+
+- **deadline 改按线上字节估算**（`send_deadline_for`，`network/file.rs:182`）：每片 256KiB 明文
+  上线要过 ChaCha20-Poly1305（+28B）再 Base64（×4/3）⇒ **×1.334**。原先按明文算，等于给每条链路
+  少发 25% 窗口 —— 600MiB 只给 21min，而 512KiB/s 的链路实需 26.7min ⇒ **单轮注定超窗**，只能靠
+  5 次重投 + `.part` 续传接力，而"接力"正是跨链路重选 ⇒ 陈旧分片 ⇒ 接收端 Gap 判死的入口。
+  现在 600MiB 给 1660s（≈27.7min），精确值钉进测试（退回明文口径当场红）。
+- **只剩蓝牙链路时不启动大文件**（新常量 `BLE_FILE_SIZE_LIMIT` = 16MiB + 纯函数
+  `refuse_reason_for_best_link`，判据在 `commands/files.rs` 的投递循环里接）：BLE 上分片被压到
+  4KiB，600MB = 153,600 片、按实测 ≈14KB/s 要十几小时，而单轮封顶 1h ⇒ 必然反复超窗重投。
+  更关键的是 `file_sending` **按 peer 去重**、一次只跑一个发送任务 ⇒ 一个大文件在蓝牙上爬，
+  会把同 peer 的其它文件全部堵在队列里（用户报的"文件消息继续异常"就是这一层）。
+  处理方式：保持 pending、**不消耗 attempts、不落 failed**（判据必须排在
+  `mark_file_outbox_sending` 之前，那一步会 attempts+1，5 次一到就永久 failed，
+  "等 LAN 回来自动重试"就成了空话），LAN 一回来下一次 flush 自然接上。
+- **接收端 `finish_receive` 的慢活移出 `file_receivers` 锁**：SHA finalize + `sync_all()` + rename
+  原先全跑在函数作用域的锁守卫里，而它执行在 reader_loop 中 ⇒ 600MB 的 fsync 期间
+  **其它并发文件的 `write_chunk` 全部堵在同一把锁上**，那些传输不再写出 ⇒ 发送端 60s 停滞判据
+  把它们判死。改成"块内摘出接收器、块尾即放锁"，来源不符的塞回路径留在锁内。
+- **停滞事件现在能带上原因**（`FileStalledInfo.reason`，可选、serde 跳过 None ⇒ 老前端忽略）：
+  只有蓝牙这条是"在等更好的链路"，不是"网络卡住" —— 两者共用一句「网络停滞」会把用户引去
+  查一个没问题的网络。前端把标记与原因存进**同一个 Map**（`stalledTransfers: Map<id, 原因>`），
+  分两处存就一定有一边忘清；气泡优先显示原因、没有原因才回退通用文案。
+- 测试与守卫：`send_deadline_scales_with_size` 改钉精确值；新增
+  `ble_only_link_must_not_start_a_hopeless_large_file`（阈值边界取"不超过就发"、判据只看**最佳**
+  链路、无链路时不表态）；新增源码守卫 `receive_finalize_slow_work_happens_outside_the_receiver_lock`
+  （**位置比较**而不是调用次数 —— 退化前后 `sync_all()`/`finalize()` 次数一模一样）；
+  前端 `storeContract` +1 条钉住 reason 的整条消费链。Rust lib **660 → 662**（基线已同步），
+  前端 **574** 条。守卫非空转：把 `finish_receive` 改回函数作用域锁 ⇒ 只红这一条、提示正确，
+  注入后源文件 `cmp` 字节一致复原。
+
 ## [4.29.15] - 2026-09-23
 
 ### Fixed (2026-09-23 稳定性审计 阶段 4 · 批次 k —— 「不打扰」的判据收敛成一份)
