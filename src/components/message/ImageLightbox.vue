@@ -10,6 +10,7 @@ import { ChevronLeft, ChevronRight, RotateCcw, Save, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/useAppStore";
 import { loadContentPreview, loadFilePreview, type PreviewResult } from "@/utils/filePreview";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
+import { StaleGuard } from "@/utils/staleGuard";
 import { urlToBase64 } from "@/utils/imageBytes";
 import { useBackLayer } from "@/composables/useBackLayer";
 
@@ -61,26 +62,42 @@ function apply(r: PreviewResult) {
   note.value = r.note ?? null;
 }
 
+/**
+ * 预览解析的"只让最新一次落地"守卫（审计阶段 4 · 4.2）。
+ *
+ * `current` 一变就重解析，而 `loadContentPreview` / `loadFilePreview` 是异步的：
+ * 缓存命中时**同步**返回、未命中时要跨 IPC。连按方向键翻图时，"先发起但后回来"的那次
+ * 会把已经翻到的那张图覆盖成上一张（错图），或把它那张的空态覆盖掉（裂图/空图）。
+ * `filePreview` 的缓存/in-flight 恰恰让这种交错更容易发生 —— 后发起的经常先回来。
+ */
+const resolveGuard = new StaleGuard();
+
 /** 解析当前图片 src：dataSrc 直接用，否则按 cid（待办描述图）/ msg_id（聊天消息）读预览（带缓存，秒回）。 */
 async function resolveCurrent() {
+  const tok = resolveGuard.begin("current");
   const img = current.value;
+  // 过了 await 之后的每一步都要问一句"我还是最新的那次吗"，是则 apply、否则整个丢弃
+  const put = (r: PreviewResult) => {
+    if (resolveGuard.isCurrent("current", tok)) apply(r);
+  };
   if (!img) {
-    apply({});
+    // 同步分支也一律走 put：被更新的一次抢走后，"清空"同样不该执行
+    put({});
     return;
   }
   if (img.dataSrc) {
-    apply({ url: img.dataSrc });
+    put({ url: img.dataSrc });
     return;
   }
   if (img.cid) {
-    apply(await loadContentPreview(img.cid, img.name));
+    put(await loadContentPreview(img.cid, img.name));
     return;
   }
   if (img.msgId) {
-    apply(await loadFilePreview(img.msgId, "image", img.name));
+    put(await loadFilePreview(img.msgId, "image", img.name));
     return;
   }
-  apply({});
+  put({});
 }
 
 watch(current, () => void resolveCurrent(), { immediate: true });

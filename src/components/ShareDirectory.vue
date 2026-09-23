@@ -8,6 +8,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import { Download, Folder, RefreshCw } from "lucide-vue-next";
 import { humanSize } from "@/utils/color";
 import { reportError } from "@/utils/errors";
+import { StaleGuard } from "@/utils/staleGuard";
 import type { ShareEntry } from "@/types";
 
 const props = defineProps<{ open: boolean }>();
@@ -26,24 +27,46 @@ function depth(p: string) {
   return p.split("/").length - 1;
 }
 
+/**
+ * 树是为哪个好友拉来的 ⇒ `download` 用它，而不是"点击那一刻的 activeConv"。
+ * 与下面的 `loadGuard` 一起构成同一条不变量的两面：显示的那棵树，只有它自己的主人能下载。
+ */
+const loadedFor = ref<string | null>(null);
+/** 后发先至守卫（审计阶段 4 · 4.2）：见 `utils/staleGuard`。 */
+const loadGuard = new StaleGuard();
+
 async function load() {
+  const tok = loadGuard.begin("tree");
+  const forId = friendId();
   loading.value = true;
   error.value = null;
   entries.value = [];
+  loadedFor.value = null;
   try {
-    entries.value = await api.requestShareTree(friendId());
+    const tree = await api.requestShareTree(forId);
+    // 期间切了会话、或有更晚发起的一次在飞 ⇒ 这份树已经不是当前会话的，整个丢弃
+    if (!loadGuard.isCurrent("tree", tok)) return;
+    entries.value = tree;
+    loadedFor.value = forId;
   } catch (e) {
+    // catch/finally 同样要过闸：旧请求的报错会把新会话的正常界面变成"加载失败"
+    if (!loadGuard.isCurrent("tree", tok)) return;
     // 不把 Rust 的 Err(String) 原样丢给用户（项目其它路径都走 reportError 出可读文案）；
     // 同时给读屏一个 role="alert" 的提示（见模板）。
     error.value = reportError(e, t("share.loadFail"));
   } finally {
-    loading.value = false;
+    if (loadGuard.isCurrent("tree", tok)) loading.value = false;
   }
 }
 
 async function download(e: ShareEntry) {
+  // ⚠️ 用 `loadedFor` 而不是当场 `friendId()`：弹窗开着时 activeConv 会被**程序化路径**换掉
+  // （点系统通知 → `openConversation`），那一刻点下载会把"A 的树里的一行"发给 B ——
+  // 后端按 B 的共享目录校验路径，结果是莫名"下载失败"，或更糟：拿到 B 上同名的另一个文件。
+  const owner = loadedFor.value;
+  if (!owner) return;
   try {
-    await api.downloadSharedFile(friendId(), e.path);
+    await api.downloadSharedFile(owner, e.path);
     app.toast(t("share.toast.downloading", { name: e.name }), "success");
     chat.refreshTransfers();
   } catch (err) {
@@ -55,6 +78,14 @@ watch(
   () => props.open,
   (v) => {
     if (v) load();
+  },
+);
+// 面板开着时换会话 ⇒ 重拉（与 GroupFilesPanel 的 groupId watch 同一条口径）。
+// 只靠 loadGuard 的话，旧树会一直挂在当前好友名下 —— 守卫挡住了错数据，也挡住了刷新。
+watch(
+  () => chat.activeConv,
+  () => {
+    if (props.open) load();
   },
 );
 </script>

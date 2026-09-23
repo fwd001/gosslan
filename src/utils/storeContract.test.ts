@@ -228,3 +228,43 @@ test("prepend 后的未读位移必须按「真正新插入且会渲染」的行
       "按整页条数平移会把分割线推到真锚点下方",
   );
 });
+
+// ---------------- 「后发先至」一族（审计阶段 4 · 4.2，utils/staleGuard.ts） ----------------
+
+/** 粗粒度剥掉 TS/Vue 的注释：形状判据必须只看代码，否则"注释里写了这个形状"会让守卫自己变红。 */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
+test("store 里不许再有「x.value = await api.foo()」这种直写（后发先至的根源形状）", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const bad = st
+    .split("\n")
+    .map((l, i) => ({ l, n: i + 1 }))
+    .filter(({ l }) => /\.value\s*=\s*await\s+(api|invoke)\./.test(l));
+  assert.deepEqual(
+    bad.map(({ l, n }) => `${n}: ${l.trim()}`),
+    [],
+    "IPC 无顺序保证：先发起的请求后回来就会用旧快照覆盖新状态（未读回退、红点亮回、\n" +
+      "     刚收藏的条目从面板消失、进度条钉在 0%）。改走 utils/staleGuard 的 begin/isCurrent。\n" +
+      "     注意本仓 useAppStore 还有 4 处同形状（device/shareDir/interfaces/updateProfile），\n" +
+      "     多数是一次性初始化写、风险面不同，尚未纳入本判据 —— 收敛它们时要一起把范围扩过去。",
+  );
+});
+
+test("组件侧的四个回填点必须各自过闸（旧形状一旦复现即红）", () => {
+  const cases: [string, string, string][] = [
+    // [文件, 必须出现的闸, 必须不出现的旧形状]
+    ["components/message/ImageLightbox.vue", "resolveGuard.isCurrent", "apply(await "],
+    ["components/MessageItem.vue", "summaryGuard.isCurrent", "deliverySummary.value = await invoke("],
+    ["components/ShareDirectory.vue", "loadGuard.isCurrent", "downloadSharedFile(friendId()"],
+  ];
+  for (const [rel, need, forbidden] of cases) {
+    const src = stripComments(readFileSync(join(ROOT, rel), "utf8"));
+    assert.ok(src.includes(need), `${rel} 缺「${need}」：跨 IPC 的旧响应可以覆盖当前状态`);
+    assert.ok(
+      !src.includes(forbidden),
+      `${rel} 又出现了「${forbidden}」：这是修之前的形状（旧请求直接落地 / 点击时才读当前会话）`,
+    );
+  }
+});

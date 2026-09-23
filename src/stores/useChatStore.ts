@@ -19,6 +19,7 @@ import {
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
 import { trimOldest } from "@/utils/bounded";
+import { StaleGuard } from "@/utils/staleGuard";
 import { actionableRequests } from "@/utils/friendRequests";
 import { notificationBody } from "@/utils/notifications";
 import { isRenderedInTimeline, isSilentKind } from "@/utils/messageKinds";
@@ -473,34 +474,69 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   // ---------------- 刷新 ----------------
+  /**
+   * 后发先至守卫（审计阶段 4 · 4.2）。下面这些 `refresh*` 全是 `x.value = await api.foo()`，
+   * 而调用点大量是 `void refreshX()`（群操作成对调两个、好友申请通过、gossip 更新…），
+   * IPC 又没有顺序保证 ⇒ 旧快照完全可能后回来，把未读、排序、在线状态整体回退。
+   * 同文件的 `refreshTransfers` 已经为这个坑单独修过一次（那次是"进度条永久钉在 0%"），
+   * 这里把同一个不变量收成一份实现，并按**被写的状态**分 key —— 不按函数分：
+   * `refreshPeers` 与 `searchNearbyPeers` 写的是同一个 `peers`，必须互相作废。
+   */
+  const refreshGuard = new StaleGuard();
+
   async function refreshPeers() {
-    peers.value = await api.getPeers();
+    const tok = refreshGuard.begin("peers");
+    const list = await api.getPeers();
+    if (!refreshGuard.isCurrent("peers", tok)) return;
+    peers.value = list;
   }
   /** 按需探测：群发一次 who_has 后返回周围在线节点（添加好友时调用）。 */
   async function searchNearbyPeers() {
-    peers.value = await api.searchNearbyPeers();
-    const onlineIds = new Set(peers.value.map((x) => x.device_id));
+    const tok = refreshGuard.begin("peers");
+    const list = await api.searchNearbyPeers();
+    // 被更新的一次探测抢走时：不写 peers、也不标注 online（online 是本结果的派生值，
+    // 用旧探测结果标会把更新的状态盖回去），但**照常返回**给调用方它要的那份列表。
+    if (!refreshGuard.isCurrent("peers", tok)) return peers.value;
+    peers.value = list;
+    const onlineIds = new Set(list.map((x) => x.device_id));
     friends.value.forEach((f) => (f.online = onlineIds.has(f.device_id)));
     return peers.value;
   }
   async function refreshFriends() {
-    friends.value = await api.getFriends();
+    const tok = refreshGuard.begin("friends");
+    const list = await api.getFriends();
+    if (!refreshGuard.isCurrent("friends", tok)) return;
+    friends.value = list;
   }
   async function refreshPending() {
-    rawPendingRequests.value = await api.getPendingRequests();
+    const tok = refreshGuard.begin("pending");
+    const list = await api.getPendingRequests();
+    if (!refreshGuard.isCurrent("pending", tok)) return;
+    rawPendingRequests.value = list;
   }
   async function refreshConversations() {
-    conversations.value = await api.getConversations();
+    const tok = refreshGuard.begin("conversations");
+    const list = await api.getConversations();
+    // ⚠️ 这条最不是理论问题：`openConversation` 会**乐观清零**未读，而旧快照带着清零前的
+    // `unread` ⇒ 红点自己亮回来、列表顺序也跟着回退（用户看到的"我没点它怎么又红了"）。
+    if (!refreshGuard.isCurrent("conversations", tok)) return;
+    conversations.value = list;
   }
   async function refreshGroups() {
-    groups.value = await api.getGroups();
+    const tok = refreshGuard.begin("groups");
+    const list = await api.getGroups();
+    if (!refreshGuard.isCurrent("groups", tok)) return;
+    groups.value = list;
     const entries = await Promise.all(
-      groups.value.map(async (group) => [group.id, await api.getGroupReads(group.id).catch(() => [])] as const),
+      list.map(async (group) => [group.id, await api.getGroupReads(group.id).catch(() => [])] as const),
     );
     const next: Record<string, Record<string, number>> = {};
     for (const [groupId, reads] of entries) {
       next[groupId] = Object.fromEntries(reads.map((read) => [read.reader_id, read.last_read_ts]));
     }
+    // 读名单是**第二次 await** 之后才写的，必须再过一次闸：把已退群成员的绿勾写回来，
+    // 比群列表旧一帧难看得多。
+    if (!refreshGuard.isCurrent("groups", tok)) return;
     groupReads.value = next;
   }
 
@@ -547,10 +583,9 @@ export const useChatStore = defineStore("chat", () => {
       .filter(([readerId, lastReadTs]) => members.has(readerId) && readerId !== myId && lastReadTs >= messageTs)
       .map(([readerId]) => readerId);
   }
-  /** 进行中的 refreshTransfers 序号：并发触发时只让**最新那次**写回结果。 */
-  let transfersReqSeq = 0;
+  /** 并发触发时只让**最新那次**写回结果（迁入 `refreshGuard`，与上面几个共用同一份实现）。 */
   async function refreshTransfers() {
-    const req = ++transfersReqSeq;
+    const req = refreshGuard.begin("transfers");
     const [list, contents] = await Promise.all([
       api.getTransfers(),
       api.getContentTransfers().catch(() => []),
@@ -558,7 +593,7 @@ export const useChatStore = defineStore("chat", () => {
     // 后发先至的旧快照必须丢掉：多选发送时每个文件都会 `void refreshTransfers()`，
     // 旧快照里**没有**刚建的那条 transfer ⇒ 覆盖回来后，后续 file-progress 全部落空
     // （见 updateTransferProgress），进度条永久钉在「发送中 0%」——而对端早就收完已读。
-    if (req !== transfersReqSeq) return;
+    if (!refreshGuard.isCurrent("transfers", req)) return;
     transfers.value = list;
     // 顺带刷新统一内容状态：未完成 / 校验失败的气泡据此显示「点击重试」。
     contentTransfers.value = contents;
@@ -584,7 +619,10 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function refreshTopology() {
-    topology.value = await api.getTopology();
+    const tok = refreshGuard.begin("topology");
+    const list = await api.getTopology();
+    if (!refreshGuard.isCurrent("topology", tok)) return;
+    topology.value = list;
   }
 
   /**
@@ -1187,7 +1225,12 @@ export const useChatStore = defineStore("chat", () => {
   const favorites = ref<FavoriteEntry[]>([]);
 
   async function refreshFavorites() {
-    favorites.value = await api.listFavorites();
+    // 「收藏 / 取消收藏」从消息菜单与面板两处发起 ⇒ 不加闸的话，先发起的后回来会把
+    // 刚收藏的那条从面板里抹掉（用户看到"点了星号又没了"）。
+    const tok = refreshGuard.begin("favorites");
+    const list = await api.listFavorites();
+    if (!refreshGuard.isCurrent("favorites", tok)) return;
+    favorites.value = list;
   }
 
   /**

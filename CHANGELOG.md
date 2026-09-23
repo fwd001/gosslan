@@ -10,6 +10,57 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-23 稳定性审计 阶段 4 · 批次 f —— 「后发先至」一族)
+
+同一条不变量的四处分身：`x.value = await api.foo()`。IPC 没有顺序保证 ⇒ 先发起的请求可以
+后回来，用旧快照覆盖新状态。本批收成一份实现（`src/utils/staleGuard.ts` 的
+`StaleGuard.begin/isCurrent`，令牌按**被写的状态**分 key），逐个接入并加结构守卫。
+
+- **store 的 8 个 refresher**（清单 4.2）：`refreshPeers` / `searchNearbyPeers`（与前者**共用
+  `peers` 这个 key**，因为写的是同一个状态，必须互相作废）/ `refreshFriends` / `refreshPending` /
+  `refreshConversations` / `refreshGroups` / `refreshTopology` / `refreshFavorites`。
+  调用点大量是 `void refreshX()`（每个群操作成对调两个、好友申请通过、gossip 更新…），
+  所以并发是常态。可感知的后果都是真的：`refreshConversations` 的旧快照带着**乐观清零之前**的
+  `unread` ⇒ 红点自己亮回来、列表顺序回退；`refreshFavorites` 两条来源（消息菜单 / 收藏面板）
+  互相覆盖 ⇒ "点了星号又没了"；`refreshGroups` 的群读名单是第二次 await 之后才写 ⇒ 已退群成员
+  的绿勾被写回来（所以那个函数里过了**两次**闸）。
+- **`refreshTransfers` 从自带的 `transfersReqSeq` 迁入同一份实现**：它早就为这个坑单独修过
+  一次（旧快照里没有刚建的 transfer ⇒ 进度条永久钉在 0%），但那份计数是**第二套真相源**；
+  迁移后同族只剩一处实现。
+- **`ImageLightbox.resolveCurrent`**（清单 4.2-9）：连按方向键翻图时，缓存命中的那次同步返回、
+  未命中的那次跨 IPC ⇒ 先发起的后回来会把当前这张覆盖成上一张（错图）或裂图。
+  现在所有落地（含同步分支与"没有图就清空"那条）都过同一道闸 —— 旧形状 `apply(await ...)`
+  被结构守卫禁掉。
+- **`ShareDirectory`**（清单 4.2-10）：两半都修。① `load()` 无过期守卫 ⇒ 旧会话的目录树回填进
+  新会话的面板；② **更要紧的是** `download()` 在点击那一刻才读 `friendId()` ⇒ 面板开着时
+  `activeConv` 会被程序化路径换掉（点系统通知 → `openConversation`），于是"A 的树里的一行"
+  发给 B 去校验路径：轻则莫名"下载失败"，**重则拿到 B 上同名的另一个文件**。
+  现在树只认自己那份（`loadedFor`），下载必须用它；面板开着时换会话会重拉。
+- **`MessageItem.deliverySummary`**（清单 4.2-13）：watch 源有两个（msg_id 与 status），
+  列表回收复用实例或快速翻状态时旧请求后到 ⇒ 群文件投递读数停在旧值；而它的 `catch` 会把
+  **更新那次刚写好的值抹成 null**（绿勾群读数一闪之后整块消失）。catch 也过闸。
+
+### Tests (阶段 4 · 批次 f)
+
+- `staleGuard.test.ts` 5 条：含两条**真实交错**用例（手工可控 promise 制造"先发起的后回来"，
+  断言新值不被覆盖；另一条断言被丢弃的那次连 `error`/`loading` 这些副作用都不执行）。
+- 结构守卫 2 条：① `useChatStore.ts` 里**不允许再出现** `x.value = await api.…` 这一形状
+  （判据先剥注释，避免"注释里写了这个形状"把守卫自己变红）；② 三个组件各自的
+  "必须有过闸调用 + 旧的直写形状必须不存在"。
+- 前端测试 548 → 555；`vue-tsc` 0；`npm run build` 通过；快速层 9 步全绿。
+
+### 已知限制（批次 f，明确不修 / 待扩范围）
+
+- **`useAppStore` 还有 4 处同形状**（`device` / `shareDir` / `interfaces` / `updateProfile` 的
+  返回值直写）。多数是一次性初始化写、并发面与本批不同，本批**没有**顺手改；守卫的报错文案里
+  写明了这一点，收敛它们时把判据范围一起扩过去，别只改代码不收守卫。
+- `StaleGuard` **刻意不提供 `forget(key)`**：删掉计数会让下一次 `begin` 从 1 重来，而一个仍在飞
+  的旧请求手里的令牌可能恰好就是 1 ⇒ 它反而被判成"最新的一次"，把旧快照写回来。本工具的所有
+  key 都是固定小集合，不清理也不会增长。
+- 令牌只回答"我是不是最新一次"，不回答"数据是否变化"：所以调用点的**所有**副作用
+  （写结果、写 error、`finally` 里清 loading）都必须在闸之后 —— 漏一个就等于那个副作用仍被
+  旧请求执行。这条写进了 util 的文档边界。
+
 ## [4.29.9] - 2026-09-23
 
 ### Fixed (2026-09-23 稳定性审计 阶段 4 · 批次 e —— 独立评审回修批次 a/d 自己引入的问题)

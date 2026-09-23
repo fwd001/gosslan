@@ -46,6 +46,7 @@ import ActionSheet from "@/components/ActionSheet.vue";
 import { Check, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Smile, Star, TextSelect, Undo2 } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 import { urlToBase64 } from "@/utils/imageBytes";
+import { StaleGuard } from "@/utils/staleGuard";
 
 const props = withDefaults(
   defineProps<{
@@ -128,18 +129,31 @@ const { memberProfile } = useMemberProfile();
 // status 变化（含 CompleteAck 推进）时自动刷新。
 const deliverySummary = ref<{ completed: number; failed: number; waiting: number } | null>(null);
 const isGroupFile = computed(() => props.message.msg_id.startsWith("gfile-"));
+/**
+ * 后发先至守卫（审计阶段 4 · 4.2）。这条 watch 的触发源有两个（msg_id 与 status），
+ * 快速翻状态或列表回收复用实例时，先发起的 IPC 可能后回来：
+ * ① 旧摘要覆盖新摘要（"已发送给 3 人"停在"0 人"）；
+ * ② 更糟的是 catch 分支 —— 它会把**更新的那次刚写好的值**抹成 null，
+ *    表现是绿勾群读数一闪之后整块消失。所以 catch 也必须过闸。
+ */
+const summaryGuard = new StaleGuard();
 watch(
   [() => props.message.msg_id, () => props.message.status],
   async ([msgId]: [string, unknown]) => {
+    const tok = summaryGuard.begin("summary");
     if (!msgId.startsWith("gfile-")) {
       deliverySummary.value = null;
       return;
     }
     try {
-      deliverySummary.value = await invoke("get_group_file_delivery_summary", {
-        transferId: msgId.slice(6),
-      });
+      const r = await invoke<{ completed: number; failed: number; waiting: number } | null>(
+        "get_group_file_delivery_summary",
+        { transferId: msgId.slice(6) },
+      );
+      if (!summaryGuard.isCurrent("summary", tok)) return;
+      deliverySummary.value = r;
     } catch {
+      if (!summaryGuard.isCurrent("summary", tok)) return;
       deliverySummary.value = null;
     }
   },
