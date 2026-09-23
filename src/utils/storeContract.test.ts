@@ -316,3 +316,48 @@ test("图片重试不许再用查询串（blob:/data: 都不接受 query ⇒ 重
   const watchSrc = src.slice(src.indexOf("() => props.src"));
   assert.ok(watchSrc.includes("loadKey.value = 0"), "换图时必须把上一代的换代计数归零");
 });
+
+// ---------------- 重复初始化守卫（审计阶段 4 · 4.2，utils/initScope.ts） ----------------
+
+test("chat.init() 必须先拆掉上一轮注册，且每条注册都要配对卸载", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const storeStart = st.indexOf("export const useChatStore");
+  assert.ok(storeStart > 0, "找不到 useChatStore 定义");
+  // 句柄必须在**模块作用域**：`acceptHMRUpdate` 换的是整个 store 实例，
+  // 放在 setup 里的状态对"下一轮 init"就是一片空白，拆不到上一轮的东西。
+  assert.ok(
+    /let chatInitScope: InitScope \| null = null;/.test(st.slice(0, storeStart)),
+    "chatInitScope 必须声明在 defineStore 之外（模块作用域）",
+  );
+
+  const initStart = st.indexOf("async function init()");
+  const initBody = st.slice(initStart, st.indexOf("\n  return {", initStart));
+  assert.ok(initStart > 0 && initBody.length > 500, "找不到 init() 函数体");
+  assert.ok(
+    initBody.indexOf("chatInitScope?.dispose()") > -1 &&
+      initBody.indexOf("chatInitScope?.dispose()") < initBody.indexOf("bindEvents({"),
+    "必须在任何注册之前拆掉上一轮（否则本轮注册会被自己拆掉）",
+  );
+
+  // 四类注册逐一配对（少一个 = 第二轮 init 起该事件跑两遍）
+  assert.ok(
+    /for \(const f of fns\) scope\.onDispose\(f\)/.test(initBody),
+    "bindEvents 返回的 unlisten 必须逐个交给 scope 保管",
+  );
+  assert.ok(/scope\.onDispose\(\(\) => clearInterval\(/.test(initBody), "拓扑定时器必须有句柄");
+  assert.ok(
+    /scope\.onDispose\(\(\) => document\.removeEventListener\("visibilitychange", onVisibility\)\)/.test(
+      initBody,
+    ),
+    "visibilitychange 必须用具名 handler 才能成对摘除",
+  );
+  assert.ok(/listener\.unregister\(\)/.test(initBody), "onAction 的 PluginListener 必须显式注销");
+  assert.ok(
+    !/void onAction\(/.test(initBody),
+    "`void onAction(...)` 会丢掉返回的 PluginListener ⇒ 回调永久挂在插件上",
+  );
+
+  const adds = (initBody.match(/\.addEventListener\(/g) ?? []).length;
+  const removes = (initBody.match(/\.removeEventListener\(/g) ?? []).length;
+  assert.equal(adds, removes, "init 里的 addEventListener 必须与 removeEventListener 一一对应");
+});

@@ -19,6 +19,7 @@ import {
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
 import { trimOldest } from "@/utils/bounded";
+import { createInitScope, type InitScope } from "@/utils/initScope";
 import { StaleGuard } from "@/utils/staleGuard";
 import { actionableRequests } from "@/utils/friendRequests";
 import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/notifications";
@@ -52,6 +53,17 @@ import type {
 
 /** 上次打开的会话（重启后恢复，纯前端 UI 状态，各端统一）。 */
 const LAST_CONV_KEY = "gosslan.lastConv";
+
+/**
+ * 上一轮 `init()` 的注册容器。
+ *
+ * 必须是**模块作用域**而不是 store 状态：`acceptHMRUpdate` 会换一个全新的 store
+ * 实例（新实例的 `setup` 里没有任何旧实例注册的痕迹），而旧实例的 `listen()`
+ * 仍挂在 Tauri 事件总线上 —— 只有模块级变量能让"新一轮 init"找到并拆掉"上一轮"。
+ * 不拆的后果不是内存泄漏那么温和：每个事件回调会跑**两遍**（消息重复入账、
+ * 通知翻倍、markRead 双发），且第一遍的闭包绑的是已被丢弃的 state。
+ */
+let chatInitScope: InitScope | null = null;
 
 export const useChatStore = defineStore("chat", () => {
   const peers = ref<Peer[]>([]);
@@ -1656,6 +1668,12 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function init() {
+    // 重复初始化守卫：先拆掉上一轮注册的资源，再注册这一轮的。
+    // 触发场景是 HMR（App.vue 热替换 → onMounted 再跑一次 init）与任何将来的
+    // 二次调用；生产冷启动只有一轮，拆的是 `null`。
+    chatInitScope?.dispose();
+    const scope = createInitScope();
+    chatInitScope = scope;
     // ⚠️ 事件绑定必须先于一切初始刷新（2026-09-23 审计 1.5）：Tauri `listen`
     // 不回放历史事件 —— 排在刷新之后绑定，启动窗口期（"打开就收消息"是局域网
     // 高频场景）emit 的系统通知/新消息/在线状态会**永久丢失**，且无任何纠正路径。
@@ -1679,6 +1697,11 @@ export const useChatStore = defineStore("chat", () => {
         });
       }, 300);
     };
+    // 去抖里还排着一次 markRead：拆掉它，否则一个绑在废弃实例上的已读回执会在
+    // 300ms 后发出去（用户已经切走，等于替他判了已读）。
+    scope.onDispose(() => {
+      if (markReadTimer) clearTimeout(markReadTimer);
+    });
     bindEvents({
       onPeers: (p) => {
         peers.value = p;
@@ -1833,6 +1856,8 @@ export const useChatStore = defineStore("chat", () => {
       onNotificationClicked: (p) => {
         routeNotificationClick(p.type, p.conv_id);
       },
+    }).then((fns) => {
+      for (const f of fns) scope.onDispose(f);
     }).catch((e) => {
       // 见 init 开头的说明：不兜底的话 init 会 reject，而骨架照常撤除 ——
       // 用户看到一个"正常"的界面，却永远收不到任何事件。必须留痕 + 可感知。
@@ -1892,7 +1917,7 @@ export const useChatStore = defineStore("chat", () => {
       });
     }
     // 注册系统通知点击回调：点击通知 → 唤起窗口 + 定位到发送者会话
-    void onAction((n) => {
+    onAction((n) => {
       // 兼容不同平台回调形状：对象 { id, actionId, extra } 或裸 id（number/string）
       const raw = (typeof n === "object" && n !== null
         ? n
@@ -1926,11 +1951,24 @@ export const useChatStore = defineStore("chat", () => {
       if (!convId && raw.extra?.conv_id) convId = String(raw.extra.conv_id);
       if (id != null) notifMap.delete(id);
       routeNotificationClick(extraType, convId);
+    }).then((listener) => {
+      // `onAction` 返回的是 PluginListener 对象（要显式 `unregister()`），
+      // 之前那句 `void onAction(...)` 把返回值直接丢了 —— 回调永久挂在插件上。
+      scope.onDispose(() => {
+        listener.unregister().catch(() => {
+          /* 插件 IPC 抖动，不牵连其它卸载器 */
+        });
+      });
+    }).catch((e) => {
+      // 注册失败只影响"点通知跳转"，不影响其余事件；留痕而不是静默吞掉。
+      console.error("[chat] 通知点击回调注册失败：点系统通知不会定位到会话", e);
     });
     // 定时刷新拓扑
-    setInterval(() => void refreshTopology(), 5000);
+    const topoTimer = setInterval(() => void refreshTopology(), 5000);
+    scope.onDispose(() => clearInterval(topoTimer));
     // 窗口重新可见：补发当前会话已读回执 + 冲刷后台期间滞留的消息批次
-    document.addEventListener("visibilitychange", () => {
+    // （具名函数 + 成对 removeEventListener：匿名 handler 摘不掉，重复 init 会叠加）
+    const onVisibility = () => {
       if (document.hidden) return;
       // 强制冲刷而不是 scheduleFlush()（2026-09-23 审计 1.7）：后者会被
       // `if (flushScheduled) return` 挡回 —— rAF 在后台被暂停/丢失时 flag 卡在
@@ -1943,7 +1981,9 @@ export const useChatStore = defineStore("chat", () => {
           if (conv) conv.unread = 0;
         });
       }
-    });
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    scope.onDispose(() => document.removeEventListener("visibilitychange", onVisibility));
   }
 
   return {
