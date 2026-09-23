@@ -714,8 +714,11 @@ export const useChatStore = defineStore("chat", () => {
   const PAGE_SIZE = 100;
   const MAX_PAGES = 10;
   const pagesLoaded = new Map<string, number>();
-  /** 正在翻历史页的会话（同一会话同时只允许一个在飞，见 `loadMoreMessages`）。 */
-  const loadingMore = new Set<string>();
+  /**
+   * 正在翻历史页的会话 → 那一次的 Promise。同一会话同时只允许一个在飞，
+   * 但**后来者必须并入这一次**（见 `loadMoreMessages` 的 ⚠️）而不是被直接弹回。
+   */
+  const loadingMore = new Map<string, Promise<void>>();
   /**
    * 已知"这个会话已翻到最早一页"的会话：不再为它付任何翻页 IPC。
    * ⚠️ 必须在每次 `loadMessages` 重新加载该会话时作废 —— 重新打开只取最新一页，
@@ -765,6 +768,10 @@ export const useChatStore = defineStore("chat", () => {
       // 分页簿记一并清掉：切回该会话时 loadMessages 会重新从 DB 取最新一页
       pagesLoaded.delete(cid);
       loadSeqs.delete(cid);
+      // 同一本账：不清"到顶"结论的话，该会话重开后翻不动历史。
+      // **不**跟着删 loadingMore —— 那条 Promise 自己会落地并摘除；在这里删会
+      // 让"淘汰后新发起的一次"与仍在飞的旧的一次并行拉页，制造新的重复请求。
+      historyTops.delete(cid);
     }
     // 同步收缩 LRU，避免它自身无限增长
     for (let i = cacheOrder.length - 1; i >= 0; i--) {
@@ -785,6 +792,11 @@ export const useChatStore = defineStore("chat", () => {
     const seq = (loadSeqs.get(convId) ?? 0) + 1;
     loadSeqs.set(convId, seq);
     touchCacheOrder(convId);
+    // ⚠️ 必须在**函数开头**作废"已翻到顶"这个结论，不能只在成功路径末尾清：
+    // IPC 失败会走 catch 提前 return、seq 被后来者抢走也会提前 return —— 那些路径下
+    // 内存列表同样是"只有最新一页"，若 historyTops 还留着 true，`loadMoreMessages`
+    // 就被永久挡死，而它正是这种空列表下唯一的自愈通道（2026-09-23 评审抓出）。
+    historyTops.delete(convId);
     // 打开会话应先加载「最新一页」，而不是最旧一页；否则底部会停在第 100 条历史，
     // 最新消息与文件都要靠后续滚动才出现。
     let list: MessageRecord[];
@@ -808,13 +820,10 @@ export const useChatStore = defineStore("chat", () => {
       ? appendLocalOnly(preserveDeliveryStatus(list, prev), prev)
       : list;
     pagesLoaded.set(convId, 1);
-    // 重新加载 = 手里只剩最新一页，"已翻到顶"这个结论当场失效。
-    // 不清这里就会出现"看过的会话重开后翻不动历史"（见 historyTops 的注释）。
-    historyTops.delete(convId);
   }
 
   /** 向上翻页加载更早的历史消息（VirtualList 触顶时调用）。 */
-  async function loadMoreMessages(convId: string) {
+  async function loadMoreMessages(convId: string): Promise<void> {
     // 两道闸门都必须有（审计阶段 4 · 4.1-2）：`VirtualList` 在"停在距顶 60px 内"期间
     // 每一次重测都会 emit `loadMore`（滚动 / resize / applyJump 轮询 / scrollToIndex /
     // items 变化 / 总高变化共 6 个入口），所以本函数会被**每帧**调用。
@@ -824,39 +833,59 @@ export const useChatStore = defineStore("chat", () => {
     //     每帧都要白付一次 `getMessageCount` IPC。
     // 刻意**不做**边沿触发式的一次性开关：那样用户停在顶部时只会翻出一页，必须"往下滚
     // 一点再滚回来"才能继续翻 —— 那是拿一个真实可用的行为去换一个噪声，不划算。
-    if (loadingMore.has(convId) || historyTops.has(convId)) return;
+    if (historyTops.has(convId)) return;
+    // ⚠️ 单飞必须是**并入在飞的那一次**，不是"看见有人在飞就直接返回"。
+    // `locateMessage` / `locateMessageInConv` 的循环写的是 `await loadMoreMessages()`
+    // 然后"长度没变 ⇒ 没有更早历史了"；直接返回会让它们把"别人正在翻"误判成"翻到头了"，
+    // 表现就是点引用/搜索命中时误报「原消息在更早的历史里」并拒绝定位（2026-09-23 评审
+    // 抓出的回归 —— 加闸门时只想了防重复拉页，没想await方的语义）。
+    const running = loadingMore.get(convId);
+    if (running) return running;
     const pages = pagesLoaded.get(convId) ?? 1;
     if (pages >= MAX_PAGES) return;
-    loadingMore.add(convId);
-    try {
-      const seq = loadSeqs.get(convId) ?? 0;
-      const total = await api.getMessageCount(convId);
-      if (seq !== (loadSeqs.get(convId) ?? 0)) return;
-      if (pages * PAGE_SIZE >= total) {
-        historyTops.add(convId);
-        return;
+    const page = loadMorePage(convId, pages);
+    loadingMore.set(convId, page);
+    // 挂在链上而不是原 promise 上：这样 `page` 始终有处理器，reject 时不会变成
+    // unhandled rejection，而**所有** await 方仍各自拿到同一次结果。
+    return page.finally(() => {
+      loadingMore.delete(convId);
+    });
+  }
+
+  /** 真正拉一页。单飞与容量闸都在 `loadMoreMessages` 那一层，这里只管一次 IPC。 */
+  async function loadMorePage(convId: string, pages: number): Promise<void> {
+    const seq = loadSeqs.get(convId) ?? 0;
+    const total = await api.getMessageCount(convId);
+    if (seq !== (loadSeqs.get(convId) ?? 0)) return;
+    if (pages * PAGE_SIZE >= total) {
+      historyTops.add(convId);
+      return;
+    }
+    // 当前已加载最新 pages 页，继续向更早方向取一页。
+    const offset = Math.max(0, total - (pages + 1) * PAGE_SIZE);
+    const older = await api.getMessages(convId, PAGE_SIZE, offset);
+    if (seq !== (loadSeqs.get(convId) ?? 0) || older.length === 0) return;
+    const existing = messages.value[convId] ?? [];
+    messages.value[convId] = mergeMessages(existing, older);
+    pagesLoaded.set(convId, pages + 1);
+    // 拿不满一页就是到头了，不必再问一次 `getMessageCount`
+    if (older.length < PAGE_SIZE) historyTops.add(convId);
+    // prepend 历史后，「第一条未读」的下标整体后移。位移量既不是 `older.length`（原实现，
+    // 把不渲染的静默行也算进去 ⇒ 每翻一页再累积一次误差，审计 4.1-1 的第二处实例），
+    // 也不是"这一页里会渲染的条数"（2026-09-23 评审抓出）—— `mergeMessages` 会按 msg_id
+    // 去重，而重叠是常态：会话总数落在 101~199 之间时第二页请求的 offset 仍是 0，
+    // 返回的整页与内存里的最新一页大面积重叠；翻页期间来了新消息同样重叠。
+    // 只有"真正新插进列表的那些**会渲染**的行"才是该平移的量。
+    // index=-1 是"还在加载"的占位态，不参与位移。
+    if (unreadJump.value?.convId === convId && unreadJump.value.index >= 0) {
+      const known = new Set(existing.map((m) => m.msg_id));
+      let shift = 0;
+      for (const m of older) {
+        if (!known.has(m.msg_id) && isRenderedInTimeline(m.kind)) shift += 1;
       }
-      // 当前已加载最新 pages 页，继续向更早方向取一页。
-      const offset = Math.max(0, total - (pages + 1) * PAGE_SIZE);
-      const older = await api.getMessages(convId, PAGE_SIZE, offset);
-      if (seq !== (loadSeqs.get(convId) ?? 0) || older.length === 0) return;
-      const existing = messages.value[convId] ?? [];
-      messages.value[convId] = mergeMessages(existing, older);
-      pagesLoaded.set(convId, pages + 1);
-      // 拿不满一页就是到头了，不必再问一次 `getMessageCount`
-      if (older.length < PAGE_SIZE) historyTops.add(convId);
-      // prepend 历史后，「第一条未读」的下标整体后移 —— 位移量必须是**会渲染的那几行**：
-      // 老页里含表情/撤回/置顶这类静默行，它们不进 ChatWindow 的列表，按 `older.length`
-      // 补偿就是"每翻一页再累积一次误差"（审计阶段 4 · 4.1-1 的第二处实例）。
-      // index=-1 是"还在加载"的占位态，不参与位移。
-      if (unreadJump.value?.convId === convId && unreadJump.value.index >= 0) {
-        const shift = older.reduce((n, m) => n + (isRenderedInTimeline(m.kind) ? 1 : 0), 0);
+      if (shift > 0) {
         unreadJump.value = { ...unreadJump.value, index: unreadJump.value.index + shift };
       }
-    } finally {
-      // 无论成功、被过期作废还是 IPC 抛错，都必须放行下一次 —— 漏掉这一步就是
-      // "翻一次页之后再也翻不动"（那道闸永远不会再开）。
-      loadingMore.delete(convId);
     }
   }
 

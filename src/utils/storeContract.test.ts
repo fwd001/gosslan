@@ -183,3 +183,48 @@ test("跨 IPC 的回填必须核对「数据还是不是当前会话/群」", ()
     "GroupFilesPanel.load() 缺过期守卫：切群瞬间的旧响应仍会把 A 群清单回填进 B 群",
   );
 });
+
+// ---------------- 历史翻页的两道闸与未读位移（审计阶段 4 · 4.1-2 + 2026-09-23 评审回修） ----
+
+/**
+ * 这三条都是"删掉一行不会编译错、只会让用户翻不动历史或定位错"的形状，
+ * 而本仓没有能驱动 store 异步竞态的运行时夹具（与 `loadSeqs` 同处境）⇒ 按代码结构钉。
+ * 判据取代码形状，不取注释文案。
+ */
+test("翻页单飞必须「并入在飞那一次」，不许把后来者直接弹回", () => {
+  const st = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const fn = st.slice(st.indexOf("if (historyTops.has(convId)) return;"));
+  const head = fn.slice(0, fn.indexOf("async function loadMorePage"));
+  assert.ok(
+    head.includes("if (running) return running;"),
+    "locateMessage / locateMessageInConv 靠「await 后长度没变」判断『已翻到头』，" +
+      "单飞闸若直接 return 就会把「别人正在翻」误报成「没有更早历史」",
+  );
+  assert.ok(
+    head.includes("page.finally("),
+    "在飞记录必须自己摘除（finally），否则一次 IPC 抛错就把该会话的翻页永久锁死",
+  );
+});
+
+test("「已翻到顶」结论必须在每次重新加载时作废，且作废点在任何 await 之前", () => {
+  const st = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const fn = st.slice(st.indexOf("async function loadMessages("));
+  const body = fn.slice(0, fn.indexOf("\n  }"));
+  const del = body.indexOf("historyTops.delete(convId)");
+  assert.ok(del >= 0, "loadMessages 不作废 historyTops ⇒ IPC 失败/seq 被抢的早退路径会永久挡死翻页");
+  assert.ok(
+    del < body.indexOf("await api.getMessageCount"),
+    "作废点必须排在 await 之前：放在成功路径末尾时，catch 与过期早退都到不了那里",
+  );
+});
+
+test("prepend 后的未读位移必须按「真正新插入且会渲染」的行数算", () => {
+  const st = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const fn = st.slice(st.indexOf("async function loadMorePage("));
+  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+  assert.ok(
+    body.includes("!known.has(m.msg_id) && isRenderedInTimeline(m.kind)"),
+    "mergeMessages 会按 msg_id 去重（会话总数落在 101~199 时第二页 offset 仍是 0，整页大面积重叠）；" +
+      "按整页条数平移会把分割线推到真锚点下方",
+  );
+});

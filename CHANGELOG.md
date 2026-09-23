@@ -10,6 +10,59 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-23 稳定性审计 阶段 4 · 批次 e —— 独立评审回修批次 a/d 自己引入的问题)
+
+对 `3ab31be..HEAD` 做只读评审后确认：**四处"修 A 引入 B"，其中两处是用户可感知的回归**，全部回修。
+
+- **翻页单飞闸把定位链路弹回成"没有更早历史"（批次 a 引入，严重）**：`locateMessage`（
+  `ChatWindow.vue`）与 `locateMessageInConv`（store）的循环写的是
+  `await loadMoreMessages()` → "长度没变 ⇒ 翻到头了"。而新加的 `loadingMore` 闸门在有人in飞时
+  **直接 return**，一次弹回就被判定"原消息在更早的历史里"并拒绝定位 —— 点引用/搜索命中会误报。
+  旧代码两次并发各自拉页，定位那一次总能前进。
+  → 单飞改成**并入在飞的那一次**（`if (running) return running`），后来者与首发者拿同一个
+  Promise；摘除挂在 `.finally` 链上，保证 IPC 抛错时闸门一定打开。
+- **`historyTops` 的失效点位置错（批次 a 引入，严重）**：原来只在 `loadMessages` **成功路径末尾**
+  清，而 IPC 失败走 catch 提前 return、seq 被后来者抢走也提前 return —— 那些路径下内存列表
+  同样只剩最新一页，`historyTops` 若还留着 true，该会话的翻页就被**永久挡死**，
+  而 `loadMoreMessages` 恰是那种"空列表"下唯一的自愈通道。
+  → 作废点前移到 `loadMessages` 函数开头（与 `loadSeqs` 同帧、在任何 await 之前）；
+  缓存淘汰（`enforceMessageCacheBound`）也一并清这本账。**刻意不**跟着删 `loadingMore`：
+  那条 Promise 自己会落地摘除，在淘汰点删反而会让新发起的一次与仍在飞的一次并行拉页。
+- **prepend 未读位移没扣 `mergeMessages` 的去重（批次 a 残留，中等）**：位移量原本是
+  "这一页里会渲染的条数"，但 `mergeMessages` 按 msg_id 去重，而**重叠是常态**——
+  会话总数落在 101~199 时第二页请求的 `offset` 仍是 0，整页与内存里的最新一页大面积重叠；
+  翻页期间来了新消息同样重叠。后果是分割线落到真锚点**下方**（部分真未读看起来像已读）。
+  → 只数"真正新插进列表、且会渲染"的行。有界性也说明了：每页至多多算一次，不逐页累积。
+- 评审顺带确认**不影响既有功能**的几处（记录判据来源，避免以后又被怀疑）：`unreadJump.index`
+  五个消费点现在全在同一个渲染坐标系；`-1` 占位语义未被破坏；三条返回路径（头部箭头 /
+  Android 系统返回 / 通知反向）都会走到新加的 `mobileView` watcher；`send-image` 全仓单一
+  emit + 单一监听，`File` 的读取与旧代码在同一个事件任务内启动（`clipboardData` 的
+  "必须同步取"约束仍然满足）；8 MiB 与后端 `MAX_OUTGOING_IMAGE_BYTES` 同值且同为解码后口径；
+  `bytesToBase64` 与旧实现逐字符等价（含 8191/8192/8193 分块边界与 0 长度）；本仓图片源只有
+  `blob:` 与 `data:`，新加的 `!res.ok` 分支实际不可达、不构成误伤；`pendingAcks`(512) 与
+  `notifMap`(128) 淘汰后无用户可见后果（前者消费在同一调用内，后者有 `extra.conv_id` 兜底）。
+
+### 已知限制（阶段 4 · 批次 e，明确不修）
+
+- **"未读全是 `announcement`/`poll` 时分割线整体消失"**：这两类计未读但不进时间线，新锚点
+  数不出任何行 ⇒ 返回 -1 ⇒ 不画、交给贴底兜底。方向是"宁可不画也不画错"，但这是**行为漂移**
+  而不是纯坐标修正；要两全得让后端按可见性给数（协议改动）。
+- `openMerge`（合并卡片详情）与 `announceDeleteArmed`（公告两段式删除确认）切会话时仍不收尾：
+  前者载荷是内容快照不会串会话数据，后者影响面是"下次打开公告全文直接落在第二段确认"。窄，记 TODO。
+- 桌面端多选进行中切走左侧 rail ⇒ ChatWindow 卸载但 `app.multiSelectActive` 残留
+  （卸载路径不调 `exitMultiSelect`）：预存在，非本批引入，只影响移动端判据。
+- 旧格式 `data:` 内容若含空白，新短路会把空白直传给后端的严格 base64 引擎（旧路径经浏览器
+  解析会剥掉）；未找到 `FileReader` 会产出空白的证据，判为理论风险。
+- 后端"图片过大，请压缩后重试"的原文在 UI 上只在 `toastError` 展开 `e.message` 时可见，
+  统一文案是 `msg.sendFailed`；可接受。
+
+### Tests (阶段 4 · 批次 e)
+
+- `storeContract.test.ts` 加 3 条结构守卫，把上面三条回归钉死：单飞必须 `return running` 且
+  必须挂 `.finally`；`historyTops.delete` 必须排在 `loadMessages` 第一个 await 之前；
+  prepend 位移必须用"未去重且会渲染"的判据。三条各自对应一段"改回旧写法必红"的形状。
+- 前端测试 545 → 548；`vue-tsc --noEmit` 0；`npm run build` 通过。
+
 ## [4.29.8] - 2026-09-23
 
 ### Fixed (2026-09-23 稳定性审计 阶段 4 · UI/交互 批次 a —— 未读定位与历史翻页)
