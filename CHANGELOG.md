@@ -10,6 +10,73 @@
 
 ## [Unreleased]
 
+## [4.29.4] - 2026-09-23
+
+### Fixed (2026-09-23 稳定性审计 阶段 1 · 止血：8 条 P0)
+
+按 2026-09-23 全量问题清单（四分区并行审查）阶段 1 批量修复。
+原则：不加任何功能，只消除数据丢失 / 永久卡死 / 消息丢失路径。每条动手前均按 AI_RULES §21
+重新复核过 `文件:行号` 仍成立。
+
+**1.1 缓存清理器跟随符号链接 → 磁盘任意位置文件被永久删除（P0 数据丢失）**
+`storage/cache_cleaner.rs` 的 `walk_files` 用 `e.path().metadata()` 判类型（**跟随软链**，与注释声称相反）。
+缓存目录是远端输入可达面：收到的文件名里放一个软链，其目标会被收集进清理列表并 `remove_file` 永久删除。
+修复：改用 `DirEntry::file_type()`（不跟随链接），软链/套接字一律跳过；`plan_removal` 的
+`to_remove.contains` O(n²) 顺手改标记数组（大缓存下配额循环卡全局 db 锁）。
+回归：`walk_files_never_follows_symlinks`（真实文件系统：文件软链 + 目录软链 + 极端配额，外部文件必须幸存）。
+
+**1.2 `resend_message` 把消息永久卡在 "sending"（P0）**
+旧顺序先 `set_message_status("sending")` 再判群聊/取公钥/密钥交换/加密；群分支无条件 `Err` 不回滚、
+`?` 路径同样不回滚 ⇒ 状态永久卡 sending，且重发入口的 `"sending" => Err` 守卫把重试挡死 ⇒
+消息永远发不出去（对失败群消息点重发必现）。修复：全部可失败步骤移到置 sending 之前，
+错误路径无需回滚；置位后只剩幂等 outbox 写入与 try_send。
+
+**1.3 `loadMessages` 快照整表覆盖吞掉在途乐观气泡（P0 诱导重复消息）**
+发送在途期间对该会话发生一次 `loadMessages`（点会话 / 状态事件 / 搜索定位），DB 快照里还没有
+tmp-* 气泡 ⇒ 整表覆盖后"刚发的消息凭空消失"，invoke 返回时 `replaceMessage` 既找不到列表项
+也不在 pending 批次 ⇒ 真实记录静默丢弃（后端不回声，无第二路径补回）⇒ 用户以为失败而重发。
+修复：`utils/messages.ts` 新增 `appendLocalOnly` —— 快照落地时把内存独有的 `tmp-*` / `file-failed-*`
+记录按原顺序追回尾部（seq=MAX_SAFE_INTEGER）；已在快照里的不重复追加，非本地独有记录不复活。
+回归：messages.test.ts 5 个新用例。
+
+**1.4 非活跃会话的状态事件取消活跃会话加载 → 骨架永久转圈（P0）**
+`loadSeq` 是全局单计数器，`onMessageStatusChanged` 对**任意**含该 msg_id 的会话触发
+`loadMessages`（含非活跃）⇒ 一次 `++loadSeq` 把飞行中的活跃会话加载/翻页判为过期 ⇒
+`messages[convId]` 永远 undefined，聊天区骨架永久转圈。修复：`loadSeq` 按会话分桶
+（淘汰时一并清理）；`onMessageStatusChanged` 只处理活跃会话（非活跃会话的结果本就会被
+activeConv 守卫丢弃，切换回来时 openConversation 会重查）。
+
+**1.5+1.6 启动竞态：`bindEvents` 排在全部初始刷新之后 / 任一刷新失败则永不绑定（P0）**
+Tauri `listen` 不回放历史事件 —— 旧顺序（8 个 refresh 全部完成后才 bindEvents）把启动窗口期的
+系统通知/新消息/在线状态**永久丢失**（局域网"打开就收消息"是高频场景）；且 refresh 无 catch，
+任一 reject ⇒ `bindEvents` 永不执行，界面"活着但功能全死"，需重启恢复。
+修复：`init()` 里 bindEvents **前置**（listen IPC 即发即生效）并自带 catch（失败留痕 + toast
+`chat.eventBindFail` 提示重启）；初始刷新改 `Promise.allSettled`，逐条记录失败；
+`App.vue` 对 `app.init` / `chat.init` 分别兜错，app.init 失败不再跳过 chat.init。
+
+**1.7 批量冲刷的 visibilitychange 兜底是死代码（P0）**
+`scheduleFlush` 的 `if (flushScheduled) return` 守卫在 rAF 回调丢失时永久卡 true ⇒
+此后所有 `enqueueMessage` 堆积、消息永不渲染且无恢复手段，兜底 `scheduleFlush()` 又必被
+第一行挡回。修复：抽出幂等 `flushNow`；rAF 路径加 1s setTimeout 安全网（正常时 no-op）；
+visibilitychange 兜底改直接 `flushNow()`；`pending` 堆积到 5000 条时 console.error 留痕。
+
+**1.8 中继收文件 SHA-256 按到达顺序、去重之前喂哈希 → 误报校验失败，两端状态相反（P0/P1）**
+`handle_relay_chunk` 逐片"到达即喂"增量哈希，而中继分片天然**重复**（多邻居泛洪）且**乱序**
+（多路径时延不同），喂点在 `add_chunk` 去重/排序之前 ⇒ 分片收齐却必然"文件完整性校验失败"：
+接收端失败、发送端却显示成功（无回执，relay offer/chunk 不在 outbox，无重试路径）。
+修复：删除增量哈希（`RelayFileReceive` 去掉 `hasher` 字段），重组完成后对按 seq 组装出的
+明文一次性 `Sha256::digest(&full)`。回归：`relay_receiver_hash_lifecycle_success`
+重写为乱序 + 重复分片场景仍校验通过。
+
+### 护栏（防回归，verify-guards.py 已登记变异用例）
+
+- `cache_cleaner_walk_never_follows_symlinks`：walk_files 必须用 `DirEntry::file_type()`，
+  不得出现 `e.path().metadata()`。变异：换回跟随链接的写法必须红。
+- `resend_message_sets_sending_only_after_all_failure_paths`：全部报错锚点必须排在
+  `set_message_status("sending")` 之前。变异：删掉群聊判废必须红。
+- `relay_receive_hashes_assembled_plaintext_once`：`handle_relay_chunk` 不得出现增量哈希，
+  校验必须是 `Sha256::digest(&full)`。变异：哈希对象改成 `&name` 必须红。
+
 ## [4.29.3] - 2026-09-23
 
 ### Fixed (审计 A8：transport 生产锁中毒不再 panic 带走 reader_loop)
