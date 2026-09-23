@@ -692,11 +692,14 @@ pub struct RelayFileReceive {
     pub file_key: [u8; 32],
     /// 发送方声明的原文件 SHA-256（hex）
     pub expected_sha256: String,
-    /// 明文增量哈希：逐片解密后 update，重组完成时 finalize 比对
-    pub hasher: sha2::Sha256,
     /// 收到 RelayFileOffer 的时刻。**必须有**：本表按 transfer_id 索引，
     /// 而对端可以一直发新 offer 却永不发分片 —— 没有时间戳就无法回收，
     /// 内存会随对端行为单调增长（见 `sweep_stale_relay`）。
+    ///
+    /// 注意：这里**没有**增量哈希。中继分片按到达顺序解密，可能重复（多邻居
+    /// 泛洪）、可能乱序（多中继路径时延不同）—— 任何"到达顺序增量喂哈希"的
+    /// 方案在去重/排序之前都是错的。完整性校验在重组完成后对按 seq 组装的
+    /// 明文一次性计算（2026-09-23 审计 1.8）。
     pub created_at: i64,
 }
 

@@ -4250,8 +4250,8 @@ async fn handle_relay_file_offer(
     let Some(file_key) = file_key else {
         return;
     };
-    // 幂等：重复的 RelayFileOffer（多邻居泛洪）不得重置已累积的 hasher，
-    // 否则完整性校验必然失败（hash 只覆盖后到的切片）。
+    // 幂等：重复的 RelayFileOffer（多邻居泛洪）不得覆盖已有会话状态
+    //（file_key/expected_sha256/重组表都要保留），否则后续分片全部无处安放。
     state
         .relay_file_keys
         .lock()
@@ -4260,10 +4260,6 @@ async fn handle_relay_file_offer(
         .or_insert_with(|| crate::state::RelayFileReceive {
             file_key,
             expected_sha256: file_sha256,
-            hasher: {
-                use sha2::Digest as _;
-                sha2::Sha256::new()
-            },
             created_at: db::now_ms(),
         });
     state
@@ -4308,29 +4304,33 @@ async fn handle_relay_chunk(
     ttl: u8,
 ) {
     if to == state.device_id {
-        // 最终接收方：先解密（E2EE，密文不落盘），再增量哈希、重组
-        let mut keys = state
-            .relay_file_keys
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(rs) = keys.get_mut(&transfer_id) else {
-            return;
+        // 最终接收方：先解密（E2EE，密文不落盘），再交重组表去重/按 seq 组装。
+        // ⚠️ 不在这里做任何增量哈希：分片按到达顺序解密，可能重复（多邻居泛洪
+        // 每条路径都送一份）、可能乱序（多中继路径时延不同）—— 按到达顺序喂哈希
+        // 在去重/排序之前必然算错。完整性校验在重组完成后对组装出的明文一次性
+        // 计算（2026-09-23 审计 1.8）。
+        let bytes = {
+            let keys = state
+                .relay_file_keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let Some(rs) = keys.get(&transfer_id) else {
+                return;
+            };
+            let Ok(sealed) = STANDARD.decode(&data) else {
+                return;
+            };
+            let Some(bytes) = crypto::open_symmetric(&rs.file_key, &sealed) else {
+                return;
+            };
+            bytes
         };
-        let Ok(sealed) = STANDARD.decode(&data) else {
-            return;
-        };
-        let Some(bytes) = crypto::open_symmetric(&rs.file_key, &sealed) else {
-            return;
-        };
-        use sha2::Digest;
-        rs.hasher.update(&bytes);
-        drop(keys);
         let completed = {
             let mut relay = state.relay.lock().unwrap_or_else(|e| e.into_inner());
             relay.add_chunk(&transfer_id, seq, bytes)
         };
         if let Some((name, expected_size, full)) = completed {
-            // 重组结束（无论成败）：移除会话状态，取哈希做完整性校验
+            // 重组结束（无论成败）：移除会话状态，对组装出的明文做完整性校验
             let rs = state
                 .relay_file_keys
                 .lock()
@@ -4359,12 +4359,11 @@ async fn handle_relay_chunk(
                 );
                 return;
             }
-            // 文件级完整性：重组内容 SHA-256 必须与发送方声明一致，否则不落盘
+            // 文件级完整性：按 seq 组装出的明文一次性算 SHA-256，
+            // 与发送方声明比对，不一致不落盘（重复/乱序分片已被 add_chunk 归一）。
             if let Some(rs) = rs {
                 use sha2::Digest;
-                let actual_hex: String = rs
-                    .hasher
-                    .finalize()
+                let actual_hex: String = sha2::Sha256::digest(&full)
                     .iter()
                     .map(|b| format!("{b:02x}"))
                     .collect();

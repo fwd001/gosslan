@@ -2775,8 +2775,8 @@ mod tests {
         let _ = std::fs::remove_file(&part_path);
     }
 
-    /// relay 场景：最终接收方逐片解密 + 增量哈希（RelayFileReceive 生命周期），
-    /// 重组完成后 SHA-256 校验通过；中继只透传密文，不参与哈希。
+    /// relay 场景（2026-09-23 审计 1.8 修复后）：最终接收方逐片解密，重组完成后
+    /// 对按 seq 组装的明文**一次性**算 SHA-256；中继只透传密文，不参与哈希。
     #[test]
     fn relay_receiver_hash_lifecycle_success() {
         use crate::state::RelayFileReceive;
@@ -2786,36 +2786,44 @@ mod tests {
         let expected = hex_of(&original);
         let file_key = crypto::random_key();
 
-        let mut rs = RelayFileReceive {
+        let rs = RelayFileReceive {
             file_key,
             expected_sha256: expected,
-            hasher: {
-                use sha2::Digest as _;
-                sha2::Sha256::new()
-            },
             created_at: crate::db::now_ms(),
         };
 
-        let mut assembled: Vec<u8> = Vec::new();
-        for (_, chunk) in original.chunks(FILE_CHUNK).enumerate() {
-            let sealed = crypto::seal_symmetric(&file_key, chunk).unwrap(); // 发送端
-            let _forwarded = sealed.clone(); // 中继：原样透传
-            let plain = crypto::open_symmetric(&rs.file_key, &_forwarded).unwrap(); // 接收端
-            use sha2::Digest;
-            rs.hasher.update(&plain); // handle_relay_chunk 的增量哈希
-            assembled.extend_from_slice(&plain);
+        // 模拟 handle_relay_chunk 的接收路径：解密 → add_chunk（去重 + 按 seq 组装）。
+        // 分片**故意乱序到达且 seq=0 重复投递一次**（多邻居泛洪 + 多路径时延不同
+        // 是该链路的常态）—— 修复前的增量哈希在这两种情况下都会算错，导致
+        // 「分片齐了却报文件完整性校验失败」，发送端却显示成功。
+        let mut relay = crate::file_relay::RelayManager::new();
+        relay.begin_reassemble("t", "f.bin", 2, original.len() as u64);
+        let sealed: Vec<Vec<u8>> = original
+            .chunks(FILE_CHUNK)
+            .map(|c| crypto::seal_symmetric(&rs.file_key, c).unwrap())
+            .collect();
+        // 乱序：先到 seq=1，再到 seq=0（此刻重组完成），然后 seq=0 再来一份（重复）
+        let mut completed: Option<(String, u64, Vec<u8>)> = None;
+        for (seq, s) in [(1u32, &sealed[1]), (0, &sealed[0]), (0, &sealed[0])] {
+            let plain = crypto::open_symmetric(&rs.file_key, s).unwrap();
+            if let Some(done) = relay.add_chunk("t", seq, plain) {
+                completed = Some(done);
+            }
         }
-        assert_eq!(assembled.len() as u64, original.len() as u64);
+        let Some((_, _, full)) = completed else {
+            panic!("三条分片后必须完成重组");
+        };
+        assert_eq!(full, original, "乱序+重复到达也要组装出原始明文");
+
+        // 修复后的校验点：对组装结果一次性算哈希
         use sha2::Digest;
-        let actual_hex: String = rs
-            .hasher
-            .finalize()
+        let actual_hex: String = sha2::Sha256::digest(&full)
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
         assert!(
             actual_hex.eq_ignore_ascii_case(&rs.expected_sha256),
-            "中继场景最终校验必须通过"
+            "乱序+重复分片场景最终校验必须通过"
         );
     }
 
