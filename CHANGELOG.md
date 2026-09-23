@@ -10,6 +10,17 @@
 
 ## [Unreleased]
 
+### Fixed (工具链 / 门禁)
+
+- `scripts/check-mobile.sh` 在 `set -u` 下把 `$ANDROID_HOME` 裸写进 `for` 的**列表**里：
+  未导出该变量的机器上 bash 在列表展开阶段就报 `ANDROID_HOME: unbound variable` 并终止，
+  连脚本自己那句"找不到 Android NDK，请设置 ANDROID_NDK_ROOT"的报错都到不了 ⇒
+  `npm run verify:full` 第 15 步（Android 编译门禁）在此环境**永久不可用**，
+  而 NDK 其实就装在默认路径 `~/Library/Android/sdk/ndk/`。改成 `${ANDROID_HOME:-}` 后
+  实跑通过：`aarch64-linux-android` 默认 feature 与 `--features bluetooth` 两轮均 0 warning。
+  这条顺带补上了"阶段 3 的 Rust 改动在 Android target 上编得过"的取证（桌面口径的
+  `cargo test --lib` 看不见那段代码，正是该门禁当初存在的理由）。
+
 ## [4.29.6] - 2026-09-23
 
 ### Fixed (2026-09-23 稳定性审计 阶段 3 · 协议与文件可靠性)

@@ -25,7 +25,12 @@ WITH_BT=0
 # ---- 找 NDK ----
 NDK_ROOT="${ANDROID_NDK_ROOT:-}"
 if [ -z "$NDK_ROOT" ]; then
-  for base in "$HOME/Library/Android/sdk/ndk" "$ANDROID_HOME/ndk" "/usr/local/share/android-ndk"; do
+  # ⚠️ `$ANDROID_HOME` 必须写成 `${ANDROID_HOME:-}`：本脚本开了 `set -u`，而未导出的变量
+  # 在 `for` 的**列表展开阶段**就会让脚本当场死掉
+  # （`ANDROID_HOME: unbound variable`），连下面那句"找不到 NDK，请设置 ANDROID_NDK_ROOT"
+  # 的自带报错都到不了 —— 于是 NDK 其实装在 `~/Library/Android/sdk/ndk/` 的机器
+  # （只导出了 ANDROID_NDK_ROOT 或干脆靠默认路径）也照样跑不了这道门禁。
+  for base in "$HOME/Library/Android/sdk/ndk" "${ANDROID_HOME:-}/ndk" "/usr/local/share/android-ndk"; do
     [ -d "$base" ] || continue
     NDK_ROOT="$base/$(ls "$base" | sort -V | tail -1)"
     break
