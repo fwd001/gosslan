@@ -363,6 +363,9 @@ export const zhCN: MessageDict = {
   "chat.header.share": "共享目录",
   "chat.selfChat": "和自己聊天",
   "chat.selfChatHint": "记笔记、传文件给自己",
+  // 事件监听绑定失败（实时消息/回执/在线状态全部不可用）：必须显式提示重启，
+  // 否则界面"看起来正常"却永远收不到任何事件（2026-09-23 审计 1.6）
+  "chat.eventBindFail": "实时消息监听启动失败，新消息可能收不到；请重启应用",
   // 自聊只支持文本（用户 2026-09-16）：粘贴/拖入图片或文件时给明确提示，不静默吞掉
   "chat.selfChatTextOnly": "和自己聊天暂不支持图片或文件",
   "chat.header.deviceDesktop": "对方设备：电脑",
@@ -1323,6 +1326,7 @@ export const enUS: MessageDict = {
   "chat.header.share": "Shared Folder",
   "chat.selfChat": "Chat with myself",
   "chat.selfChatHint": "Notes & files to yourself",
+  "chat.eventBindFail": "Failed to start live message listeners; new messages may not arrive. Please restart the app.",
   "chat.selfChatTextOnly": "Chat-with-myself doesn't support images or files yet",
   "chat.header.deviceDesktop": "Peer device: Desktop",
   "chat.header.deviceMobile": "Peer device: Mobile",

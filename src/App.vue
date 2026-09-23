@@ -69,8 +69,20 @@ onMounted(async () => {
     // `app.init()`：只读偏好/设备/网卡（两个窗口都要）。
     // `chat.init()`：会话、好友、网络事件监听 —— **只在主窗口**跑，
     // 在独立窗口重复初始化会注册第二份监听并重复触发后端动作。
-    await app.init();
-    await chat.init();
+    //
+    // 两者各自兜底（2026-09-23 审计 1.6）：app.init 失败（如 settings IPC 抖动）
+    // 不得跳过 chat.init —— 那会让主窗口**永远收不到任何事件**（"活着但功能全死"，
+    // 需重启恢复）；chat.init 失败也要留痕而不是静默吞进 unhandled rejection。
+    try {
+      await app.init();
+    } catch (e) {
+      console.error("[app] app.init 失败（偏好/设备可能未加载，继续启动）", e);
+    }
+    try {
+      await chat.init();
+    } catch (e) {
+      console.error("[app] chat.init 失败", e);
+    }
   } finally {
     // 真实数据就绪 → 让首屏骨架淡出（index.html 内联骨架，由 src/boot/boot.ts 撤除）。
     // 放在 finally：init 失败也要撤，否则骨架会一直挡在界面上。

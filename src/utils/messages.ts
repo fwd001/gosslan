@@ -83,6 +83,31 @@ export function preserveDeliveryStatus(
 }
 
 /**
+ * `loadMessages` 的 DB 快照只含库里已有的行；两类记录**只存在于内存**：
+ * - `tmp-*`：send() 的乐观气泡（invoke 在途 / 已失败待重发）
+ * - `file-failed-*`：sendFileTo 失败时插入的 failed 占位
+ *
+ * 整表覆盖会把它们吞掉 —— 用户看到"刚发的消息凭空消失"，以为失败而重发
+ * （重复消息）；invoke 返回后 replaceMessage 又找不到列表项 → 真实记录
+ * 也静默丢失（后端不回声 message-received，无第二路径补回）。
+ * 把这些本地独有记录按原顺序追加到快照尾部（它们的 seq 是 MAX_SAFE_INTEGER，
+ * 理应排在最新一页之后）。见 2026-09-23 审计 1.3。
+ */
+export function appendLocalOnly(
+  fresh: MessageRecord[],
+  local: MessageRecord[],
+): MessageRecord[] {
+  if (local.length === 0) return fresh;
+  const freshIds = new Set(fresh.map((m) => m.msg_id));
+  const localOnly = local.filter(
+    (m) =>
+      !freshIds.has(m.msg_id) &&
+      (m.msg_id.startsWith("tmp-") || m.msg_id.startsWith("file-failed-")),
+  );
+  return localOnly.length ? [...fresh, ...localOnly] : fresh;
+}
+
+/**
  * 乐观记录（`tmp-*` msg_id）经 rAF 批量队列落地，而 invoke 可能先返回真实记录；
  * 此时按 msg_id 就地替换会落空，真实记录一旦被丢弃气泡就永久停在「发送中」。
  * 挂起的替换在批次落地这一唯一入口处完成。

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   applyIncomingToConversations,
   applyReplacements,
+  appendLocalOnly,
   furthestStatus,
   mergeMessages,
   messageMentionsAll,
@@ -277,6 +278,57 @@ test("会话重查快照不得退回已推进的送达状态", () => {
 test("空本地缓存时原样返回重查结果", () => {
   const fresh = [msg({ msg_id: "m1", status: "sent" })];
   assert.equal(preserveDeliveryStatus(fresh, []), fresh);
+});
+
+// ==================== 快照覆盖 vs 本地独有记录（审计 1.3） ====================
+
+test("loadMessages 快照覆盖不得吞掉在途乐观气泡（tmp-*）", () => {
+  // 发送在途期间发生一次 loadMessages：DB 快照里还没有这条消息
+  const fresh = [msg({ msg_id: "m1", seq: 1 })];
+  const local = [
+    msg({ msg_id: "m1", seq: 1 }),
+    msg({ msg_id: "tmp-1", seq: Number.MAX_SAFE_INTEGER, status: "sending" }),
+  ];
+  const out = appendLocalOnly(preserveDeliveryStatus(fresh, local), local);
+  assert.deepEqual(
+    out.map((m) => m.msg_id),
+    ["m1", "tmp-1"],
+    "乐观气泡被吞 → 用户以为发送失败而重发（重复消息）",
+  );
+  assert.equal(out[1].status, "sending");
+});
+
+test("快照覆盖不得吞掉文件失败占位（file-failed-*）", () => {
+  const fresh = [msg({ msg_id: "m1", seq: 1 })];
+  const local = [
+    msg({ msg_id: "file-failed-1", kind: "file", seq: Number.MAX_SAFE_INTEGER, status: "failed" }),
+  ];
+  const out = appendLocalOnly(preserveDeliveryStatus(fresh, local), local);
+  assert.deepEqual(out.map((m) => m.msg_id), ["m1", "file-failed-1"]);
+});
+
+test("已替换为真实记录的乐观气泡不得复活（tmp 已不在 local）", () => {
+  // 正常时序：invoke 返回 → replaceMessage 把 tmp-* 换成真实 msg_id
+  const fresh = [msg({ msg_id: "m1", seq: 1 })];
+  const local = [msg({ msg_id: "m1", seq: 1, status: "delivered" })];
+  const out = appendLocalOnly(preserveDeliveryStatus(fresh, local), local);
+  assert.deepEqual(out.map((m) => m.msg_id), ["m1"]);
+});
+
+test("已在快照里的消息不得被追加成重复行", () => {
+  const fresh = [msg({ msg_id: "m1", seq: 1 })];
+  const local = [msg({ msg_id: "m1", seq: 1, status: "read" })];
+  const out = appendLocalOnly(preserveDeliveryStatus(fresh, local), local);
+  assert.equal(out.length, 1, "fresh 里已有的 msg_id 不该从 local 再追加一份");
+});
+
+test("非本地独有记录不得借快照覆盖复活（例如已被删除的 DB 行）", () => {
+  // local 里有、fresh 里没有、且不是 tmp-*/file-failed-* 前缀：说明它已被
+  // 删除或本就不该保留 —— 不得追加回来（否则已删消息反复复活）。
+  const fresh = [msg({ msg_id: "m1", seq: 1 })];
+  const local = [msg({ msg_id: "m1", seq: 1 }), msg({ msg_id: "m-gone", seq: 2 })];
+  const out = appendLocalOnly(preserveDeliveryStatus(fresh, local), local);
+  assert.deepEqual(out.map((m) => m.msg_id), ["m1"]);
 });
 
 // ==================== 媒体 path 回填 vs stale 快照 ====================

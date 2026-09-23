@@ -4,6 +4,7 @@ import { api, bindEvents } from "@/api";
 import {
   applyIncomingToConversations,
   applyReplacements,
+  appendLocalOnly,
   furthestStatus,
   mergeMessages,
   messageMentionsAll,
@@ -326,19 +327,29 @@ export const useChatStore = defineStore("chat", () => {
   function scheduleFlush() {
     if (flushScheduled) return;
     flushScheduled = true;
-    const flush = () => {
-      flushScheduled = false;
-      const batch = pending;
-      pending = [];
-      void applyIncoming(batch);
-    };
     // 后台/遮挡窗口的 requestAnimationFrame 会被浏览器暂停，导致消息滞留不渲染；
     // 窗口不可见时退回 setTimeout，保证任何状态下都能入列渲染。
     if (!document.hidden && typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(flush);
+      requestAnimationFrame(flushNow);
+      // 安全网（2026-09-23 审计 1.7）：rAF 回调可能在个别平台行为下丢失（既不投递
+      // 也不报错），flushScheduled 一旦卡在 true，后续所有 enqueueMessage 都被
+      // 开头的守卫挡回 —— 消息永久不渲染且无恢复手段、pending 无上限堆积。
+      // 1s 后仍未落地就强制冲刷；rAF 正常时这里是幂等 no-op（flag 已被置回）。
+      setTimeout(() => {
+        if (flushScheduled) flushNow();
+      }, 1000);
     } else {
-      setTimeout(flush, 0);
+      setTimeout(flushNow, 0);
     }
+  }
+
+  /** 立即冲刷批量队列（幂等：无挂起项时只复位 flag）。 */
+  function flushNow() {
+    flushScheduled = false;
+    if (pending.length === 0) return;
+    const batch = pending;
+    pending = [];
+    void applyIncoming(batch);
   }
 
   async function applyIncoming(raw: MessageRecord[]) {
@@ -438,6 +449,14 @@ export const useChatStore = defineStore("chat", () => {
 
   function enqueueMessage(rec: MessageRecord) {
     pending.push(rec);
+    // 批量队列软上限（审计 1.7）：正常情况下 rAF 一帧内就会清空；堆积到这个量级
+    // 说明 flush 调度已经失灵（或事件风暴），必须留痕 —— 无告警时它只是安静地吃内存。
+    if (pending.length === 5000) {
+      console.error("[chat] 消息批量队列堆积 5000 条：flush 调度疑似失灵", {
+        flushScheduled,
+        hidden: document.hidden,
+      });
+    }
     scheduleFlush();
   }
 
@@ -670,8 +689,12 @@ export const useChatStore = defineStore("chat", () => {
   const PAGE_SIZE = 100;
   const MAX_PAGES = 10;
   const pagesLoaded = new Map<string, number>();
-  // 加载竞态守卫：快速切换会话时丢弃过期响应
-  let loadSeq = 0;
+  // 加载竞态守卫：快速切换会话时丢弃过期响应。**按会话分桶**：
+  // 全局单计数会让「非活跃会话的重查」把此刻飞行中的活跃会话加载/翻页
+  // 一并判为过期（onMessageStatusChanged 会对任意含该 msg_id 的会话触发
+  // loadMessages）→ 活跃会话 messages[convId] 永远 undefined，骨架永久转圈
+  // （2026-09-23 审计 1.4）。会话淘汰时一并清理（见 enforceMessageCacheBound）。
+  const loadSeqs = new Map<string, number>();
 
   // ---------------- 消息缓存上界：限制「同时缓存多少个会话」 ----------------
   //
@@ -708,6 +731,7 @@ export const useChatStore = defineStore("chat", () => {
       delete messages.value[cid];
       // 分页簿记一并清掉：切回该会话时 loadMessages 会重新从 DB 取最新一页
       pagesLoaded.delete(cid);
+      loadSeqs.delete(cid);
     }
     // 同步收缩 LRU，避免它自身无限增长
     for (let i = cacheOrder.length - 1; i >= 0; i--) {
@@ -725,7 +749,8 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function loadMessages(convId: string) {
-    const seq = ++loadSeq;
+    const seq = (loadSeqs.get(convId) ?? 0) + 1;
+    loadSeqs.set(convId, seq);
     touchCacheOrder(convId);
     // 打开会话应先加载「最新一页」，而不是最旧一页；否则底部会停在第 100 条历史，
     // 最新消息与文件都要靠后续滚动才出现。
@@ -740,11 +765,15 @@ export const useChatStore = defineStore("chat", () => {
       if (messages.value[convId] === undefined) messages.value[convId] = [];
       return;
     }
-    if (seq !== loadSeq || activeConv.value !== convId) return;
+    if (seq !== (loadSeqs.get(convId) ?? 0) || activeConv.value !== convId) return;
     // 快照可能取自 Ack / peer-read 落库之前：与查询期间已推进的内存状态合并，
     // 否则刚亮的绿勾会被这份旧快照退回「发送中」。
     const prev = messages.value[convId];
-    messages.value[convId] = prev ? preserveDeliveryStatus(list, prev) : list;
+    // 乐观气泡（tmp-*）/ 文件失败占位（file-failed-*）只存在于内存：快照整表
+    // 覆盖会把它们吞掉 → 已发出的消息"凭空消失"，用户以为失败而重发（审计 1.3）。
+    messages.value[convId] = prev
+      ? appendLocalOnly(preserveDeliveryStatus(list, prev), prev)
+      : list;
     pagesLoaded.set(convId, 1);
   }
 
@@ -752,13 +781,13 @@ export const useChatStore = defineStore("chat", () => {
   async function loadMoreMessages(convId: string) {
     const pages = pagesLoaded.get(convId) ?? 1;
     if (pages >= MAX_PAGES) return;
-    const seq = loadSeq;
+    const seq = loadSeqs.get(convId) ?? 0;
     const total = await api.getMessageCount(convId);
     if (pages * PAGE_SIZE >= total) return;
     // 当前已加载最新 pages 页，继续向更早方向取一页。
     const offset = Math.max(0, total - (pages + 1) * PAGE_SIZE);
     const older = await api.getMessages(convId, PAGE_SIZE, offset);
-    if (seq !== loadSeq || older.length === 0) return;
+    if (seq !== (loadSeqs.get(convId) ?? 0) || older.length === 0) return;
     const existing = messages.value[convId] ?? [];
     messages.value[convId] = mergeMessages(existing, older);
     pagesLoaded.set(convId, pages + 1);
@@ -1477,26 +1506,13 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function init() {
-    await Promise.all([
-      refreshFriends(),
-      refreshConversations(),
-      refreshPending(),
-      refreshGroups(),
-      refreshTransfers(),
-      refreshPeers(),
-      refreshTopology(),
-      refreshAnnouncements(),
-    ]);
-    // 恢复上次打开的会话（若仍存在）。HIG State Restoration：重启后回到上次离开的地方。
-    // 用 void 触发：不阻塞 init，也避免其异步失败拖垮启动。
-    try {
-      const last = localStorage.getItem(LAST_CONV_KEY);
-      if (last && conversations.value.some((c) => c.id === last)) {
-        void openConversation(last);
-      }
-    } catch {
-      /* localStorage 不可用则跳过恢复 */
-    }
+    // ⚠️ 事件绑定必须先于一切初始刷新（2026-09-23 审计 1.5）：Tauri `listen`
+    // 不回放历史事件 —— 排在刷新之后绑定，启动窗口期（"打开就收消息"是局域网
+    // 高频场景）emit 的系统通知/新消息/在线状态会**永久丢失**，且无任何纠正路径。
+    // bindEvents 内部是并行 listen，调用瞬间 IPC 即发出，不等往返即可开始拉数据。
+    //
+    // 事件绑定自身也要兜底（审计 1.6）：不 catch 的话它 reject 会拖着 init 一起
+    // reject —— 界面看起来正常，却永远收不到任何事件（"活着但功能全死"）。
     // 会话打开期间收到新消息：去抖标记已读（同时把已读回执发给对方 → 对方绿勾）
     let markReadTimer: ReturnType<typeof setTimeout> | null = null;
     const debounceMarkRead = (convId: string) => {
@@ -1513,7 +1529,7 @@ export const useChatStore = defineStore("chat", () => {
         });
       }, 300);
     };
-    await bindEvents({
+    bindEvents({
       onPeers: (p) => {
         peers.value = p;
         const onlineIds = new Set(p.map((x) => x.device_id));
@@ -1631,10 +1647,12 @@ export const useChatStore = defineStore("chat", () => {
       onMessageStatusChanged: (msgId) => {
         // 后端 emit 的状态变更事件 —— 我们直接从数据库拉最新状态覆盖本地
         // 目前只在 cancel_file_transfer 里发（cancel 后 mark failed，前端同步一下）
-        const convId = Object.keys(messages.value).find(cid =>
-          messages.value[cid]?.some(m => m.msg_id === msgId)
-        );
-        if (convId) {
+        // 只处理**活跃**会话：loadMessages 的结果对非活跃会话必被 activeConv
+        // 守卫丢弃（两次 IPC 纯浪费），而且切换回来时 openConversation 会重查。
+        // （修复前它还会顺带把全局 loadSeq +1，取消活跃会话飞行中的加载 →
+        //   骨架永久转圈，见 2026-09-23 审计 1.4。）
+        const convId = activeConv.value;
+        if (convId && messages.value[convId]?.some((m) => m.msg_id === msgId)) {
           void loadMessages(convId);
         }
       },
@@ -1662,7 +1680,52 @@ export const useChatStore = defineStore("chat", () => {
       onNotificationClicked: (p) => {
         routeNotificationClick(p.type, p.conv_id);
       },
+    }).catch((e) => {
+      // 见 init 开头的说明：不兜底的话 init 会 reject，而骨架照常撤除 ——
+      // 用户看到一个"正常"的界面，却永远收不到任何事件。必须留痕 + 可感知。
+      console.error("[chat] bindEvents 失败：实时事件不可用", e);
+      app.toast(t("chat.eventBindFail"), "error");
     });
+
+    // 初始刷新：每个独立兜底（2026-09-23 审计 1.6）—— 任一失败只影响该数据源
+    // （对应事件/下次刷新会补上），不得阻断其他刷新，更不得阻断已注册的监听。
+    const names = [
+      "refreshFriends",
+      "refreshConversations",
+      "refreshPending",
+      "refreshGroups",
+      "refreshTransfers",
+      "refreshPeers",
+      "refreshTopology",
+      "refreshAnnouncements",
+    ] as const;
+    const results = await Promise.allSettled([
+      refreshFriends(),
+      refreshConversations(),
+      refreshPending(),
+      refreshGroups(),
+      refreshTransfers(),
+      refreshPeers(),
+      refreshTopology(),
+      refreshAnnouncements(),
+    ]);
+    results.forEach((r, i) => {
+      if (r.status === "rejected") {
+        console.error(`[chat] 初始刷新 ${names[i]} 失败`, r.reason);
+      }
+    });
+
+    // 恢复上次打开的会话（若仍存在）。HIG State Restoration：重启后回到上次离开的地方。
+    // 用 void 触发：不阻塞 init，也避免其异步失败拖垮启动。
+    try {
+      const last = localStorage.getItem(LAST_CONV_KEY);
+      if (last && conversations.value.some((c) => c.id === last)) {
+        void openConversation(last);
+      }
+    } catch {
+      /* localStorage 不可用则跳过恢复 */
+    }
+
     // 移动端注册通知动作类别（「标记已读」按钮）。桌面端无此能力（Web Notification 不支持按钮），
     // 命令也不存在，故只对移动端调用。语言切换后按钮文案不随动（原生注册一次），可接受。
     if (app.isMobile) {
@@ -1716,7 +1779,10 @@ export const useChatStore = defineStore("chat", () => {
     // 窗口重新可见：补发当前会话已读回执 + 冲刷后台期间滞留的消息批次
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) return;
-      if (pending.length) scheduleFlush();
+      // 强制冲刷而不是 scheduleFlush()（2026-09-23 审计 1.7）：后者会被
+      // `if (flushScheduled) return` 挡回 —— rAF 在后台被暂停/丢失时 flag 卡在
+      // true，兜底就永远是死代码。flushNow 幂等且立即生效。
+      if (pending.length) flushNow();
       // 同 `debounceMarkRead`：回到前台也要确认"聊天视图真的可见"才补发已读回执
       if (activeConv.value && app.chatVisible) {
         void api.markRead(activeConv.value).then(() => {
