@@ -2500,12 +2500,14 @@ async fn connect_to_peer(
         cancel_rx,
     ));
     flush_outbox(state, &peer_id).await;
+    // 群密钥必须**先于**群消息补发（2026-09-24 RC2）：`handle_gossip` 在解密之前就把 msg_id
+    // 登进去重表 ⇒ 密钥后到的那一条已经被"见过"挡掉，之后再重发多少次都没人消费。
+    requeue_group_keys_for_peer(state, &peer_id);
+    flush_pending_group_keys(state, &peer_id).await;
     flush_group_outbox(state, &peer_id).await;
     flush_pending_reads(state, &peer_id).await;
     flush_pending_group_reads(state, &peer_id).await;
     crate::commands::flush_pending_files(state, &peer_id).await;
-    // 主动拨号建链完成：补发此前因无 link 而未送达的群密钥
-    flush_pending_group_keys(state, &peer_id).await;
     // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
     crate::commands::flush_pending_group_files(state, &peer_id).await;
     DialOutcome::Connected
@@ -2821,12 +2823,13 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             maybe_update_friend(state, &device_id, &nickname, avatar);
             flush_outbox(state, &device_id).await;
+            // 同建链路径：群密钥先于群消息，且每次 Hello 都重新登记一遍（幂等、帧很小）。
+            requeue_group_keys_for_peer(state, &device_id);
+            flush_pending_group_keys(state, &device_id).await;
             flush_group_outbox(state, &device_id).await;
             flush_pending_reads(state, &device_id).await;
             flush_pending_group_reads(state, &device_id).await;
             crate::commands::flush_pending_files(state, &device_id).await;
-            // 链路刚建立：补发此前因无 link 而未送达的群密钥
-            flush_pending_group_keys(state, &device_id).await;
             // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
             crate::commands::flush_pending_group_files(state, &device_id).await;
             // 好友申请没有回执：建链补全时补发一次（用户真机：链路抖动丢过一次，
@@ -2933,11 +2936,13 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             touch_peer(state, &device_id).await;
             flush_outbox(state, &device_id).await;
+            // 心跳也是一次"链路确实活着"的重发机会（见 `requeue_group_keys_for_peer` 的注释）。
+            requeue_group_keys_for_peer(state, &device_id);
+            flush_pending_group_keys(state, &device_id).await;
             flush_group_outbox(state, &device_id).await;
             flush_pending_reads(state, &device_id).await;
             flush_pending_group_reads(state, &device_id).await;
             crate::commands::flush_pending_files(state, &device_id).await;
-            flush_pending_group_keys(state, &device_id).await;
             crate::commands::flush_pending_group_files(state, &device_id).await;
             // 心跳 = 链路确实活着。这一帧丢了的好友申请/同意回执在这里补发，
             // 不必等到链路再断一次、重新建链（真机：点了加好友要等几分钟才有反应）。
@@ -6110,6 +6115,48 @@ async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
 
 /// 冲刷指定 peer 的待发群密钥：仅处理该 peer，发送成功即移除登记项；
 /// link 仍不可用则保留，等下一次 flush（Hello / 心跳 / 建链）重试。
+/// 纯函数：这个 peer 属于哪些群 ⇒ 该给谁重发群密钥。
+///
+/// 判据单拎出来是为了可测：`members` 里有没有他，是唯一的事实（不看"是否已发过"，
+/// 因为下面这条要的就是"每次都确保送到"）。
+pub(crate) fn group_ids_containing(groups: &[crate::state::Group], peer_id: &str) -> Vec<String> {
+    let mut ids: Vec<String> = groups
+        .iter()
+        .filter(|g| g.members.iter().any(|m| m == peer_id))
+        .map(|g| g.id.clone())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// 链路建立 / Hello / 心跳时，把该 peer 所属的群**全部重新登记**一遍密钥。
+///
+/// 为什么必须重发而不是"发出去过就算了"（2026-09-24 真机群不同步的根因之一）：
+/// `try_send` 返回 Ok 只代表帧进了那条链路的 mpsc 队列（A1-L1 已经把这个教训写进过注释），
+/// `flush_pending_group_keys` 据此清除登记 ⇒ 链路随即死掉时 GroupKey 跟着队列一起没了。
+/// 而 GroupKey **没有回执帧**，旧代码只在"公钥变化 / 新节点"时才再发一次 ⇒ 密钥永久缺席，
+/// 之后每一条群消息都因解不开被静默丢弃（且 msg_id 已进去重表，重发多少次都没人消费）。
+/// 接收侧 `handle_group_key` 是幂等的（upsert 群与密钥），所以每次建链多一发小帧
+/// 远比"这个群永远不同步"便宜。
+fn requeue_group_keys_for_peer(state: &AppState, peer_id: &str) {
+    let ids = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let groups = db::list_groups(&dbc).unwrap_or_default();
+        group_ids_containing(&groups, peer_id)
+    };
+    if ids.is_empty() {
+        return;
+    }
+    let mut pending = state
+        .pending_group_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let set = pending.entry(peer_id.to_string()).or_default();
+    for gid in ids {
+        set.insert(gid);
+    }
+}
+
 pub async fn flush_pending_group_keys(state: &AppState, peer_id: &str) {
     let group_ids: Vec<String> = {
         let pending = state
@@ -6459,7 +6506,7 @@ pub fn spawn_outbox_sweeper(
 
             let now = db::now_ms();
             let deadline_single = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
-            let deadline_group = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
+            let deadline_group = now - crate::db::GROUP_OUTBOX_FAIL_DEADLINE_MS;
             let deadline_file = now - crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS;
             // 可达性快照：每 tick 取一次 links 键集，三条队列复用。
             // 此前每个候选行各抢一次 links 锁（500 离线行 = 500 次/tick，自审建议#4）；
@@ -6527,10 +6574,12 @@ pub fn spawn_outbox_sweeper(
             }
             for (msg_id, (_group_id, rows)) in per_msg {
                 let all_give_up = rows.iter().all(|(peer, created)| {
+                    // 群走**自己的**窗口（30min，见 `GROUP_OUTBOX_FAIL_DEADLINE_MS` 的理由）：
+                    // 群 outbox 行是群消息唯一的补发载体，删早了就是永久丢。
                     db::should_fail_expired(
                         is_reachable(peer),
                         now - created,
-                        crate::db::OUTBOX_FAIL_DEADLINE_MS,
+                        crate::db::GROUP_OUTBOX_FAIL_DEADLINE_MS,
                         crate::db::OUTBOX_OFFLINE_HOLD_MS,
                     )
                 });
@@ -6709,6 +6758,35 @@ pub async fn flush_pending_group_reads(state: &AppState, peer_id: &str) {
 mod tests {
     use super::*;
     use crate::gossip_engine::GossipEngine;
+
+    /// 「该给谁重发群密钥」的判据（2026-09-24 RC2：链路抖动后 GroupKey 永不重发）。
+    #[test]
+    fn group_ids_containing_picks_only_actual_members() {
+        let groups = vec![
+            crate::state::Group {
+                id: "g2".into(),
+                name: "b".into(),
+                creator: "me".into(),
+                members: vec!["me".into(), "p1".into()],
+            },
+            crate::state::Group {
+                id: "g1".into(),
+                name: "a".into(),
+                creator: "me".into(),
+                members: vec!["me".into(), "p2".into()],
+            },
+        ];
+        // 只含"成员里有他"的那几个，且**顺序稳定**（登记进 HashSet 后靠它保证重试次序可预期）
+        assert_eq!(group_ids_containing(&groups, "p1"), vec!["g2".to_string()]);
+        assert_eq!(group_ids_containing(&groups, "p2"), vec!["g1".to_string()]);
+        // 我自己在每个群里 ⇒ 拿到全部（排序后）
+        assert_eq!(
+            group_ids_containing(&groups, "me"),
+            vec!["g1".to_string(), "g2".to_string()]
+        );
+        // 陌生人 ⇒ 空，调用方据此完全不碰 pending 表
+        assert!(group_ids_containing(&groups, "nobody").is_empty());
+    }
 
     /// **群信封的"可消费"判据**（2026-09-13 审计的真缺陷，必须钉住）。
     ///

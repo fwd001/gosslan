@@ -22,6 +22,15 @@ pub const OUTBOX_FAIL_DEADLINE_MS: i64 = 120_000;
 /// 不是补发期限。
 pub const OUTBOX_OFFLINE_HOLD_MS: i64 = 7 * 24 * 3600 * 1000;
 
+/// 群 outbox 行的判死窗口：**30 分钟**，不是单聊那 120 秒。
+///
+/// 为什么单聊可以 120s 而群不行（2026-09-24 真机：大文件失败之后群聊一直不同步）：
+/// 群消息是"每个成员一行、按成员各自判可达"，一条行只有在**所有成员都该放弃**时整条消息才 failed；
+/// 而 120s 这个窗口比"链路抖动 + 群密钥重发"的收敛时间还短 —— 表现是行被删、消息置 failed，
+/// 此后无论密钥什么时候补到，那条内容都不会再同步给任何人（**单聊**有直发 outbox 与内容拉取
+/// 两条路，群只有这一行）。30min 与文件 outbox 同量级：够链路抖完，也不会把僵尸行留到看不见的地方。
+pub const GROUP_OUTBOX_FAIL_DEADLINE_MS: i64 = 30 * 60 * 1000;
+
 /// sweeper 判定：一条已过 `OUTBOX_FAIL_DEADLINE_MS` 的候选行现在该不该判 failed。
 ///
 /// 可达（当前有 TCP 链路）⇒ 等了至少 120s 仍无 Ack，再等也没有意义 → 放弃；
@@ -105,6 +114,45 @@ mod offline_queue_tests {
     // 注意：本文件经 include! 拼进 db 模块，模块名在 db 作用域里必须全局唯一
     // （favorites_tests.rs 已经占了 `tests`）。
     use super::*;
+
+    /// 群 outbox 的判死窗口必须比单聊长（2026-09-24 真机：大文件失败之后群聊一直不同步）。
+    ///
+    /// 钉的是"120 秒这一档**不再适用于群**"：群 outbox 行是群消息唯一的补发载体，
+    /// 删早了以后就算群密钥补到了也没人再消费那条内容（单聊还有直发 outbox 与内容拉取两条路）。
+    #[test]
+    fn group_rows_survive_the_link_flap_window_that_kills_single_chats() {
+        use std::time::Duration;
+        assert!(
+            GROUP_OUTBOX_FAIL_DEADLINE_MS > OUTBOX_FAIL_DEADLINE_MS,
+            "群窗口必须严格长于单聊窗口，否则这条改动等于没做"
+        );
+        let flap = OUTBOX_FAIL_DEADLINE_MS + 1; // 刚过单聊窗口：单聊该放弃，群不该
+        assert!(should_fail_expired(true, flap, OUTBOX_FAIL_DEADLINE_MS, OUTBOX_OFFLINE_HOLD_MS));
+        assert!(
+            !should_fail_expired(
+                true,
+                flap,
+                GROUP_OUTBOX_FAIL_DEADLINE_MS,
+                OUTBOX_OFFLINE_HOLD_MS
+            ),
+            "链路抖动 3 分钟内就删群行 ⇒ 那条群消息永久无人补发"
+        );
+        // 到点仍然要放弃：不许把窗口改成"永不放弃"
+        let past = GROUP_OUTBOX_FAIL_DEADLINE_MS + 1;
+        assert!(should_fail_expired(
+            true,
+            past,
+            GROUP_OUTBOX_FAIL_DEADLINE_MS,
+            OUTBOX_OFFLINE_HOLD_MS
+        ));
+        // 离线对端仍按 7 天保留（这条改动不许顺手削弱离线补发）
+        assert!(!should_fail_expired(
+            false,
+            Duration::from_secs(86_400).as_millis() as i64,
+            GROUP_OUTBOX_FAIL_DEADLINE_MS,
+            OUTBOX_OFFLINE_HOLD_MS
+        ));
+    }
 
     #[test]
     fn offline_peer_is_held_while_reachable_peer_fails_at_deadline() {

@@ -2944,6 +2944,46 @@ mod tests {
         }
     }
 
+    /// 群密钥必须**先于**群消息补发，且每次建链 / Hello / 心跳都重新登记（2026-09-24 RC2）。
+    ///
+    /// 三个触发点顺序错任何一处，表现都一样：`handle_gossip` 在解密之前就把 msg_id 登进
+    /// 去重表 ⇒ 密钥后到时那条群消息已经被"见过"挡掉，之后 group_outbox 重发多少次都
+    /// 没有消费者（而且行还会在窗口到期时被删掉）。这条只能钉接线 —— 判据本身没有纯函数，
+    /// 是三步调用的先后。
+    #[test]
+    fn group_keys_always_precede_group_messages() {
+        let flat = code_flat(&crate::network::transport_src_for_guards());
+        // 只数**调用**（`state,&xxx)` 这种实参形状）：函数定义那行 `state: &AppState` 也含同样的前缀，
+        // 按前缀数会多数一次 ⇒ 判据必须是"调用点"的完整形状。
+        let calls = flat
+            .matches("requeue_group_keys_for_peer(state,&peer_id);")
+            .count()
+            + flat
+                .matches("requeue_group_keys_for_peer(state,&device_id);")
+                .count();
+        assert_eq!(
+            calls, 3,
+            "三处触发点（拨号建链 / Hello / 心跳）都要先重新登记密钥；少一处 = 那条路径上\\
+             链路抖动丢过的 GroupKey 永远不会再发（GroupKey 没有回执帧）"
+        );
+        // 每一处 flush_group_outbox 之前必须已经有 flush_pending_group_keys（同一串里）
+        let mut seen_ok = 0;
+        for (i, _) in flat.match_indices("flush_group_outbox(state,") {
+            // 按字节回退窗口会切进多字节字符里直接 panic ⇒ 必须先吸附到字符边界
+            let raw = i.saturating_sub(220);
+            let start = (raw..i).find(|&k| flat.is_char_boundary(k)).unwrap_or(i);
+            let window = &flat[start..i];
+            if window.contains("flush_pending_group_keys(state,") {
+                seen_ok += 1;
+            }
+        }
+        assert_eq!(
+            seen_ok,
+            flat.matches("flush_group_outbox(state,").count(),
+            "有一处群消息补发排在群密钥之前 ⇒ 密钥没到的那条消息会被去重表永久挡掉"
+        );
+    }
+
     /// attempt epoch 的**接线**（2026-09-23 真机 600MB 根治，用户拍板选 B）。
     ///
     /// 判据本身有单测（`frame_is_current`、协议双向兼容），这里钉的是接线是否四处都在：

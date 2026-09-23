@@ -3200,6 +3200,43 @@ CASES: list[Case] = [
         expect_fail_hint="不门控就等于对老端发新语义",
         tags=["rust", "file", "stability", "new-guards", "file-epoch"],
     ),
+    # ---------------- 群同步：密钥必须先于群消息（2026-09-24 RC2） ----------------
+    Case(
+        name="心跳路径退回「群消息先于群密钥」—— 顺序守卫必须红",
+        why="三处补发点（拨号建链 / Hello / 心跳）的先后是这条链唯一的保护：\n"
+        "     `handle_gossip` 在解密**之前**就把 msg_id 登进去重表，密钥后到时那一条\n"
+        "     已经被「见过」挡掉 ⇒ 之后 group_outbox 重发多少次都没有消费者。\n"
+        "     注入用带注释锚点的完整块（同一形状在 Hello 与心跳两处都出现，\n"
+        "     短锚点会命中 2 次被脚本拒掉 —— 这本身就是「锚点必须唯一」那条纪律）。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            """            // 心跳也是一次"链路确实活着"的重发机会（见 `requeue_group_keys_for_peer` 的注释）。
+            requeue_group_keys_for_peer(state, &device_id);
+            flush_pending_group_keys(state, &device_id).await;
+            flush_group_outbox(state, &device_id).await;""",
+            """            // 心跳也是一次"链路确实活着"的重发机会（见 `requeue_group_keys_for_peer` 的注释）。
+            flush_group_outbox(state, &device_id).await;
+            requeue_group_keys_for_peer(state, &device_id);
+            flush_pending_group_keys(state, &device_id).await;""",
+        )],
+        cmd=cargo("test", "--lib", "group_keys_always_precede_group_messages"),
+        cwd=TAURI,
+        expect_fail_hint="有一条群消息补发排在群密钥之前",
+        tags=["rust", "group", "stability", "new-guards", "rc2-group-sync"],
+    ),
+    Case(
+        name="少一处重新登记群密钥（拨号建链那条被删）",
+        why="GroupKey 没有回执帧，旧代码只在「公钥变化 / 新节点」时重发 ⇒ 链路抖动把它带走后\n"
+        "     就永远不再发。修法是把「每次链路建立/Hello/心跳」都当成一次重发机会（接收侧幂等）。\n"
+        "     注入 = 删掉三处中的一处：另外两处还在，所以「调用次数」这一类弱判据会漏，\n"
+        "     必须数得到具体次数。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[("    requeue_group_keys_for_peer(state, &peer_id);\n", "")],
+        cmd=cargo("test", "--lib", "group_keys_always_precede_group_messages"),
+        cwd=TAURI,
+        expect_fail_hint="三处触发点（拨号建链 / Hello / 心跳）都要先重新登记密钥",
+        tags=["rust", "group", "stability", "new-guards", "rc2-group-sync"],
+    ),
 
 ]
 
