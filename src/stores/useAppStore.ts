@@ -100,12 +100,22 @@ export const useAppStore = defineStore("app", () => {
   const notifyEnabled = ref<boolean>(true);
   /** 通知是否显示消息正文（隐私开关；默认显示）。 */
   const notifyShowContent = ref<boolean>(true);
-  /** 权限缓存：已申请过且通过就不再弹（isPermissionGranted 每次重新查，这里只做短路）。 */
-  let notifyPermission = false;
+  /**
+   * 权限缓存三态：`null` 从没问过 / `false` 问过且**被拒** / `true` 已授权。
+   *
+   * 为什么不能只有 `false` 一个值（审计阶段 4 · 4.2）：原先"没问过"和"被拒了"都是 `false`，
+   * 于是每次通知批次都要重跑 `isPermissionGranted()` + `requestPermission()` 两次 IPC，
+   * 被拒的系统下每 1.5s 问一遍。设置页的开关走 `force` 参数重新申请（见 `setNotifyEnabled`），
+   * 所以"缓存被拒"不会把用户后来在系统设置里改判的路径堵死。
+   */
+  let notifyPermission: boolean | null = null;
 
-  /** 显式请求通知权限（供设置页开关在**用户动作上下文**里调用，符合 HIG）。 */
-  async function ensureNotifyPermission(): Promise<boolean> {
-    if (notifyPermission) return true;
+  /**
+   * 请求通知权限。`force=true` 用于**用户动作上下文**（点开关）：忽略缓存重新申请，
+   * 否则"先被拒、后来在系统设置里放开"的场景会永远拿到缓存的 false。
+   */
+  async function ensureNotifyPermission(force = false): Promise<boolean> {
+    if (!force && notifyPermission !== null) return notifyPermission;
     let granted = await isPermissionGranted();
     if (!granted) granted = (await requestPermission()) === "granted";
     notifyPermission = granted;
@@ -119,7 +129,8 @@ export const useAppStore = defineStore("app", () => {
    */
   async function setNotifyEnabled(v: boolean) {
     if (v) {
-      const ok = await ensureNotifyPermission();
+      // 用户主动点开关 ⇒ 必须真的去问一次（force），不能被"上次被拒"的缓存挡掉
+      const ok = await ensureNotifyPermission(true);
       if (!ok) {
         toast(t("notify.permissionDenied"), "error");
         return;
@@ -810,13 +821,23 @@ export const useAppStore = defineStore("app", () => {
    * 而且这条路径也要把 `channels[lan]` 一起改掉，否则设置页的开关会滞后（两处不同步的老毛病）。
    */
   async function startNetwork(bindIp: string) {
-    const prev = { online: online.value, boundIp: boundIp.value, preferredIp: preferredIp.value, channels: channels.value };
+    const prev = {
+      online: online.value,
+      boundIp: boundIp.value,
+      preferredIp: preferredIp.value,
+      channels: channels.value,
+      runtime: runtime.value,
+      present: present.value,
+    };
     online.value = true;
     boundIp.value = bindIp;
     channels.value = prev.channels.map((c) => (c.channel === "lan" ? { ...c, enabled: true } : c));
     markChannelPending("lan", true);
     try {
-      await api.startNetwork(bindIp);
+      // 命令的返回值就是新快照：后端 `notify_runtime_changed` 刻意**不回发给发起窗口**
+      // （它在返回值里已经拿到了），丢弃它 ⇒ 本窗口的 `present`/`runtime` 停更，
+      // 用户看到的就是"局域网开关都关了，头像还是在线"（审计阶段 4 · 4.2）。
+      applyRuntimeSnapshot(await api.startNetwork(bindIp));
       preferredIp.value = bindIp;
       void persistSettings();
     } catch (e) {
@@ -824,6 +845,8 @@ export const useAppStore = defineStore("app", () => {
       boundIp.value = prev.boundIp;
       preferredIp.value = prev.preferredIp;
       channels.value = prev.channels;
+      runtime.value = prev.runtime;
+      present.value = prev.present;
       throw e;
     } finally {
       markChannelPending("lan", false);
@@ -832,18 +855,26 @@ export const useAppStore = defineStore("app", () => {
 
   /** 停局域网监听。乐观更新同上：先切成"已关"，再真正停；失败回退并抛出。 */
   async function stopNetwork() {
-    const prev = { online: online.value, boundIp: boundIp.value, channels: channels.value };
+    const prev = {
+      online: online.value,
+      boundIp: boundIp.value,
+      channels: channels.value,
+      runtime: runtime.value,
+      present: present.value,
+    };
     online.value = false;
     boundIp.value = null;
     channels.value = prev.channels.map((c) => (c.channel === "lan" ? { ...c, enabled: false } : c));
     markChannelPending("lan", true);
     try {
-      await api.stopNetwork();
+      applyRuntimeSnapshot(await api.stopNetwork());
       void persistSettings();
     } catch (e) {
       online.value = prev.online;
       boundIp.value = prev.boundIp;
       channels.value = prev.channels;
+      runtime.value = prev.runtime;
+      present.value = prev.present;
       throw e;
     } finally {
       markChannelPending("lan", false);

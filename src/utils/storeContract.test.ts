@@ -268,3 +268,51 @@ test("组件侧的四个回填点必须各自过闸（旧形状一旦复现即�
     );
   }
 });
+
+// ---------------- 通知链路与图片重试（审计阶段 4 · 批次 g） ----------------
+
+test("通知批次：先出队再查权限的那条链必须有「退回队列」的 catch", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const from = st.indexOf("function flushNotifications(");
+  assert.ok(from >= 0, "找不到 flushNotifications");
+  const fn = st.slice(from, st.indexOf("\n  }\n", from) + 4);
+  assert.ok(fn.includes("notifyQueue.clear()"), "确认它仍是「先出队」的形状（判据的前提）");
+  assert.ok(
+    fn.includes("mergeNoticesInto(notifyQueue, entries)"),
+    "出队与发出之间任何一步 reject 都会让整批通知凭空消失 —— 必须有退回队列的 catch",
+  );
+});
+
+test("通知权限：必须区分「没问过」与「问过并被拒」，且用户点开关时强制重问", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useAppStore.ts"), "utf8"));
+  assert.ok(
+    /let notifyPermission: boolean \| null = null;/.test(st),
+    "三态缓存：两个值会把「被拒」和「没问过」混为一谈 ⇒ 每个通知批次都重跑两次权限 IPC",
+  );
+  assert.ok(st.includes("if (!force && notifyPermission !== null) return notifyPermission;"));
+  assert.ok(
+    st.includes("await ensureNotifyPermission(true)"),
+    "设置页开关是用户动作上下文：不能拿缓存的「上次被拒」挡死「后来在系统设置里放开」",
+  );
+});
+
+test("start/stopNetwork 必须消费后端返回的快照（发起窗口收不到 runtime-changed）", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useAppStore.ts"), "utf8"));
+  for (const call of ["api.startNetwork(bindIp)", "api.stopNetwork()"]) {
+    const at = st.indexOf(`await ${call}`);
+    assert.ok(at >= 0, `找不到 ${call} 的调用点`);
+    const line = st.slice(st.lastIndexOf("\n", at - 1) + 1, st.indexOf("\n", at + call.length));
+    assert.ok(
+      line.includes("applyRuntimeSnapshot("),
+      `${call} 的返回值被丢弃 ⇒ 本窗口 present/runtime 停更（后端刻意不回发给发起窗口）：${line.trim()}`,
+    );
+  }
+});
+
+test("图片重试不许再用查询串（blob:/data: 都不接受 query ⇒ 重试必然全败）", () => {
+  const src = stripComments(readFileSync(join(ROOT, "components", "message", "MessageImageBubble.vue"), "utf8"));
+  assert.ok(!src.includes("effectiveSrc"), "查询串版的 effectiveSrc 回来了：blob:/data: 上加 ?r=N 是无效地址");
+  assert.ok(/:key="loadKey"/.test(src), "强制重取必须靠换 <img> 元素");
+  const watchSrc = src.slice(src.indexOf("() => props.src"));
+  assert.ok(watchSrc.includes("loadKey.value = 0"), "换图时必须把上一代的换代计数归零");
+});

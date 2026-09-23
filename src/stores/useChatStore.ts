@@ -21,7 +21,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { trimOldest } from "@/utils/bounded";
 import { StaleGuard } from "@/utils/staleGuard";
 import { actionableRequests } from "@/utils/friendRequests";
-import { notificationBody } from "@/utils/notifications";
+import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/notifications";
 import { isRenderedInTimeline, isSilentKind } from "@/utils/messageKinds";
 import { todoCompletedForCreator, todoMentionsMe, type TodoImage } from "@/utils/todos";
 import { invalidateFilePreview } from "@/utils/filePreview";
@@ -124,7 +124,7 @@ export const useChatStore = defineStore("chat", () => {
   // 合并：首条消息开 1.5s 窗口，窗口内同会话只累积；窗口结束按会话各发一条
   // （count > 1 显示「…等 N 条新消息」）。窗口结束前用户已切到该会话 → 跳过。
   const NOTIFY_DEBOUNCE_MS = 1500;
-  const notifyQueue = new Map<string, { count: number; last: MessageRecord }>();
+  const notifyQueue = new Map<string, QueuedNotice>();
   let notifyTimer: number | null = null;
 
   function queueNotification(rec: MessageRecord) {
@@ -162,7 +162,10 @@ export const useChatStore = defineStore("chat", () => {
         const convId = last.conv_id;
         anyReminded = true;
         if (app.isMobile) {
-          // 移动端：plugin 通知（Android 有 actionPerformed 点击事件桥）
+          // 移动端：plugin 通知（Android 有 actionPerformed 点击事件桥）。
+          // 注意 `sendNotification` 是 fire-and-forget（返回 void，不是 Promise）⇒ 这里
+          // 没有可 catch 的失败信号，清单 4.2 说的"无 catch 丢批"其实不成立；真正会 reject
+          // 的是上面那次权限查询，它的 catch 在本函数末尾。
           const id = notifSeq++;
           notifMap.set(id, convId);
           trimOldest(notifMap, NOTIF_MAP_MAX);
@@ -194,6 +197,13 @@ export const useChatStore = defineStore("chat", () => {
           /* 个别 Linux 桌面环境不支持闪烁，忽略即可（通知本身已经发出） */
         });
       }
+    }).catch((e) => {
+      // ⚠️ 本批修的正是这里：`flushNotifications` **先 `clear()` 再 await 权限**，
+      // 而这条链原先没有 catch ⇒ `isPermissionGranted()` / `requestPermission()` 任一 IPC
+      // reject，这批通知就彻底消失（用户少收一条，毫无线索，还附赠一条 unhandled rejection）。
+      // 放回队列是安全的：失败点在**任何一条通知发出之前**，不会重复提醒。
+      console.warn("[notify] 权限查询失败，这批通知退回队列", e);
+      mergeNoticesInto(notifyQueue, entries);
     });
   }
 

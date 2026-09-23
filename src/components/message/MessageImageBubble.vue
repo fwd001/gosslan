@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, onUnmounted, ref, watch } from "vue";
+import { onUnmounted, ref, watch } from "vue";
 import { ImageOff, ImageIcon } from "lucide-vue-next";
 
 const props = defineProps<{ src: string }>();
@@ -58,18 +58,26 @@ function retry() {
   loadKey.value += 1;
 }
 
+/**
+ * "强制重新请求"换代计数。
+ *
+ * ⚠️ 它**绝不能**被拼成 URL 查询串（审计阶段 4 · 4.2 的原 bug）：这里的 `src` 只有
+ * `blob:`（`filePreview` 的 objectURL）和 `data:` 两种形态，两类都不接受 query ——
+ * 给 `blob:` 加 `?r=1` 直接是个无效地址，给 `data:` 加则是把 base64 载荷改坏。
+ * 于是"失败后退避重试 5 次"每次都打在结构性无效的地址上 ⇒ **即使文件早就在本机、
+ * 也必然停在「图片加载失败」**，手动同理。换 `<img>` 的 `:key` 才是与 URL 形态无关的
+ * 强制重取（Vue 会重建元素，浏览器重新发起加载）。
+ */
 const loadKey = ref(0);
-const effectiveSrc = computed(() => {
-  if (loadKey.value === 0) return props.src;
-  const sep = props.src.includes("?") ? "&" : "?";
-  return `${props.src}${sep}r=${loadKey.value}`;
-});
 
 watch(
   () => props.src,
   () => {
     clearTimer();
     attempt.value = 0;
+    // src 换了（重新解析出一份新的 objectURL）⇒ 换代计数归零：上一代的失败与这一张无关。
+    // 原实现只重置 attempt/state，loadKey 会一直挂着，把 ?r=N 一路带上新图。
+    loadKey.value = 0;
     state.value = "loading";
   },
 );
@@ -107,7 +115,8 @@ onUnmounted(clearTimer);
       {{ t("msg.imageLoadFailed") }}
     </span>
     <img :alt="t('msg.imageMessage')"
-      :src="effectiveSrc"
+      :key="loadKey"
+      :src="props.src"
       class="block max-h-72 w-full rounded-[var(--gosslan-bubble-radius)] object-contain"
       :class="state === 'loaded' ? '' : 'hidden'"
       @load="clearTimer(); state = 'loaded'"

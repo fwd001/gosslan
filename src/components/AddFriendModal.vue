@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { addressText, linkLabelKey, linkLabelParams } from "@/utils/peerConnectionInfo";
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -198,6 +198,14 @@ async function scan() {
   }
 }
 
+// 模态框是 v-if 挂载的：关闭 = 卸载。不清这些定时器，"连点 20 个对端再关掉"就会留下
+// 20 个在飞的 3s 定时器往已销毁的 ref 上写（不是可见 bug，但这类"只登记不注销"
+// 正是审计阶段 4 · 4.2 数出来的那几个泄漏里最便宜的一类）。
+onUnmounted(() => {
+  for (const t of cooldownTimers.values()) window.clearTimeout(t);
+  cooldownTimers.clear();
+});
+
 watch(
   () => props.open,
   async (v) => {
@@ -232,14 +240,22 @@ function inCooldown(peerId: string): boolean {
   return Date.now() - (cooldown.value[peerId] ?? 0) < SEND_COOLDOWN_MS;
 }
 
+/** 每个对端的冷却解除定时器：句柄必须存下来，卸载时统一清（见文件末尾）。 */
+const cooldownTimers = new Map<string, number>();
+
 async function add(peerId: string) {
   if (inCooldown(peerId)) return; // 防抖：3 秒内不重复发送
   cooldown.value = { ...cooldown.value, [peerId]: Date.now() };
-  setTimeout(() => {
-    const next = { ...cooldown.value };
-    delete next[peerId];
-    cooldown.value = next;
-  }, SEND_COOLDOWN_MS);
+  window.clearTimeout(cooldownTimers.get(peerId));
+  cooldownTimers.set(
+    peerId,
+    window.setTimeout(() => {
+      cooldownTimers.delete(peerId);
+      const next = { ...cooldown.value };
+      delete next[peerId];
+      cooldown.value = next;
+    }, SEND_COOLDOWN_MS),
+  );
   try {
     await chat.sendFriendRequest(peerId);
     app.toast(t("friend.add.toast.sent"), "success");

@@ -148,6 +148,8 @@ function onVisibility() {
   if (!document.hidden) void load();
 }
 onUnmounted(() => {
+  window.clearTimeout(copyTimer);
+  window.clearTimeout(confirmTimer);
   document.removeEventListener("visibilitychange", onVisibility);
   if (timer) clearInterval(timer);
 });
@@ -172,16 +174,22 @@ async function copyAll() {
       document.body.removeChild(ta);
     }
     copied.value = true;
-    setTimeout(() => (copied.value = false), 2000);
+    window.clearTimeout(copyTimer);
+    copyTimer = window.setTimeout(() => (copied.value = false), 2000);
   } catch {
     /* 复制失败静默：不打断用户 */
   }
 }
 
+/** 「已复制」与"再点一次确认清空"的自动复位定时器（卸载时要清，见 onUnmounted）。 */
+let copyTimer = 0;
+let confirmTimer = 0;
+
 function onClear() {
   if (!confirmClear.value) {
     confirmClear.value = true;
-    setTimeout(() => (confirmClear.value = false), 3000);
+    window.clearTimeout(confirmTimer);
+    confirmTimer = window.setTimeout(() => (confirmClear.value = false), 3000);
     return;
   }
   confirmClear.value = false;

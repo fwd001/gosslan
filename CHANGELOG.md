@@ -10,6 +10,69 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-23 稳定性审计 阶段 4 · 批次 g —— 通知链路、发起窗口快照、图片重试、定时器)
+
+- **通知整批凭空消失**（清单 4.2-3）：`flushNotifications` 是**先 `notifyQueue.clear()` 再
+  `await` 权限**，而那条链没有 `catch` ⇒ `isPermissionGranted()` / `requestPermission()` 任一
+  IPC reject，这批通知就没了（用户少收一条、毫无线索，还附赠一条 unhandled rejection）。
+  → 补 `.catch`：**退回队列**等下一批重试。放回是安全的——失败点在任何一条通知**发出之前**，
+  不会重复提醒。合并放回用新的纯函数 `mergeNoticesInto`（同会话累加条数、`last` 取更新的那条），
+  否则放回的一批会把窗口期内新到的消息覆盖成旧的，正文与点击跳转都指错。
+- **权限被拒后每个批次重问两次**（清单 4.2-3 后半）：缓存原先是 `boolean`，"没问过"和"被拒了"
+  同为 `false` ⇒ 每 1.5s 的通知批次都跑 `isPermissionGranted` + `requestPermission` 两次 IPC。
+  → 改三态 `boolean | null`；`null`=没问过、`false`=问过且被拒（短路）、`true`=已授权。
+  **`setNotifyEnabled` 打开时强制重问**（`force`），否则"上次被拒、后来在系统设置里放开"会被
+  缓存永远挡死。清单说的"每批再弹一次授权框"按平台降级：macOS/Windows 对已拒过的应用通常直接
+  返回 denied 不再弹框，所以反复付出的是 IPC 与噪声，不一定是对话框。
+- **发起窗口自己的运行状态停更**（清单 4.2-4）：`startNetwork` / `stopNetwork` 都返回新的
+  `RuntimeSnapshot`，而后端 `notify_runtime_changed` **刻意不回发给发起窗口**（它在返回值里
+  已经拿到了）。前端把返回值丢掉 ⇒ 本窗口 `present`/`runtime` 不再更新，表现是
+  "局域网开关都关了，头像还显示在线"。→ 两处都 `applyRuntimeSnapshot(await ...)`，
+  并把 `runtime`/`present` 加进失败回滚的快照（原先回滚漏了它们）。
+- **图片重试结构性必然失败**（清单 4.2-11，比描述更糟）：`effectiveSrc` 给 `props.src`
+  拼 `?r=N` 来"强制重取"，而这里的 src 只有 `blob:`（objectURL）和 `data:` 两种形态，
+  两类都不接受 query ⇒ 退避的 5 次重试**每一次都打在无效地址上**，即使文件早就在本机也
+  必然停在「图片加载失败」，手动点击重试同样无效。再加评审补的一刀：`watch(props.src)`
+  只重置 `attempt/state`，`loadKey` 从不归零 ⇒ 换了一张新图还带着上一代的 `?r=6`。
+  → 彻底去掉查询串，改用 `:key="loadKey"` 换 `<img>` 元素（与 URL 形态无关的强制重取），
+  并在换图时把计数归零。
+- **辅助窗口初始化失败会吞掉补救注册**（清单 4.2-8）：`mountAuxWindow` 是
+  `try { await beforeMount() } finally { mount }`，异常继续外抛 ⇒ 调用方
+  `.then(() => 注册焦点刷新)` 整段被跳过。偏偏"焦点刷新"就是那个窗口的自我修复通道，
+  于是设置窗口拿不到网卡/共享目录后再也不重拉、任务窗口空列表且无实时监听。
+  → 失败时**仍然挂载**（不给用户白窗）、**仍然上报**（走既有 `log_frontend_error`，
+  不藏错误），但把 `{ok:false,error}` 交回调用方，让补救注册照样执行。
+- **两个组件的定时器只登记不注销**（清单 4.2-15 的一部分）：`AddFriendModal` 的冷却
+  `setTimeout`（无 `onUnmounted`）、`LogViewer` 的「已复制」与「再点一次确认清空」两个。
+  如实说严重度：**不是可见 bug**（回调写的是已销毁实例的 ref），属于"只登记不注销"这一类
+  清理不彻底，顺手收口。
+
+### 复核纠正（清单/评审里有两条不成立）
+
+- **"移动端 `void sendNotification({...})` 没有 catch" 不成立**：插件这个 API 是
+  fire-and-forget（返回 `void`，不是 Promise），没有可 catch 的失败信号 —— 我按它写了
+  `.catch()` 被 `vue-tsc` 当场拒绝（TS2339），已撤销并把这条事实写进代码注释。真正会
+  reject 的是上面那次权限查询。
+- **"清单 4.2-12 `VirtualList` 的 key 回退成 index" 前提不可达**：唯一消费者的列表元素类型
+  是 `MessageRecord`，`msg_id` 在前端类型与 `schema.sql:36`（`UNIQUE NOT NULL`）里都是必填，
+  自造的乐观/占位记录也恒带 `tmp-*` id ⇒ 两条兜底分支都取不到。判为不修（记录成因），
+  避免下一个人照着清单去"修一个不存在的 bug"。
+
+### Tests (阶段 4 · 批次 g)
+
+- `notifications.test.ts` +5（回队合并的四条语义 + 空批次不动队列）。
+- `storeContract.test.ts` +4 条形状守卫：出队与发出之间必须有退回队列的 catch；权限缓存必须
+  三态且开关走 `force`；两个 network 命令的返回值必须被 `applyRuntimeSnapshot` 消费；
+  `effectiveSrc`/查询串重试禁止复现 + `:key="loadKey"` 与归零必须在。
+- 前端测试 555 → 564；`vue-tsc` 0；`npm run build` 通过；快速层 9 步全绿。
+
+### 已知限制（批次 g）
+
+- todos 独立窗口在 `loadGroupTodos` 失败后仍是"空列表 + 无实时监听"，且**没有重试入口**：
+  本批只保证了"该注册的一定会注册"，给它加焦点重试属新交互设计，没在真机上验过不做。
+- `clearAllData` 之外的那条 `setNotifyEnabled` 路径不改权限缓存的三态初值；用户在系统里撤销
+  授权后本机要等下一次 `force`（点开关）才会重新感知 —— 与改前一致，不是本批引入。
+
 ## [4.29.10] - 2026-09-23
 
 ### Fixed (2026-09-23 稳定性审计 阶段 4 · 批次 f —— 「后发先至」一族)

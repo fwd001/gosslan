@@ -158,14 +158,35 @@ export function mountMainWindow(app: App) {
  *
  * 撤骨架放在 `nextTick()` 之后：等真实内容真的挂上去了再让骨架淡出，中间不露空白帧。
  */
-export async function mountAuxWindow(app: App, beforeMount?: () => Promise<void>) {
+/** 挂载结果：`ok:false` 表示"带着降级状态挂载了"，错误已经上报过，调用方只需决定是否补做。 */
+export type AuxMount = { ok: true } | { ok: false; error: unknown };
+
+export async function mountAuxWindow(
+  app: App,
+  beforeMount?: () => Promise<void>,
+): Promise<AuxMount> {
   installBootDismissal();
   installDocumentTitle();
-  try {
-    if (beforeMount) await beforeMount();
-  } finally {
-    app.mount("#app");
-    await nextTick();
-    window.dispatchEvent(new Event("gosslan:app-ready"));
+  let result: AuxMount = { ok: true };
+  if (beforeMount) {
+    try {
+      await beforeMount();
+    } catch (e) {
+      // ⚠️ 这里**不能把异常抛出去**（审计阶段 4 · 4.2）：原先是 `try/finally` + 自然外抛，
+      // 于是调用方 `mountAuxWindow(...).then(() => 注册焦点刷新)` 的 `.then` 整段被跳过 ——
+      // 偏偏"初始化失败"是最需要那个补救注册的时刻。结果是设置窗口拿不到网卡/共享目录后
+      // 再也自我修复，任务窗口空列表且没有实时监听，而且没有任何重试入口。
+      // 改成：仍然挂载（不给用户一个白窗），仍然上报（错误不藏），但把结果**交回调用方**。
+      result = { ok: false, error: e };
+      reportFrontendError(
+        "aux-init",
+        `独立窗口挂载前初始化失败，已降级挂载：${String(e)}
+${e instanceof Error ? (e.stack ?? "") : ""}`,
+      );
+    }
   }
+  app.mount("#app");
+  await nextTick();
+  window.dispatchEvent(new Event("gosslan:app-ready"));
+  return result;
 }
