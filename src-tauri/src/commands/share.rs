@@ -147,7 +147,9 @@ pub async fn request_share_tree(
             return Err(e);
         }
     } else {
-        crate::network::transport::relay_send_to_neighbors(s, &friend_id, &msg).await;
+        // 邻居接住数在这里**故意不用**：下面自己等 `rx`（10s 超时），
+        // "对端真的回了目录树"比"邻居接住了请求帧"是更强的证据。
+        let _ = crate::network::transport::relay_send_to_neighbors(s, &friend_id, &msg).await;
     }
 
     match tokio::time::timeout(Duration::from_secs(10), rx).await {
@@ -184,8 +186,11 @@ pub async fn download_shared_file(
     };
     if s.has_link(&friend_id).await {
         try_send(s, &friend_id, &msg).await?;
-    } else {
-        crate::network::transport::relay_send_to_neighbors(s, &friend_id, &msg).await;
+    } else if crate::network::transport::relay_send_to_neighbors(s, &friend_id, &msg).await == 0 {
+        // 下载是**发完就返回**的（真正的完成由对端推流驱动），所以"没有任何邻居接住"
+        // 是这条路径唯一的失败证据。旧实现连这个都不看 ⇒ 命令返回 Ok、界面留下
+        // 一条"你正在下载"的系统消息，而请求从未离开本机（2026-09-23 审计 A1）。
+        return Err("无法联系对方：没有可达的中继邻居".to_string());
     }
     // 本地提示：你正在下载好友的文件（聊天信息内简约系统消息）
     let file_name = std::path::Path::new(&remote_path)

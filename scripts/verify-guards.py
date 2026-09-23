@@ -3031,6 +3031,73 @@ CASES: list[Case] = [
         expect_fail_hint="少于 3 = 又出现一条",
         tags=["rust", "file", "stability", "new-guards", "st3-terminal"],
     ),
+    Case(
+        name="中继邻居投递数必须来自 try_send 的成功判定（丢了返回值就数不出来）",
+        why="2026-09-23 审计 A1：`relay_send_to_neighbors` 旧实现是 `let _ = try_send(...)`，\n"
+        "     于是「一个邻居都没接住」与「所有邻居都接住」在调用方看来完全一样 —— 发送端\n"
+        "     据此宣布成功就是假成功。注入方式 = 把计数退回丢弃返回值（保留 `-> usize`，\n"
+        "     让它编译得过、并且 `accepted` 恒为 0 看起来还「更安全」）。\n"
+        "     这条打的是守卫里**第二个**断言：只把签名改回 `()` 会先撞上第一个断言，\n"
+        "     那样证明不了「计数建立在成功判定上」这一条有独立价值。",
+        file=TAURI / "src" / "network" / "transport" / "outbound.rs",
+        injections=[(
+            """        if try_send(state, &p, msg).await.is_ok() {
+            accepted += 1;
+        }
+""",
+            "        let _ = try_send(state, &p, msg).await;\n",
+        )],
+        cmd=cargo("test", "--lib", "relay_send_does_not_claim_unproven_success"),
+        cwd=TAURI,
+        expect_fail_hint="计数必须建立在",
+        tags=["rust", "relay", "file", "stability", "new-guards", "a1-l1"],
+    ),
+    Case(
+        name="中继 Offer 不许无条件发出（0 个邻居接住必须当场判失败）",
+        why="A1 的「下限判据」：Offer 没有任何邻居接住 ⇒ 这一帧从未离开本机，正确做法是在**读盘之前**\n"
+        "     就失败。注入方式 = 退回修好之前的那一行（发完就走、不看结果）。\n"
+        "     ⚠️ 反向不成立：`≥1` 不代表送达（邻居未必与目标有直连），所以守卫钉的是\n"
+        "     「两处判据都在」，而不是「它保证成功」—— A1-L2 的接收端回执才是真证明。",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            """        if crate::network::transport::relay_send_to_neighbors(state, peer_id, &offer).await == 0 {
+            return Err("没有可达的中继邻居：文件未发出".to_string());
+        }
+""",
+            "        let _ = crate::network::transport::relay_send_to_neighbors(state, peer_id, &offer).await;\n",
+        )],
+        cmd=cargo("test", "--lib", "relay_send_does_not_claim_unproven_success"),
+        cwd=TAURI,
+        expect_fail_hint="Offer 与每一片各一处",
+        tags=["rust", "relay", "file", "stability", "new-guards", "a1-l1"],
+    ),
+    Case(
+        name="中继发送失败必须落 DB 终态（发送方向没有任何清扫器兜底）",
+        why="接收侧有 `sweep_stale_relay`，**发送侧一行 active 没人管**。旧实现里取消 / 读盘失败 /\n"
+        "     整体超时 / 分片失败每一条 Err 路径都把行留在 active —— 界面当场报失败，\n"
+        "     重启后它又回到「进行中 X%」并永久挂着。修法是把包装层做成唯一出口：失败统一标 failed。\n"
+        "     注入方式 = 删掉这段标记（回到「只有内层推流、外层不管终态」的形状）。",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            """    if let Err(reason) = &outcome {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = db::mark_transfer_failed_if_active(&dbc, transfer_id) {
+            state.logger.warn(
+                "file",
+                format!(
+                    "中继发送失败后落终态也失败 transfer={transfer_id}: {e}（发送失败原因：{reason}）"
+                ),
+            );
+        }
+    }
+""",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "relay_send_does_not_claim_unproven_success"),
+        cwd=TAURI,
+        expect_fail_hint="失败必须落 DB 终态",
+        tags=["rust", "relay", "file", "stability", "new-guards", "a1-l1"],
+    ),
 
 ]
 

@@ -2911,6 +2911,67 @@ mod tests {
         );
     }
 
+    /// 中继发送不许宣称「未经证明的成功」（2026-09-23 审计 A1 的 L1 那一半）。
+    ///
+    /// 四处必须同时成立，拆掉任何一处就退回"写出 = 送达"那个假成功：
+    /// ① `relay_send_to_neighbors` 交出**接住该帧的邻居数**（旧实现把每个 `try_send` 的结果
+    ///    用 `let _ =` 丢掉，于是"没人接住"和"全都接住"在调用方看来一模一样）；
+    /// ② `relay_push_file` 把它当**下限判据**用在两处：Offer 与每一片。注意方向 ——
+    ///    `0 ⇒ 必然没送出` 才可用，`≥1` 不代表某个邻居与目标有直连，所以它不是送达证明
+    ///    （真证明要等接收端回执，即尚未实施的 A1-L2）；
+    /// ③ 失败必须落 DB 终态，且**只能经包装层这一个出口**：发送方向没有任何清扫器
+    ///    （`sweep_stale_relay` 清的是接收侧那两张内存表），漏一条 Err 路径就是一行 active
+    ///    永久挂在"进行中"，重启后又被捞出来显示百分比；
+    /// ④ 推流之前插的那条系统消息必须是「请求下载」而不是完成时态 —— 写下它的那一刻，
+    ///    这条链上还没有任何成功证据。
+    /// 为什么是源码守卫：判定需要"邻居接住数为 0"的链路夹具 + 事件捕获，本仓没有这种夹具。
+    #[test]
+    fn relay_send_does_not_claim_unproven_success() {
+        let tv = crate::network::transport_src_for_guards();
+        let relay = rust_fn_body(&tv, "pub(crate) async fn relay_send_to_neighbors(");
+        assert!(
+            relay.contains("-> usize"),
+            "relay_send_to_neighbors 必须返回接住该帧的邻居数 —— 返回 () 就等于把假成功留给调用方"
+        );
+        assert!(
+            code_flat(&relay).contains("try_send(state,&p,msg).await.is_ok()"),
+            "计数必须建立在 try_send 的成功判定上（`let _ =` 丢弃返回值就永远数不出来）"
+        );
+
+        let file = include_str!("network/file.rs");
+        let push = rust_fn_body(file, "async fn relay_push_file(");
+        let flat_push = code_flat(&push);
+        assert_eq!(
+            flat_push.matches(".await==0{returnErr(").count(),
+            2,
+            "Offer 与每一片各一处「0 个邻居接住 ⇒ 失败」的判据，少一处就是又退回无条件发送。\
+             探针带 `.await` 与 `return Err` 两段形状：本函数里还有一处无害的 `if size == 0`，\
+             只数 `==0{{` 会把它算进来（实测第一次就跑出 3）。刻意不再单列「调用处数」那条断言：\
+             它被这条完全覆盖（少调用必然同时少判据），留着只会让变异用例打在它前面那条上、\
+             得到一句弱确认（2026-09-23 真踩过）。"
+        );
+
+        let wrap = rust_fn_body(file, "pub async fn send_file_via_relay(");
+        assert!(
+            wrap.contains("mark_transfer_failed_if_active("),
+            "失败必须落 DB 终态：发送方向没有清扫器，漏一条 Err 路径就是一行 active 永久挂着"
+        );
+        assert!(
+            !wrap.contains("return Err("),
+            "落终态依赖「唯一出口」这个形状：判据留在 relay_push_file 里，包装层只做 outcome→终态；\
+             包装层里任何提前 return 都会绕过落终态，那就又是「界面说失败、库里说进行中」"
+        );
+
+        assert!(
+            tv.contains("请求下载你的文件"),
+            "共享下载的系统消息必须是「请求下载」：插它的时候还没有任何成功证据"
+        );
+        assert!(
+            !tv.contains("下载了你的文件"),
+            "「下载了你的文件」是在证据之前下的断言 —— 中继发送失败时它就成了一句假话"
+        );
+    }
+
     /// transport 生产代码的 std Mutex 一律**抗中毒**取锁（审计 A8）。
     ///
     /// 全仓主导写法是 `.lock().unwrap_or_else(|e| e.into_inner())`（`state.rs` 的注释也明令"不要写

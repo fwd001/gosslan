@@ -3917,7 +3917,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if state.has_link(&from).await {
                 let _ = try_send(state, &from, &resp).await;
             } else {
-                relay_send_to_neighbors(state, &from, &resp).await;
+                // 邻居接住数不用：请求方自己有 10s 超时兜底，那边才是它的失败证据。
+                let _ = relay_send_to_neighbors(state, &from, &resp).await;
             }
         }
         Message::ShareTreeResponse {
@@ -3969,7 +3970,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             let st = state.clone();
             let from = from.clone();
-            // 本地提示：对方下载了你的共享文件（聊天信息内简约系统消息）
+            // 本地提示：对端请求下载你的共享文件（聊天信息内简约系统消息）。
+            // ⚠️ 措辞必须是「请求下载」而不是「下载了」：这条插入发生在**推第一个分片之前**，
+            // 而中继发送此刻起还没任何成功证据（审计 A1）。写成完成时态就是一句可能被证伪的
+            // 陈述句，用户会据此以为文件已经给出去了。
             let file_name = path
                 .rsplit('/')
                 .next()
@@ -3979,7 +3983,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             crate::commands::insert_system_message(
                 state,
                 &from,
-                &format!("「{from_name}」下载了你的文件「{file_name}」"),
+                &format!("「{from_name}」请求下载你的文件「{file_name}」"),
             );
             tokio::spawn(async move {
                 // 有直连走原有可靠直传；没有直连则借一跳中继（RelayFileOffer/RelayChunk）。

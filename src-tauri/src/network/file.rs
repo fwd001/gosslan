@@ -516,8 +516,34 @@ pub async fn send_file_from_path_at(
 /// - 走 RelayFileOffer + RelayChunk：中继只透传密文，E2EE 与直传一致；
 /// - 单跳：中继必须与目标有直连（与既有 RelayChunk 的限制一致）。
 ///
-/// 尽力而为：没有回执，失败只能靠接收方超时/本机日志。
+/// **失败必须落 DB 终态**（2026-09-23 审计 A1）：推流建的行写的是 `active`，而**发送方向
+/// 没有任何清扫器**（`sweep_stale_relay` 清的是接收侧那两张内存表）⇒ 旧实现里取消 / 读盘
+/// 失败 / 整体超时 / 分片失败**每一条 Err 路径**都留一行 active 在库里 —— 界面当场收到
+/// `file-failed`，重启后那条传输又变回"进行中 X%"并永久挂着。本包装是这条链唯一出口，
+/// 失败时统一把仍 active 的行标 failed（已 done 的行不动，绝不改写既有终态）。
 pub async fn send_file_via_relay(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: &str,
+    path: PathBuf,
+) -> Result<(), String> {
+    let outcome = relay_push_file(state, peer_id, transfer_id, path).await;
+    if let Err(reason) = &outcome {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = db::mark_transfer_failed_if_active(&dbc, transfer_id) {
+            state.logger.warn(
+                "file",
+                format!(
+                    "中继发送失败后落终态也失败 transfer={transfer_id}: {e}（发送失败原因：{reason}）"
+                ),
+            );
+        }
+    }
+    outcome
+}
+
+/// 真正推分片出去：见 [`send_file_via_relay`] —— 终态落库在外层，保证所有 Err 路径同一条出口。
+async fn relay_push_file(
     state: &Arc<AppState>,
     peer_id: &str,
     transfer_id: &str,
@@ -616,7 +642,12 @@ pub async fn send_file_via_relay(
     };
 
     let result = tokio::time::timeout(RELAY_FILE_SEND_DEADLINE, async {
-        crate::network::transport::relay_send_to_neighbors(state, peer_id, &offer).await;
+        // Offer 一个邻居都没接住 ⇒ 这一帧从未离开本机：直接判失败，既不读盘也不推分片。
+        // 方向要说清：这里只用「0 必然没送出」这一侧的下限判据；`≥1` **不等于**送达
+        // （邻居未必与对方有直连），真送达要等接收端回执（A1-L2，尚未实施）。
+        if crate::network::transport::relay_send_to_neighbors(state, peer_id, &offer).await == 0 {
+            return Err("没有可达的中继邻居：文件未发出".to_string());
+        }
 
         let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
         for seq in 0..chunk_count {
@@ -642,7 +673,11 @@ pub async fn send_file_via_relay(
                 to: peer_id.to_string(),
                 ttl: 3,
             };
-            crate::network::transport::relay_send_to_neighbors(state, peer_id, &msg).await;
+            // 同一判据用在每一片上：某片开始没有任何邻居接住，说明链路在这中间断了，
+            // 继续推剩余分片只是把日志刷满并让界面停在最后一个报过的百分比上。
+            if crate::network::transport::relay_send_to_neighbors(state, peer_id, &msg).await == 0 {
+                return Err(format!("中继链路中断：第 {seq} 片没有任何邻居接住"));
+            }
             let sent = end as u64;
             if last_report.elapsed() >= Duration::from_millis(250) {
                 last_report = std::time::Instant::now();

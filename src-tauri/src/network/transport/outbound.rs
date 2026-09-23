@@ -392,14 +392,25 @@ pub(crate) async fn send_on_link_with_tick(
 /// 只做「借邻居的直连」这一跳：给所有有直连的邻居各发一份（帧自带 to），邻居收到后
 /// 按 to 直接投递（见 handle_message 顶部的定向中继分支）。邻居若与 to 没有直连就丢弃
 /// —— 与既有 RelayChunk 的单跳限制一致；不泛洪，因此不存在环路。
-pub(crate) async fn relay_send_to_neighbors(state: &AppState, to: &str, msg: &Message) {
+///
+/// 返回**成功接住这一帧的邻居数**（2026-09-23 审计 A1）：旧实现把每个 `try_send` 的结果
+/// 直接 `let _ =` 丢掉，于是"一个邻居都没接住"与"所有邻居都接住了"在调用方看来一模一样
+/// —— 发送端据此宣布成功就是假成功。
+/// ⚠️ 这个数**只到本机链路边界**：`≥1` 不代表某个邻居与 to 有直连、更不代表 to 收到了。
+/// 真正的送达证据需要接收端回执（A1-L2），所以调用方只能把它当"下限判据"用：
+/// 0 ⇒ 必然没送出去；≥1 ⇒ 只是"还没资格宣布失败"。
+pub(crate) async fn relay_send_to_neighbors(state: &AppState, to: &str, msg: &Message) -> usize {
     let peers: Vec<String> = { state.links.lock().await.keys().cloned().collect() };
+    let mut accepted = 0usize;
     for p in peers {
         if p == to {
             continue;
         }
-        let _ = try_send(state, &p, msg).await;
+        if try_send(state, &p, msg).await.is_ok() {
+            accepted += 1;
+        }
     }
+    accepted
 }
 
 /// 向所有已连接节点广播一条 Gossip 消息。
