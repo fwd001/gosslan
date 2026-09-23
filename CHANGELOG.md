@@ -10,6 +10,67 @@
 
 ## [Unreleased]
 
+## [4.29.5] - 2026-09-23
+
+### Fixed (2026-09-23 稳定性审计 阶段 2 · 结构性根因：全局 db 锁 / 主线程 / 静默吞错)
+
+16 条复核（1 条已被 4.29.2 修掉、2 条判定为既有设计决策/自愈设计不改），实际修复 13 条。
+每条动手前均已按 AI_RULES §21 重新复核原文坐实（并行会话当天有提交，清单行号有漂移）。
+
+**批次 a · 静默吞错 / 卡死 / 主线程**
+- **m** `commands/chat.rs` 全仓最后一处生产代码 `if let Ok(dbc) = s.db.lock()`（锁中毒静默
+  跳过置 sent，消息停在 sending，与 1.2 同形）→ 改 poison-tolerant，与全仓纪律统一。
+- **k** `update_profile` 对每条链路 `tx.send().await` 无超时且 `let _ =` 吞错：对端僵死时
+  "保存资料"按钮永远转；昵称改了某些对端收不到且无任何线索。→ 500ms 有界发送
+  （同 `outbound::SEND_QUEUE_FULL_TIMEOUT` 纪律）+ 失败/超时留痕（warn 日志）。
+- **o** 每小时 `.part` 清扫在 async 任务上同步 read_dir/删除 + 抢 3 把锁（启动时立刻一轮），
+  慢盘上占满 tokio worker → `sweep_stale_parts` 移入 `spawn_blocking`（对照缓存自动清理
+  的既有正确用法），JoinError 留痕。
+- **i** `is_zh()` / `notifications::enabled()` 每段后端文案/每条通知抢一次全局 db 锁，
+  消息洪峰 + 通知 + 托盘重建时加剧争用 → AppState 加 `lang_pref`/`notify_pref` 原子缓存
+  （与既有 `ui_lang` 同型：未加载读库一次回填，此后零锁）；save_settings 写入点同步缓存、
+  reset_settings 失效缓存（下次读库回填默认）。
+- **j** `set_unread_badge` 是同步命令：macOS 主线程 IPC 回调里内联跑整张托盘图标逐像素
+  混合 + set_icon（配合锁内 VACUUM 就是全 UI 冻结）→ 改 async + `spawn_blocking`
+  （tauri 的 tray set_icon/set_tooltip 经 `run_item_main_thread!` 内部派发回主线程，已实证）；
+  主线程守卫 `blocking_commands_run_off_the_main_thread` 补 `tray::` 标记（字面量 marker
+  原本抓不到跨模块调用）。
+- **n 判定不修（误报）**：`get_lan_enabled`/`get_bt_enabled` 读时持久化默认值是被
+  lib.rs 源码守卫 + 测试钉住的既有设计（"缺省值必须立刻持久化"），非缺陷。
+
+**批次 b · 锁内慢活**
+- **a** `clean_cache_now` 持全局 db 锁期间递归删文件 + VACUUM（可秒~分钟级，用户点
+  "立即清理"全 App 冻住）→ 文件清理移 `spawn_blocking`（不持锁），VACUUM 仅在
+  `removed > 0` 时短暂持锁执行（与 6h 自动清理同纪律）；删除已无调用者的
+  `cache_cleaner::clean`（锁 + VACUUM 耦合的旧接口），VACUUM 纪律写进 `clean_files` 文档。
+- **c** 聊天搜索结果页每个会话 `conversation_meta()`、每条命中 `sender_display_name()`
+  各抢一次 db 锁（50 会话 × 60 条 ≈ 3000 次锁往返）→ `SearchMeta::prefetch`：
+  db 一把锁查齐全部点查 + peers 一把锁补非好友昵称（两锁不叠加，语义与逐条版一致）。
+- **d** `read_content_preview` 持 db 锁做 `fs::canonicalize`（网络盘可挂任意久）且构成
+  db → downloads_dir 锁序耦合 → 锁内只留两个点查，canonicalize/越权校验全部移出锁外。
+- **e** `export_chat_text` 在 tokio worker 上同步读全库 + 渲染 + 写盘 → 整体移
+  `spawn_blocking`。已知限制：读全库仍在 db 锁内（单连接架构，分批读需读连接池，
+  导出是低频自救操作，收益不抵风险——如实记录）。
+- **h** 群 `mark_read` 每成员 2 次抢 db 锁（200 人群 = 400 次/滚动触发）→ 单次锁内
+  批查全部成员最近消息，发送（await）在锁外，回执持久化合并为一次锁。
+- **f/g 判定不修（已知限制）**：群公告面板全表扫描（`conv_id LIKE 'group:%'`）、
+  `latest_todo_def` 无 todo_id 谓词倒序扫描——修法均需 schema 索引/内容索引表
+  （架构级），且均为低频路径，记录为已知限制。
+
+**批次 c · 迁移健壮性**
+- **q** `content_transfers` 补列探测失败默认"列存在"→ 真缺列的老库跳过 ALTER，
+  `row_to_record` 的 `r.get("transfer_id")` 让**所有行**不可读；ALTER 失败也被纯吞。
+  → 探测失败改按"没有该列"处理（最坏是对已有列的库多跑一次幂等 ALTER，无害）；
+  ALTER 失败留痕（duplicate column 除外）。
+- **p 判定不修（自愈设计）**：迁移 `user_version` bump 在步骤事务之外，但每步
+  `column_exists` 预检 + 重跑跳过使"commit 与 bump 之间崩溃"在下次启动自愈
+  （幂等设计正是为此）；"步骤内吞 ALTER 错"实为带日志的预检跳过，非 `let _ =`。
+
+### 护栏
+
+- 主线程守卫新增 `tray::` 重资源标记：任何**同步**命令内联调用托盘重绘即红（j 的
+  结构性防回归）。
+
 ## [4.29.4] - 2026-09-23
 
 ### Fixed (2026-09-23 稳定性审计 阶段 1 · 止血：8 条 P0)
