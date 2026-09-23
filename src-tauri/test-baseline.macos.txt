@@ -169,6 +169,7 @@ db::tests::search_messages_plain_text
 db::tests::sender_not_in_recipient_states
 db::tests::set_group_creator_updates_creator_only
 db::tests::silent_kinds_are_excluded_from_search_and_read_watermark
+db::tests::transfer_terminal_helpers_touch_only_their_own_rows
 db::tests::transfer_upsert_tracks_progress
 db::tests::unread_and_event_fire_only_for_the_winning_insert
 db::tests::update_conversation_profile_ignores_group
@@ -294,6 +295,7 @@ mesh::router::tests::ring_buffer_is_bounded_and_evicts_oldest
 mesh::router::tests::select_outgoing_excludes_source_node
 mesh::router::tests::select_outgoing_is_bounded_by_fanout
 mesh::router::tests::ttl_is_clamped_to_max_ttl
+mesh::router::tests::zero_ttl_frame_does_not_burn_the_dedup_slot
 mesh::router::tests::zero_ttl_is_dropped
 mesh::selection::tests::all_unhealthy_falls_back_to_first_keeps_usable
 mesh::selection::tests::empty_candidates_returns_none
@@ -346,6 +348,7 @@ network::file::tests::ble_file_chunk_actually_fits_the_ble_fragment_layer
 network::file::tests::case_insensitive_and_multidot_and_chinese
 network::file::tests::chunk_seq_rule_only_rejects_real_gaps
 network::file::tests::code_extensions
+network::file::tests::completed_transfer_rejects_duplicate_offer_without_resend
 network::file::tests::derive_file_name_no_ext_anywhere
 network::file::tests::derive_file_name_normal
 network::file::tests::derive_file_name_temporal_file_missing_ext
@@ -422,6 +425,7 @@ network::transport::tests::direct_open_succeeds_with_current_keys
 network::transport::tests::directed_relay_target_routes_share_and_offer_frames
 network::transport::tests::e2e_gossip_encrypt_sign_decrypt
 network::transport::tests::failover_delivers_on_next_link_when_selected_is_closed
+network::transport::tests::finalize_expired_file_failure_leaves_the_row_retryable
 network::transport::tests::finalize_expired_message_writes_both_and_gates_on_failure
 network::transport::tests::flush_failure_reinserts_pending_read
 network::transport::tests::flush_failure_retains_or_clears_pending_correctly
@@ -533,6 +537,7 @@ storage::cache_cleaner::tests::no_policy_removes_nothing
 storage::cache_cleaner::tests::quota_removes_oldest_first
 storage::cache_cleaner::tests::retention_removes_expired_only
 storage::cache_cleaner::tests::walk_files_never_follows_symlinks
+tests::already_have_shortcut_shares_the_send_finalization
 tests::android_jni_signatures_match_kotlin
 tests::android_peripheral_paces_its_notifications
 tests::aux_window_open_is_singleton_serialized_and_resident
@@ -552,6 +557,7 @@ tests::capability_covers_every_window_label
 tests::channel_status_exposes_persisted_preference
 tests::cmd_w_is_handled_by_our_own_menu_item
 tests::content_pull_requires_capability_negotiation
+tests::duplicate_file_done_still_answers_with_an_ack
 tests::every_friend_accept_path_forgets_the_pending_request
 tests::external_link_rejects_non_http_schemes
 tests::file_send_progress_counts_wire_not_queue
@@ -582,6 +588,7 @@ tests::receiver_abort_notifies_the_sender_inside_the_loop
 tests::relay_circuit_is_tagged_relay_not_routed
 tests::relay_data_plane_respects_policy
 tests::relay_receive_hashes_assembled_plaintext_once
+tests::relay_reclaim_finalizes_in_db_and_emits_outside_the_lock
 tests::relay_token_never_reaches_logs_or_diagnostics
 tests::release_keeps_every_kotlin_method_called_from_rust
 tests::removing_a_friend_also_drops_the_in_memory_identity_binding
@@ -591,6 +598,7 @@ tests::runtime_snapshot_reports_real_bluetooth_runtime
 tests::runtime_state_has_a_single_source
 tests::scan_results_are_not_filtered_by_unconnected_services
 tests::self_chat_stays_local
+tests::terminal_finalize_defers_the_destructive_write
 tests::transport_locks_tolerate_poison
 tests::unknown_wire_frame_is_tolerated_after_auth
 tests::window_pattern_matcher_is_not_vacuous

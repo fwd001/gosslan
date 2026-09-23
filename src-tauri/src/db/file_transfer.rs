@@ -41,6 +41,37 @@ pub fn get_transfer_path(conn: &Connection, id: &str) -> Option<String> {
     .flatten()
 }
 
+/// 只把**仍处 active** 的传输行标为 failed，返回是否有行被改。
+///
+/// 回收中继态时给接收端一个显式失败终态（2026-09-23 审计 A2：旧行为只从内存
+/// retain 掉，DB 行永远停在 active/某个百分比，前端永久卡 X%）。只改 active 行：
+/// done/failed 等既有终态不许被回收动作改写。
+pub fn mark_transfer_failed_if_active(conn: &Connection, id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE file_transfers SET status = 'failed', progress = 0.0
+         WHERE id = ?1 AND status = 'active'",
+        params![id],
+    )?;
+    Ok(n > 0)
+}
+
+/// 该传输是否已完整收下（status='done'）。Offer 判据的单行查询（审计 A6）。
+///
+/// 不用 `list_transfers()` 全表扫：那是在 db 锁内按行数收费，而 Offer 每收到一次
+/// 就扫一遍，`file_transfers` 恰好是随使用单调增长的表。
+///
+/// `Err` 交给调用方裁决（不折叠成 `false`）：`false` 在这里意味着「还要收」，
+/// 判错方向会让已完成的文件重传落一份"名字(1)"副本，必须留痕。
+pub fn is_transfer_done(conn: &Connection, id: &str) -> Result<bool> {
+    let n = conn.query_row(
+        "SELECT 1 FROM file_transfers WHERE id = ?1 AND status = 'done'",
+        params![id],
+        |_| Ok(()),
+    )
+    .optional()?;
+    Ok(n.is_some())
+}
+
 pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {
     let mut stmt = conn.prepare(
         "SELECT id, peer_id, name, size, direction, status, path, progress FROM file_transfers ORDER BY created_at DESC",

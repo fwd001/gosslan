@@ -2782,6 +2782,135 @@ mod tests {
         );
     }
 
+    /// 落终态的**写序**：把行踢出重试集合的那一次写必须排最后（2026-09-23 审计 A3 的自身缺陷）。
+    ///
+    /// `finalize_*` 返回 `false` 时对不 emit、"下一 tick 重试" —— 这个承诺只有在**行还在重试集合里**
+    /// 时才成立。文件那趟里 `mark_file_outbox_failed` 是唯一会让 `list_expired_file_outbox`
+    /// 再也扫不到该行的写（它只选 pending/sending），一旦排到最前面，后面任何一步失败就变成
+    /// "界面报失败、行再也扫不到"，或者更糟：永久停在"发送中"。消息那趟同型（删行必须最后）。
+    /// 判据用位置而不是数量：把破坏性写挪回前面时数量不变，只有顺序变。
+    #[test]
+    fn terminal_finalize_defers_the_destructive_write() {
+        let src = crate::network::transport_src_for_guards();
+
+        let file_body = rust_fn_body(&src, "fn finalize_expired_file(");
+        let destructive = file_body
+            .find("mark_file_outbox_failed(")
+            .expect("文件终态必须仍由 mark_file_outbox_failed 落库");
+        for anchor in ["set_message_status(", "upsert_transfer("] {
+            let at = file_body
+                .rfind(anchor)
+                .unwrap_or_else(|| panic!("finalize_expired_file 少了 {anchor} 这一步"));
+            assert!(
+                at < destructive,
+                "破坏性写（把行踢出重试集合）必须排最后：它先跑 ⇒ 后续步骤失败时行已是 failed，\
+                 下一轮再也扫不到 ⇒ {anchor} 的失败永久无人重试，界面卡在「发送中」"
+            );
+        }
+
+        let msg_body = rust_fn_body(&src, "fn finalize_expired_message(");
+        let deleted = msg_body
+            .find("delete_outbox_by_msg_id(")
+            .expect("单聊终态必须仍删 outbox 行");
+        assert!(
+            msg_body
+                .find("set_message_status(")
+                .expect("少了置 failed 那一步")
+                < deleted,
+            "删行是消息终态里唯一不可重放的写，必须排在置 failed 之后"
+        );
+    }
+
+    /// 中继态回收（审计 A2）：被回收的传输必须**落 DB 终态**并 emit，且 emit 在 db 锁**之外**。
+    ///
+    /// 两条各挡一种退化：① 只 `retain` 内存不写库 ⇒ DB 行永远停在 active/某个百分比，
+    /// 接收端界面永久卡 X%（旧行为）；② 顺手在 `for id in &removed { 写库 + emit }` 里 emit
+    /// ⇒ 把阶段 2 刚消灭的「锁内慢活」请回来（前端收到 file-failed 后下一次 IPC 要抢同一把锁）。
+    #[test]
+    fn relay_reclaim_finalizes_in_db_and_emits_outside_the_lock() {
+        let src = crate::network::transport_src_for_guards();
+        let body = rust_fn_body(&src, "pub fn sweep_stale_relay(");
+        assert!(
+            body.contains("mark_transfer_failed_if_active("),
+            "回收中继态必须把仍 active 的传输行落 failed，否则接收端界面永久卡在百分比上"
+        );
+        let lock_at = body
+            .find("state.db.lock()")
+            .expect("回收必须写库（db 锁）才能落终态");
+        // ⚠️ 探针刻意**不带左括号**：`src/api/events.test.ts` 扫 Rust 源码时不抹字符串字面量
+        // （它必须看见 `emit("x")` 里那个串本身才认得出事件名），于是守卫里写全 `emit(` 会被
+        // 当成一个真实发送点、把它后面那截文本当成"事件名" ⇒ 结构门禁无故变红。
+        let emit_at = body
+            .find("state.app.emit")
+            .expect("回收必须 emit file-failed：只写库不发事件的话前端要等下一次刷新才知道");
+        assert!(
+            !body.contains(".db.lock().unwrap()"),
+            "db 取锁必须抗中毒（`.unwrap_or_else(|e| e.into_inner())`）"
+        );
+        assert!(
+            code_flat(&body[lock_at..emit_at]).contains("};"),
+            "emit 必须在 db 锁作用域**之外**：锁内只收集要通知的 id，出锁再 emit"
+        );
+    }
+
+    /// 重复 FileDone 不许静默（2026-09-23 审计 A5）：接收器已被清时，两个出口都得回 Ack。
+    ///
+    /// 旧代码只有 `if already_done { 回成功 Ack }` 而**没有 else** ⇒ 本机从没收下这份文件时
+    /// 一帧都不回，发送端只能干等整个静默窗口（`FILE_ACK_IDLE`）才判失败，然后整套重发。
+    /// 为什么是源码守卫：这一条是 `handle_message` 的一个 match 臂，本仓没有能驱动它并捕获
+    /// 出站帧的异步夹具（与 A3 那条同理）。判据取「锚点注释 → 下一个 `Ok(Some(` 之间」这段
+    /// 区域，避开同函数里其他 FileCompleteAck 的计数干扰。
+    #[test]
+    fn duplicate_file_done_still_answers_with_an_ack() {
+        let src = crate::network::transport_src_for_guards();
+        let body = rust_fn_body(&src, "pub async fn handle_message(");
+        let at = body.find("重复 FileDone").expect(
+            "handle_message 里那段「重复 FileDone」判据注释不见了 ⇒ 这条守卫的区域锚点失效",
+        );
+        let arm = &body[at..];
+        let region = &arm[..arm
+            .find("Ok(Some(")
+            .expect("接收器在位的那条分支锚点不见了")];
+        let flat = code_flat(region);
+        assert_eq!(
+            flat.matches("Message::FileCompleteAck{").count(),
+            2,
+            "两个出口各回一帧 Ack：已收完回成功、没收下也必须回失败（静默 = 发送端白等一整个静默窗口）"
+        );
+        assert!(
+            flat.contains("Message::FileCompleteAck{transfer_id,success:false,}"),
+            "「本机没这份文件」的出口必须回**失败** Ack；写成功会让发送端把没收下的文件标成已送达"
+        );
+    }
+
+    /// 「对方已收完」这条捷径必须和成功回执走**同一份**收尾（2026-09-23 审计 A6 的自审发现）。
+    ///
+    /// Offer 阶段对方直接回 `received = size` 时，发送端 `return Ok(())` 是不再发一个分片的
+    /// 正确决定 —— 但收尾（`file_transfers` 落 done、`file-*` 推进 delivered、
+    /// `message-acked` / `file-done` / `file-progress` 三个事件）原本整段写在 `stream_file`
+    /// 里，捷径一绕过去就是**对方已经收到、我方气泡永久转圈**。判据用定义+调用的总数，
+    /// 因为"少了哪一处"正是这类缺陷的形状；两个调用点各自对应一条成功证据。
+    #[test]
+    fn already_have_shortcut_shares_the_send_finalization() {
+        let file = include_str!("network/file.rs");
+        assert_eq!(
+            file.matches("finalize_send_accepted(").count(),
+            3,
+            "1 处定义 + 2 处调用（stream_file 成功回执 / Offer 的 received≥size 捷径）。\
+             少于 3 = 又出现一条「发送成功却没落终态」的出口 —— 用户看到的是文件气泡一直转圈"
+        );
+        let arm = rust_fn_body(file, "pub async fn send_file_from_path_at(");
+        let at = arm
+            .find("if n >= size && size > 0")
+            .expect("Offer 阶段「对方已收完」那条分支的判据锚点不见了");
+        assert!(
+            arm[at..]
+                .find("finalize_send_accepted(")
+                .is_some_and(|i| i < arm[at..].find("return Ok(())").unwrap_or(usize::MAX)),
+            "「对方已收完」必须先落收尾再 return，否则本机状态永远停在 pending"
+        );
+    }
+
     /// transport 生产代码的 std Mutex 一律**抗中毒**取锁（审计 A8）。
     ///
     /// 全仓主导写法是 `.lock().unwrap_or_else(|e| e.into_inner())`（`state.rs` 的注释也明令"不要写

@@ -437,6 +437,20 @@ pub async fn send_file_from_path_at(
                     )
                     .await;
                 }
+                Ok(Ok(Err(n))) if n >= size && size > 0 => {
+                    // 接收端已完整持有这份文件（2026-09-23 审计 A6）：它的
+                    // decide_offer 判定 AlreadyHave 后回 received = size ⇒ 一发分片
+                    // 都不必再发。旧实现会继续重发 Offer（n > resume_from 不再成立 →
+                    // 落入超时分支），接收端则整份重推一遍落"名字(1)"副本。
+                    state.logger.info(
+                        "file",
+                        format!("接收端已完整收下该文件，直接完成 transfer={transfer_id}"),
+                    );
+                    // 收尾与 stream_file 拿到成功回执时**共用同一份**：少了它，对方明明
+                    // 已经有了，本机气泡却永久转圈、transfer 行停在 pending。
+                    finalize_send_accepted(state, transfer_id, peer_id, &name, size, &path);
+                    return Ok(());
+                }
                 Ok(Ok(Err(n))) if n > resume_from => {
                     state.logger.info(
                         "file",
@@ -529,7 +543,30 @@ pub async fn send_file_via_relay(
     // ⚠️ **逐片读盘，不整读进内存**。这里原先 `std::fs::read(&path)` 把整个文件读进来再切片：
     // 中继发送的是共享目录里的文件（可能很大），整读后逐片 base64（×1.33）会让内存峰值
     // 超过文件大小本身。改成按需 seek + read_exact，峰值只剩一个分片。
-    let chunk_size = crate::file_relay::MIN_CHUNK_SIZE;
+    //
+    // 分片大小必须迁就链路中最受限的邻居（2026-09-23 审计 B1）：中继帧会发给
+    // **所有**有直连的邻居，任一邻居是 BLE 时，64KiB 分片（base64 后 ~87KB）会反复
+    // 撑爆 BLE 写超时（整帧一个 deadline，重试数次即拆链）—— 纯蓝牙链路必现停摆
+    // 与丢片。直传早有 `chunk_size_for_path` 门控，中继路径在此补齐：有 BLE 邻居就
+    // 整单用 BLE 尺寸（迁就最慢路径；协议无感知，total_chunks 相应变化，跨版本兼容）。
+    //
+    // 判据刻意用「邻居名下**存在** BLE 链路」而不是「邻居的最佳链路是 BLE」：
+    // `send_over_order` 在首选链路队列满（Full）时会顺延到 order 里的下一条，
+    // 因此同一邻居同时有 LAN+BLE 时，拥塞的那一帧照样会落到 BLE 上并把链路拆掉。
+    // 按最佳链路判会把罕见但致命的拆链换成"LAN 邻居多吃些小帧"，不划算。
+    let chunk_size = {
+        let links = state.links.lock().await;
+        let any_ble = links
+            .iter()
+            .filter(|(p, _)| p.as_str() != peer_id)
+            .flat_map(|(_, ls)| ls.iter())
+            .any(|l| l.path_kind == crate::mesh::PathKind::Bluetooth);
+        if any_ble {
+            BLE_FILE_CHUNK
+        } else {
+            crate::file_relay::MIN_CHUNK_SIZE
+        }
+    };
     let total = size as usize;
     let chunk_count = total.div_ceil(chunk_size).max(1) as u32;
     let mut src = std::fs::File::open(&path).map_err(|e| format!("读取文件失败：{e}"))?;
@@ -1007,14 +1044,30 @@ async fn stream_file(
     if !completed {
         return Err(SendFileError::retryable("接收方未确认文件完成"));
     }
+    finalize_send_accepted(state, transfer_id, peer_id, &name, size, &path);
+    Ok(())
+}
 
+/// 发送端拿到"对方已完整收下"的证据后统一的收尾：落 `done` + 推进 `delivered` + 三个事件。
+///
+/// 必须只有一份，两个调用点共用：`stream_file` 收到成功 `FileCompleteAck` 之后，以及
+/// Offer 阶段对方直接回 `received = size`（2026-09-23 审计 A6 的 `AlreadyHave`）。
+/// 少一份的表现很具体：对方明明已经有了，本机气泡永久转圈、`file_transfers` 停在 pending。
+fn finalize_send_accepted(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    peer_id: &str,
+    name: &str,
+    size: u64,
+    path: &std::path::Path,
+) {
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
             peer_id,
-            &name,
+            name,
             size,
             "send",
             "done",
@@ -1034,7 +1087,7 @@ async fn stream_file(
         "file-done",
         &FileDoneInfo {
             transfer_id: transfer_id.to_string(),
-            name: name.clone(),
+            name: name.to_string(),
             size,
             path: path.to_string_lossy().to_string(),
         },
@@ -1047,7 +1100,6 @@ async fn stream_file(
             total: size,
         },
     );
-    Ok(())
 }
 
 /// 该 transfer_id 已保留的 .part 前缀字节数（无则 0）。
@@ -1266,6 +1318,14 @@ pub fn begin_receive(
 /// 收到 `FileOffer` 时接收端的答复。
 #[derive(Debug, PartialEq, Eq)]
 pub enum OfferDecision {
+    /// 回 `FileReject { received = 文件总大小 }`：本机已完整收下这份内容，
+    /// 发送端不得再发任何分片（收到 `received ≥ size` 应直接宣布完成）。
+    ///
+    /// 为什么必须有（2026-09-23 审计 A6）：旧判据只有「活跃接收器 / .part 前缀 /
+    /// from_bytes」三输入——**没有"本机已收完"**。收完之后 `.part` 已改名、接收器
+    /// 已清空 ⇒ 三输入全归零 ⇒ 重复 Offer 判成 Accept ⇒ 整份重推落「名字(1)」副本
+    /// （重复 Offer 的常见来源：A4 丢回执 → 发送端 outbox 重试）。
+    AlreadyHave,
     /// 回 `FileAccept`，其它什么都不动（全新，或"同一起点的重复 offer"）。
     Accept,
     /// 回 `FileAccept`，**并且**把活跃接收器切到"新段从 `seq = 0` 重编"。
@@ -1300,7 +1360,13 @@ pub fn decide_offer(
     active_received: u64,
     disk_retained: u64,
     from_bytes: u64,
+    already_completed: bool,
 ) -> OfferDecision {
+    // 「本机已收完」优先于一切位置判据（审计 A6）：收完后三输入全归零，
+    // 任何位置比较都会退化成"整份重推"。
+    if already_completed {
+        return OfferDecision::AlreadyHave;
+    }
     let held = if has_active {
         active_received
     } else {
@@ -3267,7 +3333,7 @@ mod tests {
         use super::{decide_offer, OfferDecision};
         let held = 40 * 1024 * 1024;
         assert_eq!(
-            decide_offer(true, held, held, 0),
+            decide_offer(true, held, held, 0, false),
             OfferDecision::ResumeFrom(held),
             "活跃接收器已收 40MB、对方却从 0 重发 ⇒ 必须回真实位置，不能裸 Accept"
         );
@@ -3283,15 +3349,36 @@ mod tests {
         // 位置对得上 ⇒ 答复仍然属于"接受"这一族，绝不退回 reject（那是被真机教育过的旧行为：
         // 两边都显示成功、接收侧列表里没有）。但**续传段**必须连带把段号归零 ⇒ 判据要能区分。
         assert_eq!(
-            decide_offer(true, held, held, held),
+            decide_offer(true, held, held, held, false),
             OfferDecision::AcceptResumeSegment,
             "位置一致的续传段：接受 + 段号归零"
         );
         // 同一起点的重复 offer ⇒ **不许**归零：上一轮 attempt 已入队的分片还在排空，
         // 归零会把它们判成「跳号」⇒ `Err(文件分片顺序错误)` ⇒ 整单死。
-        assert_eq!(decide_offer(true, 0, 0, 0), OfferDecision::Accept);
+        assert_eq!(decide_offer(true, 0, 0, 0, false), OfferDecision::Accept);
         // 全新传输：什么都没有，对方也从 0 开始
-        assert_eq!(decide_offer(false, 0, 0, 0), OfferDecision::Accept);
+        assert_eq!(decide_offer(false, 0, 0, 0, false), OfferDecision::Accept);
+    }
+
+    /// 回归（2026-09-23 审计 A6）：「本机已收完」必须优先于一切位置判据。
+    ///
+    /// 收完之后 `.part` 已改名、活跃接收器已清空 ⇒ 三输入全归零（与全新传输同形），
+    /// 旧判据把重复 Offer 判成 Accept ⇒ 整份重推落「名字(1)」副本
+    /// （重复 Offer 的常见来源：终态回执丢失 → 发送端 outbox 重试）。
+    #[test]
+    fn completed_transfer_rejects_duplicate_offer_without_resend() {
+        use super::{decide_offer, OfferDecision};
+        // 三输入全零但已收完：必须 AlreadyHave，绝不能 Accept
+        assert_eq!(
+            decide_offer(false, 0, 0, 0, true),
+            OfferDecision::AlreadyHave,
+            "已收完的传输收到重复 Offer：拒绝重推（审计 A6）"
+        );
+        // 即使残留了活跃接收器/磁盘前缀的形态，已收完也一票否决
+        assert_eq!(
+            decide_offer(true, 1024, 1024, 1024, true),
+            OfferDecision::AlreadyHave
+        );
     }
 
     /// 权威是"**我有什么**"，而活跃接收器的内存计数比磁盘 `.part` 更靠前
@@ -3302,13 +3389,13 @@ mod tests {
         use super::{decide_offer, OfferDecision};
         let (live, disk) = (30 * 1024 * 1024, 20 * 1024 * 1024);
         assert_eq!(
-            decide_offer(true, live, disk, 0),
+            decide_offer(true, live, disk, 0, false),
             OfferDecision::ResumeFrom(live),
             "有活跃接收器时必须报内存里的真实值，不是 .part 大小"
         );
         // 没有活跃接收器（断链后进程没重启）⇒ 磁盘前缀才是唯一事实
         assert_eq!(
-            decide_offer(false, 0, disk, 0),
+            decide_offer(false, 0, disk, 0, false),
             OfferDecision::ResumeFrom(disk),
             "无活跃接收器时仍以 .part 前缀为准（这条是既有行为，锁住别退回去）"
         );

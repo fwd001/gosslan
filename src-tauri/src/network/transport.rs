@@ -60,25 +60,63 @@ const RELAY_STATE_TTL_MS: i64 = 60 * 60 * 1000;
 
 /// 清扫过期的中继态（`relay_file_keys` + `reassemblies`），返回清掉的条目数。
 /// 与 `sweep_stale_parts` 同一趟定时任务里跑。
+///
+/// 回收 ≠ 静默消失（2026-09-23 审计 A2）：被回收的传输若在 `file_transfers`
+/// 里仍是 active（offer 落过库、前端在显示进度），必须标 failed 并 emit
+/// `file-failed` —— 旧行为只 retain，DB 行永远停在某个百分比，接收端永久卡 X%。
 pub fn sweep_stale_relay(state: &AppState) -> usize {
     let cutoff = db::now_ms() - RELAY_STATE_TTL_MS;
-    let mut n = 0;
+    let mut removed: Vec<String> = Vec::new();
     state
         .relay_file_keys
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .retain(|_, v| {
+        .retain(|k, v| {
             let keep = v.created_at > cutoff;
             if !keep {
-                n += 1;
+                removed.push(k.clone());
             }
             keep
         });
-    n += state
-        .relay
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .sweep_stale_reassemblies(cutoff);
+    removed.extend(
+        state
+            .relay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sweep_stale_reassemblies(cutoff),
+    );
+    let n = removed.len();
+    if !removed.is_empty() {
+        // 锁只圈住写库，emit 一律出锁再做：在 db 锁内 emit 会把「锁内慢活」请回来
+        // （前端收到 file-failed 后的下一次 IPC 要抢同一把锁）。
+        let marked: Vec<String> = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            let mut done = Vec::new();
+            for id in &removed {
+                match db::mark_transfer_failed_if_active(&dbc, id) {
+                    // 只改仍 active 的行：done/failed 的既有终态不许被回收动作改写
+                    Ok(true) => done.push(id.clone()),
+                    Ok(false) => {}
+                    Err(e) => state.logger.warn(
+                        "relay",
+                        format!(
+                            "回收中继传输时标 failed 失败，DB 行可能仍停在 active id={id}: {e}"
+                        ),
+                    ),
+                }
+            }
+            done
+        };
+        for id in marked {
+            let _ = state.app.emit(
+                "file-failed",
+                &FileFailedInfo {
+                    transfer_id: id,
+                    reason: "接收超时：中继传输一小时未完成，已回收".to_string(),
+                },
+            );
+        }
+    }
     n
 }
 
@@ -3433,13 +3471,47 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             // 早就听得懂 `FileReject.received`，它只是从来没被这样告诉过）。
             let active = file::receiver_progress(state, &transfer_id);
             let disk_retained = file::retained_part_len(state, &transfer_id);
+            // 「本机已收完」也是判据输入（2026-09-23 审计 A6）：收完后 .part 已改名、
+            // 接收器已清空，三输入全归零 ⇒ 旧判据把重复 Offer 判成 Accept ⇒ 整份
+            // 重推落"名字(1)"副本。已 done 的传输一律回 AlreadyHave。
+            let done_query = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::is_transfer_done(&dbc, &transfer_id)
+            };
+            // 查询失败按「还没收完」处理（保守方向：最坏重传一次，不会丢数据），但必须留痕。
+            let already_completed = done_query.unwrap_or_else(|e| {
+                state.logger.warn(
+                    "file",
+                    format!("查询传输终态失败，按未收完处理 transfer={transfer_id}: {e}"),
+                );
+                false
+            });
             let decided = file::decide_offer(
                 active.is_some(),
                 active.unwrap_or(0),
                 disk_retained,
                 from_bytes,
+                already_completed,
             );
             match decided {
+                file::OfferDecision::AlreadyHave => {
+                    state.logger.info(
+                        "file",
+                        format!(
+                            "本机已完整收下该文件，拒绝重推 transfer={transfer_id}（回 received=size）"
+                        ),
+                    );
+                    let _ = try_send(
+                        state,
+                        peer_id,
+                        &Message::FileReject {
+                            transfer_id,
+                            received: size,
+                        },
+                    )
+                    .await;
+                    return;
+                }
                 file::OfferDecision::ResumeFrom(held) => {
                     state.logger.info(
                         "file",
@@ -3712,10 +3784,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     // 避免发送方因重试而一直等待。
                     let already_done = {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        db::list_transfers(&dbc)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .any(|t| t.id == transfer_id && t.status == "done")
+                        db::is_transfer_done(&dbc, &transfer_id).unwrap_or(false)
                     };
                     if already_done {
                         let _ = try_send(
@@ -3724,6 +3793,21 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                             &Message::FileCompleteAck {
                                 transfer_id,
                                 success: true,
+                            },
+                        )
+                        .await;
+                    } else {
+                        // 接收器已清且库非 done（接收态被 TTL 回收 / 本机从未接受该
+                        // 传输）：也必须回一帧失败确认（2026-09-23 审计 A5）—— 旧实现
+                        // 这里静默，发送端收不到任何帧只能干等静默窗口超时。立刻拿到
+                        // 失败终态才不会白等；发送端只认 file_transfers 里登记的
+                        // peer_id，伪造面不变。
+                        let _ = try_send(
+                            state,
+                            peer_id,
+                            &Message::FileCompleteAck {
+                                transfer_id,
+                                success: false,
                             },
                         )
                         .await;
@@ -6304,13 +6388,20 @@ fn finalize_expired_message(dbc: &rusqlite::Connection, msg_id: &str, group: boo
     status_ok && deleted
 }
 
-/// 把一条过期的**文件** outbox 落终态（审计 A3 同型）：标记 file_outbox 失败 + 两个消息前缀
-/// （`file-` / `gfile-`）置 failed + transfer 落 failed。**全部成功**才返回 true（门控 `emit("file-failed")`）。
+/// 把一条过期的**文件** outbox 落终态（审计 A3 同型）：两个消息前缀（`file-` / `gfile-`）
+/// 置 failed + transfer 落 failed + 标记 file_outbox 失败。**全部成功**才返回 true（门控
+/// `emit("file-failed")`）。
+///
+/// ⚠️ 写序不能随便排：`mark_file_outbox_failed` 是**唯一会把行踢出重试集合**的写
+/// （`list_expired_file_outbox` 只选 pending/sending），必须放最后。放在最前面时，
+/// 一旦后面某步失败，返回 `false` 的"下轮重试"承诺就落空了 —— 行已经是 failed，
+/// 再也扫不到，界面永久停在"发送中"。前三步都可重复执行（`set_message_status`
+/// 带正向单调条件、`upsert_transfer` 是 upsert），所以整体重放无害。
 fn finalize_expired_file(dbc: &rusqlite::Connection, transfer_id: &str) -> bool {
-    db::mark_file_outbox_failed(dbc, transfer_id).is_ok()
-        && db::set_message_status(dbc, &format!("file-{transfer_id}"), "failed").is_ok()
+    db::set_message_status(dbc, &format!("file-{transfer_id}"), "failed").is_ok()
         && db::set_message_status(dbc, &format!("gfile-{transfer_id}"), "failed").is_ok()
         && db::upsert_transfer(dbc, transfer_id, "", "", 0, "send", "failed", None, 0.0).is_ok()
+        && db::mark_file_outbox_failed(dbc, transfer_id).is_ok()
 }
 
 /// 启动 outbox 超时清扫后台任务。
@@ -8365,6 +8456,68 @@ mod tests {
             !finalize_expired_message(&conn, "m2", false),
             "任一步写库失败必须返回 false —— 否则 emit 谎报失败而 outbox 行还在 ⇒ 重复投递"
         );
+    }
+
+    /// 审计 A3 的**自身缺陷**（2026-09-23 review 发现，非清单条目）：
+    /// `finalize_expired_file` 四步里只有 `mark_file_outbox_failed` 会把行踢出重试集合
+    /// （`list_expired_file_outbox` 只选 pending/sending）。它原先排**第一** ⇒ 后面任一步失败时
+    /// "返回 false、下一 tick 重试"是假承诺：行已是 failed，再也扫不到，界面永久停在"发送中"。
+    /// 判据 = 破坏性写必须排最后，且失败时行仍要能被扫到。
+    #[test]
+    fn finalize_expired_file_failure_leaves_the_row_retryable() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        let deadline = db::now_ms() + 10_000;
+
+        // 绿路：四步全成功 ⇒ true，outbox 行落 failed（此后不再进重试集合，这是**成功**的表现）
+        db::insert_file_outbox(&conn, "t1", "peer", None, "/tmp/x", "x.bin", 10).unwrap();
+        db::mark_file_outbox_sending(&conn, "t1", 0).unwrap();
+        assert!(finalize_expired_file(&conn, "t1"));
+        assert_eq!(
+            file_outbox_status(&conn, "t1").as_deref(),
+            Some("failed"),
+            "成功落终态后行必须标 failed"
+        );
+        assert!(
+            !expired_ids(&conn, deadline).contains(&"t1".to_string()),
+            "已落终态的传输不该再被扫到"
+        );
+
+        // 失败路：messages 表不可用 ⇒ 第一步就失败 ⇒ 返回 false（emit 被门控），
+        // 且这条行必须**仍在**重试集合里，否则"下一 tick 重试"就是假话。
+        conn.execute_batch("DROP TABLE messages").unwrap();
+        db::insert_file_outbox(&conn, "t2", "peer", None, "/tmp/y", "y.bin", 10).unwrap();
+        db::mark_file_outbox_sending(&conn, "t2", 0).unwrap();
+        assert!(
+            !finalize_expired_file(&conn, "t2"),
+            "任一步写库失败必须返回 false"
+        );
+        assert_eq!(
+            file_outbox_status(&conn, "t2").as_deref(),
+            Some("sending"),
+            "写库没成功时不得提前把行标 failed —— 否则它永远退不出重试集合"
+        );
+        assert!(
+            expired_ids(&conn, deadline).contains(&"t2".to_string()),
+            "失败的终态必须还能被下一轮清扫扫到（破坏性写要排最后）"
+        );
+    }
+
+    fn file_outbox_status(conn: &rusqlite::Connection, id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT status FROM file_outbox WHERE transfer_id = ?1",
+            rusqlite::params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    fn expired_ids(conn: &rusqlite::Connection, deadline: i64) -> Vec<String> {
+        db::list_expired_file_outbox(conn, deadline)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _, _, _)| id)
+            .collect()
     }
 
     /// P1-3 / Test C：三态落库裁决 → 副作用与 Ack 策略的映射必须是显式且可测的。

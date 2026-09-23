@@ -1975,6 +1975,52 @@ mod tests {
         assert_eq!(t.progress, 1.0);
     }
 
+    /// 中继态回收 / Offer 判据的两个单行助手（审计 A2 + A6）。
+    ///
+    /// 钉的是**边界**而不是"能跑"：回收只准改 active 行（已 done 的行被改写成 failed
+    /// = 用户看到收好的文件变失败），而 `is_transfer_done` 必须只认 done（把 active
+    /// 当成"已收完"会让正在传输的文件被回绝重推）。
+    #[test]
+    fn transfer_terminal_helpers_touch_only_their_own_rows() {
+        let conn = mem();
+        for (id, status) in [("t-active", "active"), ("t-done", "done")] {
+            upsert_transfer(&conn, id, "b", "x.bin", 10, "receive", status, None, 0.5).unwrap();
+        }
+
+        // active ⇒ 改到 failed 并回报"确实改了"（调用方据此才 emit file-failed）
+        assert!(mark_transfer_failed_if_active(&conn, "t-active").unwrap());
+        assert_eq!(transfer_status(&conn, "t-active").as_deref(), Some("failed"));
+        // 第二次不再命中 active：回报 false，调用方据此**不重复** emit
+        assert!(
+            !mark_transfer_failed_if_active(&conn, "t-active").unwrap(),
+            "已落终态的行不该再被回收动作改写"
+        );
+
+        // done ⇒ 既有终态不许被回收改写
+        assert!(
+            !mark_transfer_failed_if_active(&conn, "t-done").unwrap(),
+            "回收只改 active 行"
+        );
+        assert_eq!(transfer_status(&conn, "t-done").as_deref(), Some("done"));
+
+        // 库里没有的行（只登记在中继内存表里）⇒ false，不 panic
+        assert!(!mark_transfer_failed_if_active(&conn, "t-missing").unwrap());
+
+        // is_transfer_done 只认 done
+        assert!(is_transfer_done(&conn, "t-done").unwrap());
+        assert!(!is_transfer_done(&conn, "t-active").unwrap());
+        assert!(!is_transfer_done(&conn, "t-missing").unwrap());
+    }
+
+    fn transfer_status(conn: &Connection, id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT status FROM file_transfers WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    }
+
     /// 群消息 outbox：同一 msg_id 对不同 peer 各保留一行；GroupAck 只删对应行。
     #[test]
     fn group_outbox_per_peer_and_delete_by_msg_peer() {

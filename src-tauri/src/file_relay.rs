@@ -222,14 +222,20 @@ impl RelayManager {
         self.senders.values().filter(|v| !v.is_empty()).count()
     }
 
-    /// 回收在 `cutoff` 之前开始、且仍未完成的重组。返回清掉的条目数。
+    /// 回收在 `cutoff` 之前开始、且仍未完成的重组。
     ///
-    /// 只按时间回收：一个 1 小时都没组完的传输，其后续分片即便到达也无处安放
-    /// （发送端早已重试或放弃）。正在活跃传输的条目时间戳很新，不会被误清。
-    pub fn sweep_stale_reassemblies(&mut self, cutoff: i64) -> usize {
-        let before = self.reassemblies.len();
-        self.reassemblies.retain(|_, r| r.created_at > cutoff);
-        before - self.reassemblies.len()
+    /// 返回被清掉的 transfer_id 列表（2026-09-23 审计 A2：调用方要据此给
+    /// file_transfers 里仍 active 的行标失败终态——静默消失 = 前端永久卡 X%）。
+    pub fn sweep_stale_reassemblies(&mut self, cutoff: i64) -> Vec<String> {
+        let mut removed = Vec::new();
+        self.reassemblies.retain(|k, r| {
+            let keep = r.created_at > cutoff;
+            if !keep {
+                removed.push(k.clone());
+            }
+            keep
+        });
+        removed
     }
 }
 
@@ -266,18 +272,20 @@ mod tests {
         if let Some(r) = m.reassemblies.get_mut("stale") {
             r.created_at = 1_000;
         }
-        let cutoff = 2_000; // only "stale" (1_000) is below it
+        let cutoff = 2_000; // 只有 "stale"（1_000）早于它
 
+        // 返回的是被回收的 transfer_id 列表（审计 A2：调用方据此给仍 active
+        // 的传输标失败终态，所以必须能知道"清掉了谁"）
         assert_eq!(
             m.sweep_stale_reassemblies(cutoff),
-            1,
-            "应只清掉过期的那一条"
+            vec!["stale".to_string()],
+            "应只清掉过期的那一条，且报出它的 id"
         );
         assert!(m.reassemblies.contains_key("fresh"), "进行中的重组不得被清");
         assert!(!m.reassemblies.contains_key("stale"));
 
         // 再清一次：已无可清项（幂等）
-        assert_eq!(m.sweep_stale_reassemblies(cutoff), 0);
+        assert!(m.sweep_stale_reassemblies(cutoff).is_empty());
     }
 
     /// 重复的 RelayFileOffer（多邻居泛洪）不得清空已收到的切片。

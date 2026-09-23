@@ -10,6 +10,80 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-23 稳定性审计 阶段 3 · 协议与文件可靠性)
+
+清单 11 条（A1–A7 / B1–B3 / G1）逐条重跑原文坐实后**修 7 条**，另 4 条记为已知限制（理由见末尾）。
+其中 2 条是修完之后再自查查出来的**修法自身缺陷**（A3 写序、A6 收尾），不是清单条目。
+
+**协议与选路**
+- **G1** `mesh/router.rs::on_receive` 改为**先判 TTL、再登记去重**。旧顺序是先去重：TTL 不在帧
+  签名内，恶意/异常中继把某帧的 ttl 改成 0 再转发，本机登记 frame_id 后 Drop ⇒ 之后所有诚实
+  路径送来的合法副本（ttl 正常）全被判 `Duplicate` = **单跳点封杀这条消息**。现在 TTL=0 的帧
+  根本不进登记。回归用例 `zero_ttl_frame_does_not_burn_the_dedup_slot`（双侧断言）。
+- **B1** `send_file_via_relay` 的分片大小迁就链路中最受限的邻居：中继帧泛洪给**所有**有直连的
+  邻居，任一邻居是 BLE 时 64KiB 分片（base64 后 ~87KB）会反复撑爆 BLE 写超时并**拆掉整条链路**
+  （直传早有 `chunk_size_for_path` 门控，中继路径此前漏掉）。判据刻意用「邻居名下**存在** BLE
+  链路」而不是「邻居的最佳链路是 BLE」：`send_over_order` 在首选链路队列满（Full）时会顺延到
+  order 里的下一条，同一邻居有 LAN+BLE 时那一帧照样落到 BLE —— 按最佳链路判会把罕见但致命的
+  拆链换成"LAN 邻居多收些小帧"，不划算（成因写进注释）。
+- **B3** `network/ble.rs` 丢弃"握手中 central 的重复 Hello"时补一条日志。行为不变，但此前这条
+  输入路径在日志里完全不可见，重连方报"握手超时"时无从排查。
+
+**文件传输终态与续传**
+- **A2** `sweep_stale_relay` 回收过期中继态时，给 `file_transfers` 里仍 active 的行标 failed 并
+  emit `file-failed`（旧行为只 `retain` 内存 ⇒ DB 行永远停在某个百分比，**接收端永久卡 X%**）。
+  新增 `db::mark_transfer_failed_if_active`：只改 active 行，done/failed 等既有终态不许被回收
+  动作改写。emit 一律挪到 db 锁**之外**（锁内只收集要通知的 id）—— 在锁内 emit 会把阶段 2 刚
+  消灭的「锁内慢活」请回来；写库失败不再 `unwrap_or(false)` 静默，改为 warn 留痕。
+  `sweep_stale_reassemblies` 改为返回被回收的 transfer_id 列表。
+- **A5** `Message::FileDone` 的 `Ok(None)` 分支补 else：接收器已清且库非 done 时也回一帧失败
+  Ack。旧实现只有 `if already_done { 回成功 }` 而**没有 else** ⇒ 本机从没收下这份文件时一帧都不
+  回，发送端只能干等整个静默窗口（`FILE_ACK_IDLE`）才判失败，然后整套重发。
+- **A6** 重复 Offer 判据补第四输入「本机已收完」：`decide_offer` 新增 `AlreadyHave`，命中时回
+  `FileReject{ received = size }`。此前判据只有「活跃接收器 / .part 前缀 / from_bytes」三项，
+  而收完之后 .part 已改名、接收器已清空 ⇒ 三输入全归零，与"全新传输"同形 ⇒ 重复 Offer 判成
+  Accept ⇒ 整份重推落"名字(1)"副本。发送端 `received ≥ size` 时直接进完成路径，不再重发 Offer。
+- **A6 的自审发现（严重）**：该捷径最初的 `return Ok(())` 绕过了 `stream_file` 里整段收尾
+  （落 done / 推进 `file-*` 到 delivered / `message-acked`+`file-done`+`file-progress` 三个事件）
+  ⇒ **对方已经收到文件，我方气泡永久转圈、transfer 行停在 pending**。收尾抽成
+  `finalize_send_accepted()` 供两个出口共用（不在捷径里重抄一遍，避免第二份真相源）。
+- **A3 的自审发现（严重，非清单条目）**：`finalize_expired_file` 四步里唯一会把行踢出重试集合的
+  `mark_file_outbox_failed` 原先排**第一**（`list_expired_file_outbox` 只选 pending/sending）⇒
+  后面任一步失败时"返回 false、下一 tick 重试"是假话：行已经是 failed，再也扫不到，
+  **界面永久停在"发送中"**。破坏性写改到最后一位，`finalize_expired_message` 的同型判据一并钉住。
+- A6/A5 两处「本机是否已收完」的查询由 `list_transfers()` 全表扫改成新的单行查询
+  `db::is_transfer_done()`（Offer/FileDone 热路径每帧付一次，而 `file_transfers` 恰是随使用单调
+  增长的表）；查询失败按"未收完"处理（保守方向：最坏重传一次，不丢数据）但必须 warn 留痕。
+
+**判定不修 / 待单独实施（本轮明确记录）**
+- **A1 中继发送端假成功**：`relay_send_to_neighbors` 对每个邻居 `let _ = try_send`，发送端把
+  "字节写出"当"送达"、跑完就落 done —— 命中 `docs/acceptance/1.0-release.md` 禁止项。
+  用户已选择**完整修复**，但完整语义需要"接收端回执帧 + 能力位门控"（老版本不回执，不能干等），
+  属协议级改动，方案单独评审后实施，不在本阶段夹带。
+- **A7 群文件协议层无续传**：群文件链路根本没有 offer/位置回执，续传需要协议级改动 + 跨版本
+  兼容设计。发版尾声硬塞风险大于收益。
+- **B2 Windows BLE 重组表回收**：需要 Windows 真机验证，无法在本环境取证。
+- **A4/A3 终态帧 `try_send` 无痕**：终态帧（FileDone / Ack）投递失败时不留痕迹，修法涉及
+  "终态要不要重试"的设计决策，与 A1 同一批处理。
+- **A6 判据的依赖边界**（本轮复核确认，不额外加固）：`AlreadyHave` 的事实来源是
+  `file_transfers.status = 'done'`，直传与中继两条接收路径都在成功落盘后写这个终态（已核对
+  `transport.rs` 中继完成分支与 `stream_file` 成功回执）。若那次 `upsert_transfer` 自身失败
+  （`.ok()` 丢弃），重复 Offer 仍会退化成重新接收落"名字(1)"副本 —— 这是"落终态失败"这一类
+  问题的共同根，修法属 A4 的"终态写入需要可靠投递"范畴，不在本阶段夹带。
+
+### Tests (阶段 3)
+
+- 新增 4 条 `lib.rs` 源码守卫：`relay_reclaim_finalizes_in_db_and_emits_outside_the_lock`、
+  `terminal_finalize_defers_the_destructive_write`、`duplicate_file_done_still_answers_with_an_ack`、
+  `already_have_shortcut_shares_the_send_finalization`。
+- 新增 4 条 `verify-guards.py` 变异用例（`--only st3-terminal` 实跑，四条全部"改坏即 FAIL、
+  恢复即 PASS"）。其中 A5 那条第一版把 `if` 的收尾花括号一起删了 ⇒ 红的是编译器而不是判据
+  （弱确认），已修正并在用例注释里记下这个坑。
+- 新增功能用例：`finalize_expired_file_failure_leaves_the_row_retryable`（失败时行必须仍可被
+  扫到）、`transfer_terminal_helpers_touch_only_their_own_rows`（两个单行助手的边界）、
+  `completed_transfer_rejects_duplicate_offer_without_resend`、`zero_ttl_frame_does_not_burn_the_dedup_slot`。
+- Rust lib 测试基线 653 → 659。
+
 ## [4.29.5] - 2026-09-23
 
 ### Fixed (2026-09-23 稳定性审计 阶段 2 · 结构性根因：全局 db 锁 / 主线程 / 静默吞错)

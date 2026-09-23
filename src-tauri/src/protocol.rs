@@ -1744,8 +1744,6 @@ mod tests {
         }
     }
 
-    use super::*;
-
     fn env() -> GossipEnvelope {
         GossipEnvelope {
             message_id: String::new(),

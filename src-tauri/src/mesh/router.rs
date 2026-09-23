@@ -178,21 +178,26 @@ impl MeshRouter {
         true
     }
 
-    /// 收到一帧后的处理（§15）：dedup → TTL → 目标判定 → 转发决策。
+    /// 收到一帧后的处理（§15）：TTL → dedup → 目标判定 → 转发决策。
     ///
-    /// 注意顺序：**先去重再判 TTL**。反过来的话，TTL 耗尽的帧每次都会被重新登记
-    /// 进去重表，既污染缓存也让同一帧的重复到达无法被识别。
+    /// 注意顺序：**先判 TTL 再登记去重**（2026-09-23 审计 G1）。TTL 不在帧签名内，
+    /// 恶意/异常中继把 ttl 改 0 的帧若先烧掉 frame_id 再 Drop，之后所有诚实路径的
+    /// 合法副本（ttl 正常）都会被判 Duplicate = 单跳点封杀这条消息。
+    /// TTL=0 的帧直接丢弃、**不登记**——同一帧重复到达每次只多付一次 TTL 比较，
+    /// 无缓存污染（旧注释担心的"TTL 耗尽帧反复登记"只在 TTL=0 也走到登记步骤时
+    /// 才成立，本顺序下它根本到不了登记）。
     pub fn on_receive(&mut self, frame: MeshFrame, my_node_id: &str) -> ForwardDecision {
-        // 1. 全局去重
-        if !self.is_new_frame(&frame.frame_id) {
-            return ForwardDecision::Drop(DropReason::Duplicate);
-        }
-
-        // 2. TTL（先按上限裁剪，防止对端自报超大 TTL）
+        // 1. TTL（先按上限裁剪，防止对端自报超大 TTL）
         let effective = frame.ttl.min(self.max_ttl);
         if effective == 0 {
             return ForwardDecision::Drop(DropReason::TtlExhausted);
         }
+
+        // 2. 全局去重（只有过得了 TTL 的帧才登记）
+        if !self.is_new_frame(&frame.frame_id) {
+            return ForwardDecision::Drop(DropReason::Duplicate);
+        }
+
         let remaining = effective - 1;
 
         // 3. 目标判定
@@ -331,6 +336,33 @@ mod tests {
         let mut r = router();
         let d = r.on_receive(frame("f1", "A", MeshDestination::Broadcast, 0), "me");
         assert_eq!(d, ForwardDecision::Drop(DropReason::TtlExhausted));
+    }
+
+    /// 回归（2026-09-23 审计 G1）：被篡改 ttl=0 的帧**不得烧掉 frame_id**。
+    ///
+    /// 攻击链：TTL 不在帧签名内 ⇒ 恶意中继把一条帧的 ttl 改 0 再发（签名仍有效）；
+    /// 若先登记去重再判 TTL，受害者把 frame_id 烧进去重表后 Drop ⇒ 之后所有诚实
+    /// 路径送来的合法副本（ttl 正常）全被判 Duplicate = 单跳点封杀这条消息。
+    /// 修复后 TTL=0 不登记：同一 frame_id 的合法副本仍能正常投递。
+    #[test]
+    fn zero_ttl_frame_does_not_burn_the_dedup_slot() {
+        let mut r = router();
+        // 恶意/异常中继投递的 ttl=0 副本：被丢弃
+        let d = r.on_receive(frame("f1", "A", MeshDestination::Broadcast, 0), "me");
+        assert_eq!(d, ForwardDecision::Drop(DropReason::TtlExhausted));
+        // 之后诚实路径的同一帧（ttl 正常）：必须仍能正常处理，不得判 Duplicate。
+        // 广播帧 ttl=3 ⇒ 本机消费 + 继续扩散（Forward{deliver_locally:true}）。
+        match r.on_receive(frame("f1", "A", MeshDestination::Broadcast, 3), "me") {
+            ForwardDecision::Forward {
+                deliver_locally, ..
+            } => {
+                assert!(
+                    deliver_locally,
+                    "TTL=0 的帧不得污染去重表（审计 G1）：合法副本必须投递本机"
+                );
+            }
+            other => panic!("TTL=0 的帧污染了去重表：合法副本被判 {other:?}"),
+        }
     }
 
     /// 广播帧 TTL=1：本机仍要收，但不再向外扩散（remaining=0）。

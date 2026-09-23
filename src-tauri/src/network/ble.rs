@@ -1829,6 +1829,16 @@ async fn peripheral_accept_loop(
                                 .await;
                         }
                     });
+                } else {
+                    // 2026-09-23 审计 B3：该 central 已在握手中，这帧 Hello 被丢。
+                    // 旧实现静默掉出 —— 重连方在 10s 握手窗口内报"握手超时"时，
+                    // 这条输入路径在日志里完全不可见，无从排查。
+                    state.logger.info(
+                        "ble",
+                        format!(
+                            "[SESSION] 丢弃握手中 central 的重复 Hello central={central}（上一次握手仍在进行）"
+                        ),
+                    );
                 }
             }
             PeripheralEvent::Unlinked { central } => {

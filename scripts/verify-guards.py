@@ -2932,6 +2932,105 @@ CASES: list[Case] = [
         expect_fail_hint="必须回真实位置",
         tags=["rust", "file", "resume"],
     ),
+    Case(
+        name="中继态回收必须真的写库（不许清完内存就宣布「已落终态」）",
+        why="2026-09-23 审计 A2：旧行为只把两张内存表 `retain` 一遍 ⇒ `file_transfers` 里的行\n"
+        "     永远停在 active，接收端界面**永久卡在某个百分比**，且一行日志都没有。\n"
+        "     注入方式是这条链路上最「看起来无害」的那种优化：写库结果换成常量 `true` ——\n"
+        "     内存清了、事件照发、前端也不报错，只有查库才发现行还是 active（本用例证明\n"
+        "     守卫盯的是「写库发生了没有」，而不是「emit 发生了没有」）。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "            match db::mark_transfer_failed_if_active(&dbc, id) {",
+            "            match Ok::<bool, rusqlite::Error>(true) {",
+        )],
+        cmd=cargo("test", "--lib", "relay_reclaim_finalizes_in_db_and_emits_outside_the_lock"),
+        cwd=TAURI,
+        expect_fail_hint="回收中继态必须把仍 active 的传输行落 failed",
+        tags=["rust", "relay", "file", "stability", "new-guards", "st3-terminal"],
+    ),
+    Case(
+        name="文件终态：把行踢出重试集合的那一次写必须排最后",
+        why="这是审计 A3 修法**自身**的缺陷（2026-09-23 review 查出）。`finalize_expired_file`\n"
+        "     四步里只有 `mark_file_outbox_failed` 会让 `list_expired_file_outbox` 再也扫不到这行\n"
+        "     （它只选 pending/sending），所以它一旦排到最前面，「返回 false、下一 tick 重试」就变成\n"
+        "     假话：后面任何一步失败，行已经是 failed，再没人重试 ⇒ 界面永久停在「发送中」。\n"
+        "     注入方式 = 把它挪回第一位（就是修好之前的次序），顺序判据必须红；\n"
+        "     只盯「调用了几次」是抓不到的 —— 次数一模一样。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            """fn finalize_expired_file(dbc: &rusqlite::Connection, transfer_id: &str) -> bool {
+    db::set_message_status(dbc, &format!("file-{transfer_id}"), "failed").is_ok()
+        && db::set_message_status(dbc, &format!("gfile-{transfer_id}"), "failed").is_ok()
+        && db::upsert_transfer(dbc, transfer_id, "", "", 0, "send", "failed", None, 0.0).is_ok()
+        && db::mark_file_outbox_failed(dbc, transfer_id).is_ok()
+}""",
+            """fn finalize_expired_file(dbc: &rusqlite::Connection, transfer_id: &str) -> bool {
+    db::mark_file_outbox_failed(dbc, transfer_id).is_ok()
+        && db::set_message_status(dbc, &format!("file-{transfer_id}"), "failed").is_ok()
+        && db::set_message_status(dbc, &format!("gfile-{transfer_id}"), "failed").is_ok()
+        && db::upsert_transfer(dbc, transfer_id, "", "", 0, "send", "failed", None, 0.0).is_ok()
+}""",
+        )],
+        cmd=cargo("test", "--lib", "terminal_finalize_defers_the_destructive_write"),
+        cwd=TAURI,
+        expect_fail_hint="破坏性写（把行踢出重试集合）必须排最后",
+        tags=["rust", "file", "stability", "new-guards", "st3-terminal"],
+    ),
+    Case(
+        name="重复 FileDone 的「本机没这份文件」出口不许退回静默",
+        why="2026-09-23 审计 A5：`Ok(None)` 分支原先只有 `if already_done { 回成功 Ack }`、**没有 else**\n"
+        "     ⇒ 本机从没收下这份文件时一帧都不回，发送端只能干等整个静默窗口（`FILE_ACK_IDLE`）\n"
+        "     才判失败，然后整套重发。注入方式就是回到修好之前的形状：整块删掉 else。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            """                    } else {
+                        // 接收器已清且库非 done（接收态被 TTL 回收 / 本机从未接受该
+                        // 传输）：也必须回一帧失败确认（2026-09-23 审计 A5）—— 旧实现
+                        // 这里静默，发送端收不到任何帧只能干等静默窗口超时。立刻拿到
+                        // 失败终态才不会白等；发送端只认 file_transfers 里登记的
+                        // peer_id，伪造面不变。
+                        let _ = try_send(
+                            state,
+                            peer_id,
+                            &Message::FileCompleteAck {
+                                transfer_id,
+                                success: false,
+                            },
+                        )
+                        .await;
+                    }
+""",
+            # 只留 `if already_done { … }` 的收尾花括号 —— 就是修好之前的形状。
+            # ⚠️ 替换串不能是 ""：那会把 if 的收尾括号一起删掉，红的是编译器而不是判据
+            #（第一版就这么错过了一次真确认，2026-09-23）。
+            "                    }\n",
+        )],
+        cmd=cargo("test", "--lib", "duplicate_file_done_still_answers_with_an_ack"),
+        cwd=TAURI,
+        expect_fail_hint="两个出口各回一帧 Ack",
+        tags=["rust", "file", "stability", "new-guards", "st3-terminal"],
+    ),
+    Case(
+        name="「对方已收完」的捷径不许绕过发送端收尾（少一份 = 气泡永久转圈）",
+        why="2026-09-23 审计 A6 的**自审发现**：接收端回 `received = size` 后发送端直接\n"
+        "     `return Ok(())` 是对的，但收尾整段写在 `stream_file` 里，捷径一绕过去，\n"
+        "     `file_transfers` 停在 pending、`file-*` 不推进 delivered、三个事件一个都不发\n"
+        "     ⇒ 对方已经收到文件，我方气泡却一直转圈。注入方式 = 把它「退化回只 return」，\n"
+        "     这正是当初会写出的形状（少写一处而不是写错一处）。",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            """                    // 收尾与 stream_file 拿到成功回执时**共用同一份**：少了它，对方明明
+                    // 已经有了，本机气泡却永久转圈、transfer 行停在 pending。
+                    finalize_send_accepted(state, transfer_id, peer_id, &name, size, &path);
+""",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "already_have_shortcut_shares_the_send_finalization"),
+        cwd=TAURI,
+        expect_fail_hint="少于 3 = 又出现一条",
+        tags=["rust", "file", "stability", "new-guards", "st3-terminal"],
+    ),
 
 ]
 
