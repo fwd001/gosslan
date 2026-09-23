@@ -2763,6 +2763,28 @@ mod tests {
         );
     }
 
+    /// transport 生产代码的 std Mutex 一律**抗中毒**取锁（审计 A8）。
+    ///
+    /// 全仓主导写法是 `.lock().unwrap_or_else(|e| e.into_inner())`（`state.rs` 的注释也明令"不要写
+    /// `.lock().unwrap()`"），但 `network/transport.rs` 曾留了 11 处多行链式 `.lock().unwrap()`。
+    /// 后果：全仓没有 `catch_unwind` ⇒ 一次锁中毒 panic 会带走 `reader_loop` 并**跳过它紧接着的收尾**
+    /// （`links.remove` / `mark_peer_offline` / 接收器清理），于是那条连接的对端在界面上永久显示"在线"。
+    ///
+    /// 判据：**去掉所有空白后**扫 transport 全集视图，不得出现 `.lock().unwrap()` —— 一并覆盖单行与
+    /// 多行链式两种写法。为什么能整文件扫而不误伤测试：transport.rs 与各 `transport/*.rs` 分册的
+    /// `#[cfg(test)]` 模块本来就不用这个写法（实测 0 处），test 代码里的 4 处都在 `file.rs`/`logs_tests.rs`
+    /// （不在这份视图里），测试可以合理地对中毒 panic。
+    #[test]
+    fn transport_locks_tolerate_poison() {
+        let src = crate::network::transport_src_for_guards();
+        let flat = src.split_whitespace().collect::<String>();
+        assert!(
+            !flat.contains(".lock().unwrap()"),
+            "transport 生产代码里出现 `.lock().unwrap()`：一次中毒 panic 会带走 reader_loop、跳过收尾，\
+             对端永久\"在线\"（审计 A8）。改用 `.lock().unwrap_or_else(|e| e.into_inner())`。"
+        );
+    }
+
     /// 好友身份锚点的**绑定来源**必须问同一道闸（#32 第一片）。
     ///
     /// 后果链：`friends.ed25519_pubkey` 是 Hello 的验签锚点（INV-P21）与安全码的输入，

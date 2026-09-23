@@ -587,6 +587,7 @@ tests::runtime_snapshot_reports_real_bluetooth_runtime
 tests::runtime_state_has_a_single_source
 tests::scan_results_are_not_filtered_by_unconnected_services
 tests::self_chat_stays_local
+tests::transport_locks_tolerate_poison
 tests::unknown_wire_frame_is_tolerated_after_auth
 tests::window_pattern_matcher_is_not_vacuous
 transport::ble_framing::tests::both_sides_agree_on_the_same_link_budget

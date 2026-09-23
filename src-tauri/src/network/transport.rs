@@ -2750,7 +2750,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let ip = state
                 .peers
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .get(&device_id)
                 .map(|p| p.ip.clone())
                 .unwrap_or_default();
@@ -2918,7 +2918,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let ip = state
                 .peers
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .get(&device_id)
                 .map(|p| p.ip.clone())
                 .unwrap_or_default();
@@ -2992,7 +2992,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             state
                 .pending_requests
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(from.clone(), req.clone());
             let _ = state.app.emit("friend-request", &req);
             let mut extra = std::collections::HashMap::new();
@@ -3581,7 +3581,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if let Some(tx) = state
                 .pending_file_accept
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .remove(&transfer_id)
             {
                 let _ = tx.send(Ok(()));
@@ -3594,7 +3594,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if let Some(tx) = state
                 .pending_file_accept
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .remove(&transfer_id)
             {
                 // 把"接收端已持有多少字节"回给发送端 ⇒ 它从该偏移续发，无需重头。
@@ -3621,7 +3621,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if let Some(tx) = state
                 .pending_file_complete
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .remove(&transfer_id)
             {
                 let _ = tx.send(success);
@@ -4075,7 +4075,7 @@ fn sender_x25519_pubkey(state: &AppState, from: &str) -> Option<String> {
         state
             .peers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(from)
             .and_then(|p| p.x25519_pubkey.clone())
     })
@@ -4157,7 +4157,7 @@ fn reseal_for_send(state: &AppState, msg: Message) -> Message {
         state
             .peers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&to)
             .and_then(|p| p.x25519_pubkey.clone())
     });
@@ -4269,7 +4269,7 @@ async fn handle_relay_file_offer(
     state
         .relay
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .begin_reassemble(&transfer_id, &name, total_chunks, size);
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -4812,7 +4812,7 @@ async fn handle_group_file_offer(
     state
         .group_file_keys
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(transfer_id, file_key);
 }
 
@@ -5616,7 +5616,7 @@ pub async fn get_group_key(state: &AppState, group_id: &str) -> Option<[u8; 32]>
     state
         .group_keys
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(group_id.to_string(), arr);
     Some(arr)
 }

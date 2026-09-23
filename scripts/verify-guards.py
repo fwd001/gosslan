@@ -2819,6 +2819,27 @@ CASES: list[Case] = [
         tags=["rust", "outbox", "stability", "new-guards"],
     ),
     Case(
+        name="transport 生产锁必须抗中毒（审计 A8：中毒 panic 会带走 reader_loop）",
+        why="全仓主导写法是 lock().unwrap_or_else(|e| e.into_inner())，但 transport.rs 曾留 11 处多行\n"
+        "     `.lock().unwrap()`。没有 catch_unwind ⇒ 一次锁中毒 panic 带走 reader_loop 并跳过收尾\n"
+        "     （links.remove / mark_peer_offline），对端在界面上永久「在线」。\n"
+        "     注入方式：把 pending_file_complete 那处改回 `.lock().unwrap()`（仍可编译），\n"
+        "     守卫（去空白后扫 transport 全集，单行与多行一并覆盖）必须红。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "                .pending_file_complete\n"
+            "                .lock()\n"
+            "                .unwrap_or_else(|e| e.into_inner())",
+            "                .pending_file_complete\n"
+            "                .lock()\n"
+            "                .unwrap()",
+        )],
+        cmd=cargo("test", "--lib", "transport_locks_tolerate_poison"),
+        cwd=TAURI,
+        expect_fail_hint="reader_loop",
+        tags=["rust", "transport", "stability", "locks", "new-guards"],
+    ),
+    Case(
         name="幂等 accept 时必须重置段号（少这一句，续传段会被当成迟到重复片整段丢掉）",
         why="2026-09-22 跨网首测：160MB 永远停在 0%，最后报分片失败。\n"
         "     发送端续传时分片**按段从 seq 0 重编**，而活跃接收器的 next_seq 已推进到上一段末尾\n"

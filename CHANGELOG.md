@@ -10,6 +10,25 @@
 
 ## [Unreleased]
 
+## [4.29.3] - 2026-09-23
+
+### Fixed (审计 A8：transport 生产锁中毒不再 panic 带走 reader_loop)
+
+`network/transport.rs` 里 11 处 `state.<field>.lock().unwrap()`（peers ×4、pending_requests、
+pending_file_accept ×2、pending_file_complete、relay、group_file_keys、group_keys）与全仓主导写法
+`lock().unwrap_or_else(|e| e.into_inner())` 不一致。全仓**没有 `catch_unwind`** ⇒ 任何一次锁中毒 panic
+都会带走所在任务；落在 `reader_loop` 上时会**跳过它紧接着的收尾**（`links.remove` / `mark_peer_offline`
+/ 接收器清理），于是那条连接的对端在界面上**永久显示"在线"**、再也判不出离线。
+
+- 11 处一律改成 poison-tolerant（`unwrap_or_else(|e| e.into_inner())`），与主导写法统一（行为仅在中毒路径变化）。
+- 源码守卫 `transport_locks_tolerate_poison`：**去掉全部空白后**扫 transport 全集视图，不许再出现
+  `.lock().unwrap()`（单行与多行链式一并覆盖）。transport.rs 与各 `transport/*.rs` 分册的测试模块本来
+  就不用这个写法，故整视图扫不误伤；已登记 verify-guards 变异用例（把 `pending_file_complete` 那处改回
+  `.unwrap()` 必须红）。
+
+> `file.rs` / `commands/logs_tests.rs` 里的 `.lock().unwrap()` 都在 `#[cfg(test)]` 代码里 —— 测试期中毒
+> 就是 bug、panic 反而是想要的信号，不在本守卫范围，也**不在这份 transport 视图里**（不同模块）。
+
 ## [4.29.2] - 2026-09-23
 
 ### Fixed (审计 A3：出站清扫器先 emit「失败」后写库 ⇒ 重复投递)
