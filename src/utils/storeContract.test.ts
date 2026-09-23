@@ -402,3 +402,30 @@ test("app.init() 的注册必须全部配对（不许退回「只解绑 settings
     assert.ok(at > 0 && body.length > 50 && body.includes("removeEventListener"), `${fn} 必须返回真正的卸载函数`);
   }
 });
+
+test("「不打扰」判据只许有一份：未读记账与通知闸门都必须走 countsTowardUnread", () => {
+  // 后端 `protocol.rs::is_non_notifying_kind` = 静默类 + system。前端此前两处各自用
+  // `!isSilentKind` ⇒ 经广播来的系统消息（如「X 加入了群聊」）会 +1 未读并弹一条系统通知。
+  const msgs = stripComments(readFileSync(join(ROOT, "utils", "messages.ts"), "utf8"));
+  const store = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const apply = msgs.slice(
+    msgs.indexOf("export function applyIncomingToConversations"),
+    msgs.indexOf("export function unreadAnchorIndex"),
+  );
+  assert.ok(apply.length > 100, "找不到 applyIncomingToConversations 函数体");
+  assert.ok(
+    apply.includes("countsTowardUnread(m.kind)"),
+    "未读记账与预览必须用 countsTowardUnread（system 不记账），不许退回 !isSilentKind",
+  );
+  // 反向也钉：`countsTowardUnread(x) || x.kind === "system"` 这种"补一个 or"的写法
+  // 看着保留了新判据、实际把 system 又放回记账集合，所以整函数体里不许再出现旧判据。
+  assert.ok(!apply.includes("isSilentKind"), "记账路径上不许再出现第二份「静默」判据");
+  assert.ok(
+    store.includes("if (!countsTowardUnread(rec.kind)) return;"),
+    "通知闸门必须与未读同一份判据，否则「后端不打扰、手机照样弹通知」",
+  );
+  assert.ok(
+    !store.includes("if (isSilentKind(rec.kind)) return;"),
+    "通知闸门不许退回旧的 isSilentKind 单判据",
+  );
+});

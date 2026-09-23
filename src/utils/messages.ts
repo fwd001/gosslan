@@ -3,7 +3,6 @@ import { MENTION_AFTER, MENTION_BEFORE, escapeRe } from "./linkify.ts";
 import {
   countsTowardUnread,
   isKnownKind,
-  isSilentKind,
   UNSUPPORTED_KIND_LABEL,
 } from "./messageKinds.ts";
 import { mergeSummary } from "./mergeCard.ts";
@@ -313,7 +312,13 @@ export function applyIncomingToConversations(
     // ⚠️ 静默类不参与未读与预览 —— 与后端 `is_non_notifying_kind` 同一口径。
     // 漏掉它的后果：别人回个表情，你的会话列表未读 +1、预览变成一段 JSON、
     // 会话还被顶到最前（后端 DB 里未读是 0，两边从此不一致）。
-    const msgs = rawMsgs.filter((m) => !isSilentKind(m.kind));
+    // ⚠️ 判据用 `countsTowardUnread`，**不是** `!isSilentKind` —— 与后端
+    // `protocol.rs::is_non_notifying_kind` 必须同一口径，那边明写 system 归"不计未读、
+    // 不改会话预览、不弹通知"（2026-09-23 审计 4.2 复核发现的漂移，现已收敛到这一份判据）。
+    // 静默类（表情回应/撤回）不在此记账的理由不变；漏掉它的后果也一样具体：
+    // 别人回个表情，你的会话列表未读 +1、预览变成一段 JSON、会话还被顶到最前
+    // （后端 DB 里未读是 0，两边从此不一致）。
+    const msgs = rawMsgs.filter((m) => countsTowardUnread(m.kind));
     if (msgs.length === 0) continue;
     const last = msgs[msgs.length - 1];
     const conv = next.find((c) => c.id === convId);

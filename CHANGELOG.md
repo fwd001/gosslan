@@ -10,6 +10,26 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-23 稳定性审计 阶段 4 · 批次 k —— 「不打扰」的判据收敛成一份)
+
+阶段 4 复核时记下一条"已知漂移未收敛"：后端 `protocol.rs::is_non_notifying_kind` 明写
+`system` 归"不计未读、不改会话预览、不弹通知"（并说明理由 —— 加人通知现在**经消息管道广播**给
+全体成员，否则「X 加入了群聊」会给每个人推一条通知），而前端**两处**各自只滤 `isSilentKind`。
+当时判断"要先证明哪条路径真会走到这里"故未动。本轮把那条前提证掉了：`ShareFileRequest` 的系统
+消息、群成员变更广播都会以 `kind: "system"` 走到摄入路径 ⇒ 这不是理论问题。
+
+- `utils/messages.ts::applyIncomingToConversations`：`!isSilentKind(m.kind)` → `countsTowardUnread(m.kind)`。
+  表现很具体：收到一条系统消息，前端 `unread +1`、预览被顶成那句话、会话还被排到最前，
+  而后端 DB 里未读是 0 ⇒ 下一次 `refreshConversations` 数字又掉回去（用户看到"红点自己跳"）。
+- `useChatStore` 的通知闸门同一处收敛：此前**手机/桌面会为一条系统消息弹系统通知**，
+  而后端明写它不打扰。
+- 收敛方向是"两处消费点共用一份判据"（`utils/messageKinds::countsTowardUnread`），
+  不是各自再加一个 `|| kind !== "system"` —— 后者就是本仓一直禁的第二套判据。
+  `messageKinds.ts` 里那段"已知漂移未收敛"的注释同步改成"已收敛 + 两处消费点名单"。
+- 测试：`messages.test.ts` +2（系统消息混在真消息里只记真消息那条 / 整批都是系统消息时会话
+  完全不动）、`storeContract.test.ts` +1 结构守卫（两处都必须用那份判据，且因为守卫先
+  `stripComments`，注释里提函数名不会让它自证通过）。前端 571 → **574**。
+
 ## [4.29.14] - 2026-09-23
 
 ### Fixed (2026-09-23 稳定性审计 · A1 的 L2 第一段 —— 中继推送不再宣称未经证明的成功)

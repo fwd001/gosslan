@@ -208,6 +208,40 @@ test("整批都是静默事件时该会话完全不动", () => {
   assert.equal(g1.last_ts, 10);
 });
 
+test("系统消息经广播抵达时不记账：未读不涨、预览不被顶掉", () => {
+  // 后端 `protocol.rs::is_non_notifying_kind` = `is_silent_kind || kind == "system"`，
+  // 且加人通知现在**经消息管道广播**给全体成员 ⇒ 这条路径真会走到这里。
+  // 前端原先只滤 isSilentKind ⇒ 未读 +1、预览变成"张三加入了群聊"，
+  // 而下一次从 DB 拉回来时数字又掉回去（审计 2026-09-23 · 4.2 复核发现的漂移）。
+  const cs = [conv("g1", 10)];
+  const byConv = new Map([
+    [
+      "g1",
+      [
+        msg({ msg_id: "s1", conv_id: "g1", kind: "system", content: "「张三」加入了群聊", ts: 999 }),
+        msg({ msg_id: "t1", conv_id: "g1", kind: "text", content: "在吗", ts: 1000 }),
+      ],
+    ],
+  ]);
+  const g1 = applyIncomingToConversations(cs, null, byConv).find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 1, "只有正文那条记账");
+  assert.equal(g1.last_msg, "在吗", "预览不能被系统消息顶掉");
+  assert.equal(g1.last_ts, 1000);
+});
+
+test("整批都是系统消息 ⇒ 该会话完全不动（不置顶、不改预览、不记未读）", () => {
+  const cs = [conv("g1", 10), conv("g2", 5)];
+  const byConv = new Map([
+    ["g1", [msg({ msg_id: "s1", conv_id: "g1", kind: "system", content: "「李四」加入了群聊", ts: 999 })]],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv);
+  const g1 = out.find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 0);
+  assert.equal(g1.last_msg, null);
+  assert.equal(g1.last_ts, 10, "时间戳也不能动 —— 动了就等于把它顶到最前");
+  assert.deepEqual(out.map((c) => c.id), ["g1", "g2"], "顺序仍按原 last_ts");
+});
+
 // ---------------- 会话排序与置顶 ----------------
 
 test("sortConversations：置顶优先于 last_ts", () => {

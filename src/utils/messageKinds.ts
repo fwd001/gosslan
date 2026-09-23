@@ -100,9 +100,10 @@ export function isRenderedInTimeline(kind: string): boolean {
  * "渲染集合 \ 计未读集合"，所以凡是要把 `conversation.unread` 换算成时间线里某个位置的
  * 判据（未读分割线的锚点就是这一个），都必须用本函数而不是 `isSilentKind` 的反面。
  *
- * ⚠️ 已知漂移**未**在此收敛：`utils/messages.ts` 的 `applyIncomingToConversations` 目前只
- * 滤 `isSilentKind`，即收到本地系统消息时前端会 +1 而后端不记。那条属阶段 4 P2 的独立条目
- * （要先证明哪条路径真会走到这里、以及收敛后的期望行为），不在未读定位这次改动里顺手改。
+ * 的两个消费点（判据只留这一份）：未读记账与会话预览
+ * （`utils/messages.ts::applyIncomingToConversations`）、是否弹系统通知
+ * （`useChatStore` 的通知闸门）。2026-09-23 审计 4.2 复核时发现这两处都只滤 `isSilentKind`
+ * ⇒ 后端不记账/不打扰的系统消息在前端会 +1 并弹通知；现已统一收敛到本函数。
  */
 export function countsTowardUnread(kind: string): boolean {
   return !isSilentKind(kind) && kind !== "system";

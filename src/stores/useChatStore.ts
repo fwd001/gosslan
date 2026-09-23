@@ -23,7 +23,7 @@ import { createInitScope, type InitScope } from "@/utils/initScope";
 import { StaleGuard } from "@/utils/staleGuard";
 import { actionableRequests } from "@/utils/friendRequests";
 import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/notifications";
-import { isRenderedInTimeline, isSilentKind } from "@/utils/messageKinds";
+import { isRenderedInTimeline, countsTowardUnread } from "@/utils/messageKinds";
 import { todoCompletedForCreator, todoMentionsMe, type TodoImage } from "@/utils/todos";
 import { invalidateFilePreview } from "@/utils/filePreview";
 import { t } from "@/i18n";
@@ -306,10 +306,13 @@ export const useChatStore = defineStore("chat", () => {
       return;
     }
 
-    // 静默事件（表情回应/撤回）不弹通知：它们不是"内容"，
-    // 提醒它们正是这个功能要消除的噪音（"收到""👍"刷屏）。
+    // 「不打扰」一族（表情回应/撤回 = 静默事件，`system` = 经广播来的成员变更与下载请求）
+    // 一律不弹通知：它们不是"内容"。判据与后端 `is_non_notifying_kind` 同一份
+    // （`utils/messageKinds::countsTowardUnread`），与未读记账那处（`utils/messages.ts`）也同一份。
+    // 系统消息漏这一条的真实后果："X 加入了群聊"给群里每个人推一条系统通知，
+    // 而后端明写它不打扰（`protocol.rs::is_non_notifying_kind` 就是这个理由）。
     if (!app.notifyEnabled) return;
-    if (isSilentKind(rec.kind)) return;
+    if (!countsTowardUnread(rec.kind)) return;
     // 应用在前台且正查看该会话 → 不通知（不进队列）。
     // 必须同时判 !document.hidden：窗口被隐藏/最小化到托盘时，WebView 的
     // document.hasFocus() 仍可能是 true，只看它会漏掉真正该提醒的消息。
