@@ -434,10 +434,30 @@ pub fn set_cache_policy(
 /// 立即执行一次清理：按保留时长 / 配额删除过期的图片与文件（含历史遗留 cache 目录），
 /// 并对数据库执行 VACUUM。**不删除聊天文字**；被清理的图片/文件在历史消息里将无法再打开。
 #[tauri::command(async)]
-pub fn clean_cache_now(state: State<'_, Arc<AppState>>) -> CleanupReport {
-    let s = state.inner();
-    let policy = load_policy(s);
-    let dirs = media_dirs(s);
-    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-    cache_cleaner::clean(&dirs, policy, &dbc)
+pub async fn clean_cache_now(state: State<'_, Arc<AppState>>) -> Result<CleanupReport, String> {
+    let s = state.inner().clone();
+    let policy = load_policy(&s);
+    let dirs = media_dirs(&s);
+    // 文件遍历/删除不碰 db：放 spawn_blocking（大缓存/慢盘上秒级起步）。
+    // ⚠️ 绝不能持全局 db 锁做这件事（审计 2.1a 的旧形状）：期间全 App 的消息落库/
+    // 发送/写好友全在排队等这把锁 —— 用户点一下"立即清理"，整个应用冻住。
+    let report = match tauri::async_runtime::spawn_blocking(move || {
+        cache_cleaner::clean_files(&dirs, policy)
+    })
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            s.logger
+                .error("cache", format!("缓存清理任务失败: {e}"));
+            return Err(format!("缓存清理任务失败: {e}"));
+        }
+    };
+    // VACUUM 只在真的删了文件时做，且锁只在 VACUUM 期间持有（与 6h 自动清理同纪律：
+    // VACUUM 本身可能秒~分钟级，没删文件却空转一次等于白冻全 App 一次）。
+    if report.removed > 0 {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = dbc.execute_batch("VACUUM");
+    }
+    Ok(report)
 }

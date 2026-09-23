@@ -294,32 +294,42 @@ pub fn read_content_preview(
 ) -> Result<tauri::ipc::Response, String> {
     let s = state.inner();
     let max_bytes = max_bytes.min(15 * 1024 * 1024);
-    let file = {
+    // db 锁内只做两个点查（find_local_path / find_source，索引查微秒级）；
+    // canonicalize 是文件系统操作（网络盘/慢盘可挂任意久），绝不放在锁持有期间
+    // —— 旧形状持 db 锁等 IO，还构成 db → downloads_dir 的锁序耦合（审计 2.1d）。
+    enum Located {
+        Local(std::path::PathBuf),
+        Sourced(std::path::PathBuf, String),
+    }
+    let located = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         match crate::content::store::find_local_path(&dbc, &cid) {
-            Some(p) => std::path::PathBuf::from(p),
-            None => {
-                let (path, owner) = match crate::content::store::find_source(&dbc, &cid) {
-                    Ok(Some((peer, _group, p))) => (p, peer),
-                    Ok(None) => return Err("内容不存在".to_string()),
-                    Err(e) => return Err(e.to_string()),
-                };
-                let f = std::fs::canonicalize(&path).map_err(|_| "文件不存在".to_string())?;
-                let under_downloads = std::fs::canonicalize(
-                    s.downloads_dir
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .as_path(),
-                )
-                .map(|dir| f.starts_with(dir))
-                .unwrap_or(false);
-                // 只允许读 downloads 下的文件（接收侧），或本机自己发出的内容（发送侧
-                // 待办图片是用户自选的原始路径）—— 与 resolve_media_path 同一口径。
-                if !under_downloads && owner != s.device_id {
-                    return Err("路径越权".to_string());
-                }
-                f
+            Some(p) => Located::Local(std::path::PathBuf::from(p)),
+            None => match crate::content::store::find_source(&dbc, &cid) {
+                Ok(Some((peer, _group, p))) => Located::Sourced(std::path::PathBuf::from(p), peer),
+                Ok(None) => return Err("内容不存在".to_string()),
+                Err(e) => return Err(e.to_string()),
+            },
+        }
+    };
+    let file = match located {
+        Located::Local(p) => p,
+        Located::Sourced(path, owner) => {
+            let f = std::fs::canonicalize(&path).map_err(|_| "文件不存在".to_string())?;
+            let under_downloads = std::fs::canonicalize(
+                s.downloads_dir
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_path(),
+            )
+            .map(|dir| f.starts_with(dir))
+            .unwrap_or(false);
+            // 只允许读 downloads 下的文件（接收侧），或本机自己发出的内容（发送侧
+            // 待办图片是用户自选的原始路径）—— 与 resolve_media_path 同一口径。
+            if !under_downloads && owner != s.device_id {
+                return Err("路径越权".to_string());
             }
+            f
         }
     };
     let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
@@ -342,36 +352,48 @@ pub fn read_content_preview(
 /// `utc_offset_minutes` 由前端给出（`-new Date().getTimezoneOffset()`）：Rust 侧不引入
 /// 时区库（`AI_RULES §25`），跨夏令时切换的历史消息可能有 1 小时偏差，已在模块注释说明。
 #[tauri::command(async)]
-pub fn export_chat_text(
+pub async fn export_chat_text(
     state: State<'_, Arc<AppState>>,
     destination: String,
     utc_offset_minutes: i64,
 ) -> Result<export::ExportSummary, String> {
-    let s = state.inner();
+    let s = state.inner().clone();
     if destination.trim().is_empty() {
         return Err("导出路径为空".to_string());
     }
-    let device_name = s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let my_id = s.device_id.clone();
 
-    // 只把「读库」放进锁里：渲染几十万条消息 + 写盘可能耗时较长，
-    // 不能让一次导出把消息落库卡住。
-    let sections = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        export::collect_sections(&dbc, &my_id)?
-    };
+    // 整个导出（读库 + 渲染 + 写盘）放 spawn_blocking（审计 2.1e）：这是同步长活，
+    // 直接跑在 tokio worker 上会把其它 IPC 的执行线程占住。
+    //
+    // 已知限制：读全库（collect_sections）仍在 db 锁内——单连接架构下读必须持锁，
+    // 分批读需要读连接/连接池，属架构级改动；导出是低频自救操作（磁盘满/换机），
+    // 收益不抵风险，故只保证不占 async worker + 渲染/写盘在锁外。
+    tauri::async_runtime::spawn_blocking(move || {
+        let device_name = s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let my_id = s.device_id.clone();
 
-    let messages: usize = sections.iter().map(|(_, m)| m.len()).sum();
-    let conversations = sections.len();
-    let generated_at = export::format_local_time(db::now_ms(), utc_offset_minutes);
-    let text = export::render_markdown(&device_name, &generated_at, &sections, utc_offset_minutes);
+        // 只把「读库」放进锁里：渲染几十万条消息 + 写盘可能耗时较长，
+        // 不能让一次导出把消息落库卡住。
+        let sections = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            export::collect_sections(&dbc, &my_id)?
+        };
 
-    std::fs::write(&destination, text.as_bytes()).map_err(|e| format!("写入导出文件失败：{e}"))?;
-    Ok(export::ExportSummary {
-        conversations,
-        messages,
-        path: destination,
+        let messages: usize = sections.iter().map(|(_, m)| m.len()).sum();
+        let conversations = sections.len();
+        let generated_at = export::format_local_time(db::now_ms(), utc_offset_minutes);
+        let text = export::render_markdown(&device_name, &generated_at, &sections, utc_offset_minutes);
+
+        std::fs::write(&destination, text.as_bytes())
+            .map_err(|e| format!("写入导出文件失败：{e}"))?;
+        Ok(export::ExportSummary {
+            conversations,
+            messages,
+            path: destination,
+        })
     })
+    .await
+    .map_err(|e| format!("导出任务失败：{e}"))?
 }
 
 /// 清除所有聊天数据（保留好友、身份、设置）。

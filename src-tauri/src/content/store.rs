@@ -36,16 +36,26 @@ pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     // 防御性迁移：早期 content_transfers 可能没有 transfer_id 列
     // （断点续传要按它找 <tid>.part）。CREATE TABLE IF NOT EXISTS 不会自动补列。
+    //
+    // ⚠️ 探测失败时按「没有该列」处理（审计 2.3q）：旧默认 true 在真缺列的老库上
+    // 会跳过补列 ⇒ row_to_record 的 r.get("transfer_id") 让**所有行**不可读。
+    // 按 false 处理最坏只是对已有列的库多跑一次幂等 ALTER（duplicate column 无害）。
     let has_tid: bool = conn
         .prepare("SELECT COUNT(*) FROM pragma_table_info('content_transfers') WHERE name = 'transfer_id'")
         .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
         .map(|n| n > 0)
-        .unwrap_or(true);
+        .unwrap_or(false);
     if !has_tid {
-        let _ = conn.execute(
+        // 幂等：列其实已存在时报 duplicate column，这种失败无害直接吞；
+        // 其它失败必须留痕 —— 静默 = 断点续传记录悄悄全表不可读、无从排查。
+        if let Err(e) = conn.execute(
             "ALTER TABLE content_transfers ADD COLUMN transfer_id TEXT",
             [],
-        );
+        ) {
+            if !e.to_string().to_lowercase().contains("duplicate column") {
+                eprintln!("[gosslan-db] content_transfers 补列 transfer_id 失败: {e}");
+            }
+        }
     }
     Ok(())
 }

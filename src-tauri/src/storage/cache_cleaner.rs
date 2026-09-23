@@ -121,21 +121,15 @@ pub fn walk_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// 自动调度用：只删文件、**不 VACUUM**（整理交给调用方按 `removed>0` 决定，
-/// 避免每 6h 空转一次持全局 db 锁的大 VACUUM —— 大库时那会冻住所有落库路径）。
+/// 自动调度用：只删文件、**不 VACUUM**。
+///
+/// VACUUM 的纪律（2026-09-23 审计 2.1a/2.1b）：
+/// - 它要独占连接、可能秒~分钟级，**绝不能与文件遍历/删除共用一次锁持有**——
+///   旧接口 `clean(dirs, policy, &dbc)` 就是这个形状：调用方持全局 db 锁期间
+///   递归删文件 + VACUUM，全 App 的消息落库/发送一起排队等锁。
+/// - 是否值得跑由调用方按 `removed > 0` 决定（没删文件空转一次 = 白冻全 App）。
 pub fn clean_files(dirs: &[PathBuf], policy: CachePolicy) -> CleanupReport {
     clean_inner(dirs, policy)
-}
-
-/// 执行一次清理：跨 `dirs` 统一按策略删除过期 / 超配额文件，并对数据库执行 `VACUUM`。
-///
-/// 多个目录合并成一个条目列表再规划删除：配额按「全部媒体的总占用」判断，
-/// 删除顺序仍是全局最旧优先（不会出现「A 目录空着不删、B 目录超额」的偏差）。
-pub fn clean(dirs: &[PathBuf], policy: CachePolicy, db: &rusqlite::Connection) -> CleanupReport {
-    let report = clean_inner(dirs, policy);
-    // 整理 SQLite 碎片（忽略失败：内存库 / 只读等情况）
-    let _ = db.execute_batch("VACUUM");
-    report
 }
 
 fn clean_inner(dirs: &[PathBuf], policy: CachePolicy) -> CleanupReport {
