@@ -6288,6 +6288,32 @@ pub async fn flush_group_outbox(state: &AppState, peer_id: &str) {
 /// 30s 跑一次，每次扫描 created_at < now - OUTBOX_FAIL_DEADLINE_MS 的条目。
 pub const OUTBOX_SWEEPER_INTERVAL_MS: u64 = 30_000;
 
+/// 把一条过期的**消息** outbox 落终态：置 `messages.status = "failed"` + 删 outbox 行。
+/// **两步都成功**才返回 `true` —— 调用方据此决定是否 `emit("message-failed")`。
+///
+/// 为什么必须返回这个 conjunction（审计 A3）：旧代码把 emit 写在写库**之外**、还用 `let _ =`
+/// 丢掉写库返回值 ⇒ 锁中毒或写库失败时**界面报失败、而 outbox 行还在** ⇒ 下次 `flush_outbox`
+/// 又把它发出去 = 重复投递（"我以为失败了的消息又发出去了"）。返回 `false` 时调用方**保留行、
+/// 不 emit、留一条 warn**，下一 tick 重试。`group` 决定删哪张 outbox 表（单聊 / 群是两张表）。
+fn finalize_expired_message(dbc: &rusqlite::Connection, msg_id: &str, group: bool) -> bool {
+    let status_ok = db::set_message_status(dbc, msg_id, "failed").is_ok();
+    let deleted = if group {
+        db::delete_group_outbox_by_msg_id(dbc, msg_id).is_ok()
+    } else {
+        db::delete_outbox_by_msg_id(dbc, msg_id).is_ok()
+    };
+    status_ok && deleted
+}
+
+/// 把一条过期的**文件** outbox 落终态（审计 A3 同型）：标记 file_outbox 失败 + 两个消息前缀
+/// （`file-` / `gfile-`）置 failed + transfer 落 failed。**全部成功**才返回 true（门控 `emit("file-failed")`）。
+fn finalize_expired_file(dbc: &rusqlite::Connection, transfer_id: &str) -> bool {
+    db::mark_file_outbox_failed(dbc, transfer_id).is_ok()
+        && db::set_message_status(dbc, &format!("file-{transfer_id}"), "failed").is_ok()
+        && db::set_message_status(dbc, &format!("gfile-{transfer_id}"), "failed").is_ok()
+        && db::upsert_transfer(dbc, transfer_id, "", "", 0, "send", "failed", None, 0.0).is_ok()
+}
+
 /// 启动 outbox 超时清扫后台任务。
 ///
 /// 每 `OUTBOX_SWEEPER_INTERVAL_MS` 扫一次：单聊 outbox 和群 outbox 里
@@ -6339,7 +6365,9 @@ pub fn spawn_outbox_sweeper(
             //（INV-P04），保留到 OUTBOX_OFFLINE_HOLD_MS 才当僵尸清理。
             // 2026-09-19 P0：此前离线 2 分钟即删行置 failed，离线补发被 sweeper 自己击穿。
             let candidates: Vec<(String, String, i64)> = {
-                let Ok(dbc) = state.db.lock() else { continue };
+                // 锁中毒也要可见地继续（into_inner）：这个清扫器是"无链路消息"唯一的终态出口，
+                // `else { continue }` 静默跳过整个 tick = 消息永久停在 sending（审计 A3）。
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::list_expired_outbox(&dbc, deadline_single)
                     .unwrap_or_default()
                     .into_iter()
@@ -6350,20 +6378,27 @@ pub fn spawn_outbox_sweeper(
                 if !db::should_fail_expired_outbox(is_reachable(&peer_id), now - created_at) {
                     continue;
                 }
-                if let Ok(dbc) = state.db.lock() {
-                    // 先置 failed（set_message_status 的终态守卫会保证幂等）
-                    let _ = db::set_message_status(&dbc, &msg_id, "failed");
-                    // 再删 outbox（防止下次 flush_outbox 又捞起来重发）
-                    let _ = db::delete_outbox_by_msg_id(&dbc, &msg_id);
+                // 写库（置 failed + 删行）成功才 emit；锁只在这块作用域内持有，不跨 emit（审计 B1）。
+                let finalized = {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    finalize_expired_message(&dbc, &msg_id, false)
+                };
+                if finalized {
+                    let _ = state.app.emit("message-failed", &msg_id);
+                } else {
+                    // 不 emit、不删行 ⇒ 下一 tick 重试；留痕便于排障（绝不"界面说失败、行还在、又重发"）
+                    state.logger.warn(
+                        "outbox",
+                        format!("过期单聊消息终态落库失败，保留 outbox 行下轮重试 msg={msg_id}"),
+                    );
                 }
-                let _ = state.app.emit("message-failed", &msg_id);
             }
 
             // --- 群 outbox：行级分类 + msg 粒度放弃（2026-09-19 自审建议#5）---
             // 一条群消息按成员各一行；某成员离线 ⇒ 他的行保留（上线补发），
             // 只有**所有行都该放弃**时整条消息才置 failed。
             let group_rows: Vec<(String, String, String, i64)> = {
-                let Ok(dbc) = state.db.lock() else { continue };
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::list_expired_group_outbox(&dbc, deadline_group).unwrap_or_default()
             };
             let mut per_msg: std::collections::HashMap<String, (String, Vec<(String, i64)>)> =
@@ -6387,18 +6422,25 @@ pub fn spawn_outbox_sweeper(
                 if !all_give_up {
                     continue;
                 }
-                if let Ok(dbc) = state.db.lock() {
-                    let _ = db::set_message_status(&dbc, &msg_id, "failed");
-                    let _ = db::delete_group_outbox_by_msg_id(&dbc, &msg_id);
+                let finalized = {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    finalize_expired_message(&dbc, &msg_id, true)
+                };
+                if finalized {
+                    let _ = state.app.emit("message-failed", &msg_id);
+                } else {
+                    state.logger.warn(
+                        "outbox",
+                        format!("过期群消息终态落库失败，保留 outbox 行下轮重试 msg={msg_id}"),
+                    );
                 }
-                let _ = state.app.emit("message-failed", &msg_id);
             }
 
             // --- 文件 outbox：与消息队列同一离线判据（窗口用文件自己的 30min）---
             // 自审建议#5：离线接收方的文件此前 30min 一律判 failed ——
             // 「关机一晚回来收不到大文件」与被修的 P0#2 同型。
             let expired_files: Vec<(String, String, Option<String>, i64)> = {
-                let Ok(dbc) = state.db.lock() else { continue };
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::list_expired_file_outbox(&dbc, deadline_file).unwrap_or_default()
             };
             for (transfer_id, peer_id, _group_id, created_at) in expired_files {
@@ -6410,24 +6452,18 @@ pub fn spawn_outbox_sweeper(
                 ) {
                     continue;
                 }
-                if let Ok(dbc) = state.db.lock() {
-                    let _ = db::mark_file_outbox_failed(&dbc, &transfer_id);
-                    // 文件消息前缀：单聊 file-{transfer_id} / 群 gfile-{transfer_id}
-                    let _ = db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed");
-                    let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "failed");
-                    let _ = db::upsert_transfer(
-                        &dbc,
-                        &transfer_id,
-                        "",
-                        "",
-                        0,
-                        "send",
-                        "failed",
-                        None,
-                        0.0,
+                let finalized = {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    finalize_expired_file(&dbc, &transfer_id)
+                };
+                if finalized {
+                    let _ = state.app.emit("file-failed", &transfer_id);
+                } else {
+                    state.logger.warn(
+                        "outbox",
+                        format!("过期文件终态落库失败，保留 file_outbox 行下轮重试 transfer={transfer_id}"),
                     );
                 }
-                let _ = state.app.emit("file-failed", &transfer_id);
             }
         }
     })
@@ -8278,6 +8314,58 @@ mod tests {
         assert!(engine.is_new("m1"), "业务层已存在不得让传播层跳过转发");
         // 且两路径共用同一 msg_id，库里始终只有一行
         assert_eq!(db::get_messages(&conn, "dev-a", 10, 0).unwrap().len(), 1);
+    }
+
+    /// 审计 A3：过期消息落终态必须**两步写库都成功**才返回 true（emit 据此门控），且真的把
+    /// status 置 failed、把 outbox 行删掉；任一步失败必须返回 false（绝不让 emit 谎报"失败"
+    /// 而 outbox 行还在 ⇒ 下次 flush 重发 = 重复投递）。
+    #[test]
+    fn finalize_expired_message_writes_both_and_gates_on_failure() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        let rec = MessageRecord {
+            id: 0,
+            msg_id: "m1".into(),
+            conv_id: "peer".into(),
+            sender_id: "me".into(),
+            receiver_id: "peer".into(),
+            kind: "text".into(),
+            content: "hi".into(),
+            ts: 1,
+            seq: 1,
+            status: "sending".into(),
+        };
+        assert!(db::insert_message_if_new(&conn, &rec).unwrap());
+        conn.execute(
+            "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES('m1','peer','{}',0)",
+            [],
+        )
+        .unwrap();
+
+        // 绿路：两步都成功 ⇒ true，且 status=failed、outbox 行已删
+        assert!(finalize_expired_message(&conn, "m1", false));
+        let status: String = conn
+            .query_row("SELECT status FROM messages WHERE msg_id='m1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "failed");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM outbox WHERE msg_id='m1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            n, 0,
+            "outbox 行必须被删掉（否则下次 flush 重发 = 重复投递）"
+        );
+
+        // 失败路：删掉 outbox 表 ⇒ 第二步写库失败 ⇒ 必须返回 false（emit 因此被门控住，不谎报失败）
+        conn.execute_batch("DROP TABLE outbox").unwrap();
+        assert!(
+            !finalize_expired_message(&conn, "m2", false),
+            "任一步写库失败必须返回 false —— 否则 emit 谎报失败而 outbox 行还在 ⇒ 重复投递"
+        );
     }
 
     /// P1-3 / Test C：三态落库裁决 → 副作用与 Ack 策略的映射必须是显式且可测的。

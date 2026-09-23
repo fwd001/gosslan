@@ -422,6 +422,7 @@ network::transport::tests::direct_open_succeeds_with_current_keys
 network::transport::tests::directed_relay_target_routes_share_and_offer_frames
 network::transport::tests::e2e_gossip_encrypt_sign_decrypt
 network::transport::tests::failover_delivers_on_next_link_when_selected_is_closed
+network::transport::tests::finalize_expired_message_writes_both_and_gates_on_failure
 network::transport::tests::flush_failure_reinserts_pending_read
 network::transport::tests::flush_failure_retains_or_clears_pending_correctly
 network::transport::tests::flush_success_clears_pending
@@ -570,6 +571,7 @@ tests::new_message_kinds_are_gated_at_the_send_path
 tests::no_whole_file_scan_before_the_file_bubble
 tests::notifications_are_observable_and_respect_the_switch
 tests::offline_peer_stays_listed_but_is_not_online
+tests::outbox_sweeper_emits_only_after_db_write_succeeds
 tests::peer_version_is_declared_not_signed_and_reclaimed
 tests::pending_requests_exclude_existing_friends
 tests::peripheral_reconnect_hello_replaces_the_stale_route

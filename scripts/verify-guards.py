@@ -2798,6 +2798,27 @@ CASES: list[Case] = [
         tags=["rust", "relay", "mesh", "new-guards"],
     ),
     Case(
+        name="出站清扫器的失败终态必须由写库成功门控（审计 A3：防重复投递）",
+        why="旧缺陷：emit(message-failed) 写在 `if let Ok(dbc){ 写库 }` 之外、写库返回值被 `let _ =` 丢掉\n"
+        "     ⇒ 锁中毒/写库失败时界面报失败而 outbox 行还在 ⇒ 下次 flush 重发 = 重复投递。\n"
+        "     修法是把 emit 收进 `if finalized { … }`（finalized = 两步写库都成功）。\n"
+        "     注入方式：把单聊那处的门控 `if finalized {` 改成 `if true {`（emit 变回无条件，仍可编译），\n"
+        "     守卫必须红 —— 它数 `if finalized {` 的处数，少一处即判 emit 脱离了写库门控。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "                    finalize_expired_message(&dbc, &msg_id, false)\n"
+            "                };\n"
+            "                if finalized {",
+            "                    finalize_expired_message(&dbc, &msg_id, false)\n"
+            "                };\n"
+            "                if true {",
+        )],
+        cmd=cargo("test", "--lib", "outbox_sweeper_emits_only_after_db_write_succeeds"),
+        cwd=TAURI,
+        expect_fail_hint="门控",
+        tags=["rust", "outbox", "stability", "new-guards"],
+    ),
+    Case(
         name="幂等 accept 时必须重置段号（少这一句，续传段会被当成迟到重复片整段丢掉）",
         why="2026-09-22 跨网首测：160MB 永远停在 0%，最后报分片失败。\n"
         "     发送端续传时分片**按段从 seq 0 重编**，而活跃接收器的 next_seq 已推进到上一段末尾\n"

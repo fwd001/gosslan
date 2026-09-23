@@ -10,6 +10,24 @@
 
 ## [Unreleased]
 
+## [4.29.2] - 2026-09-23
+
+### Fixed (审计 A3：出站清扫器先 emit「失败」后写库 ⇒ 重复投递)
+
+`spawn_outbox_sweeper` 三处终态（单聊 / 群 / 文件）都把 `emit("message-failed" / "file-failed")`
+写在 `if let Ok(dbc){ 写库 }` **之外**，且写库返回值被 `let _ =` 丢掉。后果：db 锁中毒（或写库失败）
+时**界面报失败、而 outbox 行还在** ⇒ 下一次 `flush_outbox` 把它再发一遍 = 用户看到「我以为失败了
+的消息又发出去了」。另外三处 `let Ok(dbc)=lock() else { continue }` 在锁中毒时**静默跳过整个 tick**，
+而这个清扫器是「无链路消息」唯一的终态出口 ⇒ 消息永久停在「发送中」。
+
+- 抽出两个纯 DB 助手 `finalize_expired_message` / `finalize_expired_file`：返回**两步写库的
+  conjunction**；三处 emit 改为 `if finalized { emit } else { warn 并保留行、下轮重试 }`。
+- db 锁读取一律 poison-tolerant（`unwrap_or_else(|e| e.into_inner())`），不再静默 `continue`；
+  锁只在写库作用域内持有、**不跨 emit**（审计 B1：不持锁做慢活）。
+- 回归用例 `finalize_expired_message_writes_both_and_gates_on_failure`（真 DB：绿路两步都写、失败路
+  返回 false）+ 源码守卫 `outbox_sweeper_emits_only_after_db_write_succeeds`（数 `if finalized {`
+  处数 == emit 处数，且不许再有 `else { continue }`），已登记变异用例证明非空转。
+
 ## [4.29.1] - 2026-09-23
 
 ### Added (守卫非空转记账)

@@ -2720,6 +2720,49 @@ mod tests {
         );
     }
 
+    /// 出站清扫器的「失败终态」必须**由写库成功门控**（审计 A3）。
+    ///
+    /// 旧缺陷：三处 `emit("message-failed"/"file-failed")` 都写在 `if let Ok(dbc){ 写库 }` **之外**，
+    /// 且写库返回值被 `let _ =` 丢掉 ⇒ 锁中毒或写库失败时**界面照样报失败、而 outbox 行还在**
+    /// ⇒ 下一次 `flush_outbox` 把它再发一遍 = 用户看到「我以为失败了的消息又发出去了」（重复投递）。
+    /// 判据：① 三处终态各由 finalize 助手落库，emit 在 `if finalized {` 分支里（写库成功才发）；
+    ///      ② db 锁中毒不许 `else { continue }` 静默跳过整个 tick（消息会永久停在 sending）。
+    /// 为什么是源码守卫：本仓没有能驱动这个清扫循环 + 捕获 emit 的异步夹具（同 4.25.7 打标顺序那条）。
+    #[test]
+    fn outbox_sweeper_emits_only_after_db_write_succeeds() {
+        let src = crate::network::transport_src_for_guards();
+        let body = rust_fn_body(&src, "pub fn spawn_outbox_sweeper(");
+        assert_eq!(
+            body.matches("finalize_expired_message(").count(),
+            2,
+            "单聊 + 群两处终态必须各调一次 finalize_expired_message（两步写库都成功才返回 true）"
+        );
+        assert_eq!(
+            body.matches("finalize_expired_file(").count(),
+            1,
+            "文件终态必须调 finalize_expired_file"
+        );
+        assert_eq!(
+            body.matches("if finalized {").count(),
+            3,
+            "三处 emit 必须各自被 `if finalized {{ … }}` 门控 —— 写库没成功就不许 emit，否则重复投递"
+        );
+        assert_eq!(
+            body.matches("emit(\"message-failed\"").count(),
+            2,
+            "message-failed 仍恰好两处（单聊 + 群）"
+        );
+        assert_eq!(
+            body.matches("emit(\"file-failed\"").count(),
+            1,
+            "file-failed 仍恰好一处"
+        );
+        assert!(
+            !body.contains(".db.lock() else { continue }"),
+            "db 锁中毒必须可见（poison-tolerant + 日志），不许 `else {{ continue }}` 静默跳过整个清扫 tick"
+        );
+    }
+
     /// 好友身份锚点的**绑定来源**必须问同一道闸（#32 第一片）。
     ///
     /// 后果链：`friends.ed25519_pubkey` 是 Hello 的验签锚点（INV-P21）与安全码的输入，
