@@ -345,7 +345,21 @@ pub fn run() {
                 let st = state.clone();
                 tauri::async_runtime::spawn(async move {
                     loop {
-                        let removed = crate::network::file::sweep_stale_parts(&st);
+                        // spawn_blocking（对照缓存自动清理的用法，审计 2.3o）：sweep_stale_parts
+                        // 是同步 read_dir/删除 + 抢 3 把锁，直接在 async 任务里跑会占住一个
+                        // tokio worker（慢盘上整套消息收发一起挨饿），且启动时立刻跑一轮。
+                        let removed = match tauri::async_runtime::spawn_blocking({
+                            let st = st.clone();
+                            move || crate::network::file::sweep_stale_parts(&st)
+                        })
+                        .await
+                        {
+                            Ok(n) => n,
+                            Err(e) => {
+                                st.logger.error("file", format!(".part 清扫任务失败: {e}"));
+                                0
+                            }
+                        };
                         if removed > 0 {
                             st.logger
                                 .info("file", format!("清理过期 .part：{removed} 个"));
@@ -740,7 +754,11 @@ mod tests {
         // 不再需要任何例外。
 
         // 重资源标记 → 人类可读的原因
-        let markers: [(&str, &str); 9] = [
+        // `tray::` 标记（审计 2.2j）：托盘更新 = 整张图标逐像素混合 + 平台角标重绘，
+        // 同步命令里内联跑等于在主线程 IPC 回调里做 CPU/平台活（macOS 主线程同时
+        // 驱动整个 UI 事件循环）。set_unread_badge 曾因此漏网——字面量 marker
+        // 匹配不到跨模块调用，本标记补上这个洞。
+        let markers: [(&str, &str); 10] = [
             (".db", "访问 SQLite（可能等锁数秒）"),
             ("db::", "访问 SQLite"),
             ("std::fs", "文件系统 IO"),
@@ -750,6 +768,7 @@ mod tests {
             ("if_addrs", "枚举网卡"),
             ("thread::sleep", "阻塞睡眠"),
             ("block_on", "阻塞等待异步任务"),
+            ("tray::", "托盘图标重绘（逐像素混合 + set_icon/badge）"),
         ];
 
         // 建窗命令单独判：`open_*_window` 的函数体里没有上面那些重资源标记（db 访问都在

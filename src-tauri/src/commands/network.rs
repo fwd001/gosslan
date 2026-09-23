@@ -232,10 +232,16 @@ pub fn request_attention(_app: tauri::AppHandle) -> Result<(), String> {
 ///
 /// 幂等：前端按未读总数去抖后推送，重复用同一个值调用没有副作用。失败静默 ——
 /// 角标是锦上添花，不该因为某个桌面环境不支持就影响聊天。
+///
+/// ⚠️ 必须 async + spawn_blocking（审计 2.2j）：同步命令在 macOS 主线程 IPC 回调里
+/// 内联跑整张图标的逐像素混合 + set_icon（主线程同时驱动整个 UI 事件循环，未读
+/// 变化一次跑一次）。tray/badge 的平台调用在 muda/tao 内部自行派发回主线程，
+/// 这里只需要把纯 CPU 部分挪出主线程。
 #[cfg(desktop)]
-#[tauri::command]
-pub fn set_unread_badge(app: tauri::AppHandle, count: u32) -> Result<(), String> {
-    crate::tray::set_unread_badge(&app, count);
+#[tauri::command(async)]
+pub async fn set_unread_badge(app: tauri::AppHandle, count: u32) -> Result<(), String> {
+    let _ = tauri::async_runtime::spawn_blocking(move || crate::tray::set_unread_badge(&app, count))
+        .await;
     Ok(())
 }
 

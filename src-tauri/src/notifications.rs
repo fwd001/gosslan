@@ -241,8 +241,9 @@ pub fn show(app: &tauri::AppHandle, title: &str, body: &str) -> Result<(), Strin
 }
 
 fn enabled(state: &Arc<AppState>) -> bool {
-    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    notifications_enabled(&dbc)
+    // 走 AppState 的内存缓存（审计 2.1i）：每条通知都判一次总开关，
+    // 逐次抢全局 db 锁会在消息洪峰时加剧争用；未加载时读库一次回填。
+    state.notify_enabled_cached()
 }
 
 fn log_result(state: &Arc<AppState>, title: &str, r: Result<(), String>) -> Result<bool, String> {

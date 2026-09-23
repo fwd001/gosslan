@@ -88,7 +88,23 @@ pub async fn update_profile(
             .collect::<Vec<_>>()
     };
     for tx in &targets {
-        let _ = tx.send(msg.clone()).await;
+        // 有界发送（同 outbound::SEND_QUEUE_FULL_TIMEOUT 的纪律，审计 2.2k）：无界等待时
+        // 一条僵死链路会把"保存资料"按钮永远挂着；失败必须留痕 —— 否则"对方怎么还是
+        // 旧名字"排查起来没有任何线索（资料同步是 best-effort，下次变更会再推）。
+        let r = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            tx.send(msg.clone()),
+        )
+        .await;
+        match r {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => s.logger
+                .warn("profile", "资料变更推送失败：链路已关闭（下次变更会再推）".to_string()),
+            Err(_) => s.logger.warn(
+                "profile",
+                "资料变更推送超时（500ms，对端消费不过来），跳过该链路（下次变更会再推）".to_string(),
+            ),
+        }
     }
 
     // 昵称/头像变更：另一个窗口的资料区要跟着刷新。

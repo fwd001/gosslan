@@ -61,6 +61,31 @@ const UI_LANG_UNKNOWN: u8 = 0;
 const UI_LANG_ZH: u8 = 1;
 const UI_LANG_EN: u8 = 2;
 
+/// 热路径设置 `settings.language` 的内存缓存（审计 2.1i）。
+/// is_zh() 在每段后端文案（托盘/日志/中继/群成员变更）上调用，逐次抢全局 db 锁
+/// 会在消息洪峰 + 托盘重建时加剧争用。与 ui_lang 同型：未加载时读库一次回填，
+/// 写入点（save_settings / reset_settings）同步更新。
+const LANG_PREF_UNSET: u8 = 0;
+const LANG_PREF_SYSTEM: u8 = 1;
+const LANG_PREF_ZH: u8 = 2;
+const LANG_PREF_EN: u8 = 3;
+/// 键不存在 / 历史脏值：resolve_is_zh 对它们本就与 None 同路（跟随系统）。
+const LANG_PREF_MISSING: u8 = 4;
+
+/// 热路径设置 `notify_enabled` 的内存缓存（同上；每条通知判一次总开关）。
+const NOTIFY_PREF_UNSET: u8 = 0;
+const NOTIFY_PREF_ON: u8 = 1;
+const NOTIFY_PREF_OFF: u8 = 2;
+
+fn lang_pref_str(code: u8) -> Option<&'static str> {
+    match code {
+        LANG_PREF_SYSTEM => Some("system"),
+        LANG_PREF_ZH => Some("zh-CN"),
+        LANG_PREF_EN => Some("en-US"),
+        _ => None,
+    }
+}
+
 /// **运行状态的唯一快照**（用户要求的第 ② 项）。
 ///
 /// 为什么必须合并：以前"局域网到底开着没有"在前端有**两份**表示 ——
@@ -779,6 +804,10 @@ pub struct AppState {
     /// 只存内存、**不落库**：它是前端解析结果的缓存，每次启动前端都会重新推一次；
     /// 落库反而会多出一份可能与 `settings.language`（那是**偏好**，不是结果）不一致的状态。
     ui_lang: AtomicU8,
+    /// `settings.language` 的内存缓存（热路径，见模块顶部常量注释；审计 2.1i）。
+    lang_pref: AtomicU8,
+    /// `notify_enabled` 的内存缓存（同上）。
+    notify_pref: AtomicU8,
     /// **在途拨号**集合（D6）：正在 connect/握手的拨号键（peer_id 或端点字符串）。
     ///
     /// 为什么需要：`connect_to_peer` 的"已连接？"检查与"登记链路"之间隔着 connect +
@@ -1232,6 +1261,8 @@ impl AppState {
             tcp_port,
             // 「前端还没推语言」的初值；前端 `app.init()` 随后就会推一次真实值。
             ui_lang: AtomicU8::new(UI_LANG_UNKNOWN),
+            lang_pref: AtomicU8::new(LANG_PREF_UNSET),
+            notify_pref: AtomicU8::new(NOTIFY_PREF_UNSET),
             downloads_dir: Mutex::new(downloads_dir),
             cache_dir,
             favorites_dir,
@@ -1334,12 +1365,76 @@ impl AppState {
     /// 当前界面语言是否为中文。偏好存 settings.language（三态 system / zh-CN /
     /// en-US，由前端维护）；「跟随系统」时**先看前端推来的解析结果**，最后才用
     /// 环境变量兜底（判定规则与理由见 [`resolve_is_zh`]）。
+    ///
+    /// 偏好走内存缓存（审计 2.1i）：未加载时读库一次回填，此后零锁 ——
+    /// 每段后端文案都调它，逐次抢全局 db 锁会在消息洪峰时加剧争用。
     pub fn is_zh(&self) -> bool {
-        let pref = {
-            let dbc = self.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_setting(&dbc, "language")
+        let pref = self.cached_lang_pref();
+        resolve_is_zh(pref, self.ui_lang_hint(), system_lang_is_zh())
+    }
+
+    /// settings.language 的缓存值；未加载时读库一次回填（此后零锁）。
+    fn cached_lang_pref(&self) -> Option<&'static str> {
+        let code = self.lang_pref.load(Ordering::Acquire);
+        if code == LANG_PREF_UNSET {
+            let stored = {
+                let dbc = self.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::get_setting(&dbc, "language")
+            };
+            let code = match stored.as_deref() {
+                Some("system") => LANG_PREF_SYSTEM,
+                Some("zh-CN") => LANG_PREF_ZH,
+                Some("en-US") => LANG_PREF_EN,
+                // 键不存在 / 历史脏值：resolve_is_zh 对它们本就按「跟随系统」处理
+                _ => LANG_PREF_MISSING,
+            };
+            self.lang_pref.store(code, Ordering::Release);
+            return lang_pref_str(code);
+        }
+        lang_pref_str(code)
+    }
+
+    /// save_settings 写入 language 后同步缓存（保持与库一致，见 [`Self::is_zh`]）。
+    pub fn cache_lang_pref(&self, v: &str) {
+        let code = match v {
+            "system" => LANG_PREF_SYSTEM,
+            "zh-CN" => LANG_PREF_ZH,
+            "en-US" => LANG_PREF_EN,
+            _ => LANG_PREF_MISSING,
         };
-        resolve_is_zh(pref.as_deref(), self.ui_lang_hint(), system_lang_is_zh())
+        self.lang_pref.store(code, Ordering::Release);
+    }
+
+    /// notify_enabled 的缓存读取；未加载时读库一次回填（每条通知判一次总开关，
+    /// 逐次抢锁同属审计 2.1i 的热路径）。
+    pub fn notify_enabled_cached(&self) -> bool {
+        match self.notify_pref.load(Ordering::Acquire) {
+            NOTIFY_PREF_ON => true,
+            NOTIFY_PREF_OFF => false,
+            _ => {
+                let on = {
+                    let dbc = self.db.lock().unwrap_or_else(|e| e.into_inner());
+                    crate::notifications::notifications_enabled(&dbc)
+                };
+                self.cache_notify_enabled(on);
+                on
+            }
+        }
+    }
+
+    /// save_settings 写入 notify_enabled 后同步缓存。
+    pub fn cache_notify_enabled(&self, on: bool) {
+        self.notify_pref.store(
+            if on { NOTIFY_PREF_ON } else { NOTIFY_PREF_OFF },
+            Ordering::Release,
+        );
+    }
+
+    /// reset_settings 删除全部偏好键后：两个热路径缓存回到未加载态
+    ///（下次读取从库回填默认值，而不是继续用被删掉的旧值）。
+    pub fn invalidate_hot_setting_cache(&self) {
+        self.lang_pref.store(LANG_PREF_UNSET, Ordering::Release);
+        self.notify_pref.store(NOTIFY_PREF_UNSET, Ordering::Release);
     }
 
     /// 记录前端**解析后**的界面语言（`set_ui_language` 命令调用；见 [`Self::is_zh`]）。

@@ -281,6 +281,8 @@ pub fn save_settings(
     if let Some(v) = settings.notify_enabled {
         db::set_setting(&dbc, "notify_enabled", if v { "1" } else { "0" })
             .map_err(|e| e.to_string())?;
+        // 热路径缓存同步（is_zh/notify 同一套纪律，审计 2.1i）
+        state.inner().cache_notify_enabled(v);
         changed.push("notifyEnabled");
     }
     if let Some(v) = settings.notify_show_content {
@@ -291,6 +293,8 @@ pub fn save_settings(
     if let Some(v) = settings.language {
         if LANGUAGES.contains(&v.as_str()) {
             db::set_setting(&dbc, "language", &v).map_err(|e| e.to_string())?;
+            // 热路径缓存同步（is_zh 零锁读，审计 2.1i）
+            state.inner().cache_lang_pref(&v);
             changed.push("language");
         }
     }
@@ -363,6 +367,9 @@ pub fn reset_settings(
     // 否则用户点了恢复默认、行为却还是旧的限制策略（要重启才生效）。
     drop(dbc);
     state.set_relay_policy_config(crate::mesh::relay_policy::RelayConfig::default());
+    // 热路径缓存同理（审计 2.1i）：language / notify_enabled 已被删除，
+    // 缓存必须回到未加载态，下次读取从库回填默认值。
+    state.invalidate_hot_setting_cache();
     // 「恢复默认」把大部分键**删掉**了（不是写成某个值），逐一送 patch 反而容易漏；
     // 用 `"*"` 明确表示"全量都变了" —— 接收方做一次完整重拉（一次性动作，不心疼）。
     state.notify_settings_changed(&["*"], Some(window.label()), json!({}));

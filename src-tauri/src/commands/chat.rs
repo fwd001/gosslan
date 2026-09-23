@@ -227,9 +227,10 @@ pub async fn send_message(
         true // 广播视为乐观已发出
     };
     if try_ok {
-        if let Ok(dbc) = s.db.lock() {
-            let _ = db::set_message_status(&dbc, &msg_id, "sent");
-        }
+        // poison-tolerant（全仓纪律）：锁中毒时静默跳过 = 状态停在 sending，
+        // 与 resend 的卡死同形（审计 2.3m）；中毒也要前进到 sent。
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = db::set_message_status(&dbc, &msg_id, "sent");
     }
     // 更新会话「当前链路」（发送方视角）：有直连则 hop=0 + 出站路径；无直连
     // （经中继广播）则乐观记 hop=1（实际跳数发送方不可知，等对端回执侧视角校正）。
@@ -454,18 +455,24 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
             db::get_group(&dbc, group_id)
         };
         if let Some(group) = group {
-            for member in group.members {
-                if member == s.device_id {
-                    continue;
-                }
-                // 群回执同样按「该成员最近一条消息」发送，避免跨设备时钟偏差。
-                let last = {
-                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::last_message_from_sender(&dbc, &conv_id, &member)
-                };
-                let Some((msg_id, last_read_ts)) = last else {
-                    continue;
-                };
+            // 单次锁内查齐全部成员的最近消息（审计 2.1h）：旧形状每成员 2 次抢锁，
+            // 200 人群打开/滚动一次 = 400 次锁往返；查询本身是索引点查，一次锁持有
+            // 内批查即可。发送（await）绝不持锁（全仓纪律），回执持久化再合并成一次锁。
+            let lasts = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                group
+                    .members
+                    .iter()
+                    .filter(|m| **m != s.device_id)
+                    .filter_map(|member| {
+                        // 群回执同样按「该成员最近一条消息」发送，避免跨设备时钟偏差。
+                        db::last_message_from_sender(&dbc, &conv_id, member)
+                            .map(|last| (member.clone(), last))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut to_persist: Vec<(String, i64)> = Vec::new();
+            for (member, (msg_id, last_read_ts)) in lasts {
                 let msg = Message::GroupReadReceipt {
                     from: s.device_id.clone(),
                     group_id: group_id.to_string(),
@@ -473,10 +480,15 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
                     last_read_msg_id: Some(msg_id),
                 };
                 let _ = crate::network::transport::try_send(s, &member, &msg).await;
-                // 无论即时发送是否成功都持久化待发记录，由建链/Hello/心跳补发；
-                // 接收端按 (group_id, reader_id) 单调去重，重复送达无副作用。
+                to_persist.push((member, last_read_ts));
+            }
+            // 无论即时发送是否成功都持久化待发记录，由建链/Hello/心跳补发；
+            // 接收端按 (group_id, reader_id) 单调去重，重复送达无副作用。
+            if !to_persist.is_empty() {
                 let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::upsert_pending_group_read(&dbc, group_id, &member, last_read_ts).ok();
+                for (member, ts) in &to_persist {
+                    db::upsert_pending_group_read(&dbc, group_id, member, *ts).ok();
+                }
             }
         }
     }
