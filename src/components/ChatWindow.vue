@@ -25,6 +25,7 @@ import { fileToDataUrl } from "@/utils/imageBytes";
 import { MAX_MERGE_ITEMS, buildMergePayload } from "@/utils/mergeCard";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
 import { foldPinned, isPinned } from "@/utils/pins";
+import { foldTodos, type TodoStatus } from "@/utils/todos";
 import { isRenderedInTimeline } from "@/utils/messageKinds";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
@@ -157,6 +158,7 @@ watch(
     membersOpen.value = false;
     filesOpen.value = false;
     tasksOpen.value = false;
+    taskFocusId.value = null;
     lightboxOpen.value = false;
     announceViewOpen.value = false;
   },
@@ -260,13 +262,22 @@ const activeGroupId = computed(() =>
 /** 当前群的任务窗口是否正在打开（按钮 pending 反馈）。 */
 const tasksOpening = computed(() => isWindowOpening(groupTodosLabel(activeGroupId.value ?? "")));
 
+/** 从任务卡片点进来时要直达详情的那条任务（null = 只是打开看板）。 */
+const taskFocusId = ref<string | null>(null);
 /**
  * 打开群任务：桌面端开**独立窗口**（每群一个），移动端/窗口创建失败回退到应用内弹窗。
  * 与设置/日志同一套单飞 + 防抖（`launchAuxWindow`），窗口实例唯一性由后端 `ensure_aux_window` 保证。
+ *
+ * `todoId` 只服务**应用内弹窗**那两条路径（用户 #23「点卡片直达详情」）：
+ * 桌面端的看板是**另一个文档**，参数只能走窗口 label，而 label 是"每群一个窗口"的**身份**
+ * （把 todoId 塞进 label 会变成"每条任务一个窗口"）。本仓没有定向跨窗口事件通道
+ * （全仓零 `emit_to`），为这个便利新造一条通道 + 处理"窗口还没起来就先到的事件"这个竞态，
+ * 不值当 ⇒ 桌面端仍然只开到看板，这是刻意保留的边界，不是漏掉了。
  */
-function openTasks() {
+function openTasks(todoId?: string) {
   const gid = activeGroupId.value;
   if (!gid) return;
+  taskFocusId.value = todoId ?? null;
   if (app.isMobile) {
     tasksOpen.value = true;
     return;
@@ -296,6 +307,24 @@ const reactionMap = computed(() => {
   const convId = chat.activeConv;
   if (!convId) return new Map<string, ReactionChip[]>();
   return foldReactions(chat.messages[convId] ?? [], app.device?.device_id ?? "");
+});
+
+/**
+ * 时间线上每张任务卡片的**当前状态**（`todo_id` → 状态）。
+ *
+ * 为什么必须单独算：卡片气泡读的是**创建那条 `todo` 消息的载荷**，而之后的每次改动都走
+ * `todo_update`（静默事件、不进时间线）⇒ 卡片自己的载荷**永远停在创建那一刻**，
+ * 而新建任务恒为「待办」，于是"干完了的任务在聊天里还挂着待办"（用户 #23）。
+ * 判据仍只有 `foldTodos` 一份（与看板、成员面板同一折叠结果），这里只是把它换成
+ * 按 `todo_id` 查表的形式。与 `reactionMap` 同构：**会话层算一次**，
+ * 放进气泡里各自折叠就是 O(n²)。
+ */
+const todoLiveStatus = computed(() => {
+  const m = new Map<string, TodoStatus>();
+  const convId = chat.activeConv;
+  if (!convId) return m;
+  for (const x of foldTodos(chat.messages[convId] ?? [])) m.set(x.todoId, x.status);
+  return m;
 });
 
 /**
@@ -998,7 +1027,7 @@ function onLoadMore() {
       @open-members="membersOpen = true"
       @open-files="filesOpen = true"
       :tasks-opening="tasksOpening"
-      @open-tasks="openTasks"
+      @open-tasks="openTasks()"
       @rename="membersOpen = true"
       @open-share="emit('open-share')"
     />
@@ -1167,7 +1196,8 @@ function onLoadMore() {
             @open-merge="openMerge = $event"
             @locate="locateMessage"
             @open-image="openImageAt"
-            @open-tasks="openTasks"
+            @open-tasks="openTasks($event)"
+            :todo-live-status="todoLiveStatus"
           />
         </template>
       </VirtualList>
@@ -1319,7 +1349,12 @@ function onLoadMore() {
     <GroupFilesPanel :open="filesOpen" :group-id="activeGroupId" @close="filesOpen = false" />
 
     <!-- 群任务（Card kind：不进时间线，只在这个面板里折叠展示） -->
-    <GroupTasksPanel :open="tasksOpen" :group-id="activeGroupId" @close="tasksOpen = false" />
+    <GroupTasksPanel
+      :open="tasksOpen"
+      :group-id="activeGroupId"
+      :focus-todo-id="taskFocusId"
+      @close="tasksOpen = false; taskFocusId = null"
+    />
 
     <!-- 转发弹窗 -->
     <ForwardModal

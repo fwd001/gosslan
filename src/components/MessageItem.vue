@@ -39,6 +39,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import MessageReactionBar from "@/components/message/MessageReactionBar.vue";
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import type { ReactionChip } from "@/utils/reactions";
+import type { TodoStatus } from "@/utils/todos";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import TodoCardBubble from "@/components/TodoCardBubble.vue";
 import UnsupportedKindBubble from "@/components/message/UnsupportedKindBubble.vue";
@@ -77,6 +78,11 @@ const props = withDefaults(
     selectMode?: boolean;
     /** 多选模式下本行是否已选中（决定勾选框的实心态）。 */
     selected?: boolean;
+    /**
+     * 群任务卡片的**当前状态**表（`todo_id` → 状态），由会话层折叠一次传下来。
+     * 卡片自己的载荷是创建那一刻的快照，不查这张表就会永远显示「待办」。
+     */
+    todoLiveStatus?: Map<string, TodoStatus>;
   }>(),
   {
     prev: null,
@@ -88,6 +94,7 @@ const props = withDefaults(
     mentionNames: () => [],
     selectMode: false,
     selected: false,
+    todoLiveStatus: () => new Map(),
   },
 );
 
@@ -780,7 +787,7 @@ const emit = defineEmits<{
   /** 多选模式下切换本行的勾选态（由覆盖层点击触发） */
   (e: "toggle-select"): void;
   /** 点了任务卡片里的「查看任务」：打开群任务面板（由 ChatWindow 接住）。 */
-  (e: "open-tasks"): void;
+  (e: "open-tasks", todoId?: string): void;
 }>();
 
 /**
@@ -1286,8 +1293,9 @@ async function copyFileToClipboard() {
             v-else-if="message.kind === 'todo'"
             :message="message"
             :card-style="cardStyle"
+            :live-status="todoLiveStatus"
             :mine="mine"
-            @open="emit('open-tasks')"
+            @open="emit('open-tasks', $event)"
           />
 
           <!-- 本机不认识的 kind（= 对端 Gosslan 比本机新）：给可解释的占位，

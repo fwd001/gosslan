@@ -6,7 +6,13 @@ import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
-import { TODO_STATUSES, TODO_STATUS_CLASS, TODO_STATUS_LABEL_KEY, foldTodos } from "@/utils/todos";
+import {
+  TODO_STATUSES,
+  TODO_STATUS_CLASS,
+  TODO_STATUS_LABEL_KEY,
+  foldTodos,
+  isEffectivelyArchived,
+} from "@/utils/todos";
 import { ArrowRightLeft, Crown, ListChecks, LogOut, Plus, UserMinus, X } from "lucide-vue-next";
 import type { Friend } from "@/types";
 
@@ -21,11 +27,15 @@ const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? 
 /**
  * 任务分区的一行摘要：各状态计数 + 完成数。
  *
- * 折叠口径与群任务面板完全一致（同一个 `foldTodos`，同一份会话消息）——
- * 只是这里只用来显示"有几项、什么状态"，完整列表在 `GroupTasksPanel` 里。
+ * 口径与看板**逐字相同**（用户 #23：三处消费者两种算法，弹窗标题写 (9) 而进去只看到 6 条）：
+ * 同一个 `foldTodos`，再按 `isEffectivelyArchived` 滤掉已归档 —— 这里显示的是
+ * "进去那一屏能看到的条数"，不是"这个群历史上发过多少条任务"。
+ * 所以 `total` 恒等于各状态之和（两边同一次过滤，不会一个含归档一个不含）。
  */
 const todoSummary = computed(() => {
-  const items = props.groupId ? foldTodos(chat.messages[`group:${props.groupId}`] ?? []) : [];
+  const items = props.groupId
+    ? foldTodos(chat.messages[`group:${props.groupId}`] ?? []).filter((x) => !isEffectivelyArchived(x))
+    : [];
   const byStatus: Record<string, number> = {};
   for (const it of items) byStatus[it.status] = (byStatus[it.status] ?? 0) + 1;
   return { total: items.length, done: byStatus.done ?? 0, byStatus };

@@ -598,3 +598,53 @@ test("通讯录「（我）」标记：两个渲染分支都要挂，判据与�
   assert.match(item, /:aria-label="t\('friend\.listItem\.aria', \{ name: displayName/, "aria 用带标记的名字");
   assert.match(item, /:title="displayName"/, "title 用带标记的名字");
 });
+
+/**
+ * 群任务的三处外显必须同源于**同一份折叠结果**（用户 2026-09-24 #23）。
+ *
+ * 三条各自都"看起来功能还在"，只有静态钉调用路径能挡住：
+ * 1. **时间线里的任务卡片**读的是创建那条 `todo` 消息的载荷，而之后所有改动都走
+ *    `todo_update`（静默、不进时间线）⇒ 卡片自己的载荷永远停在创建时，而新建恒为「待办」。
+ *    表现："群里任务早干完了，聊天里那条还挂着待办" —— 这正是要点卡片去看的原因。
+ *    修法只能是会话层折一次传下去（`reactionMap` 同构）；每条气泡自己折叠就是 O(n²)。
+ * 2. **两处任务计数**（弹窗标题 / 成员面板摘要）原先算"含归档的全部"，而看板默认那一档
+ *    是活动任务 ⇒ 标题写 (9) 进去只看到 6 条。三处消费者必须同一次 `foldTodos` +
+ *    同一个 `isEffectivelyArchived` 过滤。
+ * 3. **点卡片直达详情**的 watch 必须同时看 `open`：只看 id 的话，关掉面板再点**同一条**卡片
+ *    第二次不触发（值没变），用户看到的就是"这个按钮时灵时不灵"。
+ */
+test("群任务三处外显同源：卡片实时状态 / 两处计数口径 / 点卡片直达", () => {
+  const chatWin = read("components/ChatWindow.vue");
+  assert.match(
+    chatWin,
+    /const todoLiveStatus = computed\(\(\) => \{[\s\S]{0,400}foldTodos\(chat\.messages\[convId/,
+    "会话层折叠一次产出 todo_id → 当前状态（不许放进每条气泡）",
+  );
+  assert.match(chatWin, /:todo-live-status="todoLiveStatus"/, "折叠结果要传给 MessageItem");
+  assert.match(
+    read("components/MessageItem.vue"),
+    /:live-status="todoLiveStatus"/,
+    "再传给任务卡片（少这一环等于白折）",
+  );
+  const card = read("components/TodoCardBubble.vue");
+  assert.match(
+    card,
+    /const status = computed<TodoStatus>\(\s*\(\) =>[^;]*props\.liveStatus/,
+    "卡片的状态必须优先查实时表，查不到才退回快照",
+  );
+
+  for (const f of ["components/GroupTasksPanel.vue", "components/GroupMemberPanel.vue"]) {
+    assert.match(
+      read(f),
+      /foldTodos\([\s\S]{0,160}?\.filter\(\(x\) => !isEffectivelyArchived\(x\)\)/,
+      `${f} 的条数要滤掉已归档 —— 与看板默认那一档同口径`,
+    );
+  }
+
+  const board = read("components/GroupTasksBoard.vue");
+  assert.match(
+    board,
+    /watch\(\s*\[\(\) => props\.open, \(\) => props\.focusTodoId\]/,
+    "直达详情的 watch 必须把 open 一起看，否则第二次点同一条卡片不生效",
+  );
+});

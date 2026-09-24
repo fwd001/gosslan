@@ -51,7 +51,17 @@ import { api } from "@/api";
 import { t } from "@/i18n";
 import { Check, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, ImagePlus, Plus, X } from "lucide-vue-next";
 
-const props = defineProps<{ groupId: string | null; open?: boolean; standalone?: boolean }>();
+const props = defineProps<{
+  groupId: string | null;
+  open?: boolean;
+  standalone?: boolean;
+  /**
+   * 打开看板时要**直达详情**的那条任务（用户 #23：点时间线上的任务卡片，不是只把看板翻开）。
+   * 独立窗口形态没有这个入参（跨文档传参要新造通道，见 `ChatWindow.openTasks` 的注释），
+   * 所以只在应用内弹窗/移动端生效。
+   */
+  focusTodoId?: string | null;
+}>();
 
 const app = useAppStore();
 const chat = useChatStore();
@@ -190,6 +200,27 @@ function openDetail(x: TodoItem) {
 function closeDetail() {
   detailId.value = null;
 }
+
+/**
+ * 带着 `focusTodoId` 打开 ⇒ 直接落到那条任务的详情（用户 #23）。
+ *
+ * 判据是 `[open, focusTodoId]` **一起看**：只看后者会漏掉"点同一条卡片第二次"
+ * （面板关掉再开，`focusTodoId` 没变，watch 不触发 ⇒ 用户以为按钮坏了）。
+ * 查不到就**什么都不做**（任务被删 / 折叠结果里没有它）—— 看板照常在后面，
+ * 不弹"找不到"也不空指针。归档态要先切到「已归档」那一档，否则详情背后的列表
+ * 根本不是它所在的那一屏。
+ */
+watch(
+  [() => props.open, () => props.focusTodoId],
+  ([open, id]) => {
+    if (!open || !id) return;
+    const x = todos.value.find((t) => t.todoId === id);
+    if (!x) return;
+    filter.value = isEffectivelyArchived(x) ? "archived" : "all";
+    openDetail(x);
+  },
+  { immediate: true },
+);
 
 // ---------------- 新建 / 编辑（内联表单，不开第二层弹窗） ----------------
 const draft = ref<{

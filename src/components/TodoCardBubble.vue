@@ -7,7 +7,9 @@ import type { CSSProperties } from "vue";
  * 渲染成一张可读的卡片（标题 / 状态 / 描述 / 图片 / 指派人 + 打开面板入口）。
  *
  * 载荷是**创建那一刻的快照**（改状态走的是 `todo_update`，那一条是静默事件、不进时间线），
- * 所以卡片显示的是创建时的样子；最新状态请看任务面板（`foldTodos` 折叠出的权威结果）。
+ * 所以状态**必须**查父层传来的实时表 `liveStatus`（用户 #23：不查的话卡片永远挂着「待办」，
+ * 而任务其实早干完了）；表里查不到（任务已删 / 那条消息没被折叠进来）才退回快照。
+ * 标题/描述/指派人仍是创建时的样子 —— 那些字段没有实时源，看板才是权威列表。
  */
 import { computed } from "vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
@@ -23,15 +25,33 @@ const props = defineProps<{
   mine?: boolean;
   /** 从父层 MessageItem 透传的卡片样式（固定底色，不跟随 mine/other）。 */
   cardStyle?: CSSProperties;
+  /**
+   * 任务 `todo_id` → **当前**状态（会话层折叠一次传下来，见 `ChatWindow.todoLiveStatus`）。
+   * 缺省空表 = 单测/别的宿主没传 ⇒ 退回卡片自己的快照。
+   */
+  liveStatus?: Map<string, TodoStatus>;
 }>();
-const emit = defineEmits<{ (e: "open"): void }>();
+/** 带上 `todo_id`：点卡片要直达**这一条**任务的详情（用户 #23），不是只把看板打开。 */
+const emit = defineEmits<{ (e: "open", todoId: string | undefined): void }>();
 
 const { cardStyle } = props;
 
 const { memberProfile } = useMemberProfile();
 
 const todo = computed(() => parseTodo(props.message));
-const status = computed<TodoStatus>(() => todo.value?.status ?? "todo");
+const todoId = computed(() => todo.value?.todoId);
+/**
+ * 卡片显示的状态 = **当前**状态（折叠结果），查不到才退回创建时的快照。
+ *
+ * 为什么要专门查这一张表（用户 #23）：载荷是创建那一刻的快照，而之后的改动都走
+ * `todo_update`（静默事件、不进时间线）⇒ 卡片自己的载荷**永远停在创建时**，
+ * 而新建任务恒为「待办」。表现就是"群里任务早干完了，聊天里那条还挂着待办"，
+ * 也正是用户去点卡片的原因 —— 查不到（任务被删 / 消息页没折叠到）时宁可显示快照，
+ * 也不要空着或骗人说已同步。
+ */
+const status = computed<TodoStatus>(
+  () => (todoId.value ? props.liveStatus?.get(todoId.value) : undefined) ?? todo.value?.status ?? "todo",
+);
 const assignees = computed(() => todo.value?.assignees ?? []);
 
 function statusText(s: TodoStatus): string {
@@ -84,7 +104,7 @@ function statusText(s: TodoStatus): string {
     <button
       type="button"
       class="mt-2 flex w-full items-center justify-center gap-1 border-t border-[var(--gosslan-card-line)] py-1.5 text-[12px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
-      @click="emit('open')"
+      @click="emit('open', todoId)"
     >
       {{ t("todo.openPanel") }}
       <ChevronRight class="h-3 w-3" />
