@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { MAX_PASTED_IMAGE_BYTES, PASTED_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import EmojiPicker from "@/components/EmojiPicker.vue";
@@ -17,6 +16,7 @@ import type { MsgKind } from "@/types";
 import { MENTION_ALL_TOKEN } from "@/utils/messages";
 import { isMentionLead } from "@/utils/linkify";
 import { isSelfConversation } from "@/utils/selfChat";
+import { api } from "@/api";
 
 const props = defineProps<{
   /** 会话切换时聚焦输入框（切换会话 = 新会话，重置草稿由父组件卸载/挂载决定）。 */
@@ -557,7 +557,7 @@ async function onPaste(e: ClipboardEvent) {
   let filePaths: string[] = [];
   if (types.includes("Files")) {
     try {
-      filePaths = await invoke<string[]>("read_clipboard_file_paths");
+      filePaths = await api.readClipboardFilePaths();
     } catch {
       filePaths = [];
     }

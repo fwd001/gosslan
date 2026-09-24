@@ -10,7 +10,6 @@
  * 这样「设置长什么样」只有一份实现，不会三处漂移。
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import DevDiagPanel from "@/components/DevDiagPanel.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
@@ -26,6 +25,7 @@ import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import { UserRound, Palette, SlidersHorizontal, Wifi, HardDrive, Lock, Info, Bell, FolderOpen, RotateCcw } from "lucide-vue-next";
 import { t } from "@/i18n";
+import { api } from "@/api";
 
 type SectionKey =
   | "profile"
@@ -88,7 +88,7 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
   // 有弹层（如清除数据二次确认）时先让弹层处理，避免一层 Esc 连窗口一起关掉。
   if (document.querySelector(".vel-modal, [role='dialog']")) return;
-  void invoke("close_settings_window").catch(() => {});
+  void api.closeSettingsWindow().catch(() => {});
 }
 onMounted(() => window.addEventListener("keydown", onKeydown));
 onUnmounted(() => window.removeEventListener("keydown", onKeydown));

@@ -22,7 +22,7 @@
 import "@/style.css";
 import { createApp, nextTick, watch, type App, type Component } from "vue";
 import { createPinia } from "pinia";
-import { invoke } from "@tauri-apps/api/core";
+import { api } from "@/api";
 import { currentLocale } from "@/i18n";
 
 // ---------------- 前端异常上报（必须在挂载之前注册） ----------------
@@ -38,7 +38,7 @@ export function reportFrontendError(kind: string, detail: string) {
   if (reportedErrorKeys.has(key) || reportedErrorCount >= 50) return;
   reportedErrorKeys.add(key);
   reportedErrorCount += 1;
-  void invoke("log_frontend_error", { kind, text: detail }).catch(() => {});
+  void api.logFrontendError(kind, detail).catch(() => {});
 }
 
 export function installFrontendErrorReporting() {
@@ -138,7 +138,7 @@ export function createWindowApp(root: Component): App {
  * 不触发，会把窗口永久留在隐藏态。Rust 侧另有 4s 超时兜底（见 lib.rs）。
  */
 export function revealMainWindow() {
-  void invoke("focus_window").catch(() => {
+  void api.focusWindow().catch(() => {
     /* 非 Tauri 环境（纯 vite dev）会 reject，忽略即可 */
   });
 }

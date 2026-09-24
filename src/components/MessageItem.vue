@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
@@ -49,6 +48,7 @@ import { Check, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Smi
 import type { MessageRecord, MsgKind } from "@/types";
 import { urlToBase64 } from "@/utils/imageBytes";
 import { StaleGuard } from "@/utils/staleGuard";
+import { api } from "@/api";
 
 const props = withDefaults(
   defineProps<{
@@ -110,10 +110,7 @@ async function refetchContent() {
     props.message.sender_id === myId ? props.message.receiver_id : props.message.sender_id;
   if (!peer) return;
   try {
-    const ok = await invoke<boolean>("request_content", {
-      peerId: peer,
-      msgId: props.message.msg_id,
-    });
+    const ok = await api.requestContent(peer, props.message.msg_id);
     app.toast(t(ok ? "msg.refetchRequested" : "msg.refetchUnsupported"), ok ? "info" : "error");
   } catch (e) {
     app.toastError(e, t("msg.refetchFail"));
@@ -154,10 +151,7 @@ watch(
       return;
     }
     try {
-      const r = await invoke<{ completed: number; failed: number; waiting: number } | null>(
-        "get_group_file_delivery_summary",
-        { transferId: msgId.slice(6) },
-      );
+      const r = await api.getGroupFileDeliverySummary(msgId.slice(6));
       if (!summaryGuard.isCurrent("summary", tok)) return;
       deliverySummary.value = r;
     } catch {
@@ -742,13 +736,12 @@ async function saveImage() {
   if (!url) return;
   try {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const { invoke } = await import("@tauri-apps/api/core");
     const picked: unknown = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
     const destination = saveDestinationOf(picked);
     if (!destination) return; // 用户取消
     // 取字节 + base64 收在 utils/imageBytes（与 ImageLightbox 的「另存图片」共用一份）
     const base64Data = await urlToBase64(url);
-    await invoke("save_data_file", { base64Data, destination });
+    await api.saveDataFile(base64Data, destination);
     app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
     if (isDialogCancelled(e)) return; // Android 取消是 reject，不是返回 null
@@ -824,7 +817,7 @@ function doCancelSend() {
   if (mid.startsWith("file-")) transferId = mid.slice(5);
   else if (mid.startsWith("gfile-")) transferId = mid.slice(6);
   if (!transferId) return;
-  invoke<boolean>("cancel_file_transfer", { transferId }).then(
+  api.cancelFileTransfer(transferId).then(
     (signalled) => {
       app.toast(
         signalled ? "已请求取消发送" : "标记为已取消（传输可能已结束）",
@@ -946,7 +939,7 @@ async function copyFileToClipboard() {
     return;
   }
   try {
-    await invoke("copy_file_to_clipboard", { path });
+    await api.copyFileToClipboard(path);
     app.toast(t("msg.fileCopied"), "success");
   } catch (e) {
     app.toastError(e, t("msg.copyFail"));

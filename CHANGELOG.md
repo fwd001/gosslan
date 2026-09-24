@@ -10,6 +10,37 @@
 
 ## [Unreleased]
 
+### Refactor (2026-09-25 · 架构改造 0-A3：把 IPC 收成一道缝，并让它可对账)
+
+复审 P10 的第四组：`src/api/index.ts` 自称"前端唯一碰 `@tauri-apps/api/core` 的地方"，
+实测**有 10 处旁路**（`boot.ts` · `localFile.ts` · `MessageItem.vue` · `FavoritePanel.vue` ·
+`MessageComposer.vue` · `GroupTasksBoard.vue` · `ImageLightbox.vue` · `GroupFilesPanel.vue` ·
+`SettingsWindow.vue`）。危害不是"不工作"，而是**契约面画不全**：其中 6 条命令
+（`copy_file` · `copy_file_to_clipboard` · `save_data_file` · `read_clipboard_file_paths` ·
+`get_group_file_delivery_summary` · `log_frontend_error`）在门面上根本没有包装 ⇒
+任何人（或 AI）只读 `src/api/index.ts` 来画接口表，会**整截漏掉**真实调用面。
+
+- **6 条包装补齐**，10 处旁路全部改走门面（含 `ImageLightbox.vue` 里那处
+  `await import("@tauri-apps/api/core")` 动态 import —— 它同样绕过门面，只是静态 grep 看不见）。
+  现在 `grep "@tauri-apps/api/core" src/` 只剩门面自己一行。
+- **两条新守卫**（`src/api/events.test.ts`）：① 「IPC 只能从 `src/api` 门面走」—— 扫全部前端源码，
+  静态与动态 import 都算违规；② 「注册表与前端调用面必须逐条对账」—— 从 `generate_handler!`
+  抽注册集（138）、从门面抽调用集（133），差集必须**逐条命中显式挂账表**，多一条少一条都红。
+  这条是"注册了但没人调"唯一的机器防线：以前只有人肉数，数完就烂。
+- **5 条零引用命令：挂账，没有删**（`cancel_send` · `resend_message` · `recall_message` ·
+  `send_group_poll` · `cast_group_poll_vote`）。复审原文是"要么补界面要么删接口"，这里**故意偏离**：
+  `resend_message` 头上压着一条活护栏（`lib.rs` 的
+  `resend_message_sets_sending_only_after_all_failure_paths`），删接口等于连护栏一起删；
+  三条 chat 命令是完整实现而非半成品；投票两条的 kind 已在线上词表里、只差 UI。
+  ⇒ 已挂账可查，**删不删仍待拍板**。
+- **一处旧护栏跟着搬家**（`channelState.test.ts`「点击重取必须接通后端 `request_content`」）：
+  原判据是 `MessageItem.vue` 里的 `invoke<boolean>("request_content"` 字面量，收拢后字面量进了门面。
+  断言改成两环同钉 —— 组件必须调 `api.requestContent(`，且门面的 `requestContent` 必须真的
+  `invoke<boolean>("request_content"`。钉的语义没变（重取必须真打后端），只是**换了钉的位置**：
+  这类"钉字面量"的护栏在代码搬家时必须同步改，否则它会红在错的地方、并被当成"测试过期"直接删。
+
+前端测试 586 → 588（两条新守卫）。`vue-tsc --noEmit` 干净。
+
 ### Removed (2026-09-24 · 架构改造 0-A2：删掉三处"看起来像入口"的死实现)
 
 复审 P10 的三组未接线实现，逐条自己复跑过调用点才动手（`transport/bluetooth.rs` 头部那句

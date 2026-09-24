@@ -235,6 +235,34 @@ export const api = {
   mediaPresent: (msgId: string) => invoke<boolean>("media_present", { msgId }),
 
   /**
+   * 以下 6 条以前**没有门面包装**：组件里直接 `invoke("copy_file", …)`，
+   * 于是"读 `src/api/index.ts` 就知道全部接口面"这个前提是假的（架构复审 0-A3 收口，
+   * 由 `events.test.ts` 的「IPC 只能从 src/api 门面走」钉住）。
+   */
+  /** 复制文件（另存为 / 拖拽保存）。Android 的"用户取消"是 reject，不是返回 null。 */
+  copyFile: (source: string, destination: string) =>
+    invoke<void>("copy_file", { source, destination }),
+  /** 文件本体写系统剪贴板（CF_HDROP）：可在资源管理器粘贴，也可粘回聊天框发送。 */
+  copyFileToClipboard: (path: string) => invoke<void>("copy_file_to_clipboard", { path }),
+  /** base64 写到目标路径（另存为的落地一步）。 */
+  saveDataFile: (base64Data: string, destination: string) =>
+    invoke<void>("save_data_file", { base64Data, destination }),
+  /** 剪贴板里的文件路径（粘贴发图那条路）。 */
+  readClipboardFilePaths: () => invoke<string[]>("read_clipboard_file_paths"),
+  /** 群文件每收件人进度汇总（气泡上「3/5 已收到」）。null = 这条 transfer 没有群投递记录。 */
+  getGroupFileDeliverySummary: (transferId: string) =>
+    invoke<{ completed: number; failed: number; waiting: number } | null>(
+      "get_group_file_delivery_summary",
+      { transferId },
+    ),
+  /**
+   * 前端异常落到后端日志（否则 WebView 里抛的错只有那个窗口自己知道）。
+   * **刻意不 catch**：上报失败不该改变界面行为，也不该在错误处理器里再抛一个错。
+   */
+  logFrontendError: (kind: string, text: string) =>
+    invoke<void>("log_frontend_error", { kind, text }),
+
+  /**
    * 收藏（微信式）：**独立本地存储** —— 原消息/会话被删、缓存被清理都不影响。
    *
    * `addFavorite` 只传 `msgId` / `convId`：内容一律以后端库里的消息为准。

@@ -459,10 +459,16 @@ test("图片预览：在途失败不缓存 + 传输完成时失效重读", () =>
  * 判据：api 暴露 request_content；图片气泡失败可触发重取；前端真的调后端命令。
  */
 test("内容拉取：点击重取必须接通后端 request_content", () => {
-  assert.match(read("api/index.ts"), /requestContent:/, "api 必须暴露 request_content");
+  const api = read("api/index.ts");
+  assert.match(api, /requestContent:/, "api 必须暴露 request_content");
+  assert.match(
+    api,
+    /requestContent: \([^)]*\) =>\s*invoke<boolean>\("request_content"/,
+    "门面必须真的调到后端命令（组件不再直连 invoke，所以这一环必须钉住）",
+  );
   const item = read("components/MessageItem.vue");
   assert.match(item, /@refetch="refetchContent"/, "图片气泡失败必须能触发重取");
-  assert.match(item, /invoke<boolean>\("request_content"/, "必须真的调后端命令");
+  assert.match(item, /api\.requestContent\(/, "组件必须走门面重取，而不是自己吞掉");
 });
 
 /** 统一内容状态（ADR-0019 Phase 1）：未完成/失败的文件卡片必须能给「重新获取」。 */

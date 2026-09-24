@@ -19,7 +19,6 @@
  * `canArchiveOrReopenTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
 import { computed, onMounted, onBeforeUnmount, onUnmounted, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isAndroid } from "@/utils/platform";
@@ -516,7 +515,7 @@ function onDocPaste(e: ClipboardEvent) {
     e.preventDefault();
     void (async () => {
       try {
-        const paths = await invoke<string[]>("read_clipboard_file_paths");
+        const paths = await api.readClipboardFilePaths();
         const imgs = paths.filter((p) => IMAGE_PATH_RE.test(p));
         if (imgs.length) await addImageFromPaths(imgs);
       } catch {

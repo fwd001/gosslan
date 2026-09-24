@@ -22,7 +22,6 @@
  * 会随页面一起卸载。
  */
 import { computed, onMounted, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -66,6 +65,7 @@ import {
   X,
 } from "lucide-vue-next";
 import type { FavoriteEntry, FileMeta, MsgKind } from "@/types";
+import { api } from "@/api";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 
@@ -389,7 +389,7 @@ async function copyItem(f: FavoriteEntry) {
       app.toast(t("favorite.mediaGone"), "error");
       return;
     }
-    await invoke("copy_file_to_clipboard", { path: f.media_path });
+    await api.copyFileToClipboard(f.media_path);
     app.toast(t("common.copied"), "success");
   } catch (e) {
     app.toastError(e, t("favorite.copyFail"));

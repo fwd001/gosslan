@@ -409,12 +409,12 @@ const MODS = [
     data: ["opening: Set<label> 单飞 + lastLaunchAt 防抖（模块作用域，全应用共享一份）"] },
 
   /* ───────────── ② IPC 契约层 ───────────── */
-  { id: "api-invoke", l: "ipc", n: "api.invoke 面", s: "src/api/index.ts 的一个平面对象", cnt: "127 条包装 / 133 条被调",
-    role: "<b>前端唯一</b>碰 <code>@tauri-apps/api/core</code> 的地方（10 处例外见「漂移」清单）。约定：参数写 camelCase，Rust 侧 snake_case 自动转；返回用 <code>invoke&lt;T&gt;</code> 泛型；<b>错误不集中吞</b>，由调用方决定 toast。",
+  { id: "api-invoke", l: "ipc", n: "api.invoke 面", s: "src/api/index.ts 的一个平面对象", cnt: "133 条包装 = 前端全部调用面",
+    role: "<b>前端唯一</b>碰 <code>@tauri-apps/api/core</code> 的地方 —— 0-A3 起这句话<b>有守卫兜</b>（src/ 下任何其它文件出现该 import 就必须红，静态与动态 import 都算）。约定：参数写 camelCase，Rust 侧 snake_case 自动转；返回用 <code>invoke&lt;T&gt;</code> 泛型；<b>错误不集中吞</b>，由调用方决定 toast。",
     files: ["src/api/index.ts"],
     in: ["组件/store 的方法调用（带 TS 类型）"],
     out: ["invoke(\"cmd\", {args}) → commands/*", "唯一例外：<code>save_todo_image_bytes</code> 直接传裸 Uint8Array 当请求体"],
-    data: ["每个命令的返回类型 = 前端消费契约（见 ③ 接口规则表）"] },
+    data: ["每个命令的返回类型 = 前端消费契约（见 ③ 接口规则表）", "另两条守卫：门面必须覆盖前端<b>全部</b>调用面；注册表与调用面逐条对账（多出来的一律要显式挂账并写明原因）"] },
   { id: "api-evt", l: "ipc", n: "事件绑定层", s: "bindEvents / bindMenuEvents", cnt: "27 个 listen",
     role: "把后端事件铺成 <code>EventHandlers</code>。<b>先绑事件再刷数据</b>（否则刷新期间到的消息丢）。窄订阅另开：<code>onMessageReceived</code>/<code>onSettingsChanged</code>/<code>onRuntimeChanged</code>/<code>onGroupTodosTarget</code>/<code>onImagePreviewChanged</code> —— 辅助窗口只用窄的。",
     files: ["src/api/index.ts（下半段）", "src/api/events.test.ts"],
@@ -1126,8 +1126,8 @@ const DOMAINS = [
 
 ];
 const DRIFT = [
-  ["<b>5 条命令注册了但前端零引用</b>", "<code>generate_handler!</code> 实数 138，前端 <code>invoke(\"…\")</code> 实数 133；差集：<code>recall_message · resend_message · cancel_send · send_group_poll · cast_group_poll_vote</code>", "撤回只有<b>群聊</b>实现（<code>chat.recallMessage</code> 调的是 <code>recall_group_message</code>）；投票的 kind 已在线上词表里但没有 UI。⇒ 要么补界面，要么删接口；留着就是「看起来有、其实没有」"],
-  ["<b>10 处 invoke 绕过 <code>api</code> 门面</b>", "<code>boot.ts</code>(focus_window, log_frontend_error)、<code>localFile.ts</code>(copy_file)、<code>MessageItem.vue</code>(request_content / get_group_file_delivery_summary / save_data_file / cancel_file_transfer / copy_file_to_clipboard)、<code>FavoritePanel.vue</code>、<code>MessageComposer.vue</code> + <code>GroupTasksBoard.vue</code>(read_clipboard_file_paths)、<code>ImageLightbox.vue</code>、<code>GroupFilesPanel.vue</code>、<code>SettingsWindow.vue</code>(close_settings_window)", "其中 <code>copy_file · copy_file_to_clipboard · save_data_file · read_clipboard_file_paths · get_group_file_delivery_summary · log_frontend_error</code> <b>在 api 上根本没有包装</b> ⇒ 只读 <code>src/api/index.ts</code> 画契约表会<b>漏掉一整截真实接口面</b>（本页 138 条是全量抽的）"],
+  ["✅ <b>10 处 invoke 绕过 <code>api</code> 门面</b>（0-A3 已收拢）", "<code>boot.ts</code>(focus_window, log_frontend_error)、<code>localFile.ts</code>(copy_file)、<code>MessageItem.vue</code>(request_content / get_group_file_delivery_summary / save_data_file / cancel_file_transfer / copy_file_to_clipboard)、<code>FavoritePanel.vue</code>、<code>MessageComposer.vue</code> + <code>GroupTasksBoard.vue</code>(read_clipboard_file_paths)、<code>ImageLightbox.vue</code>、<code>GroupFilesPanel.vue</code>、<code>SettingsWindow.vue</code>(close_settings_window) —— 全部改走门面，<b>现在为 0</b>", "原本的风险不是「不工作」而是<b>契约表画不全</b>：其中 6 条（copy_file · copy_file_to_clipboard · save_data_file · read_clipboard_file_paths · get_group_file_delivery_summary · log_frontend_error）在 api 上根本没有包装 ⇒ 只读 <code>src/api/index.ts</code> 会漏掉一整截真实接口面。6 条包装已补齐，并把「除本文件外不得 import core」写成守卫（静态与动态 import 都算）"],
+  ["<b>5 条命令注册了但前端零引用</b> —— 已挂账，未删", "<code>generate_handler!</code> 实数 138，前端 <code>invoke(\"…\")</code> 实数 133；差集：<code>recall_message · resend_message · cancel_send · send_group_poll · cast_group_poll_vote</code>，现由 <code>src/api/events.test.ts</code> 的 <code>DEAD_COMMANDS</code> 白名单逐条钉住（新增一条未挂账的即红）", "复审原文是「要么补界面，要么删接口」。0-A3 <b>只做了挂账</b>：① <code>resend_message</code> 带一条活护栏（<code>lib.rs</code> 的 <code>resend_message_sets_sending_only_after_all_failure_paths</code>），删它等于连护栏一起删；② 三条 chat 命令是完整实现而非半成品；③ 投票两条是「词表已在线上跑、UI 未做」。<b>删除仍是待拍板项</b>，不是已决"],
   ["<code>schema.sql</code> 与真源不一致", "真源是 <code>db.rs</code> 的 <code>SCHEMA</code> 常量；<code>schema.sql</code> 文件头自陈「供文档/手动建库参考」，实测缺 5 张表（<code>group_files · group_file_recipients · group_recalled_messages · favorites · content_transfers</code>）与 <code>conversations.pinned</code>", "照 <code>schema.sql</code> 判断数据契约会得出<b>错误结论</b>。它仍挂在 persistence 域的路径里 ⇒ 要么同步，要么删掉并留一句「真源在 db.rs」"],
   ["<code>(conv_id, seq)</code> 索引可能在新库上不存在", "该索引只由迁移 v2→v3 建，而全新库走 <code>is_fresh</code> 分支<b>直接盖 user_version 并跳过全部迁移</b>", "新装用户的时间线查询少一条索引 ⇒ 表现为「聊天多的会话打开慢一点」，很难归因。<b>需要维护者判定</b>（并进 SCHEMA 常量即可，但要确认幂等）"],
   ["<code>state.rs</code> 关于 favorites 的注释是旧的", "<code>state.rs</code> 写「不在 media_dirs 里，清理逻辑不会碰它」，<code>commands/channel.rs</code> 实际把它算进清理目录（2026-09-19 审计补的）", "以注释为准会误判「收藏副本永不回收」。<code>favorites.available</code> 的存在理由恰恰是<b>会被回收</b>"],

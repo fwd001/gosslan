@@ -405,3 +405,107 @@ test("设置变更事件两端都在（回归：改语言/主题后另一个窗�
   );
   assert.ok(listened.has("settings-changed"), "前端必须监听 settings-changed");
 });
+
+// ---------------- 0-A3：IPC 面的两条收口判据 ----------------
+
+/** 递归收集前端源文件（.ts / .vue），跳过测试文件。 */
+function frontendFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) frontendFiles(full, out);
+    else if (/\.(ts|vue)$/.test(entry.name) && !/\.test\.ts$/.test(entry.name)) out.push(full);
+  }
+  return out;
+}
+
+/** 前端 `invoke("cmd"` 里出现过的命令名（覆盖带泛型与动态 `await import` 两种写法）。 */
+function invokedCommands(): Set<string> {
+  const out = new Set<string>();
+  for (const f of frontendFiles(join(ROOT, "src"))) {
+    const src = readFileSync(f, "utf8");
+    for (const m of src.matchAll(/\binvoke(?:<[^()]*>)?\(\s*"([a-z_0-9]+)"/g)) out.add(m[1]);
+  }
+  return out;
+}
+
+/** `lib.rs` 的 `generate_handler![...]` 注册表（编译器实际暴露的命令面）。 */
+function registeredCommands(): string[] {
+  const src = readFileSync(join(RUST_SRC, "lib.rs"), "utf8");
+  const start = src.indexOf("generate_handler![");
+  assert.ok(start > 0, "lib.rs 里找不到 generate_handler! —— 这条判据会空转");
+  let depth = 0;
+  let i = start + "generate_handler!".length;
+  for (; i < src.length; i++) {
+    if (src[i] === "[") depth++;
+    else if (src[i] === "]") {
+      depth--;
+      if (depth === 0) break;
+    }
+  }
+  const block = src.slice(start, i);
+  return [...block.matchAll(/\b([a-z_0-9]+)\s*,/g)].map((m) => m[1]).filter((n) => n !== "generate_handler");
+}
+
+/**
+ * 注册了、但前端一次都不调的命令 —— **逐条写明理由**。
+ * 为什么是"挂账"而不是"删掉"：这几条不是空壳，是**实现完整、只差界面**的能力
+ * （`recall_message` / `resend_message` / `cancel_send` 各有 4-5 处 `db::` 与 1 处 `emit`，
+ * 其中 `resend_message` 还有一条活着的审计护栏 `resend_message_sets_sending_only_after_all_failure_paths`
+ * 钉着"所有可失败步骤通过之后才置 sending"的顺序）。删掉它们等于连那条不变量的载体一起删。
+ * 所以这里改成机器守住"死接口不再增长"：**新增一条不接界面的命令必须红**。
+ */
+const DEAD_COMMANDS: Record<string, string> = {
+  recall_message:
+    "单聊撤回：实现完整但界面没有入口（撤回目前只有群聊版 recall_group_message）。" +
+    "要恢复它 = 先补 UI，别让它继续当隐形接口",
+  resend_message:
+    "按 msg_id 重投同一条（幂等友好）。界面上的「重发」目前走 chat.send 重发一条**新消息**，" +
+    "所以这条没被调用。它带着审计 1.2 的顺序护栏，删之前先想清楚那条护栏跟谁走",
+  cancel_send: "取消文本发送。界面用的是 cancel_file_transfer（文件），文本没有取消入口",
+  send_group_poll: "投票：线上词表已留 poll / poll_vote（新版本能渲染），但没有任何 UI 能创建",
+  cast_group_poll_vote: "投票：同上，没有 UI 能投票",
+};
+
+test("IPC 只能从 src/api 门面走（回归：组件里裸 invoke，其中 6 条命令在 api 上根本没有包装）", () => {
+  const gate = join(ROOT, "src", "api", "index.ts");
+  const offenders: string[] = [];
+  for (const f of frontendFiles(join(ROOT, "src"))) {
+    if (f === gate) continue;
+    const src = readFileSync(f, "utf8");
+    // 静态 import 与动态 import 都算：`await import("@tauri-apps/api/core")` 同样绕过了门面
+    if (src.includes("@tauri-apps/api/core")) offenders.push(f.replace(ROOT + "/", ""));
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `以下文件绕过了 src/api 门面直接 invoke（契约面只能从一个地方读）：${offenders.join(", ")}`,
+  );
+  // 反向自检：门面本身必须真的在用 invoke，否则这条判据会因为"门面也空了"而假绿
+  assert.ok(readFileSync(gate, "utf8").includes("invoke<"), "api/index.ts 里没有任何 invoke ⇒ 判据空转");
+});
+
+test("注册表与前端调用面必须逐条对账（新增不接界面的命令要红）", () => {
+  const registered = registeredCommands();
+  const invoked = invokedCommands();
+  assert.ok(registered.length > 100, `注册表只解析出 ${registered.length} 条 —— 解析器坏了，判据空转`);
+  assert.ok(invoked.size > 100, `前端只扫出 ${invoked.size} 条调用 —— 扫描器坏了，判据空转`);
+
+  const dead = registered.filter((n) => !invoked.has(n)).sort();
+  const expected = Object.keys(DEAD_COMMANDS).sort();
+  const newDead = dead.filter((n) => !expected.includes(n));
+  const resurrected = expected.filter((n) => !dead.includes(n));
+  assert.deepEqual(
+    newDead,
+    [],
+    `新增了注册但前端从不调用的命令：${newDead.join(", ")} —— 要么接上界面，要么删掉；` +
+      "确实要留成隐形接口才把它加进 DEAD_COMMANDS 并写清理由",
+  );
+  assert.deepEqual(
+    resurrected,
+    [],
+    `DEAD_COMMANDS 里这些条目已经被调用了：${resurrected.join(", ")} —— 挂账过期会让真漏接隐身，请删条目`,
+  );
+  // 前端调用了一定要注册：漏注册是运行期才炸的错
+  const unregistered = [...invoked].filter((n) => !registered.includes(n)).sort();
+  assert.deepEqual(unregistered, [], `前端调用了但没注册的命令：${unregistered.join(", ")}`);
+});

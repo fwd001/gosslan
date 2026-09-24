@@ -12,7 +12,6 @@
  */
 import { t } from "@/i18n";
 import { computed, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
@@ -140,10 +139,7 @@ async function openFile(f: GroupFileEntry) {
  */
 async function refetch(f: GroupFileEntry) {
   try {
-    const ok = await invoke<boolean>("request_content", {
-      peerId: f.sender_id,
-      msgId: `gfile-${f.transfer_id}`,
-    });
+    const ok = await api.requestContent(f.sender_id, `gfile-${f.transfer_id}`);
     app.toast(
       t(ok ? "group.files.refetching" : "group.files.refetchUnsupported"),
       ok ? "info" : "error",

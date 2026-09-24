@@ -11,7 +11,6 @@
  * （"打开失败" vs "保存失败"）只有调用方知道。
  */
 import { save } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
 import { api } from "@/api";
 import { isAndroid } from "@/utils/platform";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
@@ -42,7 +41,7 @@ export async function saveLocalFile(path: string, name: string): Promise<LocalFi
     const picked: unknown = await save({ defaultPath: name });
     const destination = saveDestinationOf(picked);
     if (!destination) return "cancelled";
-    await invoke("copy_file", { source: path, destination });
+    await api.copyFile(path, destination);
     return "done";
   } catch (e) {
     // Android 取消是 reject 而不是返回 null
