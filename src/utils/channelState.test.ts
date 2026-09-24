@@ -505,3 +505,58 @@ test("未读总数外显（TabBar + 返回箭头）必须共用 totalUnread 一�
     "TabBar 与返回箭头读同一个数",
   );
 });
+
+/**
+ * 「切到会话」这个动作必须排在"把数据读回来"之前（用户 2026-09-24 #29：
+ * 切换会话要瞬间响应，内容随后由骨架让位给异步加载）。
+ *
+ * 为什么只钉调用顺序、不钉耗时：`openConversation` 第一行就**同步**写下 `activeConv`，
+ * 之后才是 `loadMessages`（两轮串行 IPC + 后端全局 `Mutex<Connection>` 排队）。
+ * 所以把翻页写在 await 之后，退化的不是"快一点慢一点"，而是**整页要等读库才出现** ——
+ * 点下去毫无反应，再点第二下才看见变化。这类退化在界面上看起来"功能还在"，
+ * 只有静态钉顺序能挡住。
+ *
+ * 三处都各有过一次这种写法（会话列表 `openConv` 一直是对的，另外三条是补上的）：
+ * 收藏跳转那一处最贵 —— `locateMessageInConv` 会从最新一页往前**逐页**翻到 MAX_PAGES。
+ */
+test("切会话的三处入口：翻页/收页必须排在读数据之前", () => {
+  const body = (src: string, fn: string, nextFn: string) => {
+    const at = src.indexOf(fn);
+    assert.ok(at > 0, `找不到 ${fn}（函数被改名了？）`);
+    const end = src.indexOf(nextFn, at);
+    return src.slice(at, end > at ? end : at + 1600);
+  };
+  // ⚠️ 两侧都必须**找得到**：`indexOf` 找不到返回 -1，而 -1 小于任何真实下标 ——
+  // 只比大小的话"把翻页那行整行删掉"反而会让守卫变绿（假绿）。
+  const mustComeFirst = (scope: string, first: string, second: string, why: string) => {
+    const a = scope.indexOf(first);
+    const b = scope.indexOf(second);
+    assert.ok(a >= 0, `${why} —— 但这一段里已经找不到 ${first} 了`);
+    assert.ok(b >= 0, `${why} —— 但这一段里已经找不到 ${second} 了`);
+    assert.ok(a < b, why);
+  };
+
+  const layout = read("layouts/ResponsiveLayout.vue");
+  mustComeFirst(
+    body(layout, "async function sendMessageTo", "\nasync function removeFriend"),
+    'app.mobileView = "chat"',
+    "await chat.openConversation",
+    "「发消息」：翻页必须排在 openConversation 之前",
+  );
+
+  const store = read("stores/useChatStore.ts");
+  mustComeFirst(
+    body(store, "async function handleNotificationClick", "\n  /**\n   * 通知点击的**统一路由**"),
+    'app.mobileView = "chat"',
+    "await openConversation",
+    "点通知进会话：翻页必须排在 openConversation 之前（focusWindow 仍须先行，见函数内注释）",
+  );
+
+  const fav = read("components/FavoritePanel.vue");
+  mustComeFirst(
+    body(fav, "async function locate(", "\nfunction askDelete"),
+    'emit("close")',
+    "await chat.locateMessageInConv",
+    "收藏跳转：先收起本页再逐页定位（定位最坏翻 10 页）",
+  );
+});

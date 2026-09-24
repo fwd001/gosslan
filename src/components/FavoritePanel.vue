@@ -480,13 +480,14 @@ async function locate(f: FavoriteEntry) {
     app.toast(t("favorite.msgGone"), "info");
     return;
   }
-  const r = await chat.locateMessageInConv(f.conv_id, f.msg_id);
-  if (r !== "found") {
-    app.toast(t("favorite.msgGone"), "info");
-    return;
-  }
+  // ⚠️ 先收起本页并翻到会话，再发起定位（与 `ResponsiveLayout.onOpenSearchHit` 同一顺序，
+  // 用户 2026-09-24 #29「切换要瞬间响应」）。`locateMessageInConv` 会从最新一页往前
+  // **逐页翻到 MAX_PAGES** 才可能报"没找到"，把它整个 await 在翻页之前 =
+  // 点一条收藏后收藏页原地卡住几轮读库；找不到时如实 toast，人已经在会话里。
   if (app.isMobile) app.mobileView = "chat";
   emit("close");
+  const r = await chat.locateMessageInConv(f.conv_id, f.msg_id);
+  if (r !== "found") app.toast(t("favorite.msgGone"), "info");
 }
 
 function askDelete(f: FavoriteEntry) {

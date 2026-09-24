@@ -274,11 +274,15 @@ async function rejectRequest(r: PendingRequest) {
 async function sendMessageTo(id: string) {
   profileFriend.value = null;
   navState.value = "chats";
+  // ⚠️ 视图切换排在一切 await 之前（用户 2026-09-24 #29「切换会话要瞬间响应，数据后台异步加载」）。
+  // `openConversation` 第一行就同步写下 `activeConv`，其后才是骨架 + 异步拉消息；
+  // 把 `mobileView` 写在 await 之后 ⇒ 移动端点「发消息」要等完两轮 IPC 才翻页，
+  // 点下去那一下毫无反应。与 `ConversationList.openConv` 同一顺序。
+  if (app.isMobile) app.mobileView = "chat";
   // 「自己」的会话行可能还不存在：先 ensure（后端有 self 分支，会用本机昵称/头像命名），
   // 否则列表里会显示成一串 gosslan-xxxx。
   if (id === app.device?.device_id) await api.ensureConversation(id);
   await chat.openConversation(id);
-  if (app.isMobile) app.mobileView = "chat";
 }
 
 async function removeFriend(f: Friend) {

@@ -322,8 +322,12 @@ export const useChatStore = defineStore("chat", () => {
 
   async function handleNotificationClick(convId: string) {
     await api.focusWindow();
-    await openConversation(convId);
+    // 翻页排在加载之前（用户 2026-09-24 #29）：`focusWindow` 必须先行（窗口还在托盘里时
+    // 切，用户会在浮出瞬间看到一次跳变），但 `openConversation` 不能等 —— 它内部是
+    // 同步写下 `activeConv` + 骨架 + 两轮 IPC 拉消息，await 它等于让移动端
+    // 「点通知」白等一次读库才翻页。
     if (app.isMobile) app.mobileView = "chat";
+    await openConversation(convId);
   }
 
   /**
@@ -804,13 +808,25 @@ export const useChatStore = defineStore("chat", () => {
   // 消息列表），其它会话的缓存纯粹是内存副本，切回时由 loadMessages 从 SQLite 重新
   // 加载最新一页，因此丢弃不影响任何展示。
   //
+  // 为什么从 4 提到 8（用户 2026-09-24 #29「切换会话要瞬间响应」）：这条上界直接决定
+  // 「切过去是**当场有内容**还是**先看到骨架**」—— 骨架的判据就是
+  // `messages[convId] === undefined`。命中缓存 = 零 IPC、当场渲染；被淘汰 = 冷加载
+  // （`getMessageCount` + `getMessages` 两轮**串行** IPC，还要排队过后端那把全局
+  // `Mutex<Connection>`）。4 个槽位意味着常聊 5 个人时按 A→B→C→D→E→A 转一圈，
+  // **回到 A 的那一下必然**是冷的 —— 淘汰是纯 LRU 计数、与"多久没打开"无关，
+  // 所以这个退化是确定会发生，不是偶发。
+  // 代价核过账：每会话上界 = MAX_PAGES × PAGE_SIZE = 1000 条，一条记录（msg_id/conv_id/
+  // kind/content/sender/ts/link/status 等十余字段，正文通常几十字）量级 0.5–1 KB
+  // ⇒ 8 个会话最坏 4–8 MB 的二级内存副本；渲染侧仍只有活跃会话那一列（VirtualList
+  // 只画视口内的行），所以放大的是内存不是帧开销。
+  //
   // 去重不受影响：后端 insert_message_if_new 只在「真的新建一行」时 emit
   // message-received（见 db.rs 注释），跨批次去重以它为权威；前端这份缓存只是二级保险。
   //
   // 仍未覆盖（已知遗留）：单个会话的实时新消息仍会不断追加，条数没有硬上界。
   // 未做是因为裁剪头部会改变 VirtualList 的滚动锚定（用户正向上翻阅时内容会跳动），
   // 需要与滚动状态联动，收益（每会话几 MB）不值这个回退风险。
-  const MAX_CACHED_CONVS = 4;
+  const MAX_CACHED_CONVS = 8;
   /** 会话缓存的 LRU 顺序（最近使用的在末尾） */
   const cacheOrder: string[] = [];
 
