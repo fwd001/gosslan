@@ -74,12 +74,14 @@ pub const WINDOW_MAIN: &str = "main";
 pub const WINDOW_SETTINGS: &str = "settings";
 /// 独立的「运行日志」窗口（`open_log_window`）。
 pub const WINDOW_LOGS: &str = "logs";
-/// 群任务窗口的 label **前缀**（实际 label = `todo-<groupId>`，见 `open_group_todos_window`）。
+/// 独立的「群任务」窗口（`open_group_todos_window`）。
 ///
-/// 它是**动态** label（每群一个窗口），所以不进 [`WINDOW_LABELS`]（那份清单只列固定 label）；
-/// capability 里用 `todo-*` 通配覆盖。前缀字符串必须与前端 `src/utils/auxWindowLabels.ts`
-/// 的 `GROUP_TODOS_LABEL_PREFIX` 完全一致（有 Rust 守卫做交叉核对）。
-pub const WINDOW_GROUP_TODOS_PREFIX: &str = "todo-";
+/// label **固定** ⇒ 全局只有一扇，看的是哪个群由后端那份"当前上下文"决定
+/// （[`crate::state::AppState::task_window_group`]），切换群就是换内容 ——
+/// 与图片预览窗口同一套做法。这样做唯一的动机是：固定 label 才能**不传参数预热**
+/// （用户 2026-09-24："创建完先放着，用的时候瞬间激活"）；每群一扇的动态 label
+/// 在启动时根本不知道该建哪一扇。代价是任务栏里不再能分清"这是哪个群的窗口"。
+pub const WINDOW_TASKS: &str = "tasks";
 /// 独立的「外部链接」窗口（`open_link_window`）。**刻意不进 [`WINDOW_LABELS`]、也不进
 /// capabilities**：它加载的是**远端页面**，不给它任何 capability 才能保证远端内容
 /// 调不动本应用的任何命令（`link_window_is_not_capability_covered` 测试锁死这一点）。
@@ -93,7 +95,13 @@ pub const WINDOW_LINK: &str = "link";
 pub const WINDOW_PREVIEW: &str = "preview";
 /// 主窗口在 `tray::MAIN_WINDOW_LABEL` 也有一份（那里是 `#[cfg(desktop)]`），
 /// 测试里断言两者一致，避免漂移。
-pub const WINDOW_LABELS: &[&str] = &[WINDOW_MAIN, WINDOW_SETTINGS, WINDOW_LOGS, WINDOW_PREVIEW];
+pub const WINDOW_LABELS: &[&str] = &[
+    WINDOW_MAIN,
+    WINDOW_SETTINGS,
+    WINDOW_LOGS,
+    WINDOW_PREVIEW,
+    WINDOW_TASKS,
+];
 
 /// 安装 panic hook：把 panic（位置 + 消息）写进应用日志文件，并打到 stderr。
 ///
@@ -177,8 +185,8 @@ pub fn run() {
                 // 设置/日志窗口是**关闭即销毁**（每次开窗由 `aux_window_geometry` 重新摆位），
                 // 不让插件按 label 恢复旧几何/最大化 —— 否则会与重新居中打架
                 // （用户 2026-09-17：这两个窗口改为"关闭即销毁"，见 commands.rs 的
-                // `AUX_WINDOWS_RESIDENT`）。群任务窗口 label 是动态的 `todo-*`，
-                // 已由 `apply_aux_geometry` 里的 `unmaximize()` 兜底。
+                // `AUX_WINDOWS_RESIDENT`）。其余窗口（群任务 / 预览 / 外链）都是**固定 label 的常驻窗**，
+                // 几何由 `apply_aux_geometry` + `restore_aux_window_size` 自己管，插件不参与按 label 恢复。
                 .with_denylist(&[WINDOW_SETTINGS, WINDOW_LOGS])
                 .build(),
         );
@@ -511,7 +519,8 @@ pub fn run() {
             commands::take_group_todo_focus,
             commands::request_group_todo_focus,
             commands::open_image_preview,
-            commands::prewarm_image_preview_window,
+            commands::prewarm_aux_windows,
+            commands::get_group_todos_context,
             commands::get_image_preview_gallery,
             commands::open_link_window,
             commands::list_external_links,
@@ -691,14 +700,8 @@ mod tests {
             WINDOW_LABELS.len() >= 3,
             "WINDOW_LABELS 至少要有 main/settings/logs 三个"
         );
-        // 群任务窗口是**动态** label（`todo-<groupId>`），这里用一个代表性 label 校验通配覆盖。
-        let dynamic_todo =
-            format!("{WINDOW_GROUP_TODOS_PREFIX}g-00000000-0000-0000-0000-000000000000");
-        for label in WINDOW_LABELS
-            .iter()
-            .copied()
-            .chain(std::iter::once(dynamic_todo.as_str()))
-        {
+        // 群任务窗口现在是**固定** label（`tasks`），已经在 WINDOW_LABELS 里 ⇒ 不再有动态通配要验。
+        for label in WINDOW_LABELS.iter().copied() {
             assert!(
                 patterns.iter().any(|p| window_pattern_matches(p, label)),
                 "窗口 `{label}` 没有被任何 capability 覆盖（windows = {patterns:?}）"
@@ -3690,9 +3693,9 @@ mod tests {
         for signature in [
             "pub fn open_settings_window(",
             "pub fn open_log_window(",
-            "pub fn open_group_todos_window(",
             "pub fn open_link_window(",
             "fn ensure_preview_window(",
+            "fn ensure_tasks_window(",
         ] {
             let body = rust_fn_body(commands, signature);
             assert!(
@@ -3734,7 +3737,7 @@ mod tests {
         // 常驻 = 群任务 / 预览 / 外链；销毁 = 设置 / 日志（这两个每次都要读最新的环境与日志尾部）。
         // 钉四件事，缺一条都是一个具体的回归：
         for (signature, want_resident) in [
-            ("const AUX_GROUP_TODOS_RESIDENT: bool = ", true),
+            ("const AUX_TASKS_RESIDENT: bool = ", true),
             ("const AUX_PREVIEW_RESIDENT: bool = ", true),
             ("const AUX_LINK_RESIDENT: bool = ", true),
             ("const AUX_WINDOWS_RESIDENT: bool = ", false),
@@ -3745,22 +3748,19 @@ mod tests {
                 "常驻策略被改动了：{want} —— 改成销毁要连「为什么」一起写进这条注释，别只翻布尔值"
             );
         }
-        // 「每群一扇」的常驻必须有上限（无界增长是它当初被设成销毁的唯一理由）
+        // 常驻的群任务窗口必须只有**一扇**（固定 label）：动态 label 既需要淘汰逻辑，
+        // 也让"不传参数预热"做不到。
         assert!(
-            commands.contains("const AUX_HIDDEN_GROUP_TODOS_MAX: usize"),
-            "群任务窗口常驻必须有隐藏数量上限"
-        );
-        let open_todos = rust_fn_body(commands, "pub fn open_group_todos_window(");
-        assert!(
-            code_flat(&open_todos).contains("prune_hidden_group_todos(&app)"),
-            "开了常驻却不在某处淘汰 = 访问过 N 个群留 N 个隐藏 WebView（淘汰必须接上）"
+            !code_flat(&commands).contains("WINDOW_GROUP_TODOS_PREFIX"),
+            "群任务窗口又回到动态 label 了：那样既不累积不了（需要淘汰），也没法不传参数预热"
         );
         // 预热必须是"建好但不显示"：reveal 传 false，且它自己不许出现 show/focus。
         // 少了这条，预热就变成"启动时弹出一扇没内容的预览窗"（比慢更糟）。
-        let prewarm = rust_fn_body(commands, "pub fn prewarm_image_preview_window(");
+        let prewarm = rust_fn_body(commands, "pub fn prewarm_aux_windows(");
         assert!(
-            code_flat(&prewarm).contains("ensure_preview_window(&app,&state,false)"),
-            "预热必须走那份共用的窗口构造，并且 reveal 传 false"
+            code_flat(&prewarm).contains("ensure_preview_window(&app,&state,false)")
+                && code_flat(&prewarm).contains("ensure_tasks_window(&app,&state,\"\",false)"),
+            "预热必须把**两扇**高频窗都备好，且都走共用的窗口构造、reveal 传 false"
         );
         assert!(
             !code_flat(&prewarm).contains(".show()")
@@ -3787,9 +3787,9 @@ mod tests {
         for signature in [
             "pub fn open_settings_window(",
             "pub fn open_log_window(",
-            "pub fn open_group_todos_window(",
             "pub fn open_link_window(",
             "fn ensure_preview_window(",
+            "fn ensure_tasks_window(",
         ] {
             let body = rust_fn_body(commands, signature);
             assert!(
@@ -3866,36 +3866,36 @@ mod tests {
         }
     }
 
-    /// 群任务窗口 label 由 groupId 派生（`todo-<groupId>`），且前缀必须与前端一致。
+    /// 群任务窗口是**固定 label** `tasks`，"看哪个群"改由后端那份当前上下文给。
     ///
-    /// 窗口靠**自己的 label** 找回是哪个群，所以"前缀两边一致"是功能成立的前提；
-    /// 而 Rust 与 TS 各写一份字面量必然漂移 —— 这条护栏做交叉核对。
+    /// 为什么钉这个形状（用户 2026-09-24）："可不传参数、后台默默先把 WebView 建好，用的时候
+    /// 瞬间激活" —— 动态 label（`todo-<groupId>`）在预热那一刻不知道该建哪一扇，"秒开"
+    /// 只能建立在固定 label 上。两头各钉一次：Rust 常量与前端启动器的字面量必须同为 `tasks`
+    /// （两份各写一遍必然漂移，这是本仓库反复踩过的一族）。
     #[cfg(desktop)]
     #[test]
-    fn group_todos_window_label_derives_from_group_id() {
+    fn tasks_window_uses_one_fixed_label_cross_checked_with_frontend() {
+        assert_eq!(WINDOW_TASKS, "tasks");
+        assert!(
+            WINDOW_LABELS.contains(&WINDOW_TASKS),
+            "固定 label 必须进 WINDOW_LABELS（capability 覆盖那条守卫才不会漏看它）"
+        );
         let commands = all_commands_src();
-        let body = rust_fn_body(commands, "pub fn open_group_todos_window(");
+        let body = rust_fn_body(commands, "fn ensure_tasks_window(");
         assert!(
-            !body.is_empty(),
-            "找不到 open_group_todos_window（护栏会空转）"
+            body.contains("crate::WINDOW_TASKS"),
+            "窗口 label 必须取自常量，不许在 builder 里另写字面量"
         );
+        // groupId 不再是 label 的一部分，但它仍然跨窗口当指令拿去查数据 ⇒ 校验不能省
+        let open = rust_fn_body(commands, "pub fn open_group_todos_window(");
         assert!(
-            body.contains("WINDOW_GROUP_TODOS_PREFIX"),
-            "label 必须由 `WINDOW_GROUP_TODOS_PREFIX` 前缀拼出（别写字面量）"
+            open.contains("is_ascii_alphanumeric()") && open.contains("is_empty()"),
+            "groupId 会被别的文档拿去查数据，必须先做非空/字符集校验"
         );
+        let ts = include_str!("../../src/composables/useWindowLauncher.ts");
         assert!(
-            body.contains("is_ascii_alphanumeric()") && body.contains("is_empty()"),
-            "groupId 会被拼进窗口 label，必须先做字符集/非空校验"
-        );
-        // 与前端 `auxWindowLabels.ts` 的前缀交叉核对（两份字面量必须一致）。
-        let ts = include_str!("../../src/utils/auxWindowLabels.ts");
-        let expected = format!(
-            "export const GROUP_TODOS_LABEL_PREFIX = \"{}\"",
-            WINDOW_GROUP_TODOS_PREFIX
-        );
-        assert!(
-            ts.contains(&expected),
-            "前端 GROUP_TODOS_LABEL_PREFIX 必须与 Rust WINDOW_GROUP_TODOS_PREFIX 一致（期望 `{expected}`）"
+            ts.contains(r#""tasks""#),
+            "前端启动器的 label 联合类型必须含 `tasks`（与 Rust WINDOW_TASKS 同一份字面量）"
         );
     }
 

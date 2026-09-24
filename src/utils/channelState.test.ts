@@ -692,28 +692,33 @@ test("桌面端任务窗口的展开投递：两条路 + 独立于启动器 + �
   assert.match(cmd.slice(takeAt, takeAt + 400), /\.remove\(&group_id\)/, "取走必须同时清掉（一次性）");
 
   const win = read("components/GroupTodosWindow.vue");
-  // 挂载那条路传 `false`：首屏正在由入口后台加载，这里再读一次是白花一轮 IPC。
+  // 固定 label 之后，"该显示哪个群"也是**两条互补路径**（与暂存那两条同形）：
+  // 挂载时自己取一次上下文（预热过 / 新建的窗口那时还没有事件监听者），
+  // 已经存在的窗口靠定向事件被叫醒 —— 而且那条事件现在承担"换群 + 重读"两件事。
   assert.match(
     win,
-    /onMounted\(\(\) => \{[\s\S]{0,200}?void applyFocusRequest\(false\)/,
-    "窗口挂载时必须主动取一次暂存，且不重复首屏加载",
+    /onMounted\(\(\) => \{[\s\S]{0,220}?api\s*\.\s*getGroupTodosContext\(\)/,
+    "挂载时必须主动取一次上下文（只发事件的话，预热/新建那一次就是点了没反应）",
   );
-  // 事件那条路传 `true`：它就是"复用了，去重读一遍"的通知。
   assert.match(
     win,
-    /onGroupTodoFocus\(\(payload\)[\s\S]{0,160}?void applyFocusRequest\(true\)/,
-    "被定向事件叫醒时必须重读数据（常驻之后没有『重建即新数据』这回事了）",
+    /onGroupTodosTarget\(\(payload\)[\s\S]{0,160}?applyTarget\(/,
+    "被定向事件叫醒时必须换上下文并重读（常驻之后没有『重建即新数据』这回事了）",
   );
-  assert.match(win, /api\s*\.onGroupTodoFocus\(/, "窗口已开着时靠定向事件被叫醒");
+  assert.match(win, /await chat\.loadGroupTodos\(next\)/, "叫醒之后确实要重读该群数据");
+  // 换群必须重置看板内部状态（筛选 / 草稿 / 展开态都属于上一个群）—— 留着就是串群。
+  assert.match(
+    win,
+    /<GroupTasksBoard\s+:key="groupId"/,
+    "看板必须按群重挂（:key=\"groupId\"），否则切群会带着上一个群的草稿与筛选",
+  );
 
   // 局部变量别叫 `chat` —— 那是 store 实例在本仓的固定叫法，
   // `storeContract` 会把它当 "chat.indexOf" 即"store 上缺一个成员"来判。
   const mainWin = read("components/ChatWindow.vue");
   const reqAt = mainWin.indexOf("api.requestGroupTodoFocus(");
-  const launchAt = mainWin.indexOf("launchAuxWindow(groupTodosLabel(gid)");
+  const launchAt = mainWin.indexOf('launchAuxWindow("tasks"');
   assert.ok(reqAt > 0, "主窗口必须投递展开目标");
   assert.ok(launchAt > 0, "找不到启动器调用点（守卫会空转）");
-  // ⚠️ 两个下标各自**独立**取再比大小：从 reqAt 往后找 launch 的话，
-  // "投递被挪到启动器之后"这种反向改动永远测不出来（-1 与正向偏置都会假装通过）。
   assert.ok(reqAt < launchAt, "投递展开必须排在 launchAuxWindow 之前 —— 启动器会把后面那次调用整段合并掉");
 });

@@ -49,21 +49,15 @@ const AUX_LINK_RESIDENT: bool = true;
 #[cfg(desktop)]
 const AUX_DEVTOOLS: bool = cfg!(debug_assertions);
 
-/// 群任务窗口**关闭即隐藏**（常驻，但有上限 —— 见 [`AUX_HIDDEN_GROUP_TODOS_MAX`]）。
+/// 群任务窗口**关闭即隐藏**（常驻）。
 ///
-/// 用户 2026-09-24 的实测口径："任务列表窗口第二次打开快点"。数据新鲜度不再靠"重建"来保证，
-/// 改由**复用时主动重拉**保证（`show_existing_aux_window` 那条路上会定向提醒窗口重新读一次，
-/// 见 `open_group_todos_window`）。
+/// 用户 2026-09-24 的两条口径合到这里：① "任务列表窗口第二次打开快点" ⇒ 常驻；
+/// ② "可不传参数、后台默默先把 WebView 建好，用的时候瞬间激活" ⇒ label 必须是**固定**的
+/// `tasks`（每群一扇的 `todo-<groupId>` 在启动时不知道该建哪一扇，预热无从下手）。
+/// 固定 label 之后全局就一扇 ⇒ 不再需要淘汰逻辑；而"每次打开都是新数据"以前靠销毁重建
+/// 顺带保证，现在改由**复用时定向通知窗口重读**顶上（见 [`open_group_todos_window`]）。
 #[cfg(desktop)]
-const AUX_GROUP_TODOS_RESIDENT: bool = true;
-
-/// 隐藏的群任务窗口最多留几个。
-///
-/// 为什么必须有上限：label 是 `todo-<groupId>`，**每群一个** ⇒ 无上限就是"打开过 N 个群
-/// 就留 N 个隐藏 WebView"，而那正是它们当初被设成"关窗即销毁"的唯一理由。留 3 个的取舍：
-/// 同时在两三个群之间来回看是常态，第四个开始就把最老的真正销毁（LRU）。
-#[cfg(desktop)]
-const AUX_HIDDEN_GROUP_TODOS_MAX: usize = 3;
+const AUX_TASKS_RESIDENT: bool = true;
 
 /// 图片预览窗口**关闭即隐藏**（常驻）。
 ///
@@ -108,8 +102,6 @@ fn show_existing_aux_window(
         // 预热路径命中一个已存在的窗口：什么都不做（既不能显示、也不能改位置）。
         return Some(win);
     }
-    // 它现在可见了 ⇒ 从"可被淘汰的隐藏窗口"名单里摘掉（见 `note_hidden_group_todo`）。
-    forget_hidden_group_todo(label);
     if let Some(g) = geo {
         recenter_aux_window(&win, &g);
     }
@@ -122,12 +114,9 @@ fn show_existing_aux_window(
 
 /// 关闭 → 隐藏（配合各窗口自己的 `AUX_*_RESIDENT`），让下一次打开是瞬时的。
 ///
-/// ⚠️ 这个回调跑在 **wry 的主线程事件循环里**。本文件对这条已经付过一次代价：
-/// 「日志窗口一开就整个应用无响应」的真机死锁，就是在主线程里做"需要等主线程"的调用
-/// （`run_on_main_thread + channel.await`）而触发的（见 `log_window_body` 的说明）。
-/// 所以这里只做三件**不碰主线程、不 await、不发 IPC** 的事：拦下关闭、隐藏、给
-/// "每群一扇"的那几扇记一笔 LRU。真正的淘汰（`destroy()`）留在 `open_group_todos_window`
-/// 里做 —— 那里是 async 命令的工作线程，跟"新建窗口"本来就是同一个上下文。
+/// ⚠️ 这个回调跑在 **wry 的主线程事件循环里**：本文件已经为"在主线程里做需要等主线程的
+/// 调用"死锁过一次（见 `log_window_body` 的说明），所以这里**只做两件事** —— 拦下关闭、
+/// 隐藏。不 await、不发 IPC、也不去销毁别的窗口。
 #[cfg(desktop)]
 fn install_hide_on_close(win: &tauri::WebviewWindow) {
     let w = win.clone();
@@ -135,69 +124,8 @@ fn install_hide_on_close(win: &tauri::WebviewWindow) {
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             let _ = w.hide();
-            note_hidden_group_todo(w.label());
         }
     });
-}
-
-/// 隐藏的群任务窗口，按"最近隐藏"排在**末尾**。只记 `todo-*`：固定 label 的那几扇
-/// （设置 / 日志 / 外链 / 预览）本来就最多各留一扇，不需要淘汰。
-#[cfg(desktop)]
-static AUX_HIDDEN_GROUP_TODOS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-#[cfg(desktop)]
-fn hidden_group_todos() -> std::sync::MutexGuard<'static, Vec<String>> {
-    AUX_HIDDEN_GROUP_TODOS.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// 某个 `todo-*` 窗口刚被隐藏 ⇒ 记一笔（**不**在这里销毁，理由见 [`install_hide_on_close`]）。
-#[cfg(desktop)]
-fn note_hidden_group_todo(label: &str) {
-    if !label.starts_with(crate::WINDOW_GROUP_TODOS_PREFIX) {
-        return;
-    }
-    let mut l = hidden_group_todos();
-    l.retain(|x| x != label);
-    l.push(label.to_string());
-}
-
-/// 把隐藏中的群任务窗口裁到 [`AUX_HIDDEN_GROUP_TODOS_MAX`] 扇，淘汰最老的。
-///
-/// 为什么必须有上限：label 是 `todo-<groupId>`、**每群一扇** ⇒ 不封顶就是"访问过 N 个群
-/// 留 N 个隐藏 WebView"，而那正是这批窗口当初被设成"关窗即销毁"的唯一理由。留 3 扇的取舍：
-/// 在两三个群之间来回看算常态，第四扇开始淘汰。
-///
-/// 时机：**开窗命令返回之后**。淘汰用的 label 表是"当前还活着且已隐藏"的窗口，
-/// 拿不到的（用户从任务栏关掉、或已被系统回收）直接跳过 —— 名单只在 `retain` 里收敛，
-/// 不会积累幽灵项。
-#[cfg(desktop)]
-fn prune_hidden_group_todos(app: &tauri::AppHandle) {
-    while let Some(old) = {
-        let mut l = hidden_group_todos();
-        if l.len() > AUX_HIDDEN_GROUP_TODOS_MAX {
-            Some(l.remove(0))
-        } else {
-            None
-        }
-    } {
-        if let Some(w) = app.get_webview_window(&old) {
-            // `destroy()` 而不是 `close()`：close 会再走一遍 CloseRequested，
-            // 而那个处理器第一件事就是 `prevent_close()` ⇒ 淘汰会变成空操作、上限形同虚设。
-            let _ = w.destroy();
-        }
-    }
-}
-
-/// 某个 `todo-*` 窗口被重新显示 ⇒ 从隐藏队列里摘掉。
-///
-/// 少了这一步会很别扭：刚复用的那扇仍留在名单里，下一次淘汰时可能被当成"最老的隐藏窗口"
-/// 当着一用户的面销毁掉。
-#[cfg(desktop)]
-fn forget_hidden_group_todo(label: &str) {
-    if !label.starts_with(crate::WINDOW_GROUP_TODOS_PREFIX) {
-        return;
-    }
-    hidden_group_todos().retain(|x| x != label);
 }
 
 /// 无边框辅助窗口（`.decorations(false)`）的 macOS 配套处理。
@@ -245,7 +173,7 @@ fn decorate_aux_window(win: &tauri::WebviewWindow, app: &tauri::AppHandle) {
 /// 每扇的取舍理由写在各自的 `AUX_*_RESIDENT` 常量上，别在这里再数一遍（数一遍就会过时）。
 ///
 /// `reveal`：真的要打开（显示 + 抢焦点），还是**预热**（只把 WebView 与文档准备好，不显示）。
-/// 见 [`prewarm_image_preview_window`]。
+/// 见 [`prewarm_aux_windows`]。
 ///
 /// 返回 `(窗口, 是否本次新建)`：外链窗口需要在"已存在"这条路径上 `navigate()` 到新网址。
 ///
@@ -296,10 +224,6 @@ where
     if reveal {
         let _ = win.show();
         let _ = win.set_focus();
-    } else {
-        // 预热出来的窗口"已经隐藏地存在"⇒ 它必须算进"每群一扇"那批的淘汰账，
-        // 否则预热过的群都不在名单里，上限管不住它们（表现是隐藏的 WebView 越攒越多）。
-        note_hidden_group_todo(label);
     }
     Ok((win, true))
 }
@@ -627,20 +551,20 @@ pub fn open_settings_window(
     .map_err(|e| e.to_string())
 }
 
-/// 桌面端：打开独立「群任务」窗口（已存在则聚焦）。**每个群一个窗口**（label = `todo-<groupId>`）。
+/// 桌面端：打开（或复用）**全局唯一**的「群任务」窗口，并把它要显示哪个群写成当前上下文。
 ///
-/// 与设置/日志同一范式（同一个 [`ensure_aux_window`]），但**关闭即隐藏**（常驻）：
-/// 用户 2026-09-24 要"第二次打开快点"。"每群一扇"带来的累积由
-/// [`AUX_HIDDEN_GROUP_TODOS_MAX`] 那套 LRU 兜住；"每次打开都该拿新数据"这条则改由
-/// **复用时主动重读**保证（下面那条 `group-todo-focus` 事件现在无条件发）。
-/// 窗口加载 `todos.html`（自己的文档与入口），并从**自己的 label** 解析群 ID
-/// （见 `src/utils/auxWindowLabels.ts`）—— 所以不做"窗口内切群"，一个窗口只服务一个群。
+/// 一扇窗、固定 label [`crate::WINDOW_TASKS`]，看的是哪个群由
+/// [`AppState::task_window_group`] 决定 ⇒ 切群 = 换内容，与图片预览窗口同一套做法。
+/// 之所以必须这样：用户 2026-09-24 要"不传参数就能在后台先把 WebView 建好，用的时候瞬间
+/// 激活"，而每群一扇的动态 label 在启动时不知道该建哪一扇。代价是任务栏里不再按群区分。
 ///
-/// `focus_todo_id` = 打开之后要**展开哪一条任务**（用户 2026-09-24 #39：点聊天里的任务卡片，
-/// 应该直接看到那条的详情，而不是只把看板翻开）。两条路都覆盖，缺一不可：
-/// - **新建**：只写 [`AppState::todo_focus_request`]，窗口挂载时自己 `take_group_todo_focus` 取走
-///   —— 此刻还没有任何监听者，发事件等于发丢（表现就是"第一次点没反应"）；
-/// - **复用**（窗口本来就开着，不会经历挂载）：写进暂存之后**定向 emit** 给这个 label。
+/// `focus_todo_id` = 打开之后要**展开哪一条任务**（#39：点聊天里的任务卡片要直接看到那条的
+/// 详情）。三条路都要覆盖，缺一不可：
+/// - **新建 / 预热过但没内容**：窗口会经历挂载 ⇒ 只写暂存，由它自己 `take_group_todo_focus`
+///   取走（此刻还没有监听者，发事件等于发丢，表现就是"第一次点没反应"）；
+/// - **复用**（窗口已经存在，不再经历挂载）：写完上下文与暂存之后**无条件**定向 emit
+///   一条 `group-todos-target` —— 它现在承担两件事：换群 + 重读数据（以前"新数据"是
+///   销毁重建顺带保证的，常驻之后没人保证了）。
 #[cfg(desktop)]
 #[tauri::command(async)]
 pub fn open_group_todos_window(
@@ -649,8 +573,8 @@ pub fn open_group_todos_window(
     group_id: String,
     focus_todo_id: Option<String>,
 ) -> Result<(), String> {
-    use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};
-    // groupId 会被拼进窗口 label ⇒ 严格校验字符集（非法字符会让 label 失效，也可能撞上别的窗口）。
+    use tauri::Emitter;
+    // groupId 会跨窗口当成指令传回前端（前端拿它去查数据）⇒ 按不透明 ID 的最短规则夹紧。
     if group_id.is_empty()
         || group_id.len() > 40
         || !group_id
@@ -659,16 +583,15 @@ pub fn open_group_todos_window(
     {
         return Err("群 ID 非法".to_string());
     }
-    // todoId 不进 label，但它会**跨窗口当成指令**传回前端 ⇒ 同样按不透明 ID 的最短规则夹紧，
-    // 不接受任意长串（这条通道没有任何"是不是真任务"的判断，前端查不到就什么都不做）。
+    // todoId 同理：这条通道没有任何"是不是真任务"的判断，前端查不到就什么都不做。
     if let Some(id) = &focus_todo_id {
         if id.is_empty() || id.len() > 80 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             return Err("任务 ID 非法".to_string());
         }
     }
-    // 每次 open 都覆盖这个群的"待展开"：带 id 就写入，**不带就清掉**。
-    // 不清的话，用户下一次从标题栏按钮（不带目标）打开窗口时，会被上次那条任务莫名展开。
+    // "该展开哪一条"：带 id 就写入，**不带就清掉** —— 不清的话，用户下一次从标题栏按钮
+    // （不带目标）打开时会被上次那条任务莫名展开。
     {
         let mut pending = state
             .todo_focus_request
@@ -683,16 +606,15 @@ pub fn open_group_todos_window(
             }
         }
     }
-    let label = format!("{}{group_id}", crate::WINDOW_GROUP_TODOS_PREFIX);
-    let bg = aux_window_background(&state);
-    // 系统标题带上群名（每群一个窗口，任务栏里得能分清）；文档加载后由前端按同样口径接管。
+    // 这扇窗现在该显示哪个群（**当前值**，不是一次性请求：窗口挂载时取的就是它）。
+    set_task_window_group(&state, &group_id);
+    // 系统标题带上群名；文档加载后前端会按同样口径接管（切群时它会再改一次）。
     let group_name = {
         // ⚠️ 拿不到锁只能**降级成"没有群名"**，绝不能中止开窗（用户 2026-09-24：
         // 「点群里的查看任务，弹窗弹出很慢，我还以为没点了，点了好几下一会才弹出来」）：
-        // 这一步原先在锁被占住时直接把整个开窗判成失败 —— 而群名只用于系统标题栏那一点
-        // 装饰（文档加载后前端会按同样口径再取一次并接管），为它牺牲一次用户动作，
-        // 表现就是"DB 一忙这扇窗就打不开"，而前端只把它吞成一句 toast。
-        // 判据由 `cosmetic_title_read_cannot_abort_the_window` 钉住（正向形状，不复述这里的文案）。
+        // 这一步原先在锁被占住时直接把整个开窗判成失败 —— 群名只是系统标题栏那一点装饰，
+        // 为它牺牲一次用户动作，表现就是"DB 一忙这扇窗就打不开"。
+        // 判据由 `cosmetic_title_read_cannot_abort_the_window` 钉住。
         match state.db.try_lock() {
             Ok(dbc) => db::get_group(&dbc, &group_id)
                 .map(|g| g.name)
@@ -700,76 +622,95 @@ pub fn open_group_todos_window(
             Err(_) => String::new(),
         }
     };
-    let title = aux_window_title(&state, "群任务", "Group Tasks", Some(&group_name));
-    let build_app = app.clone();
-    let build_label = label.clone();
-    // 设计尺寸 780×620（首版 560×620 太"瘦长"、一版 1080×780 又太大，都是用户 2026-09-21
-    // 实机反馈）：任务看板是单列长列表，太窄标题/指派人/时间挤成一团，太宽则大片空白。
-    // 780 与设置窗口同宽，620 是原来的高度 ⇒ 从"竖长条"变成正常横向窗口，又明显小于主窗口。
-    // `fit_aux_window` 仍会把理想尺寸夹到「主窗口 − 两侧各 24px」，主窗口更小时跟着缩
-    //（几何不变式见 `logs_tests`）；实际用起来的尺寸由 `restore_aux_window_size` 记住。
-    let geo = aux_window_geometry(&app, (780.0, 620.0), (360.0, 420.0));
-    ensure_aux_window(
-        &app,
-        &label,
-        geo,
-        AUX_GROUP_TODOS_RESIDENT,
-        true, // reveal：真的要把这扇窗显示出来（不是预热）
-        move || {
-        let win = WebviewWindowBuilder::new(
-            &build_app,
-            build_label.as_str(),
-            WebviewUrl::App("todos.html".into()),
-        )
-        .title(title)
-        .devtools(AUX_DEVTOOLS)
-        // 同 open_log_window：设计尺寸只作初值，几何在 build 之后按物理像素落地。
-        .inner_size(780.0, 620.0)
-        .min_inner_size(360.0, 420.0)
-        .background_color(bg)
-        .visible(false)
-        // 同 open_log_window：无系统标题栏（共用自绘标题栏）+ 小窗口不给最大化。
-        .decorations(false)
-        .resizable(true)
-        .maximizable(false)
-        .minimizable(true)
-        .closable(true)
-        .build()?;
-        decorate_aux_window(&win, &build_app);
-        if let Some(g) = geo {
-            apply_aux_geometry(&win, g);
-            // 必须在几何落地**之后**（见函数说明）：把用户上次拉的尺寸还原回来，
-            // 否则每次打开都回到设计尺寸 —— 用户 2026-09-21：「这个窗口都没记住用户的尺寸吗？」
-            restore_aux_window_size(&win, &g);
-            // ⚠️ 还原尺寸之后**必须再居中一次**：`recenter_aux_window` 是按窗口**当时的**
-            // 外框尺寸算位置的，而尺寸刚刚被改过 ⇒ 不重算就会偏掉半个尺寸差，
-            // 表现是"每次弹出来都不居中"（用户 2026-09-21 实机反馈）。只动尺寸、不动位置
-            // 是用户要的口径：「窗口只用记住大小就行啊，不用记住位置」。
-            recenter_aux_window(&win, &g);
-        }
-        Ok(win)
-    })
-    .map(|(_win, created)| {
-        // **复用**那条路：窗口本来就开着（现在它是常驻的）⇒ 不会经历挂载，既没人取暂存、
-        // 也不会重读数据。所以这条事件在复用时**必须发**，语义是"重新显示出来了，去把数据
-        // 读一遍、顺便看看有没有要展开的那条"：
-        // - 只在新建时发 = 常驻之后重开看到的是上一次的旧列表（成员可能刚改过任务）；
-        // - 只带 groupId，前端仍自己比对再动手，免得哪天 label 与群对不上时误展开别群的。
-        // 新建那条路刻意不发：那时文档里还没有监听者，发了就是丢（挂载时会自己取暂存）。
-        if !created {
-            let _ = _win.emit(
-                "group-todo-focus",
-                serde_json::json!({ "groupId": group_id.clone() }),
-            );
-        }
-    })
-    .map_err(|e| e.to_string())?;
-    // 关掉即隐藏之后，"访问过的每个群各留一扇隐藏窗"会累积 ⇒ 每次开窗顺手裁到上限。
-    // 放在命令返回之后、而不是隐藏回调里：淘汰要 `destroy()`，而隐藏回调跑在主线程事件循环上。
-    prune_hidden_group_todos(&app);
+    let (win, created) = ensure_tasks_window(&app, &state, &group_name, true)?;
+    if !created {
+        let _ = win.emit(
+            "group-todos-target",
+            serde_json::json!({ "groupId": group_id.clone() }),
+        );
+    }
     Ok(())
 }
 
+/// 记下"那扇群任务窗口该显示哪个群"。两条写路径（开窗 / 只投递目标）共用这一份取锁形状。
+#[cfg(desktop)]
+fn set_task_window_group(state: &tauri::State<'_, Arc<AppState>>, group_id: &str) {
+    *state
+        .task_window_group
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(group_id.to_string());
+}
+
+/// 群任务窗口本体（打开与预热**共用同一份**构造，差别只在要不要显示）。
+///
+/// 与预览窗口同一条理由：两条路各写一份 builder，"预热出来的窗口和真正打开的不一样"
+/// 这种缺陷查不出来（尺寸/装饰/背景少一项，秒开就变成"开出来是另一个样子"）。
+#[cfg(desktop)]
+fn ensure_tasks_window(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, Arc<AppState>>,
+    group_name: &str,
+    reveal: bool,
+) -> Result<(tauri::WebviewWindow, bool), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    let bg = aux_window_background(state);
+    let title = aux_window_title(state, "群任务", "Group Tasks", Some(group_name));
+    let geo = aux_window_geometry(app, (780.0, 620.0), (360.0, 420.0));
+    let build_app = app.clone();
+    ensure_aux_window(
+        app,
+        crate::WINDOW_TASKS,
+        geo,
+        AUX_TASKS_RESIDENT,
+        reveal,
+        move || {
+            let win = WebviewWindowBuilder::new(
+                &build_app,
+                crate::WINDOW_TASKS,
+                WebviewUrl::App("todos.html".into()),
+            )
+            .title(title)
+            .devtools(AUX_DEVTOOLS)
+            // 设计尺寸 780×620（用户 2026-09-21 实机反馈：560 太瘦长、1080 太大）；
+            // `fit_aux_window` 会夹到「主窗口 − 两侧各 24px」⇒ 永不比主窗口大。
+            .inner_size(780.0, 620.0)
+            .min_inner_size(360.0, 420.0)
+            .background_color(bg)
+            // 隐藏创建：`ensure_aux_window` 在几何落地后才 show，中间这段用来摆位置与尺寸。
+            .visible(false)
+            .decorations(false)
+            .resizable(true)
+            .maximizable(false)
+            .minimizable(true)
+            .closable(true)
+            .build()?;
+            decorate_aux_window(&win, &build_app);
+            if let Some(g) = geo {
+                apply_aux_geometry(&win, g);
+                // 先还原用户拉过的尺寸，再按**当时**的外框重算居中 —— 顺序反了就偏半个差值
+                // （用户 2026-09-21：「每次弹出来都不居中」）。只记尺寸、不记位置。
+                restore_aux_window_size(&win, &g);
+                recenter_aux_window(&win, &g);
+            }
+            Ok(win)
+        },
+    )
+}
+
+/// 那扇群任务窗口**现在该显示哪个群**（不清，理由见 [`AppState::task_window_group`]）。
+///
+/// 不分桌面/移动：只是读一块内存。预热过、还没被真正打开时返回 `None` ⇒ 窗口显示
+/// "还没选群"那一档，而不是拿一个脏 ID 去查。
+#[tauri::command]
+pub fn get_group_todos_context(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Option<String> {
+    state
+        .task_window_group
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
 /// 群任务窗口启动时取走"该展开哪条任务"（**取走即清空**，一次性）。
 ///
 /// 与 `open_group_todos_window` 里那条定向 emit 是同一个需求的**两条互补路径**
@@ -827,10 +768,12 @@ pub fn request_group_todo_focus(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(group_id.clone(), todo_id);
-    let label = format!("{}{group_id}", crate::WINDOW_GROUP_TODOS_PREFIX);
-    if let Some(win) = app.get_webview_window(&label) {
+    set_task_window_group(&state, &group_id);
+    // 窗口已经开着 ⇒ 它不会经历挂载，只能靠这条通知去"换群 + 重读 + 展开"。
+    // 窗口不存在（或只是预热过）⇒ 什么都不发：它挂载时会自己取上下文与暂存。
+    if let Some(win) = app.get_webview_window(crate::WINDOW_TASKS) {
         let _ = win.emit(
-            "group-todo-focus",
+            "group-todos-target",
             serde_json::json!({ "groupId": group_id }),
         );
     }
@@ -964,11 +907,15 @@ pub fn open_image_preview(
 /// 那条护栏禁止的形状（并发下会开出第二个窗口），而且这里连必要性都没有。
 #[cfg(desktop)]
 #[tauri::command(async)]
-pub fn prewarm_image_preview_window(
+pub fn prewarm_aux_windows(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    ensure_preview_window(&app, &state, false).map(|_| ())
+    // 顺序无含义：两扇都是"建好就放着"，谁先谁后不影响结果。任何一扇失败都不影响另一扇，
+    // 也不影响后续真正打开（那时的错误才是用户需要看到的）。
+    let _ = ensure_preview_window(&app, &state, false);
+    let _ = ensure_tasks_window(&app, &state, "", false);
+    Ok(())
 }
 
 /// 预览窗口本体（打开与预热**共用这一份**构造，差别只在最后要不要显示出来）。
@@ -1054,7 +1001,7 @@ pub fn open_image_preview(
 /// 写错要被看见，而不是被一个假的 `Ok(())` 掩盖。
 #[cfg(mobile)]
 #[tauri::command]
-pub fn prewarm_image_preview_window(
+pub fn prewarm_aux_windows(
     _app: tauri::AppHandle,
     _state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<(), String> {

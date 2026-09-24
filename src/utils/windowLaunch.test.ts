@@ -91,11 +91,12 @@ test("外部链接与群任务窗口也必须走 launchAuxWindow（不得在按�
     /launchAuxWindow\("link",\s*\(\)\s*=>\s*api\.openLinkWindow\(/,
     `ResponsiveLayout 打开外链窗口必须走 launchAuxWindow("link", …)`,
   );
-  // 群任务窗口：label 是动态的 `todo-<groupId>`（每群一个），由 `groupTodosLabel` 构造。
+  // 群任务窗口：label 是**固定**的 "tasks"（一扇窗换内容）。动态 `todo-<groupId>` 会让
+  // "不传参数预热"做不到 —— 预热那一刻不知道该建哪一扇（Rust 侧有交叉核对守卫）。
   assert.match(
     chatWindow,
-    /launchAuxWindow\(groupTodosLabel\([^)]*\),\s*\(\)\s*=>\s*api\.openGroupTodosWindow\(/,
-    `ChatWindow 打开群任务窗口必须走 launchAuxWindow(groupTodosLabel(…), …)`,
+    /launchAuxWindow\("tasks",\s*\(\)\s*=>\s*api\.openGroupTodosWindow\(/,
+    `ChatWindow 打开群任务窗口必须走 launchAuxWindow("tasks", …)（固定 label 才有秒开）`,
   );
 
   // 反向：不得有绕过 launcher 的裸调用（每条命令只应出现一次，且在 launcher 参数里）。

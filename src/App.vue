@@ -102,7 +102,7 @@ onMounted(async () => {
     // 目的正好相反。失败不提示：最坏结果只是"第一次点图仍然慢一点"。
     if (!app.isMobile) {
       window.setTimeout(() => {
-        void api.prewarmImagePreview().catch(() => {});
+        void api.prewarmAuxWindows().catch(() => {});
       }, AUX_PREWARM_DELAY_MS);
     }
   }

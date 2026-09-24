@@ -19,7 +19,6 @@ import MergeCardModal from "@/components/message/MergeCardModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { estimateMessageHeight } from "@/utils/messageHeight";
 import { launchAuxWindow, isWindowOpening } from "@/composables/useWindowLauncher";
-import { groupTodosLabel } from "@/utils/auxWindowLabels";
 import { MENTION_ALL_TOKEN } from "@/utils/messages";
 import { fileToDataUrl } from "@/utils/imageBytes";
 import { MAX_MERGE_ITEMS, buildMergePayload } from "@/utils/mergeCard";
@@ -263,7 +262,8 @@ const activeGroupId = computed(() =>
 const preview = useImagePreviewStore();
 
 /** 当前群的任务窗口是否正在打开（按钮 pending 反馈）。 */
-const tasksOpening = computed(() => isWindowOpening(groupTodosLabel(activeGroupId.value ?? "")));
+// 一扇固定 label 的窗口 ⇒ pending 状态与"当前是哪个群"无关（切群不换窗口，只换内容）。
+const tasksOpening = computed(() => isWindowOpening("tasks"));
 
 /** 从任务卡片点进来时要直达详情的那条任务（null = 只是打开看板）。 */
 const taskFocusId = ref<string | null>(null);
@@ -275,8 +275,9 @@ const taskFocusId = ref<string | null>(null);
  * 应用内弹窗走 prop（`taskFocusId`）；桌面端独立窗口走后端那条「暂存 + 定向事件」——
  * 新建的窗口在挂载时 `take_group_todo_focus` 取走（事件那时没有监听者，只发事件就是
  * "第一次点没反应"），本来就开着的窗口靠事件被叫醒后再取同一个暂存。
- * 注意 label 仍然只带 groupId：`todo-<groupId>` 是"每群一窗"的**身份**，
- * 把任务 ID 塞进 label 会变成"每条任务一个窗口"。
+ * 窗口本身是**固定 label 的一扇**（`tasks`）：群由后端那份当前上下文决定，切群 = 换内容。
+ * 之所以这样：用户 2026-09-24 要"不传参数也能先把 WebView 建好、用时瞬间激活"，
+ * 而每群一扇的动态 label 在预热时不知道该建哪一扇。
  */
 function openTasks(todoId?: string) {
   const gid = activeGroupId.value;
@@ -294,7 +295,7 @@ function openTasks(todoId?: string) {
       /* 只丢"自动展开"这一点便利：窗口照开，用户点进去就行，不为它弹窗 */
     });
   }
-  void launchAuxWindow(groupTodosLabel(gid), () => api.openGroupTodosWindow(gid, todoId)).catch(
+  void launchAuxWindow("tasks", () => api.openGroupTodosWindow(gid, todoId)).catch(
     (e) => {
       app.toastError(e, t("common.operationFail"));
       tasksOpen.value = true; // 独立窗口开不出来 → 回退到应用内弹窗

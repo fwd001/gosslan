@@ -368,10 +368,9 @@ export const api = {
   openSettingsWindow: () => invoke<void>("open_settings_window"),
   closeSettingsWindow: () => invoke<void>("close_settings_window"),
 
-  /** 打开**指定群**的独立任务窗口（桌面端；每群一个窗口，label = `todo-<groupId>`）。 */
-  /**
-   * 打开**指定群**的独立任务窗口（桌面端；每群一个窗口，label = `todo-<groupId>`）。
-   * `focusTodoId` = 打开后要直接展开的那条任务（用户 2026-09-24 #39）；不传 = 清掉上次的待展开。
+    /**
+   * 让那扇**全局唯一**的群任务窗口去显示这个群（桌面端；固定 label `tasks`，切群 = 换内容）。
+   * `focusTodoId` = 打开后要直接展开的那条任务（#39）；不传 = 清掉上次的待展开。
    */
   openGroupTodosWindow: (groupId: string, focusTodoId?: string) =>
     invoke<void>("open_group_todos_window", { groupId, focusTodoId: focusTodoId ?? null }),
@@ -383,9 +382,15 @@ export const api = {
   takeGroupTodoFocus: (groupId: string) =>
     invoke<string | null>("take_group_todo_focus", { groupId }),
 
-  /** 群任务窗口已开着时，后端定向推来的"该展开哪条"提醒（载荷只带 groupId）。 */
-  onGroupTodoFocus: (cb: (payload: { groupId: string }) => void) =>
-    listen<{ groupId: string }>("group-todo-focus", (e) => cb(e.payload)),
+  /**
+   * 群任务窗口已经存在时（不管是开着还是预热后藏着），后端定向推来的"换到这个群"提醒。
+   * 载荷带 groupId ⇒ 前端拿它换上下文并**重读数据**：常驻之后没有"重建即新数据"这回事了。
+   */
+  onGroupTodosTarget: (cb: (payload: { groupId: string }) => void) =>
+    listen<{ groupId: string }>("group-todos-target", (e) => cb(e.payload)),
+
+  /** 这扇群任务窗口**现在该显示哪个群**（预热过、还没被真正打开时是 null）。 */
+  getGroupTodosContext: () => invoke<string | null>("get_group_todos_context"),
 
   /**
    * **只投递**"该展开哪条"，不要求开窗口（桌面端）。
@@ -407,11 +412,11 @@ export const api = {
   /** 窗口已经开着时的"内容换了，再取一次"提醒。 */
   onImagePreviewChanged: (cb: () => void) => listen("preview-gallery", () => cb()),
   /**
-   * 预热那扇全局预览窗口：建好 WebView、载入文档，但**不显示也不抢焦点**。
-   * 桌面端启动后延后一拍调用；失败无所谓（最坏就是第一次点图仍然慢一点），
+   * 把高频的两扇窗（图片预览 + 群任务）**先建好、文档先加载**，但不显示也不抢焦点。
+   * 桌面端启动后延后一拍调用；失败无所谓（最坏就是第一次仍然慢一点），
    * 所以调用方一律 `.catch(() => {})`，不要给它弹提示。
    */
-  prewarmImagePreview: () => invoke<void>("prewarm_image_preview_window"),
+  prewarmAuxWindows: () => invoke<void>("prewarm_aux_windows"),
 
 
   /** 在独立窗口里加载一个外部网址（桌面端；窗口隔离，不授予远端页面任何命令权限）。 */

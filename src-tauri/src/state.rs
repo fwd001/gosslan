@@ -967,6 +967,13 @@ pub struct AppState {
     /// 还是被事件叫醒后来取，拿到的都是"用户最后一次点的那组图"。也正因如此 `get` 不清它 ——
     /// 清了反而会在"事件先于监听器到达"那个窗口期把内容丢掉（批次 w 记过的同一个竞态）。
     pub preview_gallery: Mutex<Option<PreviewGallery>>,
+    /// 「那扇群任务窗口现在显示的是哪个群」—— **当前值**，不是一次性请求。
+    ///
+    /// 群任务窗口的 label 是固定的 `tasks`（不再是每群一扇），所以"看哪个群"必须由这里给：
+    /// 预热时它是 `None`（窗口已经建好、还没有内容），第一次真正打开写入某个群 ⇒ 窗口
+    /// 要么在挂载时自己取到（新建/预热后首用），要么被定向事件叫醒后再取（已开着）。
+    /// 与 `preview_gallery` 同一套"当前值"语义 ⇒ 不存在"丢一次点击"。
+    pub task_window_group: Mutex<Option<String>>,
     /// 节点身份（X25519 + Ed25519）
     pub identity: Identity,
     /// Gossip 去重 + 扇出引擎
@@ -1349,6 +1356,7 @@ impl AppState {
             dialing: Mutex::new(std::collections::HashSet::new()),
             todo_focus_request: Mutex::new(std::collections::HashMap::new()),
             preview_gallery: Mutex::new(None),
+            task_window_group: Mutex::new(None),
             dial_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)),
             inbound_permits: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_CONNECTIONS)),
             pending_out_requests: Mutex::new(std::collections::HashSet::new()),

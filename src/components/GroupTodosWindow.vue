@@ -1,108 +1,39 @@
 <script setup lang="ts">
 /**
- * 独立「群任务」窗口的根组件（`todos.html`，label = `todo-<groupId>`，每群一个）。
+ * 独立「群任务」窗口的根组件（`todos.html`，桌面端固定 label=`tasks`，**全局只有一扇**）。
  *
- * 群 ID 从**窗口自己的 label** 解析（label 是身份/参数，不是"按 label 分支渲染"——
- * 本窗口仍然只有一份文档与一个入口，见 ADR-0018）。
+ * ## 为什么不再是"每群一扇"
+ * 原先 label 是 `todo-<groupId>`，窗口靠自己的 label 找回"我是哪个群的窗口"。
+ * 用户 2026-09-24 要求"启动时可以不传参数就把 WebView 先建好，用的时候瞬间激活"——
+ * 动态 label 在预热那一刻根本不知道该建哪一扇，所以秒开做不到。改成固定 label 之后，
+ * "现在该显示哪个群"由后端那份**当前上下文**给（`get_group_todos_context` +
+ * 定向事件 `group-todos-target`），与图片预览窗口"换内容不换窗口"完全同一套做法。
+ * 代价说清楚：任务栏里不再能按群区分这扇窗。
  *
- * 窗口外壳 = `AuxWindowShell`（自绘标题栏 + 1px inset ring），与主窗口/设置窗口同一套
- * —— 用户 2026-09-17：「新窗口用的是系统样式？标题栏和窗口背景有界限」；群名进 caption。
+ * ## 换群时必须做的两件事（常驻窗口的固有责任）
+ * 1. **重读数据** —— 以前"每次打开都是新数据"是销毁重建顺带保证的，现在窗口活着，
+ *    不重读就是上一次那个群的列表；
+ * 2. **重置看板内部状态** —— 筛选、正在编辑的草稿都属于上一个群。做法是给看板加
+ *    `:key="groupId"` 让它整块重挂（比在组件里手写"切群清草稿"少一处会漏的地方）。
+ *
+ * 外壳 = `AuxWindowShell`（自绘标题栏），与设置/日志/预览窗口同一套。
  */
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import GroupTasksBoard from "@/components/GroupTasksBoard.vue";
-import { groupTodosGroupId } from "@/utils/auxWindowLabels";
 import { currentLocale, t } from "@/i18n";
 
-const groupId = groupTodosGroupId(getCurrentWindow().label);
+const app = useAppStore();
 const chat = useChatStore();
-const group = computed(() => (groupId ? (chat.groups.find((g) => g.id === groupId) ?? null) : null));
 
-/**
- * 「该展开哪条任务」—— 两条路都收在这一个函数里（用户 2026-09-24 #39）。
- *
- * 后端 `open_group_todos_window` 每次都会先写一份一次性暂存：
- * - **窗口是新建设的**：那条定向事件发给了一个还没有监听者的文档（等于发丢），
- *   所以只能靠挂载时主动取一次 —— 只发事件的表现就是"第一次点卡片没反应、第二次才有"；
- * - **窗口本来就开着**：不会经历挂载 ⇒ 由定向事件叫醒，再取同一个暂存（取走即清，
- *   所以不会重复展开，也不会把上次那条带进下次打开）。
- * 载荷只带 groupId，取回来的 id 也按本窗口自己的群去要 ⇒ 别群的任务串不过来。
- */
-const boardRef = ref<InstanceType<typeof GroupTasksBoard> | null>(null);
-/**
- * 拿到的目标先存这里，等首屏数据落地再投。
- *
- * 为什么必须等（2026-09-24 随"先挂载"改造一起改）：窗口现在挂载时数据还没到，
- * 而 `focusTodo(id)` 是在**当前列表**里找那条任务 —— 列表为空时它按设计"什么都不做"
- * （任务被删 / 折叠结果里没有它 ⇒ 不弹"找不到"也不空指针）。少这一步的表现就是
- * "点了卡片，窗口开了却没展开那条"（#39 的原始诉求）。
- */
-const pendingFocusId = ref<string | null>(null);
-
-function deliverFocus(id: string) {
-  boardRef.value?.focusTodo(id);
-}
-
-async function applyFocusRequest(reload: boolean) {
-  if (!groupId) return;
-  if (reload) {
-    // **复用时必须自己重读**（2026-09-24 改成关闭即隐藏之后新增的责任）：以前每次打开都是
-    // 新建 WebView，"新数据"是顺带保证的；现在窗口活着，不重读就是上一次那份列表
-    // （成员可能刚改过任务、刚归档了一条）。
-    // 失败刻意保持静默：这一次是"刷新"，列表里还有上一次的内容可看，比清空重来更好；
-    // 真要恢复，关掉窗口重开就会走首屏那条路（那条会 toast）。
-    await chat.loadGroupTodos(groupId).catch(() => {});
-  }
-  const id = await api.takeGroupTodoFocus(groupId).catch(() => null);
-  if (!id) return;
-  if (chat.todosLoadedOnce(groupId)) {
-    deliverFocus(id);
-    return;
-  }
-  pendingFocusId.value = id; // 连点多次以最后一次为准
-}
-
-watch(
-  () => (groupId ? chat.todosLoadedOnce(groupId) : true),
-  (ready) => {
-    const id = pendingFocusId.value;
-    if (!ready || !id) return;
-    pendingFocusId.value = null;
-    deliverFocus(id);
-  },
+/** 这扇窗现在服务哪个群（`null` = 还没被打开过，只是预热放着）。 */
+const groupId = ref<string | null>(null);
+const group = computed(
+  () => (groupId.value ? (chat.groups.find((g) => g.id === groupId.value) ?? null) : null),
 );
-
-let unlistenFocus: (() => void) | null = null;
-let disposed = false;
-onMounted(() => {
-  // 挂载这条路**不重读**：入口正在后台取首屏（`src/entries/todos.ts`），再读一遍是白花一次。
-  void applyFocusRequest(false);
-  api
-    .onGroupTodoFocus((payload) => {
-      if (payload?.groupId && payload.groupId !== groupId) return;
-      void applyFocusRequest(true);
-    })
-    .then((fn) => {
-      // 窗口被秒关时 `onUnmounted` 可能已经跑完 ⇒ 拿到 unlisten 就立刻补一次取消，
-      // 否则这条监听永久留着（与 `boot.ts` 里"降级挂载也要把注册补上"是同一条纪律）。
-      if (disposed) {
-        fn();
-        return;
-      }
-      unlistenFocus = fn;
-    })
-    .catch(() => {
-      /* 订阅失败只影响"窗口已开着时再点卡片"那一条路：新建那条仍走挂载时取暂存 */
-    });
-});
-onUnmounted(() => {
-  disposed = true;
-  unlistenFocus?.();
-  unlistenFocus = null;
-});
 
 /** 标题栏文案：「群名 · 群任务」（群信息还没加载出来时只显示「群任务」）。 */
 const windowTitle = computed(() =>
@@ -112,8 +43,8 @@ const windowTitle = computed(() =>
 /**
  * 系统窗口标题（任务栏/窗口列表）跟随标题栏文案。
  *
- * `boot.ts` 的 `installDocumentTitle` 也会按 `data-title-*` 设一次；本 watch 在入口里
- * **挂载之后**才注册，所以后者生效。依赖里显式读 `currentLocale()` 是为了在切语言时重算。
+ * `boot.ts` 的 `installDocumentTitle` 也会按 `data-title-*` 设一次；本 watch 在挂载之后
+ * 注册，所以以后者为准 —— 切群时就是这里把任务栏那一条改过来的。
  */
 watch(
   [() => group.value?.name, () => currentLocale()],
@@ -122,15 +53,103 @@ watch(
   },
   { immediate: true },
 );
+
+const boardRef = ref<InstanceType<typeof GroupTasksBoard> | null>(null);
+/**
+ * 拿到的"该展开哪条"先存这里，等首屏数据落地再投。
+ *
+ * 为什么必须等：`focusTodo(id)` 是在**当前列表**里找那条任务，列表为空时它按设计什么都不做
+ * （任务被删 / 折叠结果里没有它 ⇒ 不弹"找不到"也不空指针）。少这一步的表现就是
+ * "点了卡片，窗口开了却没展开那条"（#39 的原始诉求）。
+ */
+const pendingFocusId = ref<string | null>(null);
+
+async function deliverFocus(id: string) {
+  await nextTick(); // 看板可能刚刚因换群整块重挂，等它挂上再投
+  boardRef.value?.focusTodo(id);
+}
+
+/**
+ * 切到某个群：换上下文 → （换群时）把实时订阅带过去 → 重读数据 → 处理待展开。
+ *
+ * `watchGroupTodos` 只在**群真的变了**时调用：store 里那份实现自己会摘掉上一个群的监听，
+ * 重复调用只是白建一次订阅。
+ */
+async function applyTarget(next: string | null) {
+  if (!next) return;
+  const switched = groupId.value !== next;
+  const fresh = !chat.todosLoadedOnce(next);
+  groupId.value = next;
+  if (switched) void chat.watchGroupTodos(next).catch(() => {});
+  try {
+    await chat.loadGroupTodos(next);
+  } catch (e) {
+    // 首次（或换群）读失败要说出来：那看起来和"这个群没有任务"一模一样。
+    // 只是刷新一个已加载过的群失败则保持静默 —— 列表里还有内容可看，比清空重来更好。
+    if (fresh) app.toastError(e, t("todo.loadFail"));
+  }
+  const id = await api.takeGroupTodoFocus(next).catch(() => null);
+  if (!id) return;
+  if (chat.todosLoadedOnce(next)) {
+    void deliverFocus(id);
+    return;
+  }
+  pendingFocusId.value = id; // 连点多次以最后一次为准
+}
+
+// 首屏落地时补投等着的那条
+watch(
+  () => (groupId.value ? chat.todosLoadedOnce(groupId.value) : true),
+  (ready) => {
+    const id = pendingFocusId.value;
+    if (!ready || !id) return;
+    pendingFocusId.value = null;
+    void deliverFocus(id);
+  },
+);
+
+let unlistenTarget: (() => void) | null = null;
+let disposed = false;
+onMounted(() => {
+  // 两条路都要：预热过 / 新建的窗口靠挂载这次取上下文；已经存在的那扇靠定向事件被叫醒。
+  void api
+    .getGroupTodosContext()
+    .then((ctx) => void applyTarget(ctx))
+    .catch(() => {
+      /* 取不到上下文 ⇒ 窗口显示"还没选群"那一档，下次点卡片的事件仍会把它带起来 */
+    });
+  void api
+    .onGroupTodosTarget((payload) => {
+      if (!payload?.groupId) return;
+      void applyTarget(payload.groupId);
+    })
+    .then((fn) => {
+      // 窗口被秒关时 `onUnmounted` 可能已经跑完 ⇒ 拿到 unlisten 就立刻补一次取消
+      if (disposed) {
+        fn();
+        return;
+      }
+      unlistenTarget = fn;
+    })
+    .catch(() => {
+      /* 订阅失败只影响"窗口已存在时再点卡片"那一条路：挂载那条路仍会取一次上下文 */
+    });
+});
+onUnmounted(() => {
+  disposed = true;
+  unlistenTarget?.();
+  unlistenTarget = null;
+});
 </script>
 
 <template>
   <AuxWindowShell :title="windowTitle">
     <div v-if="!groupId" class="p-6 text-sm text-[var(--gosslan-text-2)]">
-      {{ t("todo.windowBadLabel") }}
+      {{ t("todo.windowNoGroup") }}
     </div>
     <div v-else class="min-h-0 flex-1 overflow-hidden p-4">
-      <GroupTasksBoard ref="boardRef" :group-id="groupId" standalone />
+      <!-- `:key` 是换群必须做的重置：筛选/草稿/展开态都属于上一个群，留着就是串群。 -->
+      <GroupTasksBoard :key="groupId" ref="boardRef" :group-id="groupId" standalone />
     </div>
   </AuxWindowShell>
 </template>

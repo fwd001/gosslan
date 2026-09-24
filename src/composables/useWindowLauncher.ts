@@ -12,15 +12,16 @@
  */
 import { computed, reactive, type ComputedRef } from "vue";
 import { shouldLaunchWindow } from "@/utils/windowLaunch";
-import { GROUP_TODOS_LABEL_PREFIX } from "@/utils/auxWindowLabels";
 
 /**
- * 桌面独立窗口的 label。
+ * 桌面独立窗口的 label，与 Rust `lib.rs` 的 `WINDOW_*` 常量一一对应
+ * （`tasks_window_uses_one_fixed_label_cross_checked_with_frontend` 做交叉核对）。
  *
- * `settings` / `logs` / `link` 与 Rust 的 `WINDOW_SETTINGS` / `WINDOW_LOGS` / `WINDOW_LINK` 一致；
- * 群任务窗口是**动态** label（每群一个，`todo-<groupId>`，见 `utils/auxWindowLabels`）。
+ * 群任务窗口以前是每群一扇的 `todo-<groupId>`，现在是一扇**固定** label：看哪个群由后端那份
+ * 当前上下文决定。唯一的动机是"不传参数就能在后台先把 WebView 建好，用的时候瞬间激活"——
+ * 动态 label 在预热那一刻不知道该建哪一扇，秒开就无从谈起。
  */
-export type AuxWindowLabel = "settings" | "logs" | "link" | `${typeof GROUP_TODOS_LABEL_PREFIX}${string}`;
+export type AuxWindowLabel = "settings" | "logs" | "link" | "tasks";
 
 /** 正在打开的窗口 label（响应式，供按钮显示 pending 状态）。 */
 const opening = reactive(new Set<AuxWindowLabel>());

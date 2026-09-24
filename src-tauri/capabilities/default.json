@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "全部应用窗口（主窗口 + 运行期创建的设置/日志/群任务窗口）的能力：窗口控制、事件、通知、对话框与打开器。⚠️ 刻意**不含**外链窗口（label `link`）：它加载远端页面，任何 capability 都会把命令面暴露给第三方内容。",
-  "windows": ["main", "settings", "logs", "preview", "todo-*"],
+  "windows": ["main", "settings", "logs", "preview", "tasks"],
   "permissions": [
     "core:default",
     "core:window:allow-set-focus",

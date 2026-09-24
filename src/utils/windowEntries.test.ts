@@ -206,26 +206,23 @@ test("辅助窗口的入口不得把聊天那一套拉进来（这是「设置�
  * 就是"点了没反应"。改成先挂载、数据后台补之后，这个形状很容易被人"顺手改回去"
  * （看起来像是"更严谨的初始化顺序"），所以钉在这里。
  */
-test("群任务窗口的挂载前门里只准有 app.init()（取数必须排在挂载之后）", () => {
-  const code = codeOnly(read("src/entries/todos.ts"));
-  const mountAt = code.indexOf("mountAuxWindow(");
+test("群任务窗口的挂载前门里只准有 app.init()，取数在根组件里", () => {
+  const entry = codeOnly(read("src/entries/todos.ts"));
+  const mountAt = entry.indexOf("mountAuxWindow(");
   assert.ok(mountAt >= 0, "找不到挂载调用，这条判据会空转");
-  // 分界取"挂载调用之后的第一个 `.then(`"：那才是"已经挂载完"的时刻。
-  // 只按 `mountAuxWindow(` 的位置判是**没用的** —— 门里的代码在文字上也在这之后。
-  const afterMount = code.indexOf(".then(", mountAt);
+  // 入口里出现任何"读数据/订阅"的调用都意味着又把网络往返塞回了挂载前那道门
+  // （用户 2026-09-24：「点查看任务，弹窗弹出很慢，我还以为没点了」就是这个形状）。
+  for (const forbidden of ["loadGroupTodos", "watchGroupTodos", "getGroupTodosContext"]) {
+    assert.ok(!entry.includes(forbidden), `入口不得出现 ${forbidden}：那等于把开窗重新堵在数据后面（用户报的「点了没反应」）`);
+  }
   assert.ok(
-    afterMount > mountAt,
-    "挂载之后必须还有 `.then(`：入口改成别的形态时请连同这条判据一起改，" +
-      "但**别**把取数塞回挂载前那道门",
+    entry.includes("useAppStore().init()"),
+    "入口的门里只留 app.init()（外观必须先于渲染）",
   );
-  for (const call of ["loadGroupTodos(groupId)", "watchGroupTodos(groupId)"]) {
-    const at = code.indexOf(call);
-    assert.ok(at >= 0, `入口必须仍然调用 ${call}，否则窗口里永远停在「正在加载」`);
-    assert.ok(
-      at > afterMount,
-      `${call} 必须排在挂载**之后** —— 塞进挂载前那道门，窗口就会在骨架屏上多等一整轮 DB 读取 ` +
-        "（用户 2026-09-24 报的「弹不出来」就是这个形状）",
-    );
+  // 取数没有消失，只是搬到根组件 —— 那边才是"当前该显示哪个群"的唯一拥有者。
+  const win = read("src/components/GroupTodosWindow.vue");
+  for (const call of ["loadGroupTodos(next)", "watchGroupTodos(next)", "getGroupTodosContext()"]) {
+    assert.ok(win.includes(call), `根组件必须仍然调用 ${call}，否则窗口会永远停在「正在加载」`);
   }
 });
 
