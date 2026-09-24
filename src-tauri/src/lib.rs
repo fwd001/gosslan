@@ -2928,6 +2928,11 @@ mod tests {
     /// 真实磁盘 + 计时，单元层拿不住；而形状一旦退化（锁挪回函数作用域），表现是
     /// "多文件里有一个大文件时其它文件莫名停滞判死"，回查成本极高。
     /// 判据用**位置比较**而不是"调用了几次"：退化前后 `sync_all()` / `finalize()` 的次数一模一样。
+    ///
+    /// 2026-09-24（#25）慢活整体搬进了 `finish_receiver_into`（那个函数不要 `AppState`，
+    /// 所以"显示成功是不是真成功"终于能被单测驱动）⇒ 判据跟着升级成三件事：
+    /// 摘锁形状留在包装函数里、慢活留在核心里、而**核心拿不到 `file_receivers` 那张表**
+    /// （拿不到就不可能把锁再写回来，这比"位置在后面"强：它是结构性的）。
     #[test]
     fn receive_finalize_slow_work_happens_outside_the_receiver_lock() {
         let file = include_str!("network/file.rs");
@@ -2935,7 +2940,7 @@ mod tests {
         let flat = code_flat(&body);
         assert!(
             flat.contains("letr={letmutrecv=state.file_receivers.lock()"),
-            "接收器必须在块内摘出（块尾即放锁）。函数作用域的锁守卫会把 SHA+fsync+rename \
+            "接收器必须在块内摘出（块尾即放锁）。函数作用域的锁会把 SHA+fsync+rename \
              全包进锁里 —— 600MB 的 fsync 期间，其它并发文件的 write_chunk 全堵在同一把锁上，\
              它们不再写出 ⇒ 发送端 60s 停滞判据把它们判死"
         );
@@ -2943,16 +2948,28 @@ mod tests {
             !flat.contains("letmutrecv=state.file_receivers.lock().unwrap_or_else(|e|e.into_inner());letr=matchrecv.remove"),
             "旧的函数作用域形状不许回来（那份守卫横跨全部慢活）"
         );
-        // 来源不符时的"塞回去"必须留在锁内；摘出之后的慢活必须留在锁外
-        let block_end = flat
-            .find("returnErr(\"文件传输来源不匹配\".to_string());}")
-            .expect("找不到来源不符分支 —— 护栏需要同步更新");
+        // 来源不符时的"塞回去"必须留在锁内
+        assert!(
+            flat.contains("returnErr(\"文件传输来源不匹配\".to_string());}"),
+            "找不到来源不符分支 —— 护栏需要同步更新"
+        );
+        // 摘出来的那份接收器必须**交给核心**，不是就地收尾（就地收尾 = 慢活回到锁的同一作用域）
+        assert!(
+            flat.contains("finish_receiver_into(&state.db,transfer_id,r)"),
+            "包装函数必须把摘出的接收器整体交给 finish_receiver_into —— 自己留着用就是持锁慢活"
+        );
+        let core = rust_fn_body(file, "fn finish_receiver_into(");
+        let core_flat = code_flat(&core);
         for slow in [".sync_all()", "hasher.clone().finalize()"] {
-            let at = flat
-                .find(slow)
-                .unwrap_or_else(|| panic!("找不到慢活锚点 {slow}"));
-            assert!(at > block_end, "{slow} 必须发生在锁块结束之后");
+            assert!(
+                core_flat.contains(slow),
+                "慢活 {slow} 必须在 finish_receiver_into 里（挪走≠删掉，掉了它这份文件永远不会落盘）"
+            );
         }
+        assert!(
+            !core_flat.contains("file_receivers"),
+            "核心函数不得再碰 file_receivers 表：一碰就能把锁写回慢活的作用域（这条是结构性的）"
+        );
     }
 
     /// 群密钥必须**先于**群消息补发，且每次建链 / Hello / 心跳都重新登记（2026-09-24 RC2）。

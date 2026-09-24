@@ -1978,9 +1978,28 @@ pub fn finish_receive(
             None => return Ok(None),
         }
     };
+    finish_receiver_into(&state.db, transfer_id, r).map(Some)
+}
+
+/// 摘出接收器之后的收尾：完整性裁决 → fsync → 改名落盘 → 落库终态。
+///
+/// 三个 `Err` 出口都必须让 `file_transfers` 停在 `failed`（而不是留在 `sending` / `done`）：
+/// ① 字节数与声明的 `size` 不等（丢片/截断）；② 实际 SHA-256 与发送方声明不符
+/// （**含**"发送方没声明"这一种 —— 空期望值不通过，fail-closed）；③ fsync 或 rename 失败。
+/// 这三条合起来就是界面上那句「已收到」的证据，少任何一条都是假成功。
+///
+/// 为什么要独立成一个函数（#25）：它只要一个 `Mutex<Connection>`，不要 `AppState`
+/// （那个要 tauri `AppHandle`，单测造不出来）⇒ 「显示成功是不是真成功」第一次可以拿
+/// **生产码**驱动，而不是像现有几处接收端测试那样各自重写一遍操作序列（生产码改坏它们不红）。
+/// 另外它拿不到 `file_receivers` 那张表 ⇒ "持锁 fsync" 那个形状不可能从这里长回去。
+fn finish_receiver_into(
+    db_lock: &std::sync::Mutex<rusqlite::Connection>,
+    transfer_id: &str,
+    r: FileReceiver,
+) -> Result<(String, u64, PathBuf, String), String> {
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -2002,7 +2021,7 @@ pub fn finish_receive(
         let actual_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
         if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
             let _ = std::fs::remove_file(&r.tmp_path);
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
             db::upsert_transfer(
                 &dbc,
                 transfer_id,
@@ -2021,7 +2040,7 @@ pub fn finish_receive(
     if let Err(e) = r.file.sync_all() {
         let reason = e.to_string();
         let _ = std::fs::remove_file(&r.tmp_path);
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -2039,7 +2058,7 @@ pub fn finish_receive(
     drop(r.file);
     if let Err(e) = std::fs::rename(&r.tmp_path, &r.final_path) {
         let reason = e.to_string();
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -2055,7 +2074,7 @@ pub fn finish_receive(
         return Err(reason);
     }
     {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -2069,12 +2088,12 @@ pub fn finish_receive(
         )
         .ok();
     }
-    Ok(Some((
+    Ok((
         r.name.clone(),
         r.size,
         r.final_path.clone(),
         r.peer_id.clone(),
-    )))
+    ))
 }
 
 /// 递归枚举共享目录树（限制深度 8，跳过隐藏文件）。
@@ -3671,5 +3690,142 @@ mod tests {
             OfferDecision::ResumeFrom(disk),
             "无活跃接收器时仍以 .part 前缀为准（这条是既有行为，锁住别退回去）"
         );
+    }
+
+    /// 造一个"分片已全部收完、只差收尾裁决"的接收器：真的写进一个临时文件，并按写入顺序
+    /// 喂增量哈希（与 `write_chunk` 的操作序列一致）。`declared_size` / `expected` 允许与
+    /// 实收不一致 —— 那正是要验的两种"假成功"。
+    fn receiver_holding(
+        tag: &str,
+        got: &[u8],
+        declared_size: u64,
+        expected: &str,
+    ) -> crate::state::FileReceiver {
+        use std::io::Write;
+        let (mut f, tmp) = temp_part(tag);
+        f.write_all(got).unwrap();
+        use sha2::Digest as _;
+        let mut h = sha2::Sha256::new();
+        h.update(got);
+        let final_path = tmp.with_extension("done");
+        let _ = std::fs::remove_file(&final_path);
+        crate::state::FileReceiver {
+            file: f,
+            name: format!("{tag}.bin"),
+            size: declared_size,
+            received: got.len() as u64,
+            next_seq: 0,
+            attempt: 0,
+            stale_dropped: 0,
+            tmp_path: tmp,
+            final_path,
+            peer_id: "dev-a".into(),
+            last_report_ms: 0,
+            file_key: [7u8; 32],
+            expected_sha256: expected.to_string(),
+            hasher: h,
+        }
+    }
+
+    /// 「界面上那句『已收到』到底是不是真话」—— 直接驱动生产收尾 `finish_receiver_into`（#25）。
+    ///
+    /// 为什么值得单独一条：这条链上真机事故的共同形状就是"显示成功而文件其实不在"
+    /// （R4 的假成功 Ack、A6 的捷径不落终态）。而在此之前的接收端测试全是**影子副本**
+    /// （`receive_one_chunk` / `receive_group_chunk` 各自重写一遍操作序列 —— 生产码被改坏
+    /// 它们照样绿）。`finish_receiver_into` 不要 `AppState`，所以这是第一次能拿真码验。
+    #[test]
+    fn receive_is_done_only_when_size_and_sha_both_prove_it() {
+        use super::finish_receiver_into;
+        use sha2::Digest as _;
+        let payload: Vec<u8> = (0..300u32).map(|i| (i % 251) as u8).collect();
+        let real_sha: String = {
+            let mut h = sha2::Sha256::new();
+            h.update(&payload);
+            h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        };
+        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
+        let row = |id: &str| -> (String, Option<String>) {
+            db.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT status, path FROM file_transfers WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+                )
+                .unwrap_or_else(|e| panic!("{id} 必须留下一行终态，实得 {e}"))
+        };
+
+        // ① 绿路：字节齐 + 哈希对 ⇒ 改名落盘、行是 done 且带真实路径
+        let ok = receiver_holding("rcv-ok", &payload, payload.len() as u64, &real_sha);
+        let (tmp, final_path) = (ok.tmp_path.clone(), ok.final_path.clone());
+        assert!(finish_receiver_into(&db, "t-ok", ok).is_ok());
+        assert!(!tmp.exists(), "临时文件必须被改名带走（留下就是双份）");
+        assert_eq!(
+            std::fs::read(&final_path).unwrap(),
+            payload,
+            "落盘内容必须就是收到的那些字节"
+        );
+        assert_eq!(
+            row("t-ok"),
+            (
+                "done".to_string(),
+                Some(final_path.to_string_lossy().to_string())
+            ),
+            "done 必须同时留下可打开的路径，否则前端只会显示一个不存在的气泡"
+        );
+
+        // ② 少收一片（size 与实收不符）⇒ 不得算成功，且不得把半截文件改名"冒充成品"
+        let short = receiver_holding(
+            "rcv-short",
+            &payload[..payload.len() - 1],
+            payload.len() as u64,
+            &real_sha,
+        );
+        let (tmp, final_path) = (short.tmp_path.clone(), short.final_path.clone());
+        assert_eq!(
+            finish_receiver_into(&db, "t-short", short).err(),
+            Some("文件传输未完成".to_string())
+        );
+        assert!(
+            !tmp.exists(),
+            "半截临时文件必须删掉（它不在任何索引里，留着就是垃圾）"
+        );
+        assert!(!final_path.exists(), "没收完绝不许出现成品文件");
+        assert_eq!(row("t-short"), ("failed".to_string(), None));
+
+        // ③ 分片被改过：长度对、内容错 ⇒ 只有 SHA 抓得住（这就是"分片损坏"的应用层形状）
+        let mut corrupted = payload.clone();
+        corrupted[7] ^= 0xff;
+        let bad = receiver_holding("rcv-bad", &corrupted, payload.len() as u64, &real_sha);
+        let (tmp, final_path) = (bad.tmp_path.clone(), bad.final_path.clone());
+        assert_eq!(
+            finish_receiver_into(&db, "t-bad", bad).err(),
+            Some("文件完整性校验失败".to_string())
+        );
+        assert!(
+            !tmp.exists() && !final_path.exists(),
+            "哈希不过同样不许落盘"
+        );
+        assert_eq!(row("t-bad"), ("failed".to_string(), None));
+
+        // ④ 发送方没声明哈希（空期望）⇒ **fail-closed**：没有期望值不等于通过
+        let nodecl = receiver_holding("rcv-nodecl", &payload, payload.len() as u64, "");
+        assert_eq!(
+            finish_receiver_into(&db, "t-nodecl", nodecl).err(),
+            Some("文件完整性校验失败".to_string()),
+            "空 expected_sha256 必须判失败 —— 否则一条不带哈希的 FileDone 就能宣布成功"
+        );
+        assert_eq!(row("t-nodecl"), ("failed".to_string(), None));
+
+        // ⑤ 大小写不同的 hex 仍是同一个哈希（对端实现差异不得变成"传不过去"）
+        let upper = receiver_holding(
+            "rcv-upper",
+            &payload,
+            payload.len() as u64,
+            &real_sha.to_uppercase(),
+        );
+        assert!(finish_receiver_into(&db, "t-upper", upper).is_ok());
+        assert_eq!(row("t-upper").0, "done");
     }
 }

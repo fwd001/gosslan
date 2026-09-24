@@ -7795,6 +7795,69 @@ mod tests {
         assert!(matches!(high.try_recv(), Ok(Message::Heartbeat { .. })));
     }
 
+    /// **业务隔离**：大文件把 Low 灌满、对端一时不取时，同一条链路上的文本（Normal）与
+    /// 心跳/Ack（High）必须照样送得出去（用户清单 #25 的"大文件失败不得影响其它业务"）。
+    ///
+    /// 为什么上面那条不够：它只证明"分片落在哪个通道"，不证明"分片堵的时候别人还在动"。
+    /// 三级通道若被合成两级（甚至一级），`send_on_link_respects_priority_channels` 依旧全绿，
+    /// 而用户看到的是"传大文件期间聊天一起卡住" —— 与 600MB 复核里"持锁 fsync 堵住并发
+    /// write_chunk"是同一类耦合，只是发生在发送侧。
+    #[tokio::test]
+    async fn saturated_chunk_channel_does_not_stall_text_or_control() {
+        let (link, mut high, mut normal, mut low) = pinned_link(2);
+        assert!(send_on_link(&link, &chunk(0)).await.is_ok());
+        assert!(send_on_link(&link, &chunk(1)).await.is_ok());
+        // 前置条件：Low 确实满了 ⇒ 第 3 片还挂着。没有这一步，后面三条断言是在测空队列。
+        // （`timeout` 丢弃 send 不会留残留片，这条前提由 `timed_out_send_leaves_nothing_behind` 钉着）
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(30),
+                send_on_link(&link, &chunk(2))
+            )
+            .await
+            .is_err(),
+            "前置条件不成立：Low 没满 ⇒ 这条测试没有可判定的对象"
+        );
+        let chat = Message::ChatMessage {
+            msg_id: "m1".into(),
+            from: "a".into(),
+            to: "b".into(),
+            kind: "text".into(),
+            content: "hi".into(),
+            ts: 1,
+            seq: 1,
+        };
+        let sent = tokio::time::timeout(
+            std::time::Duration::from_millis(30),
+            send_on_link(&link, &chat),
+        )
+        .await;
+        assert!(
+            matches!(sent, Ok(Ok(()))),
+            "分片堵塞时文本必须照常送出，实得 {sent:?}"
+        );
+        assert!(
+            matches!(send_on_link(&link, &msg("hb")).await, Ok(())),
+            "分片堵塞时心跳（High）必须照常送出"
+        );
+        // 而且要真的落在各自的通道里 —— 否则"没堵住"只是因为共用了同一个队列
+        assert!(
+            matches!(normal.try_recv(), Ok(Message::ChatMessage { .. })),
+            "文本必须落在 Normal 通道"
+        );
+        assert!(matches!(high.try_recv(), Ok(Message::Heartbeat { .. })));
+        for expect in [0u32, 1] {
+            assert!(
+                matches!(low.try_recv(), Ok(Message::FileChunk { seq, .. }) if seq == expect),
+                "分片必须仍按提交顺序排在 Low 里等着（第 {expect} 片）"
+            );
+        }
+        assert!(
+            low.try_recv().is_err(),
+            "被超时丢弃的第 3 片不得留在队列里（否则续发时它就是重复片，群接收端会判死）"
+        );
+    }
+
     // ---- Hello 握手身份认证（P0 安全修复回归）----
 
     /// 用 `signer` 对其公钥 + 指定字段签名，返回 (x25519_pub, ed25519_pub, sig)。

@@ -385,6 +385,7 @@ network::file::tests::markdown_is_a_document_not_code
 network::file::tests::matching_position_still_accepts_idempotently
 network::file::tests::other_files
 network::file::tests::progress_counts_written_chunks_not_enqueued_bytes
+network::file::tests::receive_is_done_only_when_size_and_sha_both_prove_it
 network::file::tests::receiver_hash_lifecycle_success
 network::file::tests::receiver_hash_mismatch_fails
 network::file::tests::rejects_path_traversal_file_names
@@ -482,6 +483,7 @@ network::transport::tests::route_order_prefers_lan_over_routed_regardless_of_ins
 network::transport::tests::route_order_single_link_is_unchanged
 network::transport::tests::route_order_skips_unhealthy_lan_when_routed_is_healthy
 network::transport::tests::route_order_tolerates_missing_mesh_candidate
+network::transport::tests::saturated_chunk_channel_does_not_stall_text_or_control
 network::transport::tests::send_on_link_backpressures_when_queue_full
 network::transport::tests::send_on_link_errs_immediately_when_closed
 network::transport::tests::send_on_link_respects_priority_channels
