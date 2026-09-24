@@ -394,8 +394,8 @@ CASES: list[Case] = [
         "     注入方式：把 CONTENT_FEATURE_MERGE 从本机广播的位图里摘掉",
         file=TAURI / "src" / "protocol.rs",
         injections=[(
-            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE\n}",
-            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL\n}",
+            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE | CONTENT_FEATURE_FILE_EPOCH\n}",
+            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL | CONTENT_FEATURE_FILE_EPOCH\n}",
         )],
         cmd=cargo("test", "--lib", "every_gated_kind_is_advertised_by_us"),
         cwd=TAURI,
@@ -632,9 +632,13 @@ CASES: list[Case] = [
         name="capability 覆盖每个窗口（漏一个窗口 ACL 会静默拒绝）",
         why="设置窗口曾经不在 capability 的 windows 里，表现为「选目录/订阅事件静默失败」",
         file=TAURI / "capabilities" / "default.json",
-        # 2026-09-17：windows 数组新增了 `todo-*`（群任务窗口是动态 label），锚点随之更新。
+        # 2026-09-24：群任务窗口从动态 label `todo-*` 改成固定的 `tasks`，预览窗口新增 ⇒
+        # 锚点跟着换成现行那一行（锚点过期会被判成"注入 0 次"，等于这条护栏不再被证明）。
         injections=[
-            ('"windows": ["main", "settings", "logs", "todo-*"]', '"windows": ["main", "logs", "todo-*"]')
+            (
+                '"windows": ["main", "settings", "logs", "preview", "tasks"]',
+                '"windows": ["main", "logs", "preview", "tasks"]',
+            )
         ],
         cmd=cargo("test", "--lib", "capability_covers_every_window_label"),
         cwd=TAURI,
@@ -1783,7 +1787,9 @@ CASES: list[Case] = [
         why="外链窗口加载的是**远端页面**；一旦被 capability 覆盖，第三方内容就能调用本应用的"
         "dialog/opener/event 等命令面 —— 等于把本机能力交给用户随手配置的网址",
         file=TAURI / "capabilities" / "default.json",
-        injections=[('"todo-*"', '"todo-*", "link"')],
+        # 锚点=现行 windows 数组的收尾（把外链 label 追加进去就是那条被禁止的回归）。
+        # ⚠️ 别用 `"todo-*"` 当锚点：动态 label 已在 2026-09-24 换成固定的 `tasks`。
+        injections=[('"preview", "tasks"]', '"preview", "tasks", "link"]')],
         cmd=cargo("test", "--lib", "link_window_is_not_capability_covered"),
         cwd=TAURI,
         expect_fail_hint="link",
@@ -1818,35 +1824,45 @@ CASES: list[Case] = [
         tags=["rust", "window"],
     ),
     Case(
-        name="群任务窗口绑定单一群（label 由 groupId 派生）",
-        why="窗口靠**自己的 label** 找回是哪个群，所以前缀必须由常量拼出（写字面量会与前端漂移）；"
-        "groupId 会拼进 label，必须先做字符集/非空校验",
-        file=TAURI / "src" / "commands.rs",
+        name="群任务窗口的 label 取自常量（固定一扇，不用动态 todo-*）",
+        why="预热/复用都建立在「这一扇窗的 label 固定」上（用户 2026-09-24：「可不传参数、后台默默"
+        "先把 WebView 建好，用的时候瞬间激活」）；builder 里另写字面量就会与 `crate::WINDOW_TASKS`"
+        "以及前端启动器那份 `\"tasks\"` 漂移 —— 三方不一致表现为「点了没反应」或「预热的那扇永远等不到」。"
+        "⚠️ 必须同时改坏两处（ensure_aux_window + builder）：护栏看的是**整个函数体**里还有没有常量，"
+        "只换一处仍然绿。",
+        file=TAURI / "src" / "commands" / "logs.rs",
         injections=[
             (
-                'let label = format!("{}{group_id}", crate::WINDOW_GROUP_TODOS_PREFIX);',
-                'let label = "todo".to_string();',
-            )
+                '    ensure_aux_window(\n        app,\n        crate::WINDOW_TASKS,',
+                '    ensure_aux_window(\n        app,\n        "todo-fixed",',
+            ),
+            (
+                '                &build_app,\n                crate::WINDOW_TASKS,',
+                '                &build_app,\n                "todo-fixed",',
+            ),
         ],
-        cmd=cargo("test", "--lib", "group_todos_window_label_derives_from_group_id"),
+        cmd=cargo("test", "--lib", "tasks_window_uses_one_fixed_label_cross_checked_with_frontend"),
         cwd=TAURI,
-        expect_fail_hint="WINDOW_GROUP_TODOS_PREFIX",
+        expect_fail_hint="取自常量",
         tags=["rust", "window", "new-guards"],
     ),
     Case(
         name="群任务窗口不得初始化聊天事件（否则重复通知/未读/回执）",
         why="独立窗口跑聊天 store 的 init 会注册第二套后端事件监听 —— 与主窗口重复，用户会收到"
-        "重复通知、未读数翻倍、群已读回执重复发（见 src/App.vue 顶部说明）",
+        "重复通知、未读数翻倍、群已读回执重复发（见 src/App.vue 顶部说明）。"
+        "2026-09-24 取数搬进根组件后，入口连 `useChatStore` 都不该出现（判据同步收紧），"
+        "所以锚点从原来的 `const chat = useChatStore();` 换成挂载那一行。",
         file=ROOT / "src" / "entries" / "todos.ts",
         injections=[
             (
-                "  const chat = useChatStore();",
-                "  const chat = useChatStore();\n  void chat.init();",
+                "void mountAuxWindow(createWindowApp(GroupTodosWindow), () => useAppStore().init());",
+                "void useChatStore().init();\n"
+                "void mountAuxWindow(createWindowApp(GroupTodosWindow), () => useAppStore().init());",
             )
         ],
         cmd=npm("test"),
         cwd=ROOT,
-        expect_fail_hint="chat.init",
+        expect_fail_hint="不该引用 useChatStore",
         tags=["frontend", "window"],
     ),
     Case(

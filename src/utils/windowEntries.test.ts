@@ -169,13 +169,15 @@ test("辅助窗口的入口不得把聊天那一套拉进来（这是「设置�
       assert.ok(!code.includes(bad), `${entry} 不得调用 ${bad}（独立窗口注册第二套事件监听会重复通知/未读/回执）`);
     }
   }
-  // 聊天组件树：设置/日志窗口完全不该碰；群任务窗口**需要**聊天数据层（它要折叠任务、
-  // 建/改任务），但仍不得挂聊天组件树（ResponsiveLayout/ChatWindow/ConversationList）。
+  // 聊天组件树 / 聊天 store：设置、日志、预览窗口完全不该碰。群任务窗口**确实需要**聊天
+  // 数据层（折叠任务、建/改任务），但那份需求已经从入口搬到根组件 `GroupTodosWindow.vue`
+  // 了（取数搬走是"点了没反应"那次修复的一部分）⇒ 入口连 `useChatStore` 都不该出现：
+  // 留在入口里的唯一用法就是 init/取数，两条都是红线。
   const commonForbidden = ["ResponsiveLayout", "App.vue", "ChatWindow", "ConversationList"];
   const perEntry: Record<string, string[]> = {
     "src/entries/settings.ts": ["useChatStore"],
     "src/entries/logs.ts": ["useChatStore"],
-    "src/entries/todos.ts": [],
+    "src/entries/todos.ts": ["useChatStore"],
     // 预览窗口只按 msgId/cid 自己取字节，连聊天 store 都不需要
     "src/entries/preview.ts": ["useChatStore"],
   };
