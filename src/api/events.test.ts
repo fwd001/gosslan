@@ -448,23 +448,15 @@ function registeredCommands(): string[] {
 
 /**
  * 注册了、但前端一次都不调的命令 —— **逐条写明理由**。
- * 为什么是"挂账"而不是"删掉"：这几条不是空壳，是**实现完整、只差界面**的能力
- * （`recall_message` / `resend_message` / `cancel_send` 各有 4-5 处 `db::` 与 1 处 `emit`，
- * 其中 `resend_message` 还有一条活着的审计护栏 `resend_message_sets_sending_only_after_all_failure_paths`
- * 钉着"所有可失败步骤通过之后才置 sending"的顺序）。删掉它们等于连那条不变量的载体一起删。
- * 所以这里改成机器守住"死接口不再增长"：**新增一条不接界面的命令必须红**。
+ *
+ * **今天这张表是空的，而且必须一直是空的**：0-A3 曾挂过 5 条
+ * （`recall_message` · `resend_message` · `cancel_send` · `send_group_poll` ·
+ * `cast_group_poll_vote`），用户 2026-09-25 拍板删除 ⇒ 现在"注册但不接界面"零容忍，
+ * 新增一条没接界面的命令直接红。
+ *
+ * 真要留一条隐形接口，就得在这里写清"为什么不能接界面"，并想清楚谁为它负责。
  */
-const DEAD_COMMANDS: Record<string, string> = {
-  recall_message:
-    "单聊撤回：实现完整但界面没有入口（撤回目前只有群聊版 recall_group_message）。" +
-    "要恢复它 = 先补 UI，别让它继续当隐形接口",
-  resend_message:
-    "按 msg_id 重投同一条（幂等友好）。界面上的「重发」目前走 chat.send 重发一条**新消息**，" +
-    "所以这条没被调用。它带着审计 1.2 的顺序护栏，删之前先想清楚那条护栏跟谁走",
-  cancel_send: "取消文本发送。界面用的是 cancel_file_transfer（文件），文本没有取消入口",
-  send_group_poll: "投票：线上词表已留 poll / poll_vote（新版本能渲染），但没有任何 UI 能创建",
-  cast_group_poll_vote: "投票：同上，没有 UI 能投票",
-};
+const DEAD_COMMANDS: Record<string, string> = {};
 
 test("IPC 只能从 src/api 门面走（回归：组件里裸 invoke，其中 6 条命令在 api 上根本没有包装）", () => {
   const gate = join(ROOT, "src", "api", "index.ts");

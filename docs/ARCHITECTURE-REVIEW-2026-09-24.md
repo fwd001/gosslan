@@ -252,9 +252,9 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
 | `discovery/routed.rs` | **只剩活的那一半** | `parse_endpoints`/`ROUTED_ENDPOINTS_KEY` 活着（保留）；未接线的 `RoutedDiscovery` 连同 4 条自身测试已于 0-A2 删除。文件头现在直接写明「这里只负责把配置读出来，不负责发现与拨号」 |
 | ✅ `file_relay.rs` **发送侧**整组 API（**0-A2 已删除**，文件 299 → 86 行） | 曾死亡 | `split_bytes/slice_file/slice_file_with/register_send/next_chunk/is_send_done/plan_distribution/ack_chunk/finish_send/progress` 全仓零外部调用 |
 | `MeshRouter::select_outgoing` | 死亡（**故意的**） | `outbound.rs:428` 注释说明不用它做群洪泛；只有 `on_receive`/`exclude_source` 活着 |
-| `send_file` / `send_file_relay` 命令 | 前端不可达 | 前端走 `send_file_auto`（`api/index.ts:203`）；`useChatStore.ts:1553 sendFileRelayTo` 零调用者 |
-| 5 条注册命令 | 零引用 | `recall_message / resend_message / cancel_send / send_group_poll / cast_group_poll_vote`（撤回真实走 `recall_group_message`） |
-| 投票 | 读写不对称 | 渲染侧活（`utils/cardText.ts:46`、`types.ts:71`），**没有任何 UI 能创建或投票** |
+| ✅ `send_file` / `send_file_relay` 命令 | 前端不可达 | 前端走 `send_file_auto`（`api/index.ts:203`）；`useChatStore.ts:1553 sendFileRelayTo` 零调用者。**2026-09-25 判定：不属本次删除范围**（它们是"门面有包装、界面没人调"这一层，比那 5 条深一级）⇒ 已单独记进契约图漂移清单等拍板 |
+| ✅ 5 条注册命令（**2026-09-25 已删除**） | 零引用 | `recall_message / resend_message / cancel_send / send_group_poll / cast_group_poll_vote`（撤回真实走 `recall_group_message`）。注册表 138 → 133 = 前端调用面；两条 `resend_*` 护栏的不变量改记 `docs/protocol-invariants.md` §6 |
+| ✅ 投票 | 读写不对称 | 渲染侧活（`utils/cardText.ts:46`、`types.ts:71`），**没有任何 UI 能创建或投票** ⇒ 两条发起命令已删，词表与渲染保留（老消息与对端新版本仍要能显示） |
 | `lib.rs:561-615 all_commands_src()` | **靠人记得登记**（今天恰好是全的） | 实测三份视图的分册数：commands 24 / db 16 / transport 3，**都等于各自的 `include!` 闭包减去 `*_tests.rs`**。所以这不是"已经漏了"，而是"漏了不会红"：它已经漏过两次（4.25.0 接线中继时 `commands/relay.rs` 与 `transport/relay.rs` 都只登记了 `include!` 与领域图，现场注释在 `lib.rs:611-613`、`network/mod.rs:229-231`），而漏登记的后果是**静默假绿** —— 以"全部命令面"为判据的守卫扫不到那个分册，永远通过 |
 | `useChatStore` 的 7 个导出 | 冗余导出（内部仍在用） | `groupReads/resetAfterDataCleared/refreshTopology/refreshAnnouncements/handleSelfRemovedFromGroup/sendFileRelayTo/enqueueMessage` 外部零引用 |
 | 5 个 `src/utils/*.ts` | 只被自己的测试引用 | `a11yLabels/cn/designGuards/templateBranches/tokenContrast`（`cn(` 从未被调用） |
@@ -362,7 +362,7 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
 |---|---|---|
 | ~~0-A1~~ **已完成**（`CHANGELOG` 的 2026-09-24 Test 小节）：新增守卫 `guard_source_views_register_every_include_subfile`，从入口文件递归展开 `include!` 得到编译器的真实集合，与守卫登记清单**双向比**（少登记=假绿、多登记=假红，两个方向都红），每个用例配一枚自己的 canary | 护栏 | 三条变异证明全部「改坏即 FAIL、恢复即 PASS」并已登记进 `verify-guards.py`。**这一步排在最前**：它决定第 1–7 步所有源码守卫的证据是否可信 |
 | ✅ **0-A2 已完成** | 死实现 | 删了 `discovery/{trait,manager,lan}.rs` + `RoutedDiscovery`；`transport/mod.rs` 的 `Transport`/`route`/`route_payload`/`Channel`/`LARGE_PAYLOAD_THRESHOLD`（并把 `lan.rs`/`bluetooth.rs` 的 trait impl 收成固有 impl）；`file_relay.rs` 发送侧整组。`MeshRouter::select_outgoing` **不标 deprecated、也不加 `#[allow(dead_code)]`**，而是写清「生产不走 + 为什么」（那个 allow 会静音编译器本会给的提示，正是 `transport/bluetooth.rs` 头部注释警告过的机制）。同步了 `domains.data.mjs` notes、`migration-ledger.md` 第 1/4/8/9 行与统计与 §2、契约图对应条目 |
-| 0-A3 5 条零引用命令 + 投票读写不对称：删接口或明确标"未接线"，并把 `get_group_file_delivery_summary` 等 6 条补上 `api` 包装 | IPC 契约 | 契约图与 `generate_handler!` 差集为空 |
+| ✅ **0-A3 已完成（含 2026-09-25 的删除拍板）** | IPC 契约 | 10 处旁路 invoke 全收进 `src/api` 门面并补 6 条包装（`copy_file`/`copy_file_to_clipboard`/`save_data_file`/`read_clipboard_file_paths`/`get_group_file_delivery_summary`/`log_frontend_error`）；两条新守卫（门面唯一性 · 注册表逐条对账）；那 5 条零引用命令**已连实现删除** ⇒ `DEAD_COMMANDS` 白名单为空、`generate_handler!` 133 条与前端调用面差集为空。⚠️ 顺带暴露更深一级：**5 条包装没有 UI 调用点**（`send_file`/`send_file_relay`/`search_messages`/`get_interface_candidates`/`close_log_window`），对账守卫只比"注册↔门面"，看不见这层 ⇒ 待拍板 |
 
 **0-B 数据库索引 —— 低风险但**不是**零风险：走迁移路径、有写放大、影响启动耗时，必须单独验证。**
 

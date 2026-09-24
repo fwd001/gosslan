@@ -38,8 +38,6 @@ pub async fn send_group_message(
 const MAX_TODO_TITLE_LEN: usize = 200;
 /// 群任务描述上限：长文本说明，但仍要受控（避免单条任务撑爆事件日志）。
 const MAX_TODO_DESC_LEN: usize = 4000;
-/// 投票选项数上限（下标要能塞进 u32 且 UI 排得下）。
-const MAX_POLL_OPTIONS: usize = 10;
 
 /// 创建一条群任务（任意成员）。
 ///
@@ -430,61 +428,6 @@ pub async fn update_group_todo(
     // 不该给全群记未读、弹通知（创建才该）。两者载荷同构、折叠也是同一条 LWW 规则，
     // 区别只在通知口径 —— 详见 `protocol.rs` 的 `WIRE_KINDS` 注释。
     send_group_payload(s, &group_id, "todo_update", content).await
-}
-
-/// 发起投票（任意成员）。
-#[tauri::command(async)]
-pub async fn send_group_poll(
-    state: State<'_, Arc<AppState>>,
-    group_id: String,
-    question: String,
-    options: Vec<String>,
-    multi: bool,
-) -> Result<MessageRecord, String> {
-    let s = state.inner();
-    let question = question.trim().to_string();
-    let options: Vec<String> = options
-        .into_iter()
-        .map(|o| o.trim().to_string())
-        .filter(|o| !o.is_empty())
-        .collect();
-    if question.is_empty() {
-        return Err("投票主题不能为空".to_string());
-    }
-    if options.len() < 2 {
-        return Err("至少需要两个选项".to_string());
-    }
-    if options.len() > MAX_POLL_OPTIONS {
-        return Err(format!("最多 {MAX_POLL_OPTIONS} 个选项"));
-    }
-    let payload = crate::protocol::PollPayload {
-        poll_id: format!("poll-{}", Uuid::new_v4()),
-        question,
-        options,
-        multi,
-        closed: false,
-        creator: s.device_id.clone(),
-    };
-    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    send_group_payload(s, &group_id, "poll", content).await
-}
-
-/// 投票 / 改票 / 撤票（任意成员；每人只写自己那一格）。
-/// 撤票就是传空的 `choices`。
-#[tauri::command(async)]
-pub async fn cast_group_poll_vote(
-    state: State<'_, Arc<AppState>>,
-    group_id: String,
-    poll_id: String,
-    choices: Vec<u32>,
-) -> Result<MessageRecord, String> {
-    let s = state.inner();
-    if poll_id.is_empty() {
-        return Err("缺少投票标识".to_string());
-    }
-    let content = serde_json::to_string(&crate::protocol::PollVotePayload { poll_id, choices })
-        .map_err(|e| e.to_string())?;
-    send_group_payload(s, &group_id, "poll_vote", content).await
 }
 
 /// 发布群公告（**仅群主**）。

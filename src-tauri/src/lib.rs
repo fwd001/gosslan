@@ -432,9 +432,6 @@ pub fn run() {
             commands::send_friend_request,
             commands::respond_friend_request,
             commands::send_message,
-            commands::cancel_send,
-            commands::resend_message,
-            commands::recall_message,
             commands::get_messages,
             commands::get_conv_link,
             commands::get_message_count,
@@ -464,8 +461,6 @@ pub fn run() {
             commands::send_group_announcement,
             commands::send_group_todo,
             commands::update_group_todo,
-            commands::send_group_poll,
-            commands::cast_group_poll_vote,
             commands::send_group_file,
             commands::send_todo_image,
             commands::todo_image_meta,
@@ -3427,42 +3422,6 @@ mod tests {
         );
     }
 
-    /// `resend_message` 只在**所有可失败步骤通过之后**才把状态置为 sending（审计 1.2）。
-    ///
-    /// 后果链：旧顺序先 `set_message_status("sending")` 再判群聊/取公钥/密钥交换/加密，
-    /// 这些路径失败时不回滚 ⇒ 状态永久卡 sending，而重发入口的守卫
-    /// （`"sending" | "sent" => Err`）又把它挡死 ⇒ 这条消息**永远发不出去**，
-    /// outbox 也从未写入。触发条件是对任何失败的群消息点重发（必现）。
-    ///
-    /// 判据：函数体内所有报错返回的锚点（群消息提示 / 只能重发自己 / 公钥缺失 /
-    /// 密钥交换失败 / 加密失败 / to_string）都必须排在 `set_message_status("sending")`
-    /// **之前** —— 置位之后不允许再有任何失败返回。
-    #[test]
-    fn resend_message_sets_sending_only_after_all_failure_paths() {
-        let src = include_str!("commands/chat.rs");
-        let body = rust_fn_body(src, "pub async fn resend_message(");
-        let sending_write = body
-            .find("set_message_status(&dbc, &msg_id, \"sending\")")
-            .expect("resend_message 必须仍有一次 sending 写入");
-        for anchor in [
-            "群消息重发请删除后重新发送",
-            "只能重发自己发出的消息",
-            "尚未获取",
-            "密钥交换失败",
-            "加密失败",
-            "serde_json::to_string",
-        ] {
-            let pos = body
-                .find(anchor)
-                .unwrap_or_else(|| panic!("resend_message 里找不到锚点 `{anchor}` —— 护栏需同步"));
-            assert!(
-                pos < sending_write,
-                "`{anchor}` 出现在置 sending 之后：这条失败路径会把消息永久卡在 sending\
-                 （重试入口又被 sending 守卫挡死）—— 审计 1.2"
-            );
-        }
-    }
-
     /// 中继收文件的完整性校验必须对**按 seq 组装出的明文一次性**计算（审计 1.8）。
     ///
     /// 后果链：旧实现逐片"到达即喂"增量哈希 —— 但中继链路分片天然**重复**（多邻居
@@ -4114,36 +4073,6 @@ mod tests {
         assert!(
             body.contains("db::insert_message("),
             "自聊消息必须只落本地库（`db::insert_message`）"
-        );
-    }
-
-    /// 单聊重发必须先重新密封再入队（2026-09-19 P0 回归护栏）。
-    ///
-    /// 为什么必须守：`messages` 表存的是**明文**（见 send_message 的「本地落库（明文）」），
-    /// resend 若直接把 `rec.content` 当线上内容，就没有 `enc1:` 前缀 ⇒
-    /// 接收端 `open_direct_content` 拒收（不落库、不 Ack）⇒ 重发实际是 no-op，
-    /// 那一行 outbox 还会被 sweeper 再次判 failed —— 用户看到的是「点重发没反应」。
-    /// 同理 `seq: 0` 会让接收端把重发消息排到会话最前（排序按 seq，INV-P09），两端顺序分裂。
-    /// 两侧都能「正常加密」，普通单测测不出来，只能源码护栏钉死。
-    #[test]
-    fn resend_reseals_before_enqueue() {
-        let commands = all_commands_src();
-        let body = rust_fn_body(commands, "async fn resend_message(");
-        assert!(
-            !body.is_empty(),
-            "找不到 resend_message（这条护栏会变成空转）"
-        );
-        assert!(
-            !body.contains("content: rec.content.clone()"),
-            "重发不得把库内明文直接上线：没有 enc1: 前缀接收端会拒收"
-        );
-        assert!(
-            !body.contains("seq: 0"),
-            "重发必须沿用原逻辑 seq：seq=0 会让接收端排到会话最前（INV-P09）"
-        );
-        assert!(
-            body.contains("crypto::seal") && body.contains("enc1:"),
-            "重发必须用对端当前公钥重新密封（crypto::seal + enc1: 前缀），与 send_message 同口径"
         );
     }
 

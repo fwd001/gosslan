@@ -118,7 +118,7 @@ pub fn get_message_preview_source(conn: &Connection, msg_id: &str) -> Option<(St
     .flatten()
 }
 
-/// 按 msg_id 取完整消息记录（cancel_send / resend_message 等需要跨字段判断时用）。
+/// 按 msg_id 取完整消息记录（需要跨字段判断时用；今天只有 `network/file.rs` 认领续传用它）。
 pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageRecord> {
     conn.query_row(
         "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
@@ -165,8 +165,9 @@ pub fn get_favorite_source(
 /// 更新单条消息状态。**硬终态不可逆**：`read`（已读回执）、`delivered`（Ack）、
 /// `recalled`（被撤回）一旦写入，任何后续 set 都会被拒绝。
 ///
-/// 注意：`failed` 和 `cancelled` 是**软终态**（可通过 resend_message 回到 sending），
-/// 所以它们**不在** NOT IN 里 — sweeper 判 failed 后用户还能点重发。
+/// 注意：`failed` 和 `cancelled` 是**软终态**，所以它们**不在** NOT IN 里 ——
+/// outbox 补发成功要把 `failed` 往前推成 `sent`，卡在 failed 的行还要能被清扫器扫到。
+/// （原先写在这里的理由「可通过 resend_message 回到 sending」已失效：那条命令 2026-09-25 删了。）
 ///
 /// 典型竞态：Ack 因 outbox 补发晚于 ReadReceipt 到达，`read` 不能被回退成 `delivered`。
 pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Result<()> {

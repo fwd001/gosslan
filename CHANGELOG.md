@@ -10,6 +10,42 @@
 
 ## [Unreleased]
 
+### Removed (2026-09-25 · 0-A3 收尾：5 条零引用命令按拍板删掉)
+
+上一条 0-A3 只做了挂账，用户 2026-09-25 拍板「都删」⇒ 隐形接口清零。
+**注册表 138 → 133，与前端调用面正好相等**，`DEAD_COMMANDS` 白名单现在是空的
+（此后新增一条不接界面的命令直接红，零容忍）。
+
+- **`commands/chat.rs` 尾部 271 行删除**：`cancel_send` / `resend_message` / `recall_message`
+  （连同文件头的职责边界注释一起改：这里从此不声称管「撤回」）。
+  `commands/group_files.rs` 删 `send_group_poll` / `cast_group_poll_vote` + 随之孤立的
+  `MAX_POLL_OPTIONS`（留着就是 clippy `-D warnings` 的 dead_code 红）。
+- **两条源码护栏跟着删**（它们钉的是被删函数的体）：
+  `resend_message_sets_sending_only_after_all_failure_paths`（审计 1.2「所有可失败步骤通过
+  之后才置 sending」）、`resend_reseals_before_enqueue`（2026-09-19 P0「先重新密封再入队、
+  seq 必须沿用原记录」）。**这两条知识没有丢**：改记在
+  `docs/protocol-invariants.md` §6，并明确写出"界面上的重发是已知例外" —— 它按 INV-P06
+  生成的是**新** `msg_id`，不是重投。将来谁真要做「按原 id 重投」，必须把这两条连实现一起带回。
+- **两个死监听删除**：`message-cancelled` / `message-resending` 的唯一发射点就在被删命令里。
+  顺序是刻意反着走的：先清空白名单跑红（守卫点名这 5 条），再删实现 ——
+  「前端监听的事件必须真的有人发」这条守卫只会在发射点先消失时红。
+- **保留的三样**（判过才留，不是没看见）：
+  ① `poll` / `poll_vote` 的**线上词表与渲染**（老消息与对端新版本仍要能显示），只是本端不再产生新投票；
+  ② `messages.status = 'cancelled'`（`cancel_file_transfer` 至今在写它，且老库里已有这类行）——
+  `db::set_message_status` 那句"为什么 failed/cancelled 是软终态"的注释已改成指向活理由；
+  ③ 群聊版撤回 `recall_group_message`（界面在用）。
+- **非空转证据**：清空白名单后守卫报
+  `新增了注册但前端从不调用的命令：cancel_send, cast_group_poll_vote, recall_message, resend_message, send_group_poll`，
+  与 `generate_handler!` 差集逐字一致。Rust 测试基线 663 → **661**（少那两条护栏），
+  前端 **588** 条不变。
+- **顺带查出的下一层（未动，等拍板）**：门面收成一道缝之后才看得见 ——
+  有 **5 条包装没有任何 UI 调用点**：`sendFile(send_file)` · `sendFileRelay(send_file_relay)` ·
+  `searchMessages(search_messages)` · `getInterfaceCandidates(get_interface_candidates)` ·
+  `closeLogWindow(close_log_window)`。对账守卫看不见这一层（它比的是"注册表 vs 门面"，
+  不是"门面 vs 界面"）。逐条手核过：活的是 `sendFileAuto` 与 `searchChatHistory`；
+  `openImagePreview` / `getGroupTodosContext` 是**假阳性**（调用点跨行写成 `api` 换行 `.name()`，
+  单行正则会被骗 —— 所以这 5 条是按名字逐个 grep 确认的，不是脚本数出来的）。
+
 ## [4.29.34] - 2026-09-25
 
 ### Refactor (2026-09-25 · 架构改造 0-A3：把 IPC 收成一道缝，并让它可对账)

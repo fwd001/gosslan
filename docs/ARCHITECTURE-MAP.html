@@ -226,7 +226,7 @@
 <header class="top">
   <div class="brand">
     <h1>Gosslan 架构与接口契约图</h1>
-    <span class="meta">v4.29.32 · HEAD <code>736e7c5</code> · 取数 2026-09-24 · 6 扇窗口 / 138 条 IPC 命令 / 31 个后端事件 / 19 张表 / 11 个领域</span>
+    <span class="meta">v4.29.34 · HEAD <code>417ba37</code> · 取数 2026-09-25 · 6 扇窗口 / 133 条 IPC 命令 / 29 个后端事件 / 19 张表 / 11 个领域</span>
   </div>
   <nav class="tabs" role="tablist" id="tabs"></nav>
 </header>
@@ -258,7 +258,7 @@
   <!-- ③ 接口规则表 -->
   <section class="tab" id="t-api" role="tabpanel">
     <p class="lede">
-      138 条 <b>输入 → 输出</b> 规则，按后端定义处（<code>src-tauri/src/commands/&lt;模块&gt;.rs</code>）分组。<b>输入/输出两列是从 Rust 函数签名直接抽的</b>（<code>str</code>=String、<code>int</code>=i64/u32、<code>X?</code>=Option、<code>X[]</code>=Vec、<code>|err</code>=Result 的错误分支），<b>语义列是判"是否符合需求"的地方</b>。
+      133 条 <b>输入 → 输出</b> 规则，按后端定义处（<code>src-tauri/src/commands/&lt;模块&gt;.rs</code>）分组。<b>输入/输出两列是从 Rust 函数签名直接抽的</b>（<code>str</code>=String、<code>int</code>=i64/u32、<code>X?</code>=Option、<code>X[]</code>=Vec、<code>|err</code>=Result 的错误分支），<b>语义列是判"是否符合需求"的地方</b>。
       前端另有 33 个事件把状态推回去，见"事件契约"。
     </p>
     <div class="filters" id="apifilters"></div>
@@ -272,7 +272,7 @@
 
   <!-- ④ 事件契约 -->
   <section class="tab" id="t-evt" role="tabpanel">
-    <p class="lede">后端 → 前端的<b>唯一反向通道</b>：31 个事件名，同类合并成 29 行。这张表是判"某个状态变化界面看不看得到"的清单：一条状态改动如果没有对应事件，常驻窗口就永远停在旧快照（这类退化本仓库真踩过：设置窗口改语言/主题后主窗不刷新）。</p>
+    <p class="lede">后端 → 前端的<b>唯一反向通道</b>：29 个事件名，同类合并成 28 行。这张表是判"某个状态变化界面看不看得到"的清单：一条状态改动如果没有对应事件，常驻窗口就永远停在旧快照（这类退化本仓库真踩过：设置窗口改语言/主题后主窗不刷新）。</p>
     <div class="tablewrap"><table id="evttable"><thead><tr><th>事件</th><th>载荷</th><th>谁发 / 何时</th><th>谁收（消费者）</th><th>范围</th></tr></thead><tbody></tbody></table></div>
   </section>
 
@@ -295,7 +295,7 @@
 </main>
 
 <footer>
-  生成口径：接口表来自 <code>src-tauri/src/lib.rs</code> 的 <code>generate_handler!</code>（138 条）与 <code>src/api/index.ts</code> 的 <code>invoke</code>/<code>listen</code> 实测交叉；表结构来自 <code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量（18 张）+ <code>content/store.rs</code> 的 <code>ensure_schema</code>（1 张）。<code>src-tauri/schema.sql</code> 只是文档参考、已落后（缺 5 张表与 <code>conversations.pinned</code>），<b>不要拿它当事实</b>。
+  生成口径：接口表来自 <code>src-tauri/src/lib.rs</code> 的 <code>generate_handler!</code>（133 条）与 <code>src/api/index.ts</code> 的 <code>invoke</code>/<code>listen</code> 实测交叉；表结构来自 <code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量（18 张）+ <code>content/store.rs</code> 的 <code>ensure_schema</code>（1 张）。<code>src-tauri/schema.sql</code> 只是文档参考、已落后（缺 5 张表与 <code>conversations.pinned</code>），<b>不要拿它当事实</b>。
 </footer>
 
 <script>
@@ -409,7 +409,7 @@ const MODS = [
     data: ["opening: Set<label> 单飞 + lastLaunchAt 防抖（模块作用域，全应用共享一份）"] },
 
   /* ───────────── ② IPC 契约层 ───────────── */
-  { id: "api-invoke", l: "ipc", n: "api.invoke 面", s: "src/api/index.ts 的一个平面对象", cnt: "133 条包装 = 前端全部调用面",
+  { id: "api-invoke", l: "ipc", n: "api.invoke 面", s: "src/api/index.ts 的一个平面对象", cnt: "133 条包装 = 注册表 1:1",
     role: "<b>前端唯一</b>碰 <code>@tauri-apps/api/core</code> 的地方 —— 0-A3 起这句话<b>有守卫兜</b>（src/ 下任何其它文件出现该 import 就必须红，静态与动态 import 都算）。约定：参数写 camelCase，Rust 侧 snake_case 自动转；返回用 <code>invoke&lt;T&gt;</code> 泛型；<b>错误不集中吞</b>，由调用方决定 toast。",
     files: ["src/api/index.ts"],
     in: ["组件/store 的方法调用（带 TS 类型）"],
@@ -424,12 +424,12 @@ const MODS = [
 
   /* ───────────── ③ 命令装配层 ───────────── */
   { id: "cmd-chat", l: "cmd", n: "单聊命令", s: "chat · chat_search", fm: ["chat", "chat_search"],
-    role: "发单聊/撤回/已读/删除/搜索/内容请求。<b>自聊走纯本地路径</b>（不进 outbox、不 gossip、不加密）。",
+    role: "发单聊/已读/删除/搜索/内容请求。<b>自聊走纯本地路径</b>（不进 outbox、不 gossip、不加密）。⚠️ <b>这里没有「撤回」和「重发」</b>：单聊版两条命令 2026-09-25 已删（前端从未调用），撤回只有群聊版 <code>recall_group_message</code>，界面上的「重发」= <code>chat.send</code> 重发一条<b>新消息</b>（详见 <code>protocol-invariants.md</code> §6）。",
     in: ["friend_id str, content str, kind str ← api-invoke", "身份与密钥 ← 领域层（身份域 + peers/friends 表）"],
     out: ["MessageRecord → messages + outbox", "ensure_link / try_send → 传输域", "emit(message-acked 等) → api-evt"],
     data: ["≤50 000 字符拒断不截断", "能力位门禁：kind_required_feature / kind_allowed_by_features"] },
   { id: "cmd-group", l: "cmd", n: "群命令（含卡片载荷）", s: "groups · group_files · group_announcements · todo/dispatch/keys", fm: ["groups", "group_files", "group_announcements", "group_todo_media", "group_file_dispatch", "group_file_keys"],
-    role: "成员与群密钥生命周期；公告/任务/投票/合并等卡片载荷统一走 <code>send_group_payload</code>；群文件按<b>每收件人一行</b>推进度。",
+    role: "成员与群密钥生命周期；公告/任务等卡片载荷统一走 <code>send_group_payload</code>（<code>poll</code> / <code>poll_vote</code> 的<b>接收与渲染仍在</b>，但两条发起命令 2026-09-25 已删 ⇒ 本端不再产生新投票）；群文件按<b>每收件人一行</b>推进度。",
     in: ["groupId + 成员表 ← groups", "群密钥 ← state.group_keys（gk:{group_id}）", "封装后的文件密钥 ← gfk:{transfer_id}（明文只活在内存）"],
     out: ["group_outbox 每人一行 → 离线补发", "GossipEnvelope(Group) → gossip 域", "group_files / group_file_recipients 状态行"],
     data: ["scope=chat|todo + todo_id（任务图与聊天图同表不同域）", "msg_id 前缀 file- / gfile-"] },
@@ -622,7 +622,6 @@ const CMDS = [
   ["get_runtime_snapshot", "channel", "", "RuntimeSnapshot|err"],
   ["set_cache_policy", "channel", "retention_days int?; max_bytes int?", "()|err"],
   ["set_channel_enabled", "channel", "channel str; enabled bool", "RuntimeSnapshot|err"],
-  ["cancel_send", "chat", "msg_id str", "()|err"],
   ["delete_conversation", "chat", "conv_id str", "()|err"],
   ["ensure_conversation", "chat", "friend_id str", "Conversation|err"],
   ["get_conv_link", "chat", "conv_id str", "LinkState?|err"],
@@ -630,8 +629,6 @@ const CMDS = [
   ["get_message_count", "chat", "conv_id str", "int"],
   ["get_messages", "chat", "conv_id str; limit int?; offset int?", "MessageRecord[]"],
   ["mark_read", "chat", "conv_id str", "()|err"],
-  ["recall_message", "chat", "friend_id str; msg_id str", "()|err"],
-  ["resend_message", "chat", "msg_id str", "()|err"],
   ["send_message", "chat", "friend_id str; content str; kind str", "MessageRecord|err"],
   ["set_conversation_pinned", "chat", "conv_id str; pinned bool", "()|err"],
   ["search_chat_history", "chat_search", "keyword str; sender_id str?; since_ms int?; until_ms int?", "ChatSearchGroup[]|err"],
@@ -673,11 +670,9 @@ const CMDS = [
   ["send_group_file", "group_announcements", "group_id str; path str; scope str?; todo_id str?", "str|err"],
   ["send_group_reaction", "group_announcements", "group_id str; target str; emoji str; add bool", "MessageRecord|err"],
   ["send_todo_image", "group_announcements", "group_id str; todo_id str; path str", "str|err"],
-  ["cast_group_poll_vote", "group_files", "group_id str; poll_id str; choices int[]", "MessageRecord|err"],
   ["delete_group_announcement", "group_files", "group_id str; ann_id str", "MessageRecord|err"],
   ["send_group_announcement", "group_files", "group_id str; text str", "MessageRecord|err"],
   ["send_group_message", "group_files", "group_id str; content str; kind str", "MessageRecord|err"],
-  ["send_group_poll", "group_files", "group_id str; question str; options str[]; multi bool", "MessageRecord|err"],
   ["send_group_todo", "group_files", "group_id str; title str; assignees str[]; description str?; images TodoImage[]?", "MessageRecord|err"],
   ["update_group_todo", "group_files", "group_id str; todo_id str; title str; assignees str[]; status str; deleted bool; description str?; images TodoImage[]?; archived bool?", "MessageRecord|err"],
   ["save_todo_image_bytes", "group_todo_media", "request Request<'_>", "str|err"],
@@ -767,9 +762,6 @@ const SEM = {
   set_conversation_pinned: { d: "置顶。<b>纯本地语义，不广播给对方</b>。" },
   delete_conversation: { d: "清空该会话。<b>只删 Bubble 类 kind</b>：群公告、任务这类 Card/Silent 不属于「聊天历史」，顺手删掉是错误语义。手写级联（无外键）。", w: "messages · outbox · group_outbox · file_outbox · group_recalled_messages" },
   get_conv_link: { d: "该会话当前链路 <code>{path, hop}</code> —— <b>界面链路徽标的唯一来源</b>，绝不从「没有 IP」反推通道。" },
-  recall_message: { d: "单聊撤回。<b>前端没有调用点</b>（撤回目前只有群聊实现：<code>chat.recallMessage</code> 调的是 <code>recall_group_message</code>）。", n: "前端零引用", k: "warn", dead: true },
-  resend_message: { d: "手动重投。<b>重投实际由 outbox flush 自动做</b>，前端没有调用点。", n: "前端零引用", k: "warn", dead: true },
-  cancel_send: { d: "取消发送。<b>前端用的是 <code>cancel_file_transfer</code></b>，这条没有调用点。", n: "前端零引用", k: "warn", dead: true },
 
   /* ── commands/chat_search.rs ── */
   search_messages: { d: "旧版关键词搜索，返回命中行（会话名 + 命中内容 + msg_id）。" },
@@ -829,8 +821,6 @@ const SEM = {
   send_group_todo: { d: "建任务。<code>kind=todo</code> 属 <b>Card 类</b>（计未读、通知被指派人）。", w: "messages(JSON)" },
   update_group_todo: { d: "改任务（标题 / 指派 / 状态 / 归档 / 删除 / 图片）。<code>kind=todo_update</code> 属 <b>Silent 类</b>：不通知。⚠️ <b>状态存在 JSON content 里，不是表列</b>，读的时候由 <code>foldTodos</code> 折叠。" },
   delete_group_announcement: { d: "删公告（<code>announcement_delete</code>）。" },
-  send_group_poll: { d: "发起投票。<b>线上词表已留 poll / poll_vote，但 UI 未实现 ⇒ 无调用点</b>。", n: "前端零引用", k: "warn", dead: true },
-  cast_group_poll_vote: { d: "投票。同上，<b>没有调用点</b>。", n: "前端零引用", k: "warn", dead: true },
 
   /* ── commands/group_todo_media.rs ── */
   save_todo_image_bytes: { d: "保存粘贴 / 拖入的图片字节。<b>全仓唯一「不包对象、直接传 <code>Uint8Array</code> 当请求体」的命令</b>（省掉 base64 一次膨胀）。" },
@@ -947,7 +937,6 @@ const EVENTS = [
   ["group-message-acked", "{msg_id}", "群成员回 GroupAck，删掉<b>那一个成员</b>的 group_outbox 行", "同上（共用一个处理）", "全体窗口"],
   ["message-status-changed", "msg_id str", "状态被外部改动（补发、重投、取消）", "onMessageStatusChanged", "全体窗口"],
   ["message-failed", "msg_id str", "<b>只有过期清扫器</b>写 failed（可达超 120s / 群与文件 30min）", "气泡转失败 + toast", "全体窗口"],
-  ["message-cancelled · message-resending", "msg_id str", "用户取消 / 自动重投开始", "onMessageStatusChanged", "全体窗口"],
   ["message-recalled", "msg_id str", "撤回落 <code>group_recalled_messages</code> 并物化之后", "从时间线摘掉那一条", "全体窗口"],
   ["peer-read", "PeerReadInfo", "对端已读回执到达（发不出去先攒 <code>pending_reads</code>，建链/心跳补发）", "已读单勾变双勾", "全体窗口"],
   ["group-read", "GroupReadInfo", "群成员读位置前进（高水位，只增）", "chat.groupReads → 已读列表", "全体窗口"],
@@ -1127,7 +1116,8 @@ const DOMAINS = [
 ];
 const DRIFT = [
   ["✅ <b>10 处 invoke 绕过 <code>api</code> 门面</b>（0-A3 已收拢）", "<code>boot.ts</code>(focus_window, log_frontend_error)、<code>localFile.ts</code>(copy_file)、<code>MessageItem.vue</code>(request_content / get_group_file_delivery_summary / save_data_file / cancel_file_transfer / copy_file_to_clipboard)、<code>FavoritePanel.vue</code>、<code>MessageComposer.vue</code> + <code>GroupTasksBoard.vue</code>(read_clipboard_file_paths)、<code>ImageLightbox.vue</code>、<code>GroupFilesPanel.vue</code>、<code>SettingsWindow.vue</code>(close_settings_window) —— 全部改走门面，<b>现在为 0</b>", "原本的风险不是「不工作」而是<b>契约表画不全</b>：其中 6 条（copy_file · copy_file_to_clipboard · save_data_file · read_clipboard_file_paths · get_group_file_delivery_summary · log_frontend_error）在 api 上根本没有包装 ⇒ 只读 <code>src/api/index.ts</code> 会漏掉一整截真实接口面。6 条包装已补齐，并把「除本文件外不得 import core」写成守卫（静态与动态 import 都算）"],
-  ["<b>5 条命令注册了但前端零引用</b> —— 已挂账，未删", "<code>generate_handler!</code> 实数 138，前端 <code>invoke(\"…\")</code> 实数 133；差集：<code>recall_message · resend_message · cancel_send · send_group_poll · cast_group_poll_vote</code>，现由 <code>src/api/events.test.ts</code> 的 <code>DEAD_COMMANDS</code> 白名单逐条钉住（新增一条未挂账的即红）", "复审原文是「要么补界面，要么删接口」。0-A3 <b>只做了挂账</b>：① <code>resend_message</code> 带一条活护栏（<code>lib.rs</code> 的 <code>resend_message_sets_sending_only_after_all_failure_paths</code>），删它等于连护栏一起删；② 三条 chat 命令是完整实现而非半成品；③ 投票两条是「词表已在线上跑、UI 未做」。<b>删除仍是待拍板项</b>，不是已决"],
+  ["门面之下一层：<b>5 条包装没有 UI 调用点</b>（未动，等拍板）", "<code>sendFile(send_file)</code> · <code>sendFileRelay(send_file_relay)</code>（唯一入口 <code>useChatStore.sendFileRelayTo</code> 也零调用）· <code>searchMessages(search_messages)</code>（界面用的是 <code>searchChatHistory</code>）· <code>getInterfaceCandidates</code> · <code>closeLogWindow</code>", "对账守卫<b>看不见这一层</b>：它比的是「注册表 vs 门面」，不是「门面 vs 界面」。⇒ 想再收一层要么删掉这 5 条（连带后端实现），要么把守卫升级成三段对账（注册 ↔ 门面 ↔ 调用点）。逐个 grep 确认过，<b>不含</b>跨行写法造成的假阳性（<code>openImagePreview</code> / <code>getGroupTodosContext</code> 的真调用点写成 <code>api</code> 换行 <code>.name()</code>，单行正则会把它们误报成死代码）"],
+  ["✅ <b>5 条注册了但前端零引用的命令已删除</b>（2026-09-25 用户拍板）", "<code>recall_message · resend_message · cancel_send · send_group_poll · cast_group_poll_vote</code> 连同实现一起删（<code>commands/chat.rs</code> 尾部 271 行、<code>group_files.rs</code> 两条投票命令 + 孤立的 <code>MAX_POLL_OPTIONS</code>）。注册表 138 → 133，与前端调用面<b>正好相等</b>", "跟着走的还有两条源码护栏（<code>resend_message_sets_sending_only_after_all_failure_paths</code> / <code>resend_reseals_before_enqueue</code>）与两个死监听（<code>message-cancelled</code> / <code>message-resending</code>）—— 那两条不变量没有丢，改记在 <code>docs/protocol-invariants.md</code> §6「界面上的重发是已知例外」。<b>已保留的部分</b>：<code>poll</code> / <code>poll_vote</code> 的线上词表与渲染、<code>cancelled</code> 状态（文件取消仍在写它，且老库里已有这类行）、群聊版撤回 <code>recall_group_message</code>。此后 <code>DEAD_COMMANDS</code> 白名单为空 ⇒ <b>再注册一条不接界面的命令直接红</b>"],
   ["<code>schema.sql</code> 与真源不一致", "真源是 <code>db.rs</code> 的 <code>SCHEMA</code> 常量；<code>schema.sql</code> 文件头自陈「供文档/手动建库参考」，实测缺 5 张表（<code>group_files · group_file_recipients · group_recalled_messages · favorites · content_transfers</code>）与 <code>conversations.pinned</code>", "照 <code>schema.sql</code> 判断数据契约会得出<b>错误结论</b>。它仍挂在 persistence 域的路径里 ⇒ 要么同步，要么删掉并留一句「真源在 db.rs」"],
   ["<code>(conv_id, seq)</code> 索引可能在新库上不存在", "该索引只由迁移 v2→v3 建，而全新库走 <code>is_fresh</code> 分支<b>直接盖 user_version 并跳过全部迁移</b>", "新装用户的时间线查询少一条索引 ⇒ 表现为「聊天多的会话打开慢一点」，很难归因。<b>需要维护者判定</b>（并进 SCHEMA 常量即可，但要确认幂等）"],
   ["<code>state.rs</code> 关于 favorites 的注释是旧的", "<code>state.rs</code> 写「不在 media_dirs 里，清理逻辑不会碰它」，<code>commands/channel.rs</code> 实际把它算进清理目录（2026-09-19 审计补的）", "以注释为准会误判「收藏副本永不回收」。<code>favorites.available</code> 的存在理由恰恰是<b>会被回收</b>"],
@@ -1437,10 +1427,10 @@ function buildDir() {
     '<div class="grid2" style="margin-bottom:14px">' +
       '<div class="stat"><div class="num">' + CMDS.length + '</div><div>后端注册命令</div></div>' +
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
-      '<div class="stat"><div class="num">31</div><div>后端事件名（表内合并成 ' + EVENTS.length + ' 行）</div></div>' +
+      '<div class="stat"><div class="num">29</div><div>后端事件名（表内合并成 ' + EVENTS.length + ' 行）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
-      '<div class="stat"><div class="num">138</div><div>护栏非空转用例（168 条锚点已全验）</div></div>' +
-      '<div class="stat"><div class="num">679 / 586</div><div>Rust / 前端测试条数</div></div>' +
+      '<div class="stat"><div class="num">169</div><div>护栏非空转用例（改坏即红）</div></div>' +
+      '<div class="stat"><div class="num">661 / 588</div><div>Rust / 前端测试条数</div></div>' +
     "</div>" +
     '<h2 class="sec">领域图（真源 <code>docs/domains.data.mjs</code> · 本页内嵌快照 · <code>check-domain-map.mjs</code> 守路径存在，<code>check-domain-deps.mjs</code> 守依赖方向）</h2>' +
     '<div class="tablewrap"><table><thead><tr><th>领域</th><th>tier</th><th>数据实际跑在哪个家（activeHome）</th><th>允许依赖（consumes）</th><th>不变量</th><th>备注里的坑</th></tr></thead><tbody>' +
@@ -1462,7 +1452,7 @@ function buildDir() {
 
 /* ---------- tabs ---------- */
 const TABS = [
-  ["t-map", "① 大图"], ["t-mod", "② 模块契约"], ["t-api", "③ 接口规则表 138"],
+  ["t-map", "① 大图"], ["t-mod", "② 模块契约"], ["t-api", "③ 接口规则表 133"],
   ["t-evt", "④ 事件契约"], ["t-db", "⑤ 数据契约"], ["t-flow", "⑥ 流程穿透"], ["t-dir", "⑦ 方向核对"],
 ];
 function showTab(id) {
