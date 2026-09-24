@@ -319,11 +319,15 @@ pub fn get_topology(state: State<'_, Arc<AppState>>) -> TopologyInfo {
     } else {
         Some(rtts.iter().sum::<u64>() / rtts.len() as u64)
     };
-    let relay_count = s
-        .relay
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .active_sends();
+    // 「N 中继」= 当前有几条走公网中继的活跃链路。
+    // ⚠️ 这里以前取的是 `RelayManager::active_sends()`，而它的 `senders` 只有
+    // `register_send` 会写、`register_send` 零调用点 ⇒ **这个数永远是 0**（架构复审 0-A2）。
+    // 本命令是**同步**的而 `links` 是 tokio::Mutex ⇒ try_lock + 抢不到报 0（顶栏数字，
+    // 不值得为它阻塞工作线程）。判据与 `relay.connected` 同源。
+    let relay_count = match s.links.try_lock() {
+        Ok(links) => crate::state::relay_circuit_count(&links),
+        Err(_) => 0,
+    };
     let online = s
         .network
         .lock()

@@ -10,6 +10,49 @@
 
 ## [Unreleased]
 
+### Removed (2026-09-24 · 架构改造 0-A2：删掉三处"看起来像入口"的死实现)
+
+复审 P10 的三组未接线实现，逐条自己复跑过调用点才动手（`transport/bluetooth.rs` 头部那句
+"这些注释大多还挂着 `#[allow(dead_code)]`，把编译器本会给出的提示一起静音了 —— **动这一带代码前
+请先核对调用点，别信注释**"就是为这类事故写的）。
+
+- **`discovery/{trait,manager,lan}.rs` + `RoutedDiscovery` 删除**（`discovery/` 现在只剩 `routed.rs`
+  的配置解析）。判据：`DiscoveryManager` / `announce_to_candidate` / `RoutedDiscovery` 在 `discovery/`
+  之外**零引用**；真跑数据的发现在 `network/discovery.rs`（由 `network/mod.rs:55` spawn）。
+  ⚠️ 原"收口动作"写的是"把 socket 循环搬进 `discovery/lan.rs`、删掉旧家"—— 那是设想，不是证据；
+  现在按相反方向收口（删掉没在跑的那一家），并在 `mod.rs` 顶部写明家在哪儿。
+- **`transport/mod.rs` 的通道抽象删除**：`Transport` trait、`TransportManager::route`、
+  `route_payload`、`Channel`、`LARGE_PAYLOAD_THRESHOLD`（64 KiB"大负载走 LAN"）+ 两条测试。
+  `lan.rs` / `bluetooth.rs` 的 `impl Transport for …` 收成固有 impl，并删掉 `LanTransport::send`
+  /`broadcast`（`outbound.rs` 同名逻辑的**第二份实现**，零调用）与无人用的 `name`/`start`/`stop`。
+  该模块现在只做一件事：**状态聚合**。真分流只有一处 —— `dispatch.rs::message_priority`
+  + `mesh/selection.rs::pick_link` + `file.rs::chunk_size_for_path`。
+- **`file_relay.rs` 发送侧整组删除**（299 → 86 行）：`split_bytes` / `slice_file*` /
+  `register_send` / `next_chunk` / `is_send_done` / `plan_distribution` / `ack_chunk` /
+  `finish_send` / `progress` / `active_sends` + `ChunkData` / `RelayPlan` /
+  `DEFAULT_CHUNK_SIZE` / `MAX_CHUNK_SIZE`。整个 `impl` 块头上原本挂着 `#[allow(dead_code)]` ——
+  那正是它能存活至今的原因。保留接收侧（`begin_reassemble` / `add_chunk` /
+  `sweep_stale_reassemblies`，都在跑）与 `MIN_CHUNK_SIZE`（`file.rs` 挑分片尺寸时用它兜底）。
+- **顺带修掉一个"永远为 0"的界面数字**：顶栏「N 中继」原先取 `active_sends()`，而 `senders`
+  只有 `register_send` 会写 ⇒ 恒为 0。改为数 `path_kind == Relay` 的活跃链路，判据与
+  `relay.connected` 同源（新增 `state::link_is_relay_circuit` + `relay_circuit_count`，
+  两处共用，不留第三份口径）。`get_topology` 是同步命令而 `links` 是 `tokio::Mutex`
+  ⇒ 用 `try_lock` + 抢不到报 0（顶栏数字不值得阻塞工作线程）。
+- **`MeshRouter::select_outgoing` 不删、不标 deprecated**：它逻辑完整且有测试，只是生产不走
+  （群洪泛按 `fanout` 截断会把成员**静默切掉**，所以 `outbound.rs:428` 刻意只用 `exclude_source`）。
+  改成把这句判断写进文档注释。**也刻意不加 `#[allow(dead_code)]`** —— 那个 allow 会静音编译器
+  本会给的提示，正是上面那条注释警告过的机制。
+- 文档同步：`docs/domains.data.mjs` 的 transport notes、`docs/migration-ledger.md` 第 1/4/8/9 行
+  + 统计 + §2 命名撞车（"两个 discovery"从 ⚠️ 变 ✅）、`docs/ARCHITECTURE-MAP.html` 对应条目与
+  领域图快照。
+- **口径纠正**：`transport/` 不是"没在跑的新栈"，是**字节层 + 状态聚合**（`tcp.rs` 的帧原语被
+  `network/transport.rs` 复用）。复审报告里那句"新栈"已改准。
+- 测试基线 680 → **663**（删掉的 17 条全属于被删实现自身：`discovery` 15 + `transport/mod.rs` 2）。
+  `cargo clippy --features bluetooth -- -D warnings` 干净、`check-domain-map` / `check-domain-deps` 绿。
+  ⚠️ 顺带发现：默认构建（**不带** `bluetooth` feature）下 `commands/network.rs:132` 有一条既有
+  `needless_return` clippy 提示 —— 门禁只 lint `--features bluetooth` 那一档，所以今天不红。
+  本次不动（不夹带），登记在 HANDOFF。
+
 ### Test (2026-09-24 · 架构改造第 0-A1 步：把"记得登记分册"变成"不登记就红")
 
 架构复审（`docs/ARCHITECTURE-REVIEW-2026-09-24.md`）的 P10 说"手工清单与编译器集合不一致 ⇒ 假绿"。

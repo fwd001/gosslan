@@ -246,11 +246,11 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
 
 | 东西 | 状态 | 证据 |
 |---|---|---|
-| `transport/mod.rs` 的 `Transport` trait / `route_payload` / `LARGE_PAYLOAD_THRESHOLD` | **传递性死亡** | `TransportManager::route` 是 `#[allow(dead_code)]`（`:114`）且零生产调用；`route_payload`（`:167`）唯一非测试调用者就是那个 `route` |
+| ✅ `transport/mod.rs` 的 `Transport` trait / `route_payload` / `LARGE_PAYLOAD_THRESHOLD` / `Channel`（**0-A2 已删除**） | 曾传递性死亡 | `TransportManager::route` 是 `#[allow(dead_code)]`（`:114`）且零生产调用；`route_payload`（`:167`）唯一非测试调用者就是那个 `route` |
 | `transport/bluetooth.rs` | 占位 | 文件头 `:8` 自陈 placeholder，`running` 恒 false |
-| `discovery/{trait,manager,lan}.rs` | **死亡** | `DiscoveryManager`/`announce_to_candidate` 只出现在自身测试；真跑的是 `network/discovery.rs:311`（由 `network/mod.rs:55` spawn） |
-| `discovery/routed.rs` | 部分 | `parse_endpoints`/`ROUTED_ENDPOINTS_KEY` 活着；`RoutedDiscovery` 只在自身测试里构造 |
-| `file_relay.rs` **发送侧**整组 API | 死亡 | `split_bytes/slice_file/slice_file_with/register_send/next_chunk/is_send_done/plan_distribution/ack_chunk/finish_send/progress` 全仓零外部调用 |
+| ✅ `discovery/{trait,manager,lan}.rs`（**0-A2 已删除**） | 曾死亡 | `DiscoveryManager`/`announce_to_candidate` 只出现在自身测试；真跑的是 `network/discovery.rs:311`（由 `network/mod.rs:55` spawn） |
+| `discovery/routed.rs` | **只剩活的那一半** | `parse_endpoints`/`ROUTED_ENDPOINTS_KEY` 活着（保留）；未接线的 `RoutedDiscovery` 连同 4 条自身测试已于 0-A2 删除。文件头现在直接写明「这里只负责把配置读出来，不负责发现与拨号」 |
+| ✅ `file_relay.rs` **发送侧**整组 API（**0-A2 已删除**，文件 299 → 86 行） | 曾死亡 | `split_bytes/slice_file/slice_file_with/register_send/next_chunk/is_send_done/plan_distribution/ack_chunk/finish_send/progress` 全仓零外部调用 |
 | `MeshRouter::select_outgoing` | 死亡（**故意的**） | `outbound.rs:428` 注释说明不用它做群洪泛；只有 `on_receive`/`exclude_source` 活着 |
 | `send_file` / `send_file_relay` 命令 | 前端不可达 | 前端走 `send_file_auto`（`api/index.ts:203`）；`useChatStore.ts:1553 sendFileRelayTo` 零调用者 |
 | 5 条注册命令 | 零引用 | `recall_message / resend_message / cancel_send / send_group_poll / cast_group_poll_vote`（撤回真实走 `recall_group_message`） |
@@ -272,6 +272,17 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
   `:889` 读库失败给 `[]` ⇒ "暂无消息"成为假终态（同文件 `:886-887` 注释解释了这个取舍）。
 
 ---
+
+### 0-A2 做完后新查出的一条（不在原 P 列表里）
+
+`get_topology` 的 `relay_count` 原先取 `RelayManager::active_sends()`，而 `senders` 这个 map
+**只有 `register_send` 会写**、`register_send` 零生产调用点 ⇒ **顶栏「N 中继」永远是 0**。
+这是「死实现」最典型的伤害方式：它不是白占几十行，而是**给一个活着的 UI 字段供了一个恒定值**，
+于是所有人从界面上读到「没有中继连接」，而真实情况可能是三条。
+修法：`relay_count` 改为数 `path_kind == Relay` 的活跃链路；判据与 `relay.connected` 同源
+（新增 `state::link_is_relay_circuit` + `relay_circuit_count`，两处消费者共用，不留第三份口径）。
+`get_topology` 是**同步**命令而 `links` 是 `tokio::Mutex` ⇒ 用 `try_lock`、抢不到报 0
+（顶栏数字不值得为它阻塞工作线程，同「窗口路径装饰性读必须 try_lock」那条规矩）。
 
 ## C. 推荐的最终架构方向
 
@@ -350,7 +361,7 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
 | 动作 | 领域 | 验收 |
 |---|---|---|
 | ~~0-A1~~ **已完成**（`CHANGELOG` 的 2026-09-24 Test 小节）：新增守卫 `guard_source_views_register_every_include_subfile`，从入口文件递归展开 `include!` 得到编译器的真实集合，与守卫登记清单**双向比**（少登记=假绿、多登记=假红，两个方向都红），每个用例配一枚自己的 canary | 护栏 | 三条变异证明全部「改坏即 FAIL、恢复即 PASS」并已登记进 `verify-guards.py`。**这一步排在最前**：它决定第 1–7 步所有源码守卫的证据是否可信 |
-| 0-A2 删 `discovery/{trait,manager,lan}.rs` 与 `transport/mod.rs` 的 `Transport`/`route`/`route_payload`/`LARGE_PAYLOAD_THRESHOLD`/`file_relay.rs` 发送侧整组；`MeshRouter::select_outgoing` 标 deprecated 并指向活家 | 死实现 | `cargo clippy -D warnings` + `verify:full` 全绿；**同步 `domains.data.mjs` 的 `paths`/`activeHome`**（否则领域图变成虚构，`check-domain-map.mjs` 会红） |
+| ✅ **0-A2 已完成** | 死实现 | 删了 `discovery/{trait,manager,lan}.rs` + `RoutedDiscovery`；`transport/mod.rs` 的 `Transport`/`route`/`route_payload`/`Channel`/`LARGE_PAYLOAD_THRESHOLD`（并把 `lan.rs`/`bluetooth.rs` 的 trait impl 收成固有 impl）；`file_relay.rs` 发送侧整组。`MeshRouter::select_outgoing` **不标 deprecated、也不加 `#[allow(dead_code)]`**，而是写清「生产不走 + 为什么」（那个 allow 会静音编译器本会给的提示，正是 `transport/bluetooth.rs` 头部注释警告过的机制）。同步了 `domains.data.mjs` notes、`migration-ledger.md` 第 1/4/8/9 行与统计与 §2、契约图对应条目 |
 | 0-A3 5 条零引用命令 + 投票读写不对称：删接口或明确标"未接线"，并把 `get_group_file_delivery_summary` 等 6 条补上 `api` 包装 | IPC 契约 | 契约图与 `generate_handler!` 差集为空 |
 
 **0-B 数据库索引 —— 低风险但**不是**零风险：走迁移路径、有写放大、影响启动耗时，必须单独验证。**

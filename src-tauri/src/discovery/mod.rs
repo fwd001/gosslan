@@ -1,23 +1,17 @@
-//! 发现层：把「谁存在」从「怎么连」里彻底分离（Phase 3）。
+//! Routed（已路由 IP）端点的配置层。
 //!
-//! 目标结构（演进中）：
-//! ```text
-//! discovery/
-//!   trait.rs    — Discovery 抽象：只产 PeerCandidate（P-A04）
-//!   manager.rs  — DiscoveryManager：聚合多源、统一产出
-//!   routed.rs   — RoutedDiscovery：手动端点（Tailscale / VPN，握手后才产候选）
-//!   lan.rs      — LanDiscovery：announce → 候选解析（socket 接线待下一步）
-//! ```
+//! ⚠️ 这里**没有**发现机制。曾经的目标结构（Phase 3：`trait.rs` 定义 `Discovery`、
+//! `manager.rs` 聚合多源、`lan.rs` 把 announce 转成候选、`routed.rs` 产 Routed 候选）
+//! 三个文件全部零生产调用点，2026-09-24 架构复审 0-A2 删除。
 //!
-//! Phase 3 逐步推进，**不动** `network/discovery.rs` 的现有路径；
-//! 新发现机制稳定后再由 Adapter 接线、最后才迁移旧实现。
+//! **真正在跑数据的发现在 `network/discovery.rs`**（UDP 广播 + 组播 + 网卡选择 + 过期清扫），
+//! Routed 拨号在 `network/transport.rs` 的 routed_task。留着那套未接线的抽象，代价不是冗余，
+//! 而是下一个人照着它改、改在一个不跑数据的家上（本仓库为这件事专门建了
+//! `docs/domains.data.mjs` 的 `activeHome` 字段与 `docs/migration-ledger.md`）。
 
-pub mod lan;
-pub mod manager;
 pub mod routed;
-pub mod r#trait;
 
-pub use lan::announce_to_candidate;
-pub use manager::DiscoveryManager;
-pub use r#trait::Discovery;
-pub use routed::RoutedDiscovery;
+pub use routed::{
+    encode_endpoints, parse_endpoint_addr, parse_endpoint_addr_on, parse_endpoints, RoutedEndpoint,
+    RELAY_DEFAULT_PORT, ROUTED_ENDPOINTS_KEY,
+};

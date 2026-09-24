@@ -1,45 +1,32 @@
-//! 局域网传输通道实现：UDP 发现 + TCP 传输（复用 `network` 模块）。
+//! 局域网通道的**状态视图**：把 `state.network` / `state.peers` 翻成
+//! `ChannelStatus{available, running, peers}`，供运行时快照与设置页展示。
 //!
-//! 作为 [`Transport`] 的具体实现，把「已序列化 + 已加密」的协议帧交给底层 `network` 层
-//! 做实际收发，使上层逻辑与物理通道解耦。
+//! ⚠️ 这里**不是**数据面。真正的收发在 `network/transport.rs`（连接表 `state.links` +
+//! 每连接 reader/writer）与 `network/discovery.rs`（UDP 发现）。
+//! 本文件曾有 `send` / `broadcast` 两个方法（把 payload 反序列化成 `Message` 再走
+//! `try_send` / 逐链路 `low` 队列），它们是 `outbound.rs` 里同名逻辑的**第二份实现**、
+//! 且零调用点 ⇒ 2026-09-24 架构复审 0-A2 删除。留着不会出错，但会让人以为
+//! "要改发送行为就改这里"。
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use tokio::sync::mpsc;
-
-use crate::network;
-use crate::protocol::Message;
 use crate::state::AppState;
 
-use super::Transport;
-
-/// 局域网通道（UDP 广播/组播发现 + TCP 分帧传输，未来可替换为 QUIC）。
+/// 局域网通道（UDP 广播/组播发现 + TCP 分帧传输，实现见 `network/`）。
 pub struct LanTransport {
     state: Arc<AppState>,
-    bind_ip: String,
 }
 
 impl LanTransport {
     pub fn new(state: Arc<AppState>) -> Self {
-        Self {
-            state,
-            bind_ip: "0.0.0.0".to_string(),
-        }
-    }
-}
-
-#[async_trait]
-impl Transport for LanTransport {
-    fn name(&self) -> &'static str {
-        "局域网"
+        Self { state }
     }
 
-    fn available(&self) -> bool {
+    pub fn available(&self) -> bool {
         true
     }
 
-    fn running(&self) -> bool {
+    pub fn running(&self) -> bool {
         self.state
             .network
             .lock()
@@ -47,55 +34,11 @@ impl Transport for LanTransport {
             .is_some()
     }
 
-    fn peer_count(&self) -> usize {
+    pub fn peer_count(&self) -> usize {
         self.state
             .peers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .len()
-    }
-
-    async fn start(&mut self) -> Result<(), String> {
-        network::start(self.state.clone(), self.bind_ip.clone()).await
-    }
-
-    async fn stop(&mut self) -> Result<(), String> {
-        network::stop(&self.state).await;
-        Ok(())
-    }
-
-    async fn send(&self, peer_id: &str, payload: &[u8]) -> Result<(), String> {
-        let msg: Message = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        network::transport::try_send(&self.state, peer_id, &msg).await
-    }
-
-    async fn broadcast(&self, payload: &[u8]) -> Result<(), String> {
-        let msg: Message = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-
-        // 锁内只 snapshot bulk senders，释放锁后再发送。
-        // 持锁跨 send().await 会让一条拥塞链路锁死整张 links 表 —
-        // 同 transport::broadcast_gossip 的设计（v4.18.10 已验证）。
-        let targets: Vec<_> = {
-            let links = self.state.links.lock().await;
-            links.values().flatten().map(|l| l.low.clone()).collect()
-        };
-
-        // 每个 peer 用 try_send 优先非阻塞，Full 时 500ms 有界补试。
-        // 一个 peer 拥塞不影响其他 peer。
-        const BULK_SEND_TIMEOUT_MS: u64 = 500;
-        for tx in &targets {
-            match tx.try_send(msg.clone()) {
-                Ok(()) => continue,
-                Err(mpsc::error::TrySendError::Closed(_)) => continue,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_millis(BULK_SEND_TIMEOUT_MS),
-                        tx.send(msg.clone()),
-                    )
-                    .await;
-                }
-            }
-        }
-        Ok(())
     }
 }

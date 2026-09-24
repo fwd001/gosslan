@@ -83,11 +83,12 @@ pub async fn build_runtime_snapshot(s: &Arc<AppState>) -> RuntimeSnapshot {
         )
     };
     // 中继是否真的连通：有任意一条 `path_kind==Relay` 的活跃链路即算（用枚举判，不按服务器地址）。
+    // 判据与 `get_topology` 的 relay_count 同源（`state::link_is_relay_circuit`）。
     let relay_connected = {
         let links = s.links.lock().await;
         links
             .values()
-            .any(|ls| ls.iter().any(|l| l.path_kind == crate::mesh::PathKind::Relay))
+            .any(|ls| ls.iter().any(crate::state::link_is_relay_circuit))
     };
     RuntimeSnapshot {
         present,

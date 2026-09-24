@@ -1,13 +1,13 @@
-//! 双通道聚合传输层。
+//! 双通道（局域网 / 蓝牙）的**状态聚合**：给运行时快照与设置页一份 `ChannelStatus[]`。
 //!
-//! 设计目标：
-//! - **通道无感知**：上层协议、E2EE（ChaCha20-Poly1305）与交互逻辑只依赖 [`Transport`] 接口，
-//!   不关心底层是局域网还是蓝牙。
-//! - **独立开关**：局域网 / 蓝牙两条通道可单独开启、关闭或同时开启。
-//! - **去重**：接收侧统一按 SHA-256 `message_id` 去重（复用 `gossip_engine` 的 Bloom+LRU），
-//!   双通道同时送达同一消息时自动丢弃重复。
-//! - **智能分流**：双通道同时开启时按流量特征分流——大负载走局域网高带宽通道，
-//!   轻量心跳 / 控制信令优先走蓝牙。
+//! ⚠️ 本模块**不是数据面，也不是分流决策点**。所有帧的收发与选路都在
+//! `network/transport.rs`（+ `outbound.rs` 的 `route_order` / `pick_link`）。
+//! 这里曾有第三套"通道抽象"：`Transport` trait + `TransportManager::route` +
+//! `route_payload`（按 `LARGE_PAYLOAD_THRESHOLD` = 64 KiB 决定"大负载走 LAN、小负载走 BLE"）。
+//! 它 `#[allow(dead_code)]` 且零调用点，而**真正的分流早已按语义分类实现在
+//! `network/dispatch.rs::message_priority` + `mesh/selection.rs::pick_link`**（并按链路
+//! 能力适配分片尺寸，见 `file.rs::chunk_size_for_path`）。
+//! 2026-09-24 架构复审 0-A2 删除：留着它的代价不是几十行代码，是"下一个人以为分流在这里改"。
 
 pub mod ble_framing;
 pub mod bluetooth;
@@ -30,45 +30,9 @@ pub mod tcp;
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use serde::Serialize;
 
 use crate::state::AppState;
-
-/// 大负载判定阈值（字节）。超过该值视为「大文件 / 长文本」，走局域网高带宽通道。
-pub const LARGE_PAYLOAD_THRESHOLD: usize = 64 * 1024;
-
-/// 物理通道标识。
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Channel {
-    Lan,
-    Bluetooth,
-}
-
-/// 传输通道统一抽象接口。
-///
-/// 采用 `async-trait` 使异步方法可装箱、可对象安全，便于统一管理不同物理通道。
-#[async_trait]
-#[allow(dead_code)]
-pub trait Transport: Send + Sync {
-    /// 通道显示名。
-    fn name(&self) -> &'static str;
-    /// 硬件 / 系统是否支持该通道。
-    fn available(&self) -> bool;
-    /// 通道是否正在运行（收发中）。
-    fn running(&self) -> bool;
-    /// 当前可达对端数量（用于状态监控）。
-    fn peer_count(&self) -> usize;
-    /// 启动通道。
-    async fn start(&mut self) -> Result<(), String>;
-    /// 停止通道。
-    async fn stop(&mut self) -> Result<(), String>;
-    /// 向指定 peer 发送一条已序列化、已加密的协议帧。
-    async fn send(&self, peer_id: &str, payload: &[u8]) -> Result<(), String>;
-    /// 广播到所有可达节点。
-    async fn broadcast(&self, payload: &[u8]) -> Result<(), String>;
-}
 
 /// 单条通道的运行状态（供前端状态栏 / 设置页展示）。
 #[derive(Serialize, Clone)]
@@ -87,7 +51,7 @@ pub struct ChannelStatus {
     pub preferred: bool,
 }
 
-/// 双通道聚合管理器：通道开关、分流决策、状态汇总。
+/// 双通道聚合：只负责**状态汇总**与"未编译 BLE 后端"时的开关兜底。
 pub struct TransportManager {
     pub lan: lan::LanTransport,
     pub bluetooth: bluetooth::BluetoothTransport,
@@ -107,13 +71,6 @@ impl TransportManager {
             bluetooth: bluetooth::BluetoothTransport::default(),
             bt_enabled,
         }
-    }
-
-    /// 分流决策：根据负载大小与通道可用性选择传输通道。
-    /// 待蓝牙后端接入后，在消息 / 文件发送路径中调用以真正分流。
-    #[allow(dead_code)]
-    pub fn route(&self, payload_len: usize) -> Channel {
-        route_payload(payload_len, self.bluetooth.available(), self.bt_enabled)
     }
 
     /// 切换蓝牙通道开关。
@@ -157,42 +114,5 @@ impl TransportManager {
                 preferred: self.bt_enabled,
             },
         ]
-    }
-}
-
-/// 分流决策纯函数（便于测试）：
-/// - 蓝牙不可用或未启用 → 局域网。
-/// - 大负载（≥ [`LARGE_PAYLOAD_THRESHOLD`]）→ 局域网（高带宽）。
-/// - 轻量负载 → 蓝牙（低功耗、控制 / 心跳优先）。
-pub fn route_payload(payload_len: usize, bt_available: bool, bt_enabled: bool) -> Channel {
-    if !bt_available || !bt_enabled {
-        return Channel::Lan;
-    }
-    if payload_len >= LARGE_PAYLOAD_THRESHOLD {
-        Channel::Lan
-    } else {
-        Channel::Bluetooth
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn route_prefers_lan_when_bt_unavailable_or_disabled() {
-        // 蓝牙不可用 → 局域网
-        assert_eq!(route_payload(10, false, true), Channel::Lan);
-        // 蓝牙可用但未启用 → 局域网
-        assert_eq!(route_payload(10, true, false), Channel::Lan);
-    }
-
-    #[test]
-    fn route_splits_by_payload_size() {
-        // 双通道开启且蓝牙可用：小负载走蓝牙，大负载走局域网
-        assert_eq!(route_payload(1, true, true), Channel::Bluetooth);
-        assert_eq!(route_payload(64 * 1024 - 1, true, true), Channel::Bluetooth);
-        assert_eq!(route_payload(64 * 1024, true, true), Channel::Lan);
-        assert_eq!(route_payload(1024 * 1024, true, true), Channel::Lan);
     }
 }

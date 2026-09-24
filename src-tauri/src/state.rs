@@ -216,6 +216,29 @@ pub fn best_link_kind(kinds: &[crate::mesh::PathKind]) -> Option<crate::mesh::Pa
         .find(|&want| kinds.contains(&want))
 }
 
+/// 一条链路是否算「公网中继电路」。**唯一判据**：`path_kind == Relay`
+/// （用枚举判，**不按服务器地址** —— 地址属于设置页，且换服务器不该让统计口径变）。
+///
+/// 为什么单独一个函数：这个判据有两处消费者 —— `get_runtime_snapshot` 的
+/// `relay.connected`（"有没有中继电路"）与 `get_topology` 的 `relay_count`（"几条"）。
+/// 各写一遍 `== Relay` 的话，将来加一种中转形态就会只改到一处。
+pub fn link_is_relay_circuit(link: &Link) -> bool {
+    link.path_kind == crate::mesh::PathKind::Relay
+}
+
+/// 当前有几条公网中继电路（**同步**版，给 `get_topology` 这类同步命令用）。
+///
+/// `links` 是 `tokio::Mutex`，同步上下文里不能 `await` ⇒ 调用方用 `try_lock`，
+/// 抢不到就报 0。这个数字只用于顶栏展示，为它阻塞一条工作线程、或让它失败，
+/// 都不值得（同「窗口路径上的装饰性读必须 try_lock + 安全降级」那条规矩）。
+pub fn relay_circuit_count(links: &HashMap<String, Vec<Link>>) -> usize {
+    links
+        .values()
+        .flatten()
+        .filter(|l| link_is_relay_circuit(l))
+        .count()
+}
+
 /// 局域网在线节点（Peer Table 条目）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Peer {

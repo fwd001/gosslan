@@ -23,10 +23,6 @@
 //! 这些注释大多还挂着 `#[allow(dead_code)]`，把编译器本会给出的提示一起静音了 ——
 //! 所以它们能存活很久。**动这一带代码前请先核对调用点，别信注释。**
 
-use async_trait::async_trait;
-
-use super::Transport;
-
 /// Gosslan 的 BLE GATT 服务与特征 UUID（128 位，随机生成后固定 —— 不能改，
 /// 改了对端就发现不了彼此；也不要用标准 UUID，免得与其它 BLE 设备混淆）。
 ///
@@ -637,35 +633,34 @@ pub mod driver {
     }
 }
 
-/// 蓝牙通道。接口占位：`available` 取决于是否编译了 BLE 后端（feature `bluetooth`），
-/// 驱动实现前 `start()` 一律返回明确错误，上层据此继续走局域网。
+/// 蓝牙通道的**状态视图**。接口占位：`available` 取决于是否编译了 BLE 后端
+/// （feature `bluetooth`），驱动实现前 `start()` 一律返回明确错误，上层据此继续走局域网。
+///
+/// ⚠️ 真正的 BLE 运行时在 `network/ble.rs`（扫描/连接/握手/登记链路）+ 本目录下的
+/// `bluetooth_peripheral*` / `ble_android` 平台实现；这个占位只服务"未编译 BLE 后端"的
+/// 默认构建，让状态页能给出明确答案而不是含糊的"已关闭"。
 #[derive(Default)]
 pub struct BluetoothTransport {
     running: bool,
 }
 
-#[async_trait]
-impl Transport for BluetoothTransport {
-    fn name(&self) -> &'static str {
-        "蓝牙"
-    }
-
-    fn available(&self) -> bool {
+impl BluetoothTransport {
+    pub fn available(&self) -> bool {
         // 编译了 BLE 后端就"可能可用"；真正的探测（有没有适配器 / 用户是否授权）
         // 只能在异步的 `start()` 里做 —— 这个接口是同步的，不能在这里 await。
         // 未编译 feature 时恒 false（默认构建即此分支）。
         cfg!(feature = "bluetooth")
     }
 
-    fn running(&self) -> bool {
+    pub fn running(&self) -> bool {
         self.running
     }
 
-    fn peer_count(&self) -> usize {
+    pub fn peer_count(&self) -> usize {
         0
     }
 
-    async fn start(&mut self) -> Result<(), String> {
+    pub async fn start(&mut self) -> Result<(), String> {
         // 两种情况下都不能声称"已启动"：
         // · 未编译 feature（默认构建）：明确提示怎么开；
         // · 编译了 feature 但驱动还没实现（7-e 待做）：同样明确报错。
@@ -678,16 +673,8 @@ impl Transport for BluetoothTransport {
         }
     }
 
-    async fn stop(&mut self) -> Result<(), String> {
+    pub async fn stop(&mut self) -> Result<(), String> {
         self.running = false;
         Ok(())
-    }
-
-    async fn send(&self, _peer_id: &str, _payload: &[u8]) -> Result<(), String> {
-        Err("蓝牙通道不可用".to_string())
-    }
-
-    async fn broadcast(&self, _payload: &[u8]) -> Result<(), String> {
-        Err("蓝牙通道不可用".to_string())
     }
 }
