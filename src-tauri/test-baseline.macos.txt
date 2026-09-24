@@ -384,6 +384,7 @@ network::file::tests::live_receiver_must_tell_the_sender_where_it_actually_is
 network::file::tests::markdown_is_a_document_not_code
 network::file::tests::matching_position_still_accepts_idempotently
 network::file::tests::other_files
+network::file::tests::permanent_send_failure_gives_up_with_the_real_reason
 network::file::tests::progress_counts_written_chunks_not_enqueued_bytes
 network::file::tests::receive_is_done_only_when_size_and_sha_both_prove_it
 network::file::tests::receiver_hash_lifecycle_success
@@ -392,6 +393,8 @@ network::file::tests::rejects_path_traversal_file_names
 network::file::tests::rejects_path_traversal_transfer_ids
 network::file::tests::relay_forwarded_ciphertext_still_decryptable
 network::file::tests::relay_receiver_hash_lifecycle_success
+network::file::tests::retryable_failure_at_the_budget_limit_gives_up
+network::file::tests::retryable_failure_within_budget_is_rescheduled
 network::file::tests::send_deadline_scales_with_size
 network::file::tests::sha256_file_hex_matches_in_memory_hash
 network::file::tests::stale_attempt_frames_are_filtered_but_legacy_frames_never_are
@@ -399,6 +402,7 @@ network::file::tests::stall_verdict_boundaries
 network::file::tests::tampered_chunk_fails_to_decrypt
 network::file::tests::the_active_receiver_is_the_authority_not_the_disk_prefix
 network::file::tests::unique_path_never_returns_existing_path
+network::file::tests::unknown_attempt_count_is_not_a_death_sentence
 network::file::tests::wire_ledger_is_reclaimed_on_every_exit_path
 network::file::tests::wire_progress_is_counted_per_recipient_within_one_group_transfer
 network::tests::discovery_failure_rolls_back_started_transport
@@ -613,6 +617,7 @@ tests::runtime_state_has_a_single_source
 tests::scan_results_are_not_filtered_by_unconnected_services
 tests::self_chat_stays_local
 tests::terminal_finalize_defers_the_destructive_write
+tests::the_outbox_retry_decision_has_exactly_one_judge_and_one_caller
 tests::transport_locks_tolerate_poison
 tests::unknown_wire_frame_is_tolerated_after_auth
 tests::window_pattern_matcher_is_not_vacuous

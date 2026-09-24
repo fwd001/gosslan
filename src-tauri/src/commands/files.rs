@@ -381,30 +381,27 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                     db::delete_file_outbox(&dbc, &transfer_id).ok();
                 }
                 Err(e) => {
-                    // retryable 错误也要检查超限 —— 超限直接 fail 不再重试。
-                    let over_limit = {
+                    // 判据只有一份（`file::send_retry_verdict`，纯函数 + 单测）：
+                    // 这里只负责"照裁决写库"，不在此处再比一次 attempts。
+                    let attempts = {
                         let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
                         db::get_file_outbox_attempts(&dbc, &transfer_id)
-                            .map(|a| a >= crate::network::file::MAX_FILE_OUTBOX_RETRIES)
-                            .unwrap_or(false)
                     };
-                    if !e.retryable || over_limit {
-                        let reason = if over_limit {
-                            "连续重试超限（链路长时间未恢复）".to_string()
-                        } else {
-                            e.message.clone()
-                        };
-                        st.logger.warn(
-                            "file",
-                            format!(
-                                "[FAILED] transfer={transfer_id} reason={reason} (retryable={}, attempts_over={over_limit})",
-                                e.retryable
-                            ),
-                        );
-                        fail_file_job(&st, &transfer_id, &reason);
-                    } else {
-                        let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
-                        db::mark_file_outbox_pending(&dbc, &transfer_id, 5_000).ok();
+                    match file::send_retry_verdict(&e, attempts) {
+                        file::RetryVerdict::GiveUp(reason) => {
+                            st.logger.warn(
+                                "file",
+                                format!(
+                                    "[FAILED] transfer={transfer_id} reason={reason} (retryable={}, attempts={attempts:?})",
+                                    e.retryable
+                                ),
+                            );
+                            fail_file_job(&st, &transfer_id, &reason);
+                        }
+                        file::RetryVerdict::Retry { backoff_ms } => {
+                            let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                            db::mark_file_outbox_pending(&dbc, &transfer_id, backoff_ms).ok();
+                        }
                     }
                 }
             }

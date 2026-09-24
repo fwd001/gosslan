@@ -265,6 +265,41 @@ impl std::fmt::Display for SendFileError {
 
 impl std::error::Error for SendFileError {}
 
+/// 一次投递失败之后，这条 `file_outbox` 行该怎么办。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RetryVerdict {
+    /// 放弃：调用方必须落终态并把这句理由显示出来（"发送中"和"卡死"必须能区分）。
+    GiveUp(String),
+    /// 回到 pending，`backoff_ms` 之后再试一次。
+    Retry { backoff_ms: i64 },
+}
+
+/// 重试退避（与 `db::mark_file_outbox_pending` 的 `next_attempt_at` 同一个数）。
+pub(crate) const FILE_OUTBOX_RETRY_BACKOFF_MS: i64 = 5_000;
+
+/// 重试裁决（**纯函数**，#25 第 2 段）。
+///
+/// 为什么必须抽出来：这三行判断决定的是用户看到的是"失败 + 原因"还是"永久转圈"，
+/// 而它原先 inline 在 `flush_pending_files` 的循环里 —— 那个循环吃 `AppState`，
+/// 测试一次都触发不了。真机 160MB 那次的形状就是从这里漏出去的：
+/// 每一轮都"可重试"，于是连续 5 次从头重灌，谁也不报错。
+///
+/// ⚠️ **`retryable` 不等于"无限重试"**：可恢复错误同样要过预算这一关（少了这一关
+/// 就是那条历史缺陷）。反过来，读不到次数（prepare 失败、行已被别的出口删掉）时
+/// 按 0 次处理 —— 那是本机自己一时出故障，把它当成"已经试满 5 次"会直接毁掉一次
+/// 本可恢复的投递。
+pub(crate) fn send_retry_verdict(err: &SendFileError, attempts: Option<i64>) -> RetryVerdict {
+    if !err.retryable {
+        return RetryVerdict::GiveUp(err.message.clone());
+    }
+    if attempts.unwrap_or(0) >= MAX_FILE_OUTBOX_RETRIES {
+        return RetryVerdict::GiveUp("连续重试超限（链路长时间未恢复）".to_string());
+    }
+    RetryVerdict::Retry {
+        backoff_ms: FILE_OUTBOX_RETRY_BACKOFF_MS,
+    }
+}
+
 /// 主动向 `peer_id` 发送本地文件。
 ///
 /// 这是一个低层投递原语：只负责把文件完整送达并拿到接收方完成确认。
@@ -2313,7 +2348,7 @@ mod tests {
     use super::{
         chunk_seq_decision, classify_file_subtype, clear_file_wire_progress_in, derive_file_name,
         file_peer_key, safe_file_name, safe_transfer_id, unique_path, wire_progress_bytes,
-        ChunkSeq, WireLedger,
+        ChunkSeq, WireLedger, MAX_FILE_OUTBOX_RETRIES,
     };
 
     /// 写出记账必须**随发送尝试一起回收**（v4.22.38）。
@@ -3827,5 +3862,79 @@ mod tests {
         );
         assert!(finish_receiver_into(&db, "t-upper", upper).is_ok());
         assert_eq!(row("t-upper").0, "done");
+    }
+
+    // ---------------- 投递失败之后的重试裁决（#25 第 2 段） ----------------
+    //
+    // 这一格判据原先inline 在 `flush_pending_files` 的循环里 ⇒ 要吃 `AppState` 才能触发，
+    // 而它恰恰是"用户看到永久转圈"还是"看到失败"的唯一分岔口（真机 160MB 那次就是
+    // 连续 5 次从头重灌，每次都"可重试"）。所以先把它抽成纯函数再测。
+
+    /// 永久错误必须当场放弃，而且**理由就是原始错误文案** —— 换成一句笼统的"发送失败"
+    /// 等于把"文件不存在"这种用户能自己解决的事藏起来。
+    #[test]
+    fn permanent_send_failure_gives_up_with_the_real_reason() {
+        use super::{send_retry_verdict, RetryVerdict, SendFileError};
+        let e = SendFileError::permanent("文件不存在或不可读：No such file");
+        assert_eq!(
+            send_retry_verdict(&e, Some(1)),
+            RetryVerdict::GiveUp("文件不存在或不可读：No such file".into()),
+            "永久错误不得进入重试队列"
+        );
+    }
+
+    /// 预算内的可恢复错误 ⇒ 回到 pending 等下一次（链路回来了 / 心跳触发）。
+    #[test]
+    fn retryable_failure_within_budget_is_rescheduled() {
+        use super::{send_retry_verdict, RetryVerdict, SendFileError};
+        let e = SendFileError::retryable("未建立连接");
+        assert_eq!(
+            send_retry_verdict(&e, Some(1)),
+            RetryVerdict::Retry { backoff_ms: 5_000 }
+        );
+        // 边界：预算是 5 次，第 4 次失败之后必须还留着一次机会
+        assert_eq!(
+            send_retry_verdict(&e, Some(MAX_FILE_OUTBOX_RETRIES - 1)),
+            RetryVerdict::Retry { backoff_ms: 5_000 },
+            "差一次就放弃 = 少给用户一次机会"
+        );
+    }
+
+    /// **retryable 也要查预算**（这条是历史缺陷的形状）：只按 `retryable` 分岔的话，
+    /// 一个永远跑不完的 160MB 会每 5 秒从头重灌、无限次，界面永远显示"发送中"。
+    #[test]
+    fn retryable_failure_at_the_budget_limit_gives_up() {
+        use super::{send_retry_verdict, RetryVerdict, SendFileError};
+        let e = SendFileError::retryable("接收方未确认文件完成");
+        assert!(
+            matches!(
+                send_retry_verdict(&e, Some(MAX_FILE_OUTBOX_RETRIES)),
+                RetryVerdict::GiveUp(_)
+            ),
+            "到预算上限必须停 —— 否则\"可重试\"就是\"永远转圈\""
+        );
+        // 超上限之后继续加也不能被"再试一次"救回来（比较是 >=，不是 ==）
+        assert!(matches!(
+            send_retry_verdict(&e, Some(MAX_FILE_OUTBOX_RETRIES + 3)),
+            RetryVerdict::GiveUp(_)
+        ));
+    }
+
+    /// 读不到次数（prepare 失败 / 行已被别的出口删掉）时**不得判死**：
+    /// 那是本机自己的一时故障，把它当成"这个文件已经试了 5 次"会直接毁掉一次可恢复的投递。
+    #[test]
+    fn unknown_attempt_count_is_not_a_death_sentence() {
+        use super::{send_retry_verdict, RetryVerdict, SendFileError};
+        let e = SendFileError::retryable("链路已关闭");
+        assert_eq!(
+            send_retry_verdict(&e, None),
+            RetryVerdict::Retry { backoff_ms: 5_000 },
+            "计数读不到时宁可多试一次"
+        );
+        // 但永久错误与计数无关，仍然当场放弃
+        assert!(matches!(
+            send_retry_verdict(&SendFileError::permanent("用户取消发送"), None),
+            RetryVerdict::GiveUp(_)
+        ));
     }
 }

@@ -2922,6 +2922,53 @@ mod tests {
         );
     }
 
+    /// 投递失败的重试裁决必须**只有一个判据点**（#25 第 2 段）。
+    ///
+    /// 三条新单测证的是纯函数本身；这条守的是**调用点有没有真的在用它** —— 那正是这类
+    /// "抽成纯函数"最容易漏的半边：判据搬走了、测试全绿，循环里却还留着旧的
+    /// `if !retryable || over_limit`，两份判据不一致时没人发现（界面上就是"有的文件永远转圈、
+    /// 有的一试就判死"）。退避毫秒数同理：调用点再写死一个 5000 就是第二份事实来源。
+    #[test]
+    fn the_outbox_retry_decision_has_exactly_one_judge_and_one_caller() {
+        let flat = code_flat(include_str!("commands/files.rs"));
+        assert_eq!(
+            flat.matches("file::send_retry_verdict(&e,attempts)")
+                .count(),
+            1,
+            "投递失败必须走那一份纯函数裁决；0 处 = 调用点被换回内联判据，三条单测集体失效"
+        );
+        assert!(
+            !flat.contains(">=MAX_FILE_OUTBOX_RETRIES")
+                && !flat.contains(">=crate::network::file::MAX_FILE_OUTBOX_RETRIES"),
+            "commands 里再比一次 attempts 就是第二份判据"
+        );
+        // 两个分支各自必须做对那一件事。切片两端都锚在 ASCII 起始处（GiveUp / Retry），
+        // 不会因为切进中文字符里 panic —— 这条写法本身是被踩过一次才定下来的。
+        let give = flat
+            .find("RetryVerdict::GiveUp(reason)=>{")
+            .expect("找不到 GiveUp 分支");
+        let retry = flat
+            .find("RetryVerdict::Retry{backoff_ms}=>")
+            .expect("找不到 Retry 分支");
+        assert!(
+            retry > give,
+            "两个分支的先后锚点看不懂了（护栏需要同步更新）"
+        );
+        let give_arm = &flat[give..retry];
+        assert!(
+            give_arm.contains("fail_file_job("),
+            "GiveUp 必须真的落终态，否则\"放弃\"只存在于日志里，行还留在 sending"
+        );
+        assert!(
+            give_arm.contains("logger.warn("),
+            "放弃必须留痕：只写库不记日志，事后无从查清是哪条链路、哪一次判的死"
+        );
+        assert!(
+            flat[retry..].contains("mark_file_outbox_pending(&dbc,&transfer_id,backoff_ms)"),
+            "退避时长必须由裁决给出，不是调用点写死的第二个数"
+        );
+    }
+
     /// 接收端 `finish_receive`：慢活必须在**放锁之后**（2026-09-23 真机 600MB + 多文件复核）。
     ///
     /// 为什么钉形状而不是钉行为：要复现"持锁 fsync 堵住别的并发传输"需要两条在途传输 +
