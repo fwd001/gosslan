@@ -501,6 +501,8 @@ pub fn run() {
             commands::open_settings_window,
             commands::close_settings_window,
             commands::open_group_todos_window,
+            commands::take_group_todo_focus,
+            commands::request_group_todo_focus,
             commands::open_link_window,
             commands::list_external_links,
             commands::add_external_link,

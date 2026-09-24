@@ -268,11 +268,12 @@ const taskFocusId = ref<string | null>(null);
  * 打开群任务：桌面端开**独立窗口**（每群一个），移动端/窗口创建失败回退到应用内弹窗。
  * 与设置/日志同一套单飞 + 防抖（`launchAuxWindow`），窗口实例唯一性由后端 `ensure_aux_window` 保证。
  *
- * `todoId` 只服务**应用内弹窗**那两条路径（用户 #23「点卡片直达详情」）：
- * 桌面端的看板是**另一个文档**，参数只能走窗口 label，而 label 是"每群一个窗口"的**身份**
- * （把 todoId 塞进 label 会变成"每条任务一个窗口"）。本仓没有定向跨窗口事件通道
- * （全仓零 `emit_to`），为这个便利新造一条通道 + 处理"窗口还没起来就先到的事件"这个竞态，
- * 不值当 ⇒ 桌面端仍然只开到看板，这是刻意保留的边界，不是漏掉了。
+ * `todoId`（用户 #23 与 #39）两条呈现路径都覆盖：
+ * 应用内弹窗走 prop（`taskFocusId`）；桌面端独立窗口走后端那条「暂存 + 定向事件」——
+ * 新建的窗口在挂载时 `take_group_todo_focus` 取走（事件那时没有监听者，只发事件就是
+ * "第一次点没反应"），本来就开着的窗口靠事件被叫醒后再取同一个暂存。
+ * 注意 label 仍然只带 groupId：`todo-<groupId>` 是"每群一窗"的**身份**，
+ * 把任务 ID 塞进 label 会变成"每条任务一个窗口"。
  */
 function openTasks(todoId?: string) {
   const gid = activeGroupId.value;
@@ -282,10 +283,20 @@ function openTasks(todoId?: string) {
     tasksOpen.value = true;
     return;
   }
-  void launchAuxWindow(groupTodosLabel(gid), () => api.openGroupTodosWindow(gid)).catch((e) => {
-    app.toastError(e, t("common.operationFail"));
-    tasksOpen.value = true; // 独立窗口开不出来 → 回退到应用内弹窗
-  });
+  // ⚠️ 投递展开目标必须**独立于** `launchAuxWindow`：那条启动器有单飞 + 连点防抖，
+  // 判定"这次不算新打开"时根本不会调用 `open_group_todos_window` ⇒ 第二张卡片带的
+  // todoId 就地消失，表现还是"点了没反应"。命令本身是幂等的（覆盖同一个暂存位）。
+  if (todoId) {
+    void api.requestGroupTodoFocus(gid, todoId).catch(() => {
+      /* 只丢"自动展开"这一点便利：窗口照开，用户点进去就行，不为它弹窗 */
+    });
+  }
+  void launchAuxWindow(groupTodosLabel(gid), () => api.openGroupTodosWindow(gid, todoId)).catch(
+    (e) => {
+      app.toastError(e, t("common.operationFail"));
+      tasksOpen.value = true; // 独立窗口开不出来 → 回退到应用内弹窗
+    },
+  );
 }
 const memberCount = computed(() => {
   const gid = activeGroupId.value;

@@ -525,14 +525,21 @@ pub fn open_settings_window(
 /// [`AUX_GROUP_TODOS_RESIDENT`]）：每群一个窗口，常驻会无界增长，且每次打开都该拿新数据。
 /// 窗口加载 `todos.html`（自己的文档与入口），并从**自己的 label** 解析群 ID
 /// （见 `src/utils/auxWindowLabels.ts`）—— 所以不做"窗口内切群"，一个窗口只服务一个群。
+///
+/// `focus_todo_id` = 打开之后要**展开哪一条任务**（用户 2026-09-24 #39：点聊天里的任务卡片，
+/// 应该直接看到那条的详情，而不是只把看板翻开）。两条路都覆盖，缺一不可：
+/// - **新建**：只写 [`AppState::todo_focus_request`]，窗口挂载时自己 `take_group_todo_focus` 取走
+///   —— 此刻还没有任何监听者，发事件等于发丢（表现就是"第一次点没反应"）；
+/// - **复用**（窗口本来就开着，不会经历挂载）：写进暂存之后**定向 emit** 给这个 label。
 #[cfg(desktop)]
 #[tauri::command(async)]
 pub fn open_group_todos_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
     group_id: String,
+    focus_todo_id: Option<String>,
 ) -> Result<(), String> {
-    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};
     // groupId 会被拼进窗口 label ⇒ 严格校验字符集（非法字符会让 label 失效，也可能撞上别的窗口）。
     if group_id.is_empty()
         || group_id.len() > 40
@@ -541,6 +548,30 @@ pub fn open_group_todos_window(
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err("群 ID 非法".to_string());
+    }
+    // todoId 不进 label，但它会**跨窗口当成指令**传回前端 ⇒ 同样按不透明 ID 的最短规则夹紧，
+    // 不接受任意长串（这条通道没有任何"是不是真任务"的判断，前端查不到就什么都不做）。
+    if let Some(id) = &focus_todo_id {
+        if id.is_empty() || id.len() > 80 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err("任务 ID 非法".to_string());
+        }
+    }
+    // 每次 open 都覆盖这个群的"待展开"：带 id 就写入，**不带就清掉**。
+    // 不清的话，用户下一次从标题栏按钮（不带目标）打开窗口时，会被上次那条任务莫名展开。
+    {
+        let mut pending = state
+            .todo_focus_request
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match &focus_todo_id {
+            Some(id) => {
+                pending.insert(group_id.clone(), id.clone());
+            }
+            None => {
+                pending.remove(&group_id);
+            }
+        }
     }
     let label = format!("{}{group_id}", crate::WINDOW_GROUP_TODOS_PREFIX);
     let bg = aux_window_background(&state);
@@ -597,14 +628,111 @@ pub fn open_group_todos_window(
         }
         Ok(win)
     })
-    .map(|_| ())
+    .map(|(_win, created)| {
+        // **复用**那条路：窗口本来就开着 ⇒ 不会经历挂载，没人会去取暂存
+        // ⇒ 必须定向推一条事件给它（新建那条路刻意不发：那时还没有监听者，发了就是丢）。
+        if !created && focus_todo_id.is_some() {
+            // 载荷带 groupId：一个窗口只服务一个群，但前端仍比自己一遍再动手，
+            // 免得哪天 label 与群对不上时静默展开别群的任务。
+            let _ = _win.emit(
+                "group-todo-focus",
+                serde_json::json!({ "groupId": group_id.clone() }),
+            );
+        }
+    })
     .map_err(|e| e.to_string())
 }
 
-/// 移动端桩：独立群任务窗口是桌面概念（移动端用应用内弹窗 `GroupTasksPanel`）。
+/// 群任务窗口启动时取走"该展开哪条任务"（**取走即清空**，一次性）。
+///
+/// 与 `open_group_todos_window` 里那条定向 emit 是同一个需求的**两条互补路径**
+/// （用户 2026-09-24 #39）：窗口是新建设的 ⇒ 事件发给了还没有监听者的文档，只能靠这里取。
+/// 不分桌面/移动：只是读写一块内存，移动端没有窗口会去调它，留着比加一份 cfg 桩更清楚。
+#[tauri::command]
+pub fn take_group_todo_focus(
+    state: tauri::State<'_, Arc<AppState>>,
+    group_id: String,
+) -> Option<String> {
+    state
+        .todo_focus_request
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&group_id)
+}
+
+/// 「只投递展开请求」，不碰窗口本身 —— 因为前端的启动器有**单飞 + 防抖**。
+///
+/// 不拆出来会有的洞（用户 2026-09-24 #39）：`launchAuxWindow` 判定"这次不算新打开"时
+/// **根本不会调用** `open_group_todos_window`，于是第二张卡片带着的 `todoId` 就地消失，
+/// 表现还是"点了没反应"。所以投递展开这件事必须独立于"要不要开窗口"：
+/// - 窗口还没建好（在途）⇒ 只写暂存，窗口挂载时自己取走 ⇒ 后一次点击的目标会覆盖前一次，
+///   这正是想要的（用户最后点的那条才该被展开）；
+/// - 窗口已经开着 ⇒ 写暂存 + 定向叫醒它来取。
+///
+/// 桌面专属（移动端没有独立任务窗口，展开走同文档传参）。
+#[cfg(desktop)]
+#[tauri::command(async)]
+pub fn request_group_todo_focus(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    group_id: String,
+    todo_id: String,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    if group_id.is_empty()
+        || group_id.len() > 40
+        || !group_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("群 ID 非法".to_string());
+    }
+    if todo_id.is_empty()
+        || todo_id.len() > 80
+        || !todo_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("任务 ID 非法".to_string());
+    }
+    state
+        .todo_focus_request
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(group_id.clone(), todo_id);
+    let label = format!("{}{group_id}", crate::WINDOW_GROUP_TODOS_PREFIX);
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.emit(
+            "group-todo-focus",
+            serde_json::json!({ "groupId": group_id }),
+        );
+    }
+    Ok(())
+}
+
+/// 移动端桩：与 `open_group_todos_window` 同因 —— 移动端没有独立任务窗口，
+/// 展开目标由 `ChatWindow` 直接把 prop 传给应用内弹窗里的看板。
 #[cfg(mobile)]
 #[tauri::command]
-pub fn open_group_todos_window(_app: tauri::AppHandle, _group_id: String) -> Result<(), String> {
+pub fn request_group_todo_focus(
+    _app: tauri::AppHandle,
+    _state: tauri::State<'_, Arc<AppState>>,
+    _group_id: String,
+    _todo_id: String,
+) -> Result<(), String> {
+    Err("移动端没有独立群任务窗口（任务面板是应用内弹窗）".to_string())
+}
+
+/// 移动端桩：独立群任务窗口是桌面概念（移动端用应用内弹窗 `GroupTasksPanel`）。
+/// 移动端走的是**同文档传参**（`ChatWindow` 把 `focusTodoId` 直接传给弹窗里的看板），
+/// 不经过这条命令 ⇒ 桩只需要保持签名一致。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn open_group_todos_window(
+    _app: tauri::AppHandle,
+    _group_id: String,
+    _focus_todo_id: Option<String>,
+) -> Result<(), String> {
     Err("移动端没有独立群任务窗口（任务面板是应用内弹窗）".to_string())
 }
 

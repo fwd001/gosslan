@@ -648,3 +648,52 @@ test("群任务三处外显同源：卡片实时状态 / 两处计数口径 / �
     "直达详情的 watch 必须把 open 一起看，否则第二次点同一条卡片不生效",
   );
 });
+
+/**
+ * 桌面端「点聊天里的任务卡片 → 独立窗口展开那条任务」的接线（用户 2026-09-24 #39）。
+ *
+ * 这个需求的实现难点**不是**功能，是三个各自都能悄悄失效的点，所以只能钉源码：
+ * 1. **两条投递路径都得在**：新建的窗口不会收到定向事件（那时还没有监听者），
+ *    只能靠它挂载时自己取一次性暂存；已经开着的窗口不会经历挂载，只能靠事件叫醒。
+ *    少任何一条，表现都是"有时点了没反应" —— 这种 bug 只在真机上偶发，测试抓不住。
+ * 2. **投递必须独立于启动器**：`launchAuxWindow` 有单飞 + 连点防抖，判定"这次不算新打开"
+ *    时**根本不会调用** `open_group_todos_window` ⇒ 如果目标只随那次调用走，
+ *    第二张卡片带的 todoId 就地消失。所以 `requestGroupTodoFocus` 必须排在启动器**之前**。
+ * 3. **暂存不能被下次打开继承**：不带目标地打开（标题栏按钮）必须清掉上次的暂存，
+ *    否则用户从按钮打开窗口会被上次那条任务莫名展开。
+ *
+ * 事件名本身（`group-todo-focus`）两端是否对得上，由 `src/api/events.test.ts` 负责
+ * （它扫 Rust 的 emit/emit_to 与前端 listen 的名单），这里不重复。
+ */
+test("桌面端任务窗口的展开投递：两条路 + 独立于启动器 + 不带目标时清暂存", () => {
+  const cmd = readCommandsSrc();
+  const openAt = cmd.indexOf("pub fn open_group_todos_window(");
+  assert.ok(openAt > 0, "找不到 open_group_todos_window");
+  // 桌面版那个先出现（移动端桩在更下面），到下一段文档注释为止就是它的函数体。
+  const openEnd = cmd.indexOf("\n///", openAt);
+  const openBody = cmd.slice(openAt, openEnd);
+  assert.ok(openBody.length > 500, "open_group_todos_window 的窗口切得太短（守卫会空转）");
+  const takeAt = cmd.indexOf("fn take_group_todo_focus(", openEnd);
+  assert.ok(takeAt > openEnd, "找不到 take_group_todo_focus（守卫会空转）");
+  // ① 新建走暂存、复用走事件
+  assert.match(openBody, /pending\.insert\(group_id\.clone\(\), id\.clone\(\)\)/, "带目标时必须写暂存");
+  assert.match(openBody, /pending\.remove\(&group_id\)/, "不带目标时必须清掉上次暂存");
+  assert.match(openBody, /if !created && focus_todo_id\.is_some\(\)/, "只有复用（没经历挂载）才定向发事件");
+  // ② 取走即清（否则同一次点击会被展开两次 / 留下过期目标）
+  assert.match(cmd.slice(takeAt, takeAt + 400), /\.remove\(&group_id\)/, "取走必须同时清掉（一次性）");
+
+  const win = read("components/GroupTodosWindow.vue");
+  assert.match(win, /onMounted\(\(\) => \{\s*void applyFocusRequest\(\)/, "窗口挂载时必须主动取一次暂存");
+  assert.match(win, /api\s*\.onGroupTodoFocus\(/, "窗口已开着时靠定向事件被叫醒");
+
+  // 局部变量别叫 `chat` —— 那是 store 实例在本仓的固定叫法，
+  // `storeContract` 会把它当 "chat.indexOf" 即"store 上缺一个成员"来判。
+  const mainWin = read("components/ChatWindow.vue");
+  const reqAt = mainWin.indexOf("api.requestGroupTodoFocus(");
+  const launchAt = mainWin.indexOf("launchAuxWindow(groupTodosLabel(gid)");
+  assert.ok(reqAt > 0, "主窗口必须投递展开目标");
+  assert.ok(launchAt > 0, "找不到启动器调用点（守卫会空转）");
+  // ⚠️ 两个下标各自**独立**取再比大小：从 reqAt 往后找 launch 的话，
+  // "投递被挪到启动器之后"这种反向改动永远测不出来（-1 与正向偏置都会假装通过）。
+  assert.ok(reqAt < launchAt, "投递展开必须排在 launchAuxWindow 之前 —— 启动器会把后面那次调用整段合并掉");
+});

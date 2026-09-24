@@ -8,9 +8,10 @@
  * 窗口外壳 = `AuxWindowShell`（自绘标题栏 + 1px inset ring），与主窗口/设置窗口同一套
  * —— 用户 2026-09-17：「新窗口用的是系统样式？标题栏和窗口背景有界限」；群名进 caption。
  */
-import { computed, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useChatStore } from "@/stores/useChatStore";
+import { api } from "@/api";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import GroupTasksBoard from "@/components/GroupTasksBoard.vue";
 import { groupTodosGroupId } from "@/utils/auxWindowLabels";
@@ -19,6 +20,51 @@ import { currentLocale, t } from "@/i18n";
 const groupId = groupTodosGroupId(getCurrentWindow().label);
 const chat = useChatStore();
 const group = computed(() => (groupId ? (chat.groups.find((g) => g.id === groupId) ?? null) : null));
+
+/**
+ * 「该展开哪条任务」—— 两条路都收在这一个函数里（用户 2026-09-24 #39）。
+ *
+ * 后端 `open_group_todos_window` 每次都会先写一份一次性暂存：
+ * - **窗口是新建设的**：那条定向事件发给了一个还没有监听者的文档（等于发丢），
+ *   所以只能靠挂载时主动取一次 —— 只发事件的表现就是"第一次点卡片没反应、第二次才有"；
+ * - **窗口本来就开着**：不会经历挂载 ⇒ 由定向事件叫醒，再取同一个暂存（取走即清，
+ *   所以不会重复展开，也不会把上次那条带进下次打开）。
+ * 载荷只带 groupId，取回来的 id 也按本窗口自己的群去要 ⇒ 别群的任务串不过来。
+ */
+const boardRef = ref<InstanceType<typeof GroupTasksBoard> | null>(null);
+async function applyFocusRequest() {
+  if (!groupId) return;
+  const id = await api.takeGroupTodoFocus(groupId).catch(() => null);
+  if (id) boardRef.value?.focusTodo(id);
+}
+
+let unlistenFocus: (() => void) | null = null;
+let disposed = false;
+onMounted(() => {
+  void applyFocusRequest();
+  api
+    .onGroupTodoFocus((payload) => {
+      if (payload?.groupId && payload.groupId !== groupId) return;
+      void applyFocusRequest();
+    })
+    .then((fn) => {
+      // 窗口被秒关时 `onUnmounted` 可能已经跑完 ⇒ 拿到 unlisten 就立刻补一次取消，
+      // 否则这条监听永久留着（与 `boot.ts` 里"降级挂载也要把注册补上"是同一条纪律）。
+      if (disposed) {
+        fn();
+        return;
+      }
+      unlistenFocus = fn;
+    })
+    .catch(() => {
+      /* 订阅失败只影响"窗口已开着时再点卡片"那一条路：新建那条仍走挂载时取暂存 */
+    });
+});
+onUnmounted(() => {
+  disposed = true;
+  unlistenFocus?.();
+  unlistenFocus = null;
+});
 
 /** 标题栏文案：「群名 · 群任务」（群信息还没加载出来时只显示「群任务」）。 */
 const windowTitle = computed(() =>
@@ -46,7 +92,7 @@ watch(
       {{ t("todo.windowBadLabel") }}
     </div>
     <div v-else class="min-h-0 flex-1 overflow-hidden p-4">
-      <GroupTasksBoard :group-id="groupId" standalone />
+      <GroupTasksBoard ref="boardRef" :group-id="groupId" standalone />
     </div>
   </AuxWindowShell>
 </template>

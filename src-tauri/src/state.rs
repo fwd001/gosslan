@@ -927,6 +927,15 @@ pub struct AppState {
     pub db_path: PathBuf,
     /// 应用级运行日志（内存 ring buffer + 落盘文件），供「运行日志」页读取与排查。
     pub logger: Logger,
+    /// 「群任务窗口该展开哪一条任务」的一次性暂存（`groupId → todoId`，桌面端用）。
+    ///
+    /// 为什么要**暂存 + 定向事件两条路**（用户 2026-09-24 #39：点聊天里的任务卡片，
+    /// 窗口打开后要把那条任务展开）：建窗是异步的 —— 窗口**正在创建**时前端还没
+    /// `listen`，只发事件的表现就是"第一次点没反应、第二次才有"。
+    /// 所以每次 `open_group_todos_window` 都写这里（不带 todoId 时**清掉**，
+    /// 否则下次从标题栏按钮打开会莫名展开上次那条），窗口挂载时取走一次；
+    /// 只有"窗口本来就开着"（不会经历挂载）才走定向事件那条路。
+    pub todo_focus_request: Mutex<std::collections::HashMap<String, String>>,
     /// 节点身份（X25519 + Ed25519）
     pub identity: Identity,
     /// Gossip 去重 + 扇出引擎
@@ -1307,6 +1316,7 @@ impl AppState {
             #[cfg(feature = "bluetooth")]
             ble_dial_failures: Mutex::new(std::collections::HashMap::new()),
             dialing: Mutex::new(std::collections::HashSet::new()),
+            todo_focus_request: Mutex::new(std::collections::HashMap::new()),
             dial_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)),
             inbound_permits: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_CONNECTIONS)),
             pending_out_requests: Mutex::new(std::collections::HashSet::new()),

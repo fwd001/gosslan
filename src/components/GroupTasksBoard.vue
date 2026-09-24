@@ -280,22 +280,33 @@ function closeDetail() {
 }
 
 /**
- * 带着 `focusTodoId` 打开 ⇒ 直接落到那条任务的详情（用户 #23）。
+ * 落到某条任务的详情。**两种触发共用这一个动作**（用户 #23 与 #39）：
+ * 应用内弹窗由下面的 watch 触发（ChatWindow 传 prop），独立窗口由根组件调
+ * （挂载时取一次性暂存、或收到定向事件后再取）。
  *
- * 判据是 `[open, focusTodoId]` **一起看**：只看后者会漏掉"点同一条卡片第二次"
- * （面板关掉再开，`focusTodoId` 没变，watch 不触发 ⇒ 用户以为按钮坏了）。
  * 查不到就**什么都不做**（任务被删 / 折叠结果里没有它）—— 看板照常在后面，
  * 不弹"找不到"也不空指针。归档态要先切到「已归档」那一档，否则详情背后的列表
  * 根本不是它所在的那一屏。
+ */
+function focusTodo(id: string) {
+  const x = todos.value.find((t) => t.todoId === id);
+  if (!x) return;
+  filter.value = isEffectivelyArchived(x) ? "archived" : "all";
+  openDetail(x);
+}
+defineExpose({ focusTodo });
+
+/**
+ * 应用内弹窗那条路：带着 `focusTodoId` 打开 ⇒ 直接落到那条任务（用户 #23）。
+ *
+ * 判据是 `[open, focusTodoId]` **一起看**：只看后者会漏掉"点同一条卡片第二次"
+ * （面板关掉再开，`focusTodoId` 没变，watch 不触发 ⇒ 用户以为按钮坏了）。
  */
 watch(
   [() => props.open, () => props.focusTodoId],
   ([open, id]) => {
     if (!open || !id) return;
-    const x = todos.value.find((t) => t.todoId === id);
-    if (!x) return;
-    filter.value = isEffectivelyArchived(x) ? "archived" : "all";
-    openDetail(x);
+    focusTodo(id);
   },
   { immediate: true },
 );

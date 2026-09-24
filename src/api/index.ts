@@ -368,7 +368,32 @@ export const api = {
   closeSettingsWindow: () => invoke<void>("close_settings_window"),
 
   /** 打开**指定群**的独立任务窗口（桌面端；每群一个窗口，label = `todo-<groupId>`）。 */
-  openGroupTodosWindow: (groupId: string) => invoke<void>("open_group_todos_window", { groupId }),
+  /**
+   * 打开**指定群**的独立任务窗口（桌面端；每群一个窗口，label = `todo-<groupId>`）。
+   * `focusTodoId` = 打开后要直接展开的那条任务（用户 2026-09-24 #39）；不传 = 清掉上次的待展开。
+   */
+  openGroupTodosWindow: (groupId: string, focusTodoId?: string) =>
+    invoke<void>("open_group_todos_window", { groupId, focusTodoId: focusTodoId ?? null }),
+
+  /**
+   * 取走本窗口"该展开哪条任务"（一次性，取完即清）。
+   * 新建的窗口拿不到那条定向事件（发的时候监听者还不存在），只能靠自己挂载时取一次。
+   */
+  takeGroupTodoFocus: (groupId: string) =>
+    invoke<string | null>("take_group_todo_focus", { groupId }),
+
+  /** 群任务窗口已开着时，后端定向推来的"该展开哪条"提醒（载荷只带 groupId）。 */
+  onGroupTodoFocus: (cb: (payload: { groupId: string }) => void) =>
+    listen<{ groupId: string }>("group-todo-focus", (e) => cb(e.payload)),
+
+  /**
+   * **只投递**"该展开哪条"，不要求开窗口（桌面端）。
+   * 必须独立于 `launchAuxWindow`：那条启动器有单飞 + 防抖，被它合并掉的那一次
+   * 根本不会调 `open_group_todos_window` ⇒ 目标就地消失。
+   */
+  requestGroupTodoFocus: (groupId: string, todoId: string) =>
+    invoke<void>("request_group_todo_focus", { groupId, todoId }),
+
 
   /** 在独立窗口里加载一个外部网址（桌面端；窗口隔离，不授予远端页面任何命令权限）。 */
   openLinkWindow: (url: string, name: string) => invoke<void>("open_link_window", { url, name }),
