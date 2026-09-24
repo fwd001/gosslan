@@ -1117,10 +1117,13 @@ test("图片预览只有一处渲染点，其余组件一律走 useImagePreviewS
       stateful.push(rel);
     }
   }
+  // 允许**两个文档各一个实例**：主窗口的覆盖层（移动端 + 不可跨文档时的退回路径）
+  // 与桌面端那个全局唯一的预览窗口。"全局只有一个预览"说的是**同一时刻用户看到的界面**，
+  // 而这两处不会同时亮：store 的 `inWindow` 为真时壳层那份就让位（ResponsiveLayout 的 :open）。
   assert.deepEqual(
-    renderers,
-    ["layouts/ResponsiveLayout.vue"],
-    `发现多处图片预览渲染点：${renderers.join(", ")} —— 预览必须只有壳层那一份，别处调 store`,
+    [...new Set(renderers)].sort(),
+    ["components/window/PreviewWindow.vue", "layouts/ResponsiveLayout.vue"],
+    `图片预览的渲染点不对：${renderers.join(", ")} —— 只许壳层覆盖层 + 预览窗口这两处`,
   );
   assert.deepEqual(stateful, [], `这些组件还自己持有预览开关状态：${stateful.join(", ")}`);
   // store 侧：唯一那份实例绑在 store 上，不是本地 ref

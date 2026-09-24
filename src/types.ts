@@ -163,6 +163,28 @@ export interface Group {
   members: string[];
 }
 
+/**
+ * 全局图片预览里的一张图（用户 2026-09-24 #40）。字段名即**线格式**
+ * （Rust `PreviewItem` 用 `rename_all = "camelCase"` 与它对上）。
+ *
+ * 三种取字节的来源，按优先级：`dataSrc`（已在手边的 data URL）→ `cid`（待办描述图）
+ * → `msgId`（聊天消息）。⚠️ `blob:` objectURL **不属于任何一种**：它只在发起它的那个文档里
+ * 有效，跨到预览窗口就是破图 ⇒ 带 blob 的那份相册不走窗口，留在应用内覆盖层
+ * （判据在前端 `deliverableToWindow`，后端 `validate_preview` 再钉一次）。
+ */
+export interface PreviewImage {
+  name: string;
+  dataSrc?: string | null;
+  msgId?: string;
+  cid?: string;
+}
+
+/** 一次预览投递 = 相册 + 起始下标（窗口里的左右循环就在这个数组上转）。 */
+export interface PreviewGallery {
+  items: PreviewImage[];
+  index: number;
+}
+
 export interface InterfaceInfo {
   name: string;
   ip: string;

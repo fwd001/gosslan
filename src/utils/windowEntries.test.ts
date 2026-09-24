@@ -19,6 +19,18 @@ import { test } from "node:test";
 const root = join(import.meta.dirname, "..", "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
 
+/**
+ * 剥掉注释后的代码。**禁止性判据（`!includes(坏东西)`）必须用它**：
+ * 否则"注释里写着这里绝不调用 chat.init()"会自己踩中红线 —— 越认真解释为什么不能用，
+ * 守卫越红（真踩过一次）。正向断言仍读原文，别让剥注释把该出现的东西剥没。
+ *
+ * 行注释只在"行首或空白后"才算：这样 `https://x` 里的 `//` 不会被当成注释起点。
+ */
+const codeOnly = (src: string) =>
+  src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(?:^|(?<=\s))\/\/[^\n]*/gm, "");
+
 /** 四个窗口：HTML 文件 ↔ 入口模块 ↔ 自己的骨架 id ↔ `<html>` 上的骨架类。 */
 const WINDOWS = [
   { html: "index.html", entry: "src/entries/main.ts", skeleton: "boot", htmlClass: null },
@@ -34,6 +46,12 @@ const WINDOWS = [
     entry: "src/entries/todos.ts",
     skeleton: "boot-todos",
     htmlClass: "boot-todos",
+  },
+  {
+    html: "preview.html",
+    entry: "src/entries/preview.ts",
+    skeleton: "boot-preview",
+    htmlClass: "boot-preview",
   },
 ] as const;
 
@@ -106,8 +124,13 @@ test("每个窗口都声明自己的标题（按语言切换，不再由 Rust �
 test("辅助窗口的入口不得把聊天那一套拉进来（这是「设置窗口先闪成聊天界面」的根因）", () => {
   // 通用红线：**任何**辅助窗口都不得注册聊天事件（第二次 bindEvents/init 会重复通知、
   // 重复计未读、重复发群已读回执 —— 见 src/App.vue 顶部的说明）。
-  for (const entry of ["src/entries/settings.ts", "src/entries/logs.ts", "src/entries/todos.ts"]) {
-    const code = read(entry);
+  for (const entry of [
+    "src/entries/settings.ts",
+    "src/entries/logs.ts",
+    "src/entries/todos.ts",
+    "src/entries/preview.ts",
+  ]) {
+    const code = codeOnly(read(entry));
     for (const bad of ["chat.init(", "bindEvents("]) {
       assert.ok(!code.includes(bad), `${entry} 不得调用 ${bad}（独立窗口注册第二套事件监听会重复通知/未读/回执）`);
     }
@@ -119,9 +142,11 @@ test("辅助窗口的入口不得把聊天那一套拉进来（这是「设置�
     "src/entries/settings.ts": ["useChatStore"],
     "src/entries/logs.ts": ["useChatStore"],
     "src/entries/todos.ts": [],
+    // 预览窗口只按 msgId/cid 自己取字节，连聊天 store 都不需要
+    "src/entries/preview.ts": ["useChatStore"],
   };
   for (const [entry, extra] of Object.entries(perEntry)) {
-    const code = read(entry);
+    const code = codeOnly(read(entry));
     for (const bad of [...commonForbidden, ...extra]) {
       assert.ok(
         !code.includes(bad),

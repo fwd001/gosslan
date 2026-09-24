@@ -1,6 +1,7 @@
 // 职责边界：
 // - logs.rs 的源码守卫测试
 // - 辅助窗口几何不变式（fit_inside_main / centered）
+// - 跨窗口预览投递的校验（validate_preview 的三条可寻址来源 + 上限）
 #[cfg(test)]
 mod tests {
     use super::{friend_is_online, FRIEND_ONLINE_GRACE_MS};
@@ -935,7 +936,7 @@ mod tests {
             !super::reopen_only_change(&def, &edit(&req_of(&def))),
             "什么都没改的请求不是还原"
         );
-        let mut r = req_of(&archived_def);
+        let r = req_of(&archived_def);
         assert!(
             !super::reopen_only_change(&archived_def, &edit(&r)),
             "库里不是完成态 ⇒ 这不是还原"
@@ -1028,6 +1029,68 @@ mod tests {
             "命令层不得再直接调两档判据 —— 那样两条窄档会被绕开"
         );
     }
+
+    /// 跨窗口预览投递的校验（用户 #40：「全局一个预览窗口，任何界面都能调用」）。
+    ///
+    /// 为什么必须单测而不是只靠前端判据：这条路径的输入**能被远端影响**（名字和 base64
+    /// 来自消息载荷），而且产物挂在全局唯一窗口上 —— 一份畸形相册不会崩，只会一直难看地
+    /// 停在那儿。`blob:` 那条尤其要钉：它是**发起文档**的句柄，跨文档拿到只会渲染成破图，
+    /// 前端 `deliverableToWindow` 也判过一遍，但那是"要不要开新窗"，这里是"开都别让你开"。
+    #[cfg(desktop)]
+    #[test]
+    fn preview_gallery_validation_rejects_unaddressable_and_oversized() {
+        use super::{
+            validate_preview, PREVIEW_MAX_ITEMS, PREVIEW_MAX_NAME_LEN, AUX_PREVIEW_RESIDENT,
+        };
+        use crate::state::{PreviewGallery, PreviewItem};
+        let item = |name: &str, msg: Option<&str>, cid: Option<&str>, data: Option<&str>| {
+            PreviewItem {
+                name: name.to_string(),
+                msg_id: msg.map(|s| s.to_string()),
+                cid: cid.map(|s| s.to_string()),
+                data_src: data.map(|s| s.to_string()),
+            }
+        };
+        let gallery = |items: Vec<PreviewItem>, index: usize| PreviewGallery { items, index };
+
+        // 三种合法来源：消息 id / 内容 cid / 内联 data URL
+        for it in [
+            item("a.png", Some("m1"), None, None),
+            item("b.png", None, Some("cid1"), None),
+            item("c.png", None, None, Some("data:image/png;base64,AAAA")),
+        ] {
+            assert_eq!(validate_preview(&gallery(vec![it], 0)), Ok(()));
+        }
+
+        // 空相册 / 起始越界 / 条数超限 / 名字超长
+        assert!(validate_preview(&gallery(vec![], 0)).is_err(), "空相册不该开窗");
+        assert!(validate_preview(&gallery(vec![item("a", Some("m"), None, None)], 1)).is_err());
+        let many = (0..=PREVIEW_MAX_ITEMS)
+            .map(|i| {
+                let id = format!("m{i}");
+                item("a", Some(id.as_str()), None, None)
+            })
+            .collect();
+        assert!(validate_preview(&gallery(many, 0)).is_err(), "条数必须有上限");
+        let long_name = "x".repeat(PREVIEW_MAX_NAME_LEN + 1);
+        assert!(validate_preview(&gallery(vec![item(&long_name, Some("m"), None, None)], 0)).is_err());
+
+        // 不可寻址：blob 句柄 / 什么引用都没有 / 空字符串占位
+        for it in [
+            item("a", None, None, Some("blob:http://localhost/1")),
+            item("a", None, None, None),
+            item("a", Some(""), Some(""), Some("")),
+        ] {
+            assert!(
+                validate_preview(&gallery(vec![it], 0)).is_err(),
+                "不可跨文档寻址的条目必须整份拒绝"
+            );
+        }
+
+        // 非常驻：关掉后靠"下一次投递"重建，而不是留一个空壳窗口
+        assert!(!AUX_PREVIEW_RESIDENT, "预览窗口不该常驻（内容是一次性的）");
+    }
+
     /// 完成 / 归档字段的权威推导（用户 2026-09-17：「完成以后手动归档」）。
     ///
     /// 为什么必须钉死：这两条都**只体现在行为里**，看代码很容易漏 ——

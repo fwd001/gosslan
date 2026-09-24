@@ -89,6 +89,7 @@ export default defineConfig(async () => ({
         settings: resolve(here, "settings.html"),
         logs: resolve(here, "logs.html"),
         todos: resolve(here, "todos.html"),
+        preview: resolve(here, "preview.html"),
       },
       output: {
         manualChunks(id) {

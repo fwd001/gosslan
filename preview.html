@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- 独立「图片预览」窗口（桌面端，固定 label=`preview`，全局只有一个）。
+     自己的文档 + 自己的入口：只加载看图那一份组件，不牵进聊天那一棵组件树。
+     相册内容靠一次 IPC 从后端取（跨文档共享不了主窗口里的数组），见 src/entries/preview.ts。 -->
+<html lang="zh-CN" class="boot-preview" data-title-zh="相闻 · 图片预览" data-title-en="Gosslan · Image">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Image</title>
+    <!-- 主题首帧 + 骨架样式：与主窗口共用同一份（见 index.html 的说明与 vite 插件）。 -->
+    <!-- GOSSLAN_THEME_BOOT -->
+    <!-- GOSSLAN_SKELETON_CSS -->
+  </head>
+  <body>
+    <!-- 预览窗口骨架：居中的一块大图占位（形状与真图一致，撤掉时不会"跳一下"）。 -->
+    <div id="boot-preview" aria-hidden="true">
+      <div class="boot-preview-frame"></div>
+    </div>
+    <div id="app"></div>
+    <script type="module" src="/src/entries/preview.ts"></script>
+  </body>
+</html>

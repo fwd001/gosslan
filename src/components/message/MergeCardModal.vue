@@ -51,6 +51,7 @@ const imageSlots = reactive<Record<number, ImageSlot>>({});
 interface GalleryItem {
   msgId: string;
   name: string;
+  cid?: string;
   dataSrc: string | null;
 }
 const gallery = computed<GalleryItem[]>(() => {
@@ -58,9 +59,14 @@ const gallery = computed<GalleryItem[]>(() => {
   items.value.forEach((it, i) => {
     if (it.kind !== "image") return;
     const slot = imageSlots[i];
-    if (slot?.phase === "ready" && slot.url) {
-      out.push({ msgId: `merge-${i}`, name: mediaName(it), dataSrc: slot.url });
-    }
+    if (slot?.phase !== "ready") return;
+    const cid = mediaCid(it);
+    // ⚠️ 优先给 **cid**，别给 objectURL：`blob:` 只在本文档有效，交给独立预览窗口就是破图
+    // （用户 2026-09-24 #40 要求"任何界面都能调这个预览"）。合并卡片的图本来就来自
+    // content store，cid 是它的稳定身份；只有拿不到 cid 的旧载荷才退回 `slot.url`，
+    // 那种情况由 store 的 `deliverableToWindow` 把整份相册留在应用内覆盖层。
+    if (cid) out.push({ msgId: `merge-${i}`, name: mediaName(it), cid, dataSrc: null });
+    else if (slot.url) out.push({ msgId: `merge-${i}`, name: mediaName(it), dataSrc: slot.url });
   });
   return out;
 });

@@ -458,6 +458,35 @@
         background: var(--boot-line);
         animation: boot-breathe 1.5s ease-in-out infinite;
       }
+      /* 独立「图片预览」窗口：一张居中的大图占位 + 左右两个箭头位。
+         为什么也要骨架：这个窗口的内容要靠一次 IPC 把相册取回来（跨文档不能直接共享
+         主窗口里的数组），没有骨架就会先看到一整片黑底，用户以为"没打开"。 */
+      #boot-preview {
+        display: none;
+      }
+      html.boot-preview #boot {
+        display: none;
+      }
+      html.boot-preview #boot-preview {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--boot-app-bg);
+      }
+      #boot-preview.boot-hide {
+        opacity: 0;
+        transition: opacity 0.18s ease-out;
+      }
+      .boot-preview-frame {
+        width: min(72%, 900px);
+        height: min(78%, 620px);
+        border-radius: 10px;
+        background: var(--boot-line);
+        animation: boot-breathe 1.5s ease-in-out infinite;
+      }
       #boot-todos {
         display: none;
       }
@@ -568,7 +597,8 @@
         .boot-log-line i,
         .boot-todos-title,
         .boot-todos-chip,
-        .boot-todo-card i {
+        .boot-todo-card i,
+        .boot-preview-frame {
           animation: none;
           opacity: 0.75;
         }

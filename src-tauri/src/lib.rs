@@ -86,7 +86,14 @@ pub const WINDOW_GROUP_TODOS_PREFIX: &str = "todo-";
 pub const WINDOW_LINK: &str = "link";
 /// 主窗口在 `tray::MAIN_WINDOW_LABEL` 也有一份（那里是 `#[cfg(desktop)]`），
 /// 测试里断言两者一致，避免漂移。
-pub const WINDOW_LABELS: &[&str] = &[WINDOW_MAIN, WINDOW_SETTINGS, WINDOW_LOGS];
+/// 独立的「图片预览」窗口（`open_image_preview`，用户 2026-09-24 #40）。
+///
+/// label 固定 ⇒ **全局只有一个**：从会话 / 任务 / 收藏点开的图都替换这一个窗口的内容，
+/// 而不是叠出第二、第三扇看图窗。
+pub const WINDOW_PREVIEW: &str = "preview";
+/// 主窗口在 `tray::MAIN_WINDOW_LABEL` 也有一份（那里是 `#[cfg(desktop)]`），
+/// 测试里断言两者一致，避免漂移。
+pub const WINDOW_LABELS: &[&str] = &[WINDOW_MAIN, WINDOW_SETTINGS, WINDOW_LOGS, WINDOW_PREVIEW];
 
 /// 安装 panic hook：把 panic（位置 + 消息）写进应用日志文件，并打到 stderr。
 ///
@@ -503,6 +510,8 @@ pub fn run() {
             commands::open_group_todos_window,
             commands::take_group_todo_focus,
             commands::request_group_todo_focus,
+            commands::open_image_preview,
+            commands::get_image_preview_gallery,
             commands::open_link_window,
             commands::list_external_links,
             commands::add_external_link,
@@ -3542,8 +3551,8 @@ mod tests {
             urls.push(rest[..end].to_string());
         }
         assert!(
-            urls.len() >= 3,
-            "应当能找到设置 / 日志 / 群任务三个窗口的 URL，实际 {}",
+            urls.len() >= 4,
+            "应当能找到设置 / 日志 / 群任务 / 图片预览四个窗口的 URL，实际 {}",
             urls.len()
         );
         assert!(
@@ -3562,15 +3571,20 @@ mod tests {
             ("settings.html", "src/entries/settings.ts"),
             ("logs.html", "src/entries/logs.ts"),
             ("todos.html", "src/entries/todos.ts"),
+            ("preview.html", "src/entries/preview.ts"),
         ] {
             assert!(
                 urls.iter().any(|u| u == url),
                 "Rust 侧应当打开 {url}：{urls:?}"
             );
+            // 每条 URL 都要显式列出来：`_ =>` 兜底会让新增的窗口"读到别人的 HTML"，
+            // 于是下面那条 contains 断言替别人通过 —— 护栏变成空转。
             let html = match url {
                 "settings.html" => include_str!("../../settings.html").to_string(),
                 "logs.html" => include_str!("../../logs.html").to_string(),
-                _ => include_str!("../../todos.html").to_string(),
+                "todos.html" => include_str!("../../todos.html").to_string(),
+                "preview.html" => include_str!("../../preview.html").to_string(),
+                _ => unreachable!("新增 url 必须在这里补自己的 include_str!"),
             };
             assert!(
                 html.contains(&format!("/{entry}")),
@@ -3584,9 +3598,13 @@ mod tests {
                 "src/entries/logs.ts" => {
                     let _ = include_str!("../../src/entries/logs.ts");
                 }
-                _ => {
+                "src/entries/todos.ts" => {
                     let _ = include_str!("../../src/entries/todos.ts");
                 }
+                "src/entries/preview.ts" => {
+                    let _ = include_str!("../../src/entries/preview.ts");
+                }
+                _ => unreachable!("新增 entry 必须在这里补自己的 include_str!"),
             }
         }
     }
@@ -3609,6 +3627,7 @@ mod tests {
             "pub fn open_log_window(",
             "pub fn open_group_todos_window(",
             "pub fn open_link_window(",
+            "pub fn open_image_preview(",
         ] {
             let body = rust_fn_body(commands, signature);
             assert!(
@@ -3665,6 +3684,7 @@ mod tests {
             "pub fn open_log_window(",
             "pub fn open_group_todos_window(",
             "pub fn open_link_window(",
+            "pub fn open_image_preview(",
         ] {
             let body = rust_fn_body(commands, signature);
             assert!(

@@ -32,6 +32,7 @@ commands::tests::message_content_over_limit_is_rejected_not_truncated
 commands::tests::message_content_within_limit_is_returned_unchanged
 commands::tests::message_length_is_counted_in_chars_not_bytes
 commands::tests::pending_request_from_an_existing_friend_is_not_actionable
+commands::tests::preview_gallery_validation_rejects_unaddressable_and_oversized
 commands::tests::restored_aux_window_size_is_clamped_between_min_and_design
 commands::tests::routed_endpoint_address_is_normalized_to_ipv4_socket
 commands::tests::sanitize_file_name_blocks_path_traversal

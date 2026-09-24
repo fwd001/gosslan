@@ -822,7 +822,7 @@ function onResizeEnd() {
     <ImageLightbox
       :images="preview.images"
       v-model:index="preview.index"
-      :open="preview.open"
+      :open="preview.open && !preview.inWindow"
       @close="preview.close()"
     />
 

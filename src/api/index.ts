@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
+import type { PreviewGallery, PreviewImage } from "@/types";
 export const api = {
   /**
    * 监听"**另一个窗口**改了设置"（外观 / 语言 / 资料 / 目录 / 缓存策略）。
@@ -393,6 +394,18 @@ export const api = {
    */
   requestGroupTodoFocus: (groupId: string, todoId: string) =>
     invoke<void>("request_group_todo_focus", { groupId, todoId }),
+
+  // ---------------- 全局图片预览（用户 2026-09-24 #40） ----------------
+  /**
+   * 把这份相册设为**那个全局唯一预览窗口**的内容（桌面端）。
+   * 已开着就替换内容并聚焦，没开就建一个 —— 调用方不需要知道窗口在不在。
+   */
+  openImagePreview: (items: PreviewImage[], index: number) =>
+    invoke<void>("open_image_preview", { gallery: { items, index } }),
+  /** 预览窗口自己取"现在该显示哪一份"（不清：每次投递都整体覆盖，见 Rust 侧说明）。 */
+  getImagePreviewGallery: () => invoke<PreviewGallery | null>("get_image_preview_gallery"),
+  /** 窗口已经开着时的"内容换了，再取一次"提醒。 */
+  onImagePreviewChanged: (cb: () => void) => listen("preview-gallery", () => cb()),
 
 
   /** 在独立窗口里加载一个外部网址（桌面端；窗口隔离，不授予远端页面任何命令权限）。 */

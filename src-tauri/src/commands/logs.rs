@@ -58,6 +58,14 @@ const AUX_DEVTOOLS: bool = cfg!(debug_assertions);
 #[cfg(desktop)]
 const AUX_GROUP_TODOS_RESIDENT: bool = false;
 
+/// 图片预览窗口**关闭即销毁**（不常驻）。
+///
+/// 它常驻的价值本来只是"下次打开快"，但里面装的是**当前正在看的相册**（可能几 MB 的
+/// data URL）；✕ 之后还留着那帧内容没有意义，销毁顺带把它放掉。
+/// "全局只有一个"靠的是固定 label + `ensure_aux_window` 的单例，与是否常驻无关。
+#[cfg(desktop)]
+const AUX_PREVIEW_RESIDENT: bool = false;
+
 /// 串行化"创建独立窗口"这一步 —— 并发打开同一个窗口是有真实竞态的。
 ///
 /// `WebviewWindowBuilder::build()` 的重复 label 检查在 `prepare_window` 里做
@@ -734,6 +742,150 @@ pub fn open_group_todos_window(
     _focus_todo_id: Option<String>,
 ) -> Result<(), String> {
     Err("移动端没有独立群任务窗口（任务面板是应用内弹窗）".to_string())
+}
+
+/// 一次投递给预览窗口的相册上限（条数 / 名字长度 / data URL 总量）。
+///
+/// 为什么要上限：这是**远端不可信输入能直接塞进内存**的一条路径（条目来自消息载荷里的
+/// 名字与 base64），而且它是全局唯一窗口 —— 一份畸形相册会一直挂在那儿。
+/// 超限就整份拒绝，前端退回应用内覆盖层（不是"少显示几张"那种半成品）。
+#[cfg(desktop)]
+const PREVIEW_MAX_ITEMS: usize = 500;
+#[cfg(desktop)]
+const PREVIEW_MAX_NAME_LEN: usize = 200;
+#[cfg(desktop)]
+const PREVIEW_MAX_TOTAL_BYTES: usize = 32 * 1024 * 1024;
+
+/// 校验一次预览投递（纯函数，便于单测）。
+///
+/// 只验形状不验"图取不取得到"：取不到字节是预览窗口自己的事（它会显示"文件已被清理"
+/// 那套既有状态），在这里拒绝反而会让用户点了完全没反应。
+#[cfg(desktop)]
+fn validate_preview(g: &crate::state::PreviewGallery) -> Result<(), String> {
+    if g.items.is_empty() {
+        return Err("没有可预览的图片".to_string());
+    }
+    if g.items.len() > PREVIEW_MAX_ITEMS {
+        return Err(format!("一次最多预览 {PREVIEW_MAX_ITEMS} 张图"));
+    }
+    if g.index >= g.items.len() {
+        return Err("预览起始位置越界".to_string());
+    }
+    let mut bytes = 0usize;
+    for it in &g.items {
+        if it.name.chars().count() > PREVIEW_MAX_NAME_LEN {
+            return Err(format!("图片名最长 {PREVIEW_MAX_NAME_LEN} 字符"));
+        }
+        // 每条都必须可寻址：`data_src` 只接受 data URL —— `blob:` 是**发起文档**的句柄，
+        // 预览窗口拿到只会渲染成破图（用户 #40 要求"任何界面都能调用这个组件"，
+        // 那就更要把"能不能跨文档"说清楚，而不是默默显示一个坏掉的框）。
+        match (&it.msg_id, &it.cid, &it.data_src) {
+            (Some(m), _, _) if !m.is_empty() => {}
+            (_, Some(c), _) if !c.is_empty() => {}
+            (
+                _,
+                _,
+                Some(d),
+            ) if d.starts_with("data:") => {
+                bytes += d.len();
+            }
+            _ => return Err("图片数据不可跨窗口预览".to_string()),
+        }
+    }
+    if bytes > PREVIEW_MAX_TOTAL_BYTES {
+        return Err("图片数据过大，无法跨窗口预览".to_string());
+    }
+    Ok(())
+}
+
+/// 桌面端：打开（或复用）**全局唯一**的「图片预览」窗口，并把这份相册设为它当前内容。
+///
+/// 用户 2026-09-24 #40 的口径："不同界面查看图片会替换里面的内容"，所以：
+/// - label 固定 [`crate::WINDOW_PREVIEW`] ⇒ 从会话、任务、收藏点进来的都是同一个窗口；
+/// - 内容写进 [`AppState::preview_gallery`]（**当前值**，不是一次性请求）；
+/// - **已开着**：定向 `emit` 一条 `preview-gallery` 叫它重新取；
+/// - **刚新建**：那条事件一定发丢（监听器还没注册），由窗口挂载时自己 `get_image_preview_gallery`。
+///   两条路都读同一份当前值，所以谁先到都一样，不存在"丢一次点击"。
+#[cfg(desktop)]
+#[tauri::command(async)]
+pub fn open_image_preview(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    gallery: crate::state::PreviewGallery,
+) -> Result<(), String> {
+    use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};
+    validate_preview(&gallery)?;
+    *state
+        .preview_gallery
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(gallery);
+    let bg = aux_window_background(&state);
+    let title = aux_window_title(&state, "图片预览", "Image preview", None);
+    // 设计尺寸 1120×820：用户要的是"比聊天界面大一圈"。`fit_aux_window` 会把它夹到
+    // 「主窗口 − 两侧各 24px」，所以**永不比主窗口大**（那条几何不变式见 logs_tests），
+    // 主窗口本身小的时候跟着缩 —— 这正是想要的，不去破不变式。
+    let geo = aux_window_geometry(&app, (1120.0, 820.0), (480.0, 360.0));
+    let build_app = app.clone();
+    let (_win, created) = ensure_aux_window(
+        &app,
+        crate::WINDOW_PREVIEW,
+        geo,
+        AUX_PREVIEW_RESIDENT,
+        move || {
+            let win = WebviewWindowBuilder::new(
+                &build_app,
+                crate::WINDOW_PREVIEW,
+                WebviewUrl::App("preview.html".into()),
+            )
+            .title(title)
+            .devtools(AUX_DEVTOOLS)
+            .inner_size(1120.0, 820.0)
+            .min_inner_size(480.0, 360.0)
+            .background_color(bg)
+            .visible(false)
+            .decorations(false)
+            .resizable(true)
+            .maximizable(false)
+            .minimizable(true)
+            .closable(true)
+            .build()?;
+            decorate_aux_window(&win, &build_app);
+            if let Some(g) = geo {
+                apply_aux_geometry(&win, g);
+                restore_aux_window_size(&win, &g);
+                recenter_aux_window(&win, &g);
+            }
+            Ok(win)
+        },
+    )?;
+    if !created {
+        let _ = _win.emit("preview-gallery", ());
+    }
+    Ok(())
+}
+
+/// 预览窗口取当前该显示的相册（**不清**，理由见 [`AppState::preview_gallery`]）。
+/// 不分桌面/移动：只是读一块内存。
+#[tauri::command]
+pub fn get_image_preview_gallery(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Option<crate::state::PreviewGallery> {
+    state
+        .preview_gallery
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// 移动端桩：预览窗口是桌面概念（移动端仍是应用内全屏覆盖层）。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn open_image_preview(
+    _app: tauri::AppHandle,
+    _state: tauri::State<'_, Arc<AppState>>,
+    _gallery: crate::state::PreviewGallery,
+) -> Result<(), String> {
+    Err("移动端图片预览用应用内覆盖层（没有独立窗口）".to_string())
 }
 
 /// 桌面端：打开（或复用）独立的「外部链接」窗口，在窗口内加载该网址。
