@@ -654,6 +654,187 @@ mod tests {
         )
     }
 
+    /// 按花括号配平切出一个函数（含签名到收尾 `}`）。
+    ///
+    /// 为什么不用现成的 `rust_fn_body`：它靠"找 `\n}\n`"定尾，而 `mod tests` 里的函数缩进四格，
+    /// 收尾是 `\n    }\n` ⇒ 它找不到锚点、**返回剩余整个文件**（那是它刻意的兜底），
+    /// 于是"登记清单"会被后面所有 `include_str!` 污染 —— 这条守卫要的是精确集合。
+    fn slice_fn_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("源码里找不到 `{signature}` —— 这条守卫需要同步更新"));
+        let open = src[start..]
+            .find('{')
+            .unwrap_or_else(|| panic!("`{signature}` 后面找不到函数体"));
+        let mut depth = 0usize;
+        for (i, ch) in src[start + open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[start..start + open + i + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("`{signature}` 的函数体花括号不配平");
+    }
+
+    /// 扫出一段源码里所有 `include_str!("…")` / `include!("…")` 的**相对路径**（跳过整行注释）。
+    ///
+    /// 为什么要跳过注释：这些文件里到处有人写"新增分册时要登记一行 `include!`"这类说明，
+    /// 不跳过的话注释里那个举例路径会被当成真实登记项。
+    fn scan_macro_paths(src: &str, macro_name: &str) -> Vec<String> {
+        let needle = format!("{macro_name}!(\"");
+        let mut out = Vec::new();
+        for line in src.lines() {
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            let mut at = 0usize;
+            while let Some(i) = line[at..].find(needle.as_str()) {
+                let start = at + i + needle.len();
+                let Some(j) = line[start..].find('"') else {
+                    break;
+                };
+                out.push(line[start..start + j].to_string());
+                at = start + j;
+            }
+        }
+        out
+    }
+
+    /// 从 `entry` 出发**递归展开** `include!("…")`，返回除入口自身外的全部分册。
+    ///
+    /// 路径按 `include!` 的语义相对**当前文件**解析；解析不到文件的条目直接跳过
+    /// （真正的 `include!` 路径写错根本编译不过，所以"文件不存在"只可能是注释里的举例）。
+    fn include_closure(entry: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let text = std::fs::read_to_string(entry)
+            .unwrap_or_else(|e| panic!("读不到 {}：{e}", entry.display()));
+        let dir = entry.parent().unwrap();
+        for rel in scan_macro_paths(&text, "include") {
+            let child = dir.join(&rel);
+            if !child.is_file() {
+                continue;
+            }
+            let child = std::path::PathBuf::from(child.to_string_lossy().replace('\\', "/"));
+            if out.contains(&child) {
+                continue;
+            }
+            out.push(child.clone());
+            include_closure(&child, out);
+        }
+    }
+
+    /// **0-A1：三份"守卫用的源码全集"必须等于编译器实际 `include!` 进来的分册集合。**
+    ///
+    /// 为什么要这条（架构复审 2026-09-24 P10）：`include!` 只做编译期拼接，`include_str!`
+    /// 看不见展开后的结果 ⇒ 守卫用的视图是**手工登记的第二份清单**。它已经漂移过两次：
+    /// `commands/relay.rs` 与 `transport/relay.rs` 在 4.25.0 接线时都只登记了 `include!` 与领域图、
+    /// 漏了这里（现场注释见 `all_commands_src()` 内与 `network/mod.rs:229`）。
+    /// **漏登记的后果不是报错而是假绿** —— 以"全部命令面"为判据的守卫扫不到那个分册，
+    /// 于是永远通过。假红至少逼人来看，假绿会一直骗下去。
+    ///
+    /// 两个方向都钉住：
+    ///   · 编译器有、视图没有 ⇒ 假绿（最危险），红；
+    ///   · 视图有、编译器没有 ⇒ 守卫会去扫根本不在这个模块里的代码（假红的来源），也红。
+    ///
+    /// `*_tests.rs` 分册是**故意**不进视图的（测试文本会把生产模式扫描带偏），
+    /// 所以判据是"闭包减去测试分册"，并把这件事写在断言消息里而不是靠沉默。
+    #[test]
+    fn guard_source_views_register_every_include_subfile() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let this_file = include_str!("lib.rs");
+        let mod_file = include_str!("network/mod.rs");
+        // 第五列是**每个用例自己的 canary**：一个"必须出现在闭包里"的分册。
+        // 为什么不能只写一条"闭包 ≥ N"：三个视图的分册数差一个量级
+        // （commands 24 / db 16 / transport 3），同一个阈值套下去要么松到没有意义、
+        // 要么把 transport 直接判成"解析器失效"（第一版就是这么红的）。
+        // canary 挑的都是历史上真漂移过的那批（4.25.0 接线时 relay 漏登记过两次）。
+        let cases: [(&str, &str, &str, &str, &str); 3] = [
+            (
+                "commands.rs",
+                "fn all_commands_src()",
+                this_file,
+                "all_commands_src()",
+                "commands/relay.rs",
+            ),
+            (
+                "db.rs",
+                "fn all_db_src()",
+                this_file,
+                "all_db_src()",
+                "db/recalls.rs",
+            ),
+            (
+                "network/transport.rs",
+                "fn transport_src_for_guards()",
+                mod_file,
+                "network::transport_src_for_guards()",
+                "transport/relay.rs",
+            ),
+        ];
+        for (entry_name, signature, holder_src, label, canary) in cases {
+            let entry = manifest.join("src").join(entry_name);
+            let mut closure = Vec::new();
+            include_closure(&entry, &mut closure);
+            let expected: Vec<String> = closure
+                .iter()
+                .filter(|p| {
+                    !p.file_name()
+                        .map_or(false, |n| n.to_string_lossy().ends_with("_tests.rs"))
+                })
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+
+            // 登记项是相对"持有该函数的文件"的，按同一规则解析成绝对路径再比集合。
+            let holder_dir = entry.parent().unwrap();
+            let registered: Vec<String> =
+                scan_macro_paths(slice_fn_body(holder_src, signature), "include_str")
+                    .into_iter()
+                    .map(|rel| {
+                        std::path::PathBuf::from(
+                            holder_dir.join(rel).to_string_lossy().replace('\\', "/"),
+                        )
+                        .to_string_lossy()
+                        .into_owned()
+                    })
+                    .filter(|p| !p.ends_with(entry_name))
+                    .collect();
+
+            let missing: Vec<&String> = expected
+                .iter()
+                .filter(|p| !registered.contains(p))
+                .collect();
+            let extra: Vec<&String> = registered
+                .iter()
+                .filter(|p| !expected.contains(p))
+                .collect();
+            assert!(
+                missing.is_empty(),
+                "`{label}` 少登记了 {} 个分册（编译器 include! 了它，守卫却看不见 ⇒ **假绿**）：{missing:?}\n\
+                 新增分册时要在 `{label}` 里同步登记一行 include_str!。",
+                missing.len()
+            );
+            assert!(
+                extra.is_empty(),
+                "`{label}` 多登记了 {} 个不在 include! 闭包里的文件（守卫会扫根本不在这个模块里的代码 ⇒ 假红）：{extra:?}",
+                extra.len()
+            );
+            // 反向自检：解析器如果整体失效（两边都空 / 都少），上面两条会同时通过 ⇒ 空转。
+            // 所以每个用例点一枚 canary：它必须**同时在闭包与登记清单里**。
+            let in_closure = expected.iter().any(|p| p.ends_with(canary));
+            let in_registered = registered.iter().any(|p| p.ends_with(canary));
+            assert!(
+                in_closure && in_registered,
+                "`{label}` 的 canary `{canary}` 没同时出现在两侧（闭包 {in_closure} / 登记 {in_registered}）\
+                 ⇒ 解析器或清单坏了，这条守卫正在空转"
+            );
+        }
+    }
+
     /// capability 的 `windows` 模式匹配。Tauri 内部用 glob；本项目只需要支持
     /// 全匹配 / `前缀*` / `*后缀` 三种写法（够用且不引入新依赖）。
     fn window_pattern_matches(pattern: &str, label: &str) -> bool {

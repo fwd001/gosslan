@@ -1847,6 +1847,20 @@ CASES: list[Case] = [
         tags=["rust", "window", "new-guards"],
     ),
     Case(
+        name="守卫的源码全集必须登记齐 include! 分册（漏登记=假绿）",
+        why="`include!` 只做编译期拼接，守卫用的 `include_str!` 清单是**手工登记的第二份**。"
+        "它已经漂移过两次：4.25.0 接线中继时 `commands/relay.rs` 与 `transport/relay.rs` 都只登记了"
+        "`include!` 与领域图、漏了这里（现场注释还在）。而漏登记的后果**不是报错是假绿** —— "
+        "以「全部命令面」为判据的守卫扫不到那个分册，于是永远通过。"
+        "注入=把 relay 那一行登记删掉（正是当年真实发生过的那个形状）。",
+        file=TAURI / "src" / "lib.rs",
+        injections=[('            include_str!("commands/relay.rs"),\n', "")],
+        cmd=cargo("test", "--lib", "guard_source_views_register_every_include_subfile"),
+        cwd=TAURI,
+        expect_fail_hint="少登记",
+        tags=["rust", "guards"],
+    ),
+    Case(
         name="群任务窗口不得初始化聊天事件（否则重复通知/未读/回执）",
         why="独立窗口跑聊天 store 的 init 会注册第二套后端事件监听 —— 与主窗口重复，用户会收到"
         "重复通知、未读数翻倍、群已读回执重复发（见 src/App.vue 顶部说明）。"
