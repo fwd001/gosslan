@@ -474,3 +474,34 @@ test("统一内容状态：未完成/失败的文件必须能给「重新获取�
   const item = read("components/MessageItem.vue");
   assert.match(item, /:content-retry=/, "MessageItem 必须把统一状态传给文件卡片");
 });
+
+/**
+ * 移动端「外面还有多少条没看」的两处外显必须同源。
+ *
+ * 为什么要钉：进聊天页后底部 TabBar 被隐藏（用户 2026-09-24：返回箭头上要提示别的新消息），
+ * 于是补了第二处徽标。第二处最容易退化成"在聊天头里自己再聚合一份"或"顺手减掉当前会话"，
+ * 那样两处数字会在同一屏里对不上 —— 而用户判断"同步/不同步"恰恰只看这两处。
+ *
+ * 判据只有 `useChatStore.totalUnread` 一个（"什么算未读"已在批次 k 收敛到 `countsTowardUnread`），
+ * 聊天头只接 prop、不自己算；当前会话进入即清未读，所以总数天然就是"外面"的量。
+ */
+test("未读总数外显（TabBar + 返回箭头）必须共用 totalUnread 一个判据", () => {
+  const store = read("stores/useChatStore.ts");
+  assert.match(store, /const totalUnread = computed/, "总数只能有一份");
+
+  const header = read("components/chat/ChatHeader.vue");
+  assert.match(header, /unreadTotal\?: number/, "聊天头只接现成的总数，不自算");
+  assert.doesNotMatch(header, /\.reduce\(/, "聊天头里出现聚合 = 会和 TabBar 漂移");
+  assert.match(header, /<UnreadBadge/, "徽标走全局唯一实现");
+
+  assert.match(
+    read("components/ChatWindow.vue"),
+    /:unread-total="chat\.totalUnread"/,
+    "调用方必须把 totalUnread 原样传下去",
+  );
+  assert.match(
+    read("layouts/ResponsiveLayout.vue"),
+    /:count="chat\.totalUnread"/,
+    "TabBar 与返回箭头读同一个数",
+  );
+});

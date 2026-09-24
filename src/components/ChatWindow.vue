@@ -993,6 +993,7 @@ function onLoadMore() {
       :member-count="memberCount"
       :can-rename="canRename"
       :show-back="app.isMobile"
+      :unread-total="chat.totalUnread"
       @back="app.mobileView = 'list'"
       @open-members="membersOpen = true"
       @open-files="filesOpen = true"

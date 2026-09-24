@@ -355,6 +355,7 @@ export const zhCN: MessageDict = {
 
   // ---- 聊天头部 ----
   "chat.header.back": "返回",
+  "chat.header.backUnread": "返回，{n} 条未读",
   "chat.header.conversation": "会话",
   "chat.header.members": "群成员",
   "chat.header.files": "群文件",
@@ -1319,6 +1320,7 @@ export const enUS: MessageDict = {
 
   // ---- Chat header ----
   "chat.header.back": "Back",
+  "chat.header.backUnread": "Back, {n} unread",
   "chat.header.conversation": "Conversation",
   "chat.header.members": "Members",
   "chat.header.files": "Group Files",

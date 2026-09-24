@@ -9,12 +9,14 @@ import {
   Users,
 } from "lucide-vue-next";
 import BackArrow from "@/components/ui/BackArrow.vue";
+import UnreadBadge from "@/components/UnreadBadge.vue";
+import { computed } from "vue";
 import LinkIcon from "@/components/ui/LinkIcon.vue";
 import { linkIconName, type LinkIconName } from "@/utils/peerConnectionInfo";
 import type { Conversation, LinkState } from "@/types";
 import { t } from "@/i18n";
 
-defineProps<{
+const props = defineProps<{
   conv: Conversation | null;
   isGroup: boolean;
   online: boolean;
@@ -34,6 +36,14 @@ defineProps<{
   canRename: boolean;
   /** 移动端：显示返回列表的箭头。 */
   showBack?: boolean;
+  /**
+   * 「外面还有多少条没看」= 未读总数（用户 2026-09-24：进聊天页后 TabBar 隐藏，
+   * 返回箭头上要提示别的新消息）。
+   *
+   * 数字**不在头部算**：调用方传 `chat.totalUnread`，与底部 TabBar、桌面导航栏、
+   * 托盘/Dock 角标共用同一份判据（`channelState.test.ts` 钉过这条）。
+   */
+  unreadTotal?: number;
   /** 群任务窗口正在打开（按钮 pending 反馈；桌面端开独立窗口时才可能为真）。 */
   tasksOpening?: boolean;
 }>();
@@ -45,6 +55,13 @@ const emit = defineEmits<{
   (e: "rename"): void;
   (e: "open-share"): void;
 }>();
+
+const unreadOutside = computed(() => props.unreadTotal ?? 0);
+const backLabel = computed(() =>
+  unreadOutside.value > 0
+    ? t("chat.header.backUnread", { n: unreadOutside.value })
+    : t("chat.header.back"),
+);
 
 /** 连接图标名走 `peerConnectionInfo` 的唯一判据（与好友列表/资料页同源）；文案仍用聊天头自己那套 key。 */
 function linkIcon(path: string, hop: number): { icon: LinkIconName; label: string } {
@@ -68,11 +85,15 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
     <div class="flex min-w-0 items-center gap-1.5">
       <button
         v-if="showBack"
-        class="tap-safe -ml-2 mr-1 flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        :title="t('chat.header.back')" :aria-label="t('chat.header.back')"
+        class="tap-safe relative -ml-2 mr-1 flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        :title="backLabel"
+        :aria-label="backLabel"
         @click="emit('back')"
       >
         <BackArrow />
+        <!-- 徽标用全应用唯一的 `UnreadBadge`（designGuards 禁止再手写一份），
+             挂点由调用方给 —— 组件自己的注释明令不要把定位写进去。 -->
+        <UnreadBadge v-if="unreadOutside > 0" :count="unreadOutside" class="absolute -right-1.5 -top-1" />
       </button>
       <span class="truncate text-[15px] font-medium leading-6" :title="conv?.name || t('chat.header.conversation')">{{ conv?.name || t("chat.header.conversation") }}<template v-if="isGroup && memberCount > 0"> ({{ memberCount }})</template></span>
       <span
