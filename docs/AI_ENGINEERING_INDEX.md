@@ -9,9 +9,13 @@
 5. `docs/migration-ledger.md` — **迁移台账**：这个关注点**有几个家、哪个在跑数据**
 6. `docs/protocol-invariants.md` — when touching protocol / network / crypto / DB
 7. `docs/design-guidelines.md` — when touching UI (圆角 / hover / 配色 / 窗口边界)
-8. Relevant ADR
-9. Relevant tests
-10. `CHANGELOG.md` history when touching a previously-fixed area
+8. `docs/ARCHITECTURE-MAP.html` — **架构与接口契约图**（浏览器直接打开，零依赖）：分层大图、
+   138 条 IPC 命令的「输入 → 输出」规则表、事件契约、19 张表的数据契约、8 条流程穿透、
+   以及「已核出的漂移」清单。**要判断一个改动方向对不对 / 接口该不该新增，先看这张图**；
+   图里的数字与函数名都是实跑 grep 抽的，改完架构后请同步更新它（它标了取数的 HEAD sha）。
+9. Relevant ADR
+10. Relevant tests
+11. `CHANGELOG.md` history when touching a previously-fixed area
 
 > ⚠️ **第 4、5 条为什么必须排这么前**（2026-09-16 加入）：本仓库处在一次**半完成的 ADR
 > 迁移**中，同一个关注点常常有**两个家**（老的还在跑数据、新的部分接线）。不先确认

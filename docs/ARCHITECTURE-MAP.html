@@ -1,0 +1,1496 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-app="gosslan">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Gosslan 架构与接口契约图</title>
+<!--
+  单文件交互架构图 —— 不读源码也能判断"方向对不对"。
+  · 零依赖、零外部请求、可直接双击用浏览器打开（file:// 就行）。
+  · 数据来源：HEAD 736e7c5 / v4.29.32（2026-09-24）逐条实跑 grep 取得，
+    接口表里的"输入/输出"是从 Rust 函数签名与前端 invoke 调用两处直接抽出来的，不是手写转述。
+  · 语义列（这个接口为什么存在、边界在哪）是人写的 —— 判"符合需求"靠这一列。
+  · 领域图一份数据的真源是 docs/domains.data.mjs；本页内嵌的是它的快照，两边不一致时以 .mjs 为准（并已把发现的漂移列在"方向核对"里）。
+-->
+<style>
+  :root {
+    --paper: #f7f8fa;
+    --card: #ffffff;
+    --ink: #14181f;
+    --muted: #5b6472;
+    --line: #d9dee6;
+    --line-soft: #e8ecf2;
+    --accent: #2f6df6;
+
+    /* 分层色（全站唯一一套，图/表/卡三处含义一致） */
+    --c-ui: #4f46e5;
+    --c-ipc: #0891b2;
+    --c-cmd: #0d9488;
+    --c-dom: #b45309;
+    --c-store: #15803d;
+    --c-net: #be123c;
+    --c-ext: #64748b;
+
+    --r: 10px;
+    --pad: 14px;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0e1116;
+      --card: #161b22;
+      --ink: #e8edf4;
+      --muted: #93a0b3;
+      --line: #2a323d;
+      --line-soft: #202731;
+      --accent: #6ea8ff;
+      --c-ui: #a5b4fc;
+      --c-ipc: #67e8f9;
+      --c-cmd: #5eead4;
+      --c-dom: #fcd34d;
+      --c-store: #86efac;
+      --c-net: #fda4af;
+      --c-ext: #a5b4c4;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  code, .mono { font-family: var(--mono); font-size: 0.92em; }
+
+  header.top {
+    position: sticky; top: 0; z-index: 40;
+    background: color-mix(in srgb, var(--card) 92%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { padding: 10px var(--pad) 4px; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+  .brand h1 { font-size: 16px; margin: 0; letter-spacing: .02em; }
+  .brand .meta { color: var(--muted); font-size: 11.5px; }
+  nav.tabs { display: flex; gap: 4px; overflow-x: auto; padding: 0 8px 8px; scrollbar-width: thin; }
+  nav.tabs button {
+    flex: 0 0 auto; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    padding: 7px 12px; border-radius: 999px; font-size: 13px; cursor: pointer; white-space: nowrap;
+  }
+  nav.tabs button[aria-selected="true"] { background: var(--ink); color: var(--card); border-color: var(--ink); }
+
+  main { padding: var(--pad); max-width: 1420px; margin: 0 auto; }
+  section.tab { display: none; }
+  section.tab.on { display: block; }
+  .lede { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .lede b { color: var(--ink); }
+
+  h2.sec { font-size: 15px; margin: 22px 0 8px; letter-spacing: .02em; }
+  h2.sec:first-child { margin-top: 0; }
+  h3.sub { font-size: 13.5px; margin: 16px 0 6px; color: var(--muted); text-transform: none; }
+
+  /* ---------- 大图 ---------- */
+  #mapwrap { position: relative; }
+  .band {
+    display: grid; grid-template-columns: 92px 1fr; gap: 10px; align-items: start;
+    padding: 10px 0; border-top: 1px dashed var(--line-soft);
+  }
+  .band:first-child { border-top: 0; }
+  .band > .bname { font-size: 12px; color: var(--muted); padding-top: 8px; }
+  .band > .bname i { display: block; font-style: normal; font-size: 10.5px; opacity: .8; }
+  .boxes { display: flex; flex-wrap: wrap; gap: 8px; }
+  .node {
+    position: relative; border: 1px solid var(--line); border-left: 3px solid var(--hue, var(--accent));
+    background: var(--card); border-radius: var(--r); padding: 8px 10px; min-width: 148px; max-width: 260px;
+    cursor: pointer; transition: box-shadow .15s, transform .05s;
+  }
+  .node:hover { box-shadow: 0 2px 10px rgba(0,0,0,.09); }
+  .node .nm { font-weight: 600; font-size: 13px; display: block; }
+  .node .sub { color: var(--muted); font-size: 11px; display: block; line-height: 1.45; }
+  .node .cnt {
+    display: block; text-align: right; font-size: 10.5px; color: var(--hue, var(--accent));
+    font-family: var(--mono); margin-top: 1px;
+  }
+  .node.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .node.dim { opacity: .32; }
+  svg.wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+  /* 默认只留很淡的结构线：64 条箭头全亮 + 全打标 = 一团乱麻（首版实测就是这样） */
+  svg.wires path { fill: none; stroke: var(--line); stroke-width: 1.2; opacity: .5; transition: opacity .15s, stroke .15s; }
+  svg.wires text { font-size: 10px; fill: var(--muted); font-family: var(--mono); display: none; paint-order: stroke; stroke: var(--paper); stroke-width: 3px; }
+  svg.wires g.edge.hi path { stroke: var(--accent); stroke-width: 1.9; opacity: 1; marker-end: url(#arri); }
+  svg.wires g.edge.hi text { display: block; }
+  svg.wires.labels-off g.edge.hi text { display: none; }
+  svg.wires.onlyhi g.edge:not(.hi) { display: none; }
+  svg.wires g.edge.off { opacity: .05; }
+  .maptools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0 2px; }
+  .maptools label { font-size: 12px; color: var(--muted); display: flex; gap: 5px; align-items: center; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--muted); margin: 6px 0 0; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .sw { width: 10px; height: 10px; border-radius: 3px; background: var(--hue, var(--accent)); display: inline-block; }
+  #detail {
+    margin-top: 14px; border: 1px solid var(--line); border-radius: var(--r); background: var(--card); padding: 12px;
+  }
+  #detail h4 { margin: 0 0 2px; font-size: 14px; }
+  #detail .files { color: var(--muted); font-size: 11.5px; font-family: var(--mono); word-break: break-all; }
+  #detail .role { margin: 6px 0 10px; }
+  .kv { display: grid; grid-template-columns: 62px 1fr; gap: 4px 10px; font-size: 12.5px; }
+  .kv > dt { color: var(--muted); }
+  .kv > dd { margin: 0; }
+  .kv > dd ul { margin: 0; padding-left: 16px; }
+  .io { font-family: var(--mono); font-size: 11.5px; }
+  .io .from, .io .to { color: var(--muted); }
+  .tag {
+    display: inline-block; border: 1px solid var(--line); border-radius: 5px; padding: 0 5px;
+    font-size: 11px; font-family: var(--mono); color: var(--muted);
+  }
+  .tag.warn { border-color: var(--c-net); color: var(--c-net); }
+  .tag.ok { border-color: var(--c-store); color: var(--c-store); }
+
+  /* ---------- 折叠卡 ---------- */
+  details.card { border: 1px solid var(--line); border-radius: var(--r); background: var(--card); margin: 0 0 8px; overflow: hidden; }
+  details.card > summary {
+    cursor: pointer; list-style: none; padding: 10px 12px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+  }
+  details.card > summary::-webkit-details-marker { display: none; }
+  details.card > summary::before { content: "▸"; color: var(--muted); font-size: 12px; }
+  details.card[open] > summary::before { content: "▾"; }
+  details.card > summary b { font-size: 13.5px; }
+  details.card > summary .sub { color: var(--muted); font-size: 12px; flex: 1 1 260px; }
+  details.card > .body { padding: 0 12px 12px; border-top: 1px solid var(--line-soft); }
+  .colhead { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 8px 0 6px; }
+
+  /* ---------- 表 ---------- */
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r); background: var(--card); }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  thead th {
+    position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--card) 88%, var(--paper));
+    font-weight: 600; white-space: nowrap; border-bottom: 1px solid var(--line);
+  }
+  tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  td.c, th.c { font-family: var(--mono); white-space: nowrap; }
+  td.c a { color: var(--accent); text-decoration: none; }
+  td.io { font-family: var(--mono); font-size: 11.5px; color: var(--muted); min-width: 210px; }
+  td.io b { color: var(--ink); font-weight: 600; }
+  tr.grp td { background: color-mix(in srgb, var(--c-cmd) 9%, transparent); font-weight: 600; font-size: 12px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 10px; }
+  .filters input {
+    flex: 1 1 200px; min-width: 160px; border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+    color: var(--ink); padding: 7px 10px; font-size: 13px;
+  }
+  .chip {
+    border: 1px solid var(--line); background: var(--card); color: var(--muted); border-radius: 999px;
+    padding: 4px 9px; font-size: 12px; cursor: pointer;
+  }
+  .chip[aria-pressed="true"] { background: var(--ink); color: var(--card); border-color: var(--ink); }
+  .count { color: var(--muted); font-size: 12px; margin-left: auto; }
+
+  /* ---------- 流程 ---------- */
+  .pipe { margin: 0 0 18px; }
+  .pipe ol { margin: 0; padding: 0; list-style: none; counter-reset: s; }
+  .pipe ol > li {
+    counter-increment: s; position: relative; padding: 7px 0 7px 34px; border-bottom: 1px dashed var(--line-soft);
+    font-size: 12.8px;
+  }
+  .pipe ol > li::before {
+    content: counter(s); position: absolute; left: 0; top: 7px; width: 22px; height: 22px; border-radius: 50%;
+    border: 1px solid var(--line); display: grid; place-items: center; font-size: 11px; color: var(--muted);
+    background: var(--card); font-family: var(--mono);
+  }
+  .pipe ol > li .who { color: var(--muted); }
+  .pipe h3 { font-size: 13.5px; margin: 0 0 4px; }
+  .pipe .why { color: var(--muted); font-size: 12.5px; margin: 0 0 6px; }
+
+  .note { border-left: 3px solid var(--c-dom); background: color-mix(in srgb, var(--c-dom) 8%, transparent); padding: 8px 10px; border-radius: 0 8px 8px 0; font-size: 12.5px; margin: 10px 0; }
+  .bad { border-left-color: var(--c-net); background: color-mix(in srgb, var(--c-net) 8%, transparent); }
+  .good { border-left-color: var(--c-store); background: color-mix(in srgb, var(--c-store) 8%, transparent); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
+  .num { font-family: var(--mono); font-size: 19px; font-weight: 600; }
+  .stat { border: 1px solid var(--line); border-radius: var(--r); background: var(--card); padding: 9px 11px; }
+  .stat div:last-child { color: var(--muted); font-size: 11.5px; }
+  footer { color: var(--muted); font-size: 11.5px; padding: 18px var(--pad) 40px; max-width: 1420px; margin: 0 auto; }
+
+  @media (max-width: 720px) {
+    :root { --pad: 10px; }
+    .band { grid-template-columns: 1fr; }
+    .band > .bname { padding-top: 0; }
+    .node { min-width: 0; flex: 1 1 46%; max-width: none; }
+    svg.wires { display: none; }
+    .maptools .wiresonly { display: none; }
+    #detail .kv { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <h1>Gosslan 架构与接口契约图</h1>
+    <span class="meta">v4.29.32 · HEAD <code>736e7c5</code> · 取数 2026-09-24 · 6 扇窗口 / 138 条 IPC 命令 / 31 个后端事件 / 19 张表 / 11 个领域</span>
+  </div>
+  <nav class="tabs" role="tablist" id="tabs"></nav>
+</header>
+
+<main>
+  <!-- ① 大图 -->
+  <section class="tab on" id="t-map" role="tabpanel">
+    <p class="lede">
+      自上而下就是<b>唯一的合法依赖方向</b>：窗口 → <code>src/api</code> 契约层 → <code>commands/*</code> 装配层 → 领域模块 → 存储 / 网络介质。
+      点任一模块看它的<b>输入 / 输出 / 数据结构</b>，同时高亮所有与它相连的箭头；再点一次取消。<b>跨层反向的箭头在本应用里只有两类</b>：后端主动 <code>emit</code> 事件、以及窗口之间的 <code>emit</code>（都已在图上标出）。
+    </p>
+    <div class="maptools">
+      <label><input type="checkbox" id="t-labels" checked /> 选中时显示箭头载荷</label>
+      <label><input type="checkbox" id="t-only" /> 只看与选中相关的箭头</label>
+      <span class="count wiresonly">手机上看不到连线：改用下面的模块清单 + 各表内的去向列</span>
+    </div>
+    <div class="legend" id="legend"></div>
+    <div id="mapwrap"><svg class="wires" id="wires" aria-hidden="true"></svg></div>
+    <div id="detail"><h4>选中一个模块</h4><div class="role">点上面任一色块，这里显示它的职责、输入、输出与关键数据结构。</div></div>
+  </section>
+
+  <!-- ② 模块契约 -->
+  <section class="tab" id="t-mod" role="tabpanel">
+    <p class="lede">每个模块都按同一套三字段描述：<b>输入</b>（字段 · 类型 · 来自哪个模块）、<b>输出</b>（字段 · 类型 · 去往哪个模块）、<b>数据结构</b>（最关键的那几个参数/返回）。折叠卡可逐层展开。</p>
+    <div class="filters"><input id="modq" placeholder="筛模块：如 transport / 窗口 / outbox / 预热" /></div>
+    <div id="modlist"></div>
+  </section>
+
+  <!-- ③ 接口规则表 -->
+  <section class="tab" id="t-api" role="tabpanel">
+    <p class="lede">
+      138 条 <b>输入 → 输出</b> 规则，按后端定义处（<code>src-tauri/src/commands/&lt;模块&gt;.rs</code>）分组。<b>输入/输出两列是从 Rust 函数签名直接抽的</b>（<code>str</code>=String、<code>int</code>=i64/u32、<code>X?</code>=Option、<code>X[]</code>=Vec、<code>|err</code>=Result 的错误分支），<b>语义列是判"是否符合需求"的地方</b>。
+      前端另有 33 个事件把状态推回去，见"事件契约"。
+    </p>
+    <div class="filters" id="apifilters"></div>
+    <div class="tablewrap">
+      <table id="apitable">
+        <thead><tr><th>命令</th><th>输入</th><th>输出</th><th>语义 / 边界</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ④ 事件契约 -->
+  <section class="tab" id="t-evt" role="tabpanel">
+    <p class="lede">后端 → 前端的<b>唯一反向通道</b>：31 个事件名，同类合并成 29 行。这张表是判"某个状态变化界面看不看得到"的清单：一条状态改动如果没有对应事件，常驻窗口就永远停在旧快照（这类退化本仓库真踩过：设置窗口改语言/主题后主窗不刷新）。</p>
+    <div class="tablewrap"><table id="evttable"><thead><tr><th>事件</th><th>载荷</th><th>谁发 / 何时</th><th>谁收（消费者）</th><th>范围</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <!-- ⑤ 数据契约 -->
+  <section class="tab" id="t-db" role="tabpanel">
+    <p class="lede">SQLite 只存<b>文本、密钥、关系与队列</b>；二进制一律落盘（<code>storage/mod.rs</code> 的硬原则）。全库 19 张表：<b>零 CHECK、零 FOREIGN KEY</b>，状态枚举与级联删除全靠应用层 SQL 自己守 —— 所以下面"状态取值"和"谁写"两列就是真正的契约。</p>
+    <div id="dblist"></div>
+  </section>
+
+  <!-- ⑥ 流程穿透 -->
+  <section class="tab" id="t-flow" role="tabpanel">
+    <p class="lede">把大图上的箭头串成可核对的编号路径。每条都写清"哪一步写库、哪一步发事件、失败时落在哪个裁决函数"。</p>
+    <div id="flowlist"></div>
+  </section>
+
+  <!-- ⑦ 方向核对 -->
+  <section class="tab" id="t-dir" role="tabpanel">
+    <div id="dirlist"></div>
+  </section>
+</main>
+
+<footer>
+  生成口径：接口表来自 <code>src-tauri/src/lib.rs</code> 的 <code>generate_handler!</code>（138 条）与 <code>src/api/index.ts</code> 的 <code>invoke</code>/<code>listen</code> 实测交叉；表结构来自 <code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量（18 张）+ <code>content/store.rs</code> 的 <code>ensure_schema</code>（1 张）。<code>src-tauri/schema.sql</code> 只是文档参考、已落后（缺 5 张表与 <code>conversations.pinned</code>），<b>不要拿它当事实</b>。
+</footer>
+
+<script>
+"use strict";
+/* ============================================================
+ * 数据层：全部是"从代码里抽出来的事实"。
+ * 字段约定：in=输入 out=输出 data=数据结构 files=落点 role=职责
+ * ============================================================ */
+const LAYERS = [
+  { k: "ui",    n: "① 呈现层",       i: "5 个 HTML 文档 + 3 个 Pinia store", c: "var(--c-ui)" },
+  { k: "ipc",   n: "② IPC 契约层",   i: "src/api/index.ts",                  c: "var(--c-ipc)" },
+  { k: "cmd",   n: "③ 命令装配层",   i: "commands/*.rs（include! 成一个模块）", c: "var(--c-cmd)" },
+  { k: "dom",   n: "④ 领域层",       i: "身份 / 发现 / 消息 / 选路 / 传输 / 文件 / 持久化 / 平台", c: "var(--c-dom)" },
+  { k: "store", n: "⑤ 存储",         i: "SQLite + 磁盘目录",                  c: "var(--c-store)" },
+  { k: "net",   n: "⑥ 网络与介质",   i: "UDP / TCP / BLE / 公网中继",         c: "var(--c-net)" },
+  { k: "ext",   n: "⑦ 外部",         i: "对端节点 · 中继服务器 · 远端网页 · OS", c: "var(--c-ext)" },
+];
+
+/* 模块：id 全局唯一，被大图/契约卡/箭头/流程四处引用 */
+const MODS = [
+  /* ───────────── ① 呈现层 ───────────── */
+  { id: "w-main", l: "ui", n: "主窗口", s: "index.html → entries/main.ts → App.vue", cnt: "唯一的聊天宿主",
+    role: "全应用<b>唯一</b>跑 <code>chat.init()</code> + <code>bindEvents()</code> 的文档：注册全部后端事件、系统通知点击路由、快捷键、原生菜单动作、启动后 1.2s 触发辅助窗口预热。移动设备上同一文档切成单栏抽屉。",
+    files: ["index.html", "src/entries/main.ts", "src/App.vue", "src/layouts/ResponsiveLayout.vue"],
+    in: ["RuntimeSnapshot(通道/在线/绑定IP) ← 后端 runtime-changed", "MessageRecord[] ← 后端 message-received", "AppSettings 快照 ← settings-changed"],
+    out: ["invoke(...) → IPC 契约层", "set_unread_badge(count) / notify_desktop() → 平台外壳", "open_*_window() → 辅助窗口"],
+    data: ["NavState = chats|contacts|links|favorites|me", "mobileView = list|chat", "AUX_PREWARM_DELAY_MS = 1200"] },
+
+  { id: "w-settings", l: "ui", n: "设置窗口", s: "settings.html · 常驻(关=隐藏)", cnt: "桌面端",
+    role: "11 个设置分区的独立窗口。只跑 <code>app.init()</code>（只读：主题/语言/设备）。常驻 ⇒ 不会重新加载，所以必须在<b>重新获得焦点时</b>重拉环境数据（Wi-Fi/共享目录会变）。",
+    files: ["settings.html", "src/entries/settings.ts", "src/components/SettingsWindow.vue", "src/components/settings/*.vue"],
+    in: ["AppSettings ← get_settings()", "RuntimeSnapshot ← get_runtime_snapshot()", "CacheInfo ← get_cache_info()", "onFocusChanged ← Tauri 窗口事件"],
+    out: ["save_settings/set_channel_enabled/start_network… → IPC", "settings-changed(全量载荷) → 其他窗口"],
+    data: ["SECTIONS: Record<key,{titleKey,render}>", "reloadToken（分区懒挂 + 重进时重建）"] },
+
+  { id: "w-logs", l: "ui", n: "日志窗口", s: "logs.html · 常驻", cnt: "桌面端",
+    role: "运行期日志查看器（轮询 <code>get_logs</code> 每 2s），配 <code>DevDiagPanel</code> 网络诊断。<b>刻意不套 AuxWindowShell</b>（结构不同、要兼移动端整页形态），所以它自己挂 <code>TitleBar</code> + <code>ToastHud</code>。",
+    files: ["logs.html", "src/entries/logs.ts", "src/components/LogViewer.vue", "src/components/ui/DevDiagPanel.vue"],
+    in: ["LogEntry[] ← get_logs(sinceSecs)", "DiscoveryDiag ← get_discovery_diag()", "InterfaceCandidate[] ← get_interface_candidates()"],
+    out: ["clear_logs() → IPC", "log_frontend_error(kind,text) → IPC（前端异常上报）"],
+    data: ["LogEntry{ts,level:info|warn|error,target,message}", "轮询 2s（不是事件：日志窗口关掉时不该有人往 IPC 灌日志）"] },
+
+  { id: "w-tasks", l: "ui", n: "群任务窗口", s: "todos.html · label 固定 tasks · 常驻+预热", cnt: "桌面端",
+    role: "全局只有<b>一扇</b>：<code>label=tasks</code>，看的是哪个群由后端 <code>task_window_group</code> + <code>group-todos-target</code> 事件给。<b>预热能成立的前提就是固定 label</b>（动态 <code>todo-&lt;groupId&gt;</code> 时不知道该先建哪一扇）。开窗门内只准 <code>app.init()</code>，取数搬到根组件（否则就是用户报的「点了没反应」）。",
+    files: ["todos.html", "src/entries/todos.ts", "src/components/GroupTodosWindow.vue", "src/components/GroupTasksBoard.vue"],
+    in: ["groupId ← get_group_todos_context() / group-todos-target", "MessageRecord(kind=todo|todo_update) ← loadGroupTodos()", "focusTodoId ← take_group_todo_focus()（一次性，读即消费）"],
+    out: ["create_todo/update_group_todo → IPC", "Board(:key=groupId) → 换群时整块重置"],
+    data: ["foldTodos(全量 todo_update 折叠出终态)", "todoLoadedOnce(groupId) 落位标记（区分「没读到」和「没有任务」）", "TODO_STATUSES = todo|doing|overdue|done"] },
+
+  { id: "w-preview", l: "ui", n: "图片预览窗口", s: "preview.html · label 固定 preview · 常驻+预热", cnt: "桌面端",
+    role: "全局唯一相册窗口：各界面点图是<b>换内容</b>，不是再开一扇。只按 <code>msgId</code>/<code>cid</code> 自己去取字节，<b>连聊天 store 都不引用</b>。关窗时释放相册（否则下次开着一屏旧图）。",
+    files: ["preview.html", "src/entries/preview.ts", "src/components/window/PreviewWindow.vue", "src/components/message/ImageLightbox.vue"],
+    in: ["PreviewGallery{items[],index} ← get_image_preview_gallery() / preview-gallery 事件", "字节 ArrayBuffer ← read_content_preview(cid) / read_file_preview(msgId)"],
+    out: ["closeIfFrom(from) → 释放本窗口持有的相册", "topInset=var(--gosslan-title-h) → 让出唯一拖拽区与 ✕"],
+    data: ["PreviewImage{name,dataSrc?,msgId?,cid?} 取字节优先级 dataSrc→cid→msgId", "blob: objectURL 不可跨窗口投递（deliverableToWindow 直接拦）"] },
+
+  { id: "ui-conv", l: "ui", n: "会话与通讯录列表", s: "ConversationList + conversation/*",
+    role: "会话行（预览/时间/未读/置顶/📢）与联系人行（分组、在线点）。<b>列表刻意不随搜索框过滤</b>（用户 2026-09-12：输入时列表不要动，要搜就在弹窗里搜）。",
+    files: ["src/components/ConversationList.vue", "src/components/conversation/*.vue", "src/components/VirtualList.vue"],
+    in: ["Conversation[] ← chat.conversations", "Friend[] + Peer[] ← chat.friends/peers（Friend≠Peer）"],
+    out: ["openConversation(id) → chat store", "mark_read / set_conversation_pinned → IPC"],
+    data: ["countsTowardUnread(什么算未读) —— 全应用唯一判据", "UnreadBadge 只有一处实现"] },
+
+  { id: "ui-chat", l: "ui", n: "聊天面板与输入", s: "ChatWindow + chat/*",
+    role: "时间线宿主（虚拟列表 + 拖拽收图 + 成员/文件/任务面板 + 转发合并弹窗）与 contenteditable 输入器（草稿、代码模式、IME 安全回车）。",
+    files: ["src/components/ChatWindow.vue", "src/components/chat/ChatHeader.vue", "src/components/chat/MessageComposer.vue"],
+    in: ["MessageRecord[] ← chat.messages[convId]", "LinkState ← get_conv_link(convId)", "GroupFileEntry[] ← list_group_files"],
+    out: ["send_message/send_file/send_group_message → IPC", "request_content(_by_cid) → 补拉"],
+    data: ["MAX_INPUT_LENGTH = 50 000（后端同样拒断，不截断）", "messages 缓存上界 + touchCacheOrder（只留 ~4 个会话）"] },
+
+  { id: "ui-bubble", l: "ui", n: "消息气泡族", s: "message/* + MessageItem",
+    role: "按 <code>kind</code> 分派气泡。<b>未知 kind 绝不渲染原始 JSON</b>（INV-P24，走 <code>UnsupportedKindBubble</code>）；时间分隔、多选、送达态、回执、反应条都在这一族。",
+    files: ["src/components/MessageItem.vue", "src/components/message/*.vue", "src/utils/messageKinds.ts"],
+    in: ["MessageRecord{kind,content,seq,status}", "FileMeta.cid(=sha256) → 内容寻址", "SendState = sending|sent|delivered|read|failed"],
+    out: ["openGallery(items,i,from) → 预览 store", "重取 → request_content(msgId/cid)", "撤回/钉/反应/收藏 → IPC"],
+    data: ["KindClass = Bubble|Silent|Card（是否计未读/是否进时间线的唯一分类）", "msg_id 前缀约定：file-{tid} / gfile-{tid}"] },
+
+  { id: "ui-todo", l: "ui", n: "任务看板与卡片", s: "GroupTasksBoard + TodoCard/Detail",
+    role: "同一块看板被窗口与移动端弹窗共用（<code>standalone</code> 决定形态）。成员泳道、按状态着色、行内归档/还原、图片拖拽入卡。",
+    files: ["src/components/GroupTasksBoard.vue", "src/components/GroupTasksPanel.vue", "src/components/TodoCardBubble.vue", "src/components/TodoDetailDialog.vue", "src/utils/todos.ts"],
+    in: ["todo/todo_update 消息流 → foldTodos 折叠", "TodoImage[]{cid,name,size} ← send_todo_image()", "首屏落位标记 ← chat.todosLoadedOnce"],
+    out: ["send_group_todo/update_group_todo → IPC", "save_todo_image_bytes(裸 Uint8Array) → 落盘缓存目录"],
+    data: ["归档/重开权限 lane = archive_only|reopen_only|is_member", "isEffectivelyArchived(折叠终态)"] },
+
+  { id: "st-app", l: "ui", n: "useAppStore", s: "设备·外观·通道·toast", cnt: "1026 行",
+    role: "设备身份、外观（主题/字体/聊天样式）、语言与通知偏好、通道运行时快照、toast 与移动端布局态。<b>所有辅助窗口都会跑它的 <code>init()</code></b>（只读）。",
+    files: ["src/stores/useAppStore.ts"],
+    in: ["DeviceInfo ← get_device_info()", "AppSettings ← get_settings()", "RuntimeSnapshot ← get_runtime_snapshot() / runtime-changed", "系统深色 + 键盘 inset"],
+    out: ["save_settings/set_ui_language/broadcast_chat_style → IPC", "toast()/toastError() → ToastHud", "set_unread_badge → 平台外壳"],
+    data: ["applySettingsSnapshot/applySettingsPatch（跨窗口零额外 IPC 的关键）", "channels[]: {channel,enabled,available,running,peers,preferred}"] },
+
+  { id: "st-chat", l: "ui", n: "useChatStore", s: "消息·关系·群·传输·收藏", cnt: "2128 行 · 86 导出",
+    role: "唯一的数据中枢：init 先绑事件再刷数据；<code>createInitScope()</code> 保证 HMR/重复 init 时回调不翻倍（危害不是泄漏，是回调翻倍）。<b>辅助窗口禁止跑它的 init</b>。",
+    files: ["src/stores/useChatStore.ts"],
+    in: ["27 个后端事件 → enqueueMessage/refreshXxx", "MessageRecord[] / Conversation[] / Group[] / Friend[] / Peer[]", "ContentTransfer[] ← get_content_transfers()"],
+    out: ["全部 send_*/create_*/update_* invoke → IPC", "notifications（只在真发时调）→ 平台外壳", "groupTodosSettled 落位表"],
+    data: ["messages: Record<convId, MessageRecord[]>", "groupReads: Record<groupId, Record<readerId, ts>>", "topology / unreadJump / locateRequest"] },
+
+  { id: "st-prev", l: "ui", n: "useImagePreview", s: "看图状态的单一事实源",
+    role: "应用内浮层与独立预览窗口<b>共用同一份相册状态</b>；<code>source</code>（conv:&lt;id&gt; / task:&lt;id&gt; / merge:&lt;id&gt;）决定关闭时该谁回收。",
+    files: ["src/stores/useImagePreview.ts"],
+    in: ["openGallery(items, startIndex, from) ← 气泡/看板/合并卡", "inWindow ← 当前是窗口还是浮层"],
+    out: ["open_image_preview(gallery,index) → 独立窗口", "closeIfFrom(from) → 只回收自己那条"],
+    data: ["deliverableToWindow(items)：blob: 与无引用源直接拒投"] },
+
+  { id: "ui-prim", l: "ui", n: "窗口/弹层原语", s: "launcher · exclusivePopup · backLayer · toast",
+    role: "四件跨界面公共能力：<b>开窗单飞+防抖</b>（连点不开第二扇）、<b>弹层全局互斥</b>（不能同时开两个表情面板）、<b>安卓返回键分层</b>、toast 唯一反馈通道。",
+    files: ["src/composables/useWindowLauncher.ts", "src/composables/useBackLayer.ts", "src/utils/popupRegistry.ts", "src/utils/windowLaunch.ts", "src/utils/backStack.ts", "src/components/ToastHud.vue"],
+    in: ["AuxWindowLabel = settings|logs|link|tasks", "popup key（每个浮层一个）", "history 栈深度"],
+    out: ["launchAuxWindow(label, open) → IPC", "isWindowOpening(label) → 按钮 spinner", "claimPopup/releasePopup → 注册表"],
+    data: ["opening: Set<label> 单飞 + lastLaunchAt 防抖（模块作用域，全应用共享一份）"] },
+
+  /* ───────────── ② IPC 契约层 ───────────── */
+  { id: "api-invoke", l: "ipc", n: "api.invoke 面", s: "src/api/index.ts 的一个平面对象", cnt: "127 条包装 / 133 条被调",
+    role: "<b>前端唯一</b>碰 <code>@tauri-apps/api/core</code> 的地方（10 处例外见「漂移」清单）。约定：参数写 camelCase，Rust 侧 snake_case 自动转；返回用 <code>invoke&lt;T&gt;</code> 泛型；<b>错误不集中吞</b>，由调用方决定 toast。",
+    files: ["src/api/index.ts"],
+    in: ["组件/store 的方法调用（带 TS 类型）"],
+    out: ["invoke(\"cmd\", {args}) → commands/*", "唯一例外：<code>save_todo_image_bytes</code> 直接传裸 Uint8Array 当请求体"],
+    data: ["每个命令的返回类型 = 前端消费契约（见 ③ 接口规则表）"] },
+  { id: "api-evt", l: "ipc", n: "事件绑定层", s: "bindEvents / bindMenuEvents", cnt: "27 个 listen",
+    role: "把后端事件铺成 <code>EventHandlers</code>。<b>先绑事件再刷数据</b>（否则刷新期间到的消息丢）。窄订阅另开：<code>onMessageReceived</code>/<code>onSettingsChanged</code>/<code>onRuntimeChanged</code>/<code>onGroupTodosTarget</code>/<code>onImagePreviewChanged</code> —— 辅助窗口只用窄的。",
+    files: ["src/api/index.ts（下半段）", "src/api/events.test.ts"],
+    in: ["Tauri 事件（emit / emit_filter）"],
+    out: ["EventHandlers 回调 → useChatStore / useAppStore", "unlisten[] → dispose 时成对卸载"],
+    data: ["payload 与命令返回共用 src/types.ts 的类型", "menu://* 四类原生菜单动作 → DOM 事件 APP_ACTION"] },
+
+  /* ───────────── ③ 命令装配层 ───────────── */
+  { id: "cmd-chat", l: "cmd", n: "单聊命令", s: "chat · chat_search", fm: ["chat", "chat_search"],
+    role: "发单聊/撤回/已读/删除/搜索/内容请求。<b>自聊走纯本地路径</b>（不进 outbox、不 gossip、不加密）。",
+    in: ["friend_id str, content str, kind str ← api-invoke", "身份与密钥 ← 领域层（身份域 + peers/friends 表）"],
+    out: ["MessageRecord → messages + outbox", "ensure_link / try_send → 传输域", "emit(message-acked 等) → api-evt"],
+    data: ["≤50 000 字符拒断不截断", "能力位门禁：kind_required_feature / kind_allowed_by_features"] },
+  { id: "cmd-group", l: "cmd", n: "群命令（含卡片载荷）", s: "groups · group_files · group_announcements · todo/dispatch/keys", fm: ["groups", "group_files", "group_announcements", "group_todo_media", "group_file_dispatch", "group_file_keys"],
+    role: "成员与群密钥生命周期；公告/任务/投票/合并等卡片载荷统一走 <code>send_group_payload</code>；群文件按<b>每收件人一行</b>推进度。",
+    in: ["groupId + 成员表 ← groups", "群密钥 ← state.group_keys（gk:{group_id}）", "封装后的文件密钥 ← gfk:{transfer_id}（明文只活在内存）"],
+    out: ["group_outbox 每人一行 → 离线补发", "GossipEnvelope(Group) → gossip 域", "group_files / group_file_recipients 状态行"],
+    data: ["scope=chat|todo + todo_id（任务图与聊天图同表不同域）", "msg_id 前缀 file- / gfile-"] },
+  { id: "cmd-file", l: "cmd", n: "文件·共享目录·剪贴板", s: "files · share · mobile_picker · helpers", fm: ["files", "share", "mobile_picker", "helpers"],
+    role: "发文件 / 看图字节 / 保存 / 取消 / 补拉；共享目录列树与下载。<b>命令侧只写库 + 起队列</b>，真正传输在传输域里跑。<br>⚠️ <b>命令名与所在文件不一致的几处</b>（按直觉 grep 会找不到接口）：好友申请三条在 <code>mobile_picker.rs</code>；<code>clear_all_data · delete_messages · read_content_preview</code> 在 <code>favorites.rs</code>；<code>apply_macos_window_shape</code> 在 <code>files.rs</code>；<code>default_nickname</code> 在 <code>channel.rs</code>。",
+    in: ["friendId/groupId + path ← api-invoke", "cid 或 msgId + maxBytes → 预览字节"],
+    out: ["file_outbox 行（status/attempts/next_attempt_at）", "flush_pending_files → 文件域 stream_file", "PREVIEW 超限直接 reject（不静默降级）"],
+    data: ["read_file_preview → ArrayBuffer | \"TOO_LARGE\"", "ContentTransfer（cid 寻址的补拉状态）"] },
+  { id: "cmd-net", l: "cmd", n: "通道·路由端点·中继", s: "channel · network · relay · routed", fm: ["channel", "network", "relay", "routed"],
+    role: "开关 LAN/BLE、启停网络、运行时快照、跨网段手动端点、中继配置与<b>保存前探测</b>、缓存策略与清理。",
+    in: ["channel str + enabled bool", "server str + token str（口令只在命令内出现，绝不进日志/诊断）", "bindIp str"],
+    out: ["RuntimeSnapshot → 全窗口（emit_filter 不回发发起窗口）", "settings 键（relay_policy / routed_endpoints / cache_*）", "network::start/stop → 传输域"],
+    data: ["RelayProbe.kind = unreachable|rejected|held|peer_identity（三档失败分型）", "token 只有 token_len 落日志"] },
+  { id: "cmd-social", l: "cmd", n: "好友·收藏·外链", s: "friends · favorites · external_links", fm: ["friends", "favorites", "external_links"],
+    role: "关系建立/解除（含内存身份绑定同步解除）、收藏的<b>独立副本</b>、外链书签（增删改后同步回列表）。",
+    in: ["peerId / (id,name,url) / msgId+convId", "内容从后端库里读，<b>不信客户端传来的正文</b>"],
+    out: ["friends / favorites / settings(外链表) 写库", "media 物理副本 → favorites_dir", "gossip(FriendRequest/FriendAccept/Presence)"],
+    data: ["FavoriteEntry{content 快照, media_path, available}（available 是被清理后仍要能解释的字段）"] },
+  { id: "cmd-win", l: "cmd", n: "窗口与跨窗口投递", s: "window · logs", fm: ["window", "logs"],
+    role: "6 扇窗的建/复用/预热/几何、任务与预览的当前上下文、日志与诊断查询、前端异常上报。<b>建窗命令必须 async</b>（同步命令在主线程内联建 WebView2 = 永久自锁，2026-09-20 真机死锁）。",
+    in: ["label + geometry + resident 标志 + reveal（预热传 false）", "groupId（校验字符集与非空后才当查询条件用）"],
+    out: ["(win, created) → created=false 时才 emit(group-todos-target / preview-gallery)", "settings 键 todo_focus_request / task_window_group / preview_gallery"],
+    data: ["fit_aux_window：辅助窗口永不比主窗口大（主窗 −24px）", "AUX_*_RESIDENT：设置/日志=false，任务/预览/外链=true"] },
+  { id: "cmd-sys", l: "cmd", n: "设备·设置·chrome·诊断", s: "system · settings · dev_diag", fm: ["system", "settings", "dev_diag", "device", "nickname"],
+    role: "设备信息与昵称、设置读写与重置、自绘标题栏的窗口动作（最小化/最大化/全屏/关闭）、macOS 圆角、发现诊断。",
+    in: ["AppSettings 全量 / 单项 patch", "dark bool（macOS 形状）"],
+    out: ["settings 表", "data-cleared / settings-changed 广播", "DiscoveryDiag（含协议版本与对端版本表）"],
+    data: ["DeviceInfo{device_id,nickname,avatar,device_type,tcp_port,x25519_pubkey,ed25519_pubkey}"] },
+
+  /* ───────────── ④ 领域层 ───────────── */
+  { id: "dom-state", l: "dom", n: "AppState", s: "全局唯一状态容器", cnt: "1841 行",
+    role: "所有命令与后台任务共享的那一个 <code>Arc&lt;AppState&gt;</code>：身份、peers、链路、传输账本、窗口上下文、日志器。<b>锁一律抗中毒</b>（<code>unwrap_or_else(|e| e.into_inner())</code>）。",
+    in: ["命令层的 &State/Arc 读", "传输域的写（链路注册/注销、进度账本）"],
+    out: ["Mutex<HashMap> 快照 → emit_peers / get_runtime_snapshot", "db: Mutex&lt;Connection&gt; → 持久化域"],
+    data: ["peers(发现知识) / links(可发连接) / peer_manager(mesh 健康) 三层不同物", "file_wire_progress：真正在线上的字节（停滞与 Ack 窗口的证据）", "network_generation：拒绝过期代际的链路注册"] },
+  { id: "dom-identity", l: "dom", n: "身份域", s: "device · crypto · nickname",
+    role: "「我是谁」：X25519（ECDH）+ Ed25519（签名）一次生成后永久、私钥只在本机、安全码只做现场核对。",
+    files: ["src-tauri/src/device.rs", "src-tauri/src/crypto.rs", "src-tauri/src/nickname.rs"],
+    in: ["settings: x25519_secret/ed25519_secret（明文落库，靠 OS 全盘加密）", "对端公钥 ← friends 表 / 发现包"],
+    out: ["shared_secret + seal/open → 消息与文件密钥封装", "sign_b64/verify → Hello 验签、gossip 验签", "safety_number → 界面"],
+    data: ["device_id 21 字符 + 多开后缀 -i{N}", "INV-P18：私钥永不过 UI 边界"] },
+  { id: "dom-presence", l: "dom", n: "发现域", s: "network/discovery.rs + discovery/",
+    role: "UDP 广播(255.255.255.255) + 组播(239.255.42.99) 的 announce/who_has、网卡选择、过期节点清扫。\"在线\"的判据在这里。",
+    files: ["src-tauri/src/network/discovery.rs", "src-tauri/src/discovery/*"],
+    in: ["本机网卡列表 / bind_ip 偏好", "收到的 UdpPacket（announce / who_has）"],
+    out: ["upsert_peer → state.peers（keys_verified 只在验签过时 true）", "spawned ensure_link → 传输域建链", "emit_peers() → peers-updated"],
+    data: ["adaptive_interval：5s（&lt;100 节点）/10s/20s + 0–2s 抖动", "should_keep_peer：有活跃链路 或 last_seen ≥ now−45s", "⚠️ discovery/ 那套抽象除 routed.rs 外<b>尚未接线</b>"] },
+  { id: "dom-messaging", l: "dom", n: "消息与 gossip", s: "protocol.rs + gossip_engine.rs",
+    role: "线上词表（Message/MsgKind/GossipEnvelope/能力位）与两两幂等的去重引擎（Bloom + LRU）。",
+    files: ["src-tauri/src/protocol.rs", "src-tauri/src/gossip_engine.rs"],
+    in: ["kind + 受众 → 需要的能力位", "信封（sender_sig、message_id、ttl）"],
+    out: ["GossipEnvelope → 传输域发送", "is_new()/choose_fanout() → 收件与转发判定"],
+    data: ["统一 msg_id：本地行、直发帧、outbox、gossip 四处同一个（这是幂等的根）", "直发+gossip+离线补发三路径必须汇成一行"] },
+  { id: "dom-routing", l: "dom", n: "选路与中继策略", s: "mesh/ + file_relay.rs",
+    role: "本仓最成型的领域模块：Path 优先级、Connection 健康、PeerManager、TTL/去重/出向选择、是否允许经服务器转发。",
+    files: ["src-tauri/src/mesh/selection.rs", "src-tauri/src/mesh/router.rs", "src-tauri/src/mesh/manager.rs", "src-tauri/src/mesh/relay_policy.rs"],
+    in: ["候选 Connection[] + now + 健康阈值", "RelayPolicy(off|friends|allowlist|all) + 是否目标 + ttl"],
+    out: ["pick_link 下标 → outbound 决定首试与failover 尾", "decide_forward → gossip 是否再转发一跳"],
+    data: ["path_rank：lan 0 &lt; routed 1 &lt; relay 2 &lt; bluetooth 3（<b>不依赖枚举声明顺序</b>）", "健康只看 last_read_seen_ms（半开 TCP 否则永远\"健康\"）"] },
+  { id: "dom-transport", l: "dom", n: "传输域（TCP 数据面）", s: "network/transport/* + transport/{tcp,lan,relay_seal}",
+    role: "accept/dial、每连接 reader+writer、三队列分流（high/normal/low）、帧收发、Hello 握手与身份核对、四张队列的 flush、过期清扫器。",
+    files: ["src-tauri/src/network/transport.rs", "src-tauri/src/network/transport/outbound.rs", "src-tauri/src/network/transport/gossip.rs", "src-tauri/src/network/transport/relay.rs", "src-tauri/src/transport/tcp.rs"],
+    in: ["Message / GossipEnvelope / File* 帧 ← 命令与文件域", "对端帧 → handle_message(state, peer_id, msg)"],
+    out: ["4B 大端长度 + JSON 帧 → TCP", "INSERT/Ack/DELETE → 持久化域", "emit(20+ 事件) → api-evt"],
+    data: ["帧族：Hello/Ack/Heartbeat/Gossip/FileOffer/Accept/Reject/Chunk/Done/CompleteAck/ContentRequest/ShareTree*", "flush 顺序是语义：outbox → 群密钥 → group_outbox → 已读 → 文件 → 群文件 → 内容补拉"] },
+  { id: "dom-files", l: "dom", n: "文件与内容域", s: "network/file.rs + content/ + storage/",
+    role: "真正搬字节的地方：offer/accept 协商、按链路定 chunk、续传（<b>永远听接收端的真实进度</b>）、attempt epoch、停滞/重试裁决、sha256 校验后 rename 落位。",
+    files: ["src-tauri/src/network/file.rs", "src-tauri/src/content/store.rs", "src-tauri/src/content/policy.rs", "src-tauri/src/storage/cache_cleaner.rs"],
+    in: ["local_path + 对端 x25519", "FileChunk{seq,data,attempt} ← 传输域", "缓存策略 retention_days/max_bytes"],
+    out: ["文件密钥封装后的 FileOffer → 对端", "upsert_transfer / content_transfers / file_outbox → 持久化", "file-progress/done/failed/stalled → api-evt"],
+    data: ["decide_offer → Accept|ResumeFrom|AlreadyHave（单一函数判续传）", "send_retry_verdict / stall_verdict / should_fail_expired：裁决全在纯函数里", "BLE 上限 16 MiB、chunk 4 KiB"] },
+  { id: "dom-persist", l: "dom", n: "持久化域", s: "db.rs + db/（17 个 include! 分册）", cnt: "114 个 pub fn",
+    role: "一条全局 <code>Mutex&lt;Connection&gt;</code>；SCHEMA 幂等建表 + <code>user_version</code> 版本化迁移 + 降级守卫；每域一份 SQL 分册共享一个扁平 <code>crate::db::</code> 命名空间。",
+    files: ["src-tauri/src/db.rs", "src-tauri/src/db/*.rs", "src-tauri/src/export.rs"],
+    in: ["&Connection 已由调用方上锁 → db::insert_message_and_outbox 等", "PRAGMA user_version（>DB_VERSION 直接拒绝启动，且必须早于任何写）"],
+    out: ["19 张表 + 索引", "Lamport next_clock/observe_clock", "级联删除（无外键 ⇒ 手写）"],
+    data: ["⚠️ 窗口路径必须 try_lock + 安全降级（同步步命令跑在 wry 主线程，持锁等待=整个应用冻）", "命名：get_/list_/insert_/upsert_/mark_/delete_"] },
+  { id: "dom-platform", l: "dom", n: "平台外壳", s: "menu · tray · macos_window · bookmark · notifications · user_dirs · open_path",
+    role: "四端差异全收在这一层：macOS 圆角/菜单/security-scoped bookmark、Android JNI 与文件打开、通知与托盘、目录解析。",
+    files: ["src-tauri/src/menu.rs", "src-tauri/src/tray.rs", "src-tauri/src/macos_window.rs", "src-tauri/src/macos_bookmark.rs", "src-tauri/src/user_dirs.rs", "src-tauri/src/notifications.rs"],
+    in: ["平台 cfg", "settings: share_dir/_bookmark, downloads_dir/_bookmark"],
+    out: ["pick(stored, from_bookmark) → 真实路径（<b>书签优先</b>）", "系统通知/角标/任务栏闪烁", "open file → NSWorkspace / FileProvider"],
+    data: ["书签坏了必须回落到已存路径，绝不逼用户重选", "OHOS 的 target_os 仍是 linux ⇒ 三处 cfg 会误判桌面（已知）"] },
+  { id: "dom-obs", l: "dom", n: "可观测性", s: "logging.rs + 诊断面板",
+    role: "有界环形缓冲 + 文件日志 + 按 target 子系统标签 + 30s 节流；<b>本项目的最强项</b>（真机问题绝大多数靠它定位）。",
+    files: ["src-tauri/src/logging.rs", "src-tauri/src/state.rs（diag）", "src-tauri/src/commands/dev_diag.rs"],
+    in: ["logger.info/warn/error(target, msg)", "push_diag_event（丢弃高频类型）"],
+    out: ["get_logs / get_discovery_diag → 日志窗口", "log_frontend_error ← 前端异常"],
+    data: ["LogLevel = info|warn|error；LogEntry{ts,level,target,message}"] },
+
+  /* ───────────── ⑤ 存储 ───────────── */
+  { id: "st-sql", l: "store", n: "SQLite", s: "gosslan.db（WAL + NORMAL）", cnt: "19 表",
+    role: "文本、密钥、关系、四张离线队列。<b>不存 BLOB</b>。",
+    in: ["db:: 的 114 个函数 ← 命令层 + 传输层（⚠️ 耦合热点）"],
+    out: ["行 → 命令层返回类型（serde → 前端 types.ts）"],
+    data: ["见 ⑤ 数据契约"],
+    note: "零 CHECK、零外键：状态枚举与级联全靠应用层。" },
+  { id: "st-disk", l: "store", n: "磁盘目录", s: "downloads / cache / favorites / logs", cnt: "二进制",
+    role: "接收落位、临时 .part、收藏独立副本、任务贴图、日志文件。",
+    in: ["tmp_path = {transfer_id}.part（<b>绝不从最终名派生</b>）", "unique_path 防同名互相打乱"],
+    out: ["rename 到 final_path = 完成的那一刻", "cache_cleaner 按 mtime + 配额回收（<b>跳过符号链接</b>）"],
+    data: ["见 ⑤ 数据契约的磁盘表"],
+    note: "多开实例用 gosslan-{N}.db，端口 +instance*10。" },
+
+  /* ───────────── ⑥ 网络与介质 ───────────── */
+  { id: "net-udp", l: "net", n: "UDP 59991", s: "广播 + 组播发现",
+    role: "谁在这里、TCP 端口是多少。两个 socket 都要读（macOS SO_REUSEPORT 只喂一个）。",
+    in: ["UdpPacket{kind,device_id,nickname,tcp_port,两把公钥,nonce,sig}"],
+    out: ["announce / who_has → 对端", "handle_datagram → upsert_peer"],
+    data: ["广播用 255.255.255.255（Windows 默认禁 directed broadcast）", "组播 239.255.42.99"] },
+  { id: "net-tcp", l: "net", n: "TCP 59992", s: "所有帧的数据面",
+    role: "聊天、gossip、文件、共享目录、回执，<b>全部同一条流</b>，靠三队列分流与链路固定。没有文件专用端口。",
+    in: ["4B 大端长度 + JSON/密文帧"],
+    out: ["reader_loop → handle_message", "writer_loop → 对端"],
+    data: ["chunk 尺寸按 path_kind；BLE=4 KiB", "文件流必须钉在一条链路（换链路 ⇒ seq Gap ⇒ 整单死）"] },
+  { id: "net-ble", l: "net", n: "蓝牙 GATT", s: "feature=bluetooth",
+    role: "近场无网络时的兜底通道：中心设备 scan + 外设 advertise，三端各自实现（CoreBluetooth / Android JNI / WinRT）。",
+    in: ["GATT 特征写入的分片帧（PARTIAL_TTL 30s）"],
+    out: ["dial 规则（device_id 大者主动）", "scan 占空比：前台 5s / 后台 30s 间隔"],
+    data: ["INV-P23：载荷预算单一事实来源（曾三端各算一遍）", "BLE 只发 ≤16 MiB 文件"] },
+  { id: "net-relay", l: "net", n: "中继客户端", s: "transport/relay* + mesh/relay_policy",
+    role: "公网<b>哑管道</b>：2s 一轮汇合，先发 <code>GSRL1 &lt;token&gt; &lt;channel_hex&gt;</code>，再双方<b>同时</b>交 GSRW1 换封条（临时 X25519 + 用好友表公钥验签），之后整条流是密文，reader/writer 一行不改。",
+    in: ["settings: relay 开关/服务器/token", "已绑定 Ed25519 的好友（未绑定不建电路）"],
+    out: ["密封 TCP 电路 → 中继服务器", "channel_hash(双方公钥,双方id,当天) → 每天旋转"],
+    data: ["MAX_RELAY_CIRCUITS=8", "方向密钥 a2b/b2a 不同 ⇒ 反射失败；计数严格 +1 ⇒ 重放失败"],
+    note: "<b>token 值绝不进日志/诊断/事件</b>（只留 token_len），两条护栏钉着。" },
+
+  /* ───────────── ⑦ 外部 ───────────── */
+  { id: "ext-peer", l: "ext", n: "对端 Gosslan 节点", s: "另一台设备 = 同一份代码",
+    role: "去中心化：<b>没有服务器权威</b>，每个节点自己存全量关系与历史，靠 gossip/outbox 收敛。",
+    in: ["announce/who_has/帧/密文"],
+    out: ["它自己的 messages/outbox/group_outbox/…"],
+    data: ["版本兼容靠能力位 + \"未知≠版本旧\"两句分开说"] },
+  { id: "ext-server", l: "ext", n: "中继服务器", s: "自建，可选",
+    role: "只按 token 放行 + 按 64-hex 通道号配对两个 socket。<b>看不到</b>设备号/昵称/群成员/文件名/帧类型（全在记录层内）。",
+    in: ["preamble 一行 + 不透明密文帧"],
+    out: ["字节（可能断连——那是它的功能，不是攻击）"],
+    data: ["能看到的：token、每日旋转的通道摘要、帧长度与时间戳（无填充 ⇒ 长度分桶是已知残余）"] },
+  { id: "ext-link", l: "ext", n: "远端网页", s: "label=link 的外链窗口",
+    role: "唯一不加载本地文档的窗口。<b>刻意不在 capability 的 windows 里</b>：一旦覆盖，第三方页面就能调本应用命令面。只放行 http/https 且必须有主机名。",
+    in: ["url + name ← 书签/用户粘贴"],
+    out: ["（无任何能力）"],
+    data: ["validate_external_url 拒 javascript:/data:/file:/tauri:"] },
+  { id: "ext-os", l: "ext", n: "操作系统", s: "通知 · 托盘 · 菜单 · 文件 · 剪贴板",
+    role: "用户可感的外在表现层：系统通知与点击回跳、角标、任务栏闪烁/Dock 弹跳、原生菜单动作、拖拽与剪贴板文件。",
+    in: ["notify_desktop / set_unread_badge / request_attention / menu 事件"],
+    out: ["notification-clicked → 主窗口路由到会话", "插件返回的路径/URI"],
+    data: ["onAction 返回的是 PluginListener <b>不是</b> UnlistenFn（必须显式 .unregister，否则永久注册）"] },
+];
+
+/* 大图箭头：from → to，lab = 真实载荷/调用名 */
+const EDGES = [
+  ["w-main", "api-invoke", "invoke(...)"], ["w-settings", "api-invoke", "invoke(...)"], ["w-logs", "api-invoke", "invoke(...)"],
+  ["w-tasks", "api-invoke", "invoke(...)"], ["w-preview", "api-invoke", "invoke(...)"],
+  ["ui-bubble", "st-prev", "openGallery(items,i,from)"], ["ui-todo", "st-prev", "openGallery"],
+  ["st-prev", "api-invoke", "open_image_preview(gallery)"], ["st-prev", "w-preview", "preview-gallery"],
+  ["w-tasks", "st-chat", "loadGroupTodos/watchGroupTodos"], ["ui-chat", "st-chat", "messages"], ["ui-conv", "st-chat", "conversations"],
+  ["st-chat", "api-invoke", "send_*/create_*/update_*"], ["st-app", "api-invoke", "get_settings/start_network"],
+  ["ui-prim", "cmd-win", "open_*_window（单飞+防抖）"],
+  ["api-evt", "st-chat", "MessageRecord / 进度 / 回执"], ["api-evt", "st-app", "RuntimeSnapshot / settings-changed"],
+  ["api-invoke", "cmd-chat", "send_message…"], ["api-invoke", "cmd-group", "send_group_*…"], ["api-invoke", "cmd-file", "send_file/read_*_preview"],
+  ["api-invoke", "cmd-net", "set_channel_enabled/save_relay_config"], ["api-invoke", "cmd-social", "friends/favorites/links"],
+  ["api-invoke", "cmd-win", "open_* / get_*_context"], ["api-invoke", "cmd-sys", "get_settings/device_info"],
+  ["cmd-chat", "dom-messaging", "能力位门禁 + 信封"], ["cmd-group", "dom-messaging", "GossipEnvelope(Group)"],
+  ["cmd-chat", "dom-persist", "insert_message_and_outbox"], ["cmd-file", "dom-persist", "file_outbox 行"],
+  ["cmd-social", "dom-persist", "friends / favorites"], ["cmd-net", "dom-persist", "settings 键"],
+  ["cmd-win", "dom-state", "task_window_group / preview_gallery / todo_focus"],
+  ["cmd-file", "dom-files", "flush_pending_files → stream_file"], ["dom-files", "dom-persist", "upsert_transfer / content_transfers"],
+  ["dom-transport", "dom-persist", "INSERT / Ack 后 DELETE"], ["dom-transport", "dom-state", "links / wire_progress / generation"],
+  ["dom-transport", "dom-routing", "pick_link"], ["dom-presence", "dom-state", "upsert_peer"],
+  ["dom-presence", "net-udp", "announce / who_has"], ["net-udp", "ext-peer", "UdpPacket"],
+  ["dom-transport", "net-tcp", "4B len + 帧"], ["net-tcp", "ext-peer", "密文帧"],
+  ["dom-transport", "net-ble", "GATT 分片"], ["net-ble", "ext-peer", "≤16 MiB"],
+  ["net-relay", "ext-server", "GSRL1 + 密文"], ["dom-transport", "net-relay", "connect_to_peer(Relay)"],
+  ["dom-transport", "dom-identity", "seal / sign / verify"], ["dom-messaging", "dom-identity", "ECDH + Ed25519"],
+  ["cmd-win", "w-settings", "文档加载 settings.html"], ["cmd-win", "w-logs", "logs.html"], ["cmd-win", "w-tasks", "todos.html"],
+  ["cmd-win", "w-preview", "preview.html"], ["cmd-win", "ext-link", "WebviewUrl::External"],
+  ["dom-transport", "api-evt", "emit / emit_filter"], ["cmd-win", "api-evt", "group-todos-target / preview-gallery"],
+  ["cmd-net", "api-evt", "runtime-changed（不回发发起窗口）"], ["cmd-sys", "api-evt", "data-cleared"],
+  ["dom-persist", "st-sql", "SQL"], ["dom-files", "st-disk", ".part → rename"], ["dom-platform", "st-disk", "书签解析"],
+  ["dom-obs", "w-logs", "get_logs"], ["cmd-sys", "ext-os", "通知/角标/菜单"], ["ext-os", "api-evt", "notification-clicked / menu://*"],
+  ["dom-platform", "ext-os", "NSWorkspace / JNI / WinRT"],
+];
+
+/* 接口规则表（真签名） */
+const CMDS = [
+  ["clean_cache_now", "channel", "", "CleanupReport|err"],
+  ["default_nickname", "channel", "", "str"],
+  ["get_cache_info", "channel", "", "CacheInfo"],
+  ["get_runtime_snapshot", "channel", "", "RuntimeSnapshot|err"],
+  ["set_cache_policy", "channel", "retention_days int?; max_bytes int?", "()|err"],
+  ["set_channel_enabled", "channel", "channel str; enabled bool", "RuntimeSnapshot|err"],
+  ["cancel_send", "chat", "msg_id str", "()|err"],
+  ["delete_conversation", "chat", "conv_id str", "()|err"],
+  ["ensure_conversation", "chat", "friend_id str", "Conversation|err"],
+  ["get_conv_link", "chat", "conv_id str", "LinkState?|err"],
+  ["get_conversations", "chat", "", "Conversation[]"],
+  ["get_message_count", "chat", "conv_id str", "int"],
+  ["get_messages", "chat", "conv_id str; limit int?; offset int?", "MessageRecord[]"],
+  ["mark_read", "chat", "conv_id str", "()|err"],
+  ["recall_message", "chat", "friend_id str; msg_id str", "()|err"],
+  ["resend_message", "chat", "msg_id str", "()|err"],
+  ["send_message", "chat", "friend_id str; content str; kind str", "MessageRecord|err"],
+  ["set_conversation_pinned", "chat", "conv_id str; pinned bool", "()|err"],
+  ["search_chat_history", "chat_search", "keyword str; sender_id str?; since_ms int?; until_ms int?", "ChatSearchGroup[]|err"],
+  ["search_messages", "chat_search", "keyword str", "SearchResult[]|err"],
+  ["get_discovery_diag", "dev_diag", "", "DiscoveryDiag"],
+  ["get_interface_candidates", "dev_diag", "", "InterfaceCandidate[]"],
+  ["add_external_link", "external_links", "name str; url str", "ExternalLink[]|err"],
+  ["list_external_links", "external_links", "", "ExternalLink[]"],
+  ["remove_external_link", "external_links", "id str", "ExternalLink[]|err"],
+  ["update_external_link", "external_links", "id str; name str; url str", "ExternalLink[]|err"],
+  ["add_favorite", "favorites", "msg_id str; conv_id str", "Favorite|err"],
+  ["clear_all_data", "favorites", "", "()|err"],
+  ["delete_messages", "favorites", "msg_ids str[]", "int|err"],
+  ["export_chat_text", "favorites", "destination str; utc_offset_minutes int", "ExportSummary|err"],
+  ["list_favorites", "favorites", "", "Favorite[]|err"],
+  ["read_content_preview", "favorites", "cid str; max_bytes int", "Response|err"],
+  ["read_favorite_preview", "favorites", "id str; max_bytes int", "Response|err"],
+  ["remove_favorite", "favorites", "id str", "()|err"],
+  ["apply_macos_window_shape", "files", "dark bool", "()|err"],
+  ["cancel_file_transfer", "files", "transfer_id str", "bool|err"],
+  ["delete_file", "files", "path str", "()|err"],
+  ["get_content_transfers", "files", "", "TransferRecord[]"],
+  ["get_group_file_delivery_summary", "files", "transfer_id str", "GroupFileDeliverySummary?"],
+  ["get_transfers", "files", "", "TransferInfo[]"],
+  ["list_group_files", "files", "group_id str", "GroupFileEntry[]|err"],
+  ["open_file_native", "files", "path str", "()|err"],
+  ["request_content", "files", "peer_id str; msg_id str", "bool|err"],
+  ["request_content_by_cid", "files", "peer_id str; cid str; name str; size int", "bool|err"],
+  ["save_outgoing_image", "files", "data_url str", "Value|err"],
+  ["send_file", "files", "friend_id str; path str", "str|err"],
+  ["send_file_auto", "files", "friend_id str; path str", "str|err"],
+  ["send_file_relay", "files", "friend_id str; path str", "str|err"],
+  ["get_friends", "friends", "", "Friend[]"],
+  ["get_safety_number", "friends", "peer_id str", "str?"],
+  ["remove_friend", "friends", "peer_id str", "()|err"],
+  ["list_active_group_announcements", "group_announcements", "", "ActiveAnnouncement[]|err"],
+  ["pin_group_message", "group_announcements", "group_id str; target str; pinned bool", "MessageRecord|err"],
+  ["recall_group_message", "group_announcements", "group_id str; target str", "()|err"],
+  ["send_group_file", "group_announcements", "group_id str; path str; scope str?; todo_id str?", "str|err"],
+  ["send_group_reaction", "group_announcements", "group_id str; target str; emoji str; add bool", "MessageRecord|err"],
+  ["send_todo_image", "group_announcements", "group_id str; todo_id str; path str", "str|err"],
+  ["cast_group_poll_vote", "group_files", "group_id str; poll_id str; choices int[]", "MessageRecord|err"],
+  ["delete_group_announcement", "group_files", "group_id str; ann_id str", "MessageRecord|err"],
+  ["send_group_announcement", "group_files", "group_id str; text str", "MessageRecord|err"],
+  ["send_group_message", "group_files", "group_id str; content str; kind str", "MessageRecord|err"],
+  ["send_group_poll", "group_files", "group_id str; question str; options str[]; multi bool", "MessageRecord|err"],
+  ["send_group_todo", "group_files", "group_id str; title str; assignees str[]; description str?; images TodoImage[]?", "MessageRecord|err"],
+  ["update_group_todo", "group_files", "group_id str; todo_id str; title str; assignees str[]; status str; deleted bool; description str?; images TodoImage[]?; archived bool?", "MessageRecord|err"],
+  ["save_todo_image_bytes", "group_todo_media", "request Request<'_>", "str|err"],
+  ["todo_image_meta", "group_todo_media", "path str", "TodoImage|err"],
+  ["create_group", "groups", "name str; members str[]", "Group|err"],
+  ["distribute_group_key", "groups", "group_id str", "()|err"],
+  ["get_group_reads", "groups", "group_id str", "GroupReadInfo[]"],
+  ["get_groups", "groups", "", "Group[]"],
+  ["group_add_member", "groups", "group_id str; device_id str", "()|err"],
+  ["group_remove_member", "groups", "group_id str; device_id str", "()|err"],
+  ["leave_group", "groups", "group_id str", "()|err"],
+  ["rename_group", "groups", "group_id str; name str", "()|err"],
+  ["transfer_group_creator", "groups", "group_id str; new_creator str", "()|err"],
+  ["copy_file", "helpers", "source str; destination str", "()|err"],
+  ["copy_file_to_clipboard", "helpers", "path str", "()|err"],
+  ["media_present", "helpers", "msg_id str", "bool|err"],
+  ["read_clipboard_file_paths", "helpers", "", "str[]"],
+  ["read_file_preview", "helpers", "msg_id str; max_bytes int", "Response|err"],
+  ["save_data_file", "helpers", "base64_data str; destination str", "()|err"],
+  ["clear_logs", "logs", "", "()|err"],
+  ["close_log_window", "logs", "", "()|err"],
+  ["close_settings_window", "logs", "", "()|err"],
+  ["get_group_todos_context", "logs", "", "str?"],
+  ["get_image_preview_gallery", "logs", "", "PreviewGallery?"],
+  ["get_logs", "logs", "since_secs int?", "LogEntry[]"],
+  ["open_group_todos_window", "logs", "group_id str; focus_todo_id str?", "()|err"],
+  ["open_image_preview", "logs", "gallery PreviewGallery", "()|err"],
+  ["open_link_window", "logs", "url str; name str", "()|err"],
+  ["open_log_window", "logs", "", "()|err"],
+  ["open_settings_window", "logs", "", "()|err"],
+  ["prewarm_aux_windows", "logs", "", "()|err"],
+  ["request_group_todo_focus", "logs", "group_id str; todo_id str", "()|err"],
+  ["take_group_todo_focus", "logs", "group_id str", "str?"],
+  ["get_pending_requests", "mobile_picker", "", "PendingRequest[]"],
+  ["import_picked_file", "mobile_picker", "path str; suggested_name str?", "str|err"],
+  ["respond_friend_request", "mobile_picker", "peer_id str; accept bool", "()|err"],
+  ["send_friend_request", "mobile_picker", "peer_id str", "()|err"],
+  ["focus_window", "network", "", "()|err"],
+  ["get_peers", "network", "", "Peer[]|err"],
+  ["get_topology", "network", "", "TopologyInfo"],
+  ["notify_desktop", "network", "title str; body str; conv_id str", "bool|err"],
+  ["request_attention", "network", "", "()|err"],
+  ["search_nearby_peers", "network", "", "Peer[]|err"],
+  ["send_test_notification", "network", "", "str|err"],
+  ["set_app_active", "network", "active bool", "()"],
+  ["set_unread_badge", "network", "count int", "()|err"],
+  ["start_network", "network", "bind_ip str", "RuntimeSnapshot|err"],
+  ["stop_network", "network", "", "RuntimeSnapshot|err"],
+  ["check_relay_server", "relay", "server str; token str", "RelayProbeReport|err"],
+  ["get_relay_config", "relay", "", "RelayConfigView"],
+  ["save_relay_config", "relay", "enabled bool; server str; token str", "RelayConfigView|err"],
+  ["add_routed_endpoint", "routed", "device_id str?; address str", "RoutedEndpoint[]|err"],
+  ["list_routed_endpoints", "routed", "", "RoutedEndpoint[]"],
+  ["remove_routed_endpoint", "routed", "address str", "RoutedEndpoint[]|err"],
+  ["broadcast_chat_style", "settings", "style str", "()|err"],
+  ["get_settings", "settings", "", "Settings"],
+  ["log_frontend_error", "settings", "kind str; text str", "()"],
+  ["request_ble_permissions", "settings", "", "()|err"],
+  ["reset_settings", "settings", "", "()|err"],
+  ["save_settings", "settings", "settings Settings", "()|err"],
+  ["set_ui_language", "settings", "lang str", "()|err"],
+  ["download_shared_file", "share", "friend_id str; remote_path str", "str|err"],
+  ["get_downloads_dir", "share", "", "str"],
+  ["get_share_dir", "share", "", "str?"],
+  ["open_downloads_dir", "share", "", "()|err"],
+  ["request_share_tree", "share", "friend_id str", "ShareEntry[]|err"],
+  ["set_downloads_dir", "share", "path str", "()|err"],
+  ["set_share_dir", "share", "path str", "()|err"],
+  ["get_device_info", "system", "", "DeviceInfo"],
+  ["list_interfaces", "system", "", "InterfaceInfo[]"],
+  ["update_profile", "system", "nickname str; avatar str?", "DeviceInfo|err"],
+  ["window_close", "window", "", "()"],
+  ["window_is_maximized", "window", "", "bool"],
+  ["window_minimize", "window", "", "()"],
+  ["window_toggle_fullscreen", "window", "", "bool"],
+  ["window_toggle_maximize", "window", "", "bool"]
+
+];
+const SEM = {
+  /* ── commands/chat.rs · 单聊 ── */
+  send_message: { d: "发单聊。门禁三关：<b>是好友 → ≤50 000 字符（拒断不截断）→ 该 kind 需要的能力位对端声明过吗</b>（缺记录按 0 = 拒绝）。取不到对方 x25519 会先 <code>who_has</code> 探一次并等 1.2s，仍无则明确报错。", w: "messages + outbox（同事务）", n: "自聊走纯本地分支" },
+  get_messages: { d: "分页读会话消息。<b>排序用 <code>seq</code>（Lamport），不是 <code>ts</code></b>；返回体就是 <code>MessageRecord[]</code>。", w: "读 messages" },
+  get_message_count: { d: "该会话总条数（前端算「还能不能继续往前加载」）。" },
+  get_conversations: { d: "会话列表（含 <code>unread / pinned / last_msg / last_ts</code>）。" },
+  ensure_conversation: { d: "没有这一行就按好友资料建一行（打开一个从没聊过的好友时）。" },
+  mark_read: { d: "清未读并触发已读回执；<b>发不出去先攒 <code>pending_reads</code></b>，建链 / 心跳时补发。", w: "conversations.unread · group_reads · pending_reads" },
+  set_conversation_pinned: { d: "置顶。<b>纯本地语义，不广播给对方</b>。" },
+  delete_conversation: { d: "清空该会话。<b>只删 Bubble 类 kind</b>：群公告、任务这类 Card/Silent 不属于「聊天历史」，顺手删掉是错误语义。手写级联（无外键）。", w: "messages · outbox · group_outbox · file_outbox · group_recalled_messages" },
+  get_conv_link: { d: "该会话当前链路 <code>{path, hop}</code> —— <b>界面链路徽标的唯一来源</b>，绝不从「没有 IP」反推通道。" },
+  recall_message: { d: "单聊撤回。<b>前端没有调用点</b>（撤回目前只有群聊实现：<code>chat.recallMessage</code> 调的是 <code>recall_group_message</code>）。", n: "前端零引用", k: "warn", dead: true },
+  resend_message: { d: "手动重投。<b>重投实际由 outbox flush 自动做</b>，前端没有调用点。", n: "前端零引用", k: "warn", dead: true },
+  cancel_send: { d: "取消发送。<b>前端用的是 <code>cancel_file_transfer</code></b>，这条没有调用点。", n: "前端零引用", k: "warn", dead: true },
+
+  /* ── commands/chat_search.rs ── */
+  search_messages: { d: "旧版关键词搜索，返回命中行（会话名 + 命中内容 + msg_id）。" },
+  search_chat_history: { d: "跨会话分组搜索（可按发送人 / 时间窗过滤，带 <code>total</code> 与 <code>latest_ts</code>）。<b>搜索不改动会话列表本身</b>（用户明确要求）。" },
+
+  /* ── commands/dev_diag.rs ── */
+  get_discovery_diag: { d: "网络诊断快照：模式 / 绑定网卡 / 广播目标 / 组播结果 / 最近一次收发 / BLE 详情 / 协议版本 / <b>对端版本表</b>。<b>不含任何口令</b>。" },
+  get_interface_candidates: { d: "候选网卡 + 评分（诊断面板；「为什么连不上」的第一现场）。" },
+
+  /* ── commands/external_links.rs ── */
+  list_external_links: { d: "外链书签列表。" },
+  add_external_link: { d: "新增。<b>每次都返回全量新列表</b>（前端直接覆盖本地状态，不做增量合并）。", w: "settings 键" },
+  update_external_link: { d: "改名 / 改 URL，返回全量列表。" },
+  remove_external_link: { d: "删除，返回全量列表。" },
+
+  /* ── commands/favorites.rs ── */
+  list_favorites: { d: "按 <code>favorited_at</code> 倒序；<code>available</code> 是<b>读时算</b>的（副本可能已被配额清理）。" },
+  add_favorite: { d: "收藏一条消息。<b>正文与媒体一律从后端自己的库里读，绝不采信客户端传来的内容</b>；媒体<b>物理复制</b>进 favorites 目录。同 msg_id 重复收藏幂等（INSERT OR IGNORE）。", w: "favorites + 磁盘副本" },
+  remove_favorite: { d: "删一条收藏。<b>不被任何级联删除调用</b>（设计如此）。" },
+  read_content_preview: { d: "按 <code>cid</code>（=sha256）取内容前 N 字节 → ArrayBuffer。<b>超限直接 reject，不静默截断</b>。" },
+  read_favorite_preview: { d: "按收藏 id 取前 N 字节（副本路径必须在该目录下才给读）。" },
+  delete_messages: { d: "批量删除本地消息行，返回删除条数。" },
+  clear_all_data: { d: "清空全部数据。<b>成功后必须广播 <code>data-cleared</code></b>，否则其他窗口毫无反应（用户实测过）。", w: "全表 + 媒体目录" },
+  export_chat_text: { d: "按 UTC 偏移导出全部会话为文本，返回 <code>{conversations, messages, path}</code>。" },
+
+  /* ── commands/files.rs ── */
+  send_file: { d: "发文件到好友。<b>只负责「写库 + 起队列」并立即返回 <code>transfer_id</code></b>，真正传输在文件域里异步跑（进度靠 <code>file-progress</code>）。", w: "messages(file-{tid}) · file_transfers · file_outbox" },
+  send_file_auto: { d: "按当前最佳链路自动选普通 / 中继路径。" },
+  send_file_relay: { d: "一跳中继变体：<b>没有 FileAccept 也没有 CompleteAck</b>，5 分钟 deadline；失败路径由包装器兜住写回 failed。" },
+  cancel_file_transfer: { d: "取消。同一 <code>transfer_id</code> 的<b>多个接收人 / 多条流一起取消</b>（群文件是一 id 多收件人）。返回是否有东西可取消。" },
+  get_transfers: { d: "传输台账（<code>file_transfers</code>，双向）。" },
+  get_content_transfers: { d: "cid 视角的传输状态（ADR-0019）：<code>queued|active|verifying|complete|incomplete|rejected</code> + attempts / next_attempt_at。" },
+  list_group_files: { d: "群文件列表，带 <code>local_state ∈ local|receiving|remote|failed</code> 与 <code>delivered/total</code>。" },
+  get_group_file_delivery_summary: { d: "群文件每收件人进度汇总 <code>{completed, failed, waiting}</code>（气泡上的「3/5 已收到」）。" },
+  request_content: { d: "按 msgId 请求补拉内容。" },
+  request_content_by_cid: { d: "按 cid 请求补拉。<b>拥有即授权</b>：任何持有该内容的设备都能当源。" },
+  save_outgoing_image: { d: "把剪贴板 / 拖进来的 dataURL 落成临时文件并返回 <code>{path,name,size}</code>（发送前的必经一步）。" },
+  open_file_native: { d: "用系统关联程序打开（NSWorkspace / FileProvider / Android intent）。" },
+  delete_file: { d: "删本地文件（只删该删的位置；不做「顺手清目录」）。" },
+  apply_macos_window_shape: { d: "macOS：<code>decorations:false</code> 之后补圆角与主题背景。<b>必须在 onMounted 之后</b>（setup 阶段设会被 wry 丢掉）。⚠️ 它定义在 <code>files.rs</code> 里，属放置不当。", n: "定义在 files.rs" },
+
+  /* ── commands/friends.rs ── */
+  get_friends: { d: "好友列表。<code>peer_app_version / peer_version_newer</code> 由后端算 ⇒ 界面不自己猜版本。" },
+  remove_friend: { d: "解除好友。<b>必须同时解除内存里的身份绑定</b>，否则对方重装设备后只能重启才连得上。", w: "friends + state.peers" },
+  get_safety_number: { d: "双方公钥排序后算安全码（<b>只做现场人工核对，不引入「已确认」状态</b>——设备身份口径决定）。" },
+
+  /* ── commands/group_announcements.rs ── */
+  send_group_file: { d: "发群文件：<b>每收件人一行</b> <code>group_file_recipients</code>，DB 才是投递事实源。", w: "group_files + recipients（同事务）" },
+  send_group_reaction: { d: "加 / 撤表情反应（<code>add: bool</code>），返回更新后的消息行。" },
+  pin_group_message: { d: "钉 / 取消钉一条群消息。" },
+  recall_group_message: { d: "群撤回。<b>先写 <code>group_recalled_messages</code>（G-Set）再物化</b>，因为撤回可能比被撤回的消息先到。", w: "group_recalled_messages + messages" },
+  list_active_group_announcements: { d: "会话列表 📢 的数据源：一次覆盖<b>全部</b>群（不靠逐个会话的内存缓存）。" },
+  send_todo_image: { d: "给任务上传一张图：落盘 → 作为 <code>scope=todo</code> 的群文件登记。" },
+
+  /* ── commands/group_files.rs ── */
+  send_group_message: { d: "群消息（走统一的 <code>send_group_payload</code>：取群密钥 → 信封 → 每人一行 group_outbox → broadcast_gossip）。" },
+  send_group_todo: { d: "建任务。<code>kind=todo</code> 属 <b>Card 类</b>（计未读、通知被指派人）。", w: "messages(JSON)" },
+  update_group_todo: { d: "改任务（标题 / 指派 / 状态 / 归档 / 删除 / 图片）。<code>kind=todo_update</code> 属 <b>Silent 类</b>：不通知。⚠️ <b>状态存在 JSON content 里，不是表列</b>，读的时候由 <code>foldTodos</code> 折叠。" },
+  delete_group_announcement: { d: "删公告（<code>announcement_delete</code>）。" },
+  send_group_poll: { d: "发起投票。<b>线上词表已留 poll / poll_vote，但 UI 未实现 ⇒ 无调用点</b>。", n: "前端零引用", k: "warn", dead: true },
+  cast_group_poll_vote: { d: "投票。同上，<b>没有调用点</b>。", n: "前端零引用", k: "warn", dead: true },
+
+  /* ── commands/group_todo_media.rs ── */
+  save_todo_image_bytes: { d: "保存粘贴 / 拖入的图片字节。<b>全仓唯一「不包对象、直接传 <code>Uint8Array</code> 当请求体」的命令</b>（省掉 base64 一次膨胀）。" },
+  todo_image_meta: { d: "由路径算 <code>TodoImage{cid,name,size}</code>（cid=sha256，跨设备寻址）。" },
+
+  /* ── commands/groups.rs ── */
+  create_group: { d: "建群 + 生成群密钥 + 向每个成员分发（一次调用做完，不留半状态）。", w: "groups · group_members · settings(gk:)" },
+  distribute_group_key: { d: "把群密钥用<b>每个成员各自的 x25519 分别封装</b>后逐个发（不是同一份密文广播）。" },
+  get_groups: { d: "我所在的全部群（含成员表）。" },
+  group_add_member: { d: "加成员（内部会为新成员补群密钥）。", w: "group_members" },
+  group_remove_member: { d: "移成员；<b>被移的人收 <code>group-member-removed</code> 自己回滚</b>。" },
+  rename_group: { d: "改名（Card 类载荷，会同步给成员）。" },
+  transfer_group_creator: { d: "转让群主（创建者是唯一可转让的人）。" },
+  leave_group: { d: "退群。⚠️ 只剩创建者时的语义由前端拦（后端不替你决定解散）。" },
+  get_group_reads: { d: "群内每人的读位置高水位（已读列表数据源）。" },
+
+  /* ── commands/helpers.rs（这 6 条在 api 上<b>没有</b>包装，组件里裸 invoke） ── */
+  copy_file: { d: "复制文件（保存 / 拖出到别的目录）。", n: "无 api 包装" },
+  copy_file_to_clipboard: { d: "把文件放进系统剪贴板。", n: "无 api 包装" },
+  media_present: { d: "本地是否已有该媒体（决定气泡显示「看图」还是「重取」）。" },
+  read_clipboard_file_paths: { d: "读剪贴板里的文件路径（粘贴发图那条路）。", n: "无 api 包装" },
+  read_file_preview: { d: "按 msgId 取前 <code>maxBytes</code> 字节 → ArrayBuffer；<b>超限返回 <code>\"TOO_LARGE\"</code> 并 reject</b>。", n: "无 api 包装" },
+  save_data_file: { d: "base64 写到目标路径（另存为的落地一步）。", n: "无 api 包装" },
+
+  /* ── commands/logs.rs —— 注意：这个文件装的是「窗口 + 日志 + 跨窗口投递」三件事 ── */
+  open_settings_window: { d: "开设置窗口。<b>async + 建窗锁双检</b>；常驻=false ⇒ 关即销毁，下次是新建。", n: "关即销毁" },
+  open_log_window: { d: "开日志窗口。常驻=false。<b>它自己的关闭回调里绝不 destroy / await</b>（跑在 wry 主线程事件循环）。", n: "关即销毁" },
+  close_settings_window: { d: "设置窗口自己关自己。" },
+  close_log_window: { d: "日志窗口自己关自己。" },
+  open_group_todos_window: { d: "开 / 复用<b>全局唯一</b>的任务窗口（固定 <code>label=tasks</code>）。写当前群上下文 + 一次性焦点 id；<b>只有复用才 emit <code>group-todos-target</code></b>，新建那扇靠挂载后自取。groupId 会当查询条件 ⇒ 先做字符集与非空校验。", n: "常驻 + 可预热", k: "ok" },
+  get_group_todos_context: { d: "「我这扇窗现在该显示哪个群」——新文档挂载后自取（<b>不依赖事件赶上</b>）。" },
+  take_group_todo_focus: { d: "取该群待展开的任务 id，<b>读即消费</b>（一次性；否则每次开窗都会重放同一个展开动作）。" },
+  request_group_todo_focus: { d: "只投递焦点、<b>不开窗</b>（已经在看这个群时用，避免把窗口抢前台）。" },
+  open_image_preview: { d: "开 / 复用预览窗口（固定 <code>label=preview</code>），载荷是整个相册 <code>{items,index}</code>。<b>复用才 emit</b>；<code>blob:</code> objectURL 不可跨窗口投递（由前端 gate 先拦，退化成应用内浮层）。", n: "常驻 + 可预热", k: "ok" },
+  get_image_preview_gallery: { d: "新文档自取当前相册。<b>关窗时会被自己清空</b>（否则下次开着一屏旧图）。" },
+  prewarm_aux_windows: { d: "启动后预热任务 + 预览两扇（<code>reveal=false</code>：只建 WebView、不显示、不动位置）。<b>移动端返回 Err</b>（没有这些窗口）。", n: "仅桌面", k: "ok" },
+  open_link_window: { d: "开外链窗口：<b>唯一走 <code>WebviewUrl::External</code> 的窗口</b>，且刻意<b>不在 capability 的 windows 列表里</b>（否则远端页面能调本应用命令面）。URL 只放行 http/https 且必须有主机名。" },
+  get_logs: { d: "拉运行期日志（可传 <code>sinceSecs</code>）。<b>由窗口每 2s 轮询而不是后端推</b>：窗口关着时不该有人往 IPC 灌日志。" },
+  clear_logs: { d: "清空日志缓冲。" },
+
+  /* ── commands/mobile_picker.rs ── */
+  get_pending_requests: { d: "待处理好友申请。<b>必须按好友关系过滤</b>（否则已接受的会一直挂着，兜底补发时也看不出来）。" },
+  send_friend_request: { d: "发申请（对方不在 peers 里时会走 gossip 兜底；「已发送但对方没收到」有补发路径）。" },
+  respond_friend_request: { d: "接受 / 拒绝。接受即<b>绑定双方公钥</b>（后续中继与验签都依赖这次绑定）。" },
+  import_picked_file: { d: "Android <code>content://</code> → 真实可读路径（其他平台没有这一步）。", n: "仅移动端" },
+
+  /* ── commands/network.rs ── */
+  start_network: { d: "启用 LAN（指定 bind_ip）。<b>TCP 必须先绑成功再起 UDP</b>（顺序不变量），返回全量快照并广播。", w: "settings(bind_ip/lan_enabled)" },
+  stop_network: { d: "停网络（保留已存偏好）。" },
+  get_peers: { d: "发现到的节点表（<code>Peer[]</code>，含 <code>rtt_ms / link / first_seen / keys_verified</code>）。<b>Peer ≠ Friend</b>。" },
+  search_nearby_peers: { d: "立刻 <code>who_has</code> 探一轮（不等下一个 5s 周期），并唤醒 BLE 扫描。" },
+  get_topology: { d: "拓扑概览 <code>{node_count, relay_count, avg_rtt_ms, online}</code>（顶栏那一条）。" },
+  set_app_active: { d: "前 / 后台标志 —— <b>驱动 BLE 扫描占空比</b>（前台 5s / 后台 30s 间隔），省电且不失响应。" },
+  focus_window: { d: "把主窗口拉到前台（也用于启动时兜底显示隐藏的主窗）。", n: "boot.ts 里裸调" },
+  request_attention: { d: "任务栏闪烁 / Dock 弹跳（无通知权限时的可见手段）。" },
+  set_unread_badge: { d: "设置<b>绝对</b>总未读数（0 = 清除）。绝对值而非增量：增量必然漂移。" },
+  notify_desktop: { d: "发系统通知，带 <code>conv_id</code> 以便点击回跳。<b>只在真发出通知时才调</b>（否则会出现点了没反应的通知）。" },
+  send_test_notification: { d: "发一条测试通知（诊断权限与链路用），返回文本。" },
+
+  /* ── commands/relay.rs ── */
+  get_relay_config: { d: "读中继配置（含口令，界面自己负责遮罩与显式 reveal）。" },
+  save_relay_config: { d: "保存开关 / 服务器 / 口令。<b>校验：token 不得含空白</b>（前缀是空格分隔）、首行总长 ≤256B。<b>日志只记 <code>token_len</code></b>。", w: "settings(relay_*)" },
+  check_relay_server: { d: "「保存前先测一下」：与真实拨号<b>用同一个前缀构造函数</b> ⇒ 探测与真发字节完全一致。报告分档：<code>unreachable|rejected|held|peer_identity</code>，<b>绝不含口令</b>。" },
+
+  /* ── commands/routed.rs ── */
+  list_routed_endpoints: { d: "手动跨网段端点（Tailscale / VPN 场景）。" },
+  add_routed_endpoint: { d: "加一个并<b>返回全量列表</b>；可选绑定到某个 device_id。", w: "settings(routed_endpoints)" },
+  remove_routed_endpoint: { d: "删除并返回全量列表；每 10s 的拨拨循环下一轮就不再拨它。" },
+
+  /* ── commands/settings.rs ── */
+  get_settings: { d: "全量设置快照（外观 / 语言 / 通知 / bind_ip / 聊天样式 / 对端样式 / 中继策略与白名单）。" },
+  save_settings: { d: "保存。<b>必须带 origin</b>：回执要发给<b>其他</b>窗口，发起窗口自己已经应用过了 —— 漏了 origin 就是「发起窗口收到自己的事件」二次回灌。", w: "settings" },
+  reset_settings: { d: "恢复默认（不碰聊天数据）。" },
+  set_ui_language: { d: "切语言。<b>同时重建 macOS 原生菜单</b>（菜单项文案不是 DOM，只能重建）。", w: "settings(language)" },
+  broadcast_chat_style: { d: "把我的聊天样式 gossip 给对端（对端界面立刻换，不用重开）。" },
+  request_ble_permissions: { d: "申请蓝牙权限（Android / macOS 各走各的原生入口）。" },
+  log_frontend_error: { d: "前端异常落到后端日志（否则 WebView 里抛的错只有窗口自己知道）。<b>刻意不 catch：上报失败不该改变界面行为。</b>", n: "boot.ts 里裸调" },
+
+  /* ── commands/share.rs ── */
+  get_share_dir: { d: "当前共享目录（可空）。macOS 上会<b>先过 security-scoped 书签解析</b>。" },
+  set_share_dir: { d: "设共享目录（同时存书签）。⚠️ 书签坏时必须回落已存路径，绝不逼用户重选。" },
+  get_downloads_dir: { d: "接收目录。" },
+  set_downloads_dir: { d: "设接收目录（同上：书签 + 路径两行一起写）。" },
+  open_downloads_dir: { d: "在文件管理器里打开接收目录。" },
+  request_share_tree: { d: "列对端的共享目录树（走定向帧，中继场景在白名单里）。" },
+  download_shared_file: { d: "从对端共享目录下载一个文件，返回本地路径。" },
+
+  /* ── commands/system.rs ── */
+  get_device_info: { d: "本机设备信息（id / 昵称 / 头像 / 类型 / tcp_port / 两把公钥）。<b>私钥永不出这条命令</b>。" },
+  list_interfaces: { d: "本机网卡列表 <code>{name, ip}</code>（设置里选绑定地址用）。" },
+  update_profile: { d: "改昵称 / 头像并<b>广播 Presence</b>（好友那边当前页就该看到，不等下次打开）。", w: "settings(nickname/avatar)" },
+
+  /* ── commands/window.rs —— 自绘标题栏 ── */
+  window_minimize: { d: "最小化（<code>decorations:false</code> ⇒ 系统按钮没有了，得自己画）。" },
+  window_toggle_maximize: { d: "最大化开关，返回新状态。小窗口在 builder 上也设了 <code>maximizable(false)</code>。" },
+  window_is_maximized: { d: "当前是否最大化（按钮图标要跟着变）。" },
+  window_toggle_fullscreen: { d: "全屏开关，返回新状态。" },
+  window_close: { d: "关窗。<b>常驻窗口会走「拦关闭 + 隐藏」</b>，设置 / 日志才是真销毁。" },
+
+  /* ── commands/channel.rs ── */
+  set_channel_enabled: { d: "开 / 关 <code>lan | bluetooth</code>。返回全量 <code>RuntimeSnapshot</code> 并<b>只发给其他窗口</b>。⚠️ 区分 <code>enabled</code>（用户意图，落库）与 <code>running</code>（实际在跑）。", w: "settings(lan_enabled/bt_enabled)" },
+  get_runtime_snapshot: { d: "运行时唯一事实源：<code>channels[] · online · boundIp · peerCount · present · routedEndpoints · relay{enabled,connected} · ble{featureCompiled}</code>。<b>没有这条，前端就会有两份「局域网开没开」的表示</b>（历史上必现「外面开了里面还是关的」）。" },
+  get_cache_info: { d: "媒体目录用量 + 当前策略（条数 / 字节 / db 大小）。" },
+  set_cache_policy: { d: "保留天数（3|7|30|null=永不）与字节配额。<b>null 的语义是「不限制」，不是 0</b>。", w: "settings(cache_*)" },
+  clean_cache_now: { d: "手动清一次。<b>按 mtime 过期优先，再按最老优先删到配额内；跳过符号链接；删了才 VACUUM。</b>" },
+  default_nickname: { d: "按平台 / 语言给一个默认昵称（纯函数式读，<b>不写库</b>）。" },
+};
+
+/* 事件契约 */
+const EVENTS = [
+  ["peers-updated", "Peer[]", "发现/建链/清扫改动后，由 300ms 合并窗口的 emitter 统一发（<code>try_lock</code>，抢不到就跳过，绝不卡网络）", "chat.refreshPeers / TopologyBar", "全体窗口"],
+  ["message-received", "MessageRecord", "对端帧解开并落库成功时；也用于自己发出的那一行的首帧", "chat.enqueueMessage（进时间线/计未读/通知）", "全体窗口"],
+  ["message-acked", "msg_id str", "发送方收到对端 Ack，<b>且核过 outbox 里确有该行</b>", "onMessageAcked → 气泡转 delivered", "全体窗口"],
+  ["group-message-acked", "{msg_id}", "群成员回 GroupAck，删掉<b>那一个成员</b>的 group_outbox 行", "同上（共用一个处理）", "全体窗口"],
+  ["message-status-changed", "msg_id str", "状态被外部改动（补发、重投、取消）", "onMessageStatusChanged", "全体窗口"],
+  ["message-failed", "msg_id str", "<b>只有过期清扫器</b>写 failed（可达超 120s / 群与文件 30min）", "气泡转失败 + toast", "全体窗口"],
+  ["message-cancelled · message-resending", "msg_id str", "用户取消 / 自动重投开始", "onMessageStatusChanged", "全体窗口"],
+  ["message-recalled", "msg_id str", "撤回落 <code>group_recalled_messages</code> 并物化之后", "从时间线摘掉那一条", "全体窗口"],
+  ["peer-read", "PeerReadInfo", "对端已读回执到达（发不出去先攒 <code>pending_reads</code>，建链/心跳补发）", "已读单勾变双勾", "全体窗口"],
+  ["group-read", "GroupReadInfo", "群成员读位置前进（高水位，只增）", "chat.groupReads → 已读列表", "全体窗口"],
+  ["file-progress", "FileProgress{transfer_id,received,total}", "每 250ms 节流；received 取<b>真正在线上的字节</b>而非已入队量", "进度条（大文件不会假快）", "全体窗口"],
+  ["file-stalled", "FileStalledInfo{stalled,idle_ms,reason}", "停滞 15s 预警 / 恢复时 stalled=false；BLE-only 且 &gt;16MiB 直接判", "标「网络停滞」而不是继续转圈", "全体窗口"],
+  ["file-done", "FileDoneInfo{transfer_id,path}", "接收端长度+sha256 双证并 rename 落位后；或发送端收到成功 CompleteAck", "气泡转完成 + 可打开", "全体窗口"],
+  ["file-failed", "FileFailedInfo", "判死：不可重试 / 重试超 5 次 / 过期。<b>四张写库全部成功才 emit</b>", "标失败并给出原因", "全体窗口"],
+  ["file-cancelled", "transfer_id str", "用户取消（同 tid 的多个接收人一起取消）", "进度归零、按钮复原", "全体窗口"],
+  ["friend-request", "PendingRequest", "收到入向申请（验签不过的会拒）", "bell 角标 + 请求列表", "全体窗口"],
+  ["friend-accepted · friend-rejected · friend-removed", "peer_id str", "对端回应或解除；removed 同时解除内存身份绑定（否则重装只能重启）", "刷新好友列表 / 清会话归属", "全体窗口"],
+  ["friend-message-blocked", "peer_id str", "非好友发来的内容被拒（不落库、不回 Ack）", "提示 + 引导加好友", "全体窗口"],
+  ["groups-updated", "str", "群名册/改名/转让有变化", "chat.refreshGroups", "全体窗口"],
+  ["group-member-removed", "group_id str", "自己被移出群", "handleSelfRemovedFromGroup（回滚 + 收起面板）", "全体窗口"],
+  ["peer-style-updated", "{device_id,style}", "对端聊天样式广播到达", "app.applyPeerStyle（当前页立即换，不等重开）", "全体窗口"],
+  ["content-audience", "ContentAudience{conv_id,msg_id,hint}", "消息已发出、但接收方可能只看到裸文本时的受众提示", "气泡下补一句", "全体窗口"],
+  ["data-cleared", "—", "清空数据<b>成功之后</b>", "chat.resetAfterDataCleared（没有它主界面毫无反应）", "全体窗口"],
+  ["settings-changed", "SettingsChanged{changed[],origin?,settings?}", "保存设置后，<b>载荷带全量值</b> ⇒ 接收方零额外 IPC；<b>不回发发起窗口</b>", "app.applySettingsSnapshot / patch", "除发起窗口外"],
+  ["runtime-changed", "RuntimeSnapshot", "通道开关 / 启停网络后（同样带快照、排除发起窗口）", "app.applyRuntimeSnapshot", "除发起窗口外"],
+  ["group-todos-target", "{groupId}", "<b>只在复用窗口时</b>发（新建的文档还没有监听者，靠挂载后自取）", "GroupTodosWindow.applyTarget（换群=重读+重置）", "tasks 窗口"],
+  ["preview-gallery", "PreviewGallery", "同上：窗口已存在时换内容", "PreviewWindow 换相册", "preview 窗口"],
+  ["notification-clicked", "NotificationClick{type,conv_id?}", "系统通知被点（含冷启动那条）", "routeNotificationClick → 打开对应会话", "主窗口"],
+  ["menu://settings · add-friend · search · logs", "—", "原生菜单项（macOS 专属，其他平台静默）", "bindMenuEvents → APP_ACTION DOM 事件", "主窗口"],
+];
+
+/* 数据契约 */
+const TABLES = [
+  ["settings", "键值配置：身份、<b>私钥</b>、目录、缓存策略、每群清空边界", "PK <code>key</code>", "<code>value TEXT NOT NULL</code>。键族：<code>device_id · nickname · avatar · tcp_port · bind_ip · lan_enabled · bt_enabled · language · dark_mode · appearance_mode · theme_color · font_family · chat_style · chat_peer_styles · notify_* · relay_policy · relay_allowlist · <b>x25519_secret</b> · <b>ed25519_secret</b> · share_dir(+_bookmark) · downloads_dir(+_bookmark) · cache_retention_days · cache_max_bytes · gk:{group_id} · gfk:{transfer_id} · clear_boundary:group:{id} · routed_endpoints</code>", "14 个模块走 <code>db::set_setting</code>；<code>gfk:</code> 存的是<b>群密钥封装后的密文</b>（明文 file_key 只在内存，不落库不进日志）"],
+  ["friends", "好友关系（两侧各存一份，无中心权威）", "PK <code>device_id</code>", "<code>nickname · avatar(base64) · x25519_pubkey · ed25519_pubkey · added_at</code>", "<code>add_friend</code>（命令 / transport / gossip）；<code>update_friend_pubkeys</code> 从在线广播学；<code>remove_friend</code>"],
+  ["conversations", "会话行：单聊 = 对端 id，群聊 = <code>group:&lt;id&gt;</code>", "PK <code>id</code>", "<code>kind · name · avatar · last_msg · last_ts · unread · updated_at · pinned</code>（pinned 是本地语义，不广播）", "<code>ensure_conversation</code> + 每条消息 <code>touch_conversation</code>；<code>delete_conversation</code> 手写级联"],
+  ["messages", "聊天正文，<b>同时是卡片存储</b>（任务 / 公告 / 钉 / 反应 / 合并）", "PK <code>id</code> · UNIQUE <code>msg_id</code> · idx <code>(conv_id,ts)</code>、<code>(conv_id,seq)</code>", "<code>conv_id · sender_id · receiver_id · kind · content(JSON) · ts · <b>seq</b> · status ∈ sent|delivered|queued|read|failed|recalled</code>", "<code>insert_message(_and_outbox|_if_new)</code>；<code>set_message_status</code>；⚠️ <b>failed 只由清扫器写</b>。<code>(conv_id,seq)</code> 只由迁移 v2→v3 建 ⇒ 全新库可能没有该索引（待核）"],
+  ["conversation_clocks", "每会话单调 Lamport 计数 = <b>排序与清空边界的权威</b>", "PK <code>conv_id</code>", "<code>seq</code>", "启动时从 messages 重建；<code>next_clock</code>（发）/ <code>observe_clock</code>（收）"],
+  ["group_recalled_messages", "撤回的<b>唯一事实</b>（G-Set，只增不减）", "PK <code>(conv_id,msg_id)</code>", "<code>recaller_id · seq</code>", "<code>insert_recall</code> + <code>materialize_recall</code> 物化到 messages。原因：撤回可能比被撤回的消息先到，光 UPDATE 会命中 0 行"],
+  ["groups", "群", "PK <code>id</code>", "<code>name · creator · created_at</code>", "<code>create_group / upsert_group / rename_group / set_group_creator / delete_group</code>"],
+  ["group_members", "群成员", "PK <code>(group_id,device_id)</code>", "—", "<code>add_group_member / remove_group_member</code>"],
+  ["group_reads", "每成员读位置高水位", "PK <code>(group_id,reader_id)</code>", "<code>last_read_ts</code>", "<code>upsert_group_read</code>（只前进）；随 <code>delete_group</code> 清"],
+  ["outbox", "单聊离线补发队列", "PK <code>id</code> · UNIQUE <code>msg_id</code> · idx <code>peer_id</code>、<code>created_at</code>", "<code>peer_id · payload(序列化 Message) · created_at</code>。<b>没有状态列：有行 = 待发</b>", "<code>insert_message_and_outbox</code> 同事务写入；Ack 到达才 <code>DELETE</code>；过期由清扫器判死（可达 120s，离线留 7 天）"],
+  ["group_outbox", "群补发：<b>每收件人一行</b> = fan-out 的单位", "UNIQUE <code>(msg_id,peer_id)</code> · idx <code>peer_id / group / created_at</code>", "<code>payload · created_at</code>", "<code>insert_group_outbox</code>；<b>只有该成员的 GroupAck 才删行</b>；flush 只重发不删"],
+  ["file_transfers", "用户可见的传输台账（双向）", "PK <code>id</code>（= transfer_id）· <b>无索引</b>", "<code>peer_id · name · size · direction · status ∈ pending|active|done|failed|sent · path · progress</code>（<code>sent</code> = 已写出但对端无回执，是终态）", "<code>upsert_transfer</code>；<code>mark_transfer_failed_if_active</code> 做启动/teardown 回收"],
+  ["file_outbox", "文件离线投递队列（<b>活过一次重启</b>）", "UNIQUE <code>transfer_id</code> · idx <code>(peer_id,status)</code>、<code>created_at</code>", "<code>group_id?(NULL=单聊) · local_path · status ∈ pending|sending|failed · <b>attempts</b> · next_attempt_at</code>", "<code>mark_file_outbox_{sending,pending,failed}</code>；启动时 <code>reset_sending_to_pending</code>（崩溃恢复）；判死由 <code>send_retry_verdict</code> + 清扫器"],
+  ["group_files", "群文件（一行一个文件）", "PK <code>transfer_id</code> · idx <code>group_id</code>", "<code>sha256（= cid，内容寻址键）· status ∈ pending|sending|completed|failed · <b>scope ∈ chat|todo</b> · todo_id</code>", "<code>insert_group_file</code> / <code>upsert_group_file_receive</code>(INSERT OR IGNORE)"],
+  ["group_file_recipients", "群文件<b>每收件人</b>投递态（DB 才是事实源）", "PK <code>(transfer_id,recipient_id)</code> · idx <code>(transfer_id,status)</code>、<code>(recipient_id,status)</code>", "<code>status · progress · updated_at</code>（第二个索引专为「某人上线 ⇒ 精确取它的待发」）", "<code>insert_group_file_recipient</code>（与 group_files 同事务，避免半完成）；<code>update_group_file_recipient</code>"],
+  ["pending_reads", "未发出的单聊已读回执（重启后恢复）", "PK <code>peer_id</code>", "<code>last_read_ts</code>（一人一行 = 天然合并）", "<code>upsert_pending_read</code>；flush 成功后删"],
+  ["pending_group_reads", "未发出的群已读", "PK <code>(group_id,peer_id)</code> · idx <code>peer_id</code>", "<code>last_read_ts</code>", "同上"],
+  ["favorites", "收藏：<b>内容的独立副本</b>", "PK <code>id</code> · UNIQUE <code>msg_id</code> · idx <code>favorited_at DESC</code>", "<code>content（收藏当时的快照）· media_path · media_size · ts · favorited_at</code>；<code>available</code> 是读时算的（副本可能已被清理）", "<code>insert_favorite</code>(INSERT OR IGNORE ⇒ 重复收藏幂等)；<b>不被任何级联删除</b>（设计如此：清了聊天记录不该顺手毁掉收藏）"],
+  ["content_transfers", "内容生命周期层自己的表（ADR-0019，由 <code>content/store.rs::ensure_schema</code> 建）", "PK <code>(cid,peer_id,direction)</code> · idx <code>status</code>", "<code>received · attempts · next_attempt_at · last_error · path · status ∈ queued|active|verifying|complete|incomplete|rejected</code>", "<code>upsert / record_local / record_failure / touch_received / mark_complete</code>（文件域调用）。<code>transfer_id</code> 列是 ensure_schema 里的<b>防御式 ALTER</b>，不走 MIGRATIONS"],
+];
+const DISK = [
+  ["<code>app_data/gosslan.db</code> (+ -wal / -shm)", "上面 19 张表", "<code>db::init</code>；多开实例 = <code>gosslan-{N}.db</code>，TCP 端口 +instance×10；WAL + <code>synchronous=NORMAL</code>"],
+  ["<code>app_data/downloads</code>", "接收落位 + <code>{transfer_id}.part</code> 续传临时文件", "默认接收目录，可改（<code>user_dirs::RECEIVE</code> + macOS 书签）。<b>.part 的键是 transfer_id，绝不从最终名派生</b>（否则两张同名图会互相打乱）；每小时清 24h 前的残留"],
+  ["<code>app_data/downloads/&lt;unique&gt;</code>", "最终文件", "<code>finish_receiver_into</code>：长度对 + sha256 对 → <code>sync_all()</code> → <code>rename</code>。<b>rename 那一刻才是「完成」</b>"],
+  ["<code>app_data/cache</code>", "旧版媒体缓存 + <code>todo-paste/</code>（任务贴图，按 sha256 命名）", "6h 一轮按 retention / 配额回收；<b>只删文件，删了才 VACUUM</b>；递归遍历<b>跳过符号链接</b>（该目录是远端输入可达的）"],
+  ["<code>app_data/favorites/media</code>", "收藏的独立媒体副本", "<code>commands/favorites.rs</code> 物理复制 + <code>resolve_favorite_media_path</code> 要求必须在该目录下。⚠️ 它<b>在</b>清理清单里（<code>state.rs</code> 注释说不在，注释是旧的）⇒ 这正是 <code>available</code> 字段的存在理由"],
+  ["<code>app_data/logs</code>", "日志文件", "<code>logging.rs</code>，按实例分文件；窗口里由 <code>get_logs</code> 每 2s 轮询"],
+  ["用户选的<b>共享目录</b>（任意路径）", "对外提供列树与下载", "只有 settings 两行（路径 + 书签），<b>无表</b>。<code>user_dirs::pick()</code>：书签优先，坏书签回落已存路径，绝不逼用户重选"],
+];
+
+/* 流程 */
+const PIPES = [
+  ["单聊消息：从按下回车到对面看见",
+   "要点：<b>先落库 + 入队，再发</b>（INV-003「enqueue before deliver」）；三条路径（直发 / gossip / 离线补发）共用同一个 <code>msg_id</code> ⇒ 收件端天然幂等。",
+   ["<b>UI</b> <code>MessageComposer → chat.send() → invoke(\"send_message\", {friendId, content, kind})</code>",
+    "<b>门禁</b> <code>commands/chat.rs</code>：是好友吗 → 长度 ≤ 50 000（<b>拒断不截断</b>）→ 该 kind 需要哪些能力位、对端声明过吗（<b>缺记录按 0 处理 = 拒绝</b>）",
+    "<b>取密钥</b> friends 表的 x25519 优先 → 缺了用 peers 里的 → 再缺就发 <code>who_has</code> 探一次并等 1.2s → 仍无则明确报错（<b>不发裸文本</b>）",
+    "<b>加密</b> <code>db::next_clock</code> 取 seq → <code>shared_secret</code> + <code>seal</code>（直发帧 <code>enc1:</code> 前缀与 gossip 载荷各封一次）→ 信封重签名",
+    "<b>落库（同一事务）</b> <code>insert_message_and_outbox</code> + <code>touch_conversation</code>。<b>行先存在，才允许存在投递</b>",
+    "<b>出向</b> 有链路 → <code>try_send</code>：<code>route_order</code> 里 <code>pick_link</code> 选路（lan&lt;routed&lt;relay&lt;ble，健康只看 <code>last_read_seen_ms</code>）→ 按 <code>message_priority</code> 投 high/normal/low → <code>writer_loop</code> → 4B 大端长度 + 帧",
+    "<b>无链路</b> → <code>broadcast_gossip</code> 给所有邻居（排除来源）。<b>故意不用 <code>select_outgoing</code></b>：按 fanout 截断会静默丢掉群成员；每跳入队有界 500ms",
+    "<b>发送侧状态</b> 投出去 → <code>set_message_status(sent)</code>；失败则保持 <code>sending</code> 且 outbox 行留着（等心跳 / 建链 flush）",
+    "<b>收件</b> <code>reader_loop → handle_message</code>：<b>解密前</b>先 <code>message_exists</code> 去重（重复只补 Ack）→ 好友校验 → 解密。<b>解密失败既不落库也不 Ack</b> —— Ack 会删掉发送方的 outbox 行，等于把「可恢复」变成「永久丢」",
+    "<b>收件落库</b> <code>insert_message_if_new</code>（三态返回，解决 gossip 与直发竞态只播一次）→ <code>observe_clock</code> → <code>touch/ensure_conversation</code> → <code>emit(\"message-received\")</code>",
+    "<b>Ack 回程</b> 收件端 <code>may_ack</code> 后回 <code>Ack{msg_id}</code>；发送端还要验「这条是我发的 <b>且</b> outbox 里确有该行」才 <code>set_message_status(delivered)</code> + <code>DELETE outbox</code> ⇒ 局域网里任何节点乱猜 msg_id 都无法伪造投递",
+    "<b>我是中间人</b>：msg_id 不是我发的 → 把 Ack 原样转给真正的发送者；完全不认识的 id 静默丢弃",
+    "<b>已读</b> <code>mark_read</code> → 有链路走 <code>ReadReceipt</code>，没链路转成定向 gossip；发不出去先攒 <code>pending_reads</code>，建链 / Hello / 心跳时补发"]],
+
+  ["群消息与 gossip：一次发送怎么到达每个人",
+   "要点：fan-out 的单位是<b>行</b>不是消息；转发与消费是两件事，<b>非成员也必须转发</b>。",
+   ["<code>send_group_message → commands/group_files.rs →</code> 统一入口 <code>send_group_payload</code>（公告 / 任务 / 反应 / 钉 / 合并都走这里）",
+    "取群密钥 <code>gk:{group_id}</code>（内存 <code>state.group_keys</code>）→ 信封 <code>GossipKind::Group</code> + 受众 = 成员表；行状态起点是 <code>sent</code>",
+    "<b>同一事务</b>：写 messages + <b>每个成员一行</b> <code>group_outbox</code> + touch 会话",
+    "<code>broadcast_gossip</code> 一次",
+    "中间节点 <code>handle_gossip</code> 五步固定顺序：① <b>信任</b>（peers 公钥匹配；peers 里没有的发送者必须用 friends 表已绑定 Ed25519 精确匹配，TOFU 只对 Presence / FriendRequest / FriendAccept 开）② 同步发送者 x25519 ③ <b>先验签再动去重表</b>（否则 Bloom/LRU 被投毒）→ <code>MeshRouter::on_receive</code>(TTL + 重复) → <code>GossipEngine::is_new</code>（两层独立去重）④ <b>转发</b>：<code>relay_policy::decide_forward</code>，定向帧命中目标后停止转发；<code>group_envelope_consumable</code> 只记账不 return（非成员也要转发，否则 BLE-only 群聊必死）；转发跑在 <b>spawned 任务</b>里，绝不阻塞本连接 reader_loop ⑤ 按 kind 消费",
+    "成员收到 → 群密钥解密 → <code>insert_message_if_new</code> → 回 <code>GroupAck</code> → 发送端只删<b>那一个成员</b>的 group_outbox 行",
+    "离线成员：任何建链 / Hello / 心跳 / BLE 事件都触发 <code>flush_group_outbox(peer)</code> —— <b>只重发，永不删</b>",
+    "⚠️ flush 的<b>顺序是语义</b>：outbox → <b>群密钥</b> → group_outbox → 单聊已读 → 群已读 → 文件 → 群文件 → 内容补拉。群密钥必须早于群消息：信封在解密前就登记了 message_id，密钥晚到等于永久丢消息",
+    "过期：群消息要<b>全部</b>成员的投递窗口都放弃才把消息判 failed（一人未到不算失败）"]],
+
+  ["文件发送：协商 → 分块 → 完成回执 → 落位",
+   "要点：<b>没有文件专用端口</b>，文件跑同一条 TCP 的 low 队列且<b>整条流钉死一条链路</b>；「显示成功」必须等于「对面真的拿到了」。",
+   ["<code>send_file</code>（事务）：写 messages（<code>msg_id = \"file-{tid}\"</code>）+ <code>upsert_transfer(pending)</code> + <code>insert_file_outbox</code> → <code>emit(message-received)</code> → <code>spawn(flush_pending_files)</code>",
+    "<b>一 peer 一 flusher</b>（<code>state.file_sending</code>）。先判该不该发：<code>best_link_kind</code> + <code>refuse_reason_for_best_link</code> ⇒ BLE-only 且 &gt; 16 MiB ⇒ 直接 <code>file-stalled</code> 并保持 pending，<b>不消耗 attempts</b>",
+    "准备：<code>sha256_file_hex</code> 跑在 <code>spawn_blocking</code>（大文件不能占异步线程池）→ 回填消息的 cid 并<b>重发 message-received</b>（否则前端手上的 cid 是旧的）→ 每次传输一把随机对称密钥（只活在内存）→ 用对端 x25519 封装",
+    "协商：<code>FileOffer{name,size,sealed_key,sha256,from_bytes,attempt}</code> → 等 15s：<b>Accept</b> = 开流；<b>Reject(received ≥ size)</b> = 对方已有 ⇒ 立刻 finalize，<b>零字节</b>；<b>Reject(received &gt; resume_from)</b> = 采纳对方实测进度续传（<b>发送端永远让位于接收端的真实位置</b>，这是 160MB 那次的根因修复）",
+    "接收端一处判死：<code>file::decide_offer</code> 把「内存进度 / 磁盘 .part 长度 / DB 是否已完成」三份事实合成一个结论；解不开密钥 ⇒ <code>FileReject{received:0}</code>，<b>密文绝不落盘</b>",
+    "开流：<code>resolve_stream_link</code> 钉链路（换链路会打断 seq ⇒ <code>chunk_seq_decision</code> 判 Gap ⇒ 整单死 —— 多图 / 600MB 故障的真因）→ 每块 <code>seal_symmetric</code>（每块新 nonce）+ base64 → <code>FileChunk{seq,data,attempt}</code>",
+    "背压时<b>原地等</b>并每 5s 跑 <code>stall_tick</code>：<code>stall_verdict</code> 15s 预警 / 60s 中止。进度每 250ms 上报，取「已入队」与「真的在线上的」较小值 ⇒ 进度条不会假快",
+    "接收：<code>frame_is_current</code>（attempt epoch，挡掉上一轮排队的残块）→ <code>chunk_seq_decision</code>：Duplicate <b>忽略</b>（不致命）、Accept 写 + 增量哈希、<b>只有 Gap 才失败</b>",
+    "收尾：<code>FileDone</code> 走同一条钉住的链路（不能越过自己 ≤1024 深的队列）→ <code>finish_receive</code> 摘接收器并<b>先放锁</b>（600MB 的 <code>sync_all</code> 要几秒，持锁会把别人的传输推进 60s 中止窗口）→ <code>finish_receiver_into</code>：长度对 + sha256 对 → <code>rename(.part → final)</code> → <code>file-done</code> → <code>FileCompleteAck{success:true}</code>",
+    "重复 <code>FileDone</code>：已完成 ⇒ 重放<b>成功</b> Ack；接收器没了且 DB 未完成 ⇒ 重放<b>失败</b> Ack（沉默会让发送端白等一整个静默窗）",
+    "发送端 <code>wait_complete_ack</code>：30s 静默窗，<b>但窗内还有字节往外走就重置继续等</b>，彻底静默才失败；<code>completed=false</code> ⇒ 可重试。成功后 <code>finalize_send_accepted</code>：transfer=done + 消息 status=delivered + <code>message-acked</code> + <code>file-done</code> + 进度拉满 → 删 file_outbox 行",
+    "<b>失败裁决（只有一处）</b> <code>send_retry_verdict</code>：不可重试 → <code>GiveUp</code>；<code>attempts ≥ 5</code> → <code>GiveUp(\"连续重试超限（链路长时间未恢复）\")</code>；否则 <code>Retry{backoff 5s}</code>。命令层只负责「照裁决写库」。用户取消属于 <b>permanent</b> ⇒ 立即 GiveUp",
+    "<b>过期判死</b> 清扫器：<code>should_fail_expired(可达, 龄, 30min, 离线留 7 天)</code> → <code>finalize_expired_file</code>，写序有要求：<code>mark_file_outbox_failed</code> <b>放最后</b>（它是唯一把该行移出重试集的写），四写全成才 emit <code>file-failed</code>"]],
+
+  ["内容补拉（cid 寻址）：图 / 文件在另一台设备上",
+   "要点：以「<b>内容</b>」而不是「某次传输」为单位记账 —— 拥有即授权，可复用任何一台持有者。",
+   ["气泡点图取不到字节 → <code>request_content_by_cid(cid,name,size)</code> 或 <code>request_content(peerId,msgId)</code>",
+    "<code>content_transfers</code>（PK <code>(cid,peer_id,direction)</code>）记状态机：<code>queued → active → verifying → complete | incomplete | rejected</code>，带 <code>received / attempts / next_attempt_at / last_error</code>",
+    "<code>ContentRequest{cid,from_bytes}</code> 走定向帧（中继场景在 <code>directed_relay_target</code> 白名单里，否则穿不过哑管道）",
+    "对端 <code>content::store::find_source(cid)</code> 找本地副本 → 有则按文件流发；无则明确失败（不许静默）",
+    "重试由 <code>content::policy::should_retry_now</code> + <code>backoff_ms</code>(2s→60s) 决定；任何建链 / Hello 都会唤醒 <code>retry_incomplete_content</code>；能力位 <code>CONTENT_FEATURE_PULL</code> 做门禁；Active 超 60s 也重探",
+    "<b>每轮失败都自己记一笔</b> ⇒ <code>MAX_CONTENT_RETRIES</code> 真的会收敛，而不是永远重试"]],
+
+  ["发现与建链：「在线」是怎么来的",
+   "要点：<b>Friend ≠ Peer</b>；「在线」既不是有 IP 也不是 last_seen，而是<b>有活跃链路</b>。",
+   ["每 5s（≥100 节点 10s、≥500 则 20s）+ 0–2s 抖动，广播 announce 到 <code>255.255.255.255:59991</code> <b>和</b>组播 <code>239.255.42.99:59991</code>（昵称、TCP 端口、两把公钥、签名）",
+    "收端 <code>handle_datagram → verify_announce → upsert_peer</code>（<b>验签通过才 keys_verified</b>）→ <b>spawned</b> <code>ensure_link</code>（建链绝不阻塞收包）。两个 socket 都要读：macOS 的 <code>SO_REUSEPORT</code> 只喂一个",
+    "谁主动 dial：<b>device_id 大的一方</b>；小的一方等 <code>BACKUP_DIAL_AFTER_MS = 10s</code> 再补拨（防双向同时拨）",
+    "握手 <code>Hello</code>：核对身份与公钥；与已绑定好友的公钥不一致 ⇒ 记冲突并拒（<b>绝不静默替换密钥</b>）",
+    "每 10s 一次 <code>Presence</code> gossip（明文、重签名）让<b>多跳之外</b>的节点也互相可见；接收方可 TOFU 登记跨跳节点",
+    "每 tick 一次 <code>sweep_peers</code>：保留条件 = <b>有活跃链路 或 last_seen ≥ now − 45s</b>；淘汰时一并清 <code>conv_link / peer_content_features / peer_versions</code>",
+    "<code>peers-updated</code> 由 300ms 合并窗口统一发（否则每个事件刷一次列表），<b>用 try_lock，抢不到就跳过</b>",
+    "UI 的链路徽标只有一个来源：<code>best_link_kind([lan,routed,relay,bluetooth])</code> ⇒ 绝不从「没有 IP」反推「蓝牙直连」（同一 Tailscale 网段被误标过，用户实测）"]],
+
+  ["公网中继电路：一条密文怎么建起来",
+   "要点：服务器是<b>哑管道</b>，不是可信第三方。「对方中继没开」这个状态<b>不存在</b> —— 对哑管道而言那就是离线。",
+   ["每 2s 一轮 <code>relay_rendezvous_task</code>：重读配置（改了立即生效）→ 没配就 <code>drop_relay_circuits</code> 并跳过",
+    "候选 = <code>list_bound_friend_identities()</code>（<b>只给已绑定 Ed25519 的好友建电路</b>）− 已连接；<code>via_relay ∪ inflight</code> 计入 8 路上限。<b>故意不 drain JoinSet</b>：drain 会让周期翻倍并把两侧永久反相",
+    "通道摘要 <code>channel_hash(双方公钥, 双方 id, 当天)</code> —— <b>每天旋转</b>，服务器拿它配对也建不了永久假名",
+    "拨号先发 <code>GSRL1 &lt;token&gt; &lt;64hex&gt;</code>。构造点<b>唯一</b>：设置页「保存前测一下」用同一个函数 ⇒ 探测与真实拨号字节完全一致",
+    "<b>双方同时</b>交 <code>GSRW1 &lt;role&gt; &lt;b64 临时 X25519&gt; &lt;b64 签名&gt;</code>（≈190B，上限 512）；签名覆盖「协议名 + 我的 id + 期望的对方 id + 通道摘要 + 角色 + 临时公钥」，验签<b>只用好友表里绑定的那把</b>，绝不用线上自报的；角色由 device_id 排序决定，不由到达顺序",
+    "握手期<b>逐字节</b>读一行（一次块读会把后面紧跟的 Hello 一起吞掉）",
+    "之后每帧过记录层（方向密钥 a2b/b2a 不同 ⇒ 反射失败；计数严格 +1 ⇒ 重放失败），<b>reader / writer 一行都不改</b>，也没有明文回落分支",
+    "服务器能看到的只有：口令、通道摘要、<b>帧长度与收发时间戳</b>（无填充 ⇒ 长度分桶是诚实承认的残余）。看不到：设备号 / 昵称 / 群名册 / 文件名与大小 / 帧类型 / 已读",
+    "<b>token 值绝不进日志、诊断、事件、运行时快照</b>（只有 <code>token_len</code> 落日志），两条护栏钉住：<code>probe_report_never_carries_the_token</code> + <code>relay_token_never_reaches_logs_or_diagnostics</code>",
+    "失败分型只有四种：<code>unreachable / rejected / held / peer_identity</code> ⇒ 界面按这几档说实话，不编第四种"]],
+
+  ["开一扇辅助窗口：从点击到秒开",
+   "要点：流畅优先 ⇒ <b>窗口先挂载、数据后补</b>；复用与预热都建立在<b>固定 label</b> 上。",
+   ["UI 按钮 → <code>launchAuxWindow(label, open)</code>：<b>模块作用域单飞 Set + 300ms 防抖</b>（连点只发一次 IPC，也不会开第二扇），按钮同时进 spinner",
+    "<b>命令必须是 async</b>：同步命令里建 WebView2 会在主线程内联执行 ⇒ 永久自锁（2026-09-20 真机故障）。所有 <code>open_*</code> 由护栏逐个钉住 <code>#[tauri::command(async)]</code>",
+    "<code>ensure_aux_window(app, label, geo, resident, reveal, build)</code> 返回 <code>(win, created)</code>：建窗锁内<b>双检</b>已存在 → 走 <code>show_existing_aux_window</code>（<code>unminimize + show + focus</code>，只 show 拉不回最小化过的窗口）",
+    "<b>reveal=false 就是预热</b>：默默建好 / 藏好，命中已存在窗口时<b>什么都不做</b>（绝不显示、绝不动位置）",
+    "几何不变量：<b>辅助窗口永不比主窗口大</b>（主窗 −24px），且 <code>apply_aux_geometry</code> 必须在 <code>build()</code> 之后",
+    "关窗 = 隐藏（<code>prevent_close + hide</code>）：任务 / 预览 / 外链常驻，设置 / 日志关即销毁。该回调跑在 wry 主线程事件循环 ⇒ <b>那里禁止 destroy / await / 发 IPC</b>",
+    "<b>新文档还没有监听者</b> ⇒ 只有 <code>created=false</code>（复用）才 emit 换内容事件；新建的那扇靠挂载后自己拉（<code>get_group_todos_context</code> / <code>get_image_preview_gallery</code>）。这是跨窗口投递的唯一正确形状：<b>pending + 仅复用时 emit + 挂载时自取</b>",
+    "启动侧：主窗口 <code>gosslan:app-ready</code> 之后 1.2s，桌面端调 <code>prewarm_aux_windows()</code> 把任务与预览两扇先建好（移动端命令直接返回 Err）",
+    "首帧：骨架屏由 <code>dismissBoot()</code> 撤，判据是<b>元素自带的 <code>.boot-skeleton</code> 类</b>而不是别处维护的 id 清单（清单漏一个 id ⇒ 整页被 fixed 骨架盖住，正是「预览只有骨架没内容」的根因）；另有 5s 兜底必撤",
+    "入口那道门里<b>只准 <code>app.init()</code></b>：把取数塞回挂载前 = 「点了没反应」重演（护栏 + 根组件 <code>:key=\"groupId\"</code> 一起守）",
+    "换群（复用同一扇）：必须<b>重读数据 + 重置组件</b>两件事都做，只做一件就是「显示上一个群的任务」"]],
+
+  ["离线与崩溃恢复：状态机怎么不撒谎",
+   "要点：<b>「显示成功」必须等于「真的成功了」</b>；所有回收都要在界面上说清是「没读到」还是「没有」。",
+   ["<b>启动第一件事</b>（建任何链路之前）：<code>reset_sending_to_pending</code>（上次崩在 sending 的文件行退回 pending）+ <code>mark_transfer_failed_if_active</code>（active 的传输没人接，判失败）",
+    "<b>四张队列</b>：<code>outbox</code>（可达 120s 判死 / 离线留 7 天）、<code>group_outbox</code>（30min，全员放弃才算）、<code>file_outbox</code>（30min + 5 次重试）、<code>pending_reads / pending_group_reads</code>",
+    "清扫器每 30s 一轮：一次 <code>links</code> 快照判可达，判据是<b>纯函数</b> <code>should_fail_expired(可达, 龄, deadline, hold)</code>；<b>分支只有一条</b>（早先是两条分支各判一次，离线好友两分钟就被删行 —— 击穿「离线保留 7 天」的承诺）",
+    "<code>emit(message-failed / file-failed)</code> <b>必须由写库成功门控</b>：写库没成就保留该行，否则同一行被重复判死、用户看到重复提示",
+    "<b>1 小时</b>一轮：清 24h 前的 <code>.part</code> + 中继状态回收；<code>mark_transfer_failed_if_active</code> 只动 active，且 <code>emit</code> 放在<b>放锁之后</b>（持全局 DB 锁 emit = 主线程等锁死锁）",
+    "<b>6 小时</b>一轮：媒体目录按 mtime + 配额清理（<b>favorites 也在内</b>），删了才 VACUUM；遍历跳过符号链接",
+    "窗口路径上的<b>装饰性读</b>必须 <code>try_lock</code> + 兜底（群名拿不到就显示空串），<b>绝不允许因为抢不到锁而放弃开窗</b>（护栏：<code>cosmetic_title_read_cannot_abort_the_window</code>）",
+    "取数失败不许静默空列表：看板要停转（<code>todosLoadedOnce</code> 落位）并 toast 说清「这是没读到，不是这个群没有任务」",
+    "降级守卫：<code>user_version &gt; DB_VERSION</code> 时 <code>db::init</code> 在任何一句写操作<b>之前</b>返回 Err —— 位置就是语义（否则「你的数据没有被改动」这句提示成了谎话）"]],
+];
+
+/* 方向核对 */
+const DOMAINS = [
+  {"id": "identity", "name": "身份", "tier": "L3", "paths": ["src-tauri/src/device.rs", "src-tauri/src/crypto.rs", "src-tauri/src/nickname.rs"], "inv": ["INV-P11", "INV-P12", "INV-P18", "INV-007", "INV-P22"], "home": "src-tauri/src/crypto.rs", "cons": [], "notes": "「我是谁」不负责「我怎么找到别人」。E2EE 密钥派生与 Hello 验签都在这。私钥永不过 UI 边界（INV-P18）。"},
+  {"id": "presence", "name": "在线状态与发现", "tier": "L3", "paths": ["src-tauri/src/network/discovery.rs", "src-tauri/src/discovery"], "inv": ["INV-P21"], "home": "src-tauri/src/network/discovery.rs", "cons": ["routing", "messaging", "transport"], "notes": "用户可见症状（2026-09-14）：「局域网直连上了，好友在线状态却不实时」——已有非空转护栏（「在线状态必须包含有活跃链路的节点」）。迁移详见 docs/migration-ledger.md 的「局域网发现」条。"},
+  {"id": "friendship", "name": "好友关系", "tier": "L3", "paths": [], "inv": ["INV-P12"], "home": null, "cons": [], "notes": "⚠️ **Friend ≠ Peer**：`Peer` 是「发现到了」，`Friend` 是「关系已建立」。混同是 Presence 类 bug 的常见来源。"},
+  {"id": "messaging", "name": "消息", "tier": "L3", "paths": ["src-tauri/src/protocol.rs", "src-tauri/src/gossip_engine.rs"], "inv": ["INV-001", "INV-002", "INV-003", "INV-004", "INV-005", "INV-006", "INV-P01", "INV-P02", "INV-P03", "INV-P04", "INV-P07", "INV-P08", "INV-P19", "INV-P22"], "home": "src-tauri/src/protocol.rs", "cons": ["identity"], "notes": "直发 + Gossip + 离线补发统一 msg_id 幂等去重；消息先落 outbox，ACK 到达才删。**已知例外**（protocol-invariants §22）：「和自己聊天」不进 outbox、不 gossip、不加密（INV-P03/P04 例外）。消息语义的**实际执行点**仍在 network/transport.rs（约 9600 行，正按 include! 分册中）—— 那是 Phase 7 的拆分目标。"},
+  {"id": "routing", "name": "路由与中继", "tier": "L3", "paths": ["src-tauri/src/mesh", "src-tauri/src/file_relay.rs"], "inv": ["INV-P20"], "home": "src-tauri/src/mesh", "cons": ["messaging"], "notes": "`mesh/` 是**本仓库最成型的领域模块**（candidate / connection / endpoint / manager / path / peer / relay_policy / router / selection 各自独立文件，有 ADR-0013/0014 背书）。⚠️ relay_manager.rs 属于**文件切片中继**（BitTorrent 式分发），不是路由 —— 命名撞车，lib.rs:19 那句注释就是为它写的。"},
+  {"id": "transport", "name": "传输", "tier": "L3", "paths": ["src-tauri/src/network/ble.rs", "src-tauri/src/network/transport.rs", "src-tauri/src/network/transport/outbound.rs", "src-tauri/src/network/transport/gossip.rs", "src-tauri/src/network/transport/relay.rs", "src-tauri/src/network/dispatch.rs", "src-tauri/src/transport"], "inv": ["INV-P20", "INV-P22", "INV-P23"], "home": "src-tauri/src/network/transport.rs", "cons": ["identity", "persistence", "files", "messaging", "routing", "presence", "platform"], "notes": "⚠️ **两个同名 transport.rs**：network/transport.rs（活；主文件 + include! 分册合计约 1 万行）与 transport/{mod,tcp}.rs（新栈）。「传输」这一个关注点今天有**三个家**：TCP 数据面走 network/、BLE 数据面走 transport/bluetooth.rs::driver + 三个外设模块、控制面（开关/状态/分流）走 transport/mod.rs。这是「改完这个 bug 又冒那个」的结构性来源，逐条证据见 docs/migration-ledger.md。BLE 载荷预算已收敛为单一事实来源（INV-P23，Phase 3/4）。"},
+  {"id": "files", "name": "文件与内容", "tier": "L3", "paths": ["src-tauri/src/network/file.rs", "src-tauri/src/content", "src-tauri/src/storage"], "inv": ["INV-P17", "INV-P22"], "home": "src-tauri/src/network/file.rs", "cons": ["identity", "persistence", "transport", "messaging"], "notes": "原则（storage/mod.rs）：**SQLite 不存 BLOB**，二进制全部落盘、前端异步懒加载。content/ 是「内容生命周期」逻辑层，network/file.rs 是它的网络侧执行点。"},
+  {"id": "persistence", "name": "持久化", "tier": "L3", "paths": ["src-tauri/src/db.rs", "src-tauri/src/db", "src-tauri/src/schema.sql", "src-tauri/src/export.rs"], "inv": ["INV-P05", "INV-P14", "INV-008"], "home": "src-tauri/src/db", "cons": [], "notes": "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。"},
+  {"id": "platform", "name": "平台外壳", "tier": "L2", "paths": ["src-tauri/src/menu.rs", "src-tauri/src/tray.rs", "src-tauri/src/macos_window.rs", "src-tauri/src/macos_bookmark.rs", "src-tauri/src/open_path.rs", "src-tauri/src/android_open.rs", "src-tauri/src/jni_method.rs", "src-tauri/src/notifications.rs", "src-tauri/src/user_dirs.rs"], "inv": [], "home": "src-tauri/src/menu.rs", "cons": ["persistence"], "notes": "按平台分：menu / macos_bookmark / macos_window 是 macOS 专属（模块级 `#[cfg(target_os = \"macos\")]`）；android_open / jni_method 是 Android 专属。这些平台差异正是 Phase 2/4 两条腿存在的原因。"},
+  {"id": "observability", "name": "可观测性", "tier": "L2", "paths": ["src-tauri/src/logging.rs"], "inv": ["INV-P16"], "home": "src-tauri/src/logging.rs", "cons": [], "notes": "本项目最强项（结构化日志 + 日志窗口 + 诊断面板 + CHANGELOG 里大量「真机日志定位」）。Phase 8 要补的是**按 msg_id 串起一条消息的生命周期**（Trace）。另有 logs.html 作为独立日志窗口入口。"},
+  {"id": "presentation", "name": "呈现层", "tier": "L2", "paths": ["src/App.vue", "src/stores", "src/components", "src/composables", "src/api", "src/utils"], "inv": [], "home": "src/stores", "cons": [], "notes": "⚠️ **没有领域边界**：stores/ 只有 2 个文件却是 2346 行（useChatStore.ts 1421 行 / 86 个导出成员），utils/ 92 个文件平铺。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。"}
+];
+const DRIFT = [
+  ["<b>5 条命令注册了但前端零引用</b>", "<code>generate_handler!</code> 实数 138，前端 <code>invoke(\"…\")</code> 实数 133；差集：<code>recall_message · resend_message · cancel_send · send_group_poll · cast_group_poll_vote</code>", "撤回只有<b>群聊</b>实现（<code>chat.recallMessage</code> 调的是 <code>recall_group_message</code>）；投票的 kind 已在线上词表里但没有 UI。⇒ 要么补界面，要么删接口；留着就是「看起来有、其实没有」"],
+  ["<b>10 处 invoke 绕过 <code>api</code> 门面</b>", "<code>boot.ts</code>(focus_window, log_frontend_error)、<code>localFile.ts</code>(copy_file)、<code>MessageItem.vue</code>(request_content / get_group_file_delivery_summary / save_data_file / cancel_file_transfer / copy_file_to_clipboard)、<code>FavoritePanel.vue</code>、<code>MessageComposer.vue</code> + <code>GroupTasksBoard.vue</code>(read_clipboard_file_paths)、<code>ImageLightbox.vue</code>、<code>GroupFilesPanel.vue</code>、<code>SettingsWindow.vue</code>(close_settings_window)", "其中 <code>copy_file · copy_file_to_clipboard · save_data_file · read_clipboard_file_paths · get_group_file_delivery_summary · log_frontend_error</code> <b>在 api 上根本没有包装</b> ⇒ 只读 <code>src/api/index.ts</code> 画契约表会<b>漏掉一整截真实接口面</b>（本页 138 条是全量抽的）"],
+  ["<code>schema.sql</code> 与真源不一致", "真源是 <code>db.rs</code> 的 <code>SCHEMA</code> 常量；<code>schema.sql</code> 文件头自陈「供文档/手动建库参考」，实测缺 5 张表（<code>group_files · group_file_recipients · group_recalled_messages · favorites · content_transfers</code>）与 <code>conversations.pinned</code>", "照 <code>schema.sql</code> 判断数据契约会得出<b>错误结论</b>。它仍挂在 persistence 域的路径里 ⇒ 要么同步，要么删掉并留一句「真源在 db.rs」"],
+  ["<code>(conv_id, seq)</code> 索引可能在新库上不存在", "该索引只由迁移 v2→v3 建，而全新库走 <code>is_fresh</code> 分支<b>直接盖 user_version 并跳过全部迁移</b>", "新装用户的时间线查询少一条索引 ⇒ 表现为「聊天多的会话打开慢一点」，很难归因。<b>需要维护者判定</b>（并进 SCHEMA 常量即可，但要确认幂等）"],
+  ["<code>state.rs</code> 关于 favorites 的注释是旧的", "<code>state.rs</code> 写「不在 media_dirs 里，清理逻辑不会碰它」，<code>commands/channel.rs</code> 实际把它算进清理目录（2026-09-19 审计补的）", "以注释为准会误判「收藏副本永不回收」。<code>favorites.available</code> 的存在理由恰恰是<b>会被回收</b>"],
+  ["<code>cache_cleaner</code> 的注释与代码不符", "注释说「启动 60s 后跑第一轮，之后每 6h」，代码是先 <code>sleep(6h)</code> 再跑", "表现：开机后 6 小时内不清理。属于「不影响功能但会误导下一次修改」的那类"],
+  ["「传输」这一个关注点今天有<b>三个家</b>", "TCP 数据面 <code>network/transport*</code>（活，约 1 万行，include! 分册中）；BLE 数据面 <code>transport/bluetooth.rs::driver</code> + 三个外设模块；控制面 <code>transport/mod.rs</code>", "领域图已登记为半完成迁移。<b>改 BLE 行为时先确认改的是控制面还是数据面</b>，否则就是「改完这个 bug 又冒那个」"],
+  ["<code>discovery/</code> 抽象层基本没接线", "除 <code>routed.rs</code> 外，<code>trait.rs / manager.rs / lan.rs</code> 找不到生产调用点；真正在跑数据的是 <code>network/discovery.rs</code>", "新代码若照着 <code>discovery/</code> 写，等于写进一条死路（领域图 <code>activeHome</code> 指的正是 <code>network/discovery.rs</code>）"],
+  ["领域图里的行数是旧的", "<code>docs/domains.data.mjs</code> 写 <code>useChatStore.ts 1421 行</code>，实测现在 <b>2128 行</b>（<code>useAppStore.ts</code> 1026 行）", "「呈现层没有领域边界」这条判断<b>更</b>成立了；顺手更新数字，否则下次评审会拿旧数当论据"],
+  ["常驻窗口自带一个退化面", "关窗 = 隐藏 ⇒ 文档不重载；设置 / 任务 / 预览三扇都改了常驻策略", "任何「只在挂载时取一次」的写法在常驻窗口里都会显示旧快照。已有护栏（<code>onFocusChanged</code> 重拉 + 换群必须重读 + <code>:key</code> 重置）⇒ <b>新增常驻窗口时必须同时补这一条</b>"],
+  ["离线队列没有状态列，「有行 = 待发」", "<code>outbox</code> / <code>group_outbox</code> 无 status 列；<code>file_outbox</code> 与 <code>content_transfers</code> 有", "删除行的时机就是状态推进的时机 ⇒ <b>任何「先 emit 再删」的写法都会造成重复投递</b>（本仓真发生过 P0，已改为写库成功门控）"],
+  ["<code>outbox.msg_id</code> 上有两份唯一约束", "<code>SCHEMA</code> 内联 <code>UNIQUE</code> + 迁移 v5→v6 又建了 <code>idx_outbox_msg_id</code> 唯一索引", "老库带两条（多一个索引的写放大）。不是 bug，但要知道：约束的<b>权威</b>是内联那个"],
+  ["<code>content_transfers.transfer_id</code> 走 ensure_schema 里的防御式 ALTER", "不走 <code>MIGRATIONS</code>；探测出错按「列不存在」处理，<code>duplicate column</code> 被吞掉，其他错误才记日志", "迁移语义与别处不同 ⇒ 加列时<b>别照抄</b>这套错误处理到 MIGRATIONS（那边 v1→v6 是 <code>?</code> 上抛的）"]
+  ];
+const INVARIANTS = [
+  ["投递：先入队再投递", "消息与它的 outbox 行<b>同一个事务</b>落库，然后才允许发（INV-003）", "并发 flush 会漏掉这一行，Ack 要等下一个 5s 心跳 ⇒ 表现为「偶发延迟送达」", "<code>db::insert_message_and_outbox</code> + 护栏"],
+  ["三条路径一个 <code>msg_id</code>", "直发帧、gossip 信封、outbox 行、本地 DB 行共用同一个 id", "收件端插出两行重复消息（用户看到「重复通知 / 重复气泡」）", "<code>GossipEngine::is_new</code> + <code>insert_message_if_new</code> + <code>MeshRouter</code> 两层去重"],
+  ["Ack 必须验归属", "收到 Ack：先确认这条 msg_id 是<b>我发的</b>，再确认 outbox 里确有该行，才转 delivered 并删行", "局域网里任何节点乱猜 id 就能伪造「已送达」", "<code>transport.rs</code> Ack 分支（SQL 里两个条件都在）"],
+  ["解密失败绝不 Ack", "收件端解不开 = 不落库 + 不回 Ack", "Ack 会删掉发送方的队列行 ⇒ 把「可重发」变成「永久丢失」", "同上（代码顺序即护栏）"],
+  ["队列 flush 顺序是语义", "outbox → <b>群密钥</b> → group_outbox → 已读 → 群已读 → 文件 → 群文件 → 内容补拉", "群密钥晚到：信封已在去重表里登记 ⇒ 那条群消息<b>永远解不开也再不会重试</b>", "调用点集中在建链 / Hello / 心跳 / BLE 四处"],
+  ["文件流必须钉一条链路", "整条 <code>stream_file</code> 用 <code>resolve_stream_link</code> 固定一条连接，不按消息 failover", "换链路打断 seq ⇒ <code>Gap</code> ⇒ 整单判死（多图与 600MB 故障的真因）", "<code>outbound.rs::resolve_stream_link</code> + attempt epoch"],
+  ["续传进度以接收端实测为准", "Offer 里带 <code>from_bytes</code>，对方回 <code>received</code> 更大就采纳对方的", "发送端按自己记账续传 ⇒ 覆盖 / 错位 / 反复从头发", "<code>file::decide_offer</code> 一个函数判死"],
+  ["完成 = <code>rename</code> 那一刻", "长度对 + sha256 对 + <code>sync_all()</code> 之后才 rename 落位并回报成功", "「显示成功但文件是半个 / 是空的」——用户最不能容忍的一类", "<code>finish_receiver_into</code> + 第 1 段回归测试"],
+  ["<code>failed</code> 只由清扫器写", "重试期间保持 pending/sending，只有窗口过期才判死", "发送端与清扫器各判一次 ⇒ 用户看到互相矛盾的状态与重复提示", "<code>db::should_fail_expired</code> 唯一判据 + 一条回归测试"],
+  ["emit 必须由写库成功门控", "四张写库全成才发 <code>file-failed / message-failed</code>；任一失败就保留行并告警", "重复判死、重复提示，且该行从重试集里消失", "审计 A3 修复 + <code>verify-guards</code> 用例"],
+  ["和自己聊天是纯本地路径", "不进 outbox、不 gossip、不加密", "自聊行永远等不到 Ack ⇒「outbox 必然排空」失效，每次心跳重发一遍", "护栏 <code>self_chat_stays_local</code>"],
+  ["中继口令不外泄", "token 值绝不进日志 / 诊断 / 事件 / 运行时快照，只留 <code>token_len</code>", "截图或反馈一条诊断就把公网中继的准入凭证交出去", "<code>probe_report_never_carries_the_token</code> + <code>relay_token_never_reaches_logs_or_diagnostics</code>"],
+  ["哑管道不解析、不兜底", "服务器只按 token 放行 + 按每日通道摘要配对；帧全部在记录层内；<b>没有明文回落分支</b>", "任何「为了兼容加一条明文路径」都会把 E2EE 变成可选", "握手后 <code>enable_seal</code> 包住 reader/writer"],
+  ["建窗命令必须 async", "所有会创建 WebView 的命令都是 <code>#[tauri::command(async)]</code>", "同步命令在主线程内联建 WebView2 = <b>永久自锁</b>（2026-09-20 真机故障）", "护栏逐个扫签名（含 <code>ensure_*_window</code> builder）"],
+  ["窗口回调不碰主线程", "<code>on_window_event</code> 里只允许「拦关闭 + 隐藏」，禁 <code>destroy</code> / <code>await</code> / 发 IPC", "「日志窗口一开整个应用无响应」那类死锁", "护栏钉住回调体内不得出现 <code>.destroy()</code>"],
+  ["窗口路径必须 <code>try_lock</code>", "抢不到 DB 锁就安全降级（背景色兜底 / 群名空串），绝不因装饰性读放弃开窗", "一次网络线程持锁就能让整个 UI 冻结", "<code>cosmetic_title_read_cannot_abort_the_window</code>"],
+  ["所有锁抗中毒", "<code>lock().unwrap_or_else(|e| e.into_inner())</code>，禁止 <code>.lock().unwrap()</code>", "一次 panic 会级联打挂后续每一次取锁 ⇒ 整个应用不可用", "约定 + A8 批次扫查"],
+  ["辅助窗口永不比主窗口大", "<code>fit_aux_window</code> = 主窗 − 24px；几何应用必须在 <code>build()</code> 之后", "小屏上窗口开出去够不着关闭按钮；builder 后再改几何会被覆盖回来", "几何不变量集中一处 + 护栏"],
+  ["入口门里只准 <code>app.init()</code>", "取数与订阅必须在挂载之后（根组件里）", "「点查看任务没反应，连点几下才弹出来」（用户 2026-09-24 实测）", "<code>windowEntries.test.ts</code> 两条 + 组件 <code>:key=\"groupId\"</code>"],
+  ["跨窗口投递 = pending + 仅复用时 emit + 挂载时自取", "新文档还没有监听者，emit 给它等于没发", "只有第二次点开才生效（第一次静默丢）", "<code>created=false</code> 才 emit，两个 <code>get_*_context</code> 兜住第一次"],
+  ["骨架撤除靠元素自带的类", "<code>.boot-skeleton</code> 出现在每个骨架根上，<code>dismissBoot()</code> 用 querySelectorAll", "别处维护的 id 清单漏一项 ⇒ 那一整页被 fixed 骨架永久盖住（预览窗口真实故障）", "<code>骨架撤除必须覆盖每个窗口</code> 用例（判据是元素自带类，不是清单）"],
+  ["排序权威是 <code>seq</code>，不是墙上钟", "<code>conversation_clocks</code> 单调 Lamport；<code>messages.ts</code> 只用于显示", "跨设备时钟偏移导致时间线错乱、清空边界误判", "<code>next_clock / observe_clock</code> + INV 清单"],
+  ["撤回的事实是 G-Set", "<code>group_recalled_messages</code> 只增；<code>messages.kind='recalled'</code> 只是物化视图", "撤回先到、消息后到 ⇒ 光 UPDATE 命中 0 行 ⇒ 那条消息永远撤不掉", "<code>insert_recall / materialize_recall</code>"],
+  ["SQLite 不存 BLOB", "二进制全部落盘，前端按 cid / msgId 异步懒加载", "库体积失控 + 预览把整张图塞进消息行（当年就是这么炸的）", "<code>storage/mod.rs</code> 原则 + 预览字节三条 read_* 命令"],
+  ["能力位门禁 + 「未知 ≠ 版本旧」", "缺对端能力记录按 0 处理（拒绝），但界面文案分两句：未知 / 版本旧", "把「没探到」说成「对方版本旧」是错误归因，用户会去升级一个不需要升级的东西", "<code>kind_required_feature</code> + 1:1 提示拆两句（4.24.1）"],
+  ["在线 = 有活跃链路", "既不是有 IP，也不是 last_seen 新鲜；链路徽标唯一来源 <code>best_link_kind</code>", "Tailscale 网段被标成「蓝牙直连」、掉线节点仍算在线", "<code>should_keep_peer</code> + 一条非空转护栏"],
+  ["「什么算未读」只有一处判据", "<code>countsTowardUnread</code>；角标只有一处实现（列表与底栏共用）", "同一会话在两处显示不同未读数", "批次 k 收敛 + <code>channelState.test.ts</code>"],
+  ["浮层全局互斥只有一个注册表", "<code>popupRegistry</code> + <code>useExclusivePopup</code>", "同时开两个表情面板、点外面都不关（用户实测过的缺陷形状）", "注册表一处，组件不得各自 hold 状态"],
+];
+
+/* ============================================================
+ * 渲染引擎
+ * ============================================================ */
+const $ = (s, r) => (r || document).querySelector(s);
+const $$ = (s, r) => Array.prototype.slice.call((r || document).querySelectorAll(s));
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+const layerOf = (m) => LAYERS.find((l) => l.k === m.l);
+/* commands/<file>.rs → 大图上归在哪个模块（③ 接口表里的跳转落点） */
+const CMD_HOME = {};
+MODS.forEach((m) => (m.fm || []).forEach((f) => { CMD_HOME[f] = m.id; }));
+
+/* 契约行允许直接写 HTML（这些串全是本页自己维护的） */
+function ioLi(rows) {
+  if (!rows || !rows.length) return "<li>—</li>";
+  return rows.map((r) => {
+    const parts = String(r).split(/\s*(?:←|→)\s*/);
+    const label = parts[0], flow = parts[1] || "";
+    const m = label.match(/^(.+?)(\s*\(.+\))$/);
+    const nm = m ? m[1] : label, ty = m ? m[2] : "";
+    const arr = r.indexOf("←") >= 0 ? '<span class="from">← ' + flow + "</span>"
+      : r.indexOf("→") >= 0 ? '<span class="to">→ ' + flow + "</span>" : "";
+    return "<li>" + nm + (ty ? "<code>" + ty.trim() + "</code>" : "") + " " + arr + "</li>";
+  }).join("");
+}
+/* 领域图 notes 里是 markdown 粗体，转成 HTML 再上屏 */
+const md = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+
+function detailHtml(m) {
+  const extra = m.note ? '<div class="note">' + m.note + "</div>" : "";
+  return "<h4>" + esc(m.n) + ' <span class="tag">' + esc(layerOf(m).n.replace(/^[①-⑦]\s*/, "")) + "</span>" +
+    (m.badge ? ' <span class="tag ' + (m.badge.k || "warn") + '">' + esc(m.b) + "</span>" : "") + "</h4>" +
+    '<div class="files">' + esc((m.files || []).join(" · ")) + "</div>" +
+    '<div class="role">' + m.role + "</div>" +
+    '<dl class="kv">' +
+      "<dt>输入</dt><dd><ul class='io'>" + ioLi(m.in) + "</ul></dd>" +
+      "<dt>输出</dt><dd><ul class='io'>" + ioLi(m.out) + "</ul></dd>" +
+      "<dt>数据结构</dt><dd><ul class='io'>" + ioLi(m.data) + "</ul></dd>" +
+    "</dl>" + extra;
+}
+
+/* ---------- 大图 ---------- */
+function buildMap() {
+  const wrap = $("#mapwrap");
+  $("#legend").innerHTML = LAYERS.map((l) =>
+    '<span><i class="sw" style="--hue:' + l.c + '"></i>' + l.n.replace(/^[①-⑦]\s*/, "") + " — " + l.i + "</span>").join("");
+  LAYERS.forEach((l) => {
+    const band = document.createElement("div");
+    band.className = "band";
+    band.innerHTML = '<div class="bname">' + l.n.replace(/^[①-⑦]\s*/, "") + "<i>" + l.i + "</i></div>";
+    const boxes = document.createElement("div");
+    boxes.className = "boxes";
+    MODS.filter((m) => m.l === l.k).forEach((m) => {
+      const n = document.createElement("div");
+      n.className = "node";
+      n.dataset.id = m.id;
+      n.style.setProperty("--hue", l.c);
+      n.innerHTML = '<span class="nm">' + esc(m.n) + "</span><span class='sub'>" + esc(m.s || "") + "</span>" +
+        (m.cnt ? '<span class="cnt">' + esc(m.cnt) + "</span>" : "");
+      boxes.appendChild(n);
+    });
+    band.appendChild(boxes);
+    wrap.insertBefore(band, $("#wires"));
+  });
+}
+
+let SELECTED = null;
+const shortDistPair = (a, b) => {
+  // 在四个边中点里挑最近的一对，保证手机上（纵向堆叠）和桌面（横向铺开）都不穿框
+  const pa = [
+    [a.left, a.cy], [a.right, a.cy], [a.cx, a.top], [a.cx, a.bottom],
+  ];
+  const pb = [
+    [b.left, b.cy], [b.right, b.cy], [b.cx, b.top], [b.cx, b.bottom],
+  ];
+  let best = null, bd = Infinity;
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+    const d = Math.hypot(pa[i][0] - pb[j][0], pa[i][1] - pb[j][1]);
+    if (d < bd) { bd = d; best = [pa[i], pb[j]]; }
+  }
+  return best;
+};
+
+function drawWires() {
+  const svg = $("#wires"), wrap = $("#mapwrap");
+  if (getComputedStyle(svg).display === "none") { svg.innerHTML = ""; return; }
+  const wr = wrap.getBoundingClientRect();
+  const rect = (id) => {
+    const el = wrap.querySelector('[data-id="' + id + '"]');
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return {
+      left: r.left - wr.left, right: r.right - wr.left, top: r.top - wr.top, bottom: r.bottom - wr.top,
+      cx: r.left - wr.left + r.width / 2, cy: r.top - wr.top + r.height / 2,
+    };
+  };
+  const names = {};
+  MODS.forEach((m) => (names[m.id] = m.n));
+  let g = "";
+  EDGES.forEach((e, i) => {
+    const a = rect(e[0]), b = rect(e[1]);
+    if (!a || !b) return;
+    const [p, q] = shortDistPair(a, b);
+    const dx = (q[0] - p[0]) * 0.42, dy = (q[1] - p[1]) * 0.42;
+    const horiz = Math.abs(q[0] - p[0]) >= Math.abs(q[1] - p[1]);
+    const c1 = horiz ? [p[0] + dx, p[1]] : [p[0], p[1] + dy];
+    const c2 = horiz ? [q[0] - dx, q[1]] : [q[0], q[1] - dy];
+    const lab = e[2]
+      ? '<text x="' + ((p[0] + q[0]) / 2).toFixed(1) + '" y="' + ((p[1] + q[1]) / 2 - 3).toFixed(1) +
+        '" text-anchor="middle">' + esc(e[2]) + "</text>" : "";
+    g += '<g class="edge" data-a="' + e[0] + '" data-b="' + e[1] + '">' +
+      '<path d="M' + p[0].toFixed(1) + "," + p[1].toFixed(1) + " C" + c1[0].toFixed(1) + "," + c1[1].toFixed(1) +
+      " " + c2[0].toFixed(1) + "," + c2[1].toFixed(1) + " " + q[0].toFixed(1) + "," + q[1].toFixed(1) +
+      '" marker-end="url(#arr)"></path>' + lab + "</g>";
+  });
+  svg.innerHTML = '<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">' +
+    '<path d="M0,0 L10,5 L0,10 z" fill="context-stroke"></path></marker>' +
+    '<marker id="arri" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
+    '<path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"></path></marker></defs>' + g;
+  svg.classList.toggle("labels-off", !$("#t-labels").checked);
+  svg.classList.toggle("onlyhi", $("#t-only").checked);
+  applyFocus();
+}
+
+function applyFocus() {
+  $$("#wires .edge").forEach((g) => {
+    g.classList.remove("hi", "off");
+    if (SELECTED) {
+      if (g.dataset.a === SELECTED || g.dataset.b === SELECTED) g.classList.add("hi");
+      else g.classList.add("off");
+    }
+  });
+  $$("#mapwrap .node").forEach((n) => {
+    const rel = !SELECTED || n.dataset.id === SELECTED ||
+      EDGES.some((e) => (e[0] === SELECTED && e[1] === n.dataset.id) || (e[1] === SELECTED && e[0] === n.dataset.id));
+    n.classList.toggle("dim", !!SELECTED && !rel);
+    n.classList.toggle("sel", n.dataset.id === SELECTED);
+  });
+}
+
+function select(id) {
+  SELECTED = SELECTED === id ? null : id;
+  if (SELECTED) {
+    const m = MODS.find((x) => x.id === SELECTED);
+    $("#detail").innerHTML = detailHtml(m);
+  } else {
+    $("#detail").innerHTML = "<h4>选中一个模块</h4><div class='role'>点上面任一色块，这里显示它的职责、输入、输出与关键数据结构。</div>";
+  }
+  drawWires();
+}
+
+/* ---------- 模块契约卡 ---------- */
+function buildModCards() {
+  $("#modlist").innerHTML = LAYERS.map((l) => {
+    const ms = MODS.filter((m) => m.l === l.k);
+    if (!ms.length) return "";
+    return '<h2 class="sec" style="color:' + l.c + '">' + l.n + ' <span class="count">' + ms.length + " 个模块</span></h2>" +
+      ms.map((m) =>
+        '<details class="card" id="m-' + m.id + '" data-search="' + esc((m.n + " " + (m.s || "") + " " + (m.files || []).join(" ") + " " + m.role).toLowerCase()) + '">' +
+        "<summary><b>" + esc(m.n) + "</b><span class='sub'>" + esc(m.s || "") + "</span>" +
+        (m.cnt ? '<span class="tag">' + esc(m.cnt) + "</span>" : "") + "</summary>" +
+        '<div class="body">' + detailHtml(m) + "</div></details>").join("");
+  }).join("");
+}
+
+/* ---------- 接口表 ---------- */
+const DOM_ORDER = ["chat","groups","group_files","files","share","friends","channel","settings","relay","routed","favorites","external_links","window","logs","system","dev_diag","helpers","mobile_picker","chat_search","group_todo_media","group_announcements","group_file_dispatch","group_file_keys"];
+const DOM_CN = {
+  chat: "单聊消息", groups: "群与群密钥", group_files: "群载荷（公告/任务/卡片）", files: "文件发送与补拉",
+  share: "共享目录", friends: "好友关系", channel: "通道开关与缓存策略", settings: "设置读写",
+  relay: "公网中继", routed: "跨网段手动端点", favorites: "收藏", external_links: "外链书签",
+  window: "窗口与跨窗口投递", logs: "日志/诊断", system: "设备与窗口 chrome", dev_diag: "开发诊断",
+  network: "网络·通知·角标",
+  helpers: "公共辅助", mobile_picker: "移动端文件选取", chat_search: "跨会话搜索",
+  group_todo_media: "任务图片落盘", group_announcements: "群公告与群文件投递",
+  group_file_dispatch: "群文件逐收件人分发", group_file_keys: "群文件密钥解封",
+};
+function buildApi() {
+  const byMod = {};
+  CMDS.forEach((r) => { (byMod[r[1]] = byMod[r[1]] || []).push(r); });
+  const mods = Object.keys(byMod).sort((a, b) => {
+    const ia = DOM_ORDER.indexOf(a), ib = DOM_ORDER.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+  const chips = ['<button class="chip" data-f="all" aria-pressed="true">全部 ' + CMDS.length + "</button>"]
+    .concat(mods.map((m) => '<button class="chip" data-f="' + m + '">' + (DOM_CN[m] || m) + " " + byMod[m].length + "</button>"));
+  $("#apifilters").innerHTML = '<input id="apiq" placeholder="搜命令名 / 输入输出 / 语义，例如 outbox、token、预热" />' + chips.join("");
+  const tb = $("#apitable tbody");
+  tb.innerHTML = mods.map((m) => {
+    const rows = byMod[m].sort((a, b) => a[0].localeCompare(b[0]));
+    return '<tr class="grp" data-mod="' + m + '"><td colspan="4">commands/' + m + '.rs — ' + (DOM_CN[m] || "") +
+      " <span class='count'>" + rows.length + " 条</span></td></tr>" +
+      rows.map((r) => {
+        const s = SEM[r[0]] || {};
+        return '<tr data-mod="' + m + '" data-search="' + esc((r[0] + " " + r[2] + " " + r[3] + " " + (s.d || "")).toLowerCase()) + '">' +
+          '<td class="c"><a href="#m-' + (CMD_HOME[r[1]] || "api-invoke") + '" data-jump="' + (CMD_HOME[r[1]] || "api-invoke") + '">' + r[0] + "</a></td>" +
+          '<td class="io">' + (r[2] ? esc(r[2]).replace(/;/g, ";<br>") : "—") + "</td>" +
+          "<td class=\"io\"><b>" + esc(r[3]) + "</b>" + (s.w ? "<br>" + s.w : "") + "</td>" +
+          "<td>" + (s.d || "—") + (s.n ? ' <span class="tag ' + (s.k || "warn") + '">' + s.n + "</span>" : "") + "</td></tr>";
+      }).join("");
+  }).join("");
+  const filter = () => {
+    const f = $("#apifilters .chip[aria-pressed='true']").dataset.f;
+    const q = ($("#apiq").value || "").trim().toLowerCase();
+    let shown = 0;
+    $$("tr", tb).forEach((tr) => {
+      if (tr.classList.contains("grp")) {
+        tr.hidden = !(f === "all" || tr.dataset.mod === f);
+        return;
+      }
+      const okMod = f === "all" || tr.dataset.mod === f;
+      const okQ = !q || tr.dataset.search.indexOf(q) >= 0;
+      tr.hidden = !(okMod && okQ);
+      if (!tr.hidden) shown++;
+    });
+    $("#apicount").textContent = shown + " / " + CMDS.length + " 条";
+  };
+  $("#apifilters").insertAdjacentHTML("beforeend", '<span class="count" id="apicount"></span>');
+  $("#apifilters").addEventListener("click", (ev) => {
+    const c = ev.target.closest(".chip");
+    if (!c) return;
+    $$("#apifilters .chip").forEach((x) => x.setAttribute("aria-pressed", String(x === c)));
+    filter();
+  });
+  $("#apiq").addEventListener("input", filter);
+  filter();
+}
+
+/* ---------- 事件表 ---------- */
+function buildEvents() {
+  $("#evttable tbody").innerHTML = EVENTS.map((e) =>
+    "<tr><td class='c'>" + e[0] + "</td><td class='io'><b>" + e[1] + "</b></td><td>" + e[2] + "</td><td>" + e[3] + "</td><td><span class='tag'>" + e[4] + "</span></td></tr>").join("");
+}
+
+/* ---------- 数据表 ---------- */
+function buildDb() {
+  $("#dblist").innerHTML =
+    '<h2 class="sec">SQLite · 19 张表（真源：<code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量，迁移靠 <code>PRAGMA user_version</code>，当前 <code>DB_VERSION = 8</code>）</h2>' +
+    '<div class="tablewrap"><table><thead><tr><th>表</th><th>用途</th><th>主键 / 索引</th><th>关键列与状态取值</th><th>谁写 · 谁清</th></tr></thead><tbody>' +
+    TABLES.map((t) =>
+      "<tr><td class='c'>" + t[0] + "</td><td>" + t[1] + "</td><td class='io'>" + t[2] + "</td><td class='io'>" + t[3] + "</td><td>" + t[4] + "</td></tr>").join("") +
+    "</tbody></table></div>" +
+    '<h2 class="sec">磁盘（二进制不落库）· 根目录 = <code>app_data_dir()</code></h2>' +
+    '<div class="tablewrap"><table><thead><tr><th>路径</th><th>放什么</th><th>谁管 · 回收规则</th></tr></thead><tbody>' +
+    DISK.map((d) => "<tr><td class='c'>" + d[0] + "</td><td>" + d[1] + "</td><td>" + d[2] + "</td></tr>").join("") +
+    "</tbody></table></div>" +
+    '<div class="note bad"><b>三个必须记住的形状</b>：① 全库零外键 ⇒ 级联删除是 <code>db/conversations.rs::delete_conversation</code> 里手写的一串 <code>DELETE</code>（含 <code>outbox/group_outbox/file_outbox/group_recalled_messages</code>），漏一条就是幽灵行；' +
+    '② 排序权威是 <code>conversation_clocks.seq</code>（Lamport），<b>不是</b> <code>messages.ts</code>（墙上钟）；' +
+    '③ <code>group_recalled_messages</code> 是撤回的唯一事实（G-Set 只增），<code>messages.kind=\'recalled\'</code> 只是它的物化视图 —— 因为撤回可能比被撤回的消息先到。</div>';
+}
+
+/* ---------- 流程 ---------- */
+function buildFlows() {
+  $("#flowlist").innerHTML = PIPES.map((p) =>
+    '<div class="pipe"><h3>' + p[0] + "</h3><p class='why'>" + p[1] + "</p><ol>" +
+    p[2].map((s) => "<li>" + s + "</li>").join("") + "</ol></div>").join("");
+}
+
+/* ---------- 方向核对 ---------- */
+function buildDir() {
+  const tier = { L3: "核心", L2: "支撑" };
+  $("#dirlist").innerHTML =
+    '<h2 class="sec">一句话方向</h2>' +
+    '<p class="lede">优先级顺序（写进项目约束）：<b>稳定 &gt; 流畅 &gt; 正确 &gt; 原生 &gt; 安全 &gt; 可维护 &gt; 扩展 &gt; 新功能</b>。当前阶段<b>暂不新增功能</b>，所以下面这几张表里的"漂移"和"死接口"就是实际待办。</p>' +
+    '<div class="grid2" style="margin-bottom:14px">' +
+      '<div class="stat"><div class="num">' + CMDS.length + '</div><div>后端注册命令</div></div>' +
+      '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
+      '<div class="stat"><div class="num">31</div><div>后端事件名（表内合并成 ' + EVENTS.length + ' 行）</div></div>' +
+      '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
+      '<div class="stat"><div class="num">138</div><div>护栏非空转用例（168 条锚点已全验）</div></div>' +
+      '<div class="stat"><div class="num">679 / 586</div><div>Rust / 前端测试条数</div></div>' +
+    "</div>" +
+    '<h2 class="sec">领域图（真源 <code>docs/domains.data.mjs</code> · 本页内嵌快照 · <code>check-domain-map.mjs</code> 守路径存在，<code>check-domain-deps.mjs</code> 守依赖方向）</h2>' +
+    '<div class="tablewrap"><table><thead><tr><th>领域</th><th>tier</th><th>数据实际跑在哪个家（activeHome）</th><th>允许依赖（consumes）</th><th>不变量</th><th>备注里的坑</th></tr></thead><tbody>' +
+    DOMAINS.map((d) =>
+      "<tr><td class='c'>" + d.name + " <span class='tag'>" + d.id + "</span></td><td>" + (tier[d.tier] || d.tier) +
+      "</td><td class='io'>" + (d.home ? "<b>" + d.home + "</b>" : '<span class="tag warn">无独立目录</span>') +
+      "</td><td class='io'>" + ((d.cons && d.cons.length) ? d.cons.join(", ") : "—") + "</td><td class='io'>" +
+      ((d.inv && d.inv.length) ? d.inv.join(" ") : "—") + "</td><td>" + (d.notes ? md(d.notes) : "") + "</td></tr>").join("") +
+    "</tbody></table></div>" +
+    '<h2 class="sec">已核出的漂移（这些是"看图就该发现"的东西）</h2>' +
+    '<div class="tablewrap"><table><thead><tr><th>现象</th><th>证据</th><th>影响面</th></tr></thead><tbody>' +
+    DRIFT.map((d) => "<tr><td>" + d[0] + "</td><td class='io'>" + d[1] + "</td><td>" + d[2] + "</td></tr>").join("") +
+    "</tbody></table></div>" +
+    '<h2 class="sec">红线与关键不变量（改这些之前必须先看代码）</h2>' +
+    '<div class="tablewrap"><table><thead><tr><th>不变量</th><th>说的是什么</th><th>破了会怎样（用户视角）</th><th>谁守着</th></tr></thead><tbody>' +
+    INVARIANTS.map((v) => "<tr><td class='c'>" + v[0] + "</td><td>" + v[1] + "</td><td>" + v[2] + "</td><td class='io'>" + v[3] + "</td></tr>").join("") +
+    "</tbody></table></div>";
+}
+
+/* ---------- tabs ---------- */
+const TABS = [
+  ["t-map", "① 大图"], ["t-mod", "② 模块契约"], ["t-api", "③ 接口规则表 138"],
+  ["t-evt", "④ 事件契约"], ["t-db", "⑤ 数据契约"], ["t-flow", "⑥ 流程穿透"], ["t-dir", "⑦ 方向核对"],
+];
+function showTab(id) {
+  $$(".tab").forEach((s) => s.classList.toggle("on", s.id === id));
+  $$("#tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.t === id)));
+  if (id === "t-map") requestAnimationFrame(drawWires);
+  location.hash = id;
+}
+function boot() {
+  $("#tabs").innerHTML = TABS.map((t) => '<button role="tab" data-t="' + t[0] + '">' + t[1] + "</button>").join("");
+  $("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) showTab(b.dataset.t); });
+  buildMap(); buildModCards(); buildApi(); buildEvents(); buildDb(); buildFlows(); buildDir();
+  $("#mapwrap").addEventListener("click", (e) => { const n = e.target.closest(".node"); if (n) select(n.dataset.id); });
+  ["t-labels", "t-only"].forEach((i) => $("#" + i).addEventListener("change", drawWires));
+  $("#modq").addEventListener("input", () => {
+    const q = ($("#modq").value || "").trim().toLowerCase();
+    $$("#modlist details.card").forEach((d) => { d.hidden = !!q && d.dataset.search.indexOf(q) < 0; });
+  });
+  document.body.addEventListener("click", (e) => {
+    const j = e.target.closest("[data-jump]");
+    if (!j) return;
+    const el = $("#m-" + j.dataset.jump) || $("#t-mod");
+    if (el) { showTab("t-mod"); el.open = true; el.scrollIntoView({ behavior: "smooth", block: "start" }); e.preventDefault(); }
+  });
+  window.addEventListener("resize", () => { clearTimeout(window.__rt); window.__rt = setTimeout(drawWires, 120); });
+  if (location.hash && /^#t-/.test(location.hash)) showTab(location.hash.slice(1));
+  requestAnimationFrame(drawWires);
+}
+document.addEventListener("DOMContentLoaded", boot);
+</script>
+</body>
+</html>
