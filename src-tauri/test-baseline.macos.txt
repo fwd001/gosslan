@@ -37,6 +37,7 @@ commands::tests::routed_endpoint_address_is_normalized_to_ipv4_socket
 commands::tests::sanitize_file_name_blocks_path_traversal
 commands::tests::settings_patch_carries_only_changed_keys_with_camel_case_names
 commands::tests::sniff_media_ext_recognises_the_common_types
+commands::tests::todo_archive_only_lane_is_narrow_and_member_only
 commands::tests::todo_done_and_archive_are_resolved_server_side
 commands::tests::todo_update_permission_matrix
 content::model::tests::fail_reason_separates_retryable_from_terminal
