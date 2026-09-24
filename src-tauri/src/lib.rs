@@ -511,6 +511,7 @@ pub fn run() {
             commands::take_group_todo_focus,
             commands::request_group_todo_focus,
             commands::open_image_preview,
+            commands::prewarm_image_preview_window,
             commands::get_image_preview_gallery,
             commands::open_link_window,
             commands::list_external_links,
@@ -3691,7 +3692,7 @@ mod tests {
             "pub fn open_log_window(",
             "pub fn open_group_todos_window(",
             "pub fn open_link_window(",
-            "pub fn open_image_preview(",
+            "fn ensure_preview_window(",
         ] {
             let body = rust_fn_body(commands, signature);
             assert!(
@@ -3715,10 +3716,10 @@ mod tests {
             "`ensure_aux_window` 必须用创建锁串行化（否则并发会开出第二个窗口）"
         );
         assert!(
-            // 签名在 2026-09-16 多了一个 `geo`（创建时摆尺寸/位置，已存在时重新摆回主窗口那块屏），
+            // 签名在 2026-09-24 多了一个 `reveal`（预热那条路要"建好但不显示"），
             // 判据本身没变：**拿锁前后各查一次**，少一次就会在并发下开出第二个窗口。
             helper
-                .matches("show_existing_aux_window(app, label, geo)")
+                .matches("show_existing_aux_window(app, label, geo, reveal)")
                 .count()
                 >= 2,
             "`ensure_aux_window` 必须做双重检查（拿锁前后各查一次），实际只有一次"
@@ -3729,14 +3730,54 @@ mod tests {
             helper.contains("resident: bool") && helper.contains("install_hide_on_close(&win)"),
             "`ensure_aux_window` 里必须接上「关闭即隐藏」（常驻）——              否则每次打开都要重新加载 WebView + 前端，用户要等（`resident` 是开关）"
         );
+        // 2026-09-24 策略翻转（用户："其他新窗口默认不销毁，第二次打开速度优化快点"）：
+        // 常驻 = 群任务 / 预览 / 外链；销毁 = 设置 / 日志（这两个每次都要读最新的环境与日志尾部）。
+        // 钉四件事，缺一条都是一个具体的回归：
+        for (signature, want_resident) in [
+            ("const AUX_GROUP_TODOS_RESIDENT: bool = ", true),
+            ("const AUX_PREVIEW_RESIDENT: bool = ", true),
+            ("const AUX_LINK_RESIDENT: bool = ", true),
+            ("const AUX_WINDOWS_RESIDENT: bool = ", false),
+        ] {
+            let want = format!("{signature}{want_resident}");
+            assert!(
+                commands.contains(&want),
+                "常驻策略被改动了：{want} —— 改成销毁要连「为什么」一起写进这条注释，别只翻布尔值"
+            );
+        }
+        // 「每群一扇」的常驻必须有上限（无界增长是它当初被设成销毁的唯一理由）
         assert!(
-            commands.contains("const AUX_GROUP_TODOS_RESIDENT: bool = false"),
-            "群任务窗口必须「关闭即销毁」（每群一个窗口，常驻会无界增长）"
+            commands.contains("const AUX_HIDDEN_GROUP_TODOS_MAX: usize"),
+            "群任务窗口常驻必须有隐藏数量上限"
+        );
+        let open_todos = rust_fn_body(commands, "pub fn open_group_todos_window(");
+        assert!(
+            code_flat(&open_todos).contains("prune_hidden_group_todos(&app)"),
+            "开了常驻却不在某处淘汰 = 访问过 N 个群留 N 个隐藏 WebView（淘汰必须接上）"
+        );
+        // 预热必须是"建好但不显示"：reveal 传 false，且它自己不许出现 show/focus。
+        // 少了这条，预热就变成"启动时弹出一扇没内容的预览窗"（比慢更糟）。
+        let prewarm = rust_fn_body(commands, "pub fn prewarm_image_preview_window(");
+        assert!(
+            code_flat(&prewarm).contains("ensure_preview_window(&app,&state,false)"),
+            "预热必须走那份共用的窗口构造，并且 reveal 传 false"
+        );
+        assert!(
+            !code_flat(&prewarm).contains(".show()")
+                && !code_flat(&prewarm).contains(".set_focus()"),
+            "预热路径里不许出现 show / set_focus —— 那会变成启动时弹一扇空窗"
         );
         let hide = rust_fn_body(commands, "fn install_hide_on_close(");
         assert!(
             hide.contains("prevent_close()") && hide.contains("hide()"),
             "`install_hide_on_close` 必须是 prevent_close + hide（关闭即隐藏）"
+        );
+        // ⚠️ 这条只判**函数体**：`rust_fn_body` 的起点是签名，所以上面那段解释"淘汰为什么不能
+        // 放在这里"的注释（里面写着 `destroy()`）不会被算进来。
+        assert!(
+            !code_flat(&hide).contains(".destroy()"),
+            "销毁不得发生在窗口事件回调里 —— 那是 wry 的主线程事件循环，\
+             本文件已经为此死锁过一次（见 `log_window_body` 的说明）"
         );
 
         // 尺寸/位置必须走**物理像素**的 setter，不能走 builder 的逻辑坐标 `position()`：
@@ -3748,7 +3789,7 @@ mod tests {
             "pub fn open_log_window(",
             "pub fn open_group_todos_window(",
             "pub fn open_link_window(",
-            "pub fn open_image_preview(",
+            "fn ensure_preview_window(",
         ] {
             let body = rust_fn_body(commands, signature);
             assert!(

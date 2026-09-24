@@ -406,6 +406,12 @@ export const api = {
   getImagePreviewGallery: () => invoke<PreviewGallery | null>("get_image_preview_gallery"),
   /** 窗口已经开着时的"内容换了，再取一次"提醒。 */
   onImagePreviewChanged: (cb: () => void) => listen("preview-gallery", () => cb()),
+  /**
+   * 预热那扇全局预览窗口：建好 WebView、载入文档，但**不显示也不抢焦点**。
+   * 桌面端启动后延后一拍调用；失败无所谓（最坏就是第一次点图仍然慢一点），
+   * 所以调用方一律 `.catch(() => {})`，不要给它弹提示。
+   */
+  prewarmImagePreview: () => invoke<void>("prewarm_image_preview_window"),
 
 
   /** 在独立窗口里加载一个外部网址（桌面端；窗口隔离，不授予远端页面任何命令权限）。 */

@@ -46,8 +46,16 @@ function deliverFocus(id: string) {
   boardRef.value?.focusTodo(id);
 }
 
-async function applyFocusRequest() {
+async function applyFocusRequest(reload: boolean) {
   if (!groupId) return;
+  if (reload) {
+    // **复用时必须自己重读**（2026-09-24 改成关闭即隐藏之后新增的责任）：以前每次打开都是
+    // 新建 WebView，"新数据"是顺带保证的；现在窗口活着，不重读就是上一次那份列表
+    // （成员可能刚改过任务、刚归档了一条）。
+    // 失败刻意保持静默：这一次是"刷新"，列表里还有上一次的内容可看，比清空重来更好；
+    // 真要恢复，关掉窗口重开就会走首屏那条路（那条会 toast）。
+    await chat.loadGroupTodos(groupId).catch(() => {});
+  }
   const id = await api.takeGroupTodoFocus(groupId).catch(() => null);
   if (!id) return;
   if (chat.todosLoadedOnce(groupId)) {
@@ -70,11 +78,12 @@ watch(
 let unlistenFocus: (() => void) | null = null;
 let disposed = false;
 onMounted(() => {
-  void applyFocusRequest();
+  // 挂载这条路**不重读**：入口正在后台取首屏（`src/entries/todos.ts`），再读一遍是白花一次。
+  void applyFocusRequest(false);
   api
     .onGroupTodoFocus((payload) => {
       if (payload?.groupId && payload.groupId !== groupId) return;
-      void applyFocusRequest();
+      void applyFocusRequest(true);
     })
     .then((fn) => {
       // 窗口被秒关时 `onUnmounted` 可能已经跑完 ⇒ 拿到 unlisten 就立刻补一次取消，

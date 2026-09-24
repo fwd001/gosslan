@@ -7,6 +7,15 @@ import { isMac } from "@/utils/platform";
 import ResponsiveLayout from "@/layouts/ResponsiveLayout.vue";
 
 /**
+ * 首屏就绪之后再过这么久才去预热辅助窗口。
+ *
+ * 不是为了"好看"：app-ready 那一刻首帧正在渲染、网络与发现正在启动，这时候建 WebView
+ * 会把用户第一眼的那一下拖慢，正好与预热的目的相反。1.2s 是"首屏已经稳住、用户还没
+ * 点到第一张图"的那个窗口。
+ */
+const AUX_PREWARM_DELAY_MS = 1200;
+
+/**
  * 主窗口根组件。
  *
  * ⚠️ 这里**只**管主窗口。独立「设置」/「运行日志」窗口各有自己的 HTML 与入口
@@ -87,6 +96,15 @@ onMounted(async () => {
     // 真实数据就绪 → 让首屏骨架淡出（index.html 内联骨架，由 src/boot/boot.ts 撤除）。
     // 放在 finally：init 失败也要撤，否则骨架会一直挡在界面上。
     window.dispatchEvent(new Event("gosslan:app-ready"));
+    // 桌面端**预热**那扇全局唯一的预览窗口（用户 2026-09-24："启动的时候后台异步把高频窗口
+    // 的 WebView 开销开好，用的时候秒开"）。放在 app-ready 之后并再延后一拍：首屏渲染与
+    // 网络启动正在抢 CPU/IO，这时去建 WebView 会把用户第一眼的那一下拖慢 —— 与本条目的
+    // 目的正好相反。失败不提示：最坏结果只是"第一次点图仍然慢一点"。
+    if (!app.isMobile) {
+      window.setTimeout(() => {
+        void api.prewarmImagePreview().catch(() => {});
+      }, AUX_PREWARM_DELAY_MS);
+    }
   }
   // init 之后再报一次：此时 `app.isMobile` 才是真实值（移动端不判 focus/blur）
   reportActivity();

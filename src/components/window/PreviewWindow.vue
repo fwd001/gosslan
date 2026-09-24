@@ -43,7 +43,23 @@ async function pull() {
 }
 
 let unlisten: (() => void) | null = null;
+let unlistenClose: (() => void) | null = null;
 let disposed = false;
+
+/**
+ * 关闭时把这个文档自己持有的相册放掉。
+ *
+ * 窗口现在是**关闭即隐藏**（常驻，为了让第二次看图秒开）⇒ ✕ 不再销毁 WebView。
+ * 不主动清就有两个后果：一是几十 MB 的图解码位图一直挂在看不见的窗口里；
+ * 二是下次打开会**先闪一下上一次的图**（复用时 Rust 先 show、事件后到、内容后拉）。
+ * 挂在 `close-requested` 上而不是只挂在"我们自己的 ✕"上：标题栏 ✕、看图器 ✕/Esc、
+ * ⌘W / Ctrl+W 三条路都会经过它，漏一条就是一个不会放资源的窗口。
+ */
+function releaseAlbum() {
+  images.value = [];
+  index.value = 0;
+}
+
 onMounted(() => {
   void pull();
   api
@@ -59,14 +75,31 @@ onMounted(() => {
     .catch(() => {
       /* 订阅失败只影响"窗口已开着时再点图"这一条路（内容会停在上一次） */
     });
+  void getCurrentWindow()
+    .onCloseRequested(() => releaseAlbum())
+    .then((fn) => {
+      if (disposed) {
+        fn();
+        return;
+      }
+      unlistenClose = fn;
+    })
+    .catch(() => {
+      /* 订阅失败最多退回"隐藏时留着上一份相册"，不影响看图本身 */
+    });
 });
 onUnmounted(() => {
   disposed = true;
   unlisten?.();
   unlisten = null;
+  unlistenClose?.();
+  unlistenClose = null;
 });
 
 function closeSelf() {
+  // 先放资源再关：`close-requested` 的监听也在同一时刻清，这里再清一次是为了
+  // 不依赖那条订阅真的注册成功（幂等，成本是两行）。
+  releaseAlbum();
   void getCurrentWindow()
     .close()
     .catch(() => {

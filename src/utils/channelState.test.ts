@@ -675,15 +675,35 @@ test("桌面端任务窗口的展开投递：两条路 + 独立于启动器 + �
   assert.ok(openBody.length > 500, "open_group_todos_window 的窗口切得太短（守卫会空转）");
   const takeAt = cmd.indexOf("fn take_group_todo_focus(", openEnd);
   assert.ok(takeAt > openEnd, "找不到 take_group_todo_focus（守卫会空转）");
-  // ① 新建走暂存、复用走事件
+  // ① 新建走暂存；**复用必须无条件发事件**
+  // （2026-09-24：窗口从"关窗即销毁"改成常驻之后，这条事件多了一项职责 —— 复用的窗口不会
+  //  重新挂载、也就不会自己重读数据，不收到的话看到的就是上一次那份旧列表。
+  //  条件里再带 `focus_todo_id.is_some()` 就等于"只是打开看板"那次不刷新，所以判据是**恰好**
+  //  `if !created {`，多一个条件都要红。）
   assert.match(openBody, /pending\.insert\(group_id\.clone\(\), id\.clone\(\)\)/, "带目标时必须写暂存");
   assert.match(openBody, /pending\.remove\(&group_id\)/, "不带目标时必须清掉上次暂存");
-  assert.match(openBody, /if !created && focus_todo_id\.is_some\(\)/, "只有复用（没经历挂载）才定向发事件");
+  assert.match(openBody, /if !created \{/, "复用时（没经历挂载）必须无条件定向发事件");
+  assert.doesNotMatch(
+    openBody,
+    /if !created && focus_todo_id/,
+    "把发事件重新收窄成「只带目标时才发」= 常驻窗口复用时不再刷新数据",
+  );
   // ② 取走即清（否则同一次点击会被展开两次 / 留下过期目标）
   assert.match(cmd.slice(takeAt, takeAt + 400), /\.remove\(&group_id\)/, "取走必须同时清掉（一次性）");
 
   const win = read("components/GroupTodosWindow.vue");
-  assert.match(win, /onMounted\(\(\) => \{\s*void applyFocusRequest\(\)/, "窗口挂载时必须主动取一次暂存");
+  // 挂载那条路传 `false`：首屏正在由入口后台加载，这里再读一次是白花一轮 IPC。
+  assert.match(
+    win,
+    /onMounted\(\(\) => \{[\s\S]{0,200}?void applyFocusRequest\(false\)/,
+    "窗口挂载时必须主动取一次暂存，且不重复首屏加载",
+  );
+  // 事件那条路传 `true`：它就是"复用了，去重读一遍"的通知。
+  assert.match(
+    win,
+    /onGroupTodoFocus\(\(payload\)[\s\S]{0,160}?void applyFocusRequest\(true\)/,
+    "被定向事件叫醒时必须重读数据（常驻之后没有『重建即新数据』这回事了）",
+  );
   assert.match(win, /api\s*\.onGroupTodoFocus\(/, "窗口已开着时靠定向事件被叫醒");
 
   // 局部变量别叫 `chat` —— 那是 store 实例在本仓的固定叫法，
