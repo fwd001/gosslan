@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.29.34] - 2026-09-25
+
 ### Refactor (2026-09-25 · 架构改造 0-A3：把 IPC 收成一道缝，并让它可对账)
 
 复审 P10 的第四组：`src/api/index.ts` 自称"前端唯一碰 `@tauri-apps/api/core` 的地方"，
