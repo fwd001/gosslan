@@ -33,6 +33,18 @@ watch(() => [app.device?.nickname, app.device?.avatar], () => {
   if (props.active) syncFromDevice();
 });
 
+/**
+ * 落库并让 store 成为唯一真相：`app.updateProfile` 的返回值就是新的 `device`，
+ * 上面那条 device 字段的 watch 会把两个 ref 重同步成**后端确认过的值**（含截断/改名）。
+ * "没变化就不发"这条保留：省一次广播，也避免每次失焦都给一条"已保存"。
+ */
+async function persistProfile(name: string) {
+  if (name === app.device?.nickname && avatar.value === app.device?.avatar) return;
+  await app.updateProfile(name, avatar.value);
+  await chat.refreshFriends();
+  app.toast(t("settings.profile.toast.saved"), "success");
+}
+
 /** 昵称：失焦或回车即保存（即点即存，无「保存」按钮）。 */
 async function saveProfileNow() {
   const name = nickname.value.trim();
@@ -41,10 +53,7 @@ async function saveProfileNow() {
     nickname.value = app.device?.nickname ?? "";
     return;
   }
-  if (name === app.device?.nickname && avatar.value === app.device?.avatar) return;
-  await app.updateProfile(name, avatar.value);
-  await chat.refreshFriends();
-  app.toast(t("settings.profile.toast.saved"), "success");
+  await persistProfile(name);
 }
 
 function onNicknameKeydown(e: KeyboardEvent) {
@@ -73,9 +82,29 @@ async function onAvatarChange(e: Event) {
     return;
   }
   try {
-    avatar.value = await processAvatar(f);
-    await saveProfileNow();
+    const next = await processAvatar(f);
+    const prev = avatar.value;
+    avatar.value = next; // 乐观：先让用户看见换成了这张
+    try {
+      // ⚠️ **不复用 `saveProfileNow()`**（用户 #24 的根因）：那条对"昵称为空"是提前 return，
+      // 于是"输入框恰好被清空 + 点头像"会让这次上传**被静默丢掉** —— 页面显示新头像、
+      // 后端里还是旧的，切个页就弹回去，正是"显示成功但没真成功"。
+      // 昵称为空是**另一个字段的未保存编辑**，头像该以库里现有的昵称为准一起提交。
+      const name = nickname.value.trim() || app.device?.nickname || "";
+      if (!name) {
+        // 连库里都没有昵称（设备信息还没到位）⇒ 明确拒绝，不发一个空昵称出去
+        avatar.value = prev;
+        app.toast(t("settings.profile.toast.nicknameEmpty"), "error");
+        return;
+      }
+      await persistProfile(name);
+    } catch (e) {
+      // 保存失败必须**回滚**：不回滚的话页面上挂着的是一个从没落库的头像
+      avatar.value = prev;
+      app.toastError(e, t("settings.profile.toast.avatarFail"));
+    }
   } catch {
+    // 图片本身读不出来（解码/画布失败）：这时还没动过 avatar，不需要回滚
     app.toast(t("settings.profile.toast.avatarFail"), "error");
   }
 }
