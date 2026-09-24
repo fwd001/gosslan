@@ -32,7 +32,14 @@ pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             PRIMARY KEY (cid, peer_id, direction)
          );
          CREATE INDEX IF NOT EXISTS idx_content_transfers_status
-            ON content_transfers(status);",
+            ON content_transfers(status);
+         -- 每次建链都要问一次「这个 peer 名下还有哪些可恢复的内容」：
+         -- WHERE peer_id + status IN(...) ORDER BY updated_at。原先只有 (status) 一条，
+         -- peer_id 不是任何索引的前缀 ⇒ 全表扫。第三列让排序也省掉。
+         -- 为什么不并进 idx_content_transfers_status：status 单独那条服务的是
+         -- 「按状态横切所有 peer」的查询，前缀不同、删不掉。
+         CREATE INDEX IF NOT EXISTS idx_content_transfers_peer
+            ON content_transfers(peer_id, status, updated_at);",
     )?;
     // 防御性迁移：早期 content_transfers 可能没有 transfer_id 列
     // （断点续传要按它找 <tid>.part）。CREATE TABLE IF NOT EXISTS 不会自动补列。

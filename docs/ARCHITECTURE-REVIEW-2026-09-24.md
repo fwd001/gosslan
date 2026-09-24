@@ -157,7 +157,8 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
   （`favorites.rs:368-370`：单连接下读必须持锁，分批读要读连接/连接池，属架构级改动）。
 * 锁内长操作：`commands/channel.rs:458-460` 与 `:366-368` 的 `VACUUM`（秒~分钟级，
   只在真删了文件时做 —— 这个纪律是对的）。
-* 缺索引（建表 vs 实际查询）：
+* 缺索引（建表 vs 实际查询）—— **✅ 0-B 已于 2026-09-25 补完前四条**（第 5 条 `messages(ts)` 判过不做），
+  最终形状与实测见「0-B 已落地」那张表：
   | 查询 | 位置 | 现有索引 | 结果 |
   |---|---|---|---|
   | `WHERE msg_id=?1` on `group_recalled_messages` | `db/recalls.rs:22-31`（在 `gossip.rs:796` 每条群收件路径上） | PK `(conv_id, msg_id)`（`db.rs:375-380`） | **全表扫**，且这张表是只增 G-Set |
@@ -258,7 +259,7 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
 | `lib.rs:561-615 all_commands_src()` | **靠人记得登记**（今天恰好是全的） | 实测三份视图的分册数：commands 24 / db 16 / transport 3，**都等于各自的 `include!` 闭包减去 `*_tests.rs`**。所以这不是"已经漏了"，而是"漏了不会红"：它已经漏过两次（4.25.0 接线中继时 `commands/relay.rs` 与 `transport/relay.rs` 都只登记了 `include!` 与领域图，现场注释在 `lib.rs:611-613`、`network/mod.rs:229-231`），而漏登记的后果是**静默假绿** —— 以"全部命令面"为判据的守卫扫不到那个分册，永远通过 |
 | `useChatStore` 的 7 个导出 | 冗余导出（内部仍在用） | `groupReads/resetAfterDataCleared/refreshTopology/refreshAnnouncements/handleSelfRemovedFromGroup/sendFileRelayTo/enqueueMessage` 外部零引用 |
 | 5 个 `src/utils/*.ts` | 只被自己的测试引用 | `a11yLabels/cn/designGuards/templateBranches/tokenContrast`（`cn(` 从未被调用） |
-| `db.rs` 的 `idx_messages_conv_seq`、`idx_outbox_msg_id` | 只在迁移里建 | `db.rs:187`、`:254` ⇒ 全新库（`is_fresh` 跳过迁移）**可能没有** |
+| ✅ `db.rs` 的 `idx_messages_conv_seq`、`idx_outbox_msg_id` | ~~只在迁移里建 ⇒ 新库缺~~ **判断有误**（0-B 实测） | 全新库其实**会**跑完整条迁移链（`is_fresh` 恒为假，见上表 ①），所以新库一直有这两条索引。<b>真实问题在别处</b>：`idx_outbox_msg_id` 与 `outbox.msg_id` 的内联 UNIQUE 是同一件事的两份 ⇒ 已由 v8→v9 删掉；`idx_messages_conv_seq` **只能**留在 v2→v3（它建在迁移才加的列上，挪进 SCHEMA 会让老库开不起来） |
 
 ### P11 / P12 前端末梢
 
@@ -373,6 +374,19 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
 
 > 为什么必须拆开：0-A 的失败在**编译期**露头，0-B 的失败在**真机运行期**露头（老库迁移卡住、写路径变慢），
 > 而后者正是本项目排在第一位的东西。两者混在一次提交里 = 出问题时分不清是谁。
+
+**✅ 0-B 已落地（2026-09-25），四条验收逐条对完，并且推翻了两处原判断：**
+
+| 验收 | 结果 |
+|---|---|
+| ① 迁移 / 新库幂等 / 降级守卫 | 新库幂等 ✓（`fresh_db_has_every_hot_query_index`）、老库补齐 ✓（`schema_alone_repairs_a_current_database`，版本保持最新 ⇒ 只可能是 SCHEMA 干的）、降级守卫仍拒绝 ✓（既有两条 `downgrade_*` 用例全绿，它们按 `DB_VERSION` 动态取值所以随版本 8→9 自动继续生效）。**顺带查出 `is_fresh` 恒为假**：`pre_table_count` 在 `execute_batch(SCHEMA)` 之后才数 ⇒ 新库会重放整条迁移链，首次启动因此打出一串**假的**「正在迁移 v1→v2…」日志。原判断「新库缺 `idx_messages_conv_seq`」因此**不成立**（它一直在，靠的是这个巧合）。 |
+| ② `EXPLAIN QUERY PLAN` 写成可跑断言 | ✓ `hot_queries_use_their_indexes` 把 5 条生产 SQL 本体钉成计划断言（判"走没走索引"，不判"索引在不在"）。 |
+| ③ 写性能回归 before/after | ✓ 实测（2000 行 × 21 次真实 upsert，A/B **换序各跑一轮**以排除缓存预热偏差）：`file_transfers` 883/890 → 903/911ms（噪声内）；`content_transfers` 1939/1963 → 2282/2290ms（**+17%**，与顺序无关）⇒ 折算**每个进度 tick 多约 8µs**（tick 间隔 250ms）。库文件 618,496 → 724,992 字节（+53 B/行）。结论：接受。<br>⚠️ 没有把耗时写成断言（CI 上必飘），钉的是**每表索引数量封顶**（`hot_tables_carry_exactly_the_intended_indexes`）—— 写放大的确定性代理。`dbstat` 在本构建里读不到（实测报错），空间成本改用文件大小量。 |
+| ④ "两处不能都写也不能都不写" | 规则**成立但边界不是原来说的那个**：形状归 SCHEMA 的前提是"这一列已经存在"。把 `idx_messages_conv_seq` 并进 SCHEMA 后三个老库升级用例全红 —— SCHEMA 跑在迁移**之前**，而 `seq` 是 v2→v3 才 ADD 的列 ⇒ 老库 `no such column: seq`，`init()` 直接失败 = **用户打不开自己的数据库**。所以最终形状是：4 条新索引进 SCHEMA（`content_transfers` 那条进它自己的 `ensure_schema`），**"删"被取代的索引**（`idx_outbox_msg_id`、旧 `idx_file_outbox_peer`）才是迁移 v8→v9 的活；`idx_messages_conv_seq` 留在 v2→v3 里（建列之后）。判据测试：`index_on_a_migration_added_column_must_not_live_in_schema`。 |
+| ⑤（追加）0-B2 的重复唯一约束 | 已收掉：`outbox.msg_id` 的权威是**内联 UNIQUE**，`idx_outbox_msg_id` 是热表上白付的一份写放大 ⇒ 迁移删掉，并且测试证明删后重复插入仍被挡（`superseded_indexes_are_dropped_and_uniquity_survives`，同时证明第二次启动 SCHEMA 不会把它造回来）。 |
+
+新增用例 6 条（Rust 基线 661 → **667**）。**没做**的一件事：`ORDER BY ts DESC` 跨会话搜索缺 `messages(ts)`
+（P5 表里的第 5 行）—— 它不在 0-B1 的四条里，且跨会话搜索走 `search_chat_history`，量级未测就先不加索引。
 
 
 ### 第 1 步 · 连接生命周期与故障隔离（**P1 + P2**，一个 PR 家族）

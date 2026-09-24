@@ -12,7 +12,12 @@ use crate::state::{
 };
 
 /// 当前数据库版本。每次 schema 变更递增一次，并在 `MIGRATIONS` 数组末尾追加一个 step。
-pub const DB_VERSION: u32 = 8;
+///
+/// ⚠️ **只有"SCHEMA 表达不了的事"才配一个 step**（加列、回填、清孤儿行、**删**被取代的索引）。
+/// 建表 / 建索引不需要 step：`init()` 在版本分支**之前**跑 `execute_batch(SCHEMA)`，
+/// 而 SCHEMA 全是 `IF NOT EXISTS` ⇒ 新老库每次启动都会被补齐。
+/// 同一条索引同时写在 SCHEMA 与 MIGRATIONS 里 = 两个家（历史上有过，v8→v9 起收敛）。
+pub const DB_VERSION: u32 = 9;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -160,7 +165,10 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
-    // v2 → v3：messages 加 seq + 回填 + 索引
+    // v2 → v3：messages 加 seq + 回填 + 索引。
+    // ⚠️ 索引必须留在这条迁移里（建列**之后**）：SCHEMA 跑在迁移之前，
+    //   把 `idx_messages_conv_seq` 写进 SCHEMA 会让没有 seq 列的老库直接开不起来。
+    //   判据测试：`migration_tests::index_on_a_migration_added_column_must_not_live_in_schema`。
     Migration {
         from: 2,
         to: 3,
@@ -316,6 +324,32 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v8 → v9：删掉两条**已被取代**的索引（0-B）。
+    //
+    // 为什么这必须是迁移而不是 SCHEMA：`CREATE INDEX IF NOT EXISTS` 只会建不会删，
+    // 而这两条留着就是热写路径上白付的写放大 ——
+    // ① `idx_outbox_msg_id`（v5→v6 建的唯一索引）与 `outbox.msg_id` 的**内联 UNIQUE**
+    //    是同一件事的两份。约束的权威是内联那个（`sqlite_autoindex` 一直在守），
+    //    这条测试会证明删掉索引后重复插入仍然被挡。
+    // ② `idx_file_outbox_peer(peer_id, status)` 是新的
+    //    `idx_file_outbox_peer_due(peer_id, status, next_attempt_at)` 的严格前缀。
+    // 软失败：删不动不拦启动（它们留着只是慢一点，不是错）。
+    Migration {
+        from: 8,
+        to: 9,
+        description: "删掉被取代的 idx_outbox_msg_id / idx_file_outbox_peer（写放大）",
+        run: |conn| {
+            for sql in [
+                "DROP INDEX IF EXISTS idx_outbox_msg_id",
+                "DROP INDEX IF EXISTS idx_file_outbox_peer",
+            ] {
+                if let Err(e) = conn.execute(sql, []) {
+                    eprintln!("[gosslan-db] v9 删冗余索引跳过一条（不影响启动）：{e}");
+                }
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// 建表脚本（与 `schema.sql` 保持一致）
@@ -360,6 +394,11 @@ CREATE TABLE IF NOT EXISTS messages (
     status      TEXT NOT NULL DEFAULT 'sent'
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, ts);
+-- ⚠️ `idx_messages_conv_seq` **不在这里**，而且不能放进来：`seq` 是迁移 v2→v3 才加到
+-- `messages` 上的列，而 `execute_batch(SCHEMA)` 跑在迁移**之前** ⇒ 老库里这句会
+-- `no such column: seq` 直接让 `init()` 失败（用户打不开自己的库）。
+-- 这条索引由 v2→v3 在建列之后创建 —— 顺序是语义，不是风格问题。
+-- 判据测试：`migration_tests::index_on_a_migration_added_column_must_not_live_in_schema`。
 
 -- 每会话逻辑时钟（Lamport 风格，单调递增）。消息排序与群聊清空边界都以此为准，
 -- 不使用发送方或接收方的墙上时钟。
@@ -379,6 +418,9 @@ CREATE TABLE IF NOT EXISTS group_recalled_messages (
     seq         INTEGER NOT NULL,
     PRIMARY KEY (conv_id, msg_id)
 );
+-- 判定"这条消息是否已被撤回"只给 msg_id（`is_recalled`），PK 的前缀是 conv_id 用不上
+-- ⇒ 每次群收件都要全表扫这张**只增不减**的 G-Set。这条索引在收件热路径上。
+CREATE INDEX IF NOT EXISTS idx_group_recalled_msg ON group_recalled_messages(msg_id);
 
 CREATE TABLE IF NOT EXISTS groups (
     id         TEXT PRIMARY KEY,
@@ -437,6 +479,9 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     progress   REAL NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
+-- 传输面板首屏是 `ORDER BY created_at DESC` 且**没有任何 WHERE** —— 零索引时
+-- 每次打开都要全表扫 + 临时 B-tree 排序，而行数是只增的（历史传输不删）。
+CREATE INDEX IF NOT EXISTS idx_file_transfers_created ON file_transfers(created_at DESC);
 
 -- 文件离线投递队列：断线后重启可恢复，重连后自动补发。
 CREATE TABLE IF NOT EXISTS file_outbox (
@@ -452,7 +497,12 @@ CREATE TABLE IF NOT EXISTS file_outbox (
     next_attempt_at INTEGER NOT NULL,
     created_at      INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_file_outbox_peer ON file_outbox(peer_id, status);
+-- 取某 peer 待投递的文件是「每次建链 / 每次心跳」都跑一遍的读：判据是
+-- peer_id + status + `next_attempt_at <= now`。原先的 (peer_id, status) 只能定位到
+-- "这个 peer 的所有待发行"，时间窗还得逐行回表比 ⇒ 把 next_attempt_at 收进第三列。
+-- ⚠️ 被它取代的旧 `idx_file_outbox_peer` **不在这里**（SCHEMA 造不出"删"），
+-- 由迁移 v8→v9 一次性删掉；两处都写会变成每次启动"建了又删"。
+CREATE INDEX IF NOT EXISTS idx_file_outbox_peer_due ON file_outbox(peer_id, status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_file_outbox_created ON file_outbox(created_at);
 
 -- 群文件：一个 transfer_id 对应一个群文件。
@@ -548,7 +598,13 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     conn.execute_batch(SCHEMA)?;
     // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
     crate::content::store::ensure_schema(&conn)?;
-    // ★ 预读状态：区分真·新库 vs 遗留老库（`current` 已在降级判定处读过，不再读第二遍）
+    // ★ 预读状态：**今天它区分不了任何东西** —— `pre_table_count` 是在上面
+    // `execute_batch(SCHEMA)` **之后**才数的，而 SCHEMA 会建出全部表 ⇒ 新库也是 19 张，
+    // `is_fresh` 恒为假 ⇒ 走 else 分支：全新库会把整条迁移链重放一遍
+    // （空库上每一步都是幂等 no-op，代价是首次启动多打 9 行"正在迁移 v1→v2…"的**假日志**）。
+    // 修它 = 把这句数表挪到 SCHEMA 之前，但那是改启动行为，单独一轮。
+    // ⚠️ 别把"新库靠迁移补形状"当依赖：索引/表的形状一律以 SCHEMA 为准
+    //   （`migration_tests::fresh_db_has_every_hot_query_index` 钉的就是这件事）。
     let pre_table_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",

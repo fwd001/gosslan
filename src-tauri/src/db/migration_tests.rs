@@ -14,6 +14,11 @@
 //!       非降级错误**没有这份文案可拿** —— `downgrade_message` 只服务降级那一种，
 //!       所以"把降级文案套到文件损坏上"这件事在类型上就不成立，不需要测试去禁。
 //!   9. Legacy user_version=0 + 空表 → 当作全新库
+//!  10. 0-B 索引一族：热查询必须真的走索引（判据是 EXPLAIN 计划，不是"索引存在"）、
+//!      新库首启即有（`is_fresh` 跳过迁移 ⇒ 只写在 MIGRATIONS 的索引新库没有）、
+//!      老库靠 SCHEMA 自愈（**纯加索引不该写迁移**，两处都写=双份）、
+//!      被取代的冗余索引走迁移删掉（且 `outbox.msg_id` 唯一性必须还在）、
+//!      热表索引数量封顶（写放大的确定性代理，不用计时断言）。
 
 use rusqlite::{params, Connection};
 use std::env;
@@ -501,6 +506,303 @@ fn downgrade_message_says_who_is_old_and_what_to_do() {
     assert!(!msg.contains("InvalidParameterName"), "{msg}");
     // ④ 不许出现裸 JSON / 结构体 Debug 输出（同一类"把内部形态露给用户"的问题）
     assert!(!msg.contains('{'), "文案里不该有未替换的占位符：{msg}");
+}
+
+// ---------------------------------------------------------------------------
+// 0-B：热查询索引。**判据是查询计划，不是"索引存在"** —— 索引建了但查询用不上
+// 等于没建（列序不对时 SQLite 会照常 SELECT 出一个全表扫）。
+// 五条查询都是抄自生产语句本体，改了生产 SQL 的 WHERE/ORDER BY 这里必须红。
+// ---------------------------------------------------------------------------
+
+/// 跑 EXPLAIN QUERY PLAN，把每一行的 detail 拼成一段文本返回。
+///
+/// 参数个数必须与 SQL 一致：rusqlite 对"多绑"是**报错**而不是忽略，
+/// 少写一个占位符就会让这条用例红在错误的原因上（真跑过一次才写下的注释）。
+fn query_plan(conn: &Connection, sql: &str, n_params: usize) -> String {
+    let nulls: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Null; n_params];
+    let refs: Vec<&dyn rusqlite::ToSql> = nulls.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+    let mut out = String::new();
+    let mut rows = stmt
+        .query_map(refs.as_slice(), |r| r.get::<_, String>(3))
+        .unwrap();
+    while let Some(Ok(detail)) = rows.next() {
+        out.push_str(&detail);
+        out.push('\n');
+    }
+    out
+}
+
+/// 这五条热查询必须走索引（0-B1 四条 + 0-B2 的会话时间线）。
+#[test]
+fn hot_queries_use_their_indexes() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("init fresh db");
+
+    // 每条：(生产 SQL 本体, 绑参个数, 期望出现在计划里的索引名)
+    let cases: &[(&str, usize, &str)] = &[
+        // db/recalls.rs `is_recalled` —— 在**每条群收件路径**上跑（gossip.rs）
+        (
+            "SELECT 1 FROM group_recalled_messages WHERE msg_id = ?1",
+            1,
+            "idx_group_recalled_msg",
+        ),
+        // db/file_transfer.rs `list_transfers` —— 传输面板首屏
+        ("SELECT id FROM file_transfers ORDER BY created_at DESC", 0, "idx_file_transfers_created"),
+        // content/store.rs `list_resumable_for_peer` —— 每次建链
+        (
+            "SELECT cid FROM content_transfers \
+             WHERE peer_id=?1 AND status IN ('queued','active','incomplete') \
+             ORDER BY updated_at ASC",
+            1,
+            "idx_content_transfers_peer",
+        ),
+        // db/file_offline.rs `list_pending_file_outbox` —— 每次建链 / 心跳
+        (
+            "SELECT transfer_id FROM file_outbox \
+             WHERE peer_id = ?1 AND status = 'pending' AND next_attempt_at <= ?2 AND attempts < ?3 \
+             ORDER BY created_at, id",
+            3,
+            "idx_file_outbox_peer_due",
+        ),
+        // db/messages.rs `get_messages` —— **最热的读**：打开任意会话
+        (
+            "SELECT id FROM messages WHERE conv_id = ?1 ORDER BY seq ASC, id ASC LIMIT ?2 OFFSET ?3",
+            3,
+            "idx_messages_conv_seq",
+        ),
+    ];
+
+    for (sql, n, index) in cases {
+        let plan = query_plan(&conn, sql, *n);
+        assert!(
+            plan.contains(index),
+            "查询没走 {index}：计划是\n{plan}SQL: {sql}"
+        );
+    }
+}
+
+/// **新库首启就必须有这些索引**（判据：只跑一次 `init`，不借任何迁移的历史）。
+///
+/// 这条为什么值得单独钉：`idx_messages_conv_seq` / `idx_outbox_msg_id` 今天**只存在于迁移里**，
+/// 新库却照样有 —— 原因是 `is_fresh` 那支**永远为假**（`pre_table_count` 在
+/// `execute_batch(SCHEMA)` 之后才数表，新库此时已有 19 张表 ⇒ 走的是 else 分支，
+/// 迁移链在空库上被整条重放了一遍）。也就是说"新库不缺索引"这件事现在靠的是一个
+/// 没人打算依赖的巧合，而不是靠 SCHEMA。0-B 起：4 条新索引全部归 SCHEMA（新老库都靠它补齐），
+/// 只有 `idx_messages_conv_seq` 留在迁移里 —— 原因见下面那条 `must_not_live_in_schema`。
+#[test]
+fn fresh_db_has_every_hot_query_index() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("init fresh db");
+
+    let have: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for want in &[
+        "idx_group_recalled_msg",
+        "idx_file_transfers_created",
+        "idx_content_transfers_peer",
+        "idx_file_outbox_peer_due",
+        "idx_messages_conv_seq",
+    ] {
+        assert!(
+            have.iter().any(|h| h == want),
+            "新库缺索引 {want}，实际: {have:?}"
+        );
+    }
+}
+
+/// **`SCHEMA` 是"形状"的唯一事实源**：版本已经是最新的库少了索引也会被补回来。
+///
+/// 为什么用 `user_version = DB_VERSION` 而不是退回上一档：那样 `run_migrations` 一进来就
+/// `return Ok(())`，"索引回来了"这件事**只可能是 SCHEMA 干的**。
+/// `init()` 里 `execute_batch(SCHEMA)` 在版本分支**之前**，每次启动都跑，而 SCHEMA 全是
+/// `IF NOT EXISTS` ⇒ 纯加索引**不需要**迁移步骤（再加一遍就是两处都写，0-B 验收第 ④ 条要的
+/// 正是"每个对象只有一个家"）。
+#[test]
+fn schema_alone_repairs_a_current_database() {
+    let path = temp_db_path();
+    {
+        let conn = init(&path).expect("first init");
+        // 模拟"这些索引还没有"的库，但版本**保持最新** ⇒ 迁移不会跑。
+        // 不含 `idx_messages_conv_seq`：它建在迁移 v2→v3 **加的列**上，只能留在迁移里
+        // （见下面 `index_on_a_migration_added_column_must_not_live_in_schema`）。
+        for doomed in [
+            "idx_group_recalled_msg",
+            "idx_file_transfers_created",
+            "idx_content_transfers_peer",
+            "idx_file_outbox_peer_due",
+        ] {
+            conn.execute(&format!("DROP INDEX IF EXISTS {doomed}"), [])
+                .unwrap();
+        }
+        assert_eq!(read_user_version(&conn), DB_VERSION);
+    }
+
+    let conn = init(&path).expect("re-init");
+    assert_eq!(read_user_version(&conn), DB_VERSION);
+    for want in [
+        "idx_group_recalled_msg",
+        "idx_file_transfers_created",
+        "idx_content_transfers_peer",
+        "idx_file_outbox_peer_due",
+    ] {
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = ?1",
+                params![want],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "只靠 SCHEMA 就该把 {want} 补齐");
+    }
+}
+
+/// **索引建在"迁移后加的列"上时只能留在迁移里 —— 写进 SCHEMA 会把老库锁死。**
+///
+/// 这条是 0-B 过程中真撞出来的：把 `idx_messages_conv_seq` 并进 SCHEMA 之后，
+/// 三个"老库升级"用例全红 —— `init()` 先跑 `execute_batch(SCHEMA)`、**后**跑迁移，
+/// 而 `messages.seq` 是 v2→v3 才 ADD 的列 ⇒ 老库上那句 `CREATE INDEX ... (conv_id, seq)`
+/// 报 `no such column: seq`，整个 `init` 失败 = **用户打不开自己的数据库**。
+/// "形状集中在 SCHEMA"是个好规矩，但它的边界是"列必须已经存在"，越界就是数据不可用。
+#[test]
+fn index_on_a_migration_added_column_must_not_live_in_schema() {
+    let path = temp_db_path();
+    {
+        let conn = Connection::open(&path).unwrap();
+        // v1 形状的 messages：**没有 seq 列**
+        conn.execute_batch(
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, msg_id TEXT UNIQUE NOT NULL, conv_id TEXT NOT NULL, sender_id TEXT NOT NULL, receiver_id TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, ts INTEGER NOT NULL);
+             PRAGMA user_version = 2;",
+        )
+        .unwrap();
+    }
+
+    // 必须开得起来（这条在任何断言之前 —— 开不起来本身就是那次回归的形态）
+    let conn = init(&path).expect("没有 seq 列的老库必须能升级到最新并打开");
+
+    assert!(
+        super::column_exists(&conn, "messages", "seq").unwrap(),
+        "v2→v3 应该补上 seq 列"
+    );
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = 'idx_messages_conv_seq'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 1, "补列之后索引必须跟上（顺序反了就是这条红）");
+}
+
+/// **SCHEMA 表达不了的才走迁移**：删掉两条被取代的冗余索引。
+///
+/// - `idx_outbox_msg_id`（迁移 v5→v6 建的唯一索引）与 `outbox.msg_id` 的**内联 UNIQUE**
+///   是同一件事的两份 ⇒ 热表上白多一份写放大。
+/// - `idx_file_outbox_peer(peer_id, status)` 被 `(peer_id, status, next_attempt_at)` 完全覆盖。
+///
+/// "删"是迁移的正当职责（`CREATE INDEX IF NOT EXISTS` 删不掉任何东西），
+/// 而 `outbox.msg_id` 的唯一性必须由内联约束继续守住 —— 所以下面顺带证明它还在生效。
+#[test]
+fn superseded_indexes_are_dropped_and_uniquity_survives() {
+    let path = temp_db_path();
+    {
+        let conn = init(&path).expect("first init");
+        // 造出"老库历史上确实建过这两条"的形状，再把版本退回上一档
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_outbox_msg_id ON outbox(msg_id);
+             CREATE INDEX IF NOT EXISTS idx_file_outbox_peer ON file_outbox(peer_id, status);",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", DB_VERSION - 1)
+            .unwrap();
+    }
+
+    let conn = init(&path).expect("re-init");
+    assert_eq!(read_user_version(&conn), DB_VERSION, "迁移跑完必须落到最新");
+    for gone in ["idx_outbox_msg_id", "idx_file_outbox_peer"] {
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = ?1",
+                params![gone],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "{gone} 应被迁移删掉（它已被取代）");
+    }
+
+    // 再启一次：删掉的东西**不许被 SCHEMA 造回来**（否则每次启动都"建了又删"，
+    // 而"删"这件事再也不是幂等的）。这条要求 SCHEMA 里根本不再出现这两个名字。
+    drop(conn);
+    let conn = init(&path).expect("third init");
+    for gone in ["idx_outbox_msg_id", "idx_file_outbox_peer"] {
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = ?1",
+                params![gone],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            n, 0,
+            "{gone} 在第二次启动又出现了 ⇒ SCHEMA 与迁移在互相打架"
+        );
+    }
+
+    // 删索引不等于删约束：内联 UNIQUE 必须仍然挡重复
+    conn.execute(
+        "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES ('m-dup','p','{}',1)",
+        [],
+    )
+    .unwrap();
+    let dup = conn.execute(
+        "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES ('m-dup','p','{}',2)",
+        [],
+    );
+    assert!(
+        dup.is_err(),
+        "outbox.msg_id 的内联 UNIQUE 必须还生效（否则这次删除真的丢了约束）"
+    );
+}
+
+/// 每条写路径上的表不得长出**第二份**被取代的索引 —— 写放大在这里是可数的。
+///
+/// 为什么钉数量而不是钉耗时：计时断言在 CI 上必然飘（同一台机器差几倍很常见），
+/// 而"这张表上现在有几个索引"是耗时的确定性代理。真要量性能是另一次单独测（结论进 CHANGELOG）。
+#[test]
+fn hot_tables_carry_exactly_the_intended_indexes() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("init fresh db");
+
+    let count = |table: &str| -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name = ?1 \
+             AND name LIKE 'idx_%'",
+            params![table],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    // 期望值 = 这次定下来的形状。要加第三个索引的人必须先回答"写路径受不受得起"。
+    for (table, want) in [
+        ("group_recalled_messages", 1),
+        ("file_transfers", 1),
+        ("content_transfers", 2),
+        ("file_outbox", 2),
+        ("outbox", 2),
+        ("messages", 2),
+    ] {
+        assert_eq!(
+            count(table),
+            want,
+            "{table} 上的显式索引数不是 {want} —— 多一个就是热写路径多一份写放大"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

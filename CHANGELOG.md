@@ -10,6 +10,51 @@
 
 ## [Unreleased]
 
+### Performance (2026-09-25 · 架构改造 0-B：4 条热查询补索引，判据用查询计划而不是"索引存在")
+
+复审 P5 的"缺索引"一族。**每条都对着生产 SQL 本体跑 `EXPLAIN QUERY PLAN` 断言**，
+因为"索引建了但查询用不上"照样是全表扫 —— 列序错了测试不会红，人眼也不会发现。
+
+- **`idx_group_recalled_msg(msg_id)`**：撤回判定 `is_recalled` 只给 `msg_id`，而这张表
+  的 PK 是 `(conv_id, msg_id)`（前缀用不上）⇒ **每条群收件**都在扫这张只增不减的 G-Set。
+- **`idx_file_transfers_created(created_at DESC)`**：`list_transfers` 是
+  `ORDER BY created_at DESC` 且没有任何 WHERE，而这张表**原先零索引** ⇒ 每次开传输面板
+  都是全表扫 + 临时 B-tree 排序，而历史传输不删。
+- **`idx_content_transfers_peer(peer_id, status, updated_at)`**：建链时捞"该 peer 还有哪些
+  可恢复内容"，而 `peer_id` 原先不是任何索引的前缀。
+- **`idx_file_outbox_peer_due(peer_id, status, next_attempt_at)`**：旧的两列版只能定位到
+  "这个 peer 的全部待发行"，时间窗要逐行回表比。
+- **迁移 v8→v9 删两条被取代的索引**（"删"是 SCHEMA 表达不了的，所以它才是迁移的正当职责）：
+  `idx_outbox_msg_id`（与 `outbox.msg_id` 的**内联 UNIQUE** 是同一件事的两份 ⇒ 热表上白付的写放大）、
+  旧 `idx_file_outbox_peer`（是新索引的严格前缀）。测试同时证明：删掉索引后重复 `msg_id`
+  仍然插不进去（约束的权威从来是内联那个），且第二次启动 SCHEMA 不会把它们造回来。
+
+**两处原判断被实测推翻**（都记进了复审报告的 0-B 表，别再照旧说法动手）：
+① 「`idx_messages_conv_seq` 在新库上不存在」**不成立** —— `init()` 里 `is_fresh` 恒为假：
+`pre_table_count` 是在 `execute_batch(SCHEMA)` **之后**才数的，新库此时已有 19 张表 ⇒
+走 else 分支，**全新库会把整条迁移链重放一遍**。真实副作用是首次启动在日志里打出一串
+**假的**「正在迁移 v1→v2…」；修它要挪取数位置 = 改启动行为，**单独一轮**，本次只把注释改对。
+② 「索引一律并进 SCHEMA」这条规矩**有边界**：把 `idx_messages_conv_seq` 挪进 SCHEMA 之后
+**三个"老库升级"用例全红** —— SCHEMA 跑在迁移之前，而 `messages.seq` 是 v2→v3 才 ADD 的列 ⇒
+老库上那句 `CREATE INDEX` 报 `no such column: seq`，`init()` 直接失败 =
+**用户打不开自己的数据库**。这条索引因此留在 v2→v3（建列之后），并新增判据
+`index_on_a_migration_added_column_must_not_live_in_schema` 钉住这个坑。
+
+**写放大实测**（0-B 验收第 ③ 条；A/B **换序各跑一轮**，否则分不清"索引变贵"和"缓存热了"）：
+2000 行 × 21 次真实 upsert —— `file_transfers` 883/890 → 903/911ms（噪声内）；
+`content_transfers` 1939/1963 → **2282/2290ms（+17%，与顺序无关）**；
+库文件 618,496 → 724,992 字节（≈ +53 B/行）。折算**每个进度 tick 多约 8µs**，
+而 tick 间隔是 250ms ⇒ 接受。⚠️ 没把耗时写成断言（CI 上必飘），钉的是
+**每表索引数量封顶**（写放大的确定性代理）；`dbstat` 在这个 bundled 构建里读不到（实测报错），
+所以空间那条线改用文件大小量。
+
+**用户看得到什么**：打开消息多的会话、传输面板、以及每次建链/心跳的补发捞取不再全表扫；
+写路径的成本是每 250ms 一次进度更新多几微秒。行为语义零改动。
+
+新增用例 6 条，Rust 基线 **661 → 667**；`verify:full` 全绿。
+**没做**：P5 表里第 5 行「跨会话搜索缺 `messages(ts)`」—— 它不在 0-B1 的四条里，
+实际走的是 `search_chat_history`，量级未测就不加索引。
+
 ## [4.29.35] - 2026-09-25
 
 ### Removed (2026-09-25 · 0-A3 收尾：5 条零引用命令按拍板删掉)
