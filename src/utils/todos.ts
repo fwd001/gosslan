@@ -224,7 +224,7 @@ export function isEffectivelyArchived(
 
 /**
  * 我能不能改这条任务（**显示用**的镜像，后端 `commands::may_update_todo` 才是权威）。
- * 归档另有一档（比这里宽），见 [`canArchiveTodo`]。
+ * 归档另有一档（比这里宽），见 [`canArchiveOrReopenTodo`]。
  *
  * | 改动 | 允许谁 |
  * |---|---|
@@ -264,18 +264,20 @@ export function canEditAssignees(
 }
 
 /**
- * 我能不能**归档 / 取消归档**这条任务（用户 2026-09-24 #37：「群里所有人都可以归档」）。
+ * 我能不能**归档 / 还原**这条任务（用户 2026-09-24：「群里所有人都可以归档」，
+ * 同日追加：「归档和被归档的数据还原，任何人都可以操作，其他权限不变」）。
  *
- * 与后端 `commands::may_change_todo` 的第三档一致：**只动归档位**的改动对全体群成员开放。
- * 三条边界与后端一一对应，缺一条就等于在前端复刻一个越权口子：
- * - 只有归档这一位被改（改标题 / 改状态 / 删除仍走 `canUpdateTodo` 那两档）；
- * - 调用方必须传**本群成员名单**（`Group.members`），不给外人；
- * - 归档只在「完成」态成立（后端会明确拒绝，UI 也只在 `status === "done"` 时给按钮）。
+ * 对应后端 `commands::may_change_todo` 的「成员窄档」。后端是**两条**判据
+ * （`archive_only_change` 只翻归档位 / `reopen_only_change` 只把状态从完成退回待办），
+ * 但放行条件相同（是本群成员即可），所以这里合成一个判据 —— 两处各写一份迟早会漂。
  *
- * ⚠️ 「重新打开」（状态从完成改回待办）**不算这一档** —— 那是状态改动，
- * 仍归创建者 / 群主 / 被指派人，所以"谁都能归档"不等于"谁都能取消归档"。
+ * ⚠️ 它**只**覆盖归档与还原：改标题 / 描述 / 图片 / 指派人 / 完成状态仍走
+ * [`canUpdateTodo`] 那两档。尤其"把一条没干完的任务标成完成"没有放宽 ——
+ * 成员能收摊、也能把活重新拎回来，但不能替别人宣布干完了。
+ * 归档只在「完成」态成立（后端明确拒绝未完成任务的归档请求），所以调用方还要自己判
+ * `status === "done"` 才给按钮。
  */
-export function canArchiveTodo(
+export function canArchiveOrReopenTodo(
   item: Pick<TodoItem, "creator" | "assignees">,
   actor: string,
   groupCreator: string,

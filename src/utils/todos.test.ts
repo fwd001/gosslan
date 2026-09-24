@@ -7,7 +7,7 @@ import {
   TODO_STATUS_DEFAULT,
   TODO_STATUS_PILL,
   TODO_STATUSES,
-  canArchiveTodo,
+  canArchiveOrReopenTodo,
   canEditAssignees,
   canUpdateTodo,
   foldTodos,
@@ -183,27 +183,32 @@ test("授权矩阵：创建者与群主全权 / 被指派人不能改结构 / �
 });
 
 /**
- * 归档那一档（用户 2026-09-24 #37：「群里所有人都可以归档」）——
- * **必须与 Rust `commands::may_change_todo` 的用例表逐项一致**（`todo_archive_only_lane_...`）。
+ * 成员窄档（用户 2026-09-24 #37 + 同日追加：「归档和被归档的数据还原，任何人都可以操作，
+ * 其他权限不变」）—— **必须与 Rust `commands::may_change_todo` 的用例表逐项一致**
+ * （`todo_member_lanes_are_narrow_and_member_only`）。
  *
  * 界面按这份决定"给不给按钮"，真正的拦截在命令层；两边都收口意味着：
- * 无关成员 **只**多得到归档这一位，改状态 / 改标题 / 删除仍然一律被拒
+ * 无关成员 **只**多得到归档与还原这两个动作，改状态 / 改标题 / 删除仍然一律被拒
  * —— 所以这里同时断言"放宽没有外溢"。
  */
-test("归档档：全体群成员可归档，但改状态/改结构仍然不行", () => {
+test("成员窄档：归档与还原对全体群成员开放，改状态/改结构仍然不行", () => {
   const item = { creator: "alice", assignees: ["bob"] };
   const members = ["alice", "bob", "carol", "dave"];
-  // 无关成员 dave：归档可以（就是这条放宽），改状态/改结构仍然不行。
-  assert.ok(canArchiveTodo(item, "dave", "owner", members));
+  // 无关成员 dave：归档/还原可以（就是这条放宽），改状态/改结构仍然不行。
+  assert.ok(canArchiveOrReopenTodo(item, "dave", "owner", members));
   assert.equal(canUpdateTodo(item, "dave", "owner", false), false, "放宽不得外溢到改状态");
   assert.equal(canUpdateTodo(item, "dave", "owner", true), false, "放宽不得外溢到改结构");
   // 不是本群成员的第三人：连归档都不给。
-  assert.equal(canArchiveTodo(item, "erin", "owner", members), false, "归档是群内动作，不给外人");
+  assert.equal(
+    canArchiveOrReopenTodo(item, "erin", "owner", members),
+    false,
+    "归档/还原是群内动作，不给外人",
+  );
   // 群主与被指派人本来就在前两档里（放宽与它们不冲突）。
-  assert.ok(canArchiveTodo(item, "owner", "owner", members));
-  assert.ok(canArchiveTodo(item, "bob", "owner", members));
+  assert.ok(canArchiveOrReopenTodo(item, "owner", "owner", members));
+  assert.ok(canArchiveOrReopenTodo(item, "bob", "owner", members));
   // device_id 还没拿到的那一帧（启动早期）不得误判成"是成员"。
-  assert.equal(canArchiveTodo(item, "", "owner", members), false, "空 actor 不算群成员");
+  assert.equal(canArchiveOrReopenTodo(item, "", "owner", members), false, "空 actor 不算群成员");
 });
 
 /**

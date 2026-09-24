@@ -16,9 +16,9 @@
  * 不进消息时间线，只在这里折叠展示。⚠️ 只统计**已加载的消息页**（既有架构口径）。
  *
  * **权限**：与后端 `commands::may_change_todo` 一致（`canUpdateTodo` / `canEditAssignees` /
- * `canArchiveTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
+ * `canArchiveOrReopenTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onMounted, onBeforeUnmount, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -37,7 +37,7 @@ import {
   TODO_STATUS_DEFAULT,
   TODO_STATUS_LABEL_KEY,
   TODO_STATUS_PILL,
-  canArchiveTodo,
+  canArchiveOrReopenTodo,
   canEditAssignees,
   canUpdateTodo,
   foldTodos,
@@ -48,8 +48,10 @@ import {
   type TodoStatus,
 } from "@/utils/todos";
 import { api } from "@/api";
+import { useExclusivePopup } from "@/composables/useExclusivePopup";
+import { popupLeft, popupPlacement, popupWidth } from "@/utils/popupPosition";
 import { t } from "@/i18n";
-import { Check, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, ImagePlus, Plus, X } from "lucide-vue-next";
+import { Archive, Check, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, ImagePlus, Plus, RotateCcw, X } from "lucide-vue-next";
 
 const props = defineProps<{
   groupId: string | null;
@@ -70,7 +72,7 @@ const { memberProfile, myId } = useMemberProfile();
 const convId = computed(() => (props.groupId ? `group:${props.groupId}` : ""));
 const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? null);
 const groupCreator = computed(() => group.value?.creator ?? "");
-/** 本群成员名单（归档那一档的判据：只给本群成员，见 `canArchiveTodo`）。 */
+/** 本群成员名单（归档/还原那条窄档的判据：只给本群成员，见 `canArchiveOrReopenTodo`）。 */
 const groupMembers = computed<string[]>(() => group.value?.members ?? []);
 
 /** 折叠出全部任务（按创建版本从新到旧），再拆成「活动」与「已归档」。 */
@@ -92,14 +94,81 @@ const FILTERS: { key: TodoFilter; labelKey: string }[] = [
 
 const filter = ref<TodoFilter>("all");
 
-/** 行内状态菜单：同一时间只开一个（行是 v-for，不能每行一个 bool）。 */
+/**
+ * 行内状态菜单：同一时间只开一个（行是 v-for，不能每行一个 bool）。
+ *
+ * ⚠️ 面板**必须 Teleport 到 body 后用 fixed 坐标**（用户 2026-09-24：下拉被遮挡）。
+ * 挂在行里时被两层东西裁掉：列表卡片自己的 `overflow-hidden`（画圆角用的）
+ * 和外面那层 `overflow-y-auto` 滚动容器 —— 与已读成员弹层、表情面板是同一个坑的第三处，
+ * 那两处 2026-09-24 已经改过（`MessageReceipt` / `MessageItem`），判据也早就抽成
+ * `utils/popupPosition`，这里只是终于用上了它。
+ * 菜单项只有 4 条、宽度固定 8rem，所以不像列表那样需要估高度：
+ * 横向按入口右缘对齐向左展开（不顶出屏幕右缘），纵向过视口中线就往上弹。
+ */
 const rowMenuId = ref<string | null>(null);
-function toggleRowMenu(todoId: string) {
-  rowMenuId.value = rowMenuId.value === todoId ? null : todoId;
+/** Teleport 出去之后拿不到"是哪条任务"，所以目标项自己也要留一份。 */
+const rowMenuTodo = ref<TodoItem | null>(null);
+/** fixed 坐标：往下弹用 `top`、往上弹用 `bottom`（贴入口上缘），不估菜单高度。 */
+const rowMenuPos = ref<{ left: number; top: number | null; bottom: number | null; width: number } | null>(
+  null,
+);
+const ROW_MENU_W = 128; // 8rem
+
+function openRowMenu(x: TodoItem, anchor: HTMLElement) {
+  const rect = anchor.getBoundingClientRect();
+  const width = popupWidth(ROW_MENU_W, window.innerWidth);
+  const below = popupPlacement(rect.top, window.innerHeight) === "below";
+  rowMenuTodo.value = x;
+  rowMenuId.value = x.todoId;
+  rowMenuPos.value = {
+    left: popupLeft({ left: rect.left, right: rect.right }, "end", width, window.innerWidth),
+    top: below ? rect.bottom + 4 : null,
+    bottom: below ? null : window.innerHeight - rect.top + 4,
+    width,
+  };
+  claimRowMenu();
+}
+function toggleRowMenu(x: TodoItem, e: MouseEvent) {
+  if (rowMenuId.value === x.todoId) {
+    closeRowMenu();
+    return;
+  }
+  const el = e.currentTarget as HTMLElement | null;
+  if (el) openRowMenu(x, el);
 }
 function closeRowMenu() {
   rowMenuId.value = null;
+  rowMenuTodo.value = null;
+  rowMenuPos.value = null;
+  releaseRowMenu();
 }
+
+/** 接入全局浮层互斥：右键菜单 / 表情面板 / 已读弹层与它同一时刻只能开一个。 */
+const {
+  isActive: rowMenuOpen,
+  claim: claimRowMenu,
+  release: releaseRowMenu,
+} = useExclusivePopup("todo-row-menu");
+watch(rowMenuOpen, (mine) => {
+  if (!mine && rowMenuId.value !== null) closeRowMenu();
+});
+
+/** 滚动 / 改窗口 ⇒ 收起（fixed 坐标会飘）。忽略菜单自己的内部滚动。 */
+function onScrollOrResize(e: Event) {
+  if (!rowMenuId.value) return;
+  if (e.type === "scroll" && rowMenuEl.value?.contains(e.target as Node)) return;
+  closeRowMenu();
+}
+const rowMenuEl = ref<HTMLElement | null>(null);
+onMounted(() => {
+  window.addEventListener("scroll", onScrollOrResize, true);
+  window.addEventListener("resize", onScrollOrResize);
+});
+onUnmounted(() => {
+  window.removeEventListener("scroll", onScrollOrResize, true);
+  window.removeEventListener("resize", onScrollOrResize);
+  closeRowMenu();
+});
 
 function isAssignedToMe(x: TodoItem): boolean {
   return !!myId.value && x.assignees.includes(myId.value);
@@ -179,11 +248,20 @@ function canEditAssigneesOf(x: TodoItem): boolean {
   return canEditAssignees(x, myId.value, groupCreator.value);
 }
 /**
- * 「只动归档位」这一档对**全体群成员**开放（用户 2026-09-24 #37），
+ * 「归档」这一档对**全体群成员**开放（用户 2026-09-24 #37），
  * 但只在「完成」这一态给按钮（后端对未完成任务的归档请求是明确拒绝，不是静默丢弃）。
  */
 function canArchive(x: TodoItem): boolean {
-  return x.status === "done" && canArchiveTodo(x, myId.value, groupCreator.value, groupMembers.value);
+  return x.status === "done" && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
+}
+/**
+ * 「还原」= 把「完成」退回「待办」（后端 `resolve_done_archive` 据此一并清掉归档位与完成时间）。
+ * 与归档同一条成员窄档 ⇒ 同样开放给全体群成员（用户 2026-09-24 追加：
+ * 「归档和被归档的数据还原，任何人都可以操作，其他权限不变」）。
+ * 判据带上"当前是 done"：非完成态的行不配还原，后端也不认那是还原。
+ */
+function canReopen(x: TodoItem): boolean {
+  return x.status === "done" && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
 }
 
 // ---------------- 任务详情（点行打开） ----------------
@@ -583,7 +661,7 @@ watch(
       draft.value = null;
       pendingDelete.value = null;
       detailId.value = null;
-      rowMenuId.value = null;
+      closeRowMenu();
       filter.value = "all";
     }
   },
@@ -676,6 +754,18 @@ watch(
           <span class="shrink-0 inline-flex h-5 items-center justify-center rounded-full px-2 text-[11px] font-medium leading-none" :class="TODO_STATUS_PILL[x.status]">
             {{ statusText(x.status) }}
           </span>
+          <!-- 快捷「还原」：以前只在详情里（用户 2026-09-24：归档要有还原按钮，
+               且和归档一样对全体群成员开放）。点一下 = 把这条从归档里拎回「待办」。 -->
+          <button
+            v-if="canReopen(x)"
+            type="button"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+            :title="t('todo.restore')"
+            :aria-label="t('todo.restore')"
+            @click.stop="restoreTodo(x)"
+          >
+            <RotateCcw class="h-4 w-4" />
+          </button>
         </div>
       </template>
 
@@ -744,7 +834,7 @@ watch(
                 :title="t('todo.statusLabel')"
                 :aria-label="t('todo.statusLabel')"
                 :aria-expanded="rowMenuId === x.todoId"
-                @click.stop="toggleRowMenu(x.todoId)"
+                @click.stop="toggleRowMenu(x, $event)"
               >
                 {{ statusText(x.status) }}
                 <ChevronDown class="h-3 w-3" />
@@ -756,30 +846,8 @@ watch(
               >
                 {{ statusText(x.status) }}
               </span>
-
-              <template v-if="canChangeStatus(x) && rowMenuId === x.todoId">
-                <button
-                  type="button"
-                  class="fixed inset-0 z-40 cursor-default"
-                  :aria-label="t('todo.closeMenu')"
-                  @click.stop="closeRowMenu"
-                />
-                <div class="gosslan-menu frost absolute right-0 top-full z-50 mt-1" role="menu" aria-orientation="vertical">
-                  <button
-                    v-for="s in TODO_STATUSES"
-                    :key="s"
-                    type="button"
-                    role="menuitem"
-                    class="gosslan-menu-item"
-                    :class="s === x.status ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
-                    :disabled="s === x.status"
-                    :aria-current="s === x.status ? 'true' : undefined"
-                    @click.stop="setStatus(x, s); closeRowMenu()"
-                  >
-                    {{ statusText(s) }}
-                  </button>
-                </div>
-              </template>
+              <!-- 菜单不在这里：它 Teleport 到 body（被卡片 overflow-hidden 与滚动容器
+                   两层裁过，见脚本里 `openRowMenu` 上方的注释）-->
             </div>
             <!-- 快捷「完成」：待办清单最高频的动作，留在行内（飞书/钉钉同做法）。
                  完成后任务仍留在列表（只换分组），不会"点错就丢"。 -->
@@ -792,6 +860,19 @@ watch(
               @click.stop="completeTodo(x)"
             >
               <Check class="h-4 w-4" />
+            </button>
+            <!-- 快捷「归档」：以前只在任务详情里，列表上看到一条干完的想收掉
+                 得先点开详情（用户 2026-09-24：归档该在列表的操作里）。
+                 与「完成」按状态互斥（只有完成态能归档），所以两枚按钮不会同屏抢位。 -->
+            <button
+              v-if="canArchive(x)"
+              type="button"
+              class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+              :title="t('todo.archive')"
+              :aria-label="t('todo.archive')"
+              @click.stop="archiveTodo(x)"
+            >
+              <Archive class="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -807,6 +888,7 @@ watch(
     :archived="detailArchived"
     :can-change-status="detailItem ? canChangeStatus(detailItem) : false"
     :can-archive="detailItem ? canArchive(detailItem) : false"
+    :can-restore="detailItem ? canReopen(detailItem) : false"
     :can-edit-structure="detailItem ? canEditStructure(detailItem) : false"
     :can-edit-assignees="detailItem ? canEditAssigneesOf(detailItem) : false"
     :name-of="(id: string) => memberProfile(id).name"
@@ -1004,4 +1086,45 @@ watch(
     @close="draftImageIndex = null"
     @update:index="draftImageIndex = $event"
   />
+
+  <!-- 行内状态菜单：**Teleport 到 body + fixed 坐标**。
+       挂在行里时它被两层东西裁掉 —— 列表卡片的 `overflow-hidden`（画圆角用）与外面那层
+       `overflow-y-auto`（用户 2026-09-24：「换状态下拉被遮挡」）。z-[70] 与「已读成员」
+       弹层同档：压在弹窗之上、大图预览（z-[80]）之下。 -->
+  <Teleport to="body">
+    <button
+      v-if="rowMenuId && rowMenuPos"
+      type="button"
+      class="fixed inset-0 z-[65] cursor-default"
+      :aria-label="t('todo.closeMenu')"
+      @click.stop="closeRowMenu"
+    />
+    <div
+      v-if="rowMenuTodo && rowMenuPos"
+      ref="rowMenuEl"
+      class="gosslan-menu frost fixed z-[70]"
+      role="menu"
+      aria-orientation="vertical"
+      :style="{
+        left: `${rowMenuPos.left}px`,
+        top: rowMenuPos.top !== null ? `${rowMenuPos.top}px` : undefined,
+        bottom: rowMenuPos.bottom !== null ? `${rowMenuPos.bottom}px` : undefined,
+        width: `${rowMenuPos.width}px`,
+      }"
+    >
+      <button
+        v-for="s in TODO_STATUSES"
+        :key="s"
+        type="button"
+        role="menuitem"
+        class="gosslan-menu-item"
+        :class="s === rowMenuTodo.status ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
+        :disabled="s === rowMenuTodo.status"
+        :aria-current="s === rowMenuTodo.status ? 'true' : undefined"
+        @click.stop="setStatus(rowMenuTodo, s); closeRowMenu()"
+      >
+        {{ statusText(s) }}
+      </button>
+    </div>
+  </Teleport>
 </template>

@@ -26,6 +26,11 @@ const props = defineProps<{
    * 与 `canChangeStatus` 是两件事：改状态 / 恢复仍归创建者、群主、被指派人。
    */
   canArchive: boolean;
+  /**
+   * 能否**还原**（把「完成」退回「待办」，一并退出归档）。与归档同一条成员窄档
+   * （用户 2026-09-24 追加：还原也开放给全体群成员）。
+   */
+  canRestore: boolean;
   canEditStructure: boolean;
   /** 能否改指派人（创建者/群主/当前被指派人）—— 被指派人也能通过编辑改指派人。 */
   canEditAssignees: boolean;
@@ -219,8 +224,9 @@ watch(
         >
           <Archive class="h-3.5 w-3.5" />{{ t("todo.archive") }}
         </button>
+        <!-- 「恢复」不在这里 —— 它是把状态从「完成」退回「待办」，见下面的 canRestore。 -->
         <button
-          v-if="archived && canChangeStatus"
+          v-if="archived && canRestore"
           type="button"
           class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
           @click="emit('restore')"

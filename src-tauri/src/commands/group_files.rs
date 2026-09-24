@@ -149,8 +149,8 @@ fn latest_todo_def(
 /// | 改标题 / 删除（结构） | 创建者 **或** 群主 |
 /// | 其余（描述 / 图片 / 指派人 / 状态） | 创建者 **或** 群主 **或** 当前被指派人 |
 ///
-/// ⚠️ 「归档」不在这两档里 —— 它另有一条放宽的口子（[`may_change_todo`]），
-/// 因为"把干完的活收起来"是任何成员都在做的整理动作。
+/// ⚠️ 「归档」与「还原」不在这两档里 —— 它们各有一条只对**群成员**开放的窄档
+/// （[`may_change_todo`]），因为"把干完的活收起来 / 再拎回来"是每个成员都在做的整理动作。
 ///
 /// 只需这一个输入 ⇒ 参数里没有 `edits_assignees`（v4.23.1 删的）：放宽群主权限之后，
 /// "改指派人"与"只改状态"落在同一档，那个入参一次都没被读过，而表上还在单独讲它
@@ -196,53 +196,86 @@ fn same_images(
         })
 }
 
-/// 本次请求是否**只动归档位**：其余字段与库里最新定义逐字相同，且归档值确实翻转了。
+/// 一次改动请求里需要**与库里最新定义逐字段比对**的那些字段。
 ///
-/// 这条判据是 [`may_change_todo`] 那个口子唯一的入口条件，所以宁可写得死板：
-/// 「改标题顺带归档」「改状态顺带归档」都不算 —— 否则任何人拿一条归档请求
-/// 就能顺着这条口子改到不该改的字段。`Some(!def.archived)` 同时钉住了"确实是一次改动"
-/// （传了相同值 = 没改，不进这一档）。
-/// ⚠️ "值没翻转"也要判否 —— 库里 `archived` 已是目标值时这次请求什么都没改，
-/// 让它进放宽档等于给一次空请求开了口子。
-#[allow(clippy::too_many_arguments)] // 七个入参就是"和库里最新定义逐字段比"这件事的形状，抽结构体反而藏住比对
-fn archive_only_change(
-    def: &crate::protocol::TodoPayload,
+/// 为什么打包成一个入参：这两条窄档的判据都是"除了一位别的都不许动"，
+/// 比对的字段一共六个；按位置参数摊开就是九个入参（读调用点时看不出谁是谁），
+/// 抽成结构体之后"窄"这件事本身就是类型说的。
+struct TodoEdit<'a> {
     deleted: bool,
-    title: &str,
-    status: &str,
-    assignees: &[String],
-    description: &str,
-    images: &[crate::protocol::TodoImage],
+    title: &'a str,
+    status: &'a str,
+    assignees: &'a [String],
+    description: &'a str,
+    images: &'a [crate::protocol::TodoImage],
     archived: Option<bool>,
-) -> bool {
-    !deleted
-        && archived == Some(!def.archived)
-        && title == def.title
-        && status == def.status
-        && assignees == def.assignees
-        && description == def.description
-        && same_images(images, &def.images)
 }
 
-/// 命令层的总判权：[`may_update_todo`] 的两档，外加"归档"这一条放宽档。
+/// 本次请求是否**只动归档位**：其余字段与库里最新定义逐字相同，且归档值确实翻转了。
 ///
-/// 归档放宽给**全体群成员**（用户 2026-09-24：「群里所有人都可以归档」）——
-/// 一条已完成的 task 收不收拾得动，不该只有创建者/被指派人说了算。三个前提：
-/// ① 必须真的只动归档位（[`archive_only_change`]）；② 必须是本群成员（`is_member`，
-/// 归档是群内协作动作，不给外人）；③ 归档只在「完成」这一态成立，
+/// 这条判据是成员窄档的入口之一，所以宁可写得死板：「改标题顺带归档」「改状态顺带归档」
+/// 都不算 —— 否则任何人拿一条归档请求就能顺着这条口子改到不该改的字段。
+/// `Some(!def.archived)` 同时钉住了"确实是一次改动"（传了相同值 = 没改，不进这一档）。
+fn archive_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> bool {
+    !e.deleted
+        && e.archived == Some(!def.archived)
+        && e.title == def.title
+        && e.status == def.status
+        && e.assignees == def.assignees
+        && e.description == def.description
+        && same_images(e.images, &def.images)
+}
+
+/// 本次请求是否**只是"还原"**：库里状态是「完成」，请求把它退回「待办」，其余字段逐字相同。
+///
+/// 为什么"还原"要看状态而不是看归档位：`resolve_done_archive` 对**非完成态**一律写回
+/// `archived=false, done_at=None` ⇒ 客户端只要把状态退回待办，归档位与完成时间自动就被清了。
+/// 所以"还原"这件事在后端只有**一个**入参可变，正好能像归档那样判得死板。
+/// ⚠️ 方向是单向的（只允许 `done → todo`）：反方向「把待办直接改成完成」是真正的
+/// 完成动作，仍归创建者 / 群主 / 被指派人 —— 否则任何人都能替别人宣布干完了。
+fn reopen_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> bool {
+    !e.deleted
+        && def.status == "done"
+        && e.status == "todo"
+        && e.title == def.title
+        && e.assignees == def.assignees
+        && e.description == def.description
+        && same_images(e.images, &def.images)
+}
+
+/// 「成员窄档」：只服务**本群成员**的两条窄动作（归档 / 还原）。
+#[derive(Clone, Copy, Default)]
+struct MemberLane {
+    archive_only: bool,
+    reopen_only: bool,
+    is_member: bool,
+}
+
+impl MemberLane {
+    fn allows(self) -> bool {
+        self.is_member && (self.archive_only || self.reopen_only)
+    }
+}
+
+/// 命令层的总判权：[`may_update_todo`] 的两档，外加 [`MemberLane`] 那两条放宽档。
+///
+/// 归档与还原放宽给**全体群成员**（用户 2026-09-24：「群里所有人都可以归档」，
+/// 同日追加：「归档和被归档的数据还原，任何人都可以操作，其他权限不变」）。
+/// 三条前提：① 改动必须真的只落在那一位上（[`archive_only_change`] / [`reopen_only_change`]）；
+/// ② 必须是本群成员（归档/还原是群内协作动作，不给外人）；③ 归档只在「完成」态成立，
 /// 由调用点显式拒绝"归档一条未完成的任务"（见 `update_group_todo`）。
 ///
-/// ⚠️ **重新打开**（把状态从「完成」改回「待办」）不走这一档：那是状态改动，
-/// 仍归创建者 / 群主 / 被指派人。所以"任何人都能归档"不等于"任何人都能不归档"。
+/// **其余一切**（改标题 / 描述 / 图片 / 指派人 / 状态 / 删除）仍然只走前两档 ——
+/// 尤其"完成"这个动作没有放宽：成员能把干完的活收进归档、也能把它拎回来，
+/// 但不能替别人宣布干完了。
 fn may_change_todo(
     def: &crate::protocol::TodoPayload,
     actor: &str,
     group_creator: &str,
     edits_structure: bool,
-    archive_only: bool,
-    is_member: bool,
+    lane: MemberLane,
 ) -> bool {
-    may_update_todo(def, actor, group_creator, edits_structure) || (archive_only && is_member)
+    may_update_todo(def, actor, group_creator, edits_structure) || lane.allows()
 }
 
 /// 完成态与归档字段的**权威推导**（纯函数，便于单测）。
@@ -329,37 +362,39 @@ pub async fn update_group_todo(
     if !deleted && description.chars().count() > MAX_TODO_DESC_LEN {
         return Err(format!("任务描述不能超过 {MAX_TODO_DESC_LEN} 字"));
     }
-    // 判权：`may_update_todo` 的两档，外加"只动归档位 + 是本群成员"这一条放宽档
-    // （用户 2026-09-24：群里所有人都可以归档）。见 [`may_change_todo`]。
+    // 判权：`may_update_todo` 的两档，外加"只动归档位 / 只还原"这两条**成员窄档**
+    // （用户 2026-09-24 与同日追加）。见 [`may_change_todo`]。
     // `edits_assignees` 在这里**只用来挑错误文案**（同一档里三种角色各自的提示不同），
-    // 不参与判权 —— 判权只需要"是不是结构改动"这一个输入。
+    // 不参与判权 —— 判权只需要"是不是结构改动"与"这次改动落在哪条窄档"这两个输入。
     let edits_assignees = assignees != def.assignees;
     let edits_structure = deleted || title != def.title;
-    let archive_only = archive_only_change(
-        &def,
+    let edit = TodoEdit {
         deleted,
-        &title,
-        &status,
-        &assignees,
-        &description,
-        &images,
+        title: &title,
+        status: &status,
+        assignees: &assignees,
+        description: &description,
+        images: &images,
         archived,
-    );
-    let is_member = members.iter().any(|m| m == &s.device_id);
+    };
+    let lane = MemberLane {
+        archive_only: archive_only_change(&def, &edit),
+        reopen_only: reopen_only_change(&def, &edit),
+        is_member: members.iter().any(|m| m == &s.device_id),
+    };
     if !may_change_todo(
         &def,
         &s.device_id,
         &group_creator,
         edits_structure,
-        archive_only,
-        is_member,
+        lane,
     ) {
         return Err(if edits_assignees {
             "只有任务创建者、群主或被指派人可以修改指派人".to_string()
         } else if edits_structure {
             "只有任务创建者或群主可以修改任务".to_string()
-        } else if archive_only {
-            "只有群成员可以归档任务".to_string()
+        } else if lane.archive_only || lane.reopen_only {
+            "只有群成员可以归档或还原任务".to_string()
         } else {
             "只有创建者或被指派人可以修改任务状态".to_string()
         });

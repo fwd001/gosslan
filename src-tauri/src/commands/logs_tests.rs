@@ -808,15 +808,55 @@ mod tests {
         assert!(!super::may_update_todo(&def, "carol", "dave", true));
     }
 
-    /// 「只动归档位」这一档（用户 2026-09-24：群里所有人都可以归档）。
+    /// 「成员窄档」：归档 与 还原（用户 2026-09-24 与同日追加
+    /// 「归档和被归档的数据还原，任何人都可以操作，其他权限不变」）。
     ///
-    /// 判权本身只有一行（`两档 || (archive_only && 是成员)`），值得钉的是 **`archive_only`
-    /// 的入口**：这条口子一旦被"顺带改一点别的"挤进来，等于把鉴权前两档全部作废 ——
-    /// 「改标题 + 归档」「改状态 + 归档」「删除 + 归档」三种形状都必须判否，
-    /// 传了**相同**的归档值（没真的改）也必须判否。
+    /// 判权只有一行（`两档 || (是成员 && (只动归档位 || 只还原))`），值得钉的是
+    /// **两条窄档各自的入口**：口子一旦被"顺带改一点别的"挤进来，等于把前两档全部作废。
+    /// 所以「改标题 + 归档」「改状态 + 归档」「删除 + 归档」「值没真的翻转」都必须判否；
+    /// 还原还必须是**单向**的 `done → todo` —— 反过来就等于让任何成员替别人宣布"干完了"。
     #[test]
-    fn todo_archive_only_lane_is_narrow_and_member_only() {
-        use crate::protocol::TodoPayload;
+    fn todo_member_lanes_are_narrow_and_member_only() {
+        use crate::protocol::{TodoImage, TodoPayload};
+
+        /// 一次"改动请求"的 owned 版本（测试夹具）：从库里最新定义抄一份，再覆盖
+        /// 调用关心的那一两位。
+        ///
+        /// 为什么不用闭包产 `TodoEdit`：`TodoEdit` 是**借用**形状，闭包要么统一
+        /// 借用 `def.images`（那就永远测不到"图片被动过"），要么同时捕获 `def` 的数组
+        /// 与用例自己的数组（两个生命周期，借用检查器不让 —— 第一版就是这么撞墙的）。
+        /// owned 夹具 + 一个 `edit(&r)` 借出去，每个用例各持自己的请求，读起来也直白。
+        struct Req {
+            deleted: bool,
+            title: String,
+            status: String,
+            assignees: Vec<String>,
+            description: String,
+            images: Vec<TodoImage>,
+            archived: Option<bool>,
+        }
+        fn req_of(def: &TodoPayload) -> Req {
+            Req {
+                deleted: def.deleted,
+                title: def.title.clone(),
+                status: def.status.clone(),
+                assignees: def.assignees.clone(),
+                description: def.description.clone(),
+                images: def.images.clone(),
+                archived: None,
+            }
+        }
+        fn edit(r: &Req) -> super::TodoEdit<'_> {
+            super::TodoEdit {
+                deleted: r.deleted,
+                title: &r.title,
+                status: &r.status,
+                assignees: &r.assignees,
+                description: &r.description,
+                images: &r.images,
+                archived: r.archived,
+            }
+        }
         let def = TodoPayload {
             todo_id: "t".into(),
             title: "x".into(),
@@ -829,72 +869,125 @@ mod tests {
             archived: false,
             done_at: Some(1),
         };
-        // 只动归档位：请求 = 库里原值 + archived 翻转。
-        let archive = |title: &str, status: &str, deleted: bool, archived: Option<bool>| {
-            super::archive_only_change(
-                &def,
-                deleted,
-                title,
-                status,
-                &def.assignees,
-                &def.description,
-                &def.images,
-                archived,
-            )
+        // 成员窄档只对"什么别的都没动"的请求成立，所以每个否定用例都从**已满足**的那一位
+        // 出发再加一处改动 —— 否则测的是另一个判据，不是"夹带"这一条。
+        let archive_req = |def: &TodoPayload| {
+            let mut r = req_of(def);
+            r.archived = Some(!def.archived);
+            r
         };
-        assert!(archive("x", "done", false, Some(true)), "纯归档要放行");
+
+        // ---- 窄档一：只动归档位 ----
         assert!(
-            super::archive_only_change(
-                &TodoPayload { archived: true, ..def.clone() },
-                false,
-                "x",
-                "done",
-                &def.assignees,
-                &def.description,
-                &def.images,
-                Some(false),
-            ),
+            super::archive_only_change(&def, &edit(&archive_req(&def))),
+            "纯归档要放行"
+        );
+        let archived_def = TodoPayload { archived: true, ..def.clone() };
+        assert!(
+            super::archive_only_change(&archived_def, &edit(&archive_req(&archived_def))),
             "取消归档走同一条口子（库里 archived=true ⇒ 翻动就是 false）"
         );
+        let mut r = archive_req(&def);
+        r.title = "改过的标题".into();
         assert!(
-            !archive("改过的标题", "done", false, Some(true)),
+            !super::archive_only_change(&def, &edit(&r)),
             "夹带改标题不许走这条口子"
         );
+        let mut r = archive_req(&def);
+        r.status = "todo".into();
         assert!(
-            !archive("x", "todo", false, Some(true)),
-            "夹带改状态不许走这条口子"
+            !super::archive_only_change(&def, &edit(&r)),
+            "夹带改状态不许走这条口子（而且归档与还原本来就互斥）"
         );
+        let mut r = archive_req(&def);
+        r.deleted = true;
         assert!(
-            !archive("x", "done", true, Some(true)),
+            !super::archive_only_change(&def, &edit(&r)),
             "夹带删除不许走这条口子"
         );
+        let mut r = archive_req(&def);
+        r.images = vec![TodoImage {
+            id: "b".into(),
+            name: "b".into(),
+            size: 2,
+            sha256: "b".into(),
+            subtype: "image".into(),
+        }];
         assert!(
-            !archive("x", "done", false, None),
-            "没传 archived = 不是归档改动"
+            !super::archive_only_change(&def, &edit(&r)),
+            "夹带加图片不许走这条口子"
         );
+        let mut r = req_of(&def);
+        r.archived = Some(false);
         assert!(
-            !archive("x", "done", false, Some(false)),
-            "库里本来就没归档 ⇒ 翻动后相同 = 什么都没改"
-        );
-        // 判权：无关成员 carol 只有在这一档 + 是本群成员时才被放行。
-        let may = |archive_only: bool, is_member: bool| {
-            super::may_change_todo(&def, "carol", "owner", false, archive_only, is_member)
-        };
-        assert!(may(true, true), "群成员只动归档位 ⇒ 可以");
-        assert!(!may(true, false), "不是本群成员 ⇒ 同一条改动也不给");
-        assert!(!may(false, true), "普通成员改状态仍然不行（放宽只覆盖归档这一位）");
-        // 结构改动即使"看起来只动归档"也不放宽（archive_only 已排除 deleted/改标题，
-        // 这里再钉住判权那一行不会自己把它放进来）。
-        assert!(
-            !super::may_change_todo(&def, "carol", "owner", true, false, true),
-            "结构改动不会因为『反正是成员』被放行"
+            !super::archive_only_change(&def, &edit(&r)),
+            "库里本来就没归档 ⇒ 传相同值 = 什么都没改，空请求不进窄档"
         );
 
-        // 判权对了但**没接上命令**，这条放宽就等于没做（而且没有任何测试会红）：
-        // `update_group_todo` 必须用 `may_change_todo` 那个总入口，并把 `members`
-        // 真读出来算 `is_member`。只能钉接线（与本仓其余"判据有单测、接线有守卫"的
-        // 分工一致），而误接回 `may_update_todo` 的编译错误**挡不住** —— 那个函数还在，
-        // 签名也对得上，表现就是"所有人都归档不了"。
+        // ---- 窄档二：只把「完成」退回「待办」= 还原 ----
+        let mut r = req_of(&def);
+        r.status = "todo".into();
+        assert!(
+            super::reopen_only_change(&def, &edit(&r)),
+            "纯还原要放行（归档位与 done_at 由 resolve_done_archive 自动清）"
+        );
+        assert!(
+            !super::reopen_only_change(&def, &edit(&req_of(&def))),
+            "什么都没改的请求不是还原"
+        );
+        let mut r = req_of(&archived_def);
+        assert!(
+            !super::reopen_only_change(&archived_def, &edit(&r)),
+            "库里不是完成态 ⇒ 这不是还原"
+        );
+        let mut r = req_of(&def);
+        r.status = "doing".into();
+        assert!(
+            !super::reopen_only_change(&def, &edit(&r)),
+            "还原只认 done → todo 这一个方向（退回「进行中」也算改状态）"
+        );
+        let mut r = req_of(&def);
+        r.status = "todo".into();
+        r.description = "改过的描述".into();
+        assert!(
+            !super::reopen_only_change(&def, &edit(&r)),
+            "夹带改描述不许走还原这条口子"
+        );
+
+        // ---- 判权：两条窄档都只对本群成员生效，且不外溢 ----
+        let may = |archive_only: bool, reopen_only: bool, is_member: bool| {
+            super::may_change_todo(
+                &def,
+                "carol",
+                "owner",
+                false,
+                super::MemberLane { archive_only, reopen_only, is_member },
+            )
+        };
+        assert!(may(true, false, true), "群成员只动归档位 ⇒ 可以");
+        assert!(may(false, true, true), "群成员只还原 ⇒ 可以");
+        assert!(!may(true, false, false), "不是本群成员 ⇒ 归档也不给");
+        assert!(!may(false, true, false), "不是本群成员 ⇒ 还原也不给");
+        assert!(
+            !may(false, false, true),
+            "普通成员改状态 / 描述 / 指派人仍然不行（放宽只覆盖那两位）"
+        );
+        assert!(
+            !super::may_change_todo(
+                &def,
+                "carol",
+                "owner",
+                true,
+                super::MemberLane { archive_only: false, reopen_only: false, is_member: true }
+            ),
+            "结构改动（改标题 / 删除）不开给普通成员"
+        );
+
+        // 判权对了但**没接上命令**，这两条窄档就等于没做（而且没有任何测试会红）：
+        // `update_group_todo` 必须把两个判据都算进 `MemberLane` 再交给 `may_change_todo`。
+        // 只能钉接线（与本仓其余"判据有单测、接线有守卫"的分工一致）—— 误接回
+        // `may_update_todo` 不会有编译错误（函数还在、签名也对得上），
+        // 表现只是"所有人都归档不了 / 还原不了"。
         // 就地 flatten（`lib.rs` 测试模块里那个 `code_flat` 是它的私有函数，跨不到这里）：
         // 守卫搜的是"调用形状"，而 `cargo fmt` 会把多参调用拆成一行一个 ⇒ 不拆就搜不到。
         let cmd: String = include_str!("group_files.rs")
@@ -904,27 +997,37 @@ mod tests {
         let at = cmd
             .find("if!may_change_todo(")
             .expect("鉴权调用点找不到（被改写了？守卫要同步）");
-        // 窗口取到闭合的 `){` 为止，**不数固定字节**：数长度会随 fmt 漂移，
-        // 极端时还会切进多字节字符里 panic（`code_flat` 之后仍按 char 计）。
+        // 窗口取到闭合的 `){` 为止，**不数固定字节**：数长度会随 fmt 漂移。
         let win_end = cmd[at..]
             .find("){")
             .map(|k| at + k + 2)
             .expect("找不到鉴权 if 的闭合");
-        let window = &cmd[at..win_end];
         assert!(
-            window.contains("archive_only,") && window.contains("is_member,"),
-            "放宽档的两个入参必须传进总判权，否则这条口子永远不生效"
+            cmd[at..win_end].contains("lane,"),
+            "总判权必须收到 MemberLane，否则两条窄档都不生效"
         );
+        let lane_at = cmd
+            .find("letlane=MemberLane{")
+            .expect("MemberLane 构造点找不到");
+        // 同样按"闭合标记"切，不数固定字节数：flatten 之后的串里全是中文注释，
+        // 按字节切法会切进多字节字符中间直接 panic（这条实测踩过一次）。
+        let lane_end = cmd[lane_at..]
+            .find("};")
+            .map(|k| lane_at + k + 2)
+            .expect("找不到 MemberLane 字面量的闭合");
+        let lane_win = &cmd[lane_at..lane_end];
+        for shape in [
+            "archive_only:archive_only_change(&def,&edit)",
+            "reopen_only:reopen_only_change(&def,&edit)",
+            "is_member:members.iter().any(|m|m==&s.device_id)",
+        ] {
+            assert!(lane_win.contains(shape), "窄档构造里缺 {shape}");
+        }
         assert!(
             !cmd.contains("if!may_update_todo("),
-            "命令层不得再直接调两档判据 —— 那样归档放宽会被绕开"
-        );
-        assert!(
-            cmd.contains("letis_member=members.iter()"),
-            "is_member 必须来自群的 members，不能是常数或别的表"
+            "命令层不得再直接调两档判据 —— 那样两条窄档会被绕开"
         );
     }
-
     /// 完成 / 归档字段的权威推导（用户 2026-09-17：「完成以后手动归档」）。
     ///
     /// 为什么必须钉死：这两条都**只体现在行为里**，看代码很容易漏 ——
