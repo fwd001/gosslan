@@ -5,6 +5,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
+import { popupLeft, popupPlacement, popupWidth } from "@/utils/popupPosition";
 import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
@@ -624,10 +625,9 @@ function positionReactionPicker() {
   if (!btn) return;
   const r = btn.getBoundingClientRect();
   const pad = 8;
-  const w = Math.min(360, window.innerWidth - pad * 2);
-  const left = Math.max(pad, Math.min(r.left, window.innerWidth - pad - w));
-  // 入口在视口下半 ⇒ 往上弹；上半 ⇒ 往下弹（避免被顶出屏幕）
-  const placement: "above" | "below" = r.top > window.innerHeight / 2 ? "above" : "below";
+  const w = popupWidth(360, window.innerWidth, pad);
+  const left = popupLeft({ left: r.left, right: r.right }, "start", w, window.innerWidth, pad);
+  const placement = popupPlacement(r.top, window.innerHeight);
   const top = placement === "above" ? r.top - pad : r.bottom + pad;
   reactionPickerPos.value = { left, top, placement };
 }
@@ -645,6 +645,17 @@ function closeReactionPicker() {
   reactionPickerOpen.value = false;
   reactionPickerPos.value = null;
 }
+/**
+ * 被别的浮层抢走展开权 ⇒ 收起自己。
+ *
+ * 这是 `useExclusivePopup` 协议的**另一半**（上面右键菜单那条 watch 一直在，
+ * `popupRegistry.ts` 顶部写的就是这个 bug 的原型）。表情面板原先只 claim 不看被抢，
+ * 于是"点 A 的表情、再点 B 的表情" → B 拿到展开权、A 的 isActive 变 false 却没人读它
+ * ⇒ 两块面板同时挂着（用户 2026-09-24 真机）。同一种缺陷在同一个文件里只修了一半。
+ */
+watch(reactionPopup.isActive, (mine) => {
+  if (!mine && reactionPickerOpen.value) closeReactionPicker();
+});
 function onDocClickForReactionPicker() {
   closeReactionPicker();
 }

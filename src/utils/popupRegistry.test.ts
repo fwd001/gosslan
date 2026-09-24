@@ -83,3 +83,34 @@ test("浮层互斥：跨类型互斥（消息菜单 ↔ 好友菜单 ↔ 已读�
   reset();
   assert.equal(activePopupKey(), null);
 });
+
+// ---------------- 使用侧协议（源码扫描） ----------------
+
+test("浮层协议：每个 `const X = useExclusivePopup(...)` 都必须 watch(X.isActive)", async () => {
+  // 协议有两半：claim/release 是"我要展开"，watch(isActive) 是"我被抢了 ⇒ 收起自己"。
+  // 只写前半的表现很具体：B 抢到展开权后 A 的 isActive 变 false，但没有任何人读它
+  // ⇒ 两块面板同时挂在屏幕上（2026-09-24 真机：连续点两条消息的表情入口，两个面板并存 ——
+  // 当时全仓 8 个浮层里只有表情面板漏了这条 watch）。
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const files: string[] = [];
+  const walk = (d: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".vue")) files.push(p);
+    }
+  };
+  walk(join(import.meta.dirname, "..", "components"));
+  const missing: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    for (const m of src.matchAll(/const (\w+) = useExclusivePopup\(/g)) {
+      const v = m[1];
+      if (!new RegExp(`watch\\(\\s*${v}\\.isActive`).test(src)) {
+        missing.push(`${f.slice(f.indexOf("components"))} → ${v}`);
+      }
+    }
+  }
+  assert.deepEqual(missing, [], "这些浮层只 claim 不监听被抢 ⇒ 同类缺陷会原地复发");
+});

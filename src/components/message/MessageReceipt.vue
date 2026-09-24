@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { popupPlacement, popupWidth } from "@/utils/popupPosition";
 import type { SendState } from "@/composables/useMessageDisplay";
 import { Check, CheckCheck, Loader2, X } from "lucide-vue-next";
 
@@ -24,9 +25,6 @@ const readerIds = computed(() => props.readerIds ?? []);
 const visibleReaders = computed(() => readerIds.value.slice(0, 3));
 const extraReaders = computed(() => readerIds.value.slice(3));
 
-/** 弹层向上还是向下：消息靠近消息区顶部时改为向下弹出，避免被裁剪。 */
-const openUp = ref(true);
-
 /**
  * 「已读成员」弹层：接入全局浮层互斥（同一时刻只允许一个弹层展开）。
  * 点另一条消息的已读头像会自动收起上一条，虚拟列表回收行时也不会残留；
@@ -39,29 +37,77 @@ const {
   release: releaseReaders,
 } = useExclusivePopup(`readers:${props.msgKey ?? ""}`);
 
-function toggleReaders(e: MouseEvent) {
+/**
+ * 弹层摆位：**Teleport 到 body + fixed 坐标**（2026-09-24 真机：长文字消息旁"已读列表
+ * 靠右被裁掉一半"）。
+ *
+ * 原来它挂在消息行里（`absolute right-0`），而消息列表是 `overflow-y: auto` 的滚动容器
+ * ⇒ 横向一并被裁。表情面板早就为同一个原因改成 Teleport + fixed（见
+ * `MessageItem.positionReactionPicker` 与 `utils/popupPosition` 的注释），这一处当时漏了。
+ *
+ * 用 `right` + `top|bottom` 而不是算 `left`：右缘对齐入口右缘、面板向左展开，
+ * 结构上就**不可能**顶出屏幕右边；纵向用视口边距定位 ⇒ 不需要估面板高度
+ * （列表可滚动，真实高度本来拿不到，拿估算值判方向会在临界值来回翻）。
+ */
+const readersPos = ref<{ right: number; top: number | null; bottom: number | null; width: number } | null>(
+  null,
+);
+/** 入口按钮：滚动/改窗口时拿它重算坐标，也用来判定"是不是面板自己的滚动"。 */
+const readersBtnRef = ref<HTMLElement | null>(null);
+const readersPanelRef = ref<HTMLElement | null>(null);
+
+function positionReaders(btn: HTMLElement) {
+  const r = btn.getBoundingClientRect();
+  const pad = 8;
+  const above = popupPlacement(r.top, window.innerHeight) === "above";
+  const width = popupWidth(208, window.innerWidth, pad);
+  readersPos.value = {
+    right: Math.max(pad, window.innerWidth - r.right),
+    top: above ? null : r.bottom + pad,
+    bottom: above ? window.innerHeight - r.top + pad : null,
+    width,
+  };
+}
+
+/** 打开/关闭时都要清坐标：`v-if` 关掉后 Teleport 的那层要跟着消失。 */
+function closeReaders() {
+  releaseReaders();
+}
+
+function toggleReaders() {
   if (readersOpen.value) {
     closeReaders();
     return;
   }
-  const btn = e.currentTarget as HTMLElement | null;
-  const scroller = btn?.closest(".overflow-y-auto") as HTMLElement | null;
-  if (btn && scroller) {
-    const br = btn.getBoundingClientRect();
-    const cr = scroller.getBoundingClientRect();
-    // 弹层最大高 240px + 间距余量；上方放不下且下方更宽敞时向下弹
-    openUp.value = br.top - cr.top > 264 || cr.bottom - br.bottom < 264;
-  } else {
-    openUp.value = true;
-  }
+  const btn = readersBtnRef.value;
+  if (btn) positionReaders(btn);
   claimReaders();
 }
 
-function closeReaders() {
-  releaseReaders();
+/** 滚动 / 改窗口大小 ⇒ 收起（固定坐标的浮层会飘）。忽略面板自己的内部滚动。 */
+function onScrollOrResize(e: Event) {
+  if (!readersOpen.value) return;
+  const panel = readersPanelRef.value;
+  if (e.type === "scroll" && panel && e.target instanceof Node && panel.contains(e.target)) return;
+  closeReaders();
 }
-onMounted(() => document.addEventListener("click", closeReaders));
-onUnmounted(() => document.removeEventListener("click", closeReaders));
+function onDocClick() {
+  closeReaders();
+}
+onMounted(() => {
+  document.addEventListener("click", onDocClick);
+  window.addEventListener("scroll", onScrollOrResize, true);
+  window.addEventListener("resize", onScrollOrResize);
+});
+onUnmounted(() => {
+  document.removeEventListener("click", onDocClick);
+  window.removeEventListener("scroll", onScrollOrResize, true);
+  window.removeEventListener("resize", onScrollOrResize);
+});
+// 虚拟列表回收这一行、或别的浮层抢走展开权时，不能让 Teleport 出去的那层留在屏幕上。
+watch(readersOpen, (open) => {
+  if (!open) readersPos.value = null;
+});
 
 function readerName(id: string) {
   return chat.nicknameOf(id);
@@ -78,6 +124,7 @@ function readerAvatar(id: string): string | null {
   <div v-if="isGroup" class="relative shrink-0 pb-1.5">
     <button
       v-if="readerIds.length > 0"
+      ref="readersBtnRef"
       class="tap-safe -space-x-1 flex items-center rounded-full p-0.5 transition hover:bg-[var(--gosslan-hover)]"
       :title="t('msg.readBy', { n: readerIds.length })"
       :aria-label="t('msg.readByView', { n: readerIds.length })"
@@ -99,12 +146,21 @@ function readerAvatar(id: string): string | null {
         +{{ extraReaders.length }}
       </span>
     </button>
-    <div
-      v-if="readersOpen && readerIds.length > 0"
-      class="frost absolute right-0 z-20 max-h-60 min-w-36 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1.5 text-xs shadow-lg"
-      :class="openUp ? 'bottom-7' : 'top-7'"
-      @click.stop
-    >
+    <!-- Teleport 到 body + fixed 坐标：挂在消息行里会被列表的 `overflow-y: auto`
+         连横向一起裁掉（真机：「已读列表靠右被裁一半」）。坐标见 `positionReaders`。 -->
+    <Teleport to="body">
+      <div
+        v-if="readersOpen && readerIds.length > 0 && readersPos"
+        ref="readersPanelRef"
+        class="frost fixed z-[70] max-h-60 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1.5 text-xs shadow-lg"
+        :style="{
+          right: `${readersPos.right}px`,
+          top: readersPos.top != null ? `${readersPos.top}px` : undefined,
+          bottom: readersPos.bottom != null ? `${readersPos.bottom}px` : undefined,
+          width: `${readersPos.width}px`,
+        }"
+        @click.stop
+      >
       <div class="px-2 py-1 text-[var(--gosslan-text-2)]">{{ t("msg.readMembers", { n: readerIds.length }) }}</div>
       <div
         v-for="id in readerIds"
@@ -120,7 +176,8 @@ function readerAvatar(id: string): string | null {
         </span>
         <span class="max-w-28 truncate" :title="readerName(id)">{{ readerName(id) }}</span>
       </div>
-    </div>
+      </div>
+    </Teleport>
   </div>
   <!-- 单聊：回执图标固定在气泡左侧（视觉上贴近对话人头像方向）。
        ♿ 回执是**纯图标**状态（转圈/空心圆/绿勾/红叉），读屏下原本什么也读不到 ——

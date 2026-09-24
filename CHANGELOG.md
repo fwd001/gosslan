@@ -10,6 +10,41 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-24 真机复核 · 批次 o —— 群聊两个浮层缺陷)
+
+先按"根因优先"走完调查，再动手；两处里**只有一处**有可确认的机制，另一处按红线记成待证据，
+不照猜测改布局。
+
+- **① 表情面板能同时开两个 —— 根因确定并已修**。全局浮层互斥协议有两半：
+  `claim()` 是"我要展开"，`watch(popup.isActive)` 是"我被抢了 ⇒ 收起自己"。
+  `MessageItem` 里右键菜单的 `ctxMenuPopup` 一直带着那条 watch（`popupRegistry.ts` 顶部写的
+  就是这个 bug 的原型），而表情面板的 `reactionPopup` **只 claim 不看被抢** ⇒ B 拿到展开权后
+  A 的 `isActive` 变 false 却没人读，A 的面板原地挂着。全仓 8 个浮层里只有这一个漏了 watch，
+  用户复现路径（点 A 的表情、再点 B 的）正好命中它。补上那条 watch 即修，不动任何语义。
+  另加一条源码守卫 `浮层协议：每个 const X = useExclusivePopup(...) 都必须 watch(X.isActive)`
+  （放在 `popupRegistry.test.ts`，它是这套协议的家）—— 变异回测里删掉那条 watch，守卫精确点名
+  `components/MessageItem.vue → reactionPopup`。
+- **"点面板外面不关"这条没有改成**（如实记录）：`onDocClickForReactionPicker` 挂在 document 上，
+  入口与面板各自 `@click.stop`，点别处的 click 确实会冒泡到 document ⇒ 静态读码找不到失效机制。
+  真正的现象由 ① 解释得通——**两块面板**时关掉其中一块看起来像"关不掉"。若补上 watch 后真机
+  仍然收不掉，需要一次带录屏/日志的复现再查，不预先改事件模型。
+- **② 群"已读成员"弹层被屏幕边缘裁掉 —— 机制确认并已修**。它原先挂在消息行里
+  （`absolute right-0`），而消息列表是 `overflow-y: auto` 的滚动容器 ⇒ 横向一并被裁。
+  表情面板为同一个原因早就改成 Teleport + fixed（`MessageItem:1112` 的注释写着这条），
+  已读弹层当时漏了 —— 同一个坑两处各修一次。
+  → 现在也 Teleport 到 body，坐标按**入口右缘对齐、面板向左展开**算 ⇒ 结构上不可能顶出右缘；
+  纵向用视口边距（`top` 或 `bottom`）定位，不再需要估面板高度（列表可滚动，真实高度拿不到，
+  拿估算值判方向会在临界值来回翻）。滚动/改窗口即收起，且忽略面板自己的内部滚动
+  （表情面板那条"一拉滚动条弹框就消失"的教训直接复用）。
+- 摆位判据收成新原语 `src/utils/popupPosition.ts`（`popupWidth` / `popupLeft` / `popupPlacement`），
+  表情面板与已读弹层共用一份；3 条真值表单测钉住"入口贴右缘不许顶出屏幕""极窄视口不为负"
+  "中线以下才往上弹"。前端 574 → **579**、vue-tsc 0、build 0。
+- **仍待真机证据的一条**：移动端"群消息的已读**不见了**"（不是被裁，是整排头像不显示）。
+  静态读码没找到平台闸门或数据断点 —— 渲染条件是 `mine && !isSelfMsg` + `readerIds.length > 0`，
+  而 `readerIds` 来自 `chat.groupReaderIds(groupId, ts)`。要定它需要一次设备侧取证
+  （同一条消息在桌面端有没有已读排、以及 `group-read` 事件到没到），照猜测改渲染条件只会
+  把另一种情况弄坏，故本轮不动，记为已知未解项。
+
 ## [4.29.18] - 2026-09-24
 
 ### Fixed (2026-09-24 真机复核 · 批次 n —— 群同步：密钥必须先于消息，且每次建链都重发)
