@@ -762,9 +762,11 @@ mod tests {
         );
     }
 
-    /// 任务改动的鉴权判据 —— 只有两档（口径来自用户 2026-09-17 与 2026-09-20）：
+    /// 任务改动的鉴权判据 —— 两档 + 「只动归档位」的放宽档（口径来自用户 2026-09-17、
+    /// 2026-09-20 与 2026-09-24）：
     /// · 结构（改标题 / 删除）：创建者 **或** 群主
-    /// · 其余（描述 / 图片 / 指派人 / 状态 / 归档）：创建者 **或** 群主 **或** 当前被指派人
+    /// · 其余（描述 / 图片 / 指派人 / 状态）：创建者 **或** 群主 **或** 当前被指派人
+    /// · 归档：任何**群成员**都可以（用户 2026-09-24「群里所有人都可以归档」）
     /// 外加一条自洽检查：无关成员两档都不行（放宽群主权限不该顺带放进第三人）。
     #[test]
     fn todo_update_permission_matrix() {
@@ -804,6 +806,123 @@ mod tests {
         // 自洽检查：actor 恰好等于群主时才算群主，别人冒充群主无效
         assert!(super::may_update_todo(&def, "dave", "dave", true));
         assert!(!super::may_update_todo(&def, "carol", "dave", true));
+    }
+
+    /// 「只动归档位」这一档（用户 2026-09-24：群里所有人都可以归档）。
+    ///
+    /// 判权本身只有一行（`两档 || (archive_only && 是成员)`），值得钉的是 **`archive_only`
+    /// 的入口**：这条口子一旦被"顺带改一点别的"挤进来，等于把鉴权前两档全部作废 ——
+    /// 「改标题 + 归档」「改状态 + 归档」「删除 + 归档」三种形状都必须判否，
+    /// 传了**相同**的归档值（没真的改）也必须判否。
+    #[test]
+    fn todo_archive_only_lane_is_narrow_and_member_only() {
+        use crate::protocol::TodoPayload;
+        let def = TodoPayload {
+            todo_id: "t".into(),
+            title: "x".into(),
+            assignees: vec!["alice".into()],
+            status: "done".into(),
+            creator: "alice".into(),
+            deleted: false,
+            description: "d".into(),
+            images: vec![],
+            archived: false,
+            done_at: Some(1),
+        };
+        // 只动归档位：请求 = 库里原值 + archived 翻转。
+        let archive = |title: &str, status: &str, deleted: bool, archived: Option<bool>| {
+            super::archive_only_change(
+                &def,
+                deleted,
+                title,
+                status,
+                &def.assignees,
+                &def.description,
+                &def.images,
+                archived,
+            )
+        };
+        assert!(archive("x", "done", false, Some(true)), "纯归档要放行");
+        assert!(
+            super::archive_only_change(
+                &TodoPayload { archived: true, ..def.clone() },
+                false,
+                "x",
+                "done",
+                &def.assignees,
+                &def.description,
+                &def.images,
+                Some(false),
+            ),
+            "取消归档走同一条口子（库里 archived=true ⇒ 翻动就是 false）"
+        );
+        assert!(
+            !archive("改过的标题", "done", false, Some(true)),
+            "夹带改标题不许走这条口子"
+        );
+        assert!(
+            !archive("x", "todo", false, Some(true)),
+            "夹带改状态不许走这条口子"
+        );
+        assert!(
+            !archive("x", "done", true, Some(true)),
+            "夹带删除不许走这条口子"
+        );
+        assert!(
+            !archive("x", "done", false, None),
+            "没传 archived = 不是归档改动"
+        );
+        assert!(
+            !archive("x", "done", false, Some(false)),
+            "库里本来就没归档 ⇒ 翻动后相同 = 什么都没改"
+        );
+        // 判权：无关成员 carol 只有在这一档 + 是本群成员时才被放行。
+        let may = |archive_only: bool, is_member: bool| {
+            super::may_change_todo(&def, "carol", "owner", false, archive_only, is_member)
+        };
+        assert!(may(true, true), "群成员只动归档位 ⇒ 可以");
+        assert!(!may(true, false), "不是本群成员 ⇒ 同一条改动也不给");
+        assert!(!may(false, true), "普通成员改状态仍然不行（放宽只覆盖归档这一位）");
+        // 结构改动即使"看起来只动归档"也不放宽（archive_only 已排除 deleted/改标题，
+        // 这里再钉住判权那一行不会自己把它放进来）。
+        assert!(
+            !super::may_change_todo(&def, "carol", "owner", true, false, true),
+            "结构改动不会因为『反正是成员』被放行"
+        );
+
+        // 判权对了但**没接上命令**，这条放宽就等于没做（而且没有任何测试会红）：
+        // `update_group_todo` 必须用 `may_change_todo` 那个总入口，并把 `members`
+        // 真读出来算 `is_member`。只能钉接线（与本仓其余"判据有单测、接线有守卫"的
+        // 分工一致），而误接回 `may_update_todo` 的编译错误**挡不住** —— 那个函数还在，
+        // 签名也对得上，表现就是"所有人都归档不了"。
+        // 就地 flatten（`lib.rs` 测试模块里那个 `code_flat` 是它的私有函数，跨不到这里）：
+        // 守卫搜的是"调用形状"，而 `cargo fmt` 会把多参调用拆成一行一个 ⇒ 不拆就搜不到。
+        let cmd: String = include_str!("group_files.rs")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let at = cmd
+            .find("if!may_change_todo(")
+            .expect("鉴权调用点找不到（被改写了？守卫要同步）");
+        // 窗口取到闭合的 `){` 为止，**不数固定字节**：数长度会随 fmt 漂移，
+        // 极端时还会切进多字节字符里 panic（`code_flat` 之后仍按 char 计）。
+        let win_end = cmd[at..]
+            .find("){")
+            .map(|k| at + k + 2)
+            .expect("找不到鉴权 if 的闭合");
+        let window = &cmd[at..win_end];
+        assert!(
+            window.contains("archive_only,") && window.contains("is_member,"),
+            "放宽档的两个入参必须传进总判权，否则这条口子永远不生效"
+        );
+        assert!(
+            !cmd.contains("if!may_update_todo("),
+            "命令层不得再直接调两档判据 —— 那样归档放宽会被绕开"
+        );
+        assert!(
+            cmd.contains("letis_member=members.iter()"),
+            "is_member 必须来自群的 members，不能是常数或别的表"
+        );
     }
 
     /// 完成 / 归档字段的权威推导（用户 2026-09-17：「完成以后手动归档」）。

@@ -9,13 +9,14 @@
  * 这样行高统一（不再"行高参差、满屏 pill"）。
  *
  * **归档**：不再自动归档（完成只记 `doneAt`）——「已归档」是筛选里的一个胶囊（带计数），
- * 完成后可手动归档，没手动归档的满 7 天由 `isEffectivelyArchived` 自动归档。
+ * 完成后可手动归档（**全体群成员都可以**，用户 2026-09-24 #37），
+ * 没手动归档的满 7 天由 `isEffectivelyArchived` 自动归档。
  *
  * **数据来源**：`foldTodos(该群会话的已加载消息)`。任务与群公告同属 `Card` kind ——
  * 不进消息时间线，只在这里折叠展示。⚠️ 只统计**已加载的消息页**（既有架构口径）。
  *
- * **权限**：与后端 `commands::may_update_todo` 一致（`canUpdateTodo` / `canEditAssignees`
- * 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
+ * **权限**：与后端 `commands::may_change_todo` 一致（`canUpdateTodo` / `canEditAssignees` /
+ * `canArchiveTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
@@ -31,10 +32,12 @@ import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
   TODO_STATUSES,
+  TODO_STATUS_BAR,
   TODO_STATUS_CLASS,
   TODO_STATUS_DEFAULT,
   TODO_STATUS_LABEL_KEY,
   TODO_STATUS_PILL,
+  canArchiveTodo,
   canEditAssignees,
   canUpdateTodo,
   foldTodos,
@@ -57,6 +60,8 @@ const { memberProfile, myId } = useMemberProfile();
 const convId = computed(() => (props.groupId ? `group:${props.groupId}` : ""));
 const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? null);
 const groupCreator = computed(() => group.value?.creator ?? "");
+/** 本群成员名单（归档那一档的判据：只给本群成员，见 `canArchiveTodo`）。 */
+const groupMembers = computed<string[]>(() => group.value?.members ?? []);
 
 /** 折叠出全部任务（按创建版本从新到旧），再拆成「活动」与「已归档」。 */
 const todos = computed(() => foldTodos(chat.messages[convId.value] ?? []));
@@ -162,6 +167,13 @@ function canEditStructure(x: TodoItem): boolean {
 }
 function canEditAssigneesOf(x: TodoItem): boolean {
   return canEditAssignees(x, myId.value, groupCreator.value);
+}
+/**
+ * 「只动归档位」这一档对**全体群成员**开放（用户 2026-09-24 #37），
+ * 但只在「完成」这一态给按钮（后端对未完成任务的归档请求是明确拒绝，不是静默丢弃）。
+ */
+function canArchive(x: TodoItem): boolean {
+  return x.status === "done" && canArchiveTodo(x, myId.value, groupCreator.value, groupMembers.value);
 }
 
 // ---------------- 任务详情（点行打开） ----------------
@@ -608,13 +620,19 @@ watch(
         <div
           v-for="x in archivedTodos"
           :key="x.todoId"
-          class="flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
+          class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
         >
+          <!-- 状态色条（用户 2026-09-24 #37）：与活动列表同一套语言，色值走 `TODO_STATUS_BAR` 唯一映射 -->
+          <span
+            class="absolute inset-y-0 left-0 w-0.5"
+            :class="TODO_STATUS_BAR[x.status]"
+            aria-hidden="true"
+          ></span>
           <span class="w-5 shrink-0 text-center text-[11px] tabular-nums text-[var(--gosslan-text-2)]">
             {{ ordinals.get(x.todoId) }}
           </span>
           <button type="button" class="min-w-0 flex-1 text-left" @click="openDetail(x)">
-            <div class="truncate text-[13px] font-medium text-[var(--gosslan-text-2)] line-through" :title="x.title">
+            <div class="truncate text-[13px] font-medium text-[var(--gosslan-text-2)]" :title="x.title">
               {{ x.title }}
             </div>
             <div class="mt-0.5 flex flex-wrap items-center gap-x-1 text-[11px] text-[var(--gosslan-text-2)]">
@@ -633,8 +651,14 @@ watch(
       <!-- 活动任务：按状态分组（空组不占位） -->
       <template v-else>
         <div v-for="g in grouped" :key="g.status">
-          <!-- 分组小标题：带底色的条（分组之间一眼分得开，也给白底卡片一个"分节"观感） -->
-          <div class="flex items-center gap-1.5 bg-[var(--gosslan-bg)] px-3 py-1.5">
+          <!-- 分组小标题：带底色的条（分组之间一眼分得开，也给白底卡片一个"分节"观感）。
+               左缘与下面每一行画同一道状态色条 ⇒ 整节从上到下是同一个颜色，扫一眼就分组。 -->
+          <div class="relative flex items-center gap-1.5 bg-[var(--gosslan-bg)] px-3 py-1.5">
+            <span
+              class="absolute inset-y-0 left-0 w-0.5"
+              :class="TODO_STATUS_BAR[g.status]"
+              aria-hidden="true"
+            ></span>
             <component
               :is="STATUS_ICON[g.status]"
               class="h-4 w-4 shrink-0"
@@ -649,15 +673,24 @@ watch(
           <div
             v-for="x in g.items"
             :key="x.todoId"
-            class="flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
+            class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
           >
+            <!-- 状态色条：整行左缘一道 2px（判据与颜色都在 `TODO_STATUS_BAR` 一处，
+                 与分组头、状态胶囊同族）。底色会盖掉 hover/选中态、四色同屏也花，所以只做一条。 -->
+            <span
+              class="absolute inset-y-0 left-0 w-0.5"
+              :class="TODO_STATUS_BAR[x.status]"
+              aria-hidden="true"
+            ></span>
             <span class="w-5 shrink-0 text-center text-[11px] tabular-nums text-[var(--gosslan-text-2)]">
               {{ ordinals.get(x.todoId) }}
             </span>
             <button type="button" class="min-w-0 flex-1 text-left" @click="openDetail(x)">
+              <!-- 完成态**不再划删除线**（用户 2026-09-24 #37：「完成的不要加横线，像删除一样」）：
+                   完成是这条任务的结论，划掉会让它读成"作废"。状态由左缘色条 + 右侧胶囊 +
+                   分组头三处一起说清楚，不靠划线。 -->
               <div
-                class="truncate text-[13px] font-medium"
-                :class="x.status === 'done' ? 'text-[var(--gosslan-text-2)] line-through' : 'text-[var(--gosslan-text)]'"
+                class="truncate text-[13px] font-medium text-[var(--gosslan-text)]"
                 :title="x.title"
               >
                 {{ x.title }}
@@ -742,6 +775,7 @@ watch(
     :item="detailItem"
     :archived="detailArchived"
     :can-change-status="detailItem ? canChangeStatus(detailItem) : false"
+    :can-archive="detailItem ? canArchive(detailItem) : false"
     :can-edit-structure="detailItem ? canEditStructure(detailItem) : false"
     :can-edit-assignees="detailItem ? canEditAssigneesOf(detailItem) : false"
     :name-of="(id: string) => memberProfile(id).name"

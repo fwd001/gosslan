@@ -147,7 +147,10 @@ fn latest_todo_def(
 /// | 改动 | 允许谁 |
 /// |---|---|
 /// | 改标题 / 删除（结构） | 创建者 **或** 群主 |
-/// | 其余（描述 / 图片 / 指派人 / 状态 / 归档） | 创建者 **或** 群主 **或** 当前被指派人 |
+/// | 其余（描述 / 图片 / 指派人 / 状态） | 创建者 **或** 群主 **或** 当前被指派人 |
+///
+/// ⚠️ 「归档」不在这两档里 —— 它另有一条放宽的口子（[`may_change_todo`]），
+/// 因为"把干完的活收起来"是任何成员都在做的整理动作。
 ///
 /// 只需这一个输入 ⇒ 参数里没有 `edits_assignees`（v4.23.1 删的）：放宽群主权限之后，
 /// "改指派人"与"只改状态"落在同一档，那个入参一次都没被读过，而表上还在单独讲它
@@ -176,6 +179,70 @@ fn may_update_todo(
         return false;
     }
     def.assignees.iter().any(|a| a == actor)
+}
+
+/// 两条图片元数据列表是否**逐字段相同**（`TodoImage` 没有 `PartialEq`，在此就地比）。
+fn same_images(
+    a: &[crate::protocol::TodoImage],
+    b: &[crate::protocol::TodoImage],
+) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.id == y.id
+                && x.name == y.name
+                && x.size == y.size
+                && x.sha256 == y.sha256
+                && x.subtype == y.subtype
+        })
+}
+
+/// 本次请求是否**只动归档位**：其余字段与库里最新定义逐字相同，且归档值确实翻转了。
+///
+/// 这条判据是 [`may_change_todo`] 那个口子唯一的入口条件，所以宁可写得死板：
+/// 「改标题顺带归档」「改状态顺带归档」都不算 —— 否则任何人拿一条归档请求
+/// 就能顺着这条口子改到不该改的字段。`Some(!def.archived)` 同时钉住了"确实是一次改动"
+/// （传了相同值 = 没改，不进这一档）。
+/// ⚠️ "值没翻转"也要判否 —— 库里 `archived` 已是目标值时这次请求什么都没改，
+/// 让它进放宽档等于给一次空请求开了口子。
+#[allow(clippy::too_many_arguments)] // 七个入参就是"和库里最新定义逐字段比"这件事的形状，抽结构体反而藏住比对
+fn archive_only_change(
+    def: &crate::protocol::TodoPayload,
+    deleted: bool,
+    title: &str,
+    status: &str,
+    assignees: &[String],
+    description: &str,
+    images: &[crate::protocol::TodoImage],
+    archived: Option<bool>,
+) -> bool {
+    !deleted
+        && archived == Some(!def.archived)
+        && title == def.title
+        && status == def.status
+        && assignees == def.assignees
+        && description == def.description
+        && same_images(images, &def.images)
+}
+
+/// 命令层的总判权：[`may_update_todo`] 的两档，外加"归档"这一条放宽档。
+///
+/// 归档放宽给**全体群成员**（用户 2026-09-24：「群里所有人都可以归档」）——
+/// 一条已完成的 task 收不收拾得动，不该只有创建者/被指派人说了算。三个前提：
+/// ① 必须真的只动归档位（[`archive_only_change`]）；② 必须是本群成员（`is_member`，
+/// 归档是群内协作动作，不给外人）；③ 归档只在「完成」这一态成立，
+/// 由调用点显式拒绝"归档一条未完成的任务"（见 `update_group_todo`）。
+///
+/// ⚠️ **重新打开**（把状态从「完成」改回「待办」）不走这一档：那是状态改动，
+/// 仍归创建者 / 群主 / 被指派人。所以"任何人都能归档"不等于"任何人都能不归档"。
+fn may_change_todo(
+    def: &crate::protocol::TodoPayload,
+    actor: &str,
+    group_creator: &str,
+    edits_structure: bool,
+    archive_only: bool,
+    is_member: bool,
+) -> bool {
+    may_update_todo(def, actor, group_creator, edits_structure) || (archive_only && is_member)
 }
 
 /// 完成态与归档字段的**权威推导**（纯函数，便于单测）。
@@ -242,14 +309,12 @@ pub async fn update_group_todo(
         }
         check_todo_assignees(s, &group_id, &assignees)?;
     }
-    let (def, group_creator) = {
+    let (def, group_creator, members) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let def = latest_todo_def(&dbc, &format!("group:{group_id}"), &todo_id)
             .ok_or_else(|| "任务不存在".to_string())?;
-        let creator = db::get_group(&dbc, &group_id)
-            .map(|g| g.creator)
-            .ok_or_else(|| "群不存在".to_string())?;
-        (def, creator)
+        let g = db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?;
+        (def, g.creator, g.members)
     };
     // `None` ⇒ 保留库里原值（不让"只改状态"的请求把描述/图片清空）；
     // `Some(x)` ⇒ 用传来的（显式传空串即表示清空）。
@@ -264,21 +329,47 @@ pub async fn update_group_todo(
     if !deleted && description.chars().count() > MAX_TODO_DESC_LEN {
         return Err(format!("任务描述不能超过 {MAX_TODO_DESC_LEN} 字"));
     }
-    // 两档判权（见 `may_update_todo` 上方那张表）：
-    //   · 结构（改标题 / 删除）：仅创建者或群主
-    //   · 其余（描述 / 图片 / 指派人 / 状态 / 归档）：创建者 / 群主 / 当前被指派人
+    // 判权：`may_update_todo` 的两档，外加"只动归档位 + 是本群成员"这一条放宽档
+    // （用户 2026-09-24：群里所有人都可以归档）。见 [`may_change_todo`]。
     // `edits_assignees` 在这里**只用来挑错误文案**（同一档里三种角色各自的提示不同），
     // 不参与判权 —— 判权只需要"是不是结构改动"这一个输入。
     let edits_assignees = assignees != def.assignees;
     let edits_structure = deleted || title != def.title;
-    if !may_update_todo(&def, &s.device_id, &group_creator, edits_structure) {
+    let archive_only = archive_only_change(
+        &def,
+        deleted,
+        &title,
+        &status,
+        &assignees,
+        &description,
+        &images,
+        archived,
+    );
+    let is_member = members.iter().any(|m| m == &s.device_id);
+    if !may_change_todo(
+        &def,
+        &s.device_id,
+        &group_creator,
+        edits_structure,
+        archive_only,
+        is_member,
+    ) {
         return Err(if edits_assignees {
             "只有任务创建者、群主或被指派人可以修改指派人".to_string()
         } else if edits_structure {
             "只有任务创建者或群主可以修改任务".to_string()
+        } else if archive_only {
+            "只有群成员可以归档任务".to_string()
         } else {
             "只有创建者或被指派人可以修改任务状态".to_string()
         });
+    }
+    // 「归档」只在完成态成立（`resolve_done_archive` 对非完成态一律写回 archived=false）。
+    // 原来这里是**静默丢弃**：调用方拿到一条成功的记录、任务却没进归档，正是
+    // "显示成功但没真成功"。放宽到全体成员之后更容易撞上（成员没资格改状态、
+    // 却可能挑一条没完成的任务点归档），所以改成明确拒绝。
+    if archived == Some(true) && status != "done" {
+        return Err("只有完成的任务可以归档".to_string());
     }
     let (archived, done_at) = resolve_done_archive(
         status == "done",

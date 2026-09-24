@@ -2,10 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   TODO_AUTO_ARCHIVE_DAYS,
+  TODO_STATUS_BAR,
   TODO_STATUS_CLASS,
   TODO_STATUS_DEFAULT,
   TODO_STATUS_PILL,
   TODO_STATUSES,
+  canArchiveTodo,
   canEditAssignees,
   canUpdateTodo,
   foldTodos,
@@ -135,6 +137,7 @@ test("状态配色口径统一：延期用 warning，不得再出现 danger", ()
   const maps = [
     ["TODO_STATUS_CLASS", TODO_STATUS_CLASS],
     ["TODO_STATUS_PILL", TODO_STATUS_PILL],
+    ["TODO_STATUS_BAR", TODO_STATUS_BAR],
   ] as const;
   for (const [name, map] of maps) {
     assert.ok(map.overdue.includes("warning"), `${name}.overdue 必须是 warning 档，实际 ${map.overdue}`);
@@ -144,6 +147,17 @@ test("状态配色口径统一：延期用 warning，不得再出现 danger", ()
       [...TODO_STATUSES].sort(),
       `${name} 的状态集合必须与 TODO_STATUSES 一致`,
     );
+  }
+});
+
+/**
+ * 列表色条必须**只引用 token**（用户 2026-09-24 #37 的配色要求"美观合适"，
+ * 而这条是它能同时成立在深色模式下的唯一方式）：写死 `#xxxxxx` 的话，
+ * 浅色下好看的那支色在深色下会糊进面板底。
+ */
+test("状态色条只用 token，不写死色值", () => {
+  for (const [status, cls] of Object.entries(TODO_STATUS_BAR)) {
+    assert.match(cls, /^bg-\[var\(--gosslan-[a-z0-9-]+\)\]$/, `${status} 的色条必须是单个 token 背景`);
   }
 });
 
@@ -166,6 +180,30 @@ test("授权矩阵：创建者与群主全权 / 被指派人不能改结构 / �
   // 无关成员：什么都不行
   assert.equal(canUpdateTodo(item, "dave", "owner", false), false);
   assert.equal(canUpdateTodo(item, "dave", "owner", true), false);
+});
+
+/**
+ * 归档那一档（用户 2026-09-24 #37：「群里所有人都可以归档」）——
+ * **必须与 Rust `commands::may_change_todo` 的用例表逐项一致**（`todo_archive_only_lane_...`）。
+ *
+ * 界面按这份决定"给不给按钮"，真正的拦截在命令层；两边都收口意味着：
+ * 无关成员 **只**多得到归档这一位，改状态 / 改标题 / 删除仍然一律被拒
+ * —— 所以这里同时断言"放宽没有外溢"。
+ */
+test("归档档：全体群成员可归档，但改状态/改结构仍然不行", () => {
+  const item = { creator: "alice", assignees: ["bob"] };
+  const members = ["alice", "bob", "carol", "dave"];
+  // 无关成员 dave：归档可以（就是这条放宽），改状态/改结构仍然不行。
+  assert.ok(canArchiveTodo(item, "dave", "owner", members));
+  assert.equal(canUpdateTodo(item, "dave", "owner", false), false, "放宽不得外溢到改状态");
+  assert.equal(canUpdateTodo(item, "dave", "owner", true), false, "放宽不得外溢到改结构");
+  // 不是本群成员的第三人：连归档都不给。
+  assert.equal(canArchiveTodo(item, "erin", "owner", members), false, "归档是群内动作，不给外人");
+  // 群主与被指派人本来就在前两档里（放宽与它们不冲突）。
+  assert.ok(canArchiveTodo(item, "owner", "owner", members));
+  assert.ok(canArchiveTodo(item, "bob", "owner", members));
+  // device_id 还没拿到的那一帧（启动早期）不得误判成"是成员"。
+  assert.equal(canArchiveTodo(item, "", "owner", members), false, "空 actor 不算群成员");
 });
 
 /**

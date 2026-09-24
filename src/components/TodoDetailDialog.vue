@@ -21,6 +21,11 @@ const props = defineProps<{
   /** 该任务当前是否实际处于归档态（显式归档 或 完成满 7 天）。 */
   archived: boolean;
   canChangeStatus: boolean;
+  /**
+   * 能否**只动归档位**（群成员皆可，用户 2026-09-24 #37）。
+   * 与 `canChangeStatus` 是两件事：改状态 / 恢复仍归创建者、群主、被指派人。
+   */
+  canArchive: boolean;
   canEditStructure: boolean;
   /** 能否改指派人（创建者/群主/当前被指派人）—— 被指派人也能通过编辑改指派人。 */
   canEditAssignees: boolean;
@@ -202,9 +207,12 @@ watch(
         >
           <Check class="mr-1 inline h-3.5 w-3.5" />{{ t("todo.complete") }}
         </button>
-        <!-- 完成之后**手动**归档（不再自动归档） -->
+        <!-- 完成之后**手动**归档（不再自动归档）。
+             归档那一档由 `canArchive` 决定 —— 它对**全体群成员**开放（用户 2026-09-24 #37），
+             比"改状态"宽；但只在「完成」态给按钮（后端拒绝归档未完成的任务）。
+             「恢复」仍然要 `canChangeStatus`：它是把状态改回待办，不是"取消归档"。 -->
         <button
-          v-else-if="canChangeStatus && !archived"
+          v-else-if="canArchive && item.status === 'done' && !archived"
           type="button"
           class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
           @click="emit('archive')"

@@ -10,8 +10,9 @@
  * 为什么单值用 LWW 就够：一条任务"当前处于什么阶段"本来就是单值语义，并发改动时后写者胜
  * 是期望行为（看板类工具都这样）；真正会丢更新的模型是"每人一格的完成标记"，而这里不做它。
  *
- * 授权口径与后端 `commands::may_update_todo` **必须一致**（后端是权威、这里是显示用的镜像）：
- * 改状态 = 创建者或被指派人；改标题/指派人/删除 = 创建者或群主。两边都有各自的用例表。
+ * 授权口径与后端 `commands::may_change_todo` **必须一致**（后端是权威、这里是显示用的镜像）：
+ * 改状态 = 创建者或被指派人；改标题/指派人/删除 = 创建者或群主；
+ * **只动归档位** = 任何群成员（用户 2026-09-24）。两边都有各自的用例表。
  */
 import type { MessageRecord } from "@/types";
 
@@ -63,6 +64,22 @@ export const TODO_STATUS_PILL: Record<TodoStatus, string> = {
   doing: "bg-[color-mix(in_srgb,var(--gosslan-primary)_14%,transparent)] text-[var(--gosslan-accent-ink)]",
   overdue: "bg-[var(--gosslan-warning-soft)] text-[var(--gosslan-warning-ink)]",
   done: "bg-[var(--gosslan-success-soft)] text-[var(--gosslan-success-ink)]",
+};
+
+/**
+ * 状态 → 列表行的**左侧色条**（用户 2026-09-24 #37：不同状态的任务列表要看得出颜色）。
+ *
+ * 为什么是一条 2px 色条而不是"整行换底色"：底色要么太淡（等于没有）、要么把
+ * `--gosslan-hover` 与选中态盖掉，而四种底色同屏会花。色条与状态胶囊同一族色
+ * （`primary` / `warning` / `success`；「待办」是"还没开始"⇒ 中性灰，与离线点同一个 token），
+ * 扫一眼就能分组，又不跟行内的其他颜色抢。
+ * ⚠️ 只准用 token、别写死色值：深色模式下这四个 token 另有取值。
+ */
+export const TODO_STATUS_BAR: Record<TodoStatus, string> = {
+  todo: "bg-[var(--gosslan-status-offline)]",
+  doing: "bg-[var(--gosslan-primary)]",
+  overdue: "bg-[var(--gosslan-warning)]",
+  done: "bg-[var(--gosslan-success)]",
 };
 
 export function isTodoStatus(v: unknown): v is TodoStatus {
@@ -207,6 +224,7 @@ export function isEffectivelyArchived(
 
 /**
  * 我能不能改这条任务（**显示用**的镜像，后端 `commands::may_update_todo` 才是权威）。
+ * 归档另有一档（比这里宽），见 [`canArchiveTodo`]。
  *
  * | 改动 | 允许谁 |
  * |---|---|
@@ -243,6 +261,28 @@ export function canEditAssignees(
   if (item.creator === actor) return true;
   if (groupCreator === actor) return true;
   return item.assignees.includes(actor);
+}
+
+/**
+ * 我能不能**归档 / 取消归档**这条任务（用户 2026-09-24 #37：「群里所有人都可以归档」）。
+ *
+ * 与后端 `commands::may_change_todo` 的第三档一致：**只动归档位**的改动对全体群成员开放。
+ * 三条边界与后端一一对应，缺一条就等于在前端复刻一个越权口子：
+ * - 只有归档这一位被改（改标题 / 改状态 / 删除仍走 `canUpdateTodo` 那两档）；
+ * - 调用方必须传**本群成员名单**（`Group.members`），不给外人；
+ * - 归档只在「完成」态成立（后端会明确拒绝，UI 也只在 `status === "done"` 时给按钮）。
+ *
+ * ⚠️ 「重新打开」（状态从完成改回待办）**不算这一档** —— 那是状态改动，
+ * 仍归创建者 / 群主 / 被指派人，所以"谁都能归档"不等于"谁都能取消归档"。
+ */
+export function canArchiveTodo(
+  item: Pick<TodoItem, "creator" | "assignees">,
+  actor: string,
+  groupCreator: string,
+  memberIds: readonly string[],
+): boolean {
+  if (canUpdateTodo(item, actor, groupCreator, false)) return true;
+  return !!actor && memberIds.includes(actor);
 }
 
 /**
