@@ -585,13 +585,18 @@ pub fn open_group_todos_window(
     let bg = aux_window_background(&state);
     // 系统标题带上群名（每群一个窗口，任务栏里得能分清）；文档加载后由前端按同样口径接管。
     let group_name = {
-        // try_lock：同 aux_window_background，主线程安全降级（拿不到锁就用空群名当兜底）。
-        let Ok(dbc) = state.db.try_lock() else {
-            return Err("数据库暂时被占用，请稍后再试".to_string());
-        };
-        db::get_group(&dbc, &group_id)
-            .map(|g| g.name)
-            .unwrap_or_default()
+        // ⚠️ 拿不到锁只能**降级成"没有群名"**，绝不能中止开窗（用户 2026-09-24：
+        // 「点群里的查看任务，弹窗弹出很慢，我还以为没点了，点了好几下一会才弹出来」）：
+        // 这一步原先在锁被占住时直接把整个开窗判成失败 —— 而群名只用于系统标题栏那一点
+        // 装饰（文档加载后前端会按同样口径再取一次并接管），为它牺牲一次用户动作，
+        // 表现就是"DB 一忙这扇窗就打不开"，而前端只把它吞成一句 toast。
+        // 判据由 `cosmetic_title_read_cannot_abort_the_window` 钉住（正向形状，不复述这里的文案）。
+        match state.db.try_lock() {
+            Ok(dbc) => db::get_group(&dbc, &group_id)
+                .map(|g| g.name)
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        }
     };
     let title = aux_window_title(&state, "群任务", "Group Tasks", Some(&group_name));
     let build_app = app.clone();

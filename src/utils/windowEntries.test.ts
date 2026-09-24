@@ -111,6 +111,40 @@ test("每个窗口只带自己的骨架（设置/日志窗口绝不能出现聊�
   }
 });
 
+/**
+ * 骨架**撤除**必须覆盖每一个窗口。
+ *
+ * 真踩过的形状（用户 2026-09-24 报"预览窗口只有骨架、没有内容"）：`dismissBoot` 原先写死一份
+ * id 清单 `["boot","boot-logs","boot-settings","boot-todos"]`，加第 5 个窗口时没人回去改它
+ * ⇒ `boot-preview` 永远撤不掉。那块骨架是 `position:fixed; inset:0; z-index:9999` + 不透明底色，
+ * 于是 Vue 挂载成功、图片也取到了，**整页被一张看不见的骨架盖着**。上面那条"每个窗口只带自己
+ * 的骨架"查的是 HTML 侧，看不见这件事 —— 它当时是绿的（假绿）。
+ *
+ * 判据刻意不做"文本里有没有某个 id"那种比对（把选择器改成 `#boot, #boot-settings` 一样能骗过，
+ * 而 preview 的骨架又没人撤了）。现在两边共用一个**骨架元素自带的类**：HTML 里那一行写
+ * `class="boot-skeleton"`，撤除方按类查 —— 新增窗口时"写骨架"和"打标"是同一次编辑，漏不掉。
+ * 两头各钉一次，缺一头即红。
+ */
+test("骨架撤除必须覆盖每个窗口（靠元素自带的类，不靠别处的清单）", () => {  for (const w of WINDOWS) {
+    const html = read(w.html);
+    // 属性顺序不敏感：id 在前在后都算，只要那个骨架根确实带着类。
+    const tagged = new RegExp(
+      `<div [^>]*id="${w.skeleton}"[^>]*class="[^"]*\\bboot-skeleton\\b[^"]*"` +
+        `|<div [^>]*class="[^"]*\\bboot-skeleton\\b[^"]*"[^>]*id="${w.skeleton}"`,
+    ).test(html);
+    assert.ok(
+      tagged,
+      `${w.html} 的骨架根 #${w.skeleton} 必须带 class="boot-skeleton" —— ` +
+        `否则 dismissBoot 撤不掉它，这个窗口会永远停在骨架屏（内容全被那张 fixed 遮罩盖住）`,
+    );
+  }
+  const boot = codeOnly(read("src/boot/boot.ts"));
+  assert.ok(
+    boot.includes('querySelectorAll<HTMLElement>(".boot-skeleton")'),
+    'dismissBoot 必须按 `.boot-skeleton` 类撤除：回到逐个 id 的清单就一定会漏掉新增的那个窗口',
+  );
+});
+
 test("每个窗口都声明自己的标题（按语言切换，不再由 Rust 维护第二份文案）", () => {
   for (const w of WINDOWS) {
     const html = read(w.html);
@@ -160,6 +194,39 @@ test("辅助窗口的入口不得把聊天那一套拉进来（这是「设置�
   assert.match(read("src/App.vue"), /ResponsiveLayout/, "主窗口根组件要渲染聊天布局");
   // 群任务窗口入口确实用了共享辅助窗口挂载路径（防"入口被清空也通过"）
   assert.match(read("src/entries/todos.ts"), /mountAuxWindow\(/, "群任务窗口入口要走 mountAuxWindow");
+});
+
+/**
+ * 群任务窗口的"挂载前那道门"里只准有 `app.init()`。
+ *
+ * 为什么钉这一条（用户 2026-09-24：「点群里的查看任务，弹窗弹出很慢，我还以为没点了，
+ * 点了好几下一会才弹出来」）：入口原先在 `beforeMount` 里串了 `loadGroupTodos`
+ * （四次刷新 + 一次消息拉取）和 `watchGroupTodos`，而骨架屏是**挂载之后**才撤的 ⇒
+ * 整段时间窗口里什么都没有，只剩一块灰底；再叠加启动器的单飞/防抖把连点吃掉，
+ * 就是"点了没反应"。改成先挂载、数据后台补之后，这个形状很容易被人"顺手改回去"
+ * （看起来像是"更严谨的初始化顺序"），所以钉在这里。
+ */
+test("群任务窗口的挂载前门里只准有 app.init()（取数必须排在挂载之后）", () => {
+  const code = codeOnly(read("src/entries/todos.ts"));
+  const mountAt = code.indexOf("mountAuxWindow(");
+  assert.ok(mountAt >= 0, "找不到挂载调用，这条判据会空转");
+  // 分界取"挂载调用之后的第一个 `.then(`"：那才是"已经挂载完"的时刻。
+  // 只按 `mountAuxWindow(` 的位置判是**没用的** —— 门里的代码在文字上也在这之后。
+  const afterMount = code.indexOf(".then(", mountAt);
+  assert.ok(
+    afterMount > mountAt,
+    "挂载之后必须还有 `.then(`：入口改成别的形态时请连同这条判据一起改，" +
+      "但**别**把取数塞回挂载前那道门",
+  );
+  for (const call of ["loadGroupTodos(groupId)", "watchGroupTodos(groupId)"]) {
+    const at = code.indexOf(call);
+    assert.ok(at >= 0, `入口必须仍然调用 ${call}，否则窗口里永远停在「正在加载」`);
+    assert.ok(
+      at > afterMount,
+      `${call} 必须排在挂载**之后** —— 塞进挂载前那道门，窗口就会在骨架屏上多等一整轮 DB 读取 ` +
+        "（用户 2026-09-24 报的「弹不出来」就是这个形状）",
+    );
+  }
 });
 
 test("常驻的设置窗口必须在重新获得焦点时刷新环境数据（否则关了再开会看到旧快照）", () => {

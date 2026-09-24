@@ -3,6 +3,7 @@ import {
   ArrowUpCircle,
   FolderOpen,
   ListChecks,
+  Loader2,
   Monitor,
   Pencil,
   Smartphone,
@@ -155,12 +156,16 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
       <button
         v-if="isGroup"
         class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        :class="tasksOpening ? 'opacity-60' : ''"
         :aria-busy="tasksOpening"
         :title="t('chat.header.tasks')" :aria-label="t('chat.header.tasks')"
         @click="emit('open-tasks')"
       >
-        <ListChecks class="h-[18px] w-[18px]" />
+        <!-- 正在开独立窗口时**换成转圈**，不是把图标调暗：`opacity-60` 在一个 18px 的图标上
+             几乎看不出来，而用户等的是"这一扇窗什么时候出来"（用户 2026-09-24：
+             "弹窗弹出很慢，我还以为没点了，点了好几下一会才弹出来"）。
+             连点会被启动器的单飞/防抖吃掉，所以"看起来没反应"必须靠这里补上。 -->
+        <Loader2 v-if="tasksOpening" class="h-[18px] w-[18px] animate-spin" />
+        <ListChecks v-else class="h-[18px] w-[18px]" />
       </button>
       <button
         v-if="isGroup && canRename"

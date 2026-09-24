@@ -13,10 +13,15 @@ import {
   foldTodos,
   isEffectivelyArchived,
 } from "@/utils/todos";
-import { ArrowRightLeft, Crown, ListChecks, LogOut, Plus, UserMinus, X } from "lucide-vue-next";
+import { ArrowRightLeft, Crown, ListChecks, Loader2, LogOut, Plus, UserMinus, X } from "lucide-vue-next";
 import type { Friend } from "@/types";
 
-const props = defineProps<{ open: boolean; groupId: string | null }>();
+const props = defineProps<{
+  open: boolean;
+  groupId: string | null;
+  /** 群任务窗口正在打开（桌面端）：按钮要给出"这一下点到了"的反馈。 */
+  tasksOpening?: boolean;
+}>();
 const emit = defineEmits<{ (e: "close"): void; (e: "open-tasks"): void }>();
 
 const app = useAppStore();
@@ -315,9 +320,13 @@ async function confirmAction() {
             </span>
           </div>
           <button
-            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] px-2 py-1 text-[12px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+            class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2 py-1 text-[12px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+            :aria-busy="tasksOpening || undefined"
             @click="emit('open-tasks')"
           >
+            <!-- 与聊天头部那颗按钮同一份反馈：桌面端这一下是去开**独立窗口**，
+                 窗口建出来之前必须让人看见"点到了、在开"（见 `ChatHeader.vue` 的说明）。 -->
+            <Loader2 v-if="tasksOpening" class="h-3.5 w-3.5 animate-spin" />
             {{ todoSummary.total ? t("todo.viewAll") : t("todo.create") }}
           </button>
         </div>

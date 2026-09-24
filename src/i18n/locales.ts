@@ -505,6 +505,8 @@ export const zhCN: MessageDict = {
   "todo.title": "群任务",
   "todo.create": "新建任务",
   "todo.empty": "暂无任务",
+  "todo.loading": "正在加载任务…",
+  "todo.loadFail": "任务读取失败，关掉窗口再打开可重试",
   "todo.doneCount": "{n}/{total} 已完成",
   // 四态由用户 2026-09-16 定：手动选、不做截止时间（「延期」就是人标出来的状态）
   "todo.status.todo": "待办",
@@ -1466,6 +1468,8 @@ export const enUS: MessageDict = {
   "todo.title": "Tasks",
   "todo.create": "New task",
   "todo.empty": "No tasks yet",
+  "todo.loading": "Loading tasks…",
+  "todo.loadFail": "Couldn't load tasks — close this window and open it again to retry",
   "todo.doneCount": "{n}/{total} done",
   "todo.status.todo": "To do",
   "todo.status.doing": "In progress",

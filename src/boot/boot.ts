@@ -93,11 +93,14 @@ let bootDismissed = false;
 export function dismissBoot() {
   if (bootDismissed) return;
   bootDismissed = true;
-  // 每个窗口只会有其中一个骨架（各自的 HTML 只写自己的那一份），
-  // 这里统一处理，缺失的自然跳过。
-  for (const id of ["boot", "boot-logs", "boot-settings", "boot-todos"]) {
-    const el = document.getElementById(id);
-    if (!el) continue;
+  // ⚠️ **刻意不枚举 id**。这里原先写着 `["boot","boot-logs","boot-settings","boot-todos"]`，
+  // 于是新增的第 5 个窗口（`boot-preview`）永远撤不掉：那块骨架是
+  // `position:fixed; inset:0; z-index:9999` + 不透明底色（见 `skeleton.css`），
+  // 结果是 Vue 挂载成功、图片也取到了，**整页被一张看不见的骨架盖着** ——
+  // 用户报的"预览窗口只有骨架、没有内容"就是这条，而且与平台无关（macOS 同样）。
+  // 现在由骨架元素自己带 `boot-skeleton` 类（各 HTML 里就写在它身上），
+  // `windowEntries` 的守卫钉"每个窗口的骨架根必须有这个类" ⇒ 加窗口不可能再漏这一步。
+  for (const el of document.querySelectorAll<HTMLElement>(".boot-skeleton")) {
     el.classList.add("boot-hide");
     window.setTimeout(() => el.remove(), 220);
   }

@@ -974,6 +974,26 @@ export const useChatStore = defineStore("chat", () => {
   // 或 `openConversation()`（会发群已读回执、写与主窗口共享的 localStorage）。
 
   /**
+   * 「这个群的任务首屏取完了没有」—— 看板该转圈还是该显示内容的唯一依据。
+   *
+   * 为什么必须有（用户 2026-09-24：「点查看任务，弹窗弹出很慢，还以为没点上」）：群任务窗口
+   * 原先把 `loadGroupTodos` 排在**挂载之前**，那段时间整扇窗是一块骨架灰屏（看不出在加载什么），
+   * 而连点又被启动器的单飞/防抖吃掉 ⇒ 表现就是"点了没反应，过一会才蹦出来"。
+   * 改成先挂载、数据后台取之后，没有这个标记的话首帧会理直气壮地显示「暂无任务」——
+   * 那不是快了一点，那是**假空态**，比慢更糟。
+   *
+   * ⚠️ 语义是"这一次取数**结束了**"（成功或失败），不是"成功过"：失败也置位，否则
+   * 一次 DB 出错就把窗口永久留在转圈上，而那是一个连点都救不回来的状态。
+   * 失败由调用方 toast 出来（`src/entries/todos.ts`），本标记只负责"别一直转"。
+   */
+  const groupTodosSettled = ref<Record<string, true>>({});
+
+  /** 该群的任务首屏是否已取完（未开始与进行中都返回 false ⇒ 看板显示加载态）。 */
+  function todosLoadedOnce(groupId: string): boolean {
+    return groupTodosSettled.value[groupId] === true;
+  }
+
+  /**
    * 群任务窗口的读路径：加载**一个群**的消息 + 解析成员名要用的数据。
    *
    * ⚠️ 不变量：调用方（群任务窗口）的 store 实例**只服务这一个会话**，所以这里
@@ -981,11 +1001,15 @@ export const useChatStore = defineStore("chat", () => {
    */
   async function loadGroupTodos(groupId: string): Promise<void> {
     const convId = `group:${groupId}`;
-    // 成员名/群名/头像来自 groups + friends + peers；conversations 让窗口内的
-    // `enqueueMessage`（创建/更新任务后本地合并）不必再补一次拉取。
-    await Promise.all([refreshGroups(), refreshFriends(), refreshPeers(), refreshConversations()]);
-    activeConv.value = convId;
-    await loadMessages(convId);
+    try {
+      // 成员名/群名/头像来自 groups + friends + peers；conversations 让窗口内的
+      // `enqueueMessage`（创建/更新任务后本地合并）不必再补一次拉取。
+      await Promise.all([refreshGroups(), refreshFriends(), refreshPeers(), refreshConversations()]);
+      activeConv.value = convId;
+      await loadMessages(convId);
+    } finally {
+      groupTodosSettled.value[groupId] = true;
+    }
   }
 
   let groupTodosUnlisten: (() => void) | null = null;
@@ -2060,6 +2084,7 @@ export const useChatStore = defineStore("chat", () => {
     loadMessages,
     loadMoreMessages,
     loadGroupTodos,
+    todosLoadedOnce,
     watchGroupTodos,
     send,
     sendFriendRequest,

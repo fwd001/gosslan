@@ -51,7 +51,7 @@ import { api } from "@/api";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { popupLeft, popupPlacement, popupWidth } from "@/utils/popupPosition";
 import { t } from "@/i18n";
-import { Archive, Check, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, ImagePlus, Plus, RotateCcw, X } from "lucide-vue-next";
+import { Archive, Check, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, ImagePlus, Loader2, Plus, RotateCcw, X } from "lucide-vue-next";
 
 const props = defineProps<{
   groupId: string | null;
@@ -220,6 +220,15 @@ const ordinals = computed(() => {
 /** 当前视图的条数（空态分流用）。 */
 const shownCount = computed(() =>
   filter.value === "archived" ? archivedTodos.value.length : filteredActive.value.length,
+);
+
+/**
+ * 独立窗口形态的首屏取数还没结束 ⇒ 显示"正在加载"，**不许**显示空态。
+ * 判据只有窗口形态这一半：主窗口里那份看板的数据来自已经加载好的会话消息，
+ * 那里没有"首次拉取"这件事，套上同一个条件就变成永远转圈。
+ */
+const loadingFirstScreen = computed(
+  () => !!props.groupId && !!props.standalone && !chat.todosLoadedOnce(props.groupId),
 );
 
 /** 分组小标题的图标（与状态语汇一致：待办=空心圈、进行中=实心点、延期=时钟、完成=对勾圈）。 */
@@ -736,8 +745,19 @@ watch(
 
     <!-- 内容区：弹窗形态由 BaseModal 自己滚；窗口形态撑满剩余空间 -->
     <div class="overflow-y-auto pr-0.5 pt-2" :class="standalone ? 'min-h-0 flex-1' : ''">
+      <!-- 首屏还在路上：**必须**是"正在加载"而不是空态。窗口现在先挂载、数据后台取
+           （用户 2026-09-24 报"弹窗弹出很慢"），没有这一档的话首帧会理直气壮地显示
+           「暂无任务」—— 那是假空态，比慢更糟。只在窗口形态判：主窗口里那份看板的数据
+           走的是已加载的会话消息，没有"首次拉取"这件事。 -->
+      <div
+        v-if="loadingFirstScreen"
+        class="flex items-center justify-center gap-2 py-8 text-sm text-[var(--gosslan-text-2)]"
+      >
+        <Loader2 class="h-4 w-4 animate-spin" />
+        {{ t("todo.loading") }}
+      </div>
       <!-- 空态（按当前筛选分流） -->
-      <div v-if="shownCount === 0 && !draft" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
+      <div v-else-if="shownCount === 0 && !draft" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ filter === "archived" ? t("todo.archivedEmpty") : filter === "all" ? t("todo.empty") : t("todo.filterEmpty") }}
       </div>
 

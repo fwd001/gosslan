@@ -1315,6 +1315,7 @@ function onLoadMore() {
       :group-id="activeGroupId"
       @close="membersOpen = false"
       @open-tasks="membersOpen = false; openTasks()"
+      :tasks-opening="tasksOpening"
     />
 
     <!-- 发布/修改群公告已并入「成员管理」弹窗（用户 2026-09-17：公告与群名/成员一起管）；

@@ -15,7 +15,7 @@
     <!-- 主窗口首屏骨架：结构照抄真实布局（caption 38 + rail 64 + list 250 + 聊天区 + 输入条），
          让用户点开的一瞬间就认得这是 Gosslan 的哪一屏。
          由 src/entries/main.ts 在真实数据就绪后加 .boot-hide 淡出并移除；初始化异常时也有兜底定时器。 -->
-    <div id="boot" aria-hidden="true">
+    <div id="boot" class="boot-skeleton" aria-hidden="true">
       <div class="boot-win">
         <div class="boot-cap">
           <span class="boot-brand">

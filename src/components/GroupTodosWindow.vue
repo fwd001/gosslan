@@ -32,11 +32,40 @@ const group = computed(() => (groupId ? (chat.groups.find((g) => g.id === groupI
  * 载荷只带 groupId，取回来的 id 也按本窗口自己的群去要 ⇒ 别群的任务串不过来。
  */
 const boardRef = ref<InstanceType<typeof GroupTasksBoard> | null>(null);
+/**
+ * 拿到的目标先存这里，等首屏数据落地再投。
+ *
+ * 为什么必须等（2026-09-24 随"先挂载"改造一起改）：窗口现在挂载时数据还没到，
+ * 而 `focusTodo(id)` 是在**当前列表**里找那条任务 —— 列表为空时它按设计"什么都不做"
+ * （任务被删 / 折叠结果里没有它 ⇒ 不弹"找不到"也不空指针）。少这一步的表现就是
+ * "点了卡片，窗口开了却没展开那条"（#39 的原始诉求）。
+ */
+const pendingFocusId = ref<string | null>(null);
+
+function deliverFocus(id: string) {
+  boardRef.value?.focusTodo(id);
+}
+
 async function applyFocusRequest() {
   if (!groupId) return;
   const id = await api.takeGroupTodoFocus(groupId).catch(() => null);
-  if (id) boardRef.value?.focusTodo(id);
+  if (!id) return;
+  if (chat.todosLoadedOnce(groupId)) {
+    deliverFocus(id);
+    return;
+  }
+  pendingFocusId.value = id; // 连点多次以最后一次为准
 }
+
+watch(
+  () => (groupId ? chat.todosLoadedOnce(groupId) : true),
+  (ready) => {
+    const id = pendingFocusId.value;
+    if (!ready || !id) return;
+    pendingFocusId.value = null;
+    deliverFocus(id);
+  },
+);
 
 let unlistenFocus: (() => void) | null = null;
 let disposed = false;

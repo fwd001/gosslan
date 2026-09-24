@@ -31,6 +31,16 @@ const props = defineProps<{
   images: GalleryImage[];
   index: number;
   open: boolean;
+  /**
+   * 覆盖层顶部要让出来的高度（一个 CSS 长度，默认 0 = 铺满整窗）。
+   *
+   * 为什么需要（用户 2026-09-24 要求"各个端都要能正常使用"）：独立预览窗口用的是
+   * `decorations:false` + 自绘标题栏，而**那条 caption 是整扇窗唯一的拖拽区**（`startDragging`
+   * 挂在它的 mousedown 上）与 ✕ 所在。本组件是 `fixed inset-0 z-[80]`，直接铺满就会把
+   * 标题栏连按钮一起盖住 —— 窗口打不开也移不动，等于"功能没实现"。传 `var(--gosslan-title-h)`
+   * 就把那一条让出来；主窗口与移动端不传，行为与以前逐字相同。
+   */
+  topInset?: string;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -296,7 +306,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         ref="dialogRef"
         tabindex="-1"
         class="glass fixed inset-0 z-[80] flex items-center justify-center outline-none"
-        style="background: rgba(0, 0, 0, 0.45)"
+        :style="{
+          background: 'rgba(0, 0, 0, 0.45)',
+          ...(topInset ? { top: topInset } : {}),
+        }"
         role="dialog"
         aria-modal="true"
         :aria-label="t('common.image')"

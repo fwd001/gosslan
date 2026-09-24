@@ -3768,6 +3768,32 @@ mod tests {
         }
     }
 
+    /// 装饰性数据**不得否决用户的动作**（2026-09-24 复查辅助窗口时找到的同形状缺陷）。
+    ///
+    /// `open_group_todos_window` 原先在"取群名填系统标题"那一步，拿不到 DB 锁时直接
+    /// 拒掉整个开窗 —— 于是 DB 一忙（文件传输的进度写库、批量落库都算），这扇窗**根本
+    /// 打不开**，而失败在前端只变成一句 toast，用户读到的是"点了没反应"。
+    /// 群名只是任务栏那一点装饰（文档加载后前端会按同样口径再取一次并接管标题），
+    /// 为它牺牲一次用户动作是彻头彻尾的错配。
+    ///
+    /// 判据取**正向形状**两条（必须是 match、拿不到锁那支必须给空串）。刻意不写负向断言：
+    /// 本文件读的是原始源码（不剥注释），一句解释"以前错在哪"的注释就会把自己踩红 ——
+    /// 同一课今天上午刚踩过一次（`windowEntries` 被"这里绝不调用 chat.init()"那句注释判红）。
+    #[test]
+    fn cosmetic_title_read_cannot_abort_the_window() {
+        let commands = all_commands_src();
+        let body = rust_fn_body(commands, "pub fn open_group_todos_window(");
+        let flat = code_flat(&body);
+        assert!(
+            flat.contains("matchstate.db.try_lock()"),
+            "群名那一步必须是 try_lock 的 match（两支都往下走），不能是拿不到锁就中止"
+        );
+        assert!(
+            flat.contains("Err(_)=>String::new()"),
+            "拿不到锁的分支必须降级成空群名 —— 这是开窗路径上唯一允许「软失败」的地方"
+        );
+    }
+
     /// 外链 URL 的**协议白名单**（用户配置的网址会被 `WebviewUrl::External` 直接加载）。
     ///
     /// 为什么必须表驱动钉死：`javascript:` / `data:` / `file:` / `tauri:` 一旦漏过，

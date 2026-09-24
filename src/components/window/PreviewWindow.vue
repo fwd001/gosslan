@@ -81,6 +81,7 @@ function closeSelf() {
       :images="images"
       v-model:index="index"
       :open="open"
+      top-inset="var(--gosslan-title-h)"
       @close="closeSelf()"
     />
   </AuxWindowShell>
