@@ -27,7 +27,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import BaseModal from "@/components/BaseModal.vue";
-import ImageLightbox from "@/components/message/ImageLightbox.vue";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
 import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
@@ -67,6 +67,8 @@ const props = defineProps<{
 
 const app = useAppStore();
 const chat = useChatStore();
+/** 全局图片预览（#40）：本组件只给数组与来源标记，渲染与切换在那唯一的一份实例里。 */
+const preview = useImagePreviewStore();
 const { memberProfile, myId } = useMemberProfile();
 
 const convId = computed(() => (props.groupId ? `group:${props.groupId}` : ""));
@@ -327,19 +329,29 @@ const draft = ref<{
 } | null>(null);
 const saving = ref(false);
 
-/** 表单里的大图预览（点缩略图打开）。与任务详情各自持有一个 `ImageLightbox`：
- *  两处的相册来源不同（草稿 vs 已保存的任务），共用一个反而要来回切来源。 */
-const draftImageIndex = ref<number | null>(null);
+/**
+ * 表单里的大图预览（点缩略图打开）。渲染用的是**全局那一份**实例（#40），
+ * 这里只留"这份相册属于草稿"的标记：草稿的相册与已保存任务的相册来源不同，
+ * 而关表单时只能收掉**自己给出去**的那一份预览。
+ */
 const draftGallery = computed(() =>
   (draft.value?.images ?? []).map((im) => ({ cid: im.sha256, name: im.name })),
 );
+const draftSource = computed(() => (draft.value ? `draft:${draft.value.todoId ?? "new"}` : null));
+/** 预览正开着、且就是这份草稿给的 ⇒ 收掉它而不是收表单（见 `closeDraft`）。 */
+const draftPreviewOpen = computed(
+  () => preview.open && draftSource.value !== null && preview.source === draftSource.value,
+);
+function openDraftImage(i: number) {
+  preview.openGallery(draftGallery.value, i, draftSource.value);
+}
 
 /** 关表单：预览开着时**只收预览、不关表单** —— HeadlessUI 的 Dialog 把「面板之外的任何点击」
  *  都当成关闭信号，而预览是 Teleport 到 body 的、就在面板外面；不挡一下的话，在预览里点
  *  「保存」，底下的表单会连编辑内容一起关掉（与 `TodoDetailDialog.onDialogClose` 同款处理）。 */
 function closeDraft() {
-  if (draftImageIndex.value !== null) {
-    draftImageIndex.value = null;
+  if (draftPreviewOpen.value) {
+    preview.close();
     return;
   }
   draft.value = null;
@@ -669,10 +681,14 @@ watch(
   () => props.open,
   (v) => {
     if (!v) {
+      // 预览是全局那一份（#40）：面板整体关掉时按**来源**收掉自己给出去的那一份，
+      // 且必须在清 `draft`/`detailId` **之前**取到 key（清完就认不出来源了）。
+      const keys = [draftSource.value, detailId.value ? `task:${detailId.value}` : null];
       draft.value = null;
       pendingDelete.value = null;
       detailId.value = null;
       closeRowMenu();
+      for (const k of keys) if (k) preview.closeIfFrom(k);
       filter.value = "all";
     }
   },
@@ -1007,7 +1023,7 @@ watch(
           </button>
           <div v-else class="flex flex-wrap gap-1.5 p-2">
             <div v-for="(img, i) in draft.images" :key="img.sha256" class="group relative">
-              <TodoImageThumb :image="img" clickable @open="draftImageIndex = i" />
+              <TodoImageThumb :image="img" clickable @open="openDraftImage(i)" />
               <button
                 type="button"
                 class="tap-safe absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] text-white opacity-90 transition hover:opacity-100"
@@ -1090,13 +1106,6 @@ watch(
 
   <!-- 大图预览：表单里的缩略图也可点开（与任务详情一致）。
        Teleport 到 body、z-[80] 压在上面那些弹窗之上；放在模板最末 ⇒ 返回栈里它是最上面一层。 -->
-  <ImageLightbox
-    :images="draftGallery"
-    :index="draftImageIndex ?? 0"
-    :open="draftImageIndex !== null"
-    @close="draftImageIndex = null"
-    @update:index="draftImageIndex = $event"
-  />
 
   <!-- 行内状态菜单：**Teleport 到 body + fixed 坐标**。
        挂在行里时它被两层东西裁掉 —— 列表卡片的 `overflow-hidden`（画圆角用）与外面那层

@@ -16,7 +16,7 @@ import ChatHeader from "@/components/chat/ChatHeader.vue";
 import MessageComposer from "@/components/chat/MessageComposer.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
 import MergeCardModal from "@/components/message/MergeCardModal.vue";
-import ImageLightbox from "@/components/message/ImageLightbox.vue";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { estimateMessageHeight } from "@/utils/messageHeight";
 import { launchAuxWindow, isWindowOpening } from "@/composables/useWindowLauncher";
 import { groupTodosLabel } from "@/utils/auxWindowLabels";
@@ -145,7 +145,7 @@ watch(
  */
 watch(
   () => chat.activeConv,
-  () => {
+  (_next, prev) => {
     quote.value = null;
     forward.value = null;
     // 切会话必须退出多选：已选集合里是对**上一个会话**的消息，留着会让"已选 N 条"
@@ -159,7 +159,9 @@ watch(
     filesOpen.value = false;
     tasksOpen.value = false;
     taskFocusId.value = null;
-    lightboxOpen.value = false;
+    // 预览是全局那一份（#40），所以按**来源**收：只有"这份相册是上一个会话给的"才关掉。
+    // 无条件 close() 会把"从任务详情点开的图"跟着切会话一起弄没。
+    if (prev) preview.closeIfFrom(`conv:${prev}`);
     announceViewOpen.value = false;
   },
 );
@@ -192,8 +194,6 @@ function estimateHeight(m: MessageRecord, index?: number): number {
 }
 
 // ---------------- 图片相册预览（点击图片 → 打开本会话全部图片，可左右切换） ----------------
-const lightboxOpen = ref(false);
-const lightboxIndex = ref(0);
 /**
  * 会话内图片列表（kind=image，或 kind=file 且 subtype=image），**打开预览时才构建**。
  *
@@ -241,15 +241,15 @@ function buildLightboxImages(): LightboxImage[] {
     });
 }
 
-/** 打开期间的图片快照（只在 openImageAt 里赋值）。 */
-const lightboxImages = ref<LightboxImage[]>([]);
-
 function openImageAt(msgId: string) {
-  lightboxImages.value = buildLightboxImages();
-  const idx = lightboxImages.value.findIndex((x) => x.msgId === msgId);
+  const items = buildLightboxImages();
+  const idx = items.findIndex((x) => x.msgId === msgId);
   if (idx < 0) return;
-  lightboxIndex.value = idx;
-  lightboxOpen.value = true;
+  // 交给全局那一份实例（#40）：本窗口只负责**构建数组**，渲染与左右切换在
+  // `ResponsiveLayout` 里那个唯一的 `<ImageLightbox>`。`source` 带上会话 id ⇒
+  // 切会话时只收掉"这个会话给出的"预览（见下面 activeConv 那个 watcher）。
+  const convId = chat.activeConv ?? "";
+  preview.openGallery(items, idx, convId ? `conv:${convId}` : null);
 }
 
 // ---------------- 群：成员面板 + 改名 ----------------
@@ -259,6 +259,9 @@ const tasksOpen = ref(false);
 const activeGroupId = computed(() =>
   isGroup.value && chat.activeConv ? chat.activeConv.slice(6) : null,
 );
+/** 全局图片预览（#40：实例只有 `ResponsiveLayout` 里那一个，这里只负责给出数组）。 */
+const preview = useImagePreviewStore();
+
 /** 当前群的任务窗口是否正在打开（按钮 pending 反馈）。 */
 const tasksOpening = computed(() => isWindowOpening(groupTodosLabel(activeGroupId.value ?? "")));
 
@@ -1410,11 +1413,5 @@ function onLoadMore() {
 
 
     <!-- 图片相册预览（会话内全部图片，左右箭头 / 键盘 ←→ 切换） -->
-    <ImageLightbox
-      :images="lightboxImages"
-      v-model:index="lightboxIndex"
-      :open="lightboxOpen"
-      @close="lightboxOpen = false"
-    />
   </div>
 </template>

@@ -1073,3 +1073,60 @@ test("VirtualList：落定轮询定时器必须在 onBeforeUnmount 里清理", (
       "（applyJump 在 `!el` 处就返回了，走不到过窗自清那一支）",
   );
 });
+
+/**
+ * 图片预览必须**只有一个渲染点**（用户 2026-09-24 #40：看图是一个公共能力）。
+ *
+ * 原先 `ImageLightbox` 被四处各挂一份（会话 / 任务看板 / 任务详情 / 合并转发卡片），
+ * 每份自己持有 `images/index/open`。后果不是重复代码那么简单：
+ * - 同一件"看图"在不同入口的能力取决于那个面板有没有把数组传全（会话里能整屏左右循环、
+ *   任务里只有那一条的几张图，这本该是同一个契约）；
+ * - 加一个入口就得再抄一遍，而"合并卡片的图是 objectURL、组件一关就被回收"这份知识
+ *   锁在那个组件里 —— 预览搬到全局后正是靠**来源标记**才没把这条保证弄丢。
+ *
+ * 所以钉两件事：渲染点只有一个（在壳层），别的组件只能经 store 调用。
+ */
+test("图片预览只有一处渲染点，其余组件一律走 useImagePreviewStore", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(join(srcDir, "components")).concat(
+    collectVueFiles(join(srcDir, "layouts")),
+  );
+  const renderers: string[] = [];
+  const stateful: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    const rel = f.replace(srcDir + "/", "");
+    // 只数**模板段里、去掉 HTML 注释之后**的元素。
+    // 为什么不是"看行首是不是 `<!--`"：注释常常是多行的，提到 `<ImageLightbox>`
+    // 的那一行本身不带 `<!--`（第一版就是这么写的，结果三处注释全被当成渲染点）。
+    // 模板里的注释不可能嵌套 ⇒ `<!--[\s\S]*?-->` 这个非贪婪匹配就是精确的。
+    const tplAt = src.indexOf("<template>");
+    if (tplAt > 0) {
+      const tpl = src.slice(tplAt).replace(/<!--[\s\S]*?-->/g, "");
+      for (const _m of tpl.matchAll(/<ImageLightbox[\s/>]/g)) {
+        // 只报文件不报行号：注释被剥掉之后偏移就变了，报出来的行号会是**错的**，
+        // 宁可少给一个信息也不要给假的（要定位在文件里搜 `<ImageLightbox` 即可）。
+        renderers.push(rel);
+      }
+    }
+    // 别人不许再自己攒一套 open/index 状态（那等于又长出第二个预览实例）
+    if (
+      rel !== "layouts/ResponsiveLayout.vue" &&
+      /const\s+\w*lightbox\w*\s*=\s*ref\(/i.test(src)
+    ) {
+      stateful.push(rel);
+    }
+  }
+  assert.deepEqual(
+    renderers,
+    ["layouts/ResponsiveLayout.vue"],
+    `发现多处图片预览渲染点：${renderers.join(", ")} —— 预览必须只有壳层那一份，别处调 store`,
+  );
+  assert.deepEqual(stateful, [], `这些组件还自己持有预览开关状态：${stateful.join(", ")}`);
+  // store 侧：唯一那份实例绑在 store 上，不是本地 ref
+  const shell = readFileSync(join(srcDir, "layouts", "ResponsiveLayout.vue"), "utf8");
+  assert.match(shell, /const preview = useImagePreviewStore\(\)/, "壳层要挂 store");
+  assert.match(shell, /:images="preview\.images"/, "渲染点的数据来自 store");
+  // 左右切换写的也是 store 的 index（写成组件本地 ref 就等于把"当前看第几张"又搬回局部）
+  assert.match(shell, /v-model:index="preview\.index"/, "切换下标也写回 store");
+});

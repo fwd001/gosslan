@@ -8,7 +8,7 @@
  */
 import { computed, ref, watch } from "vue";
 import BaseModal from "@/components/BaseModal.vue";
-import ImageLightbox from "@/components/message/ImageLightbox.vue";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import { TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, type TodoItem, type TodoStatus } from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
@@ -72,14 +72,23 @@ function choose(s: TodoStatus) {
 /**
  * 图片点开大图（用户 2026-09-21：「任务详情里图片不能点击预览」）。
  *
- * 复用聊天的 `ImageLightbox`（同一套双指缩放/滑动切图/保存），只是相册条目按 **cid**
- * 而不是 `msg_id` 解析 —— 待办描述图片的载荷里只有 sha256（= content store cid）。
- * 弹窗与预览都 Teleport 到 body，预览的 z-[80] 压在弹窗 z-[65] 之上（与合并转发卡片同一做法）。
+ * 渲染用的是**全局那一份**预览实例（用户 2026-09-24 #40：看图是一个公共能力，
+ * 不再是每个面板各挂一个 `ImageLightbox`），本组件只给数组 + 来源标记 `task:<todoId>`。
+ * 相册条目按 **cid** 而不是 `msg_id` 解析 —— 待办描述图片的载荷里只有 sha256（= content store cid）。
+ * 预览的 z-[80] 压在弹窗 z-[65] 之上（与合并转发卡片同一做法）。
  */
-const lightboxIndex = ref<number | null>(null);
 const gallery = computed(() =>
   (props.item?.images ?? []).map((im) => ({ cid: im.sha256, name: im.name })),
 );
+const preview = useImagePreviewStore();
+/** 这份相册属于"哪条任务的详情"（关闭时按来源收，见 `onDialogClose`）。 */
+const sourceKey = computed(() => (props.item ? `task:${props.item.todoId}` : null));
+const previewIsMine = computed(
+  () => preview.open && sourceKey.value !== null && preview.source === sourceKey.value,
+);
+function openAt(i: number) {
+  preview.openGallery(gallery.value, i, sourceKey.value);
+}
 
 /**
  * 弹窗要求关闭（点遮罩 / Esc）。
@@ -90,8 +99,8 @@ const gallery = computed(() =>
  * 让最上面那层吃掉这一次关闭，也正好是浮层该有的层级语义。
  */
 function onDialogClose() {
-  if (lightboxIndex.value !== null) {
-    lightboxIndex.value = null;
+  if (previewIsMine.value) {
+    preview.close();
     return;
   }
   emit("close");
@@ -103,7 +112,8 @@ watch(
   (v) => {
     if (!v) {
       menuOpen.value = false;
-      lightboxIndex.value = null;
+      // 详情被别处关掉（改状态/归档/完成后 closeDetail）时，按来源收掉这份相册
+      if (sourceKey.value) preview.closeIfFrom(sourceKey.value);
     }
   },
 );
@@ -188,7 +198,7 @@ watch(
         <p v-else class="text-[12px] text-[var(--gosslan-text-2)]">{{ t("todo.noDescription") }}</p>
       </div>
 
-      <!-- 图片：点缩略图看大图（复用聊天的 ImageLightbox，见 script 里的说明） -->
+      <!-- 图片：点缩略图看大图（交给全局那一份预览实例，见 script 里的说明） -->
       <div v-if="item.images.length">
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.imagesLabel") }}</div>
         <div class="flex flex-wrap gap-1.5">
@@ -197,7 +207,7 @@ watch(
             :key="img.sha256"
             :image="img"
             clickable
-            @open="lightboxIndex = i"
+            @open="openAt(i)"
           />
         </div>
       </div>
@@ -261,11 +271,4 @@ watch(
   </BaseModal>
 
   <!-- 大图预览：Teleport 到 body，压在弹窗之上（与合并转发卡片同一做法） -->
-  <ImageLightbox
-    :images="gallery"
-    :index="lightboxIndex ?? 0"
-    :open="lightboxIndex !== null"
-    @close="lightboxIndex = null"
-    @update:index="lightboxIndex = $event"
-  />
 </template>

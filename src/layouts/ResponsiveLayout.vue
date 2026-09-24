@@ -23,6 +23,8 @@ import ShareDirectory from "@/components/ShareDirectory.vue";
 import LogViewer from "@/components/LogViewer.vue";
 import FavoritePanel from "@/components/FavoritePanel.vue";
 import ToastHud from "@/components/ToastHud.vue";
+import ImageLightbox from "@/components/message/ImageLightbox.vue";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
 import LinksList from "@/components/LinksList.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
@@ -30,6 +32,8 @@ import { Compass, MessageCircle, ScrollText, Settings, Star, UserCircle, Users }
 import type { ExternalLink, Friend, PendingRequest } from "@/types";
 const app = useAppStore();
 const chat = useChatStore();
+/** 全局图片预览的宿主（实例只有一个，见模板末尾那处 `<ImageLightbox>`）。 */
+const preview = useImagePreviewStore();
 
 /**
  * 导航状态——**单一数据源**，替代之前分散的 `view` + `favoritesOpen`。
@@ -811,6 +815,16 @@ function onResizeEnd() {
         <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
       </MobilePageFrame>
     </Transition>
+
+    <!-- 全局图片预览：**整个应用只有这一个实例**（用户 2026-09-24 #40）。
+         状态在 `useImagePreviewStore`，任何功能都按 `{items, startIndex, source}` 调它，
+         不再各自挂一份 `<ImageLightbox>` 各抄一遍数组。 -->
+    <ImageLightbox
+      :images="preview.images"
+      v-model:index="preview.index"
+      :open="preview.open"
+      @close="preview.close()"
+    />
 
     <!-- Toast：主窗口与独立窗口共用的 HUD（见 `ToastHud.vue` 的说明）。 -->
     <ToastHud />

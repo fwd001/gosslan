@@ -12,11 +12,11 @@
  * ## 为什么媒体默认仍是占位
  * 不带 cid 的旧载荷 / 文件（非图片）没有回源钥匙，只能显示 `[图片] 名字` / `[文件] 名字`。
  */
-import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, reactive, watch } from "vue";
 import { Loader2 } from "lucide-vue-next";
 import { t } from "@/i18n";
 import BaseModal from "@/components/BaseModal.vue";
-import ImageLightbox from "@/components/message/ImageLightbox.vue";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { api } from "@/api";
 import { imageMime } from "@/utils/filePreview";
 import { fmtConversationTime } from "@/utils/time";
@@ -47,7 +47,7 @@ interface ImageSlot {
 }
 const imageSlots = reactive<Record<number, ImageSlot>>({});
 
-/** 已就绪的图片 → 大图相册（复用 ImageLightbox，dataSrc 直接塞 objectURL）。 */
+/** 已就绪的图片 → 相册数组（`dataSrc` 直接塞 objectURL，只在本文档有效，见下面 MERGE_SOURCE 的说明）。 */
 interface GalleryItem {
   msgId: string;
   name: string;
@@ -64,11 +64,21 @@ const gallery = computed<GalleryItem[]>(() => {
   });
   return out;
 });
-const lightboxIndex = ref<number | null>(null);
+/**
+ * 预览用的是全局那一份实例（用户 2026-09-24 #40），所以这个来源要有个 key。
+ *
+ * ⚠️ 合并卡片这里的图是 **objectURL**（blob:），只在本文档有效，而且卡片一关就被
+ * `URL.revokeObjectURL` 回收 ⇒ 预览绝不能比它活得久。所以下面两处回收之前
+ * 必须先 `closeIfFrom(MERGE_SOURCE)`：这与"预览长在本组件里时随组件一起消失"
+ * 是同一个保证，只是换了实现位置。
+ * （将来把预览镜像到独立窗口时，blob: 是跨不过文档的 —— 那条路必须先换成 data URL。）
+ */
+const MERGE_SOURCE = "merge:card";
+const preview = useImagePreviewStore();
 
 function openLightbox(i: number) {
   const gi = gallery.value.findIndex((g) => g.msgId === `merge-${i}`);
-  if (gi >= 0) lightboxIndex.value = gi;
+  if (gi >= 0) preview.openGallery(gallery.value, gi, MERGE_SOURCE);
 }
 
 let objectUrls: string[] = [];
@@ -140,6 +150,8 @@ async function pull(i: number, item: MergedItem) {
 watch(
   [() => props.open, () => props.content],
   () => {
+    // 先收预览再回收 URL（顺序反了就会先看到一次破图闪烁）
+    preview.closeIfFrom(MERGE_SOURCE);
     objectUrls.forEach(releaseUrl);
     objectUrls = [];
     for (const k of Object.keys(imageSlots)) delete imageSlots[Number(k)];
@@ -155,6 +167,7 @@ watch(
 
 onBeforeUnmount(() => {
   closed = true;
+  preview.closeIfFrom(MERGE_SOURCE);
   objectUrls.forEach(releaseUrl);
   objectUrls = [];
 });
@@ -242,12 +255,4 @@ onBeforeUnmount(() => {
     </div>
   </BaseModal>
 
-  <!-- 大图预览：复用 ImageLightbox（Teleport 到 body，压在详情弹窗之上） -->
-  <ImageLightbox
-    :images="gallery"
-    :index="lightboxIndex ?? 0"
-    :open="lightboxIndex !== null"
-    @close="lightboxIndex = null"
-    @update:index="lightboxIndex = $event"
-  />
 </template>

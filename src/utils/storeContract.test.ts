@@ -144,18 +144,20 @@ test("切会话必须收尾会话级浮层；离开聊天视图必须退多选",
   assert.ok(from >= 0, "找不到 activeConv 的 watcher");
   assert.ok(to > from, "找不到 mobileView 的 watcher —— 4.1-4 会回归（TabBar 被永久藏掉）");
   const convWatch = cw.slice(from, to);
-  for (const flag of [
-    "membersOpen",
-    "filesOpen",
-    "tasksOpen",
-    "lightboxOpen",
-    "announceViewOpen",
-  ]) {
+  for (const flag of ["membersOpen", "filesOpen", "tasksOpen", "announceViewOpen"]) {
     assert.ok(
       convWatch.includes(`${flag}.value = false`),
       `切会话时没清 ${flag}：面板会带着上一个会话的内容继续显示`,
     );
   }
+  // 图片预览从批次 x 起是**全局那一份实例**（#40），不再有个本地 `lightboxOpen`。
+  // 收尾要求没变、只是换了形状：按**来源**收 —— 无条件 close() 会把
+  // "从任务详情点开的图"跟着切会话一起弄没，不收则会留着上一个会话的相册。
+  assert.match(
+    convWatch,
+    /preview\.closeIfFrom\(`conv:\$\{prev\}`\)/,
+    "切会话时没按来源收掉上一个会话给出的图片预览",
+  );
   assert.ok(
     cw.slice(to).includes("exitMultiSelect()"),
     "mobileView watcher 里没退多选：返回会话列表后 multiSelectActive 会永久挂着",
