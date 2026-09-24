@@ -560,3 +560,41 @@ test("切会话的三处入口：翻页/收页必须排在读数据之前", () =
     "收藏跳转：先收起本页再逐页定位（定位最坏翻 10 页）",
   );
 });
+
+/**
+ * 通讯录里「自己」那一行的标记（用户 2026-09-24 #31：认不出哪一个是自己）。
+ *
+ * 「自己」是一条**伪好友行**，与好友共用同一条渲染/排序/搜索路径，所以标记必须
+ * 挂在渲染层，而不是去改数据（改 nickname 会连带影响分组首字母、排序与搜索命中）。
+ * 两处退化值得钉：
+ * - 通讯录有**两个渲染分支**（搜索时平铺 / 浏览时按首字母分组），只给一个挂上
+ *   就是"搜到了带（我）、平时不带"这种只在半个界面上成立的修复；
+ * - 判据必须是 `isSelfConversation`（`utils/selfChat` 明写了"各处各写一遍
+ *   `=== device_id` 迟早漏一处"），文案必须走 i18n（英文界面不该出现「（我）」）。
+ */
+test("通讯录「（我）」标记：两个渲染分支都要挂，判据与文案都走同一条路", () => {
+  const list = read("components/ConversationList.vue");
+  const selfSites = (list.match(/:is-self="isSelfRow\(f\.device_id\)"/g) ?? []).length;
+  assert.equal(selfSites, 2, "平铺与分组两个 FriendListItem 分支都要传 is-self");
+  const judgeAt = list.indexOf("function isSelfRow");
+  assert.ok(judgeAt > 0, "isSelfRow 应存在（判据收在一个函数里）");
+  assert.match(
+    list.slice(judgeAt, judgeAt + 400),
+    /isSelfConversation\(/,
+    "行身份必须复用 isSelfConversation，不再写一份 === device_id",
+  );
+
+  const item = read("components/conversation/FriendListItem.vue");
+  assert.match(item, /isSelf\?: boolean/, "标记由调用方传，组件不读 store");
+  assert.match(item, /t\("friend\.selfSuffix"\)/, "文案走 i18n");
+  // 只查模板段：注释里提到「（我）」是在解释这件事，不是硬编码。
+  const tplAt = item.indexOf("<template>");
+  assert.ok(tplAt > 0, "找不到 <template>（这一段就空转了）");
+  assert.ok(
+    !item.slice(tplAt).includes("（我）"),
+    "模板里不该硬编码中文后缀（英文界面会出现「（我）」）",
+  );
+  // 悬停 title 与读屏 aria 都要用同一份带标记的名字，否则"看得见、念不出来"。
+  assert.match(item, /:aria-label="t\('friend\.listItem\.aria', \{ name: displayName/, "aria 用带标记的名字");
+  assert.match(item, /:title="displayName"/, "title 用带标记的名字");
+});

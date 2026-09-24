@@ -23,7 +23,18 @@ const props = defineProps<{
    * 无链路（离线 / 只发现未建链）时为空 ⇒ 不画图标。
    */
   link?: string | null;
+  /**
+   * 这一行就是**我自己**（用户 2026-09-24 #31：通讯录里认不出哪一个是自己）。
+   * 「自己」在通讯录里是一条伪好友行（`ConversationList.selfFriend`），与好友同一条
+   * 渲染/排序/搜索路径 ⇒ 只靠名字区分不了。判据由调用方给，本组件不读 store。
+   */
+  isSelf?: boolean;
 }>();
+
+/** 显示名与读屏文案共用同一份，避免"看得见（我）但读屏听不到"。 */
+const displayName = computed(
+  () => props.friend.nickname + (props.isSelf ? t("friend.selfSuffix") : ""),
+);
 
 /** 连接图标名；无真实链路时返回 null（模板据此不画图标 —— 画了就是骗）。判据与聊天头同源。 */
 const linkIcon = computed(() => {
@@ -128,7 +139,7 @@ onUnmounted(clearPress);
       compact ? 'h-[56px]' : 'h-[64px]',
       active ? 'bg-[var(--gosslan-list-active)]' : 'hover:bg-[var(--gosslan-list-hover)]',
     ]"
-    :aria-label="t('friend.listItem.aria', { name: friend.nickname, status: friend.online ? t('common.online') : t('common.offline') })"
+    :aria-label="t('friend.listItem.aria', { name: displayName, status: friend.online ? t('common.online') : t('common.offline') })"
     @click="openFriend(friend)"
     @keydown.enter.prevent="openFriend(friend)"
     @keydown.space.prevent="openFriend(friend)"
@@ -172,9 +183,9 @@ onUnmounted(clearPress);
         <div
           class="truncate text-[13px] leading-5"
           :class="active ? 'font-medium text-[var(--gosslan-text)]' : 'text-[var(--gosslan-text)]'"
-          :title="friend.nickname"
+          :title="displayName"
         >
-          {{ friend.nickname }}
+          {{ displayName }}
         </div>
       </div>
       <div

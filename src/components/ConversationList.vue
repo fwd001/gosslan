@@ -70,6 +70,15 @@ const selfFriend = computed<Friend | null>(() => {
 });
 
 /**
+ * 「这一行是不是我自己」（用户 2026-09-24 #31：通讯录里那行自己要标「（我）」）。
+ * 判据复用 `isSelfConversation`（`Friend` 的 `device_id` 就是那条伪会话的 id，
+ * 与本文件 `onlineOf` 的用法一致），不再写第四份 `=== device_id`。
+ */
+function isSelfRow(id: string): boolean {
+  return isSelfConversation({ id }, app.device?.device_id);
+}
+
+/**
  * device_id → 当前链路类型（取自节点表 `chat.peers` 的 `link` 字段）。
  * 好友记录本身不带链路，连接图标要靠这张表关联 —— 与聊天头、资料页、添加好友页**同源**
  * （都读后端 `Peer.link`，再经 `peerConnectionInfo` 的唯一判据出图标/文案）。
@@ -516,6 +525,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             v-memo="[f.nickname, f.avatar, f.online, linkOf(f.device_id), props.activeFriendId === f.device_id]"
             :friend="f"
             :link="linkOf(f.device_id)"
+            :is-self="isSelfRow(f.device_id)"
             :active="props.activeFriendId === f.device_id"
             compact
             @open="openFriend"
@@ -536,6 +546,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
               v-memo="[f.nickname, f.avatar, f.online, linkOf(f.device_id), props.activeFriendId === f.device_id]"
               :friend="f"
               :link="linkOf(f.device_id)"
+              :is-self="isSelfRow(f.device_id)"
               :active="props.activeFriendId === f.device_id"
               compact
               @open="openFriend"
