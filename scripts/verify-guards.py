@@ -443,6 +443,24 @@ CASES: list[Case] = [
         expect_fail_hint="没声明 CI 归属",
         tags=["gates", "frontend", "new-guards"],
     ),
+    Case(
+        name="门禁 local 层必须逐条点名 harness 的正向注入轮（少一步要能红）",
+        why="§十五把四轮多实例 E2E 接进 verify 之后，静默面从「根本没接进来」变成「接进来又被删掉一步」：\n"
+        "     删掉 `--group local` 里任意一条步骤，`verify:e2e` 会照样报「3 步全绿」，没有任何东西记得少了一步。\n"
+        "     判据 D 拿 harness 自己的 `const X = FAULT === \"…\"` 当正向轮次清单，与门禁里点名的\n"
+        "     `--fault=` 互相对账（不手抄第二份名单），并反向钉一条：`-lie` 模式不许进门禁 ——\n"
+        "     预期红的东西进了门禁，整层就会被静音。\n"
+        "     注入：把 kill-mid 那条改成一个 harness 里不存在的名字 ⇒ 文档守卫必须退出码 1",
+        file=ROOT / "scripts" / "verify.mjs",
+        injections=[(
+            '"--fault=kill-mid"',
+            '"--fault=kill-mid-gone"',
+        )],
+        cmd=["node", "scripts/check-doc-numbers.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="local 层",
+        tags=["gates", "frontend", "new-guards"],
+    ),
     # ---------------- 本地新增护栏（2026-09-14）----------------
 
     Case(

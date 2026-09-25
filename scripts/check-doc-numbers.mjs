@@ -23,6 +23,14 @@
  *    调用，文档凡声明「默认轮 N 断言 / 脏前缀轮 N 断言 / 续传轮 N 断言」必须等于现算值，
  *    且三种标注**一种都不许消失**（否则「删掉标签」就是绕过这条守卫的最短路径）。
  *
+ * **D. harness 的每条正向轮次都必须被门禁 `local` 层点名**（§十五）。
+ *    判据 C 只管"断言数对不对"，管不到"这一轮**还在不在门禁里**"：把 `--group local` 里
+ *    某一步整条删掉，`verify:e2e` 会照样报「3 步全绿」，谁都不记得少了一步 —— 而这正是
+ *    GROUPS 那列存在的理由（"本地有、CI 永不跑"式的静默漏）在新层上的复现。
+ *    模式与 CLI 字符串的对应关系**从 harness 自己的 `const X = FAULT === "…"` 现读**，
+ *    不在这里手抄；同时反向钉两条：门禁里出现 `-lie` 模式 = 红（预期红的东西不许进门禁），
+ *    门禁里出现 harness 没有的 `--fault=` 值 = 红。
+ *
  * 退出码：0 = 通过；1 = 有漂移 / 有违规手写。
  */
 import { spawnSync } from "node:child_process";
@@ -193,6 +201,64 @@ for (const label of Object.keys(e2e)) {
   }
 }
 
+// ---------- 判据 D：harness 的每条正向轮次都必须被门禁的 local 层点名 ----------
+/** 注入模式与 CLI 字符串的关系**取自 harness 自己**（`const X = FAULT === "…"`），
+ *  不在这里手抄一份 —— 手抄就是制造第二个事实源，正是本脚本反对的东西。 */
+function harnessFaultModes() {
+  const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
+  const out = [];
+  for (const m of src.matchAll(/^const ([A-Z][A-Z_]*) = FAULT === "([^"]+)"/gm)) out.push(m[2]);
+  if (!out.length) {
+    throw new Error(`harness 里解析不到任何 --fault= 模式（\`const X = FAULT === "…"\` 的写法变了？）`);
+  }
+  return out;
+}
+
+/** verify.mjs 里 `--group local` 那一段的原文（顶格 `}` 收尾，与判据 C 同一套取块约定）。 */
+function localGateBlock() {
+  const src = fs.readFileSync(path.join(ROOT, "scripts/verify.mjs"), "utf8").split("\n");
+  const start = src.findIndex((l) => /^if \(groupFlag === "local"\) \{$/.test(l));
+  if (start < 0) throw new Error('verify.mjs 里找不到 `if (groupFlag === "local") {` 这一段');
+  let end = start + 1;
+  while (end < src.length && !/^\}/.test(src[end])) end++;
+  if (end >= src.length) throw new Error("local 层那一段没找到顶格 } 收尾");
+  return src.slice(start, end).join("\n");
+}
+
+try {
+  const modes = harnessFaultModes();
+  const block = localGateBlock();
+  const gated = [...block.matchAll(/--fault=([a-z0-9-]+)/g)].map((m) => m[1]);
+  const lies = gated.filter((s) => s.endsWith("-lie"));
+  if (lies.length) {
+    fails.push(
+      `local 层里点名了反向模式（${lies.join(" / ")}）—— 它们**预期红**，` +
+        `进门禁会把"能红"变成"常红"，那样整层会被静音掉`,
+    );
+  }
+  for (const s of gated) {
+    if (!modes.includes(s)) {
+      fails.push(`local 层点名了 harness 里不存在的注入 --fault=${s}（harness 现有：${modes.join(" / ")}）`);
+    }
+  }
+  for (const s of modes) {
+    if (!gated.includes(s)) {
+      fails.push(
+        `harness 有正向轮次 --fault=${s}，但 verify.mjs 的 local 层没有它 —— ` +
+          `这条注入又从门禁里滑出去了（表现：verify:e2e 只报 3 步还全绿，谁都不记得少了一步）`,
+      );
+    }
+  }
+  const defaults = (block.match(/args: \[\s*"scripts\/e2e-multi-instance\.mjs"\s*\]/g) || []).length;
+  if (defaults !== 1) {
+    fails.push(`local 层应当恰好 1 条"默认轮"（不带 --fault 的 harness 调用），实际 ${defaults} 条`);
+  }
+  console.log(`· 现算门禁 local 层：${defaults} 条默认轮 + ${gated.length} 条注入轮（harness 正向模式 ${modes.length} 条）`);
+} catch (e) {
+  console.error(`✗ 对账 harness 轮次 ↔ 门禁 local 层失败：${e.message}`);
+  process.exit(1);
+}
+
 if (fails.length) {
   console.error(`\n✗ 文档硬数字漂移 ${fails.length} 处：`);
   for (const f of fails) console.error(`  · ${f}`);
@@ -203,5 +269,6 @@ if (fails.length) {
   process.exit(1);
 }
 console.log(
-  `✓ 文档硬数字对账通过（${LIVE_DOCS.length} 份活文档；取锁点条数无手写；E2E 断言数现算对账）`,
+  `✓ 文档硬数字对账通过（${LIVE_DOCS.length} 份活文档；取锁点条数无手写；E2E 断言数现算对账；` +
+    `harness 轮次与门禁 local 层互点对齐）`,
 );
