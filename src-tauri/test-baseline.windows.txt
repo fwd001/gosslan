@@ -124,12 +124,6 @@ db::tests::repeated_ack_is_idempotent
 db::tests::repeated_delivery_of_same_msg_id_yields_single_side_effect
 db::tests::schema_and_settings
 db::tests::search_history_filters_sender_time_and_excludes_system
-db::tests::search_messages_case_insensitive
-db::tests::search_messages_chinese
-db::tests::search_messages_emoji
-db::tests::search_messages_escapes_like_wildcards
-db::tests::search_messages_no_results
-db::tests::search_messages_plain_text
 db::tests::sender_not_in_recipient_states
 db::tests::set_group_creator_updates_creator_only
 db::tests::silent_kinds_are_excluded_from_search_and_read_watermark

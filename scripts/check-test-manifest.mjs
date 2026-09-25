@@ -153,6 +153,64 @@ function rustTestNames() {
  * 缺名必须红 —— 那意味着某个 feature 没开、某个 `mod` 没挂进 `mod.rs`、
  * 或某个 `#[cfg]` 没满足，被测代码连同测试一起消失了。
  */
+/** 递归列出目录下所有 .rs 文件（跳过 target）。 */
+function rustFiles(dir, acc = []) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === "target" || e.name === ".git") continue;
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) rustFiles(full, acc);
+    else if (e.name.endsWith(".rs")) acc.push(full);
+  }
+  return acc;
+}
+
+let _fnNamesCache = null;
+/** 全仓 Rust 源码里出现过的 `fn <名字>`（含 `pub fn` / `async fn` / `unsafe fn`）。 */
+function declaredFnNames() {
+  if (_fnNamesCache) return _fnNamesCache;
+  const set = new Set();
+  for (const f of rustFiles(path.join(TAURI, "src"))) {
+    const src = readFileSync(f, "utf8");
+    // 标识符类放宽到「非空白、非括号、非逗号」：Rust 允许中文函数名
+    // （本仓就有 `gossip_group不受好友检查影响`），用 `\w` 会把它误报成陈旧条目。
+    for (const m of src.matchAll(/\bfn\s+([^\s(<,;]+)/g)) set.add(m[1]);
+  }
+  _fnNamesCache = set;
+  return set;
+}
+
+/**
+ * 每份平台基线里的每个名字，其函数名必须仍在源码里存在。
+ *
+ * 为什么这能与"平台差异"分开：平台门控的用例**函数还在**（只是本平台不编译）⇒ 不报；
+ * 被删掉或改名的用例**函数已经没了** ⇒ 一定是基线烂了，删它没有争议。
+ * 这条在任何平台上都会把所有平台的基线全查一遍，所以"只在 Windows 上才能发现的问题"
+ * 第一次变得在 mac 上就能拦住。
+ */
+function checkNamesStillExist() {
+  const declared = declaredFnNames();
+  const stale = [];
+  for (const f of readdirSync(TAURI).filter((x) => /^test-baseline\..+\.txt$/.test(x))) {
+    for (const line of readFileSync(path.join(TAURI, f), "utf8").split("\n")) {
+      const name = line.trim();
+      if (!name) continue;
+      const fn = name.split("::").pop();
+      if (!declared.has(fn)) stale.push(`${f}: ${name}`);
+    }
+  }
+  if (stale.length > 0) {
+    console.error(`✗ 基线里有 ${stale.length} 个名字在源码中已不存在（陈旧条目，不是平台差异）：`);
+    for (const n of stale) console.error(`    · ${n}`);
+    console.error("  成因：删掉或改名的测试没同步所有平台的基线文件。");
+    console.error("  修法：从对应文件里删掉这些行（本平台可直接 --update；跨平台要手工删）。");
+    return false;
+  }
+  const files = readdirSync(TAURI).filter((x) => /^test-baseline\..+\.txt$/.test(x));
+  console.log(`✓ 基线名字全部仍存在于源码（跨平台核对 ${files.length} 份基线）`);
+  return true;
+}
+
+
 function checkRust() {
   let actual;
   try {
@@ -219,10 +277,19 @@ function checkRust() {
   const actualSet = new Set(actual);
   const baselineSet = new Set(baseline);
 
+  // 跨平台基线的"名字还在不在"核对 —— 这条与平台无关，所以在任何平台上都能查出
+  // 另一条腿上的**陈旧条目**（Windows 基线没人手工同步，历史上就是这么烂掉的：
+  // 删掉/改名一个测试，mac 侧 --update 自动跟上，win 侧留着一堆不存在的名字，
+  // 于是那条腿只能靠"缺名=静默跳过"报一堆误判，把真正的漏跑淹掉）。
   const missing = baseline.filter((n) => !actualSet.has(n));
   const added = actual.filter((n) => !baselineSet.has(n));
 
   let ok = true;
+  // 跨平台基线的"名字还在不在"核对 —— 这条与平台无关，所以在任何平台上都能查出
+  // 另一条腿上的**陈旧条目**：删掉/改名一个测试时，mac 侧 `--update` 自动跟上，
+  // 而 win 侧留着一堆不存在的名字，于是那条腿把"漏跑"与"基线烂了"混成同一种红，
+  // 只能靠人猜（历史上正是来回跑了两轮 CI）。
+  ok = checkNamesStillExist() && ok;
 
   if (missing.length > 0) {
     ok = false;
