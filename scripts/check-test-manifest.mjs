@@ -205,8 +205,31 @@ function checkNamesStillExist() {
     console.error("  修法：从对应文件里删掉这些行（本平台可直接 --update；跨平台要手工删）。");
     return false;
   }
+  // 同一个函数名在不同平台基线里必须带**同一个模块路径**。
+  // 现场（2026-09-25，我自己造的）：往 Windows 基线手工补两条用例时按记忆写成
+  // `db::tests::…`，真路径是 `db::cascade_tests::…` —— 函数名存在所以上面那条查不出来，
+  // 而 CI 上它变成"基线里有、本平台没跑"，又是那种"红得像代码坏了"的形状。
+  const byPlatform = new Map();
+  for (const f of readdirSync(TAURI).filter((x) => /^test-baseline\..+\.txt$/.test(x))) {
+    for (const line of readFileSync(path.join(TAURI, f), "utf8").split("\n")) {
+      const name = line.trim();
+      if (!name) continue;
+      const fn = name.split("::").pop();
+      const pathPart = name.slice(0, name.length - fn.length);
+      const seen = byPlatform.get(fn) || new Map();
+      byPlatform.set(fn, seen);
+      for (const prev of seen.keys()) {
+        if (prev !== pathPart) {
+          console.error(`✗ 用例 ${fn} 在不同平台基线里的模块路径不一致：${prev} vs ${pathPart}（${f}）`);
+          console.error("  手工补基线时请按 `--update` 打出的**整条名字**复制，模块前缀不能凭记忆写。");
+          return false;
+        }
+      }
+      seen.set(pathPart, true);
+    }
+  }
   const files = readdirSync(TAURI).filter((x) => /^test-baseline\..+\.txt$/.test(x));
-  console.log(`✓ 基线名字全部仍存在于源码（跨平台核对 ${files.length} 份基线）`);
+  console.log(`✓ 基线名字与模块路径跨平台一致（核对 ${files.length} 份基线）`);
   return true;
 }
 
