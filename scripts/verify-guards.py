@@ -2198,6 +2198,36 @@ CASES: list[Case] = [
         tags=["frontend", "peer", "display"],
     ),
     Case(
+        name="写失败的分流两半都必须各自咬住（本地成帧失败 vs 真 socket 失败）",
+        why="第 1 步 · 故障隔离（P2）。判据不是帧类型而是**字节有没有上过链路**：一个字节都没"
+        "写出去 ⇒ 那是本机 bug，链路保留；写出去才失败 ⇒ 这条连接不可信，必须判死并拆写半。"
+        "两个退化方向各对应一次真实事故，所以两个变异各来一遍：\n"
+        "     ① 把 Local 折回 Failed（旧形状 `res.is_ok()` 一把抓）⇒ 一条永远发不出去的超长帧"
+        "会带走整条连接，再连带拖死同一 peer 其它链路上的文件接收；\n"
+        "     ② 把 Socket 折成 Local（\"保护文件传输\"式修法）⇒ 已经写不出去的连接被一直复用，"
+        "消息静默堆在队列里 —— 用户 2026-09-24 明确划的界。\n"
+        "     两条都由同一处护栏判出，锚点必须逐字对齐 rustfmt 后的形状（带 `Err(` 那层括号）。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[
+            (
+                "Err(WriteError::Local(why)) => WriteOutcome::Local(why),",
+                "Err(WriteError::Local(_)) => WriteOutcome::Failed,",
+            ),
+            (
+                "Err(WriteError::Socket(_)) => WriteOutcome::Failed,",
+                "Err(WriteError::Socket(e)) => WriteOutcome::Local(e.to_string()),",
+            ),
+        ],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "writer_loop_splits_local_from_socket_failure_exactly_once",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="分流",
+        tags=["rust", "transport", "write-taxonomy"],
+    ),
+    Case(
         name="应用样式（三个窗口都必须加载 style.css）",
         why="真实缺陷：一窗一入口重构时漏掉了 `import \"./style.css\"`，dev 起来整个界面\"像没有 CSS\"，"
         "而且不报错、不影响任何测试 —— 只有这条守卫能拦住",

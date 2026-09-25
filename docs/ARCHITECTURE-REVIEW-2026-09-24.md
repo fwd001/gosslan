@@ -391,11 +391,28 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
 
 ### 第 1 步 · 连接生命周期与故障隔离（**P1 + P2**，一个 PR 家族）
 
-1. 先写**能红的测试**：构造"peer 有两条链路，其中一条读半结束"，断言另一条链路上的接收器**不被**判死。
-   （现成刀法：把判定函数从吃 `&AppState` 的循环里拆出来，同 `finish_receiver_into` / `send_retry_verdict`。）
-2. `FileReceiver`/群接收器加端点身份；`fail_receives_for_peer` → `fail_receives_for_endpoint(state, peer, endpoint_key)`；
-   调用点从 `:1548` 移到 `:1563-1583` 的"确认这条连接确实没了"之后。
-3. **写失败按错误来源分流**（不是按帧类型分流！）：`write_frame` 返回带类型的错误，writer 按类型决定 ——
+> **进度（2026-09-25）**：**P2 已落地**（下面第 1、3、4 条 + 一条双变异用例；`write_frame`
+> 改成返回 `WriteError::{Local, Socket}`，`Local` 丢帧 + error 留痕但**链路保留**，
+> `Socket` 行为一字未变仍然判死拆链）。
+> **P1 未动**，卡在一个必须先答的前提上：**延后清理之后，谁回收喂不到分片的接收器？**
+> 现状是既没有接收侧 idle TTL，而 `sweep_stale_parts` 反过来把内存里的接收器当"活跃"**永久保护**
+> （它只删 24h 以上、且不在表里的 `.part`）。直接把第 2 条改掉 = 把"杀错人"换成"泄漏"。
+> 两个候选：给 `FileReceiver` 加 `last_chunk_ms` + 复用某个周期任务做 TTL；
+> 或者只在 `peer_now_offline` 为真时清（其余交给发送侧的 stall/outbox 重连续传）。
+> 判完再动 —— 这一条不许和 P2 混在一个 commit 里。
+
+1. ✅ 先写**能红的测试**（改成"分类用真链路证、接线用源码护栏证"，因为 `writer_loop` 吃
+   `Arc<AppState>` 造不出来）：`oversize_frame_is_a_local_failure_and_writes_nothing`
+   （断言超长帧归 `Local` **且对端一个字节都没读到**）、
+   `socket_write_failure_is_classified_as_socket`（反向：真 IO 失败仍归 `Socket`）、
+   `writer_loop_splits_local_from_socket_failure_exactly_once`（判死点全函数只有一处且不在 `Local` 分支）。
+   另登记 `verify-guards.py` 双变异：折回旧的 `res.is_ok()` 一把抓必须红，把 `Socket` 也放过必须红。
+2. ⬜ `FileReceiver`/群接收器加端点身份；`fail_receives_for_peer` → `fail_receives_for_endpoint(state, peer, endpoint_key)`；
+   调用点从 `:1548` 移到 `:1563-1583` 的"确认这条连接确实没了"之后。（**行号已复核为 2026-09-25 实测**：
+   `file::fail_receives_for_peer` 唯一调用点在 `transport.rs:1548`，紧跟其后的群接收器清理 `:1551-1562`
+   是**同一形状的 peer-wide 清理**，两处要一起改；而"只删这一条连接"的正确逻辑在 `:1563-1603`，
+   注释里已经写明「断一条 ≠ peer 下线」—— 也就是说文件那两处与它**自相矛盾**。）
+3. ✅ **写失败按错误来源分流**（不是按帧类型分流！）：`write_frame` 返回带类型的错误，writer 按类型决定 ——
    * `Encode`/`Framing`（序列化失败、载荷超 `MAX_FRAME`、BLE 无法分片、入队被拒）⇒ **只结束这一帧 / 这一个
      transfer**，链路保留，并记 **error** 级日志（那是我们自己的 bug，绝不能静默降级成"文件失败"就完事）。
    * **真 socket IO 失败（`write_all` / `flush` 返回 Err）⇒ 仍然判该 endpoint 失效**：`mark_conn_failure`
@@ -403,9 +420,14 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
    实现上这是**补齐一致性**，不是新发明：`transport/tcp.rs:38-44`（本地非法载荷 → `InvalidData`）、
    `network/ble.rs:1418-1420`（"帧无法分片"是这一帧的问题，不重试不拆链）、读侧 `decode_frame`
    （`outbound.rs:24-38`，未知 type ⇒ 忽略这一条、链路保持）三处都已经是这个规则，
-   **只有 TCP writer 还停在 `res.is_ok()` 一把抓**（`transport.rs:1469-1471`、`1496-1498`）。
-4. 三条不变量都要有测试：**连接失败 ≠ peer 失败 ≠ 该 peer 的所有文件失败**；
-   外加一条反向测试：**真 IO 失败必须仍然导致该 endpoint 判死**（防止把修复做成"文件永远不拆链"）。
+   **只有 TCP writer 还停在 `res.is_ok()` 一把抓**（`transport.rs:1469-1471`、`1496-1498`）
+   —— ✅ **这一处已改完**（2026-09-25）。落地形态比原计划更进一步：不是让调用方嗅 `io::ErrorKind`，
+   而是 `write_frame` 直接返回 `WriteError::{Local, Socket}`，**因为只有产出错误的那一层
+   知道自己有没有碰过 socket**（`tcp::write_bytes` 的长度校验发生在写之前，`write_all` 之后才失败
+   的一定是 socket）。
+4. 三条不变量都要有测试：**连接失败 ≠ peer 失败 ≠ 该 peer 的所有文件失败**（⬜ 这条属于 P1，
+   还没做）；✅ 外加一条反向测试：**真 IO 失败必须仍然导致该 endpoint 判死**
+   （`socket_write_failure_is_classified_as_socket` + 源码护栏里"判死点只有一处、且不在 Local 分支"）。
 5. 回归：`verify:full` + 真机（用户）双链路场景。**回滚**：改动集中在清理函数签名与错误类型枚举，可单独 revert。
 
 ### 第 2 步 · 缓冲与内存（**P3 + P4**）

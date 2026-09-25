@@ -10,6 +10,43 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-25 · 第 1 步 · 故障隔离 P2：写失败按**错误来源**分流，不再一把抓)
+
+旧形状是 `writer_loop` 里一句 `if res.is_ok() { Ok } else { Failed }` —— 任何写失败都
+"记一次连接失败 + 拆这条写半"。于是一条**本机就写不出去**的帧（序列化不出来，或长度超过
+`MAX_FRAME`）会把一条好端端的连接判死；而连接一死，`reader_loop` 收尾又按 peer -wide
+清接收器 ⇒ **一个超长帧拖死同一好友其它链路上正在跑的文件传输**（这就是 P1 与 P2 的连结点）。
+
+- `write_frame` 现在返回**带来源**的错误 `WriteError::{Local, Socket}`，而不是让调用方去嗅
+  `io::ErrorKind`：**只有产出错误的那一层知道自己有没有碰过 socket**。
+  `Local` = 长度校验/序列化失败，**一个字节都没写进 socket**；`Socket` = `write_all` 真失败。
+- `Local` ⇒ 丢掉这一帧 + `eprintln!` **error 级**留痕（带 `msg.wire_kind()` 类型名），**链路保留**；
+  未送达的帧仍留在 outbox / file_outbox 里，界面上是"排队中/未送达"而不是"已送达"
+  —— 不许静默丢（INV-005），也不许把它伪装成"文件失败"就完事（那是我们自己的 bug）。
+- `Socket` ⇒ **行为一字未变**：仍然 `mark_conn_failure` + 拆这条写半。
+  这是刻意加的反向约束：**不允许"为了保护文件传输"继续复用一条已经写不出去的连接**
+  （用户 2026-09-24 划的界；目标是"连接失败 ≠ peer 失败 ≠ 该 peer 所有文件失败"，
+  而不是"文件永不拆链"）。
+- 拨号握手那处（`write_frame` 的另一个调用点）**不分流**：那一刻链路还没建立，
+  没有"保留"可言，两种失败都归 `DialOutcome::Failed`，只把原因换成 `WriteError::reason()`。
+
+**判据（3 条用例 + 1 条变异）**
+- `oversize_frame_is_a_local_failure_and_writes_nothing`：真 `duplex` 链路 + 超过 `MAX_FRAME`
+  的帧 ⇒ 归 `Local`，**并且断言对端一个字节都没读到**（"半截帧污染流"比"没写"更糟，所以这条
+  断言不是锦上添花）。
+- `socket_write_failure_is_classified_as_socket`：对端整半被 drop ⇒ 归 `Socket`（反向护栏）。
+- `writer_loop_splits_local_from_socket_failure_exactly_once`：`writer_loop` 吃 `Arc<AppState>`
+  造不出来 ⇒ 分流点的**接线**只能用源码护栏钉：两半各一条断言 + "判死点全函数只有一处、
+  且不在 Local 分支里"。
+- `verify-guards.py` 新增一条双变异用例：把 `Local` 折回 `Failed`（旧形状）必须红，
+  把 `Socket` 折成 `Local`（"保护文件"式修法）也必须红 —— 两个退化方向各对应一次真事故。
+  ⚠️ 锚点带行尾逗号才唯一：护栏自己的 `contains(...)` 里写的是不带逗号的那半截。
+
+Rust 基线 667 → **670**。**P1 那半（接收侧按端点/仅在全链路断开时才清）没做**，
+卡在一条未定的前提上：延后清理之后，"喂不到分片的接收器"由谁回收
+（现在既没有接收侧的 idle TTL，`sweep_stale_parts` 反而把内存里的接收器当"活跃"永久保护）——
+先答这个再动，否则会把一个"杀错人"换成一个"泄漏"。
+
 ## [4.29.36] - 2026-09-25
 
 ### Performance (2026-09-25 · 架构改造 0-B：4 条热查询补索引，判据用查询计划而不是"索引存在")

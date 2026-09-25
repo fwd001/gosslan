@@ -8,12 +8,49 @@ fn is_virtual_ip_str(ip_str: &str) -> bool {
 
 // ---------------- 分帧 ----------------
 
-pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> std::io::Result<()> {
-    let json = serde_json::to_vec(msg)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+/// `write_frame` 的失败**来源**（第 1 步 · 故障隔离）。
+///
+/// 分型的依据不是"这一帧是什么类型"，而是**字节有没有上过链路**：
+/// - 还没写出去就失败 ⇒ 换一条链路也会一模一样地失败 ⇒ 那是我们自己的问题，
+///   与这条连接的健康无关。
+/// - 写出去才失败 ⇒ 这条连接不可信，必须记失败并拆掉它 ——
+///   **不允许"为了保护文件传输"继续复用一条已经写不出去的连接**（用户 2026-09-24 纠正）。
+///
+/// 为什么分型放在这里而不是让调用方嗅 `io::ErrorKind`：只有这一层知道
+/// 哪个错误发生在 `write_all` **之前**。
+#[derive(Debug)]
+pub enum WriteError {
+    /// 载荷本身就不可写：序列化失败，或长度超过 `MAX_FRAME`。**一个字节都没写进 socket。**
+    Local(String),
+    /// `write_all` / `flush` 真的失败（BrokenPipe / ConnectionReset / WriteZero / OS 错误）。
+    Socket(std::io::Error),
+}
+
+impl WriteError {
+    /// 面向日志与 `DialOutcome::Failed` 的一句话原因。
+    pub fn reason(&self) -> String {
+        match self {
+            Self::Local(why) => format!("本地成帧失败（未上链路）：{why}"),
+            Self::Socket(e) => e.to_string(),
+        }
+    }
+}
+
+pub async fn write_frame<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    msg: &Message,
+) -> Result<(), WriteError> {
+    let json = serde_json::to_vec(msg).map_err(|e| WriteError::Local(e.to_string()))?;
     // 分帧（4 字节大端长度 + payload）与长度校验统一交给 bytes 层，
     // 业务侧只负责序列化 —— 单一真相源见 `transport::tcp`（P-A03）。
-    crate::transport::tcp::write_bytes(w, &json).await
+    crate::transport::tcp::write_bytes(w, &json)
+        .await
+        .map_err(|e| match e.kind() {
+            // `tcp::write_bytes` 只在**动手写之前的长度校验**上报 `InvalidData`
+            // （此刻 socket 一个字节都没碰到）；其余 kind 全来自 `write_all`。
+            std::io::ErrorKind::InvalidData => WriteError::Local(e.to_string()),
+            _ => WriteError::Socket(e),
+        })
 }
 
 /// 只取 `type` 标签的轻量视图 —— 用来区分"我们不认识这个帧类型"和"认识但字段畸形"。

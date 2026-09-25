@@ -1414,8 +1414,14 @@ fn mark_conn_failure(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
 
 /// 单次写出的结果（D8-4）。把"主动放弃"与"写失败"分开：
 /// 前者是我们在停机/拆链路，不该记成链路故障（否则选路会把正在关闭的链路算成失败）。
+///
+/// `Local` 是第三种（第 1 步 · 故障隔离）：**载荷自身不可写**（超长 / 序列化不出来），
+/// 一个字节都没上链路 ⇒ 这一帧作废即可，**链路保留**。
+/// 旧形状是 `res.is_ok()` 一把抓 ⇒ 一条永远发不出去的超大帧会把整条连接判死，
+/// 再顺带拖掉同一 peer 其它链路上正在跑的文件传输。
 enum WriteOutcome {
     Ok,
+    Local(String),
     Failed,
     Stopped,
 }
@@ -1466,8 +1472,11 @@ async fn writer_loop(
                     biased;
                     _ = shutdown.changed() => WriteOutcome::Stopped,
                     _ = cancel.changed() => WriteOutcome::Stopped,
-                    res = write_frame(&mut w, &msg) => {
-                        if res.is_ok() { WriteOutcome::Ok } else { WriteOutcome::Failed }
+                    res = write_frame(&mut w, &msg) => match res {
+                        Ok(()) => WriteOutcome::Ok,
+                        Err(WriteError::Local(why)) => WriteOutcome::Local(why),
+                        // 真 socket 写失败 ⇒ 这条连接已经不可信，照旧走下面的判死+拆链。
+                        Err(WriteError::Socket(_)) => WriteOutcome::Failed,
                     }
                 };
                 if matches!(outcome, WriteOutcome::Ok) {
@@ -1479,6 +1488,18 @@ async fn writer_loop(
                 }
                 if matches!(outcome, WriteOutcome::Stopped) {
                     break;
+                }
+                if let WriteOutcome::Local(why) = outcome {
+                    // 载荷自身不可写（超长 / 序列化不出来）：一个字节都没上链路 ⇒
+                    // 这一帧作废，**链路保留**、不记连接失败。
+                    // ⚠️ 必须响：静默丢帧违反 INV-005「不允许静默丢失」。发不出去的帧
+                    //    仍留在 outbox / file_outbox 里，界面上是"未送达/排队中"而不是"已送达"。
+                    eprintln!(
+                        "[gosslan][WRITE] peer={peer_id} 帧 {} 本机就写不出去，已丢弃这一帧（链路保留）：\
+                         {why} —— 这是本机 bug，换链路也会同样失败，别当网络问题查",
+                        msg.wire_kind()
+                    );
+                    continue;
                 }
                 {
                     // TCP write 失败：普通消息由 outbox 重发；ReadReceipt 需要特殊处理——
@@ -2377,7 +2398,8 @@ async fn connect_to_peer(
     };
     let hello = build_signed_hello(state, conv_clock);
     if let Err(e) = write_frame(&mut w, &hello).await {
-        return DialOutcome::Failed(format!("握手发送失败: {e}"));
+        // 握手帧的失败一律算"这次拨号没成"：此刻链路还没建立，没有"保留链路"可言。
+        return DialOutcome::Failed(format!("握手发送失败: {}", e.reason()));
     }
     // 读对端回发的 Hello（对端收到我们的 Hello 后会回发，见 `handle_incoming`）。
     let first = tokio::select! {
@@ -8132,6 +8154,138 @@ mod tests {
             Message::Heartbeat { device_id } => assert_eq!(device_id, "dev-1"),
             _ => panic!("类型不符"),
         }
+    }
+
+    /// 超长帧必须归 **Local**，而且**一个字节都不许上链路**（第 1 步 · 故障隔离）。
+    ///
+    /// 判据为什么是这两条：旧形状是 `res.is_ok()` 一把抓 ⇒ 一条永远发不出去的帧会把
+    /// 整条连接判死，再顺带拖掉同一 peer **其它**链路上正在跑的文件传输。
+    /// 而"半截帧写进了流"比"没写"更糟：那条链路从此被污染，后面每一帧都会被对端
+    /// 读成截断帧 —— 所以"没上链路"这个事实必须被测出来，不能只靠代码注释。
+    #[tokio::test]
+    async fn oversize_frame_is_a_local_failure_and_writes_nothing() {
+        use crate::protocol::MAX_FRAME;
+        use tokio::io::AsyncReadExt;
+        let (a, b) = tokio::io::duplex(64);
+        let (_ar, mut aw) = tokio::io::split(a);
+        let (mut br, _bw) = tokio::io::split(b);
+        let msg = Message::ChatMessage {
+            msg_id: "m-1".into(),
+            from: "dev-1".into(),
+            to: "dev-2".into(),
+            kind: "text".into(),
+            content: "x".repeat(MAX_FRAME + 8),
+            ts: 1,
+            seq: 1,
+        };
+        let err = write_frame(&mut aw, &msg)
+            .await
+            .expect_err("超过 MAX_FRAME 的帧必须失败");
+        assert!(
+            matches!(err, WriteError::Local(_)),
+            "超长帧必须归 Local（链路该保留），实际 {err:?}"
+        );
+
+        let mut sink = [0u8; 1];
+        let got =
+            tokio::time::timeout(std::time::Duration::from_millis(50), br.read(&mut sink)).await;
+        assert!(
+            got.is_err(),
+            "链路上出现了 {} 个字节 —— 长度校验必须在动 socket 之前拦住",
+            match got {
+                Ok(Ok(n)) => n,
+                _ => usize::MAX,
+            }
+        );
+    }
+
+    /// **反向护栏**：真 socket 写失败必须归 `Socket`（⇒ 记连接失败 + 拆这条写半）。
+    /// 没有这一条，"写失败不再拆链"会被做成"文件永远不拆链"，
+    /// 于是那条已经写不出去的连接会被一直复用（用户 2026-09-24 明确要求的分界）。
+    #[tokio::test]
+    async fn socket_write_failure_is_classified_as_socket() {
+        let (a, b) = tokio::io::duplex(8);
+        let (_ar, mut aw) = tokio::io::split(a);
+        drop(b); // 对端整个消失 ⇒ 这一帧写不出去
+        let msg = Message::Heartbeat {
+            device_id: "dev-1".into(),
+        };
+        let res = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            write_frame(&mut aw, &msg),
+        )
+        .await
+        .expect("对端消失时写必须立刻返回，不能挂住");
+        let err = res.expect_err("对端已消失，写必然失败");
+        assert!(
+            matches!(err, WriteError::Socket(_)),
+            "真 IO 失败必须归 Socket ⇒ 该连接判死，实际 {err:?}"
+        );
+    }
+
+    /// writer_loop 的"写失败"分流**只有一处判据，两半都不许退化**（第 1 步 · 故障隔离）。
+    ///
+    /// 为什么是源码护栏而不是行为测试：`writer_loop` 吃 `Arc<AppState>`（单测里造不出来），
+    /// 而这里要钉的恰恰是"接到分类结果之后做了什么" —— 分类本身已由
+    /// `oversize_frame_is_a_local_failure_and_writes_nothing` / `socket_write_failure_is_classified_as_socket`
+    /// 用真链路证过。
+    ///
+    /// 两半各自的退化方向：
+    /// - **Local 那一半不许拆链**：一旦它旁边长出 `mark_conn_failure(` 或 `break`，
+    ///   一条永远发不出去的帧又会把整条连接带走（旧行为）。
+    /// - **Socket 那一半必须拆链**：判死点必须**只剩一处**，且不能在 Local 分支里 ——
+    ///   防止"为了保护文件传输"把真 IO 失败也一起放过（用户 2026-09-24 明确划的界）。
+    #[test]
+    fn writer_loop_splits_local_from_socket_failure_exactly_once() {
+        let src = crate::network::transport_src_for_guards();
+        let start = src
+            .find("async fn writer_loop(")
+            .expect("找不到 writer_loop（这条护栏会空转）");
+        let end = src[start..]
+            .find("async fn reader_loop(")
+            .map(|i| start + i)
+            .expect("writer_loop 后面找不到 reader_loop（函数边界变了，护栏需同步）");
+        let body = &src[start..end];
+
+        // ① 分类必须在此发生，且 Socket 那一半被送到 Failed（不是被 Local 吞掉）
+        assert!(
+            body.contains("Err(WriteError::Local(why)) => WriteOutcome::Local(why)"),
+            "writer_loop 不再接 WriteError 的分型 ⇒ 分流点丢了"
+        );
+        assert!(
+            body.contains("Err(WriteError::Socket(_)) => WriteOutcome::Failed"),
+            "真 socket 失败必须仍然走 Failed 那一支（拆链）"
+        );
+
+        // ② 判死点全函数只有一处，且**不在** Local 分支里
+        assert_eq!(
+            body.matches("mark_conn_failure(").count(),
+            1,
+            "写失败的判死点必须只有一处；现在有 {} 处",
+            body.matches("mark_conn_failure(").count()
+        );
+        let local_at = body
+            .find("if let WriteOutcome::Local(why)")
+            .expect("Local 分支不见了 ⇒ 本地成帧失败又会拆链");
+        let local_end = body[local_at..]
+            .find("continue")
+            .map(|i| local_at + i + "continue".len())
+            .expect("Local 分支没有 continue");
+        let local_span = &body[local_at..local_end];
+        for forbidden in ["mark_conn_failure(", "break"] {
+            assert!(
+                !local_span.contains(forbidden),
+                "Local 分支里出现了 `{forbidden}`：一个字节都没上链路的帧不该带走整条连接"
+            );
+        }
+        // ③ 剩下的那一处判死点必须在 Local 分支之后（即它服务的是真 IO 失败）
+        let kill_at = body
+            .find("mark_conn_failure(")
+            .expect("Socket 那一半必须记连接失败");
+        assert!(
+            kill_at > local_end,
+            "唯一的判死点落在了 Local 分支之前/之内 ⇒ 分流失效"
+        );
     }
 
     /// 定向中继判定：共享目录/中继文件在无直连时靠它借一跳；给本机或旧端无 to 的帧不转发。

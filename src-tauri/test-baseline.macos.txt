@@ -458,6 +458,7 @@ network::transport::tests::new_peer_entry_respects_friend_key_anchor
 network::transport::tests::non_frame_bytes_still_error
 network::transport::tests::non_friend_chat_message_rejected
 network::transport::tests::only_routed_connection_still_dials_lan_path
+network::transport::tests::oversize_frame_is_a_local_failure_and_writes_nothing
 network::transport::tests::pending_reads_keeps_max_timestamp
 network::transport::tests::pick_member_x25519_prefers_peers_then_friends
 network::transport::tests::plaintext_payload_is_rejected
@@ -487,12 +488,14 @@ network::transport::tests::should_dial_larger_id_dials_when_not_connected
 network::transport::tests::should_dial_skips_when_same_path_already_connected
 network::transport::tests::should_dial_smaller_id_backups_after_threshold
 network::transport::tests::should_dial_smaller_id_waits_within_threshold
+network::transport::tests::socket_write_failure_is_classified_as_socket
 network::transport::tests::stale_generation_is_rejected
 network::transport::tests::start_stop_start_accept_loop_keeps_serving
 network::transport::tests::successful_flush_clears_pending
 network::transport::tests::timed_out_send_leaves_nothing_behind
 network::transport::tests::unknown_wire_type_degrades_instead_of_erroring
 network::transport::tests::writer_failure_preserves_pending_for_read_receipt
+network::transport::tests::writer_loop_splits_local_from_socket_failure_exactly_once
 nickname::tests::base36_is_zero_padded_and_uppercase
 nickname::tests::default_nickname_is_deterministic_and_looks_right
 nickname::tests::different_devices_get_different_suffixes
