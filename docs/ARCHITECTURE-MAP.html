@@ -226,7 +226,7 @@
 <header class="top">
   <div class="brand">
     <h1>Gosslan 架构与接口契约图</h1>
-    <span class="meta">v4.29.35 · HEAD <code>a021861</code> · 取数 2026-09-25 · 6 扇窗口 / 133 条 IPC 命令 / 29 个后端事件 / 19 张表 / 11 个领域</span>
+    <span class="meta">v4.29.35 · HEAD <code>a021861</code> · 取数 2026-09-25 · 6 扇窗口 / 129 条 IPC 命令 / 29 个后端事件 / 19 张表 / 11 个领域</span>
   </div>
   <nav class="tabs" role="tablist" id="tabs"></nav>
 </header>
@@ -258,7 +258,7 @@
   <!-- ③ 接口规则表 -->
   <section class="tab" id="t-api" role="tabpanel">
     <p class="lede">
-      133 条 <b>输入 → 输出</b> 规则，按后端定义处（<code>src-tauri/src/commands/&lt;模块&gt;.rs</code>）分组。<b>输入/输出两列是从 Rust 函数签名直接抽的</b>（<code>str</code>=String、<code>int</code>=i64/u32、<code>X?</code>=Option、<code>X[]</code>=Vec、<code>|err</code>=Result 的错误分支），<b>语义列是判"是否符合需求"的地方</b>。
+      129 条 <b>输入 → 输出</b> 规则，按后端定义处（<code>src-tauri/src/commands/&lt;模块&gt;.rs</code>）分组。<b>输入/输出两列是从 Rust 函数签名直接抽的</b>（<code>str</code>=String、<code>int</code>=i64/u32、<code>X?</code>=Option、<code>X[]</code>=Vec、<code>|err</code>=Result 的错误分支），<b>语义列是判"是否符合需求"的地方</b>。
       前端另有 33 个事件把状态推回去，见"事件契约"。
     </p>
     <div class="filters" id="apifilters"></div>
@@ -295,7 +295,7 @@
 </main>
 
 <footer>
-  生成口径：接口表来自 <code>src-tauri/src/lib.rs</code> 的 <code>generate_handler!</code>（133 条）与 <code>src/api/index.ts</code> 的 <code>invoke</code>/<code>listen</code> 实测交叉；表结构来自 <code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量（18 张）+ <code>content/store.rs</code> 的 <code>ensure_schema</code>（1 张）。<code>src-tauri/schema.sql</code> 只是文档参考、已落后（缺 5 张表与 <code>conversations.pinned</code>），<b>不要拿它当事实</b>。
+  生成口径：接口表来自 <code>src-tauri/src/lib.rs</code> 的 <code>generate_handler!</code>（129 条）与 <code>src/api/index.ts</code> 的 <code>invoke</code>/<code>listen</code> 实测交叉；表结构来自 <code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量（18 张）+ <code>content/store.rs</code> 的 <code>ensure_schema</code>（1 张）。<code>src-tauri/schema.sql</code> 只是文档参考、已落后（缺 5 张表与 <code>conversations.pinned</code>），<b>不要拿它当事实</b>。
 </footer>
 
 <script>
@@ -410,7 +410,7 @@ const MODS = [
     data: ["opening: Set<label> 单飞 + lastLaunchAt 防抖（模块作用域，全应用共享一份）"] },
 
   /* ───────────── ② IPC 契约层 ───────────── */
-  { id: "api-invoke", l: "ipc", n: "api.invoke 面", s: "src/api/index.ts 的一个平面对象", cnt: "133 条包装 = 注册表 1:1",
+  { id: "api-invoke", l: "ipc", n: "api.invoke 面", s: "src/api/index.ts 的一个平面对象", cnt: "129 条包装 = 注册表 1:1",
     role: "<b>前端唯一</b>碰 <code>@tauri-apps/api/core</code> 的地方 —— 0-A3 起这句话<b>有守卫兜</b>（src/ 下任何其它文件出现该 import 就必须红，静态与动态 import 都算）。约定：参数写 camelCase，Rust 侧 snake_case 自动转；返回用 <code>invoke&lt;T&gt;</code> 泛型；<b>错误不集中吞</b>，由调用方决定 toast。",
     files: ["src/api/index.ts"],
     in: ["组件/store 的方法调用（带 TS 类型）"],
@@ -1112,7 +1112,7 @@ const DOMAINS = [
 const DRIFT = [
   ["✅ <b>10 处 invoke 绕过 <code>api</code> 门面</b>（0-A3 已收拢）", "<code>boot.ts</code>(focus_window, log_frontend_error)、<code>localFile.ts</code>(copy_file)、<code>MessageItem.vue</code>(request_content / get_group_file_delivery_summary / save_data_file / cancel_file_transfer / copy_file_to_clipboard)、<code>FavoritePanel.vue</code>、<code>MessageComposer.vue</code> + <code>GroupTasksBoard.vue</code>(read_clipboard_file_paths)、<code>ImageLightbox.vue</code>、<code>GroupFilesPanel.vue</code>、<code>SettingsWindow.vue</code>(close_settings_window) —— 全部改走门面，<b>现在为 0</b>", "原本的风险不是「不工作」而是<b>契约表画不全</b>：其中 6 条（copy_file · copy_file_to_clipboard · save_data_file · read_clipboard_file_paths · get_group_file_delivery_summary · log_frontend_error）在 api 上根本没有包装 ⇒ 只读 <code>src/api/index.ts</code> 会漏掉一整截真实接口面。6 条包装已补齐，并把「除本文件外不得 import core」写成守卫（静态与动态 import 都算）"],
   ["✅ 已收口（2026-09-25）：门面之下那 5 条已删，对账升级成<b>三段</b>", "删掉的是<b>入口</b>不是实现：<code>send_file</code> 的真身在删注册后由编译器指出唯一调用者是 <code>send_file_auto</code> ⇒ 降级成模块内私有函数；<code>send_file_relay</code> 的能力由自动路径（<code>transport.rs</code> 无直连时借一跳）提供，那条手工命令同样没人调；<code>search_messages</code> 及其私有查询 <code>search_messages_in_conv</code>、<code>SearchResult</code>（Rust + TS 两份）一并删除；<code>get_interface_candidates</code>、<code>close_log_window</code> 同删。", "判据 <code>src/utils/mapContract.test.ts</code> 三段：① 前端 invoke 的每个名字必须注册过（拼错只在运行时炸）；② 注册 ↔ 本图 IPC 表双向一致 + 两侧不重复；③ 门面包装必须有引用点。⚠️ 第三段判的是「<code>api.K</code> 有没有被引用」而不是「UI 是否可达」—— 只被另一条死方法引用的仍会算活，要真判可达得建调用图。匹配前必须把空白压平：真调用点常写成 <code>api</code> 换行 <code>.name()</code>，按行匹配会把它们误报成死代码（这一条是被现场假阳性逼出来的）。"],
-  ["✅ <b>5 条注册了但前端零引用的命令已删除</b>（2026-09-25 用户拍板）", "<code>recall_message · resend_message · cancel_send · send_group_poll · cast_group_poll_vote</code> 连同实现一起删（<code>commands/chat.rs</code> 尾部 271 行、<code>group_files.rs</code> 两条投票命令 + 孤立的 <code>MAX_POLL_OPTIONS</code>）。注册表 138 → 133，与前端调用面<b>正好相等</b>", "跟着走的还有两条源码护栏（<code>resend_message_sets_sending_only_after_all_failure_paths</code> / <code>resend_reseals_before_enqueue</code>）与两个死监听（<code>message-cancelled</code> / <code>message-resending</code>）—— 那两条不变量没有丢，改记在 <code>docs/protocol-invariants.md</code> §6「界面上的重发是已知例外」。<b>已保留的部分</b>：<code>poll</code> / <code>poll_vote</code> 的线上词表与渲染、<code>cancelled</code> 状态（文件取消仍在写它，且老库里已有这类行）、群聊版撤回 <code>recall_group_message</code>。此后 <code>DEAD_COMMANDS</code> 白名单为空 ⇒ <b>再注册一条不接界面的命令直接红</b>"],
+  ["✅ <b>5 条注册了但前端零引用的命令已删除</b>（2026-09-25 用户拍板）", "<code>recall_message · resend_message · cancel_send · send_group_poll · cast_group_poll_vote</code> 连同实现一起删（<code>commands/chat.rs</code> 尾部 271 行、<code>group_files.rs</code> 两条投票命令 + 孤立的 <code>MAX_POLL_OPTIONS</code>）。注册表 138 → 133，与前端调用面<b>正好相等</b>", "跟着走的还有两条源码护栏（<code>resend_message_sets_sending_only_after_all_failure_paths</code> / <code>resend_reseals_before_enqueue</code>）与两个死监听（<code>message-cancelled</code> / <code>message-resending</code>）—— 那两条不变量没有丢，改记在 <code>docs/protocol-invariants.md</code> §6「界面上的重发是已知例外」。（此后随 4 条命令退场到 <b>129</b>；这条表与注册表的等值由 <code>mapContract.test.ts</code> 每次实算核对，不靠本段文字。）<br><b>已保留的部分</b>：<code>poll</code> / <code>poll_vote</code> 的线上词表与渲染、<code>cancelled</code> 状态（文件取消仍在写它，且老库里已有这类行）、群聊版撤回 <code>recall_group_message</code>。此后 <code>DEAD_COMMANDS</code> 白名单为空 ⇒ <b>再注册一条不接界面的命令直接红</b>"],
   ["<code>schema.sql</code> 与真源不一致", "真源是 <code>db.rs</code> 的 <code>SCHEMA</code> 常量；<code>schema.sql</code> 文件头自陈「供文档/手动建库参考」，实测缺 5 张表（<code>group_files · group_file_recipients · group_recalled_messages · favorites · content_transfers</code>）与 <code>conversations.pinned</code>", "照 <code>schema.sql</code> 判断数据契约会得出<b>错误结论</b>。它仍挂在 persistence 域的路径里 ⇒ 要么同步，要么删掉并留一句「真源在 db.rs」"],
   ["✅ <b>断一条链路 = 杀掉该 peer 全部文件接收</b>（第 1 步 P1 已修）", "<code>reader_loop</code> 开头就按 peer 清 <code>file_receivers</code> 与 <code>group_file_receivers</code>，而同一函数下面那段「只删这一条连接」的注释早就写明「断一条 ≠ peer 下线」—— 两处一直<b>自相矛盾</b>。LAN + Tailscale 双链路时断其一，另一条上正在收的文件被连带判死", "现在两处清理都在 <code>if peer_now_offline</code> 门内；配套 <code>sweep_stalled_receives</code>（判据 <code>receive_is_stale</code>，5 分钟）补上「对端在线但这单被放弃」那一半 —— 因为<b>协议里没有 cancel 帧</b>，发送侧 60s 停滞不通知接收端。三条护栏登记进 <code>verify-guards.py</code>（挪回门之前 / 摘掉这趟回收 / 退回快照-再杀 各必须红）"],
   ["<b>接收器回收的延迟是 1 小时，不是 5 分钟</b>（有意，但要记下来）", "判据窗口 5 分钟，可它挂在每小时那一趟清扫上（与 <code>.part</code> / 中继态同一趟）", "治的是<b>永久</b>泄漏（表项 + 文件句柄 + <code>.part</code> 被 <code>sweep_stale_parts</code> 当活跃跳过），不是界面 spinner。若哪天要让失败提示更快出现，把它挂到 30s 那趟清扫器上即可 —— <b>别顺手把窗口调小到分钟级</b>：发送侧 abort 就是 60s，接收侧必须更宽，否则会在对端重排队的间隙里把自己那半截清掉（这条有断言钉着）"],
@@ -1401,7 +1401,7 @@ function buildEvents() {
 /* ---------- 数据表 ---------- */
 function buildDb() {
   $("#dblist").innerHTML =
-    '<h2 class="sec">SQLite · 19 张表（真源：<code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量，迁移靠 <code>PRAGMA user_version</code>，当前 <code>DB_VERSION = 8</code>）</h2>' +
+    '<h2 class="sec">SQLite · 19 张表（真源：<code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量，迁移靠 <code>PRAGMA user_version</code>，当前 <code>DB_VERSION = 9</code>）</h2>' +
     '<div class="tablewrap"><table><thead><tr><th>表</th><th>用途</th><th>主键 / 索引</th><th>关键列与状态取值</th><th>谁写 · 谁清</th></tr></thead><tbody>' +
     TABLES.map((t) =>
       "<tr><td class='c'>" + t[0] + "</td><td>" + t[1] + "</td><td class='io'>" + t[2] + "</td><td class='io'>" + t[3] + "</td><td>" + t[4] + "</td></tr>").join("") +
@@ -1433,7 +1433,8 @@ function buildDir() {
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
       '<div class="stat"><div class="num">29</div><div>后端事件名（表内合并成 ' + EVENTS.length + ' 行）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
-      '<div class="stat"><div class="num">181</div><div>护栏非空转用例（改坏即红）</div></div>' +
+      '<div class="stat"><div class="num">185</div><div>护栏非空转用例（改坏即红）</div></div>' +
+      '<div class="stat"><div class="num">2 / 16</div><div>跨进程双实例 E2E 的旅程数 / 断言数（J1 文本 + J2 文件；本地，未进 CI）</div></div>' +
       '<div class="stat"><div class="num">690 / 606</div><div>Rust / 前端测试条数</div></div>' +
     "</div>" +
     '<h2 class="sec">领域图（真源 <code>docs/domains.data.mjs</code> · 本页内嵌快照 · <code>check-domain-map.mjs</code> 守路径存在，<code>check-domain-deps.mjs</code> 守依赖方向）</h2>' +
@@ -1456,7 +1457,7 @@ function buildDir() {
 
 /* ---------- tabs ---------- */
 const TABS = [
-  ["t-map", "① 大图"], ["t-mod", "② 模块契约"], ["t-api", "③ 接口规则表 133"],
+  ["t-map", "① 大图"], ["t-mod", "② 模块契约"], ["t-api", "③ 接口规则表 129"],
   ["t-evt", "④ 事件契约"], ["t-db", "⑤ 数据契约"], ["t-flow", "⑥ 流程穿透"], ["t-dir", "⑦ 方向核对"],
 ];
 function showTab(id) {

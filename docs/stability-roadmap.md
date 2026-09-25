@@ -172,7 +172,7 @@ Windows 基线 487 条 vs macOS 690，差约 200 条；`check-test-manifest` 对
 |---|---|---|---|---|
 | **B-1** | 20 条无具名钩子的不变量补钩子（优先 P01/P02/P03/P04/P14/P15/P19/P20/P21） | **B** | 优化，**排在 A-1/A-2 之后** | 没有跨进程 harness 时，部分只能做成"顺序/形状"护栏；有 harness 后能做成行为护栏 ⇒ 顺序错了会白做 |
 | **B-2** | R6：事件 payload 契约（先覆盖有真实消费者的 ~10 个，不做全量 codegen） | **B** | 优化 | ADR-0009 全量生成 TS 类型属大工程，收益待证；先做"逐字段断言"扩面，成本可控 |
-| **B-3** | R4：文档硬数字改成**由门禁自己算并写回**，或加"文档数字 == 实算"判据 | **B** | 修复 + 优化 | 教训已记过：写死条数一定腐烂，一律交给执行者打印 |
+| **B-3** | R4：文档硬数字改成**由门禁自己算并写回**，或加"文档数字 == 实算"判据 | **B** | 修复 + 优化 | 教训已记过：写死条数一定腐烂，一律交给执行者打印。**2026-09-25 一夜之内抓到三处同类漂移**：① `docs/acceptance/1.0-release.md` 写「全量 15 步」（实为 16，清单还漏了「db 锁作用域守卫」）→ 已删掉手写清单；② `README.md` 的 IPC 138 → 129；③ **门禁自己的文案也漂**：`scripts/verify.mjs:172` 写「292 个取锁点全扫」，而同一步在同一次运行里实际打印 **284 guard 绑定 + 11 语句临时量 = 295** ⇒ 待改：`why:` 里不留数字（真实条数由该步输出自带）。<br>**机器判据的可行性已实测**：`node scripts/verify.mjs --list` 无副作用、退出 0，快速层正好 10 条编号步骤；`--list --full-gate` 正好 16 条 ⇒ 「快速 N 步 / 全量 N 步」这类声明完全可以从 `--list` 现算现比，不需要人记。 |
 | **B-4** | R7：双实例 receive/cache 目录隔离 | **B** | 修复（作为 A-1 的前置，写进 harness 而非改生产码） | 不隔离会让 A-3 的"同名文件"类用例判定失真 |
 | **B-5** | §4-A③ `useAppStore` 4 处直写未收，`storeContract` 禁令只扫 `useChatStore` | **B** | 保留（小步） | 门面唯一性的已知缺口，成本低 |
 | **B-6** | §4-A② 群消息卡片跨窗口同步（需向自己窗口 emit） | **B** | **降级为 C**（改判） | 属"新增一条链路"，§「暂不新增功能」；且它是跨窗口一致性问题，应先由 A-1 证明"到底错在哪一步" |
@@ -270,7 +270,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 | L2 行为单测（Rust） | `cargo test --features bluetooth` | **690**(mac)/487(win) | 协议/分片/队列/DB/选路/清理的进程内语义 | 真 socket、真进程、真重启 |
 | L3 契约对账 | api/events/domain/lock/invariant 等 6 个脚本 + 3 个 test | 20 余条判据 | 名字/归属/注册/取锁形状/双向存在 | 类型与 payload 形状、UI 可达性 |
 | L4 护栏非空转 | `verify-guards.py` | 181(提交)/185(树) | "把正确代码改坏必须红" | 反向（无对象时必须非 0）类判据 |
-| **L5 跨进程 E2E** | — | **0** | — | **一切用户可感知的东西** |
+| **L5 跨进程 E2E** | `scripts/e2e-multi-instance.mjs`（本地，未进 CI） | **16 条断言 / J1+J2**（文本 6 + 文件 8 + 重启 2） | 两个真实进程之间：送达、只有一条、内容正确、outbox 被 Ack 清空、状态过 sending、**文件只有 rename 后落地且 sha256 一致**、两侧终态 `done`、重启后仍正确 | 除 J1/J2 之外的一切旅程；尺寸阶梯与断链/杀进程；UI 视觉腿；Windows 腿；routed/BLE/中继三条路径 |
 
 ### 5.2 功能区覆盖矩阵（17 区 × 4 类证明）
 
@@ -278,8 +278,8 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 
 | 功能区 | 单元 | 契约 | 护栏 | E2E |
 |---|---|---|---|---|
-| 文本消息 | ● | ● | ● | **–** |
-| 文件传输 | ● | ● | ● | **–** |
+| 文本消息 | ● | ● | ● | **●** J1（本地 5 连绿 + 反向自证报红） |
+| 文件传输 | ● | ● | ● | **●** J2（1 MB 单文件 4 连绿；仅"未断开、单文件、1 MB"这一格）|
 | 图片/预览 | ○ | ● | ○ | **–** |
 | 群聊/群同步 | ● | – | ● | **–** |
 | 任务(群 todo) | ● | ○ | ● | **–** |
@@ -297,6 +297,8 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 | 数据清理/迁移 | ● | ● | ● | **–** |
 
 ⇒ **结论很直白：单测与护栏这一层密度不低，E2E 这一层是零。** 所以§四把它定成"整个计划中最重要的一项"是对的。
+> 2026-09-26 更新（本表是**审计时快照**，故意不回填）：E2E 列已从 0 补到 **2 / 17**（文本 + 文件传输），
+> 其余 15 区仍为 0。补的速度远慢于欠账，所以这张表的重点仍然是"哪些格子还是 –"。
 
 ### 5.3 明确不存在（不要以为有）
 
@@ -335,7 +337,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 | # | 旅程 | 为什么最高风险 | 必须断言 | 今天能否自动 |
 |---|---|---|---|---|
 | **J1** | 文本消息 A→B 全程 | 它是所有语义的地基；RC3 曾出现"接收失败但发送端显示成功" | A 出现 sending→sent；B **恰好一条**、内容正确；`msg_id` 唯一；A 最终 delivered/read；outbox 清空；**重启后仍正确**；无重复通知 | 否 → A-1 后 **AUTOMATED** |
-| **J2** | 文件 A→B（小/中/大 × 尺寸阶梯） | 历史 4 个 RCA 全在此；`.part`+rename+hash+attempt 四层状态 | 只有 rename 后 B 目录有文件；进度单调不超 100%；hash 不符必拒且不 rename；`.part` 收完即清；重复 FileDone 幂等 | 否 → A-2/A-3 后 AUTOMATED |
+| **J2** | 文件 A→B（小/中/大 × 尺寸阶梯） | 历史 4 个 RCA 全在此；`.part`+rename+hash+attempt 四层状态 | 只有 rename 后 B 目录有文件；进度单调不超 100%；hash 不符必拒且不 rename；`.part` 收完即清；重复 FileDone 幂等 | **部分 AUTOMATED**：1 MB / 单文件 / 不断链这一格已 4 连绿（8 条断言，含 rename 后落地 + sha256 + 两侧终态 `done`）。尺寸阶梯、并发、断链/杀进程仍 → A-2/A-3 |
 | **J3** | 传输中断链/杀进程/重启后续传 | 跨链路重试 + Gap 判死曾是 600MB 必死根因 | 断链只影响该端点；旧 attempt 帧必须无效；重启后前缀一致；终态不可被降级（INV-P26） | 否 → A-2 后 AUTOMATED |
 | **J4** | 群聊：离线成员→上线后补齐 + gossip 收敛 | RC2「永久不同步而单聊正常」的机制最复杂 | 成员重连后收敛到同一集合；撤回按 G-Set 语义不复活；seq 排序权威；不产生重复应用 | 否 → A-1 后 SIMULATED，两台真机 MANUAL |
 | **J5** | 首次启动（新库→骨架→首页→身份） | `is_fresh` 曾恒为假；#27 首屏误判桌面；建窗不能阻塞主线程 | 新库只付一次 schema 成本（不打假"正在迁移"）；首帧判移动版；骨架必关；窗口可见 | 部分可 AUTOMATED（DB/日志），视觉仍 MANUAL |
@@ -397,7 +399,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 | 本文件（第一阶段审计） | **DONE**（AUDITED→DOCS_SYNCED 于本轮完成；无生产码） | — |
 | A 账 / Smoke 矩阵 | PLANNED | 落文档，不需环境 |
 | R9 四条护栏 | **DONE**（UNIT_VERIFIED + GUARDS_LOCKED：4/4 注入验证通过） | — |
-| A-1 harness v0 | DISCOVERED | 设计（第二步）+ B-4 隔离方案 |
+| A-1 harness v0 | **DONE**（J1 5 连绿 → 接 J2 后 16 断言 4 连绿 + `--negative` 反向自证报红 + 残留进程 0；设计=§11，结果=§11.7） | 下一步接 J3（断链/杀进程）与 Windows 腿，再谈进 CI |
 | A-2 故障注入 | DISCOVERED | A-1 先立 |
 | A-3 文件实验室 | DISCOVERED | A-1 + A-2 |
 | A-8 `schema.sql` | AUDITED | 决定生成还是退役（属"数据契约"，需用户点头） |
@@ -432,3 +434,139 @@ grep -n "pub const DB_VERSION" src-tauri/src/db.rs
 **纪律（本轮又验证了一次）**：文档里任何"N 条/N 张/N 行"都不许手抄；
 子 agent 报的"实测值"必须自己复跑一遍才算数（本轮 L2 数字 `651 vs 基线 690` 的差异，
 就是"数函数名"与"数 harness 清单"两种口径 —— 取后者，因为门禁用的是后者）。
+
+---
+
+## 11. 附录 A：双实例 E2E 基础设施设计（第二阶段产物）
+
+> 判据先说结论：**不改一行生产码就能跑到 J1/J2/J3 的全链路断言。**
+> 唯一被排除的是 UI 视觉腿（下表 L-D），那部分诚实留在 §6 人工清单里，不冒充 PASS。
+
+### 11.1 现有能力实测：可驱动的入口只有两个
+
+`env::var("GOSSLAN…")` 全仓只命中两处：`lib.rs:328`（`GOSSLAN_AUTOSTART=1` ⇒ 强制 `0.0.0.0` 起网络）
+与 `state.rs:1829`（`GOSSLAN_INSTANCE`）。**没有**控制套接字、没有 CLI 驱动面、`tauri` 也没开 `test` feature。
+⇒ 任何"让 harness 能发消息"的方案要么加一条新的可驱动面（=新增生产代码 + 新增安全面，本阶段禁止），
+要么走下面这条路。
+
+### 11.2 驱动层：四档，按「要不要动生产码」排序
+
+| 档 | 手段 | 覆盖什么 | 生产码 |
+|---|---|---|---|
+| **L-A 预置状态** | 实例**停机时**写它的 SQLite，把"用户点了发送"变成"已入队的事实" | 发消息（`outbox`+`messages` 双行）、发文件（`file_outbox`+磁盘真源文件）、清空数据、旧库迁移（预置 `user_version`） | **零** |
+| **L-B 进程级操纵** | `SIGKILL`/`SIGTERM`/重启、TCP 探测、日志与磁盘断言 | 断链、杀进程、重启恢复、崩溃后 `sending→pending` | **零** |
+| **L-C 协议级注入** | 复用 `examples/e2e_peer.rs` 已实现的 17 种消息面，harness 扮演第三个真实对端 | 重复帧、乱序 Chunk、错 hash、错 size、旧 attempt、重复 FileDone | **零**（example 已存在） |
+| **L-D UI 驱动** | WebDriver / `tauri-driver` | 真实点击与像素 | 零，但 macOS 需 Appium、CI 跑不动 ⇒ **本轮不做** |
+
+L-A 之所以成立，靠一条已核对的实现细节：`transport.rs:4321` `reseal_for_send` 只有在
+`content` 以 `enc1:` 开头时才去 `messages` 行取**明文**并用 `friends.x25519_pubkey` **重新封袋**
+（`:4353` `reseal_chat_content`）。⇒ harness 写 `"enc1:harness"` 占位 + 一行明文 `messages`，
+真实密钥由应用自己完成加密，**测试里不需要任何密码学实现**，也就不存在"测试自己实现了一套加密"的假通过。
+这正是 enqueue-before-deliver 不变量的红利：入队即事实源。
+
+### 11.3 隔离方案（B-4 的落地形状）
+
+| 维度 | 怎么隔离 | 证据 |
+|---|---|---|
+| DB / 日志 / device_id / TCP | `GOSSLAN_INSTANCE=N` ⇒ `gosslan-N.db`、`gosslan-N.log`、`<base>-iN`、`59992+N*10` | `state.rs:1186/1207/1271/1281` |
+| 接收目录 | 停机预置 `settings.downloads_dir` = `test-results/run-<ts>/recv/<n>/`；**绝不预置 `downloads_dir_bookmark`**（macOS 上 `load()` 优先信书签，脏书签会盖掉路径） | `user_dirs.rs:37/49-59`，`state.rs:1233` |
+| **互联通路** | 我原先记的「同机 LAN 天然失效」**过头了**：两实例同机实测**能**靠 announce 建链（日志 `+conn peer=… path=Lan`）。`SO_REUSEPORT` 的分担在 ≥3 实例 / presence 学习场景才致命（`t3-presence-relay.sh:16-18` 实测的是那个形状）。仍预置 `settings.routed_endpoints`，但它是**确定性兜底**、不是唯一通路 | 本轮实跑 + `discovery.rs:198-205` |
+| 用户真实库 | 只隔离**文件名**不隔离目录 ⇒ 每次 run 先把现有 `gosslan-N.db` 移进 run 目录备份，退出时还原 | `state.rs:1174` |
+
+### 11.4 预置 ≠ 用户操作：12 个陷阱，每个都写成断言而不是注释
+
+1. `settings.device_id` 在 `instance>0` 时**不是**运行时 id ⇒ 所有外键必须用 `-iN` 后缀形式。
+2. `settings.tcp_port` 对 `instance>0` 是死值（端口由公式来）。
+3. 同机 LAN 发现不可用 ⇒ 必须 routed_endpoints（见上）。
+4. `x25519_secret`/`ed25519_secret` 格式错 ⇒ 应用**静默重新生成**而不是报错 ⇒ 预置后必须回读校验。
+5. `update_friend_pubkeys` 是 `COALESCE` 只填空、先到先得 ⇒ 预置错 `ed25519_pubkey` 会永久拒 Hello。
+   **对策**：`x25519_pubkey` 必须预置真值（否则 re-seal 拿不到密钥、明文发出被对端静默丢），
+   `ed25519_pubkey` 一律留 NULL 交给 TOFU 自绑。公钥由 harness 从 A 自己 DB 里的 secret 推导
+   （PKCS8 定长前缀 + `createPrivateKey` → `export({format:"jwk"})`，Node 原生支持，已实测）。
+6. `set_message_status` 带 `status NOT IN ('read','delivered','recalled')` 单调闸 ⇒ 预置终态会把状态冻住。
+7. `conversation_clocks` 每次 `db::init` 从 `MAX(messages.seq)` 重同步 ⇒ 手写 seq 会被抬高。
+8. `file_outbox.local_path` 必须真实存在，否则每次重试白烧一个 `attempts` 配额。
+9. WAL + `synchronous=NORMAL` ⇒ 只在进程停着时写库，写完 `wal_checkpoint(TRUNCATE)`，遇 `locked|busy` 重试。
+10. **`outbox` 与 `messages` 必须成对插**（同一个事务的形状）：只插 outbox ⇒ re-seal 没有明文；
+    只插 messages ⇒ Ack 那句 `SELECT sender_id FROM messages` 找不到人，状态永不前进。
+11. `nickname` 缺失时会被自动生成覆盖。
+12. 可达对端的 outbox 有 **120s** 判死窗口 ⇒ 断言必须在此之前完成（不可达对端才持 7 天）。
+
+### 11.5 生命周期与产物
+
+```text
+备份用户 gosslan-N.db → 起 A/B 一次（只为生成身份密钥）→ 停机
+→ 读各自 secret、推导公钥 → 预置 friends（x25519 真值 / ed25519 NULL）
+→ 预置 routed_endpoints + downloads_dir → 预置本轮动作（L-A）
+→ 起 A/B → 就绪探针（TCP 可连 + 日志出现 boot 完成行）→ 等链路（日志 +conn peer=）
+→ 断言（双方 DB / 日志 / 磁盘文件）→ SIGTERM → 残留进程数必须为 0
+→ 写 test-results/run-<ts>/{summary.json,summary.html,instance-*.log,sqlite-*/,recv/}
+→ 还原用户 DB
+```
+
+判据（不满足就不算 harness v0 完成）：连跑 3 次全绿；单轮 ≤5 分钟；失败时报出
+「第几步 / 预期 vs 实际 / `msg_id`」；残留进程 0；**永不触碰用户的 `gosslan.db`**（只碰 `-N`）。
+
+### 11.6 明确不做（§18）
+
+- **不加**任何控制套接字 / 新命令 / 新 feature-gated 驱动面。要等 L-A~L-C 证明"确实有一条旅程无法用预置表达"时，
+  再单独提这项并给证据。
+- **不接** WebDriver/tauri-driver：macOS 侧要 Appium，CI 不稳定，收益不如把 L-A~L-C 做扎实；UI 腿留在 §6 人工清单。
+- 不在 v0 就把 E2E 塞进 CI：先本地连跑 3 次全绿，再谈加 job（§二十优先 Windows x64）。
+
+### 11.7 v0 实跑结果（2026-09-25，macOS arm64，release 二进制）
+
+| 判据 | 结果 |
+|---|---|
+| 正向 | J1 阶段 **连跑 5 轮全绿**（每轮 8 条断言）；接 J2 + 重启注入后 **16 条断言 / 4 连绿**。最新一轮 `/usr/bin/time` 墙钟 **12.8 s**（步骤计时合计 ≈8 s，报告里的 `duration_s` 就是这个合计、不含进程起停）。⚠️ 原先手写的「单轮 22–25 s」本轮**没能复现**，量纲也不同 ⇒ 已按实测改写；这类数字**每次要重新跑，不许抄上一版** |
+| 反向自证 | `--negative`：两端照常起、链路照建，只把这条消息的收件人换成幽灵 id ⇒ **投递断言报红**、退出码按预期归 0。链路是好的，所以红只能来自「没送到」，不来自「B 没启动」 |
+| 清理 | 残留 `pgrep` = **0**；用户原有 `gosslan-1/2.db` 每轮自动备份、结束时还原 |
+| 产物 | `test-results/run-<ts>/{summary.json,summary.html,instance-{A,B}.app.log,instance-*.stdout.log,sqlite-{A,B}/,recv/,after-*.db,backup-*/}` |
+| 覆盖 | **J1（文本 A→B + 重启后仍正确）+ J2（1 MB 文件 A→B）= 4 连绿**。J2 钉的是：只有 rename 后的 `<transfer_id>.bin` 才算落地、字节数 1 MB、sha256 与源一致、A 侧 `file_outbox` 收尾删除、两侧终态 `done`、同一条传输只记一次、接收目录无 `.part`/改名残留 |
+| 覆盖的**边界**（别把这句话读成"文件传输已覆盖"） | 只有「1 MB / 单文件 / 链路不断」这一格。尺寸阶梯、并发多文件、断链、杀进程、hash 篡改、`.part` 已存在**全部未做** → A-2/A-3。另：`--negative` 目前只把**文本**那条腿钉红；文件腿的"没送到"红尚未单独演示过（机制上是 `waitFor` 120 s 超时抛异常 → 步骤 FAIL，但没跑出来看过）|
+
+四个 harness 自己的 bug（值得记，因为它们现场长得像「产品坏了」，而且**其中三个是"假绿/假红"级别的**）：
+1. 断言读错了文件 —— 查 A 侧链路却去读 B 的日志、还拿 B 的 id 当目标，于是永远查不到；
+   表现是「链路超时 90s」，看起来完全像产品没连上。另一处是 `127.0.0.1:undefined` —— 种子拿的是身份对象，里面没有 `port`。
+   ⇒ **教训：报红的文案必须说清「我读的是哪个文件、找的是哪个 id」**，否则下一轮只能靠猜。
+2. **「二进制不得比源码新」守卫拦下过真问题，也自己造过一次假红。**
+   第一次运行就拦下一个 9-20 的 release 产物（正是§十四要的形状：判据不靠人记得）；
+   但后来它把 E2E 挡在门外 —— 护栏注入器写回时**只挪 mtime、内容不变**，于是"源码比二进制新"永远成立、直接 exit 2。
+   ⇒ 改成**内容判据**：`git status --porcelain -- src-tauri/src` 干净 **且** 二进制晚于 HEAD ⇒ 放行并打印理由。
+   **通用教训：拿 mtime 当证据的守卫，会被任何"写回但没改内容"的工具打穿。**
+3. **假绿（最严重的一个）**：终局判定原先来自「有没有步骤抛异常」，
+   而 `check(name, false, …)` 是不抛异常的 —— 所以一条报红的断言可以被写成 `PASS` 的 summary。
+   ⇒ 改成**终局由台账推导**（`anyFail()`），并且这条修法当场被验证有效：
+   我把一条**错的**契约（发送侧终态 `sent`）写进断言后，跑出来是 `✗ 1/16 条断言报红`，而不是假绿。
+   另：反向模式加了「红必须落在建链之后」的门（`stepIdx > linkStepIdx()`），
+   否则「B 根本没起来」这种基础设施噪声也算自证成功。
+4. **存在性断言 = 半个断言**：J2 第一版写的是"A 侧存在一行 `file_transfers`"，
+   而这一行是网络层自己建的，**传输根本没发生它也在** ⇒ 接近空转。
+   已改成钉 `status` 与 `progress` 的具体值（见 §11.7.1 第 3 条）。
+
+⚠️ 必须如实说的边界：本轮只证明了两台同机实例在 **LAN 路径**上跑通，
+不等于 routed/Tailscale、BLE、中继也被这条 harness 覆盖（§19 的网络分组仍欠）。
+
+#### 11.7.1 接 J2 时先实测到的三条前提（不写下来，下一位一定会踩）
+
+这三条都是**先读码再写断言**读出来的，不是从文档抄的；每条都直接决定断言会不会"假绿"或"假红"。
+
+1. **发送侧的终态是 `done`，不是 `sent`**（这条我先写错过一次，被 harness 当场纠正）：
+   生命周期是 `pending → active → sent → done`。
+   `sent`（`network/file.rs:827`）只表示「我把字节全写进 socket 了」，
+   只有 `finalize_send_accepted`（`network/file.rs:1199`，收到对端 `FileCompleteAck`
+   或 Offer 阶段直接 `received = size`）才写 `send` / `done` / `progress 1.0`。
+   两侧终态**同为 `done`**，含义不同：接收侧的 done 由 rename 触发，发送侧的 done 由对端确认触发。
+   ⇒ J2 因此钉 `done`：这正是总指令「不要因 TCP write 成功就认为已送达」的机器形状 ——
+   任何实现只要「自己写完就罢」，这条断言就红。
+   ⚠️ 反面教训：我最初从一条**被分页截断的 grep**（只显示 15 个 `upsert_transfer` 里的 7 个）
+   推出「发送侧终态是 sent、两侧不许统一」，并把它写进了本节与验收矩阵。**「不存在」不能来自带分页的检索**；
+   改用 multiline 一次列全 7 处 `"send",…` 才看见 1215 行的 `done`。
+2. **预置行必须命中真实的取队判据**，否则 J2 会"静默不跑还报绿"：
+   `list_pending_file_outbox`（`src-tauri/src/db/file_offline.rs:24`）要求
+   `status='pending' AND next_attempt_at <= now AND attempts < MAX_FILE_OUTBOX_RETRIES(=5)` 三个条件同时成立
+   ⇒ 预置固定写 `status='pending', attempts=0, next_attempt_at=0`，并让 `local_path` 指向真实存在的文件
+   （缺文件只会白烧 attempts 配额，第五次就永久失败，红得看不懂原因）。
+3. **发送侧的 `file_transfers` 行不需要 harness 预置**：`network/file.rs` 自己有 15 处 `upsert_transfer`
+   （pending → active → sent），补发路径也在其中。第一版断言写成"存在一行"其实接近空转，
+   已改成钉 status 与 progress —— **判据要能自己发现"没发生"，而不是只发现"没记录"**。

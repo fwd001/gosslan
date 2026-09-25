@@ -50,3 +50,4 @@ src-tauri/gen/schemas
 # （`git check-ignore` 之前对它返回"未忽略"，2026-09-13 审计发现）。
 src-tauri/gen/android/app/release.keystore
 src-tauri/gen/android/app/*.keystore
+test-results/
