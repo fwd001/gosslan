@@ -51,6 +51,8 @@
     "test:fault-injection:freeze": "node scripts/e2e-multi-instance.mjs --fault=peer-freeze",
     "test:fault-injection:freeze-selfproof": "node scripts/e2e-multi-instance.mjs --fault=peer-freeze-lie",
     "test:fault-injection:disk": "node scripts/e2e-multi-instance.mjs --fault=recv-readonly",
+    "test:fault-injection:shrink": "node scripts/e2e-multi-instance.mjs --fault=src-shrunk",
+    "test:fault-injection:shrink-selfproof": "node scripts/e2e-multi-instance.mjs --fault=src-shrunk-lie",
     "test:fault-injection:disk-selfproof": "node scripts/e2e-multi-instance.mjs --fault=recv-readonly-lie",
     "test:fault-injection:resume-selfproof": "node scripts/e2e-multi-instance.mjs --fault=resume-prefix-lie",
     "test:fault-injection:selfproof": "node scripts/e2e-multi-instance.mjs --fault=poison-part-lie"

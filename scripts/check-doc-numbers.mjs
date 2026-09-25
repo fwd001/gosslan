@@ -145,6 +145,7 @@ const MODE_LABEL = {
   KILL: "杀进程轮",
   FREEZE: "冻结轮",
   DISK: "磁盘轮",
+  SHRINK: "改小轮",
 };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
@@ -191,7 +192,7 @@ console.log(
   `· 现算 E2E 断言数：${Object.entries(e2e).map(([k, v]) => `${k} ${v}`).join(" / ")}`,
 );
 const E2E_CLAIM =
-  /(默认轮|脏前缀轮|故障轮|续传轮|杀进程轮|冻结轮|磁盘轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
+  /(默认轮|脏前缀轮|故障轮|续传轮|杀进程轮|冻结轮|磁盘轮|改小轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
 const seenLabel = new Set();
 for (const rel of LIVE_DOCS) {
   const abs = path.join(ROOT, rel);

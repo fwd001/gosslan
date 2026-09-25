@@ -25,6 +25,8 @@
 //   --fault=kill-mid-lie      → 同样的注入，只把"期望续发字节数/期望摘要"换成错值 ⇒ 预期报红
 //   --fault=peer-freeze       → 注入④：对端被 SIGSTOP 冻住（有写无 ACK）⇒ 不许宣布送达，解冻后补齐
 //   --fault=peer-freeze-lie   → 同样的注入，只换期望摘要 ⇒ 预期报红
+//   --fault=src-shrunk        → 注入⑥：入队后源文件被改小 ⇒ 按磁盘真值收发，两侧终态一致
+//   --fault=src-shrunk-lie    → 同样的注入，只换期望摘要 ⇒ 预期报红
 //   --fault=recv-readonly     → 注入⑤：接收目录只读（磁盘写不进去）⇒ 必须明确失败并止步，不许假 done、不许无限重试
 //   --fault=recv-readonly-lie → 同样的注入，只把"该落到哪个终态"换成 done ⇒ 预期报红
 //   （每轮各几条断言**不在这里写**：`check-doc-numbers.mjs` 从下面的 check(" 调用点现算，
@@ -75,6 +77,19 @@ const DISK_BYTES = Number(process.env.E2E_DISK_MB || 1) * 1024 * 1024;
 const DISK_MAX_ATTEMPTS = 5;
 let xferId6, term6 = null;
 let xferId5, srcFile5, srcSha5;
+/// 注入⑥：§七「错误 size」的**真实用户形状** —— 不是线上收到一个谎报的 size（那一格协议层
+/// 已经用 hash+length 判死了），而是**入队之后、真正发出去之前，磁盘上的原件被改小了**。
+/// 现实触发：离线排队期间用户在原路径上裁掉/覆盖了同一个文件（视频剪完再发、同步盘回写）。
+/// 窗口为什么是确定的：A 只在**收到对端某一帧**时才读盘（A-9 实测），所以
+/// 「先冻住 B → 入队 → 截断 → 解冻」保证 A 一定读到截断后的版本，不靠运气。
+/// ⚠️ 这里**入队三行**（messages 气泡 / file_transfers / file_outbox），与前五轮只插 outbox
+///   不同：这一格的疑点正好在"入队时按磁盘算的那份 size 事后会不会被更正"，
+///   少插一行就测不到它（`send_file_from_path_at` 的 offer size 来自 `meta.len()`，
+///   而 `upsert_transfer` 的 ON CONFLICT 只改 status/path/progress，**不改 size**）。
+const SHRINK = FAULT === "src-shrunk" || FAULT === "src-shrunk-lie";
+const SHRINK_BYTES = Number(process.env.E2E_SHRINK_MB || 1) * 1024 * 1024;
+const SHRINK_TO = Number(process.env.E2E_SHRINK_TO_BYTES || 4096);
+let xferId7, srcFile7;
 /// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
 /// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
 const LIE = FAULT.endsWith("-lie");
@@ -951,6 +966,120 @@ if (DISK) {
       a6?.status !== "done", "非 done", a6?.status ?? "无行");
     check("写不进去就不许在接收目录留下这个 transfer 的任何东西",
       seen.length === 0, "无文件", seen.join(", ") || "无");
+  });
+}
+
+if (SHRINK) {
+  step("故障注入判据⑥：入队后源文件被改小 ⇒ 只许按磁盘上那份真值收发，两侧终态一致", async () => {
+    const dl = path.join(RUN_DIR, "recv", "B");
+    fs.mkdirSync(dl, { recursive: true });
+    const srcDir = path.join(RUN_DIR, "src");
+    fs.mkdirSync(srcDir, { recursive: true });
+    xferId7 = `e2e-h-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    const name7 = `${xferId7}.bin`;
+    srcFile7 = path.join(srcDir, name7);
+    fs.writeFileSync(srcFile7, Buffer.alloc(SHRINK_BYTES));
+    const landed = path.join(dl, name7);
+    const sizeOf = (p) => { try { return fs.statSync(p).size; } catch { return -1; } };
+    const pB = procs.get(INSTANCES[1].n);
+    if (!pB) throw new Error("拿不到 B 的子进程句柄 —— 这一轮的窗口要靠冻结 B 来保证");
+    let thawed = false;
+    let sent = null;
+    try {
+      // 顺序不能换：先冻住 B，A 才有"不读盘"的确定窗口（A 只在收到入站帧时才 flush，见 A-9）。
+      pB.kill("SIGSTOP");
+      // 入队 = 复刻 `send_file` 命令在点击那一刻写的三行（气泡 / 传输台账 / 队列）。
+      // 少写一行就测不到这一格的疑点：气泡与台账的 size 都是**按当时磁盘**算出来的。
+      for (let i = 0; ; i++) {
+        try {
+          seed(INSTANCES[0].db, (db) => {
+            db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(xferId7);
+            db.prepare("DELETE FROM file_transfers WHERE id=?1").run(xferId7);
+            db.prepare("DELETE FROM messages WHERE msg_id=?1").run(`file-${xferId7}`);
+            const ts = nowMs();
+            const seq = db.prepare("SELECT COALESCE(MAX(seq),0)+1 s FROM messages WHERE conv_id=?1")
+              .get(peerTo).s;
+            db.prepare(
+              `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+               VALUES(?1,?2,?3,?4,'file',?5,?6,?7,'sent')`,
+            ).run(`file-${xferId7}`, peerTo, idA.runtimeId, peerTo,
+              JSON.stringify({ name: name7, path: srcFile7, size: SHRINK_BYTES, sha256: "", subtype: "file" }),
+              ts, seq);
+            db.prepare(
+              `INSERT INTO file_transfers(id,peer_id,name,size,direction,status,path,progress,created_at)
+               VALUES(?1,?2,?3,?4,'send','pending',?5,0,?6)`,
+            ).run(xferId7, peerTo, name7, SHRINK_BYTES, srcFile7, ts);
+            db.prepare(
+              `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+               VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
+            ).run(xferId7, peerTo, srcFile7, name7, SHRINK_BYTES, ts);
+          });
+          break;
+        } catch (e) {
+          if (i >= 5) throw e;
+          await sleep(300);
+        }
+      }
+      // 注入：入队之后把原件改小（用户在同一批"等着对方上线"的单子还没发出去时改了那个文件）。
+      fs.truncateSync(srcFile7, SHRINK_TO);
+      const shrunkSha = createHash("sha256").update(fs.readFileSync(srcFile7)).digest("hex");
+      pB.kill("SIGCONT");
+      thawed = true;
+      const t0 = nowMs();
+      await waitFor(() => {
+        const aDb = openDb(INSTANCES[0].db, true);
+        const a = aDb.prepare("SELECT status,size FROM file_transfers WHERE id=?1").get(xferId7);
+        const q = aDb.prepare("SELECT COUNT(*) c FROM file_outbox WHERE transfer_id=?1").get(xferId7).c;
+        const bubble = aDb.prepare("SELECT content FROM messages WHERE msg_id=?1").get(`file-${xferId7}`);
+        aDb.close();
+        const bDb = openDb(INSTANCES[1].db, true);
+        const b = bDb.prepare("SELECT status,size FROM file_transfers WHERE id=?1").get(xferId7);
+        bDb.close();
+        // 收完的判据用"队列行已关 + 两侧 done"，不用 landed 存在 —— rename 之后 A 还要等回执才落 done。
+        if (a && b && a.status === "done" && b.status === "done" && q === 0) {
+          sent = {
+            a, q, b, landed: sizeOf(landed),
+            bubbleSize: bubble ? JSON.parse(bubble.content).size : null,
+            bubbleSha: bubble ? JSON.parse(bubble.content).sha256 : null,
+            shrunkSha,
+          };
+        }
+        return !!sent;
+      }, 120_000, "改小的原件要按新 size 走完 offer→chunk→rename→done");
+      console.log(`  · 实测：解冻 → 两侧 done ${(nowMs() - t0) / 1000}s ${JSON.stringify(sent)}`);
+      for (const l of (tailLog(INSTANCES[0].log, 60000) || "").split("\n")
+        .filter((x) => x.includes(xferId7)).slice(-6)) console.log("      A│ " + l.slice(0, 220));
+    } finally {
+      // 被 SIGSTOP 停住的进程收不到 SIGTERM ⇒ 不解冻会把整条 harness 挂死（冻结轮的教训）。
+      if (!thawed) { try { pB.kill("SIGCONT"); } catch { /* 已经退了 */ } }
+    }
+    const landedBytes = sizeOf(landed);
+    const got = landedBytes >= 0
+      ? createHash("sha256").update(fs.readFileSync(landed)).digest("hex") : null;
+    check("落地字节数必须等于截断后的磁盘大小（说明这一单按真值重算，不是按入队那份）",
+      sent.landed === SHRINK_TO && landedBytes === SHRINK_TO, SHRINK_TO,
+      `offer时队列=${sent?.landed} 盘上=${landedBytes}`);
+    check("落地内容必须等于截断后的源文件（不许把半截当完成，也不许多给旧字节）",
+      got === (LIE ? LIE_SHA : sent.shrunkSha), (LIE ? LIE_SHA : sent.shrunkSha).slice(0, 12) + "…",
+      got ? got.slice(0, 12) + "…" : "未落地");
+    check("两侧台账必须同时 done 且队列行已关（跨设备终态不许分叉）",
+      sent.a.status === "done" && sent.b.status === "done" && sent.q === 0,
+      "A=done B=done outbox=0", `A=${sent.a.status} B=${sent.b.status} outbox=${sent.q}`);
+    check("接收目录只许有终名那一个文件（无 .part 残留、无第二份）",
+      fs.readdirSync(dl).filter((f) => f.includes(xferId7)).join(",") === name7, name7,
+      fs.readdirSync(dl).filter((f) => f.includes(xferId7)).join(", ") || "空");
+    check("接收端台账的 size 必须等于盘上真实字节数（接收端说真话）",
+      sent.b.size === landedBytes, landedBytes, sent.b.size);
+    check("发送端气泡回填的 sha256 必须等于落地文件摘要（内容寻址 cid 不许撒谎）",
+      sent.bubbleSha === got, got?.slice(0, 12) + "…", sent.bubbleSha?.slice(0, 12) ?? "空");
+    // ⚠️ 这一行**不是断言**，是这一轮照出来的**分歧证据**（已按 A-11 登记 roadmap）：
+    //   气泡与发送台账的 size 来自点击那一刻的磁盘，`upsert_transfer` 的 ON CONFLICT 只改
+    //   status/path/progress、不改 size ⇒ 原件事后变小时，A 自己看到的"多大"和真正发出去、
+    //   B 收到的那份就不是一个数。修（回填 size）之前不许把它写成断言，也不许删这条打印。
+    console.log(
+      `  · 实测 size 分歧：入队 ${SHRINK_BYTES} → 实发 ${landedBytes}` +
+      ` | A 气泡 ${sent.bubbleSize} · A 台账 ${sent.a.size} · B 台账 ${sent.b.size}`,
+    );
   });
 }
 

@@ -443,6 +443,19 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--fault=recv-readonly"],
     },
+    {
+      group: "local",
+      name: "双实例 E2E：入队后源文件被改小 ⇒ 按磁盘真值收发、两侧终态一致",
+      why: `先冻住接收端、入队（气泡 + 台账 + 队列三行一起写，复刻点击那一刻的产物）、把原件截断、再解冻 ⇒ ` +
+        `发送端 offer 的 size 必然来自截断后的盘（A 只在收到入站帧时才读盘，A-9）。钉的是：` +
+        `落地字节数与新 size 一致、内容 hash 与截断后的源一致（不是半截也不是多给旧字节）、` +
+        `两侧同时 done 且队列行已关、接收目录只留终名那一份。` +
+        `★ 这一轮同时照出 A-11（实测：发送侧气泡与台账的 size 仍是入队时那份，与真正发出去的字节不等）——` +
+        `修之前不许把那个分歧写成断言；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=src-shrunk"],
+    },
   );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。
