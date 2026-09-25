@@ -521,14 +521,18 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
    **只写 `file-`**，看着像缺口，其实很可能是有意的（N 个收件人共用一条气泡）。
    语义没确认之前不动，这是本条存在的原因。
 
-### 第 5 步 · 事件与自愈（**P6**）
+### 第 5 步 · 事件与自愈（**P6**）—— 1 与 4 已落地 2026-09-25，且第 4 条的前提被推翻后重做过
 
 1. 规则化：**每个常驻窗口必须有"重新可见 ⇒ 重拉"或"事件带可应用状态"**。
    先补最省的两个：主窗口 `visibilitychange`/`focus` ⇒ `refreshConversations + refreshTransfers`；
    群任务窗口 `onFocusChanged` ⇒ 重拉当前群。
 2. 只带 id 的事件补最小载荷（`message-acked{status}`、`message-failed{reason}`、`file-cancelled{status}`）。
 3. 未读收成单一来源（后端给值）。
-4. 测试：`windowEntries.test.ts` 加"常驻窗口必须有重拉兜底"的结构判据（现在只钉了设置窗口）。
+4. ✅ 测试：结构判据已加，但**"只钉了设置窗口"这件事比原先记的更糟** ——
+   `AUX_WINDOWS_RESIDENT` 早就是 `false`（设置/日志关闭即销毁），那条守卫钉的是一扇
+   已经不常驻的窗口，而真正常驻的 main / tasks 一个都没被覆盖。新判据改为**现场从 Rust 读
+   `AUX_*_RESIDENT`** 并强制登记，形状与第 4 步那条自动扫同构（点名式判据会因为翻一个常量
+   而静默失效，这是本仓第三次撞上同一件事）。
 
 ### 第 6 步 · 选路（**P9**，必须最后做）
 

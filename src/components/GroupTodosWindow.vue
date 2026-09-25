@@ -19,6 +19,7 @@
  * 外壳 = `AuxWindowShell`（自绘标题栏），与设置/日志/预览窗口同一套。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
@@ -109,6 +110,7 @@ watch(
 );
 
 let unlistenTarget: (() => void) | null = null;
+let unlistenFocus: (() => void) | null = null;
 let disposed = false;
 onMounted(() => {
   // 两条路都要：预热过 / 新建的窗口靠挂载这次取上下文；已经存在的那扇靠定向事件被叫醒。
@@ -134,11 +136,31 @@ onMounted(() => {
     .catch(() => {
       /* 订阅失败只影响"窗口已存在时再点卡片"那一条路：挂载那条路仍会取一次上下文 */
     });
+  // 常驻窗口的**自愈兜底**：关窗 = 隐藏 ⇒ 文档永远不重新加载，而"看的是哪个群"是活的。
+  // 上面那两条路都要求"有人再点一次查看任务"才会重读；从任务栏 / ⌘Tab / 托盘唤回这扇窗时
+  // 没人点 ⇒ 列表停在离开那一刻（别人完成了任务、新加了任务，这里全都看不见）。
+  // 刻意复用 `applyTarget`：它正是点卡片走的那条路（含换群时的订阅切换与待展开投递），
+  // 不另写一份取数逻辑 ⇒ 不会再长出第二个家。
+  void (async () => {
+    try {
+      const fn = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+        if (focused && groupId.value) void applyTarget(groupId.value);
+      });
+      // 与上面同一条理由：窗口被秒关时 onUnmounted 可能已经跑完
+      if (disposed) fn();
+      else unlistenFocus = fn;
+    } catch (e) {
+      // 只影响"唤回时不重读"这一条兜底，不影响任何功能 —— 但要说出来，别静默降级
+      console.error("[todos] 焦点兜底注册失败：从任务栏唤回这扇窗时不会重读列表", e);
+    }
+  })();
 });
 onUnmounted(() => {
   disposed = true;
   unlistenTarget?.();
   unlistenTarget = null;
+  unlistenFocus?.();
+  unlistenFocus = null;
 });
 </script>
 

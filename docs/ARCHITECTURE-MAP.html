@@ -1132,7 +1132,7 @@ const DRIFT = [
   ["「传输」这一个关注点今天有<b>三个家</b>（0-A2 后收窄）", "TCP 数据面 <code>network/transport*</code>（活，约 1 万行，include! 分册中）；BLE 数据面 <code>transport/bluetooth.rs::driver</code> + 三个外设模块；<b>状态聚合</b> <code>transport/mod.rs</code>", "0-A2 已删掉 <code>transport/mod.rs</code> 里那套「看起来像分流点」的通道抽象（<code>Transport</code> trait / <code>route</code> / <code>route_payload</code> / <code>Channel</code>，全部零调用）。真分流只有一处：<code>dispatch.rs::message_priority</code> + <code>mesh/selection.rs::pick_link</code>"],
   ["✅ <code>discovery/</code> 未接线抽象已删除（0-A2）", "<code>trait.rs / manager.rs / lan.rs</code> + <code>RoutedDiscovery</code> 全删（零生产调用点，只有自身测试）；<code>discovery/</code> 现在只剩 <code>routed.rs</code> 的配置解析", "原来那条「照着写就写进死路」的风险已经不存在；<code>mod.rs</code> 顶部直接写明发现机制的家在 <code>network/discovery.rs</code>"],
   ["领域图里的行数是旧的", "<code>docs/domains.data.mjs</code> 写 <code>useChatStore.ts 1421 行</code>，实测现在 <b>2128 行</b>（<code>useAppStore.ts</code> 1026 行）", "「呈现层没有领域边界」这条判断<b>更</b>成立了；顺手更新数字，否则下次评审会拿旧数当论据"],
-  ["常驻窗口自带一个退化面", "关窗 = 隐藏 ⇒ 文档不重载；设置 / 任务 / 预览三扇都改了常驻策略", "任何「只在挂载时取一次」的写法在常驻窗口里都会显示旧快照。已有护栏（<code>onFocusChanged</code> 重拉 + 换群必须重读 + <code>:key</code> 重置）⇒ <b>新增常驻窗口时必须同时补这一条</b>"],
+  ["✅ <b>常驻窗口的自愈面</b>（第 5 步 1/4 已落地 2026-09-25；本行原先的事实也是错的）", "关窗 = 隐藏 ⇒ 文档不重载。<b>真正常驻的是 main / tasks / preview / link 四扇</b>（<code>AUX_WINDOWS_RESIDENT = false</code> ⇒ 设置与日志关闭即销毁 —— 本行原先写着「设置 / 任务 / 预览三扇都改了常驻」，而唯一那条钉兜底的守卫钉的正是一扇<b>已经不常驻</b>的窗口）", "任何「只在挂载时取一次」的写法在常驻窗口里都显示旧快照。主窗口的 <code>visibilitychange</code> 原先只调蓝牙上报与补发已读、不重拉任何表；群任务窗口的重拉只挂在 Rust 复用它时发的 <code>group-todos-target</code> 上 ⇒ 从任务栏 / ⌘Tab / 托盘唤回来仍是旧数据。现在：主窗口重新可见重拉「会话 + 传输」（那些只带 id 的事件的真相源），群任务窗口获得焦点复用 <code>applyTarget</code>（不另写一份取数）。<b>判据现场从 Rust 读 <code>AUX_*_RESIDENT</code> 并强制登记</b> ⇒ 翻标记或新增窗口不表态都会红；这是本仓第三次撞上「点名式判据 = 半个守卫」"],
   ["离线队列没有状态列，「有行 = 待发」", "<code>outbox</code> / <code>group_outbox</code> 无 status 列；<code>file_outbox</code> 与 <code>content_transfers</code> 有", "删除行的时机就是状态推进的时机 ⇒ <b>任何「先 emit 再删」的写法都会造成重复投递</b>（本仓真发生过 P0，已改为写库成功门控）"],
   ["<code>outbox.msg_id</code> 上有两份唯一约束", "<code>SCHEMA</code> 内联 <code>UNIQUE</code> + 迁移 v5→v6 又建了 <code>idx_outbox_msg_id</code> 唯一索引", "老库带两条（多一个索引的写放大）。不是 bug，但要知道：约束的<b>权威</b>是内联那个"],
   ["<code>content_transfers.transfer_id</code> 走 ensure_schema 里的防御式 ALTER", "不走 <code>MIGRATIONS</code>；探测出错按「列不存在」处理，<code>duplicate column</code> 被吞掉，其他错误才记日志", "迁移语义与别处不同 ⇒ 加列时<b>别照抄</b>这套错误处理到 MIGRATIONS（那边 v1→v6 是 <code>?</code> 上抛的）"]
@@ -1150,6 +1150,7 @@ const INVARIANTS = [
   ["emit 必须由写库成功门控", "四张写库全成才发 <code>file-failed / message-failed</code>；任一失败就保留行并告警", "重复判死、重复提示，且该行从重试集里消失", "审计 A3 修复 + <code>verify-guards</code> 用例"],
   ["emit 不得持有 db 锁（INV-P25）", "写库用 <code>{ … }</code> 圈住或 <code>drop(dbc);</code>，事件一律在锁<b>外</b>发", "只有一条 SQLite 连接 ⇒ 前端收到事件后的第一次 IPC 抢同一把锁：「出错那一刻界面整个冻一下」", "<code>check-lock-scope.mjs</code>（292 个取锁点全扫 + 7 段夹具自证；判不出作用域直接红）"],
   ["文件终态只有一个出口 + 踢出重试集合的那一步排最后（INV-P26）", "落库走 <code>db::finalize_file_failure(conn, transfer_id, end)</code>（end = Expired | GiveUp | Cancelled）；气泡 → 台账 → 才关队列行，且<b>只有面向用户的写都落地了</b>才关", "合并前有三份各写一遍的实现：同一条规矩只在两处成立、<code>done</code> 闸门只装在两扇门上（清扫器那扇没有）。关行排最前时，后续任一步失败就永久无人补 —— 气泡停在「发送中」，而行已经不在任何重试集合里", "<code>every_finalize_path_defers_the_destructive_write</code>（<b>自动扫</b>顶层条目，不点名、不靠清单） + <code>expired_file_never_rewrites_a_completed_transfer</code> + gfile 口径一正一反两条 + 4 条变异用例"],
+  ["常驻窗口必须能自愈（第 5 步）", "自取数的常驻窗口必须有「重新可见/焦点 ⇒ 重拉」；内容由后端定向推送的必须有那个推送监听 —— 二者必居其一，不许两个都没有", "关窗 = 隐藏的窗口里任何「只在挂载时取一次」都会永久显示旧快照：未读数、已送达勾、任务列表都是这个形状", "<code>windowEntries.test.ts</code> 常驻判据（<b>现场读 Rust 的 <code>AUX_*_RESIDENT</code>，不点名</b>） + 红→绿事实各一次；⚠️ 新增变异用例被权限层拦下，未登记进 verify-guards"],
   ["和自己聊天是纯本地路径", "不进 outbox、不 gossip、不加密", "自聊行永远等不到 Ack ⇒「outbox 必然排空」失效，每次心跳重发一遍", "护栏 <code>self_chat_stays_local</code>"],
   ["中继口令不外泄", "token 值绝不进日志 / 诊断 / 事件 / 运行时快照，只留 <code>token_len</code>", "截图或反馈一条诊断就把公网中继的准入凭证交出去", "<code>probe_report_never_carries_the_token</code> + <code>relay_token_never_reaches_logs_or_diagnostics</code>"],
   ["哑管道不解析、不兜底", "服务器只按 token 放行 + 按每日通道摘要配对；帧全部在记录层内；<b>没有明文回落分支</b>", "任何「为了兼容加一条明文路径」都会把 E2EE 变成可选", "握手后 <code>enable_seal</code> 包住 reader/writer"],
@@ -1439,7 +1440,7 @@ function buildDir() {
       '<div class="stat"><div class="num">29</div><div>后端事件名（表内合并成 ' + EVENTS.length + ' 行）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
       '<div class="stat"><div class="num">182</div><div>护栏非空转用例（改坏即红）</div></div>' +
-      '<div class="stat"><div class="num">685 / 588</div><div>Rust / 前端测试条数</div></div>' +
+      '<div class="stat"><div class="num">685 / 589</div><div>Rust / 前端测试条数</div></div>' +
     "</div>" +
     '<h2 class="sec">领域图（真源 <code>docs/domains.data.mjs</code> · 本页内嵌快照 · <code>check-domain-map.mjs</code> 守路径存在，<code>check-domain-deps.mjs</code> 守依赖方向）</h2>' +
     '<div class="tablewrap"><table><thead><tr><th>领域</th><th>tier</th><th>数据实际跑在哪个家（activeHome）</th><th>允许依赖（consumes）</th><th>不变量</th><th>备注里的坑</th></tr></thead><tbody>' +

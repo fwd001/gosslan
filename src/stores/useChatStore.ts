@@ -2028,6 +2028,17 @@ export const useChatStore = defineStore("chat", () => {
       // `if (flushScheduled) return` 挡回 —— rAF 在后台被暂停/丢失时 flag 卡在
       // true，兜底就永远是死代码。flushNow 幂等且立即生效。
       if (pending.length) flushNow();
+      // **自愈**：会话表与传输表是"事件只带 id、前端就地改内存"那一类事件的真相源
+      //（`message-acked` / `message-failed` / `peer-read` / `file-*` / `file-cancelled`）。
+      // 事件在后台丢了、或者窗口隐藏期间根本没投递到 ⇒ 不重拉就永久错下去：
+      // 未读数、"已送达"勾、传输进度都可能停在一个从来没发生过的状态上。
+      // 两件各自独立兜底（审计 1.6 同一条理由）：一边失败不影响另一边。
+      void refreshConversations().catch((e) => {
+        console.error("[chat] 回到前台重拉会话失败（未读数可能停留）", e);
+      });
+      void refreshTransfers().catch((e) => {
+        console.error("[chat] 回到前台重拉传输表失败（进度可能停留）", e);
+      });
       // 同 `debounceMarkRead`：回到前台也要确认"聊天视图真的可见"才补发已读回执
       if (activeConv.value && app.chatVisible) {
         void api.markRead(activeConv.value).then(() => {

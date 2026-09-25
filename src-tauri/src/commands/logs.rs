@@ -62,9 +62,11 @@ const AUX_TASKS_RESIDENT: bool = true;
 /// 图片预览窗口**关闭即隐藏**（常驻）。
 ///
 /// "全局只有一个"本来就靠固定 label + `ensure_aux_window` 的单例，与是否常驻无关；
-/// 改成常驻之后 ✕ 不再释放相册，所以**隐藏时要通知那个文档自己把内容放掉**
-/// （见 `install_hide_on_close` 里的 `aux-hidden` 与 `PreviewWindow.vue`）——
-/// 否则"关掉窗口却还留着几十 MB 图"就变成新的泄漏。
+/// 改成常驻之后 ✕ 不再释放相册，所以**隐藏时要让那个文档自己把内容放掉** ——
+/// 但这件事不在 `install_hide_on_close` 里做（那个回调只 `prevent_close + hide`，不 await、
+/// 不发 IPC，见它自己的注释），而是前端自己监听关闭请求（`PreviewWindow.vue` 的
+/// `onCloseRequested`）。本注释原先写着"见 `aux-hidden` 事件"，而**全仓不存在那个事件**
+/// —— 照着它去 Rust 里找会一无所获，所以改成写实：释放动作在前端，入口是关闭请求。
 #[cfg(desktop)]
 const AUX_PREVIEW_RESIDENT: bool = true;
 

@@ -228,9 +228,11 @@ test("群任务窗口的挂载前门里只准有 app.init()，取数在根组件
   }
 });
 
-test("常驻的设置窗口必须在重新获得焦点时刷新环境数据（否则关了再开会看到旧快照）", () => {
-  // 独立设置窗口现在是常驻的（关闭 = 隐藏，不重新加载），所以"只加载一次"就会把
-  // 网卡/IP、共享目录、在线状态停在旧值上：用户切了 Wi-Fi 再打开设置，看到的还是上次的。
+test("设置窗口的环境数据重拉入口必须存在（注意：它今天**不是**常驻窗口，见下面那条常驻判据）", () => {
+  // ⚠️ 这条原来叫「常驻的设置窗口必须…」，而 `AUX_WINDOWS_RESIDENT` 早就改成 `false`
+  //（关闭即销毁，每次打开都是新数据）⇒ 标题与理由都在说一件已经不成立的事。
+  // 判据本身继续留着（那个函数与它的四个只读拉取仍有用户价值），但"常驻窗口必须有重拉兜底"
+  // 这件事交给下面那条**从 Rust 现场读标记**的守卫 —— 点名式判据会因为翻一个常量而静默失效。
   const entry = read("src/entries/settings.ts");
   assert.match(entry, /onFocusChanged/, "设置窗口要监听重新获得焦点");
   assert.match(entry, /refreshEnvironment\(\)/, "获得焦点时刷新环境数据");
@@ -325,5 +327,105 @@ test("骨架主色必须跟随主题色（写死默认蓝 = 换了主题色还�
     read("src/boot/theme-boot.js"),
     /setProperty\("--gosslan-primary"/,
     "theme-boot.js 必须把主题色写到 --gosslan-primary —— 骨架跟随主题色靠的就是它",
+  );
+});
+
+/**
+ * 常驻窗口的自愈兜底（架构复审第 5 步 · 判据）。
+ *
+ * 背景：关窗 = 隐藏 ⇒ 文档永远不重新加载，任何"只在挂载时取一次"的写法都会永久显示旧快照。
+ * 这条规则以前只被**一个具体窗口**的守卫钉着（上面那条 `settings.ts` 的 `onFocusChanged`），
+ * 而那是点名式判据：换一扇窗口、换一个函数名，它永远绿。更糟的是它的前提已经过期 ——
+ * `AUX_WINDOWS_RESIDENT = false`（设置/日志关闭即销毁），被钉的那扇窗根本不再常驻。
+ *
+ * 所以这里把两件事分开钉：
+ *  ① **常驻集合从 Rust 现场读**（`AUX_*_RESIDENT`）并强制登记 —— 谁翻了标记、谁新增一扇
+ *     常驻窗口而没来这里表态，直接红；
+ *  ② 每扇常驻窗口必须有兜底，但**允许两种合法形状**：自己取数的必须有"重新可见 ⇒ 重拉"；
+ *     内容由后端定向推送的必须有那个推送监听（并且关闭时自己释放）。
+ *     不这么分就会逼着预览窗口去重拉一份"它本来就没有的列表"。
+ */
+test("常驻窗口必须有自愈兜底（常驻集合从 Rust 的 *_RESIDENT 现场读，不许点名）", () => {
+  const logs = read("src-tauri/src/commands/logs.rs");
+  const flags = new Map<string, boolean>();
+  for (const m of logs.matchAll(/const AUX_(\w+)_RESIDENT: bool = (true|false);/g)) {
+    flags.set(m[1], m[2] === "true");
+  }
+  assert.ok(
+    flags.size >= 3,
+    `只从 logs.rs 读出 ${flags.size} 个 *_RESIDENT 标记 ⇒ 判据的覆盖范围正在失效，先修正则再谈别的`,
+  );
+
+  /**
+   * 每扇辅助窗口的归属。`selfFetch` = 这个窗口的内容**是它自己向本地后端取**的
+   * （那种窗口漏了重拉就会永久显示旧数据）；否则它的内容由后端定向事件带过来。
+   */
+  const WINDOWS: {
+    flag: string;
+    label: string;
+    selfFetch: boolean;
+    files: string[];
+    /** 被推送形状所必需的监听（缺了就等于"隐藏后既不自取也没人推"）。 */
+    pushListener?: RegExp;
+  }[] = [
+    {
+      flag: "TASKS",
+      label: "群任务窗口",
+      selfFetch: true,
+      // 取数与换群都在根组件里（入口刻意不取数，见 entries/todos.ts 顶部说明）
+      files: ["src/components/GroupTodosWindow.vue", "src/entries/todos.ts"],
+    },
+    {
+      flag: "PREVIEW",
+      label: "图片预览窗口",
+      selfFetch: false,
+      files: ["src/components/window/PreviewWindow.vue", "src/entries/preview.ts"],
+      pushListener: /onImagePreviewChanged/,
+    },
+    { flag: "LINK", label: "外链窗口", selfFetch: false, files: [] },
+    {
+      flag: "WINDOWS",
+      label: "设置 / 日志窗口",
+      selfFetch: false,
+      files: ["src/entries/settings.ts"],
+    },
+  ];
+  for (const [flag, resident] of flags) {
+    const w = WINDOWS.find((x) => x.flag === flag);
+    assert.ok(w, `AUX_${flag}_RESIDENT 没在判据表里登记 ⇒ 新增窗口必须先来这里表态（自愈/不自愈都行，别默认）`);
+    if (!resident) continue;
+    if (w!.selfFetch) {
+      const src = w!.files.map(read).join("\n");
+      assert.match(
+        src,
+        /onFocusChanged|visibilitychange/,
+        `${w!.label} 是常驻窗口且内容自己取 ⇒ 必须有"重新可见/获得焦点"的兜底；今天只有 Rust 复用它时发的定向事件，从任务栏或 ⌘Tab 唤回来仍是旧快照`,
+      );
+      assert.match(
+        src,
+        /loadGroupTodos\(|refresh[A-Z]\w*\(/,
+        `${w!.label} 的可见性兜底必须真的重拉数据，不能只改样式`,
+      );
+    } else if (w!.pushListener) {
+      const src = w!.files.map(read).join("\n");
+      assert.match(
+        src,
+        w!.pushListener,
+        `${w!.label} 是常驻窗口：内容不靠自己取，就必须有后端定向事件把它推醒`,
+      );
+    }
+  }
+
+  // 主窗口不在 AUX_* 之下：它的"关窗即隐藏"由托盘那条路径实现，所以事实要单独读
+  const tray = read("src-tauri/src/tray.rs");
+  const mainResident = /prevent_close\(\)/.test(tray) && /hide\(\)/.test(tray);
+  assert.ok(mainResident, "托盘的「关窗即隐藏」判据失效了（先确认实现搬去哪了，别把这条守卫删掉）");
+  const chat = read("src/stores/useChatStore.ts");
+  const vis = chat.slice(chat.indexOf("const onVisibility"));
+  assert.ok(vis.length > 80, "找不到主窗口的可见性兜底函数");
+  assert.match(
+    vis,
+    /refreshConversations\(\)[\s\S]{0,400}refreshTransfers\(\)|refreshTransfers\(\)[\s\S]{0,400}refreshConversations\(\)/,
+    "主窗口重新可见时必须重拉会话与传输：`message-acked` / `peer-read` / `file-*` 都是就地改内存的轻量事件，错过一条就永久错，而这两张表是它们的真相源",
   );
 });
