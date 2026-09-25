@@ -1133,3 +1133,55 @@ test("图片预览只有一处渲染点，其余组件一律走 useImagePreviewS
   // 左右切换写的也是 store 的 index（写成组件本地 ref 就等于把"当前看第几张"又搬回局部）
   assert.match(shell, /v-model:index="preview\.index"/, "切换下标也写回 store");
 });
+
+/**
+ * 布局级断点必须叠加 `desktop:`（#27）。
+ *
+ * 安卓启动时系统权限弹框盖住 WebView 首次布局，那一刻视口宽度会读到兜底档（980px），
+ * 于是 JS 判"移动"而 CSS 判"桌面"：导航栏回来、底部安全区内边距被清零、抽屉按 980 铺满。
+ * 所以**决定结构**的那几个断点必须同时要求"本机不是移动布局"，而 `is-mobile` 这个类
+ * 只有 `useAppStore.applyIsMobile()` 一个写者（判据 = platform.ts 的 resolveMobileLayout）。
+ *
+ * 表里每条都是"少了它手机就当桌面用"的那一类；纯文字密度（`sm:inline` 的秒级时间戳等）
+ * 刻意不在这里 —— 那些在宽视口下多显示一点无害，钉进去只会让人下次不敢用断点。
+ */
+test("布局级断点必须叠加 desktop: 变体（移动端视口会说谎）", () => {
+  const cases: [string, string][] = [
+    ["../components/NavRail.vue", "md:flex"],
+    ["../layouts/ResponsiveLayout.vue", "md:block"],
+    ["../layouts/ResponsiveLayout.vue", "md:pb-0"],
+    ["../layouts/ResponsiveLayout.vue", "md:flex"],
+    ["../components/FavoritePanel.vue", "sm:flex-col"],
+    ["../components/FavoritePanel.vue", "sm:flex-none"],
+    ["../components/search/ChatSearchDialog.vue", "md:flex-row"],
+    ["../components/DevDiagPanel.vue", "sm:grid-cols-2"],
+  ];
+  const bare: string[] = [];
+  for (const [rel, util] of cases) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    for (const line of src.split("\n")) {
+      if (!line.includes(util)) continue;
+      // 只查 class 里的那次出现：注释里提一句不算违反
+      const cls = /class="[^"]*"/.exec(line);
+      if (!cls) continue;
+      const idx = cls[0].indexOf(util);
+      if (idx < 0) continue;
+      const before = cls[0].slice(Math.max(0, idx - 9), idx);
+      if (!before.endsWith("desktop:")) bare.push(`${rel}  ${util}`);
+    }
+  }
+  assert.deepEqual(
+    bare,
+    [],
+    `这些结构级断点没叠 desktop:，移动布局下也会被视口宽度点亮：${bare.join(" · ")}`,
+  );
+});
+
+test("`desktop:` 变体必须在 tailwind 里注册（拼错的后缀会静默不生效）", () => {
+  const cfg = readFileSync(new URL("../../tailwind.config.js", import.meta.url), "utf8");
+  assert.ok(cfg.includes('addVariant("desktop"'), "tailwind.config.js 里没有 desktop 变体");
+  assert.ok(
+    cfg.includes("html:not(.is-mobile)"),
+    "变体的选择器必须是 html:not(.is-mobile) —— 与 useAppStore 写的那个类同名才对得上",
+  );
+});

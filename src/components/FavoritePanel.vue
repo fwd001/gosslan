@@ -552,17 +552,17 @@ async function confirmDelete() {
       <div class="flex min-h-0 flex-1">
         <!-- 左栏 = 列表底 `--gosslan-list`（与聊天/通讯录/搜索列表同族）：
              此前用 main 的白色 `--gosslan-chat` 打底，整栏发白，和其它列表不一致（用户 2026-09-20）。 -->
-        <!-- ⚠️ `sm:flex-none` 不能省：`flex-1` 把 `flex-basis` 设成 0%，会让下面的 width 失效、
+        <!-- ⚠️ `desktop:sm:flex-none` 不能省：`flex-1` 把 `flex-basis` 设成 0%，会让下面的 width 失效、
              左列被拉伸成「和详情各占一半」，宽度就和别处的列表列对不上了（用户 2026-09-20）。
              宽度走 `var(--gosslan-list-w)`（= 布局里可拖拽的列表宽），与聊天/通讯录列表一致。 -->
         <!-- ⚠️ 只在**移动端**才在选中后收起左列（两级：列表 ↔ 详情）：桌面端详情的返回头部是
              `v-if="app.isMobile"`，收起左列后**没有返回入口**、没法再选下一条，所以桌面端保持两栏。
              ⚠️ 更正（用户 2026-09-20 指出）：早先这条注释把「这里怎么有圆角」的根因写成这个，是**错的** ——
              那个圆角来自主区 `<main>` 自身的 `rounded-tl`，与是否收起左列无关，已单独删除。 -->
-        <!-- ⚠️ 这里**不加** `sm:border-r`：两栏靠底色分栏（列表底 vs 详情白），与聊天/通讯录页一致；
+        <!-- ⚠️ 这里**不加** `desktop:sm:border-r`：两栏靠底色分栏（列表底 vs 详情白），与聊天/通讯录页一致；
              加一条竖线反而是别的页面没有的东西（用户 2026-09-20：「收藏页两栏中间多个分割线」）。 -->
         <div
-          class="min-h-0 bg-[var(--gosslan-list)] sm:flex sm:w-[var(--gosslan-list-w)] sm:flex-none sm:flex-col"
+          class="min-h-0 bg-[var(--gosslan-list)] desktop:sm:flex desktop:sm:w-[var(--gosslan-list-w)] desktop:sm:flex-none desktop:sm:flex-col"
           :class="app.isMobile && active ? 'hidden' : 'flex flex-1 flex-col'"
         >
           <div class="flex shrink-0 flex-col gap-2 px-2 pt-2">
@@ -839,7 +839,7 @@ async function confirmDelete() {
           </div>
         </div>
         </Transition>
-        <div v-if="!active" class="hidden flex-1 items-center justify-center text-xs text-[var(--gosslan-text-2)] sm:flex">
+        <div v-if="!active" class="hidden flex-1 items-center justify-center text-xs text-[var(--gosslan-text-2)] desktop:sm:flex">
           {{ t("favorite.pickOne") }}
         </div>
       </div>

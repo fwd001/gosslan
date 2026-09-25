@@ -107,7 +107,7 @@ function peerIsNewer(p: PeerVersionDiag): boolean {
         <!-- ① 通道状态：一条通道一张卡（蓝牙用户不再被判 offline） -->
         <section>
           <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.channels") }}</h4>
-          <div class="grid gap-2 sm:grid-cols-2">
+          <div class="grid gap-2 desktop:sm:grid-cols-2">
             <!-- 局域网 -->
             <div class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-3">
               <div class="mb-2 flex items-center gap-1.5 text-[13px] font-medium">

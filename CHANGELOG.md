@@ -10,6 +10,52 @@
 
 ## [Unreleased]
 
+## [4.29.45] - 2026-09-25
+
+### Fixed (2026-09-25 · #27 移动端首屏被判成桌面布局：两处各一半)
+
+工单原话是「权限弹框后骨架屏结束，样式崩掉（注明不是移动布局本身的问题）」。
+先把机制钉死，再改 —— 两条独立成因，缺一条都还会看见：
+
+**成因 A：`isMobile` 要等 IPC。** `useAppStore` 里它是 `ref(false)`，唯一赋值点
+`applyIsMobile()` 排在 `await api.getSettings()` **之后**。而撤骨架的两个条件
+（`App.vue` 在 `init()` 之后的 `finally` 派发 `gosslan:app-ready` + `boot.ts` 那条 5s 硬定时器）
+**与 init 有没有跑完无关** ⇒ `getSettings()`/两次 `listen` 任一 reject，`isMobile` 就永久停在
+`false`，手机上骨架一撤露出的是**桌面三栏**。Android 的运行时权限弹框
+（`MainActivity.kt` 在 `decorView.post` 里申请）恰好就是最容易让首屏 IPC 失败/延后的那一刻。
+- `isMobile` 改成**建 store 时就判一次**（只依赖 UA 与 `matchMedia`，不需要等任何 IPC）；
+  `init()` 里那段整体挪到**第一个 await 之前**，负责再确认 + 挂 change/resize + 写 `<html>` 类。
+- 判据：`storeContract` 钉住「`applyIsMobile()` 必须排在 `init()` 任何 `await` 之前」
+  + 「必须写 `html.is-mobile`」。判据形状沿用今天那条教训 —— 钉**第一个 await 的位置**，
+  不钉某个具体调用名，换调用名绕不过去。先写后红（红在"必须排在 await 之前"）。
+
+**成因 B：CSS 侧仍然只看视口宽度。** 2026-09-21 那次只把 **JS** 判据改成平台优先
+（`resolveMobileLayout`），可 Tailwind 的 `md:`/`sm:` 还是纯宽度 —— 手机上报到兜底 980px 时
+**JS 说移动、CSS 说桌面**：导航栏 `md:flex` 回来了、`md:pb-0` 把底部安全区内边距清零
+（输入框被 TabBar 压住）、抽屉 `w-full` 变成 980px 宽。
+- `tailwind.config.js` 新增一个 `desktop:` 变体（`html:not(.is-mobile) &`），
+  结构级断点一律写成 **叠加**形式 `desktop:md:flex` / `desktop:sm:flex-none`：
+  既要"不是移动布局"也要"够宽" ⇒ **桌面窄窗口的行为与改造前一字不差**，只砍掉
+  "手机上被兜底视口点亮"那一档。改了 10 处（导航栏、三栏外壳、底部留白、收藏两栏、
+  搜索对话框、诊断面板），纯文字密度类（`sm:inline` 的秒级时间戳）**刻意不改** ——
+  宽视口下多显示一点无害，全钉进去会让人下次不敢用断点。
+- `is-mobile` 这个类**只有 `applyIsMobile()` 一个写者**（CSS 只读），不留第二份判据。
+- 判据两条（`designGuards.test.ts`）：结构级断点清单里每一项必须带 `desktop:` 前缀；
+  变体必须在 tailwind 里注册（拼错的后缀 Tailwind 静默不生成规则，等于没改）。
+  非空转证据：把 `NavRail.vue` 的 `desktop:md:flex` 改回 `md:flex` ⇒ 守卫立刻点名该文件红。
+- 编译产物核对（不是"看着对"）：`npm run build` 后的 CSS 里
+  `html:not(.is-mobile) .desktop\:sm\:flex{display:flex}` 共 16 处。
+- ⚠️ 真机待验：手机首启（权限弹框前/后）与转屏，看导航栏是否出现、输入框是否被 TabBar 压住。
+  还有一处**本次没动**：`skeleton.css` 的 `@media (max-width:767px)` 只影响骨架自身观感，
+  且骨架在 `is-mobile` 写入之前就把真实布局盖住了。
+
+### Changelog
+- `src/stores/useAppStore.ts`：`isMobile` 建立时即判定 + `applyIsMobile` 移到 await 之前 + 写 `html.is-mobile`。
+- `tailwind.config.js`：新增 `desktop` 变体。
+- 10 处结构级断点叠加 `desktop:`；`designGuards.test.ts` +2 条判据、`storeContract.test.ts` +1 条。
+
+
+
 ## [4.29.44] - 2026-09-25
 
 ### Test (2026-09-25 · #25 那笔欠账：emit 抑制第一次有了行为测试)

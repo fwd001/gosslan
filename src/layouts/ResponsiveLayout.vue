@@ -537,7 +537,7 @@ function onResizeEnd() {
          （收藏页另有下面那条，见下）。 -->
     <div
       v-if="!app.isMobile && !favoritesOpen"
-      class="relative z-10 hidden w-2 cursor-col-resize transition-colors hover:bg-[var(--gosslan-divider)] md:block"
+      class="relative z-10 hidden w-2 cursor-col-resize transition-colors hover:bg-[var(--gosslan-divider)] desktop:md:block"
       :class="resizing ? '-mx-1 bg-[var(--gosslan-divider)]' : '-mx-1'"
       @pointerdown="onResizeStart"
       @pointermove="onResizeMove"
@@ -583,7 +583,7 @@ function onResizeEnd() {
            ⚠️ 这里与下面 TabBar 的 v-if **共用同一个 `showMobileTabBar`**（不要再各写一份条件）：
            两边一旦不一致，TabBar 已隐藏时 pb 还白留着 → 底部空一大截（用户 2026-09-19）。 -->
       <div
-        class="min-h-0 flex flex-1 flex-col md:pb-0"
+        class="min-h-0 flex flex-1 flex-col desktop:md:pb-0"
         :class="showMobileTabBar ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : ''"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 8}px` }
@@ -757,7 +757,7 @@ function onResizeEnd() {
         </span>
         <span class="text-[11px]">{{ t("nav.contacts") }}</span>
       </button>
-      <!-- 收藏：移动端 rail hidden md:flex（看不到），TabBar 保留入口。
+      <!-- 收藏：移动端 rail hidden desktop:md:flex（看不到），TabBar 保留入口。
            桌面端 NavRail 也有星标按钮，风格一致。 -->
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"

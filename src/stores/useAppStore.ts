@@ -234,8 +234,21 @@ export const useAppStore = defineStore("app", () => {
     toast(reportError(e, prefix), "error");
   }
 
-  // 响应式布局状态
-  const isMobile = ref(false);
+  /**
+   * 响应式布局状态。**建 store 时就先判一次**，不等 init()：
+   * 首帧渲染早于 init，而 init 里任何一步 IPC 抛错都不该把移动端留在默认 false 上
+   * —— 那等于"手机上永久挂着桌面三栏"（#27）。判据在 `platform.ts::resolveMobileLayout`
+   * （平台优先、宽度兜底），init 里的 `applyIsMobile()` 会再确认一次并写 `html.is-mobile`。
+   */
+  const isMobile = ref(
+    typeof window === "undefined"
+      ? false
+      : resolveMobileLayout({
+          android: isAndroid,
+          ios: isIOS,
+          narrow: window.matchMedia("(max-width: 767px)").matches,
+        }),
+  );
   const mobileView = ref<"list" | "chat">("list");
   /**
    * 移动端此刻是否有"整页内容盖住了聊天"（设置页 / 运行日志 / 新的朋友 / 好友资料 / 分享面板）。
@@ -722,6 +735,31 @@ export const useAppStore = defineStore("app", () => {
     if (typeof document !== "undefined") {
       document.documentElement.classList.toggle("platform-mac", isMac);
     }
+    const mq = window.matchMedia("(max-width: 767px)");
+    /**
+     * 布局是否走移动端 —— 判据见 `platform.ts::resolveMobileLayout`（**平台优先，宽度兜底**）。
+     *
+     * ⚠️ 为什么不能"init 里读一次 matchMedia"就完事：真实事故（用户 2026-09-21，Android 首次启动）
+     * 里，启动时的系统权限弹框盖在 WebView 的**首次布局**上，那一次读到了兜底视口宽度（980px 档）
+     * ⇒ 手机上判成"桌面" ⇒ 首页渲染成三栏布局，而且**一直错下去**（"变窄"那次过渡早于监听注册）。
+     * 所以：① 平台优先（安卓/iOS 恒为移动布局，它们是竖屏锁定的）；② 再把 change / resize
+     * （首次布局落定、转屏、拖窗口都会触发）与首帧后的一次重判挂上兜底。
+     */
+    const applyIsMobile = () => {
+      isMobile.value = resolveMobileLayout({ android: isAndroid, ios: isIOS, narrow: mq.matches });
+      // 同一个结论再写一份到 `<html>`：CSS 侧的布局级断点要用它挡掉
+      // 「WebView 首帧读到兜底视口宽度」那一档 —— 否则 JS 说移动、CSS 说桌面，
+      // 手机上会同时出现「桌面导航栏回来了」和「抽屉按 980px 铺满」。
+      document.documentElement.classList.toggle("is-mobile", isMobile.value);
+    };
+    applyIsMobile();
+    mq.addEventListener("change", applyIsMobile);
+    window.addEventListener("resize", applyIsMobile);
+    scope.onDispose(() => {
+      mq.removeEventListener("change", applyIsMobile);
+      window.removeEventListener("resize", applyIsMobile);
+    });
+    requestAnimationFrame(applyIsMobile);
     // 从后端恢复持久化偏好（外观 / 网卡 / 聊天样式），优先于 localStorage
     const s = await api.getSettings();
     applySettingsSnapshot(s);
@@ -749,27 +787,6 @@ export const useAppStore = defineStore("app", () => {
 
     // 注册系统外观监听（跟随系统模式下，用户在系统设置里切换要即时生效，不必重启）
     scope.onDispose(watchSystemAppearance());
-    const mq = window.matchMedia("(max-width: 767px)");
-    /**
-     * 布局是否走移动端 —— 判据见 `platform.ts::resolveMobileLayout`（**平台优先，宽度兜底**）。
-     *
-     * ⚠️ 为什么不能"init 里读一次 matchMedia"就完事：真实事故（用户 2026-09-21，Android 首次启动）
-     * 里，启动时的系统权限弹框盖在 WebView 的**首次布局**上，那一次读到了兜底视口宽度（980px 档）
-     * ⇒ 手机上判成"桌面" ⇒ 首页渲染成三栏布局，而且**一直错下去**（"变窄"那次过渡早于监听注册）。
-     * 所以：① 平台优先（安卓/iOS 恒为移动布局，它们是竖屏锁定的）；② 再把 change / resize
-     * （首次布局落定、转屏、拖窗口都会触发）与首帧后的一次重判挂上兜底。
-     */
-    const applyIsMobile = () => {
-      isMobile.value = resolveMobileLayout({ android: isAndroid, ios: isIOS, narrow: mq.matches });
-    };
-    applyIsMobile();
-    mq.addEventListener("change", applyIsMobile);
-    window.addEventListener("resize", applyIsMobile);
-    scope.onDispose(() => {
-      mq.removeEventListener("change", applyIsMobile);
-      window.removeEventListener("resize", applyIsMobile);
-    });
-    requestAnimationFrame(applyIsMobile);
     scope.onDispose(watchKeyboard());
 
     await refreshEnvironment();

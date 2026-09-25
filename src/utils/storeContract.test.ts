@@ -245,6 +245,30 @@ test("peers 只许经 mergePeerList 写入：每拍换掉整表引用 = 每 333m
   assert.ok(st.includes('from "@/utils/peerMerge"'), "必须真的用那份合并函数，而不是就地再拼一遍");
 });
 
+test("isMobile 必须在 init 的第一个 await 之前定好，并同步写 html.is-mobile", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useAppStore.ts"), "utf8"));
+  const at = st.indexOf("async function init()");
+  assert.ok(at > 0, "找不到 app.init() —— 改名要同步这条守卫");
+  const body = st.slice(at, st.indexOf("\n  }", at));
+  const call = body.indexOf("applyIsMobile();");
+  const firstAwait = body.indexOf("await ");
+  assert.ok(call > 0, "init() 里没有 applyIsMobile()：判据前提变了");
+  assert.ok(firstAwait > 0, "init() 里没有 await：判据前提变了");
+  // 为什么钉"排在第一个 await 之前"：isMobile 只依赖 UA 与 matchMedia，**根本不需要等 IPC**。
+  // 真机现场（#27）：`getSettings()` 之前那几步任一 reject，`App.vue` 的 `finally` 与
+  // `boot.ts` 的 5s 硬定时器照样把骨架撤掉 ⇒ 手机上露出来的是 isMobile 仍是默认 false
+  // 的那一帧起就一直挂着的**桌面三栏**。顺序错了不是"晚一点好"，是"永久错"。
+  assert.ok(
+    call < firstAwait,
+    "applyIsMobile() 必须排在任何 await 之前：排在 IPC 之后，init 半途抛错就永远停在桌面布局",
+  );
+  assert.ok(
+    body.includes('classList.toggle("is-mobile"'),
+    "必须把同一个结论写进 html.is-mobile —— CSS 侧的布局级断点要用它挡掉" +
+      "「WebView 首帧读到兜底视口宽度」那一档，否则 JS 说移动、CSS 说桌面",
+  );
+});
+
 test("冷加载必须一次 IPC 取到最新一页，不许退回「先问总数再按 offset 取」两轮串行", () => {
   const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
   const at = st.indexOf("async function loadMessages(");

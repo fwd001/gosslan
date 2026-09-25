@@ -322,7 +322,8 @@ const MODS = [
     files: ["index.html", "src/entries/main.ts", "src/App.vue", "src/layouts/ResponsiveLayout.vue"],
     in: ["RuntimeSnapshot(通道/在线/绑定IP) ← 后端 runtime-changed", "MessageRecord[] ← 后端 message-received", "AppSettings 快照 ← settings-changed"],
     out: ["invoke(...) → IPC 契约层", "set_unread_badge(count) / notify_desktop() → 平台外壳", "open_*_window() → 辅助窗口"],
-    data: ["NavState = chats|contacts|links|favorites|me", "mobileView = list|chat", "AUX_PREWARM_DELAY_MS = 1200"] },
+    data: ["NavState = chats|contacts|links|favorites|me", "mobileView = list|chat", "AUX_PREWARM_DELAY_MS = 1200",
+           "⚠️ 移动布局判据只有一处：<code>resolveMobileLayout</code>（平台优先、宽度兜底），<b>建 store 时即判</b>，同一个结论独家写成 <code>html.is-mobile</code>；CSS 只读不判 —— 结构级断点必须写成 <code>desktop:md:*</code> 叠加，因为手机首帧的视口宽度<b>会说谎</b>（启动权限弹框盖住 WebView 时读到 980px 兜底档 ⇒ 纯 <code>md:</code> 会把桌面导航栏与<code>pb-0</code> 点亮到手机上）"] },
 
   { id: "w-settings", l: "ui", n: "设置窗口", s: "settings.html · 常驻(关=隐藏)", cnt: "桌面端",
     role: "11 个设置分区的独立窗口。只跑 <code>app.init()</code>（只读：主题/语言/设备）。常驻 ⇒ 不会重新加载，所以必须在<b>重新获得焦点时</b>重拉环境数据（Wi-Fi/共享目录会变）。",
@@ -1433,7 +1434,7 @@ function buildDir() {
       '<div class="stat"><div class="num">29</div><div>后端事件名（表内合并成 ' + EVENTS.length + ' 行）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
       '<div class="stat"><div class="num">181</div><div>护栏非空转用例（改坏即红）</div></div>' +
-      '<div class="stat"><div class="num">690 / 602</div><div>Rust / 前端测试条数</div></div>' +
+      '<div class="stat"><div class="num">690 / 606</div><div>Rust / 前端测试条数</div></div>' +
     "</div>" +
     '<h2 class="sec">领域图（真源 <code>docs/domains.data.mjs</code> · 本页内嵌快照 · <code>check-domain-map.mjs</code> 守路径存在，<code>check-domain-deps.mjs</code> 守依赖方向）</h2>' +
     '<div class="tablewrap"><table><thead><tr><th>领域</th><th>tier</th><th>数据实际跑在哪个家（activeHome）</th><th>允许依赖（consumes）</th><th>不变量</th><th>备注里的坑</th></tr></thead><tbody>' +

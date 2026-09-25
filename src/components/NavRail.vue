@@ -102,7 +102,7 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
   <!-- 微信式窄导航栏：顶部本人头像 + 中部导航图标 + 底部偏好；
        选中项仅图标变色（主题色），不改底色，与微信一致 -->
   <aside
-    class="hidden shrink-0 select-none flex-col items-center bg-[var(--gosslan-rail)] py-3 md:flex"
+    class="hidden shrink-0 select-none flex-col items-center bg-[var(--gosslan-rail)] py-3 desktop:md:flex"
     :style="{ width: 'var(--gosslan-rail-w)' }"
   >
     <!-- 顶部：本人头像（点开设置/我）；在线点放在 overflow-hidden 按钮外层，避免被裁切 -->
