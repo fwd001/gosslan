@@ -169,10 +169,18 @@ const steps = [
   {
     group: "frontend",
     name: "db 锁作用域守卫",
-    why: "挡住「锁还活着时 emit」——只有一条 SQLite 连接，前端收到事件后的第一次 IPC 抢同一把锁 ⇒ 那一刻界面冻一下；292 个取锁点全扫（判据自带 7 段夹具自证）",
+    why: "挡住「锁还活着时 emit」——只有一条 SQLite 连接，前端收到事件后的第一次 IPC 抢同一把锁 ⇒ 那一刻界面冻一下；全部取锁点逐处判（条数由该步自己打印，别处不抄），判据自带 7 段夹具自证",
     cwd: ROOT,
     cmd: NODE_EXE,
     args: ["scripts/check-lock-scope.mjs"],
+  },
+  {
+    group: "frontend",
+    name: "文档硬数字对账",
+    why: "挡住「文档抄了一份数字、下次改代码没人回来改它」——门禁步数由 verify --list 现算对账；取锁点条数一律禁止手写（曾在四处共存三种写法）",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-doc-numbers.mjs"],
   },
   {
     group: "frontend",
