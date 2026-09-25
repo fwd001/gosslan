@@ -666,3 +666,99 @@ fn a_cancelled_group_file_marks_its_own_bubble() {
         .unwrap();
     assert_eq!(q, "cancelled", "队列行走 cancelled 口径，不是 failed");
 }
+
+/// 「一台设备已经收完这份文件」的行，队列超时**不许把它报成失败** ——
+/// 但队列行必须照样关掉。这两半都是语义，缺任何一边用户都会看见东西：
+///  · 少了 `done` 闸门 ⇒ 用户看到一个「打开就在那儿的文件」显示失败（气泡被改成 failed）；
+///  · 少了关行 ⇒ 那一行永远留在 pending/sending 集合里，`list_expired_file_outbox`
+///    每个 tick 重扫一遍又什么都不做（活锁，且每次都白拿一次 db 锁）。
+///
+/// 为什么要单独钉：`commands::fail_file_job` 与 `finalize_expired_file` 都**只把
+/// 这个返回值当作"要不要 emit file-failed"的唯一依据**（A3 那条纪律）。
+/// 它一旦回归，编译器不会响、其余测试也不会响 —— 只有界面会。
+#[test]
+fn a_done_transfer_is_not_announced_failed_yet_its_queue_row_closes() {
+    let conn = fresh_db();
+    seed_send_job(&conn, "t6", "done");
+
+    assert!(
+        !finalize_file_failure(&conn, "t6", FileJobEnd::GiveUp).unwrap(),
+        "台账已 done ⇒ 没有任何面向用户的写发生，必须回报 false（调用方据此不发 file-failed）"
+    );
+    assert_eq!(
+        message_status(&conn, "file-t6"),
+        "sending",
+        "已收完的文件气泡不许被改成失败"
+    );
+    assert_eq!(
+        transfer_status(&conn, "t6"),
+        "done",
+        "done 是不可降级的那一头"
+    );
+    assert_eq!(
+        outbox_status(&conn, "t6"),
+        "failed",
+        "队列行仍然要关掉：它是它自己的状态机，且不能留在重试集合里"
+    );
+}
+
+/// 反向的一半：没收成的那一行，三处必须**一起**推进并回报 true。
+/// 只钉正向会变成"永远返回 false 也通过" —— 那正好是关掉 emit、让前端永久卡在 X% 的形状。
+#[test]
+fn an_unfinished_transfer_is_announced_failed_and_all_three_rows_move() {
+    let conn = fresh_db();
+    seed_send_job(&conn, "t7", "sending");
+
+    assert!(
+        finalize_file_failure(&conn, "t7", FileJobEnd::GiveUp).unwrap(),
+        "没收到 ⇒ 面向用户的状态真的推进了，必须回报 true"
+    );
+    assert_eq!(message_status(&conn, "file-t7"), "failed");
+    assert_eq!(transfer_status(&conn, "t7"), "failed");
+    assert_eq!(outbox_status(&conn, "t7"), "failed");
+}
+
+/// 夹具：一条 1:1 文件消息气泡 + 一行台账（`status` 由用例决定）+ 一行 pending 队列。
+fn seed_send_job(conn: &Connection, tid: &str, status: &str) {
+    conn.execute(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+         VALUES(?1, 'p1', 'me', 'p1', 'file', 'x', 1000, 1, 'sending')",
+        params![format!("file-{tid}")],
+    )
+    .unwrap();
+    upsert_transfer(conn, tid, "p1", "z.bin", 10, "send", status, None, 0.5).unwrap();
+    conn.execute(
+        "INSERT INTO file_outbox(transfer_id, peer_id, local_path, name, size, status,
+                                 attempts, next_attempt_at, created_at)
+         VALUES(?1, 'p1', '/d/z.bin', 'z.bin', 10, 'pending', 0, 0, 1)",
+        params![tid],
+    )
+    .unwrap();
+}
+
+fn message_status(conn: &Connection, msg_id: &str) -> String {
+    conn.query_row(
+        "SELECT status FROM messages WHERE msg_id = ?1",
+        params![msg_id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+fn transfer_status(conn: &Connection, tid: &str) -> String {
+    conn.query_row(
+        "SELECT status FROM file_transfers WHERE id = ?1",
+        params![tid],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+fn outbox_status(conn: &Connection, tid: &str) -> String {
+    conn.query_row(
+        "SELECT status FROM file_outbox WHERE transfer_id = ?1",
+        params![tid],
+        |r| r.get(0),
+    )
+    .unwrap()
+}

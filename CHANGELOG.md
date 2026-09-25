@@ -10,6 +10,34 @@
 
 ## [Unreleased]
 
+## [4.29.44] - 2026-09-25
+
+### Test (2026-09-25 · #25 那笔欠账：emit 抑制第一次有了行为测试)
+
+`fail_file_job` 的"已收完的文件不许被报成失败"这条闸门，此前只有**源码结构守卫**
+（`lib.rs` 钉 `finalize_file_failure` 体内的写序锚点）—— 结构守卫只能保证"这些步骤还在、
+还在原来的顺序"，保证不了"返回值仍然是那个意思"。而这个返回值是
+**要不要 emit `file-failed` 的唯一依据**（A3 纪律），回归时编译器不响、别的测试也不响，
+只有界面上会出现「一个打开就在那儿的文件显示失败」。
+
+- P7 把三份收尾合成一份之后，这块逻辑已经天然不吃 `AppState` ⇒ 不需要再拆签名，
+  直接打在 `db::finalize_file_failure` 上（两条，一正一反）：
+  · `a_done_transfer_is_not_announced_failed_yet_its_queue_row_closes` ——
+    `done` 行必须回报 `false`、气泡与台账一个字都不许动，**但队列行必须关掉**
+    （不关就是活锁：它每 tick 被 `list_expired_file_outbox` 重扫一遍又什么都不做）；
+  · `an_unfinished_transfer_is_announced_failed_and_all_three_rows_move` ——
+    没收成的必须回报 `true` 且三处一起推进。只钉正向会变成"永远返回 false 也能通过"，
+    而那正好是"关掉 emit、前端永久卡在 X%"的形状。
+- 非空转证据（两条各自改坏必须红，跑完已还原并核对文件一致）：
+  把闸门 `if !already_done || cancelled` 改成 `if true` ⇒ 第 684 行断言炸；
+  把关行条件 `if changed || already_done` 改成 `if changed` ⇒ 第 698 行断言炸。
+- 两份平台基线都补上这两条（mac 688 → 690；win 同步 +2），
+  清单守卫跨平台名字核对一并通过。
+
+### Changelog
+- `src-tauri/src/db/cascade_tests.rs`：+2 行为测试 + 4 个夹具/读回助手。
+
+
 ## [4.29.43] - 2026-09-25
 
 ### Fixed (2026-09-25 · 发版脚本自己把 Cargo.lock 跟上，并且断言跟上了)
