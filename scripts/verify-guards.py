@@ -1783,6 +1783,63 @@ CASES: list[Case] = [
         expect_fail_hint="boot-todos",
         tags=["frontend", "window"],
     ),
+    # ── #27 移动端首屏布局（2026-09-25）：四条各盯一个「少了它手机就当桌面用」的形状 ──
+    Case(
+        name="移动布局判据必须写进 html.is-mobile（CSS 侧唯一的读端）",
+        why="isMobile 只活在 JS 里的话，结构级断点就无从让路 —— 而手机首帧的视口宽度会说谎"
+        "（启动时系统权限弹框盖住 WebView，那一刻读到 980px 兜底档）。那个类是 JS 与 CSS 之间"
+        "唯一的接缝，写的人少一句，CSS 侧全部 desktop: 叠加同时失效，且不产生任何编译错误",
+        file=ROOT / "src" / "stores" / "useAppStore.ts",
+        injections=[(
+            '      document.documentElement.classList.toggle("is-mobile", isMobile.value);\n',
+            "",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="html.is-mobile",
+        tags=["frontend", "mobile-layout", "ui"],
+    ),
+    Case(
+        name="结构级断点必须叠 desktop:（导航栏那条）",
+        why="导航栏只写 `hidden md:flex`：手机首帧读到兜底视口宽度时导航栏直接回来，"
+        "与 JS 判出的移动布局互相打脸。叠成 desktop:md:flex 才等于「桌面且够宽」；"
+        "少叠一次就是一个「手机上多出桌面导航栏」的现场",
+        file=ROOT / "src" / "components" / "NavRail.vue",
+        injections=[("py-3 desktop:md:flex", "py-3 md:flex")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="desktop:",
+        tags=["frontend", "mobile-layout", "ui"],
+    ),
+    Case(
+        name="desktop 变体必须在 tailwind 注册（拼错的后缀会静默不生效）",
+        why="Tailwind 对不认识的变体是静默丢掉整条工具类：不报错、不生成规则，界面只是"
+        "「少了一点样式」。所以写 desktop: 的人必须有人回头查注册还在不在",
+        file=ROOT / "tailwind.config.js",
+        injections=[('addVariant("desktop", "html:not(.is-mobile) &");', "// removed by 非空转验证")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="desktop",
+        tags=["frontend", "mobile-layout", "ui"],
+    ),
+    Case(
+        name="peers 必须走 mergePeerList（不许退回整表直写）",
+        why="peers-updated 最多每秒 3 次，整表直写会换掉数组和里面每个对象 ⇒ 凡读过 peers 的"
+        "渲染（消息行模板里的 nicknameOf）每 333ms 全部作废一次，与这一拍有没有真的变化无关。"
+        "合并函数把「没变就不赋值」变成可单测的判据，绕开它就是再把那次重画请回来",
+        file=ROOT / "src" / "stores" / "useChatStore.ts",
+        injections=[
+            (
+                "        const merged = mergePeerList(peers.value, p);\n"
+                "        if (merged) peers.value = merged;\n",
+                "        peers.value = p;\n",
+            )
+        ],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="mergePeerList",
+        tags=["frontend", "mobile-layout", "ui"],
+    ),
     Case(
         name="外链窗口隔离（远端页面不得拿到任何 capability）",
         why="外链窗口加载的是**远端页面**；一旦被 capability 覆盖，第三方内容就能调用本应用的"

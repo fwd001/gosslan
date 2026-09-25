@@ -25,12 +25,13 @@
 | **★★★ 必读** | [AI_RULES.md](AI_RULES.md) | **AI 工程宪法**：核心不变量 INV-001~008、任务复杂度分级 L1/L2/L3、既有代码优先、协议/DB 规则、**跨版本兼容（§12）**、状态机、Bug 修复流程、范围边界（§3 当前不做）、Definition of Done |
 | **★★★ 必读** | [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md) | **v1.0 验收标准**：P0 地基 + mesh 本体清单（含跨版本降级）、禁止事项、必须运行的验证命令 |
 | **★★★ 必读** | [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) | **项目全景**：完整功能清单、架构与代码导读、E2EE 状态机、工程约定、测试口径 |
-| **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01~P24，含 INV-P24 跨版本优雅降级）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
+| **★★★ 必读** | [docs/stability-roadmap.md](docs/stability-roadmap.md) | **稳定版工作地图（当前阶段的地图）**：审计结论、10 条风险、26 条在途任务的 A/B/C/D 重判与保留/修复/优化/延后/删除理由、自动化 vs 人工覆盖边界、8 条高风险旅程、执行顺序与每阶段退出判据。**做任何稳定性工作前先在这里定位自己在哪一格** |
+| **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01~P26，含 INV-P24 跨版本优雅降级、INV-P25 发射不持锁、INV-P26 终态不可降级）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
 | **★★ 参考** | [docs/AI_ENGINEERING_INDEX.md](docs/AI_ENGINEERING_INDEX.md) | 约束文档导航索引 + 文档与代码冲突时的处理规则 |
 | **★★ 参考** | [docs/adr/](docs/adr/) | **架构决策记录**：协议版本化（ADR-0007，2026-09-20 Accepted）、状态机边界、Rust/TS 契约、多路径选路、BLE、中继授权、故障注入测试 |
 | **★★ 参考** | [CHANGELOG.md](CHANGELOG.md) | **版本历史**：每个版本改了什么、为什么改（含所有已修 bug 的根因） |
 | **★★ 参考** | [docs/ARCHITECTURE-REVIEW-2026-09-24.md](docs/ARCHITECTURE-REVIEW-2026-09-24.md) | **架构复审（2026-09-24）**：12 条结构性问题的根因（全部带 file:line）、保持/收缩/拆分/解耦/延后的判断、8 步安全改造路线。**动核心链路前先看这份**，它同时是「为什么现在不做 X」的记录 |
-| **★★ 参考** | [docs/ARCHITECTURE-MAP.html](docs/ARCHITECTURE-MAP.html) | **架构与接口契约图**（单文件，浏览器直接打开）：分层大图 + 138 条 IPC 命令的「输入 → 输出」规则表 + 事件/表结构/流程穿透 + 已核出的漂移清单。判「方向对不对」不用读代码 |
+| **★★ 参考** | [docs/ARCHITECTURE-MAP.html](docs/ARCHITECTURE-MAP.html) | **架构与接口契约图**（单文件，浏览器直接打开）：分层大图 + 129 条 IPC 命令的「输入 → 输出」规则表（条数由 `mapContract.test.ts` 与后端注册表逐条双向核对） + 事件/表结构/流程穿透 + 已核出的漂移清单。判「方向对不对」不用读代码 |
 | **★ 按需** | [docs/templates/BUG_FIX.md](docs/templates/BUG_FIX.md) | Bug 修复报告模板（复现 / 根因 / 影响 / 修复 / 回归） |
 | **★ 按需** | [docs/templates/ADR.md](docs/templates/ADR.md) | 新增架构决策记录模板 |
 
@@ -83,8 +84,9 @@ gosslan/
 ├── docs/
 │   ├── AI_ENGINEERING_INDEX.md   # 约束文档导航
 │   ├── ARCHITECTURE-MAP.html     # ★ 单文件交互架构 + 接口契约图（浏览器直接打开）
+│   ├── stability-roadmap.md      # ★★★ 稳定版工作地图：风险/任务重判/覆盖边界/执行顺序
 │   ├── ARCHITECTURE-REVIEW-2026-09-24.md  # ★ 架构复审：根因 + 8 步路线
-│   ├── protocol-invariants.md    # 协议不变量明细 INV-P01~P18
+│   ├── protocol-invariants.md    # 协议不变量明细 INV-P01~P26
 │   ├── acceptance/               # 版本验收标准（当前：1.0 release）
 │   ├── adr/                      # 架构决策记录（含 ADR-0020 公网哑管道中继）
 │   └── templates/                # Bug 修复 / ADR 模板
@@ -268,7 +270,7 @@ npm run verify:full   # 重门禁层：cargo fmt/clippy/test、Rust 清单、护
 
 **默认跑快速层就够日常用**，但它**不等于"编得过"** —— 结束时脚本会列出没跑哪几项。
 改过 Rust 代码 / `Cargo.*` / 构建配置，提交前必须 `npm run verify:full`；
-发版或出包前再加 `-- --full`（123 条护栏逐条改坏验证）。
+发版或出包前再加 `-- --full`（全部护栏逐条改坏验证，条数由脚本自己打印）。
 CI（`verify.yml`）在任意分支每次 push 全跑，是这套分层的兜底。判据细节见 `AI_RULES.md` §37.1。
 
 ### 前端（node 内置测试运行器，零额外依赖，需 Node ≥ 22）
