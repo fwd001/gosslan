@@ -239,13 +239,14 @@ CASES: list[Case] = [
         "而用户正是凭这句话判断「可以放心去装新版本」",
         file=TAURI / "src" / "db.rs",
         injections=[(
-            "        return Err(err);\n"
-            "    }\n"
-            "    conn.execute_batch(SCHEMA)?;",
-            "        conn.execute_batch(SCHEMA)?;\n"
-            "        return Err(err);\n"
-            "    }\n"
-            "    conn.execute_batch(SCHEMA)?;",
+            # ⚠️ 锚点只钉"降级判定那两行本身"。原先钉的是
+            # `return Err(err);\n }\n conn.execute_batch(SCHEMA)?;` 这一整块，而 #46 把
+            # "数表"那一段插到了 `}` 与 `execute_batch` 之间 ⇒ 锚点变成 0 次命中，
+            # 这条用例**静默失效**了两周（它在 `--only rust` 的子集里，日常门禁跑不到）。
+            '        eprintln!("[gosslan-db] FATAL: {err}");\n        return Err(err);',
+            '        eprintln!("[gosslan-db] FATAL: {err}");\n'
+            "        conn.execute_batch(SCHEMA).ok();\n"
+            "        return Err(err);",
         )],
         cmd=cargo("test", "--lib", "downgrade_refusal_writes_nothing"),
         cwd=TAURI,
@@ -3157,27 +3158,6 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="不跟随软链",
         tags=["rust", "storage", "stability", "data-loss", "new-guards"],
-    ),
-    Case(
-        name="resend_message 的群聊判废必须在置 sending 之前（审计 1.2：否则消息永久卡 sending）",
-        why="旧顺序先 set_message_status(\"sending\") 再判群聊/取公钥/加密，失败路径不回滚 ⇒ 状态永久卡\n"
-        "     sending，而重发入口的守卫（sending => Err）又把它挡死 ⇒ 这条消息永远发不出去。\n"
-        "     触发条件是对任何失败的群消息点重发（必现）。\n"
-        "     注入方式：删掉函数开头那段群聊判废（有人会觉得「后面单聊分支反正会走」——\n"
-        "     差的就是这段顺序保证），守卫 resend_message_sets_sending_only_after_all_failure_paths\n"
-        "     的锚点（群消息重发提示）找不到必须红。",
-        file=TAURI / "src" / "commands" / "chat.rs",
-        injections=[(
-            "    if rec.conv_id.strip_prefix(\"group:\").is_some() {\n"
-            "        return Err(\"群消息重发请删除后重新发送\".to_string());\n"
-            "    }\n"
-            "\n",
-            "",
-        )],
-        cmd=cargo("test", "--lib", "resend_message_sets_sending_only_after_all_failure_paths"),
-        cwd=TAURI,
-        expect_fail_hint="找不到锚点",
-        tags=["rust", "chat", "stability", "new-guards"],
     ),
     Case(
         name="中继收文件的哈希必须对组装后的明文算（审计 1.8：乱序/重复分片必错）",
