@@ -406,9 +406,6 @@ function checkNamesStillExist() {
 
 
 function checkRust() {
-  // 这条不依赖 cargo（纯比对已有基线 + 源码门控），所以放在取实际名单之前：
-  // cargo 编不过的时候，跨平台那只眼仍然要能睁开。
-  const complete = checkBaselinesAreComplete();
   let actual;
   try {
     actual = rustTestNames();
@@ -420,7 +417,8 @@ function checkRust() {
 
   if (syncBaselines) {
     syncOtherBaselines(actual.sort());
-    return complete;
+    // 写完立刻用同一条判据复核 —— 推出来的东西必须当场能被自己判一遍。
+    return checkBaselinesAreComplete();
   }
 
   if (update) {
@@ -486,7 +484,7 @@ function checkRust() {
   const missing = baseline.filter((n) => !actualSet.has(n));
   const added = actual.filter((n) => !baselineSet.has(n));
 
-  let ok = complete;
+  let ok = true;
   // 跨平台基线的"名字还在不在"核对 —— 这条与平台无关，所以在任何平台上都能查出
   // 另一条腿上的**陈旧条目**：删掉/改名一个测试时，mac 侧 `--update` 自动跟上，
   // 而 win 侧留着一堆不存在的名字，于是那条腿把"漏跑"与"基线烂了"混成同一种红，
@@ -529,6 +527,9 @@ function checkRust() {
 }
 
 const results = [];
+// 跨平台完整性这条**不需要 cargo**，所以放在最外面：任何 `--only` 子集、以及
+// cargo 编不过的场合，它都照样睁着眼（放进 checkRust 里就会被"编译失败"提前挡掉）。
+if (!syncBaselines) results.push(checkBaselinesAreComplete());
 if (runFrontend) results.push(checkFrontend());
 if (runRust) results.push(checkRust());
 

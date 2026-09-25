@@ -2491,8 +2491,25 @@ CASES: list[Case] = [
         expect_fail_hint="静默跳过",
         tags=["manifest", "ble"],
         # 基线按平台分文件（macOS 外设 / Windows 外设是互斥的 #[cfg]）。
-        # Phase 2 打通 Windows 测试通道后，这里补一条 test-baseline.windows.txt 的对应用例。
+        # Windows 那条腿的对应用例在下面 `平台基线之间的差额` 那条（2026-09-26 打通）。
         platforms=("darwin",),
+    ),
+    Case(
+        name="测试清单：平台基线之间的差额说不出平台理由必须报出来（Windows 那条腿不能是瞎的）",
+        why="`added`（本平台多跑）只能 warn —— 新测试跑得好好的不该红。代价是**一条用例只要不在某平台的基线里，"
+            "它在那个平台上消失就不会红**，而 mac 那条腿照跑照绿。Windows 基线曾烂到只有并集的一部分"
+            "（487 vs 690，其中 194 条没有任何平台门控能解释）。新判据不依赖 cargo：任一平台基线都不许比"
+            "各平台基线的并集少一条**有源码门控背书**的用例，背书从 src-tauri/src 现扫（模块声明级 + 测试函数级"
+            "的 target_os/unix/windows cfg），解析不出平台约束的 cfg 一律要求每个平台都得有 ⇒ 猜错的方向是"
+            "'响亮地红'而不是'静默的洞'。故意从 Windows 基线删掉一条跨平台用例必须红。",
+        file=TAURI / "test-baseline.windows.txt",
+        injections=[("db::migration_tests::downgrade_refusal_writes_nothing\n", "")],
+        cmd=["node", "scripts/check-test-manifest.mjs", "--only", "frontend"],
+        cwd=ROOT,
+        expect_fail_hint="说不出平台理由",
+        # 走 --only frontend 这一份**是有意的**：这条判据不需要 cargo，所以它必须在不编译 Rust 的
+        # 那条路径上也被跑到 —— 否则"cargo 编不过"会把跨平台这只眼一起关掉（放进 checkRust 里就是这个后果）。
+        tags=["manifest", "frontend", "ci"],
     ),
     Case(
         name="测试清单：磁盘上的测试文件没登记进 package.json 必须报出来",

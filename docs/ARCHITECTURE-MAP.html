@@ -1433,7 +1433,7 @@ function buildDir() {
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
       '<div class="stat"><div class="num">29</div><div>后端事件名（表内合并成 ' + EVENTS.length + ' 行）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
-      '<div class="stat"><div class="num">185</div><div>护栏非空转用例（改坏即红）</div></div>' +
+      '<div class="stat"><div class="num">187</div><div>护栏非空转用例（改坏即红）</div></div>' +
       '<div class="stat"><div class="num">local</div><div>跨进程双实例 E2E：正向轮全部接进 <code>verify</code> 的 <code>local</code> 组（每轮断言数由 <code>check-doc-numbers.mjs</code> 从 harness 现算对账，手写即红；入口 <code>npm run verify:e2e</code>；CI 仍不跑这一层）</div></div>' +
       '<div class="stat"><div class="num">690 / 606</div><div>Rust / 前端测试条数</div></div>' +
     "</div>" +

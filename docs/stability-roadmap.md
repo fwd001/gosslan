@@ -56,7 +56,7 @@
 | 前端测试用例 | **606** | `node --test --test-reporter=tap` 的 `^ok` 计数 |
 | Rust 用例基线 macOS | **690** | `src-tauri/test-baseline.macos.txt` 行数 |
 | Rust 用例基线 Windows | **679** | 同上 windows（2026-09-26 由 `--sync-baselines` 按源码门控推出；差额 14 条全部有名有据） |
-| 护栏非空转用例 | **185** | `verify-guards.py` 的 `Case(` 计数；#27 那 4 条已跑完注入验证并计入 |
+| 护栏非空转用例 | **187** | `verify-guards.py` 的 `Case(` 计数；新增的那条是「平台基线差额说不出平台理由」 |
 | 登记不变量 | **26** | `protocol-invariants.md` 的 `^### INV-P` |
 | 其中**有具名验证钩子** | **6 条**（P11/P22/P23/P24/P25/P26）+ P17 半条 | 逐节核对 |
 | 门禁层 | 快速 10 步 / 全量 16 步 / CI 3 job | `scripts/verify.mjs` 步骤表 |
