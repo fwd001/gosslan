@@ -10,6 +10,28 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-25 · CI：Windows 那条腿从 0-A2 起一直红着 —— 陈旧基线，不是代码坏了)
+
+`check-test-manifest.mjs` 的判据是单向致命的：**基线里有、实际没跑 ⇒ FAIL**（"静默跳过"必须拦），
+而"跑了但没登记"只是警告。`src-tauri/test-baseline.windows.txt` 上一次生成是 **09-22**，
+0-A2 删掉的三处死实现里有 **17 条测试跟着没了**，Windows job 因此从那天起一直红：
+`discovery::lan::tests::*`(7) + `discovery::manager::tests::*`(4) + `discovery::routed::tests::*`(4)
++ `transport::tests::route_*`(2)。
+
+- 只删这 17 条，基线 500 → **483**。逐条自己复跑过证据，不信 diff：
+  `discovery/{trait,manager,lan}.rs` 文件已不存在（`ls` 直接确认）、
+  四个函数名全仓 `grep` 零命中。
+- **三条 Windows 专属项原样保留** —— 它们在"只在 windows 基线里"那份差集里，
+  看着像陈旧项，其实是被 macOS 侧互斥 `#[cfg]` 挡掉的活代码：
+  `network::transport.rs:9530 windows_abortive_close_allows_immediate_rebind`、
+  `transport/bluetooth_peripheral_windows.rs:673 / :709`。
+  （按差集无脑删就会顺手删掉这三条保护，而它们在 macOS 上永远不会有人发现。）
+- 顺带一个必须记账的真相：**Windows 基线落后 190 条**。"跑了没登记"不报红，
+  所以 09-22 之后新增的用例（0-A1 的登记守卫、0-B 的 6 条、P2 的 3 条、中继一族…）
+  在 Windows 上**完全不受清单守卫保护**。修它只能在 Windows 上跑一次
+  `node scripts/check-test-manifest.mjs --update`（本机交叉 `--target` 检查与 GitHub API
+  都被开发机的权限层拦了，所以这事只能落在 CI/Windows 机器上）——已另立待办。
+
 ## [4.29.37] - 2026-09-25
 
 ### Fixed (2026-09-25 · 第 1 步 · 故障隔离 P2：写失败按**错误来源**分流，不再一把抓)
