@@ -10,6 +10,30 @@
 
 ## [Unreleased]
 
+### Test（2026-09-26 · Windows 那条腿的清单守卫补眼：「多跑只 WARN」留下的洞由跨平台完整性判据封住）
+- **根因不是"Windows 基线忘了同步"，是判据方向不对称**：`check-test-manifest` 只对「缺名」红脸、对「多跑」只 warn（这个不对称是对的——新测试跑得好好的不该红）。
+  代价是：一条用例**只要没进 Windows 基线**，它在 Windows 上消失就不会红，而 mac 那条腿照跑照绿。实测差额 **487 vs 690**，
+  其中 **194 条说不出平台理由**（`db::migration_tests` 19 条、`network::file` 21 条、`protocol::tests` 12 条……全是跨平台模块）⇒ 那条腿基本是瞎的。
+- 新增一条**不依赖 cargo** 的判据：任一平台基线都不许比"各平台基线并集"少一条**有源码门控背书**的用例。
+  背书不是手写豁免名单，是从 `src-tauri/src` 现扫：模块声明级 + 测试函数级两类 `target_os` / `unix` / `windows` cfg，
+  **解析不出平台约束的 cfg 一律要求"每个平台都得有"**（宁可红，不许静默放行）。Windows 基线据此推到 **679**，
+  排除的 14 条逐条打印出处（`macos_bookmark` / `menu` / `transport::bluetooth_peripheral` 三处模块门控 +
+  `cache_cleaner` 的 `#[cfg(unix)]`、`user_dirs` 的 `#[cfg(target_os = "macos")]` 两处函数门控）。新增入口 `--sync-baselines`。
+- 两条证据：**绿路** `EXIT=0`（`macos:690+3，windows:679+14` 全部有背书）；**红路** 从 Windows 基线里删掉一条跨平台用例
+  ⇒ `EXIT=1` 并精确点名那一条，还原后回到 `EXIT=0`。
+- ★ **我自己的两个洞，都是被这条新判据当场抓出来的**：
+  ① 函数级门控一开始扫不到 —— cfg 与 `fn` 之间还夹着 `#[test]` / `#[tokio::test]`，`^\s*fn` 永远匹配不上，
+     于是"函数级门控"那半条腿是空的（4 条该豁免的没豁免）；② **更严重**：判据算出了 `false` 但我没把它并进最终返回值
+     ⇒ 打印"✗ 比并集少 194 条"之后**退出码仍然是 0**。没有那次红/绿反证，这就是一条"看着有、其实是假绿"的守卫。
+  ⇒ 再次坐实：**新判据必须先跑一次"故意做坏必须红"，否则它只是屏幕上的一行字。**
+- ⚠️ **诚实边界**：这 679 条是"从 macOS 观测名单 + 源码门控**推**出来的"，不是 Windows 上观测过的。
+  下一次 Windows CI 就是它的反证；若真少跑几条会红并点名，届时在 Windows 侧 `--update` 一次即转成观测值。
+  另外「Windows 基线非空转的注入夹具」还没登记进 `verify-guards.py`（本次靠手工红/绿反证），记为欠账。
+- 顺带重判 §八/§七 的六格：**重复 Chunk / 重复 FileDone / 乱序 / 旧 attempt / 重复 offer 早已有 L2 点名单测**
+  （`file_relay.rs:337`、`file.rs:2983`、`file.rs:3819`、`lib.rs:3210`、`ble_framing.rs:461/470`、`favorites_tests.rs:1675`）
+  ⇒ 再造一遍属于重复覆盖，L-C 协议级注入降为**延后**（只剩"三实例真并发 / 断链"才有增量）。roadmap 里三处"仍未做"的措辞已改成
+  "L2 已覆盖 / L5 跨进程未覆盖"，并同步了 Windows 基线数字（487 → 679）。零生产码改动。
+
 ### Test（2026-09-26 · 故障注入第七格：连续多文件 + 两单同名 —— 「少一个文件」就是丢数据，所以这条必须在）
 - 新增 `--fault=multi-file`（+ `npm run test:fault-injection:multi` / `:multi-selfproof`，已接进 `verify --group local`）：
   一次入队 3 个 transfer，其中**两单文件名完全相同、内容不同**（两份源放不同目录 —— offer 的 name 取自路径的 file_name）。

@@ -55,7 +55,7 @@
 | 后端注册命令 | **129** | `lib.rs` `generate_handler!` 条目数 |
 | 前端测试用例 | **606** | `node --test --test-reporter=tap` 的 `^ok` 计数 |
 | Rust 用例基线 macOS | **690** | `src-tauri/test-baseline.macos.txt` 行数 |
-| Rust 用例基线 Windows | **487** | 同上 windows（**落后约 200 条，见 S-2**） |
+| Rust 用例基线 Windows | **679** | 同上 windows（2026-09-26 由 `--sync-baselines` 按源码门控推出；差额 14 条全部有名有据） |
 | 护栏非空转用例 | **185** | `verify-guards.py` 的 `Case(` 计数；#27 那 4 条已跑完注入验证并计入 |
 | 登记不变量 | **26** | `protocol-invariants.md` 的 `^### INV-P` |
 | 其中**有具名验证钩子** | **6 条**（P11/P22/P23/P24/P25/P26）+ P17 半条 | 逐节核对 |
@@ -127,9 +127,18 @@ ADR-0009（Rust 生成 TS 类型）至今 `Status: Proposed`。
 ⇒ 双实例收发文件会写进同一个目录，"同名文件/`.part` 已存在"这类用例的判定会被污染。
 好消息：接收目录走 `user_dirs::load(&conn, RECEIVE)`，即**每实例 DB 里的设置** ⇒ 不改生产码就能隔离。
 
-**R8 Windows 那条腿的清单守卫半失效**
-Windows 基线 487 条 vs macOS 690，差约 200 条；`check-test-manifest` 对"多出来"只 warn。
-⇒ Windows 上"绿"不代表同等覆盖。只能在 Windows 环境 `--update` 收。
+**R8（本轮已收口）Windows 那条腿的清单守卫半失效**
+成因不是平台差异，是**判据方向不对称留下的洞**：`added`（本平台多跑）只能 warn，
+于是一条用例只要**不在 Windows 基线里**，它在 Windows 上消失就不会红 —— 而 mac 那条腿照跑照绿。
+Windows 基线曾烂到只有 mac 并集的一部分（487 vs 690）。
+收法：`check-test-manifest` 加一条**不依赖 cargo** 的跨平台完整性判据 ——
+任一平台基线都不许比"各平台基线并集"少一条说不出理由的用例，
+理由只能是源码里现算出来的 `target_os` / `unix` / `windows` 门控（模块声明 + 测试函数头上两类，
+解析不出平台约束的 cfg 一律要求"每个平台都得有"）。`--sync-baselines` 按同一套门控把 Windows 基线推到 679，
+差额 14 条逐条打印门控出处（`macos_bookmark` / `menu` / `bluetooth_peripheral` 三处模块门控 +
+`cache_cleaner` 的 `#[cfg(unix)]`、`user_dirs` 的 `#[cfg(target_os = "macos")]` 两处函数门控）。
+⚠️ **诚实边界**：这 679 条是"按门控从 macOS 观测名单推出来的"，不是 Windows 上观测过的。
+下一次 Windows CI 就是它的反证 —— 若真少跑了几条，会红并精确点名，届时在 Windows 侧 `--update` 一次即转观测值。
 
 **R9（本轮已收口）一处未提交护栏**
 `verify-guards.py` 里 #27 那 4 条（`mobile-layout` 族）已跑非空转验证：四条全部「改坏即 FAIL、恢复即 PASS」，
@@ -282,7 +291,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 | 层 | 内容 | 数量 | 查得到什么 | **查不到什么** |
 |---|---|---|---|---|
 | L1 行为单测（前端） | `node --test`，60 个 `.test.ts` | **606** | 纯函数/状态机/合并/解析的正确性 | 组件真实渲染、浏览器布局、跨窗口 |
-| L2 行为单测（Rust） | `cargo test --features bluetooth` | **690**(mac)/487(win) | 协议/分片/队列/DB/选路/清理的进程内语义 | 真 socket、真进程、真重启 |
+| L2 行为单测（Rust） | `cargo test --features bluetooth` | **690**(mac)/679(win，按源码门控推出) | 协议/分片/队列/DB/选路/清理的进程内语义 | 真 socket、真进程、真重启 |
 | L3 契约对账 | api/events/domain/lock/invariant 等 6 个脚本 + 3 个 test | 20 余条判据 | 名字/归属/注册/取锁形状/双向存在 | 类型与 payload 形状、UI 可达性 |
 | L4 护栏非空转 | `verify-guards.py` | 181(提交)/185(树) | "把正确代码改坏必须红" | 反向（无对象时必须非 0）类判据 |
 | **L5 跨进程 E2E** | `scripts/e2e-multi-instance.mjs`；入口已接进 `npm run verify:e2e`（= `verify --group local`：**正向轮全部收在这一组**，`verify:all` 串全量层与本地层；反向/lie 模式仍单独跑，因为它们**预期红**） | **默认轮 16 条断言 / J1+J2**（文本 6 + 文件 8 + 重启 2）；**脏前缀轮 20 断言**（+4：脏 `.part` → 错 hash → 重试补齐）；**续传轮 21 断言**（+5：真前缀必须被续传复用）；**杀进程轮 23 断言**（+7：接收中真 `SIGKILL`，100 MB 在飞窗口）；**冻结轮 22 断言**（+6：对端被 `SIGSTOP` 冻住 ⇒ 失联期间两侧都不许 done、接收目录不许有终名，解冻后自己补齐且只成功一次）；**磁盘轮 22 断言**（+6：接收目录只读写不进去 ⇒ 必须明确失败并止步、重试不许失控）；**改小轮 22 断言**（+6：入队后源文件被截断 ⇒ 只许按磁盘真值收发、两侧终态一致、盘上只留终名那一份）；**多文件轮 22 断言**（+6：三单一起排队、其中两单同名 ⇒ 一张都不许丢、同名不许互相覆盖、落地内容多重集合必须等于源内容多重集合）——这些数由 `check-doc-numbers.mjs` 现算对账；⚠️ 冻结轮**没有**覆盖"失联期间到点重投"（实测失联窗口内发送侧一次都没尝试）⇒ 见 **A-9** | 两个真实进程之间：送达、只有一条、内容正确、outbox 被 Ack 清空、状态过 sending、**文件只有 rename 后落地且 sha256 一致**、两侧终态 `done`、重启后仍正确 | 除 J1/J2/J3 之外的一切旅程；尺寸阶梯（只有 1 MB 与 100 MB 两格实测）与断链/重复帧/乱序/DB 锁竞争；UI 视觉腿；Windows 腿；routed/BLE/中继三条路径 |
@@ -353,7 +362,8 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 |---|---|---|---|---|
 | **J1** | 文本消息 A→B 全程 | 它是所有语义的地基；RC3 曾出现"接收失败但发送端显示成功" | A 出现 sending→sent；B **恰好一条**、内容正确；`msg_id` 唯一；A 最终 delivered/read；outbox 清空；**重启后仍正确**；无重复通知 | 否 → A-1 后 **AUTOMATED** |
 | **J2** | 文件 A→B（小/中/大 × 尺寸阶梯） | 历史 4 个 RCA 全在此；`.part`+rename+hash+attempt 四层状态 | 只有 rename 后 B 目录有文件；进度单调不超 100%；hash 不符必拒且不 rename；`.part` 收完即清；重复 FileDone 幂等 | **部分 AUTOMATED**：1 MB / 单文件 / 不断链这一格已 4 连绿（8 条断言，含 rename 后落地 + sha256 + 两侧终态 `done`）。尺寸阶梯、并发、断链/杀进程仍 → A-2/A-3 |
-| **J3** | 传输中断链/杀进程/重启后续传 | 跨链路重试 + Gap 判死曾是 600MB 必死根因 | 断链只影响该端点；旧 attempt 帧必须无效；重启后前缀一致；终态不可被降级（INV-P26） | **部分 AUTOMATED**：`.part 已存在 / 错 hash → 重试补齐`这一格已 2 连绿（4 条断言 + lie 模式反向自证）；**接收中真 `SIGKILL`（100 MB 在飞）→ 重启后按盘上真实字节续完**这一格 1 连绿（7 条断言，实测续发点 786432 字节；lie 模式 2/23 报红）；两端优雅重启不二次投递已由 L-B 覆盖。**断链、旧 attempt 帧到达仍未做** → A-2 |
+| **J3** | 传输中断链/杀进程/重启后续传 | 跨链路重试 + Gap 判死曾是 600MB 必死根因 | 断链只影响该端点；旧 attempt 帧必须无效；重启后前缀一致；终态不可被降级（INV-P26） | **部分 AUTOMATED**：`.part 已存在 / 错 hash → 重试补齐`这一格已 2 连绿（4 条断言 + lie 模式反向自证）；**接收中真 `SIGKILL`（100 MB 在飞）→ 重启后按盘上真实字节续完**这一格 1 连绿（7 条断言，实测续发点 786432 字节；lie 模式 2/23 报红）；两端优雅重启不二次投递已由 L-B 覆盖。**旧 attempt 帧在 L5 跨进程仍未做**（但 L2 已有 `stale_attempt_frames_are_filtered_but_legacy_frames_never_are`，
+`network/file.rs:2983` ⇒ 这里缺的是"过真 socket"那一层，不是"没人证过"）；断链 → A-2 |
 | **J4** | 群聊：离线成员→上线后补齐 + gossip 收敛 | RC2「永久不同步而单聊正常」的机制最复杂 | 成员重连后收敛到同一集合；撤回按 G-Set 语义不复活；seq 排序权威；不产生重复应用 | 否 → A-1 后 SIMULATED，两台真机 MANUAL |
 | **J5** | 首次启动（新库→骨架→首页→身份） | `is_fresh` 曾恒为假；#27 首屏误判桌面；建窗不能阻塞主线程 | 新库只付一次 schema 成本（不打假"正在迁移"）；首帧判移动版；骨架必关；窗口可见 | 部分可 AUTOMATED（DB/日志），视觉仍 MANUAL |
 | **J6** | 窗口：隐藏→再聚焦→数据新鲜 | 常驻=不重载；三窗口共用骨架 | 重获焦点必重拉；任务窗换群；预览换内容；无白屏骨架 | 结构部分 AUTOMATED，视觉 MANUAL |
@@ -470,7 +480,7 @@ grep -n "pub const DB_VERSION" src-tauri/src/db.rs
 |---|---|---|---|
 | **L-A 预置状态** | 实例**停机时**写它的 SQLite，把"用户点了发送"变成"已入队的事实" | 发消息（`outbox`+`messages` 双行）、发文件（`file_outbox`+磁盘真源文件）、清空数据、旧库迁移（预置 `user_version`） | **零** |
 | **L-B 进程级操纵** | `SIGKILL`/`SIGTERM`/重启、TCP 探测、日志与磁盘断言 | 断链、杀进程、重启恢复、崩溃后 `sending→pending` | **零** |
-| **L-C 协议级注入** | 复用 `examples/e2e_peer.rs` 已实现的 17 种消息面，harness 扮演第三个真实对端 | 重复帧、乱序 Chunk、错 hash、错 size、旧 attempt、重复 FileDone | **零**（example 已存在） |
+| **L-C 协议级注入** | 复用 `examples/e2e_peer.rs` 已实现的 17 种消息面，harness 扮演第三个真实对端 | ~~重复帧、乱序 Chunk、错 hash、错 size、旧 attempt、重复 FileDone~~ ⇒ **2026-09-26 重判：这六格早已有 L2 点名证据，再造一遍是重复覆盖**（`file_relay.rs:337` 重复 Chunk 不重复计数、`network/file.rs:2983` 旧 attempt 帧被过滤而 legacy 帧永不、`file.rs:3819` 完成的 transfer 拒重复 offer、`lib.rs:3210` 重复 FileDone 仍回 Ack、`ble_framing.rs:461/470` 乱序仍可完工 / 重复与残缺不许完工、`db/favorites_tests.rs:1675` 重复 transfer_id offer 幂等）。L-C 只剩"两个发送者→一个接收者"的真并发与断链才有增量 ⇒ **延后** | 延后（要做就得连三实例一起重开） |
 | **L-D UI 驱动** | WebDriver / `tauri-driver` | 真实点击与像素 | 零，但 macOS 需 Appium、CI 跑不动 ⇒ **本轮不做** |
 
 L-A 之所以成立，靠一条已核对的实现细节：`transport.rs:4321` `reseal_for_send` 只有在

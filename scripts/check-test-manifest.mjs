@@ -44,12 +44,23 @@
  * 所以基线按平台分文件：`test-baseline.<macos|windows|linux>.txt`。
  * 拿到本平台没有基线时**不猜、不退化**，直接报错让你用 `--update` 生成。
  *
+ * ## 「多了只 WARN」留下的那只眼，由跨平台完整性核对补上
+ *
+ * 判据方向不对称是有代价的：一条用例只要**没进本平台基线**，它在本平台消失就不会红。
+ * 于是 mac 侧每次 `--update` 自己跟上、win 侧越拉越远，Windows 基线烂到只剩并集的一部分，
+ * 而那部分之外的用例从此"在 Windows 上被门控掉也没人知道"（mac 那条腿照跑照绿）。
+ * 所以还有一条 **不依赖 cargo** 的判据：任一平台基线都不许比"各平台基线的并集"少一条
+ * 说不出理由的用例 —— 理由只能是**源码里现算出来的 `target_os` 门控**
+ * （模块声明与测试函数头上两类），解析不出平台约束的 cfg 一律要求"每个平台都得有"。
+ * 本平台基线仍只认 `--update`（观测优先）；跨平台用 `--sync-baselines` 按同一套门控推。
+ *
  * ## 用法
  *
  *     node scripts/check-test-manifest.mjs                  # 全部检查
  *     node scripts/check-test-manifest.mjs --only frontend  # 只查前端（秒级，无需编译）
  *     node scripts/check-test-manifest.mjs --only rust      # 只查 Rust（需编译）
- *     node scripts/check-test-manifest.mjs --update         # 用当前实际名单重写**本平台**基线
+ *     node scripts/check-test-manifest.mjs --update          # 用当前实际名单重写**本平台**基线
+ *     node scripts/check-test-manifest.mjs --sync-baselines  # 按源码门控推出**其它平台**的基线
  *
  * 退出码：0 = 通过；1 = 有测试静默消失了。
  */
@@ -81,6 +92,7 @@ const only = (() => {
   return i >= 0 ? argv[i + 1] : null;
 })();
 const update = argv.includes("--update");
+const syncBaselines = argv.includes("--sync-baselines");
 
 if (only && only !== "frontend" && only !== "rust") {
   console.error(`✗ --only 只接受 frontend / rust，收到「${only}」`);
@@ -166,8 +178,7 @@ function rustFiles(dir, acc = []) {
 
 let _fnNamesCache = null;
 /** 全仓 Rust 源码里出现过的 `fn <名字>`（含 `pub fn` / `async fn` / `unsafe fn`）。 */
-function declaredFnNames() {
-  if (_fnNamesCache) return _fnNamesCache;
+function declaredFnNames() {  if (_fnNamesCache) return _fnNamesCache;
   const set = new Set();
   for (const f of rustFiles(path.join(TAURI, "src"))) {
     const src = readFileSync(f, "utf8");
@@ -177,6 +188,166 @@ function declaredFnNames() {
   }
   _fnNamesCache = set;
   return set;
+}
+
+/**
+ * 平台门控扫描 —— 回答「这条用例在某个平台上**会不会**编译」。
+ *
+ * 只认两处的 cfg：① 模块声明（`mod X` / `include!("x.rs")`）② 测试函数头上。
+ * 判据方向刻意保守：**解析不出平台约束的 cfg 一律当作"每个平台都要有"**，
+ * 于是猜错的后果是"多要求一条"（响亮地红）而不是"少要求一条"（静默的洞）。
+ */
+const ALL_OS = ["macos", "windows", "linux", "android"];
+
+/** cfg 表达式 → 允许的平台集合；返回 null 表示这条 cfg 与平台无关。 */
+function platformsAllowed(expr) {
+  const positive = new Set();
+  const negative = new Set();
+  for (const m of expr.matchAll(/target_os\s*=\s*"(\w+)"/g)) positive.add(m[1]);
+  for (const m of expr.matchAll(/not\s*\(\s*target_os\s*=\s*"(\w+)"\s*\)/g)) {
+    positive.delete(m[1]);
+    negative.add(m[1]);
+  }
+  const bare = (tok) =>
+    new RegExp(`(^|[^a-z_])${tok}([^a-z_]|$)`).test(expr.replace(/target_os\s*=\s*"\w+"/g, " "));
+  if (bare("unix") && !/not\s*\(\s*unix/.test(expr)) ["macos", "linux", "android"].forEach((o) => positive.add(o));
+  if (/not\s*\(\s*unix\s*\)/.test(expr)) ["macos", "linux", "android"].forEach((o) => negative.add(o));
+  if (bare("windows") && !/not\s*\(\s*windows/.test(expr)) positive.add("windows");
+  if (/not\s*\(\s*windows\s*\)/.test(expr)) negative.add("windows");
+  if (positive.size === 0 && negative.size === 0) return null;
+  let allowed = ALL_OS.filter((o) => !negative.has(o));
+  if (positive.size > 0) allowed = allowed.filter((o) => positive.has(o));
+  return new Set(allowed);
+}
+
+let _gateCache = null;
+/**
+ * 从源码现算的门控表：`{ kind: "module"|"fn", key, allowed, evidence }`。
+ * 刻意不维护手写名单 —— 名单会漏、门控会改；判据必须自己去源码里找那几处。
+ */
+function platformGates() {
+  if (_gateCache) return _gateCache;
+  const gates = [];
+  for (const f of rustFiles(path.join(TAURI, "src"))) {
+    const lines = readFileSync(f, "utf8").split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!/^\s*#\[cfg\(/.test(line)) continue;
+      const allowed = platformsAllowed(line);
+      if (!allowed) continue;
+      const rel = posix(path.relative(TAURI, f));
+      // cfg 与声明之间还夹着别的属性（`#[test]` / `#[tokio::test]` / doc 注释）——
+      // 不先把它们剥掉，`^\s*fn` 永远匹配不上，于是"函数级门控"这条腿是空的（我自己踩过）。
+      const next = [lines[i + 1], lines[i + 2], lines[i + 3]]
+        .filter(Boolean)
+        .join("\n")
+        .replace(/^\s*(?:#\[[^\n]*\]\s*|\/\/[/!]?[^\n]*\n)+/, "");
+      const mod = next.match(/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)/);
+      const inc = next.match(/^\s*include!\(\s*"([^"]+)\.rs"/);
+      const fn = next.match(/^\s*(?:async\s+|unsafe\s+|pub(?:\([^)]*\))?\s+)*fn\s+([^\s(<,;]+)/);
+      if (mod) gates.push({ kind: "module", key: mod[1], allowed, evidence: `${rel}:${i + 1}` });
+      else if (inc)
+        gates.push({
+          kind: "module",
+          key: path.basename(inc[1]).replace(/\.rs$/, ""),
+          allowed,
+          evidence: `${rel}:${i + 1}`,
+        });
+      else if (fn) gates.push({ kind: "fn", key: fn[1], allowed, evidence: `${rel}:${i + 1}` });
+    }
+  }
+  _gateCache = gates;
+  return gates;
+}
+
+/** 这条用例名在 os 上是否被门控挡在外面（附带挡它的那条证据）。 */
+function gateExcluding(name, os) {
+  const segs = name.split("::");
+  const fn = segs[segs.length - 1];
+  for (const g of platformGates()) {
+    if (g.allowed.has(os)) continue;
+    if (g.kind === "fn" ? g.key === fn : segs.slice(0, -1).includes(g.key)) return g;
+  }
+  return null;
+}
+
+/**
+ * 跨平台**完整性**核对：任何一份平台基线都不许比"其它平台基线的并集"少一条
+ * 说不出理由的用例。
+ *
+ * 为什么必须有这条：`added`（本平台实际多跑）只能 WARN —— 新测试跑得好好的不该红。
+ * 于是历史上 Windows 基线烂成了 mac 的 487/690：那 200 多条"实际会跑但没登记"的名字
+ * 在 Windows 上永远只出 WARN，**有人把它们在 Windows 侧门控掉了也不会红**
+ * （mac 那条腿照跑照绿）。缺名红脸只能管住"已登记的那部分"，
+ * 没登记的这部分需要一个与平台无关的判据 —— 就是这条。
+ *
+ * 它不需要 cargo，所以在任何平台上都能查出另一条腿上的洞。
+ */
+function checkBaselinesAreComplete() {
+  const files = readdirSync(TAURI).filter((x) => /^test-baseline\..+\.txt$/.test(x));
+  if (files.length < 2) {
+    console.log(`✓ 跨平台基线完整性：只有 ${files.length} 份基线，无可对比（新平台接进来即生效）`);
+    return true;
+  }
+  const read = (f) =>
+    readFileSync(path.join(TAURI, f), "utf8").split("\n").map((s) => s.trim()).filter(Boolean);
+  const byOs = new Map(files.map((f) => [f.match(/^test-baseline\.(.+)\.txt$/)[1], read(f)]));
+  const union = [...new Set([...byOs.values()].flat())];
+  let ok = true;
+  for (const [os, names] of byOs) {
+    const have = new Set(names);
+    const unjustified = union.filter((n) => !have.has(n) && !gateExcluding(n, os));
+    if (unjustified.length === 0) continue;
+    ok = false;
+    console.error(`✗ 基线 ${path.join("src-tauri", `test-baseline.${os}.txt`)} 比并集少 ${unjustified.length} 条，且说不出平台理由：`);
+    for (const n of unjustified.slice(0, 40)) console.error(`    · ${n}`);
+    if (unjustified.length > 40) console.error(`    …（另 ${unjustified.length - 40} 条）`);
+    console.error(`  这些用例在别的平台基线里存在、却没有一条 target_os 门控能解释它们为何不在 ${os} 上。`);
+    console.error(`  成因：只 --update 了本平台基线，另一条腿留下空洞 ⇒ 它在本平台"多跑只 WARN"，`);
+    console.error(`        将来真被门控掉时不会有任何人看见。`);
+    console.error(`  修法：本平台跑 --update；跨平台跑 \`node scripts/check-test-manifest.mjs --sync-baselines\`。`);
+  }
+  if (ok) {
+    const exempt = [...byOs.entries()].map(([os, names]) => {
+      const have = new Set(names);
+      return `${os}:${names.length}+${union.filter((n) => !have.has(n)).length}`;
+    });
+    console.log(`✓ 跨平台基线完整性：差额全部有源码门控背书（${exempt.join("，")}）`);
+  }
+  return ok;
+}
+
+/**
+ * 用本平台实际名单 + 源码门控，把**其它平台**的基线推出来。
+ * 本平台自己仍然只认 `--update`（观测优先于推断）。
+ */
+function syncOtherBaselines(actual) {
+  const files = readdirSync(TAURI).filter((x) => /^test-baseline\..+\.txt$/.test(x));
+  // 池子 = 本平台实际名单 ∪ 所有已有基线。只用实际名单会把"只在别的平台上才有的用例"
+  // 顺手删掉（它们在本平台从来没被列出来过），那条腿反而更空。
+  const pool = [
+    ...new Set([
+      ...actual,
+      ...files
+        .flatMap((f) => readFileSync(path.join(TAURI, f), "utf8").split("\n"))
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ]),
+  ];
+  for (const f of files) {
+    const os = f.match(/^test-baseline\.(.+)\.txt$/)[1];
+    if (os === RUST_OS) continue;
+    const keep = pool.filter((n) => !gateExcluding(n, os)).sort();
+    const dropped = pool.filter((n) => gateExcluding(n, os));
+    writeFileSync(path.join(TAURI, f), keep.join("\n") + "\n");
+    console.log(
+      `✓ 已按源码门控推出 ${path.join("src-tauri", f)}：${keep.length} 条（排除 ${dropped.length} 条，池子 ${pool.length} 条）`,
+    );
+    for (const n of dropped) {
+      const g = gateExcluding(n, os);
+      console.log(`    · 排除 ${n} —— ${g.kind} 门控 [${[...g.allowed].join("|")}] 见 ${g.evidence}`);
+    }
+  }
 }
 
 /**
@@ -235,6 +406,9 @@ function checkNamesStillExist() {
 
 
 function checkRust() {
+  // 这条不依赖 cargo（纯比对已有基线 + 源码门控），所以放在取实际名单之前：
+  // cargo 编不过的时候，跨平台那只眼仍然要能睁开。
+  const complete = checkBaselinesAreComplete();
   let actual;
   try {
     actual = rustTestNames();
@@ -242,6 +416,11 @@ function checkRust() {
     console.error("✗ 无法取得 Rust 测试名单（cargo 失败）：");
     console.error(`  ${e.stderr || e.message}`);
     return false;
+  }
+
+  if (syncBaselines) {
+    syncOtherBaselines(actual.sort());
+    return complete;
   }
 
   if (update) {
@@ -307,7 +486,7 @@ function checkRust() {
   const missing = baseline.filter((n) => !actualSet.has(n));
   const added = actual.filter((n) => !baselineSet.has(n));
 
-  let ok = true;
+  let ok = complete;
   // 跨平台基线的"名字还在不在"核对 —— 这条与平台无关，所以在任何平台上都能查出
   // 另一条腿上的**陈旧条目**：删掉/改名一个测试时，mac 侧 `--update` 自动跟上，
   // 而 win 侧留着一堆不存在的名字，于是那条腿把"漏跑"与"基线烂了"混成同一种红，
