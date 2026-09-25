@@ -502,10 +502,16 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
    新增 `mark_file_outbox_cancelled`；`mark_queued_transfer_failed`（自动判死）仍写 failed，
    两个口径不许合并。三条队列查询只认 pending/sending ⇒ 功能等价、台账不等价，
    所以先用 `cancelled_file_outbox_rows_are_never_requeued` 证明"写进去就是永久出局"再引入。
-4. ⏳ `fail_file_job` 的**写序**对齐仍未做（破坏性写放最后）；但本次顺手把它**绕过助手**的那句
-   裸 `UPDATE file_transfers SET status='failed'` 收进了 `db`，并且已经 `done` 时不再 emit
-   （`file-failed` 为一个收好的文件弹出来是谎话）。⚠️ 那条 emit 抑制**没有行为级测试**
-   （函数吃 `&AppState`，本仓造不出来），只有 SQL 层判据 + 读码保证。
+4. ✅ `fail_file_job` 的**写序**已对齐（2026-09-25 第三刀）：把行踢出重试集合的那一步挪到所有
+   面向用户的写之后，`cancel_file_transfer` 同病同治。判据从"点名 `finalize_expired_file`"
+   升级成**自动扫全部收尾路径**（结构式，不靠清单），首次跑就自己找出那两处没被点名的违规。
+   ⚠️ 上一刀的 emit 抑制**仍无行为级测试**（函数吃 `&AppState`，本仓造不出来），只有 SQL 层
+   判据 + 读码保证。
+5. ⬜ **本次新查出、没动**：三份"落文件终态"的收尾**仍是三份**（只对齐了顺序，没合并实现）。
+   合并的形状是一个 `db::finalize_file_failure(dbc, transfer_id, kind) -> bool` owning 全部四笔写，
+   但它必须先回答"群气泡 `gfile-` 该不该被单个收件人的失败改写"—— 今天 `fail_file_job`
+   **只写 `file-`**，看着像缺口，其实很可能是有意的（N 个收件人共用一条气泡）。
+   语义没确认之前不动，这是本条存在的原因。
 
 ### 第 5 步 · 事件与自愈（**P6**）
 

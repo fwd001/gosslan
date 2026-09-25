@@ -3022,6 +3022,151 @@ mod tests {
         );
     }
 
+    /// 把上面那条**点名式**写序守卫升级成**自动扫全部收尾路径**（第 4 步 P7 第 4 条）。
+    ///
+    /// 为什么必须升级：`fail_file_job` 与 `cancel_file_transfer` 各自也做"落终态 + 把行踢出
+    /// 重试集合"这件事，形状与 `finalize_expired_file` 一模一样，但它们是**另写的两份**
+    /// （§9 那族平行实现）。点名式守卫看不见没被点名的那个 —— 于是那里明令禁止的顺序
+    /// （先踢出集合、后置气泡状态）在这里照样成立：outbox 行先变 failed/cancelled，
+    /// 后面任何一步失败，清扫器再也扫不到这一行 ⇒ 那条气泡**永久停在「发送中」**，
+    /// 而且再没有人会去修它（它已经不在任何重试集合里）。
+    ///
+    /// 判据是**结构**的，不是清单：凡调用了"把行踢出重试集合"那一类写的函数，
+    /// 该调用必须排在同函数内所有"面向用户的写"之后。新增第三个收尾函数会**自动**被扫到，
+    /// 不必记得来这张表里登记 —— 这正是点名式做不到的那一点。
+    ///
+    /// ⚠️ 两个刻意的保守性，都是为了**不静默放过**：
+    ///  · 注释里提到的函数名也算命中（保守方向 = 多报）。所以收尾函数不许在注释里写
+    ///    `mark_file_outbox_failed(` 这种带左括号的形式，要写就用别的措辞 ——
+    ///    多报会立刻被人看见并改掉，漏报不会。
+    ///  · 分两个分支各调一次破坏性写会被判红（文本顺序看不出分支）。合并成
+    ///    "分支只决定要不要做面向用户的写，破坏性写在分支之后统一做一次" ——
+    ///    本来就是更少的重复，不是为迁就判据而绕路。
+    #[test]
+    fn every_finalize_path_defers_the_destructive_write() {
+        /// 会让这一行**从此扫不到**的写。
+        const DESTRUCTIVE: &[&str] = &[
+            "mark_file_outbox_failed(",
+            "mark_file_outbox_cancelled(",
+            "delete_file_outbox(",
+            "delete_outbox_by_msg_id(",
+            "delete_group_outbox_by_msg_id(",
+        ];
+        /// 终态在界面上的投影：气泡状态、传输台账。
+        const USER_FACING: &[&str] = &[
+            "set_message_status(",
+            "upsert_transfer(",
+            "mark_transfer_failed_if_active(",
+            "mark_queued_transfer_failed(",
+        ];
+        let mut scanned = 0usize;
+        let mut bad: Vec<String> = Vec::new();
+        let transport = crate::network::transport_src_for_guards();
+        for src in [transport.as_str(), all_commands_src(), all_db_src()] {
+            for (name, body) in top_level_fns(src) {
+                // 最早的破坏性写；没有就不是收尾函数
+                let Some(destroy_at) = DESTRUCTIVE.iter().filter_map(|d| body.find(d)).min() else {
+                    continue;
+                };
+                scanned += 1;
+                // 最晚的面向用户的写；没有就无从比较（如 flush 的成功分支只删行）
+                let Some(last_user_write) = USER_FACING.iter().filter_map(|u| body.rfind(u)).max()
+                else {
+                    continue;
+                };
+                if last_user_write > destroy_at {
+                    bad.push(format!(
+                        "{name}：把行踢出重试集合的那一步在前，面向用户的写在后"
+                    ));
+                }
+            }
+        }
+        assert!(
+            scanned >= 4,
+            "只扫到 {scanned} 个收尾函数 ⇒ 这条判据已经空转（至少该有 finalize_expired_* 两条 +              fail_file_job + cancel_file_transfer）。通常是锚点或聚合清单变了，先去核对聚合源"
+        );
+        assert!(
+            bad.is_empty(),
+            "有 {} 个收尾路径的写序反了：{bad:?}\n             破坏性写（failed/cancelled/删行）必须排最后 —— 它先跑，后续步骤失败时行已扫不到，             那条气泡就永久停在「发送中」且无人再修",
+            bad.len()
+        );
+    }
+
+    /// 把源码切成"顶层条目"，返回 `(条目名, 条目体)`；`#[cfg(test)]` 的 `mod` 整块跳过。
+    ///
+    /// 只做顶层：本仓 rustfmt 下 `fn` / `mod` 的声明都在第 0 列，函数体内的嵌套函数有缩进，
+    /// 因此"以 `fn `/`mod ` 开头且无缩进"就是唯一的条目边界。不数大括号 ⇒ 不受字符串干扰。
+    fn top_level_fns(src: &str) -> Vec<(String, String)> {
+        let lines: Vec<&str> = src.split('\n').collect();
+        // 每个条目的起始行 + 名字 + 是不是测试块
+        let mut items: Vec<(usize, String, bool)> = Vec::new();
+        let mut i = 0usize;
+        while i < lines.len() {
+            let l = lines[i];
+            let is_cfg_test = l.trim_end() == "#[cfg(test)]";
+            if let Some(name) = item_name(l) {
+                // 往前看一眼属性行，判断是否测试专用
+                let mut test = false;
+                let mut k = i;
+                while k > 0 {
+                    k -= 1;
+                    let prev = lines[k].trim_end();
+                    if prev == "#[cfg(test)]" {
+                        test = true;
+                        break;
+                    }
+                    if !prev.starts_with('#') && !prev.is_empty() {
+                        break;
+                    }
+                }
+                items.push((i, name, test || is_cfg_test));
+            }
+            i += 1;
+        }
+        let mut out = Vec::new();
+        for (n, (start, name, is_test)) in items.iter().enumerate() {
+            if *is_test {
+                continue;
+            }
+            let end = items.get(n + 1).map(|x| x.0).unwrap_or(lines.len());
+            let body = lines[*start..end].join("\n");
+            out.push((format!("{name}（第 {} 行）", start + 1), body));
+        }
+        out
+    }
+
+    /// 这一行是不是一个顶层 `fn` / `mod` 声明？是的话给出它的名字。
+    fn item_name(line: &str) -> Option<String> {
+        let re = regex_for_item(line)?;
+        Some(re)
+    }
+
+    fn regex_for_item(line: &str) -> Option<String> {
+        // 手写判定，避免为一条守卫引入 regex 依赖
+        if line.starts_with(' ') || line.starts_with('\t') || line.is_empty() {
+            return None;
+        }
+        let rest = line
+            .strip_prefix("pub(crate) ")
+            .or_else(|| line.strip_prefix("pub(super) "))
+            .or_else(|| line.strip_prefix("pub "))
+            .or_else(|| line.strip_prefix("async "))
+            .unwrap_or(line);
+        let rest = rest.strip_prefix("async ").unwrap_or(rest);
+        let (kw, tail) = rest.split_once(' ')?;
+        if kw != "fn" && kw != "mod" {
+            return None;
+        }
+        let name: String = tail
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() {
+            return None;
+        }
+        Some(format!("{kw} {name}"))
+    }
+
     /// 中继态回收（审计 A2）：被回收的传输必须**落 DB 终态**并 emit，且 emit 在 db 锁**之外**。
     ///
     /// 两条各挡一种退化：① 只 `retain` 内存不写库 ⇒ DB 行永远停在 active/某个百分比，

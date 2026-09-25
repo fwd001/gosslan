@@ -953,6 +953,13 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 * **同一个关注点只有一个家**：除 `db/file_transfer.rs` 之外不许再出现直接
   `UPDATE file_transfers SET status`（守卫 `cascade_tests::terminal_status_writes_have_one_home`）。
   有第二个家时，"改一个忘一个"是常态 —— 本仓 §9 那族平行实现反复就是这个形状。
+* **把行踢出重试集合的那一步必须排最后**：`mark_file_outbox_{failed,cancelled}` 与
+  `delete_*_outbox_by_msg_id` 一跑，这一行就再也扫不到（三条队列查询只认 pending/sending），
+  前面任何一步失败都永久无人补 —— 症状是气泡停在「发送中」且不再有任何人来修它。
+  这条在审计 A3 时只对 `finalize_expired_file` 立了规矩，但**同形状的收尾当时有三份**
+  （`fail_file_job` / `cancel_file_transfer` 各抄了一份，顺序都是错的），点名式守卫看不见
+  没被点名的那些 ⇒ 2026-09-25 判据升级成自动扫（结构式，不是清单）：
+  `lib.rs::every_finalize_path_defers_the_destructive_write`。
 * **两个失败口径不许合并**：`file_outbox.status` 的 `failed` = **自动**判死（超时 / 重试耗尽 /
   接收方不可达），`cancelled` = 用户主动取消。三条队列查询只认 `pending` / `sending`，
   所以两者在功能上等价 —— 但台账不等价，混用之后"这一单为什么失败"就查不动了。

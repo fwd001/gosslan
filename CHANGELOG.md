@@ -10,6 +10,39 @@
 
 ## [Unreleased]
 
+### Fix (2026-09-25 · 第 4 步 P7 第三刀：写序 —— 把行踢出重试集合的那一步必须排最后)
+
+审计 A3 当年给 `finalize_expired_file` 立过这条规矩并配了逐函数守卫：
+**先做完面向用户的写，最后才让那一行从重试集合里消失**。但"落终态"这件事当时**有三份实现** ——
+`fail_file_job`（发送放弃）与 `cancel_file_transfer`（用户取消）各自又抄了一遍同形状的收尾，
+而点名式守卫看不见没被点名的那两个 ⇒ 被明令禁止的顺序在这两处一直成立。
+
+为什么这不是洁癖：`list_expired_file_outbox` / flush 只选 `pending` / `sending`，
+所以 `mark_file_outbox_failed`（或 `..._cancelled`）一跑，**这一行就再也扫不到**。
+它排在最前面时，后面任何一步失败（写锁、磁盘满、消息行已被删）都没有人来补 ——
+症状不是"报错了"，而是**那条气泡永久停在「发送中」，且系统已经忘记它存在**。
+
+- `fail_file_job`：改成"分支只决定要不要做面向用户的写，**破坏性写在分支之后统一做一次**"
+  （顺带把重复的两处 `mark_file_outbox_failed` 收成一处；已 `done` 那一支仍然关掉队列行，
+  否则每 tick 被重扫一遍又什么都不做）。emit 依旧由"台账真的改了"门控。
+- `cancel_file_transfer`：两笔气泡写 + 台账写在前，`mark_file_outbox_cancelled` 在后。
+- **判据从点名升级成自动扫**：新增 `lib.rs::every_finalize_path_defers_the_destructive_write`
+  —— 把 transport / commands / db 三份聚合源切成顶层条目，凡调用了
+  "踢出重试集合"那一类写（`mark_file_outbox_{failed,cancelled}` / `delete_file_outbox` /
+  `delete_{group_,}outbox_by_msg_id`）的函数，都要求它排在所有"面向用户的写"
+  （`set_message_status` / `upsert_transfer` / 两个 transfer 助手）之后。
+  **新增第三个收尾函数会被自动扫到，不必记得登记** —— 这正是点名式做不到的那一点。
+  首次跑就报出那两处（不是我猜的，是它自己找出来的）。
+- 两个刻意的保守方向写进了判据注释：注释里出现带左括号的函数名也算命中（宁可多报，
+  漏报没人看得见）；分两支各调一次破坏性写会被判红。
+- 不变量并入 **INV-P26**（§26 未新增节号，避免"每加一条就挪一次必测矩阵"的无意义churn）。
+
+⚠️ **没做**的：这三份收尾**仍是三份**（本次只对齐了顺序，没合并实现）。合并的正确形状是
+`db::finalize_file_failure(dbc, transfer_id, kind) -> bool` 一个函数 owning 全部四笔写，
+但它要同时决定"取消算不算 emitted"「群气泡 `gfile-` 该不该被单个收件人的失败改写」——
+后者**看起来像缺口、其实是有意不写**（群文件 N 个收件人共用一条气泡，一个失败不该改全局态），
+需要先确认语义再动。记在待办，不在本轮顺手改。护栏 180 → 181，Rust 基线 683 → 684。
+
 ### Fix (2026-09-25 · 第 4 步 P7 第二刀：用户取消不再记成失败)
 
 `cancel_file_transfer` 自己的注释写着「用户主动停止用 cancelled，自动失败用 failed」，

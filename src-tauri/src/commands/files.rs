@@ -271,26 +271,35 @@ fn build_file_message(
     }
 }
 
-/// 永久失败收尾：队列置 failed，消息气泡置 failed，并通知前端。
+/// 永久失败收尾：把一单放弃重发的文件落终态，并通知前端。
 ///
-/// ⚠️ 但**已经 `done` 的传输不是失败**。离线队列的过期清扫与"文件到底收没收成"是两件事：
-/// 传输行落到 `done` 意味着磁盘证据已经成立（长度对 + sha256 对 + `sync_all()` 后 rename），
-/// 这时再把气泡和传输行改成 failed，用户看到的就是"一个打开就在那儿的文件显示失败"。
-/// 所以队列行照常判死（那是它自己的状态机，不留活口），**面向用户的那两笔写与 emit 全部跳过**。
-/// 终态契约整体见 `db::file_transfer::upsert_transfer` 上面那段。
+/// ⚠️ 两件事按顺序做，不许颠倒：
+/// 1. **已经 `done` 的传输不是失败。** 传输行落到 `done` 意味着磁盘证据已经成立
+///    （长度对 + sha256 对 + `sync_all()` 之后才 rename），这时再把气泡与台账改成 failed，
+///    用户看到的就是"一个打开就在那儿的文件显示失败"⇒ 面向用户的两笔写与 emit 全部跳过。
+/// 2. **把队列行踢出重试集合的那一步排最后**（下面唯一那处 `mark_file_outbox_failed` 调用）。
+///    `list_expired_file_outbox` 只选 pending/sending ⇒ 它一跑，前面任何一步失败都永久无人补，
+///    症状是"气泡停在发送中、而这行再也扫不到"。同一条规矩在
+///    `transport.rs::finalize_expired_file` 上有逐函数注释；判据已升级成自动扫全部收尾路径
+///    （`lib.rs::every_finalize_path_defers_the_destructive_write`）。
+///    已 done 那一支同样要走到这一步：队列行必须关掉，否则每 tick 被重扫一遍又什么都不做。
+///
+/// 终态契约整体见 `db::file_transfer::upsert_transfer` 上面那段（INV-P26）。
 fn fail_file_job(state: &AppState, transfer_id: &str, reason: &str) {
     let announce = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::mark_file_outbox_failed(&dbc, transfer_id).ok();
-        if db::is_transfer_done(&dbc, transfer_id).unwrap_or(false) {
-            // `unwrap_or(false)` 的方向是刻意的：查询出错时**当作"没收成"**继续判失败，
-            // 那正是加这道闸门之前的行为 —— 宁可维持现状，也不要在读不到状态时静默放过。
-            false
-        } else {
-            db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed").ok();
+        // `unwrap_or(false)` 的方向是刻意的：查询出错时**当作"没收成"**继续判失败，
+        // 那正是加这道闸门之前的行为 —— 宁可维持现状，也不要在读不到状态时静默放过。
+        let already_done = db::is_transfer_done(&dbc, transfer_id).unwrap_or(false);
+        let mut changed = false;
+        if !already_done {
             // 保持已有的 name/size/path，只把状态推进到 failed（`done` 行在助手里就被挡掉）。
-            db::mark_queued_transfer_failed(&dbc, transfer_id).unwrap_or(false)
+            if db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed").is_ok() {
+                changed = db::mark_queued_transfer_failed(&dbc, transfer_id).unwrap_or(false);
+            }
         }
+        db::mark_file_outbox_failed(&dbc, transfer_id).ok();
+        changed
     };
     if announce {
         let _ = state.app.emit(
@@ -429,11 +438,14 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
 /// 做三件事：
 /// 1. 从 `file_send_cancels` 取 sender send(()) —— send_file_from_path / dispatch_group_file_to_peer
 ///    的 chunk loop 会 select! 到这个信号，cleanup + return "用户取消发送"。
-/// 2. DB 层：outbox → failed；消息状态 → failed；transfer → failed。
+/// 2. DB 层：**面向用户的三笔写先做**（消息气泡 `file-` / `gfile-` → cancelled、
+///    传输台账 → cancelled），**最后**才把 `file_outbox` 行标 cancelled —— 那一步才是
+///    "把行踢出重试集合"的写，排前面会让前面任何一次失败都永久无人补（同 `fail_file_job`，
+///    判据自动扫全部收尾路径）。用户主动取消记 `cancelled`，不记 `failed`（INV-P26）。
 /// 3. 通知前端 emit `file-cancelled` + `message-status-changed`。
 ///
-/// 如果文件已经发完或 sender 已关闭，signalled=false 但仍会 mark failed + emit 事件 ——
-/// 前端 UI 立刻切到失败态。
+/// 如果文件已经发完或 sender 已关闭，signalled=false 但仍会落 cancelled 并 emit 事件 ——
+/// 用户按了取消，界面必须立刻响应。已经 `done` 的传输行不会被改成"已取消"（INV-P26 的闸门）。
 ///
 /// 注意：file_sending（spawn loop 里按 peer_id 存的 HashSet）不需要我们清 ——
 /// spawn loop 收到 cancel 信号后会自己走到下一条或清掉。
@@ -476,11 +488,15 @@ pub async fn cancel_file_transfer(
     //    （INV-P26）。
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::mark_file_outbox_cancelled(&dbc, &transfer_id);
+        // ★ 同 `fail_file_job`：先做完面向用户的写，最后才把队列行踢出重试集合
+        //（`mark_file_outbox_cancelled` 一跑，`list_expired_file_outbox` 与 flush 都再也看
+        // 不到它 ⇒ 前面任何一步失败就没人补了）。判据是自动扫全部收尾路径的，见
+        // `lib.rs::every_finalize_path_defers_the_destructive_write`。
         let _ = db::set_message_status(&dbc, &format!("file-{transfer_id}"), "cancelled");
         // 群文件消息前缀是 gfile-，也处理一下
         let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "cancelled");
         let _ = db::upsert_transfer(&dbc, &transfer_id, "", "", 0, "send", "cancelled", None, 0.0);
+        let _ = db::mark_file_outbox_cancelled(&dbc, &transfer_id);
     }
 
     // 3. 通知前端

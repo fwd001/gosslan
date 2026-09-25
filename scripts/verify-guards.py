@@ -3099,6 +3099,26 @@ CASES: list[Case] = [
         tags=["rust", "db", "files", "terminal-state", "new-guards"],
     ),
     Case(
+        name="收尾路径的写序守卫必须扫到没被点名的函数（踢出重试集合的那一步排最后）",
+        why="审计 A3 当时只给 `finalize_expired_file` 写了逐函数守卫，而 `fail_file_job` 与\n"
+        "     `cancel_file_transfer` 各自又抄了一份同形状的收尾 —— 点名式守卫看不见没被点名的那些，\n"
+        "     于是同一条被明令禁止的顺序在另外两处一直成立：outbox 行先变 failed/cancelled，\n"
+        "     后面任何一步失败就没人补了（`list_expired_file_outbox` 只选 pending/sending）⇒\n"
+        "     症状是那条气泡永久停在「发送中」，而且行已不在任何重试集合里，永远无人再修。\n"
+        "     判据已升级成自动扫（结构式，不是清单）。注入方式：把 `fail_file_job` 里那处破坏性写\n"
+        "     挪回面向用户的写之前（编译照过、跑起来也大概率正常，只有顺序错），守卫必须红。",
+        file=TAURI / "src" / "commands" / "files.rs",
+        injections=[(
+            "        let already_done = db::is_transfer_done(&dbc, transfer_id).unwrap_or(false);\n        let mut changed = false;",
+            "        let already_done = db::is_transfer_done(&dbc, transfer_id).unwrap_or(false);\n"
+            "        db::mark_file_outbox_failed(&dbc, transfer_id).ok();\n        let mut changed = false;",
+        )],
+        cmd=cargo("test", "--lib", "every_finalize_path_defers_the_destructive_write"),
+        cwd=TAURI,
+        expect_fail_hint="写序反了",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
         name="缓存清理器不得跟随符号链接（审计 1.1：软链目标会被当缓存永久删除）",
         why="缓存目录是远端输入可达面（收到的文件名/目录名不受信）。旧实现用 e.path().metadata()\n"
         "     判类型——它**跟随软链**：缓存里一个指向任意位置的软链会让其目标被收集进清理列表并\n"
