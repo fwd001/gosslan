@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import type { PreviewGallery, PreviewImage } from "@/types";
 export const api = {
@@ -207,13 +207,10 @@ export const api = {
   windowToggleFullscreen: () => invoke<boolean>("window_toggle_fullscreen"),
   windowClose: () => invoke<void>("window_close"),
 
-  sendFile: (friendId: string, path: string) => invoke<string>("send_file", { friendId, path }),
   cancelFileTransfer: (transferId: string) =>
     invoke<boolean>("cancel_file_transfer", { transferId }),
   sendFileAuto: (friendId: string, path: string) =>
     invoke<string>("send_file_auto", { friendId, path }),
-  sendFileRelay: (friendId: string, path: string) =>
-    invoke<string>("send_file_relay", { friendId, path }),
   sendGroupFile: (groupId: string, path: string) =>
     invoke<string>("send_group_file", { groupId, path }),
   saveOutgoingImage: (dataUrl: string) =>
@@ -356,12 +353,10 @@ export const api = {
   saveSettings: (s: AppSettings) => invoke<void>("save_settings", { settings: s }),
   resetSettings: () => invoke<void>("reset_settings"),
   broadcastChatStyle: (style: string) => invoke<void>("broadcast_chat_style", { style }),
-  searchMessages: (keyword: string) => invoke<SearchResult[]>("search_messages", { keyword }),
   clearAllData: () => invoke<void>("clear_all_data"),
 
   // 开发者诊断（隐藏面板用）
   getDiscoveryDiag: () => invoke<DiscoveryDiag>("get_discovery_diag"),
-  getInterfaceCandidates: () => invoke<InterfaceCandidate[]>("get_interface_candidates"),
   /**
    * 上报「应用是否在前台且窗口聚焦」。
    *
@@ -391,7 +386,6 @@ export const api = {
   clearLogs: () => invoke<void>("clear_logs"),
   /** 桌面端：打开独立日志窗口；移动端不要调用（用页面跳转）。 */
   openLogWindow: () => invoke<void>("open_log_window"),
-  closeLogWindow: () => invoke<void>("close_log_window"),
   /**
    * 把「文件选择器」给的东西落地成**真实可读的文件路径**。
    *

@@ -1,5 +1,4 @@
 commands::tests::aux_window_fits_inside_the_main_window_and_is_centered
-commands::tests::restored_aux_window_size_is_clamped_between_min_and_design
 commands::tests::bt_switch_plan_coalesces_intent_and_keeps_the_cooldown
 commands::tests::clear_is_batched_so_the_db_lock_is_held_only_briefly
 commands::tests::content_uri_yields_a_real_file_name_when_it_encodes_one
@@ -25,6 +24,7 @@ commands::tests::message_content_over_limit_is_rejected_not_truncated
 commands::tests::message_content_within_limit_is_returned_unchanged
 commands::tests::message_length_is_counted_in_chars_not_bytes
 commands::tests::pending_request_from_an_existing_friend_is_not_actionable
+commands::tests::restored_aux_window_size_is_clamped_between_min_and_design
 commands::tests::routed_endpoint_address_is_normalized_to_ipv4_socket
 commands::tests::sanitize_file_name_blocks_path_traversal
 commands::tests::settings_patch_carries_only_changed_keys_with_camel_case_names
@@ -98,6 +98,10 @@ db::tests::kind_class_lists_are_derived_from_the_single_table
 db::tests::lan_enabled_defaults_on_and_keeps_explicit_off
 db::tests::last_message_from_sender_ignores_own_and_other_senders
 db::tests::late_ack_never_regresses_a_read_message
+db::tests::latest_page_breaks_seq_ties_by_id_exactly_like_the_ascending_query
+db::tests::latest_page_is_identical_to_the_count_plus_offset_two_step
+db::tests::latest_page_is_scoped_to_its_conversation_and_returns_a_short_tail_whole
+db::tests::latest_page_returns_an_empty_page_instead_of_erroring_on_an_unknown_limit
 db::tests::list_group_files_scoped_and_newest_first
 db::tests::message_and_outbox_are_written_atomically
 db::tests::message_dedup_by_unique_msg_id
@@ -138,10 +142,10 @@ db::tests::update_friend_pubkeys_never_overwrites_a_bound_key
 db::tests::update_message_content_backfills_path_for_preview
 db::tests::update_one_recipient_does_not_affect_others
 db::tests::upsert_group_file_receive_reestablishes_session
-device::tests::legacy_dev_prefix_is_stripped_exactly_once
 device::tests::empty_attributes_still_yield_valid_distinct_ids
 device::tests::generated_id_keeps_the_one_prefix_and_length
 device::tests::identical_attributes_still_produce_different_ids
+device::tests::legacy_dev_prefix_is_stripped_exactly_once
 discovery::routed::tests::device_id_is_optional_and_backward_compatible
 discovery::routed::tests::endpoints_serialize_roundtrip
 discovery::routed::tests::malformed_endpoints_json_yields_empty
@@ -152,6 +156,14 @@ export::tests::message_body_keeps_text_and_code_verbatim
 export::tests::message_body_summarises_media_without_dumping_paths
 export::tests::message_body_survives_broken_metadata
 export::tests::rendered_markdown_contains_sections_and_headers
+file_relay::tests::begin_reassemble_is_idempotent
+file_relay::tests::chunks_stream_to_disk_and_completion_hands_back_a_path
+file_relay::tests::duplicate_chunk_is_ignored_not_double_counted
+file_relay::tests::malformed_shapes_are_rejected_and_the_part_file_is_gone
+file_relay::tests::offer_without_chunk_size_is_refused_instead_of_buffering
+file_relay::tests::sweep_removes_the_part_files_too
+file_relay::tests::unsafe_transfer_id_cannot_create_a_file_outside_the_dir
+file_relay::tests::zero_byte_file_completes
 gossip_engine::tests::bloom_and_lru_dedup
 gossip_engine::tests::bloom_rotates_when_full
 gossip_engine::tests::envelope_sign_verify_and_tamper_detection
@@ -299,6 +311,7 @@ network::tests::discovery_failure_rolls_back_started_transport
 network::tests::transport_bind_failure_never_starts_discovery
 network::tests::transport_success_starts_discovery_and_merges_handles
 network::transport::mesh_sync_tests::socket_addr_from_accepts_v4_and_bare_v6
+network::transport::tests::accept_binds_encryption_key_but_defers_unverified_anchor
 network::transport::tests::ack_local_sender_marks_delivered_and_clears_outbox
 network::transport::tests::ack_relay_node_does_not_process_locally
 network::transport::tests::ack_relay_preserves_original_fields
@@ -322,7 +335,6 @@ network::transport::tests::flush_success_clears_pending
 network::transport::tests::frame_roundtrip
 network::transport::tests::frame_roundtrip_large_payload
 network::transport::tests::friend_accept_backfills_pubkeys_from_peers
-network::transport::tests::accept_binds_encryption_key_but_defers_unverified_anchor
 network::transport::tests::friend_accept_flush_is_bounded_and_spaced
 network::transport::tests::friend_chat_message_accepted
 network::transport::tests::friend_message_blocked_has_original_sender
@@ -402,10 +414,6 @@ protocol::tests::opaque_external_validation_bounds
 protocol::tests::reaction_payload_roundtrips
 protocol::tests::unknown_message_type_is_a_hard_parse_error
 protocol::tests::wire_kind_matches_the_serde_tag
-file_relay::tests::begin_reassemble_is_idempotent
-file_relay::tests::reassemble_out_of_order
-file_relay::tests::rejects_out_of_range_chunks
-file_relay::tests::sweep_stale_reassemblies_keeps_active_and_drops_expired
 state::tests::ui_language_hint_states_are_distinct
 state::tests::ui_language_prefers_preference_then_frontend_hint_then_env
 storage::cache_cleaner::tests::no_policy_removes_nothing
@@ -418,7 +426,6 @@ tests::aux_windows_open_their_own_document
 tests::ble_connect_cheap_path_requires_an_existing_connection
 tests::ble_dial_is_deduplicated_and_disconnects_on_failure
 tests::ble_file_transfer_respects_link_limits
-tests::friend_identity_anchor_has_one_binding_rule
 tests::ble_handshake_skips_leading_frames_without_processing_them
 tests::ble_link_has_a_designated_dialer
 tests::ble_start_does_not_block_on_the_peripheral_state_wait
@@ -430,6 +437,7 @@ tests::channel_status_exposes_persisted_preference
 tests::cmd_w_is_handled_by_our_own_menu_item
 tests::content_pull_requires_capability_negotiation
 tests::every_friend_accept_path_forgets_the_pending_request
+tests::friend_identity_anchor_has_one_binding_rule
 tests::friend_request_from_existing_friend_auto_accepts
 tests::friend_request_survives_a_dropped_link
 tests::in_flight_media_is_not_reported_as_deleted

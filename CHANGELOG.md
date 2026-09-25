@@ -10,6 +10,50 @@
 
 ## [Unreleased]
 
+### Removed (2026-09-25 · 把 IPC 对账做成三段，顺手清掉门面之下那 5 条)
+
+0-A3 那批收了「注册表 ↔ 门面」这一层，但**门面之下**还留着 5 条谁都不调的包装
+（当时记在契约图的漂移行里、标着"等拍板"）。这次先加判据再删，删完三段的第二段自己就红了：
+
+- 新增第三段对账（`src/utils/mapContract.test.ts`）：门面包装必须在 `src/api/` 之外
+  有引用点。**先按行匹配产出了 3 个假阳性**（`api` 换行 `.openImagePreview(...)`
+  这类跨行调用点）⇒ 匹配前把空白压平，之后红名单精确等于那 5 条。
+  ⚠️ 已知边界（写在判据注释里）：这一层判"有没有被引用"，不判"UI 是否可达"——
+  只被另一条死方法引用的仍算活。
+- 删的是**入口**，不是实现：
+  · `send_file` 命令注册删掉后，编译器立刻指出它的唯一调用者是 `send_file_auto`
+    ⇒ 降级成模块内私有函数。**这条是本批最有价值的一刻**：它证明了"第二条入口"
+    从来不是白占几十行，而是一份会跟着主路径漂移的平行实现。
+  · `send_file_relay` 同删 —— 中继发文件的能力由自动路径提供（无直连时借一跳，
+    `transport.rs` 那条分支直接调 `file::send_file_via_relay`），界面里从来没有第二个按钮。
+  · `search_messages`（界面用的是 `searchChatHistory`）连它的**私有查询**
+    `db::search_messages_in_conv` 与两份 `SearchResult`（Rust + TS）一起删 ——
+    `search_messages` 那 6 条测试里唯一有价值的覆盖是 LIKE 通配符转义，
+    而活的 `search_history` 用的是同一份 `escape_like` + `ESCAPE '\'` **却没有一条转义测试**
+    ⇒ 断言搬过去打在活查询上（`search_history_treats_like_wildcards_as_literals`），
+    而不是连覆盖一起删。
+  · `get_interface_candidates`（`DiscoveryDiag` 里已经带 candidates）、
+    `close_log_window`（窗口用 `window_close`）同删。
+- 顺带发现并留档：`store` 里的 `sendFileRelayTo` 也是零调用（第三段判据按"有没有被引用"
+  会把它算活，所以一并删掉了方法与其导出）。
+- 契约图同步：IPC 表少 5 行、SEM 描述少 5 条、那条漂移行改写成"已收口 + 三段的边界"。
+- Rust 测试 693 → 688（−6 条死查询测试 +1 条搬到活查询上 −... 净 -5）；基线已同步。
+- clippy `-D warnings` 通过（删完命令后 `SearchResult` / `search_messages_in_conv`
+  会变成 dead_code，正是靠它俩把"牵连到的私有件"找全的）。
+- **修 Windows CI 那条腿上的清单守卫（#47 的一半）**：`fc8fb19` 的 Verify 在
+  `Rust 单测 / 清单（windows-latest）` 上红，逐项排下来与代码无关 ——
+  `cargo fmt` ✅、`cargo clippy -D warnings` ✅、`cargo test` **686 passed / 0 failed** ✅，
+  只有第 4 步清单守卫报「基线里的 3 条用例没有跑」。那 3 条正是本批 P4 改写
+  `file_relay.rs` 测试时**删掉的旧名字**（`reassemble_out_of_order` /
+  `rejects_out_of_range_chunks` / `sweep_stale_reassemblies_keeps_active_and_drops_expired`）。
+  macOS 侧我跑过 `--update` 所以看不出来，而 `test-baseline.windows.txt` 是**另一份文件**：
+  守卫按平台分文件，改测试名必须两边都同步，否则"红的是 Windows 那条腿、原因在基线"。
+  ⇒ 从 Windows 基线里摘掉那 3 条不存在于任何平台的名字，并补上本批新增的 11 条
+  （7 条 `file_relay` + 4 条 `latest_page`，都不带 cfg 门控、四个平台都会跑）。
+  ⚠️ 该文件仍落后约 200 条（历史上只在 mac 上跑 `--update` 攒下的债，就是 #47），
+  那些是"新增未纳入保护"= 警告级，不拦门禁 —— 真正需要的是在 Windows 上跑一次
+  `--update`，本机做不到，等下一次有 Windows 环境时收。
+
 ### Perf (2026-09-25 · 第 7 步 2：附近设备列表不再每 333ms 把整屏作废)
 
 复审第 7 步第 2 条写的是"三处 O(n) 微改"。**先量再改，结果两条被推翻、一条换了病因**：

@@ -1168,17 +1168,6 @@ pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 pub fn close_settings_window(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
-
-/// 桌面端：关闭独立的「运行日志」窗口（与设置窗口一致：关闭即销毁）。
-#[cfg(desktop)]
-#[tauri::command]
-pub fn close_log_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window(crate::WINDOW_LOGS) {
-        let _ = win.close();
-    }
-    Ok(())
-}
-
 /// 移动端桩：见 `open_log_window` 的说明。
 #[cfg(mobile)]
 #[tauri::command]

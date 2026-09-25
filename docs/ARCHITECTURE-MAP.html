@@ -633,9 +633,7 @@ const CMDS = [
   ["send_message", "chat", "friend_id str; content str; kind str", "MessageRecord|err"],
   ["set_conversation_pinned", "chat", "conv_id str; pinned bool", "()|err"],
   ["search_chat_history", "chat_search", "keyword str; sender_id str?; since_ms int?; until_ms int?", "ChatSearchGroup[]|err"],
-  ["search_messages", "chat_search", "keyword str", "SearchResult[]|err"],
   ["get_discovery_diag", "dev_diag", "", "DiscoveryDiag"],
-  ["get_interface_candidates", "dev_diag", "", "InterfaceCandidate[]"],
   ["add_external_link", "external_links", "name str; url str", "ExternalLink[]|err"],
   ["list_external_links", "external_links", "", "ExternalLink[]"],
   ["remove_external_link", "external_links", "id str", "ExternalLink[]|err"],
@@ -659,9 +657,7 @@ const CMDS = [
   ["request_content", "files", "peer_id str; msg_id str", "bool|err"],
   ["request_content_by_cid", "files", "peer_id str; cid str; name str; size int", "bool|err"],
   ["save_outgoing_image", "files", "data_url str", "Value|err"],
-  ["send_file", "files", "friend_id str; path str", "str|err"],
   ["send_file_auto", "files", "friend_id str; path str", "str|err"],
-  ["send_file_relay", "files", "friend_id str; path str", "str|err"],
   ["get_friends", "friends", "", "Friend[]"],
   ["get_safety_number", "friends", "peer_id str", "str?"],
   ["remove_friend", "friends", "peer_id str", "()|err"],
@@ -694,7 +690,6 @@ const CMDS = [
   ["read_file_preview", "helpers", "msg_id str; max_bytes int", "Response|err"],
   ["save_data_file", "helpers", "base64_data str; destination str", "()|err"],
   ["clear_logs", "logs", "", "()|err"],
-  ["close_log_window", "logs", "", "()|err"],
   ["close_settings_window", "logs", "", "()|err"],
   ["get_group_todos_context", "logs", "", "str?"],
   ["get_image_preview_gallery", "logs", "", "PreviewGallery?"],
@@ -766,12 +761,10 @@ const SEM = {
   get_conv_link: { d: "该会话当前链路 <code>{path, hop}</code> —— <b>界面链路徽标的唯一来源</b>，绝不从「没有 IP」反推通道。" },
 
   /* ── commands/chat_search.rs ── */
-  search_messages: { d: "旧版关键词搜索，返回命中行（会话名 + 命中内容 + msg_id）。" },
   search_chat_history: { d: "跨会话分组搜索（可按发送人 / 时间窗过滤，带 <code>total</code> 与 <code>latest_ts</code>）。<b>搜索不改动会话列表本身</b>（用户明确要求）。" },
 
   /* ── commands/dev_diag.rs ── */
   get_discovery_diag: { d: "网络诊断快照：模式 / 绑定网卡 / 广播目标 / 组播结果 / 最近一次收发 / BLE 详情 / 协议版本 / <b>对端版本表</b>。<b>不含任何口令</b>。" },
-  get_interface_candidates: { d: "候选网卡 + 评分（诊断面板；「为什么连不上」的第一现场）。" },
 
   /* ── commands/external_links.rs ── */
   list_external_links: { d: "外链书签列表。" },
@@ -790,9 +783,7 @@ const SEM = {
   export_chat_text: { d: "按 UTC 偏移导出全部会话为文本，返回 <code>{conversations, messages, path}</code>。" },
 
   /* ── commands/files.rs ── */
-  send_file: { d: "发文件到好友。<b>只负责「写库 + 起队列」并立即返回 <code>transfer_id</code></b>，真正传输在文件域里异步跑（进度靠 <code>file-progress</code>）。", w: "messages(file-{tid}) · file_transfers · file_outbox" },
   send_file_auto: { d: "按当前最佳链路自动选普通 / 中继路径。" },
-  send_file_relay: { d: "一跳中继变体：<b>没有 FileAccept 也没有 CompleteAck</b>，5 分钟 deadline；失败路径由包装器兜住写回 failed。" },
   cancel_file_transfer: { d: "取消。同一 <code>transfer_id</code> 的<b>多个接收人 / 多条流一起取消</b>（群文件是一 id 多收件人）。返回是否有东西可取消。" },
   get_transfers: { d: "传输台账（<code>file_transfers</code>，双向）。" },
   get_content_transfers: { d: "cid 视角的传输状态（ADR-0019）：<code>queued|active|verifying|complete|incomplete|rejected</code> + attempts / next_attempt_at。" },
@@ -851,7 +842,6 @@ const SEM = {
   open_settings_window: { d: "开设置窗口。<b>async + 建窗锁双检</b>；常驻=false ⇒ 关即销毁，下次是新建。", n: "关即销毁" },
   open_log_window: { d: "开日志窗口。常驻=false。<b>它自己的关闭回调里绝不 destroy / await</b>（跑在 wry 主线程事件循环）。", n: "关即销毁" },
   close_settings_window: { d: "设置窗口自己关自己。" },
-  close_log_window: { d: "日志窗口自己关自己。" },
   open_group_todos_window: { d: "开 / 复用<b>全局唯一</b>的任务窗口（固定 <code>label=tasks</code>）。写当前群上下文 + 一次性焦点 id；<b>只有复用才 emit <code>group-todos-target</code></b>，新建那扇靠挂载后自取。groupId 会当查询条件 ⇒ 先做字符集与非空校验。", n: "常驻 + 可预热", k: "ok" },
   get_group_todos_context: { d: "「我这扇窗现在该显示哪个群」——新文档挂载后自取（<b>不依赖事件赶上</b>）。" },
   take_group_todo_focus: { d: "取该群待展开的任务 id，<b>读即消费</b>（一次性；否则每次开窗都会重放同一个展开动作）。" },
@@ -1120,7 +1110,7 @@ const DOMAINS = [
 ];
 const DRIFT = [
   ["✅ <b>10 处 invoke 绕过 <code>api</code> 门面</b>（0-A3 已收拢）", "<code>boot.ts</code>(focus_window, log_frontend_error)、<code>localFile.ts</code>(copy_file)、<code>MessageItem.vue</code>(request_content / get_group_file_delivery_summary / save_data_file / cancel_file_transfer / copy_file_to_clipboard)、<code>FavoritePanel.vue</code>、<code>MessageComposer.vue</code> + <code>GroupTasksBoard.vue</code>(read_clipboard_file_paths)、<code>ImageLightbox.vue</code>、<code>GroupFilesPanel.vue</code>、<code>SettingsWindow.vue</code>(close_settings_window) —— 全部改走门面，<b>现在为 0</b>", "原本的风险不是「不工作」而是<b>契约表画不全</b>：其中 6 条（copy_file · copy_file_to_clipboard · save_data_file · read_clipboard_file_paths · get_group_file_delivery_summary · log_frontend_error）在 api 上根本没有包装 ⇒ 只读 <code>src/api/index.ts</code> 会漏掉一整截真实接口面。6 条包装已补齐，并把「除本文件外不得 import core」写成守卫（静态与动态 import 都算）"],
-  ["门面之下一层：<b>5 条包装没有 UI 调用点</b>（未动，等拍板）", "<code>sendFile(send_file)</code> · <code>sendFileRelay(send_file_relay)</code>（唯一入口 <code>useChatStore.sendFileRelayTo</code> 也零调用）· <code>searchMessages(search_messages)</code>（界面用的是 <code>searchChatHistory</code>）· <code>getInterfaceCandidates</code> · <code>closeLogWindow</code>", "对账守卫<b>看不见这一层</b>：它比的是「注册表 vs 门面」，不是「门面 vs 界面」。⇒ 想再收一层要么删掉这 5 条（连带后端实现），要么把守卫升级成三段对账（注册 ↔ 门面 ↔ 调用点）。逐个 grep 确认过，<b>不含</b>跨行写法造成的假阳性（<code>openImagePreview</code> / <code>getGroupTodosContext</code> 的真调用点写成 <code>api</code> 换行 <code>.name()</code>，单行正则会把它们误报成死代码）"],
+  ["✅ 已收口（2026-09-25）：门面之下那 5 条已删，对账升级成<b>三段</b>", "删掉的是<b>入口</b>不是实现：<code>send_file</code> 的真身在删注册后由编译器指出唯一调用者是 <code>send_file_auto</code> ⇒ 降级成模块内私有函数；<code>send_file_relay</code> 的能力由自动路径（<code>transport.rs</code> 无直连时借一跳）提供，那条手工命令同样没人调；<code>search_messages</code> 及其私有查询 <code>search_messages_in_conv</code>、<code>SearchResult</code>（Rust + TS 两份）一并删除；<code>get_interface_candidates</code>、<code>close_log_window</code> 同删。", "判据 <code>src/utils/mapContract.test.ts</code> 三段：① 前端 invoke 的每个名字必须注册过（拼错只在运行时炸）；② 注册 ↔ 本图 IPC 表双向一致 + 两侧不重复；③ 门面包装必须有引用点。⚠️ 第三段判的是「<code>api.K</code> 有没有被引用」而不是「UI 是否可达」—— 只被另一条死方法引用的仍会算活，要真判可达得建调用图。匹配前必须把空白压平：真调用点常写成 <code>api</code> 换行 <code>.name()</code>，按行匹配会把它们误报成死代码（这一条是被现场假阳性逼出来的）。"],
   ["✅ <b>5 条注册了但前端零引用的命令已删除</b>（2026-09-25 用户拍板）", "<code>recall_message · resend_message · cancel_send · send_group_poll · cast_group_poll_vote</code> 连同实现一起删（<code>commands/chat.rs</code> 尾部 271 行、<code>group_files.rs</code> 两条投票命令 + 孤立的 <code>MAX_POLL_OPTIONS</code>）。注册表 138 → 133，与前端调用面<b>正好相等</b>", "跟着走的还有两条源码护栏（<code>resend_message_sets_sending_only_after_all_failure_paths</code> / <code>resend_reseals_before_enqueue</code>）与两个死监听（<code>message-cancelled</code> / <code>message-resending</code>）—— 那两条不变量没有丢，改记在 <code>docs/protocol-invariants.md</code> §6「界面上的重发是已知例外」。<b>已保留的部分</b>：<code>poll</code> / <code>poll_vote</code> 的线上词表与渲染、<code>cancelled</code> 状态（文件取消仍在写它，且老库里已有这类行）、群聊版撤回 <code>recall_group_message</code>。此后 <code>DEAD_COMMANDS</code> 白名单为空 ⇒ <b>再注册一条不接界面的命令直接红</b>"],
   ["<code>schema.sql</code> 与真源不一致", "真源是 <code>db.rs</code> 的 <code>SCHEMA</code> 常量；<code>schema.sql</code> 文件头自陈「供文档/手动建库参考」，实测缺 5 张表（<code>group_files · group_file_recipients · group_recalled_messages · favorites · content_transfers</code>）与 <code>conversations.pinned</code>", "照 <code>schema.sql</code> 判断数据契约会得出<b>错误结论</b>。它仍挂在 persistence 域的路径里 ⇒ 要么同步，要么删掉并留一句「真源在 db.rs」"],
   ["✅ <b>断一条链路 = 杀掉该 peer 全部文件接收</b>（第 1 步 P1 已修）", "<code>reader_loop</code> 开头就按 peer 清 <code>file_receivers</code> 与 <code>group_file_receivers</code>，而同一函数下面那段「只删这一条连接」的注释早就写明「断一条 ≠ peer 下线」—— 两处一直<b>自相矛盾</b>。LAN + Tailscale 双链路时断其一，另一条上正在收的文件被连带判死", "现在两处清理都在 <code>if peer_now_offline</code> 门内；配套 <code>sweep_stalled_receives</code>（判据 <code>receive_is_stale</code>，5 分钟）补上「对端在线但这单被放弃」那一半 —— 因为<b>协议里没有 cancel 帧</b>，发送侧 60s 停滞不通知接收端。三条护栏登记进 <code>verify-guards.py</code>（挪回门之前 / 摘掉这趟回收 / 退回快照-再杀 各必须红）"],

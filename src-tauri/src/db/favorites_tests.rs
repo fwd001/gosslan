@@ -1189,85 +1189,37 @@ mod tests {
         .unwrap();
     }
 
-    /// 普通文本搜索：中文 + 英文。
+    /// LIKE 搜索的性质，逐条打在**活的** `search_history` 上。
+    ///
+    /// 原先这六条钉的是 `search_messages` —— 那条命令在 IPC 门面之下没有任何调用点，
+    /// 已随门面一起删掉。两份查询共用 `escape_like` + `ESCAPE '\'`，
+    /// 所以断言是**搬过来**而不是连覆盖一起删掉。
     #[test]
-    fn search_messages_plain_text() {
-        let conn = mem();
-        insert_text_msg(&conn, "m1", "conv1", "hello world");
-        insert_text_msg(&conn, "m2", "conv2", "今天测试 hello");
-        insert_text_msg(&conn, "m3", "conv3", "没有匹配");
-
-        let r = search_messages(&conn, "hello", 10).unwrap();
-        assert_eq!(r.len(), 2);
-        assert!(r.contains(&"conv1".to_string()));
-        assert!(r.contains(&"conv2".to_string()));
-
-        let r = search_messages(&conn, "没有", 10).unwrap();
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0], "conv3");
-    }
-
-    /// LIKE 通配符 % 和 _ 按字面字符搜索，不作为 wildcard。
-    #[test]
-    fn search_messages_escapes_like_wildcards() {
+    fn search_history_treats_like_wildcards_as_literals() {
         let conn = mem();
         insert_text_msg(&conn, "m1", "conv1", "100% 完成");
         insert_text_msg(&conn, "m2", "conv2", "a_b 测试");
-
-        // % 应按字面搜索，不是 wildcard
-        let r = search_messages(&conn, "100%", 10).unwrap();
-        assert_eq!(r.len(), 1, "% 应按字面匹配");
-        assert_eq!(r[0], "conv1");
-
-        // _ 应按字面搜索，不是 wildcard
-        let r = search_messages(&conn, "a_b", 10).unwrap();
-        assert_eq!(r.len(), 1, "_ 应按字面匹配");
-        assert_eq!(r[0], "conv2");
-
-        // 不应匹配 "100% 完成" 中的 "100" 作为独立搜索（% 是字面字符）
-        let r = search_messages(&conn, "100", 10).unwrap();
-        assert_eq!(r.len(), 1, "'100' 应匹配 '100% 完成'");
+        insert_text_msg(&conn, "m3", "conv3", "你好世界 \u{1F30D}");
+        insert_text_msg(&conn, "m4", "conv4", "Hello World");
+        // 活查询多一道闸：只搜还在会话列表里的会话 ⇒ 先把四行会话建出来
+        for cid in ["conv1", "conv2", "conv3", "conv4"] {
+            ensure_conversation(&conn, cid, "single", cid, None).unwrap();
+        }
+        let hits = |kw: &str| -> Vec<String> {
+            search_history(&conn, kw, None, None, None, 50)
+                .unwrap()
+                .into_iter()
+                .map(|h| h.msg_id)
+                .collect()
+        };
+        assert_eq!(hits("100%"), vec!["m1"], "% 当通配用会把别的一并捞进来");
+        assert_eq!(hits("a_b"), vec!["m2"], "_ 当通配用会匹配任意单字符");
+        assert_eq!(hits("世界"), vec!["m3"], "中文按字符匹配");
+        assert_eq!(hits("\u{1F30D}"), vec!["m3"], "emoji 按字符匹配，不是按 UTF-8 字节切片");
+        assert!(hits("hello world").contains(&"m4".to_string()), "ASCII 大小写不敏感");
+        assert!(hits("查不到").is_empty());
     }
 
-    /// 空结果。
-    #[test]
-    fn search_messages_no_results() {
-        let conn = mem();
-        insert_text_msg(&conn, "m1", "conv1", "hello");
-        let r = search_messages(&conn, "不存在", 10).unwrap();
-        assert!(r.is_empty());
-    }
-
-    /// 中文搜索正常。
-    #[test]
-    fn search_messages_chinese() {
-        let conn = mem();
-        insert_text_msg(&conn, "m1", "conv1", "你好世界");
-        insert_text_msg(&conn, "m2", "conv2", "hello world");
-        let r = search_messages(&conn, "你好", 10).unwrap();
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0], "conv1");
-    }
-
-    /// emoji 搜索正常（按字符匹配，非 UTF-8 字节）。
-    #[test]
-    fn search_messages_emoji() {
-        let conn = mem();
-        insert_text_msg(&conn, "m1", "conv1", "🎉庆祝🎉");
-        let r = search_messages(&conn, "🎉", 10).unwrap();
-        assert_eq!(r.len(), 1);
-    }
-
-    /// 大小写不敏感搜索。
-    #[test]
-    fn search_messages_case_insensitive() {
-        let conn = mem();
-        insert_text_msg(&conn, "m1", "conv1", "Hello World");
-        let r = search_messages(&conn, "hello", 10).unwrap();
-        assert_eq!(r.len(), 1);
-        let r = search_messages(&conn, "HELLO", 10).unwrap();
-        assert_eq!(r.len(), 1);
-    }
 
     /// update_conversation_profile 只更新 name/avatar，不修改 last_msg/last_ts。
     #[test]

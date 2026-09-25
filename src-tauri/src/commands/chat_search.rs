@@ -1,40 +1,7 @@
 // 职责边界：
 // - 聊天历史搜索（search_messages / search_chat_history）
-// - 搜索结果结构体（ChatSearchMessage/ChatSearchGroup/SearchResult）
+// - 搜索结果结构体（ChatSearchMessage/ChatSearchGroup）
 // - ⚠️ 原混在 favorites.rs 里，因功能域独立而拆出
-
-/// 搜索消息：返回匹配关键词的会话列表及其最新匹配消息。
-#[tauri::command(async)]
-pub fn search_messages(
-    state: State<'_, Arc<AppState>>,
-    keyword: String,
-) -> Result<Vec<SearchResult>, String> {
-    let s = state.inner();
-    // 搜索关键词长度保护：按字符截断（UTF-8 安全）
-    let keyword: String = keyword.chars().take(MAX_SEARCH_LEN).collect();
-    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-    let conv_ids = db::search_messages(&dbc, &keyword, 20).map_err(|e| e.to_string())?;
-    let mut results = Vec::new();
-    for conv_id in conv_ids {
-        // 获取会话名称
-        let name = db::get_friend(&dbc, &conv_id)
-            .map(|(n, _)| n)
-            .unwrap_or_else(|| conv_id.clone());
-        // 获取最新匹配消息
-        let msgs = db::search_messages_in_conv(&dbc, &conv_id, &keyword, 1).unwrap_or_default();
-        if let Some(m) = msgs.into_iter().next() {
-            results.push(SearchResult {
-                conv_id,
-                name,
-                match_content: m.content,
-                match_ts: m.ts,
-                match_msg_id: m.msg_id,
-            });
-        }
-    }
-    Ok(results)
-}
-
 /// 「搜索聊天记录」结果页的一条命中。
 #[derive(Serialize)]
 pub struct ChatSearchMessage {
@@ -249,15 +216,4 @@ fn conversation_meta_locked(
         Some((name, avatar)) => (name, "single".to_string(), avatar),
         None => (conv_id.to_string(), "single".to_string(), None),
     }
-}
-
-#[derive(Serialize)]
-pub struct SearchResult {
-    conv_id: String,
-    name: String,
-    match_content: String,
-    match_ts: i64,
-    /// 命中消息的 msg_id：前端据此"跳到那一条"（只给 conv_id 的话，
-    /// 用户点进去还要自己在会话里翻，搜索就只完成了一半）。
-    match_msg_id: String,
 }

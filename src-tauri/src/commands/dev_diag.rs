@@ -285,12 +285,3 @@ pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::Disc
     result.peer_versions = collect_peer_versions(s);
     result
 }
-
-/// 获取候选链路列表（网卡 + 蓝牙，含评分）。
-#[tauri::command(async)]
-pub fn get_interface_candidates(
-    state: State<'_, Arc<AppState>>,
-) -> Vec<crate::state::InterfaceCandidate> {
-    let bt = collect_ble_diag(state.inner());
-    collect_candidates(&bt)
-}

@@ -19,7 +19,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dirname, "..", "..");
@@ -84,5 +84,66 @@ test("注册命令与契约图 IPC 表双向一致，且两侧都没有重复条
     notRegistered,
     [],
     `契约图上有、后端没注册（图在骗人，而且骗的是最容易相信它的地方）：${notRegistered.join(", ")}`,
+  );
+});
+
+/** 门面包装的名字（`sendFile: (…)` 这种键）。 */
+function facadeWrappers(): { cmd: string; key: string }[] {
+  const src = readFileSync(API_FILE, "utf8");
+  const out: { cmd: string; key: string }[] = [];
+  // 只认 `key: (…) => invoke<T>("cmd", …)` 这一种形状（门面里全部 134 条都是这个形状）
+  for (const m of src.matchAll(/(\w+):\s*\([^)]*\)[^]*?invoke(?:<[^>]*>)?\(\s*"([a-z0-9_]+)"/g)) {
+    out.push({ key: m[1], cmd: m[2] });
+  }
+  return out;
+}
+
+/** 除 api 层自己以外，全仓 `src/` 下的 ts/vue 文件。 */
+function sourceFiles(dir: string, acc: string[] = []): string[] {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) {
+      if (full === join(ROOT, "src", "api")) continue;
+      sourceFiles(full, acc);
+    } else if (/\.(ts|vue)$/.test(e.name) && !e.name.endsWith(".test.ts")) {
+      acc.push(full);
+    }
+  }
+  return acc;
+}
+
+/**
+ * 第三段对账：门面里的每条包装，界面（或 store）里必须真的有人引用。
+ *
+ * 为什么值得单独钉（0-A3 那批的遗留）：注册表 ↔ 门面这一层当时已经收口了，
+ * 但**门面之下**还漏着五个"谁都不调"的包装 —— 它们守住的判据看不见这一层，
+ * 于是这些命令变成了"注册着、能 IPC、永远没人按"的第三条入口。
+ * 真正的危险不是白占几十行，而是**它们不会跟着主路径一起被改**：
+ * 主路径后来加的 attempt epoch、终态契约、消毒口径，那五条一个都没吃到，
+ * 哪天有人照着它们抄一份，就抄到一份旧的、少了几道闸的实现。
+ *
+ * ⚠️ 已知边界：这一层判的是"`api.K` 有没有被引用"，不是"有没有 UI 可达" ——
+ * 一条 store 方法只被另一条没人调的 store 方法引用，仍会在这里被判成活的。
+ * 要真判可达得建调用图，收益不值这片代码；需要时按具体案例 grep。
+ */
+test("门面之下不许留没人引用的包装（第三条入口会停在与主路径不同的位置）", () => {
+  const ALLOWED_UNREFERENCED: Record<string, string> = {
+    // 例外必须写理由，空表是默认状态。
+  };
+  const files = sourceFiles(join(ROOT, "src"));
+  // 必须先把空白压平再匹配：真调用点常常写成 `api` 换行 `.openImagePreview(...)`，
+  // 按行匹配的守卫会把它们误报成死代码（这个坑本仓已经记过一次，见契约图 0-A3 那条漂移行）。
+  const bodies = files.map((f) => readFileSync(f, "utf8").replace(/\s+/g, " "));
+  const dead: string[] = [];
+  for (const { key, cmd } of facadeWrappers()) {
+    const re = new RegExp(`api\\s*\\.\\s*${key}\\b`);
+    if (bodies.some((b) => re.test(b))) continue;
+    if (key in ALLOWED_UNREFERENCED) continue;
+    dead.push(`${key}(${cmd})`);
+  }
+  assert.deepEqual(
+    dead,
+    [],
+    `这些包装全仓没人引用（既不在界面上，也没在 store 里）：${dead.join(" · ")}`,
   );
 });

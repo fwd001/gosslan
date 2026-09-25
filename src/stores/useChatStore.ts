@@ -1587,10 +1587,6 @@ export const useChatStore = defineStore("chat", () => {
       return null;
     }
   }
-  async function sendFileRelayTo(convId: string, path: string) {
-    if (convId.startsWith("group:")) return null;
-    return api.sendFileRelay(convId, path);
-  }
 
   /** 清除聊天数据：后端清库（含群聊删除边界）后重置本 store 全部会话状态。
    *  activeConv 必须置 null——否则左侧无选中而右侧仍显示失效 ChatWindow。 */
@@ -2154,7 +2150,6 @@ export const useChatStore = defineStore("chat", () => {
     leaveGroup,
     handleSelfRemovedFromGroup,
     sendFileTo,
-    sendFileRelayTo,
     sendGroupFileTo,
     sendImage,
     clearAllData,

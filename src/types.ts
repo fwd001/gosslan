@@ -440,14 +440,6 @@ export interface ExportSummary {
 }
 
 /** 搜索结果 */
-export interface SearchResult {
-  conv_id: string;
-  name: string;
-  match_content: string;
-  match_ts: number;
-  /** 命中消息的 msg_id —— 用于「跳到那一条」，见 useChatStore.locateMessageInConv。 */
-  match_msg_id: string;
-}
 
 /** 「搜索聊天记录」结果页的一条命中消息。 */
 export interface ChatSearchMessage {

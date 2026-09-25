@@ -651,8 +651,12 @@ pub fn get_content_transfers(
     crate::content::store::list(&dbc, 200).unwrap_or_default()
 }
 
-#[tauri::command(async)]
-pub async fn send_file(
+/// 单聊文件的真实实现。**不再是 IPC 入口**：界面上只有 `send_file_auto` 这一条门。
+/// 两条入口并存的后果是「没人调的那条不会跟着主路径一起改」—— 0-A3 收了门面，
+/// 但这条实现当时仍是注册着的命令，这次才真正降级成模块内私有：
+/// 删掉注册后编译器立刻指出 `send_file_auto` 是它唯一的调用者，
+/// 那份「第二条入口」的账也因此第一次被算清。
+async fn send_file(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
     path: String,
@@ -729,22 +733,10 @@ pub async fn send_file(
     });
     Ok(transfer_id)
 }
-
 /// 统一文件发送入口：当前稳定版统一走「直连 + 离线队列」。
 /// 只要好友最终上线，文件就会在连接事件触发时自动补发，不再依赖不可达的中继路径。
 #[tauri::command]
 pub async fn send_file_auto(
-    state: State<'_, Arc<AppState>>,
-    friend_id: String,
-    path: String,
-) -> Result<String, String> {
-    send_file(state, friend_id, path).await
-}
-
-/// 中继切片发送入口：保留命令名以兼容前端，当前实现回退到与直连相同的可靠队列，
-/// 避免「看似已发送、实际无法投递」的假成功。
-#[tauri::command]
-pub async fn send_file_relay(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
     path: String,
