@@ -21,6 +21,9 @@
 //   --fault=poison-part-lie   → 同样的注入，只把比对摘要换成必定不相等的值 ⇒ 预期报红
 //   --fault=resume-prefix     → 注入②：真前缀必须被续传复用，21 条断言，预期全绿
 //   --fault=resume-prefix-lie → 同样的注入，只把"期望已收字节数/期望摘要"换成错值 ⇒ 预期报红
+//   --fault=kill-mid          → 注入③：接收中真 SIGKILL 对端，23 条断言，预期全绿
+//   --fault=kill-mid-lie      → 同样的注入，只把"期望续发字节数/期望摘要"换成错值 ⇒ 预期报红
+//   （kill 轮的文件尺寸用 E2E_KILL_MB 调，默认 100 —— 回环上实测 ~0.78s 走完，窗口够打）
 
 const NEGATIVE = process.argv.includes("--negative");
 /// 故障注入模式（§八）。`--fault=poison-part` 见下方 preset 步骤的注释。
@@ -28,10 +31,20 @@ const FAULT = (process.argv.find((a) => a.startsWith("--fault=")) || "").slice("
 const POISON = FAULT === "poison-part" || FAULT === "poison-part-lie";
 /// 注入②：接收端已有**真实前缀** ⇒ 必须按前缀续传，不许从 0 重灌整份。
 const RESUME = FAULT === "resume-prefix" || FAULT === "resume-prefix-lie";
+/// 注入③：接收中**真杀进程**。窗口是实测的，不是猜的：100 MB 在回环上 ~0.78s 走完
+/// （.part 每 ~52ms 涨 6.5MB）⇒ 20%~100% 之间有 ~0.6s 可打，所以这条不是掷骰子。
+const KILL = FAULT === "kill-mid" || FAULT === "kill-mid-lie";
+/// 这一条注入专用的尺寸（与 J2 的 1 MB 分开，免得把默认轮也拖慢）。
+const KILL_BYTES = Number(process.env.E2E_KILL_MB || 100) * 1024 * 1024;
+let xferId4, srcFile4, srcSha4, partAtKill = 0;
 /// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
 /// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
 const LIE = FAULT.endsWith("-lie");
 const LIE_SHA = "0".repeat(64);
+/// 传输尺寸（默认 1 MB，`E2E_FILE_MB=N` 覆盖）。这个旋钮不是为了测"大文件"本身，
+/// 而是先量出**一次传输在回环上真实耗时多久**：「接收中杀进程」这类注入能不能做成
+/// 非竞态，取决于窗口有没有那么长。量不出来就老实标 SIMULATED，不许伪装 PASS（§十）。
+const FILE_BYTES = Number(process.env.E2E_FILE_MB || 1) * 1024 * 1024;
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -354,7 +367,7 @@ step("L-A 入队：A 的一个 1 MB 文件也排好队（停机窗口内）", ()
   fs.mkdirSync(dir, { recursive: true });
   srcFile = path.join(dir, `${xferId}.bin`);
   // 真随机字节：全零会被任何"压缩/去重"路径悄悄改掉而断言看不出来
-  const buf = Buffer.alloc(1024 * 1024);
+  const buf = Buffer.alloc(FILE_BYTES);
   for (let i = 0; i < buf.length; i += 32) buf.writeUInt32BE(Math.floor(Math.random() * 2 ** 32), i);
   fs.writeFileSync(srcFile, buf);
   srcSha = createHash("sha256").update(buf).digest("hex");
@@ -380,7 +393,7 @@ if (POISON) {
     const dir = path.join(RUN_DIR, "src");
     fs.mkdirSync(dir, { recursive: true });
     srcFile2 = path.join(dir, `${xferId2}.bin`);
-    const buf = Buffer.alloc(1024 * 1024);
+    const buf = Buffer.alloc(FILE_BYTES);
     for (let i = 0; i < buf.length; i += 32) buf.writeUInt32BE(Math.floor(Math.random() * 2 ** 32), i);
     fs.writeFileSync(srcFile2, buf);
     srcSha2 = createHash("sha256").update(buf).digest("hex");
@@ -414,7 +427,7 @@ if (RESUME) {
     const dir = path.join(RUN_DIR, "src");
     fs.mkdirSync(dir, { recursive: true });
     srcFile3 = path.join(dir, `${xferId3}.bin`);
-    const buf = Buffer.alloc(1024 * 1024);
+    const buf = Buffer.alloc(FILE_BYTES);
     for (let i = 0; i < buf.length; i += 32) buf.writeUInt32BE(Math.floor(Math.random() * 2 ** 32), i);
     fs.writeFileSync(srcFile3, buf);
     srcSha3 = createHash("sha256").update(buf).digest("hex");
@@ -429,6 +442,20 @@ if (RESUME) {
     fs.mkdirSync(dl, { recursive: true });
     fs.writeFileSync(path.join(dl, `${xferId3}.part`), buf.subarray(0, 64 * 1024));
     console.log(`      预置真前缀 65536 字节 / 全文件 ${buf.length} 字节（sha256=${srcSha3.slice(0, 12)}…）`);
+  });
+}
+
+if (KILL) {
+  step(`预置（注入③）：先生成一个 ${KILL_BYTES / 1024 / 1024} MB 源文件（行进库留到判据里，见下面那段注释）`, () => {
+    xferId4 = `e2e-k-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    const dir = path.join(RUN_DIR, "src");
+    fs.mkdirSync(dir, { recursive: true });
+    srcFile4 = path.join(dir, `${xferId4}.bin`);
+    const buf = Buffer.alloc(KILL_BYTES);
+    for (let i = 0; i < buf.length; i += 32) buf.writeUInt32BE(Math.floor(Math.random() * 2 ** 32), i);
+    fs.writeFileSync(srcFile4, buf);
+    srcSha4 = createHash("sha256").update(buf).digest("hex");
+    console.log(`      源文件 ${buf.length / 1024 / 1024} MB（sha256=${srcSha4.slice(0, 12)}…）`);
   });
 }
 
@@ -481,7 +508,7 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
   const landed = path.join(recvB, `${xferId}.bin`);
   await waitFor(() => fs.existsSync(landed), 120_000, `B 的接收目录出现 ${xferId}.bin（只认 rename 后的最终名）`);
   const bytes = fs.readFileSync(landed);
-  check("B 侧字节数与发送端一致", bytes.length === 1024 * 1024, 1024 * 1024, bytes.length);
+  check("B 侧字节数与发送端一致", bytes.length === FILE_BYTES, FILE_BYTES, bytes.length);
   const got = createHash("sha256").update(bytes).digest("hex");
   check("B 侧 sha256 与源文件一致（INV-P17 分片可验证）", got === srcSha, srcSha.slice(0, 12) + "…", got.slice(0, 12) + "…");
 
@@ -605,6 +632,111 @@ if (RESUME) {
     const kept3 = fs.existsSync(recvB) ? fs.readdirSync(recvB).filter((f) => f.includes(xferId3)) : [];
     check("前缀用完即弃：接收目录只剩 1 个终名文件，无 .part 残留、无副本",
       kept3.length === 1 && kept3[0] === `${xferId3}.bin`, `${xferId3}.bin`, kept3.join(", ") || "空");
+  });
+}
+
+if (KILL) {
+  step("故障注入判据③：接收中被 SIGKILL ⇒ 不许假成功，重启后按盘上真实字节续完", async () => {
+    const dl = path.join(RUN_DIR, "recv", "B");
+    const partPath = path.join(dl, `${xferId4}.part`);
+    const landed = path.join(dl, `${xferId4}.bin`);
+    const partSize = () => {
+      try {
+        return fs.statSync(partPath).size;
+      } catch {
+        return 0;
+      }
+    };
+    // 这一单**由我在判据里才入队**：前两版都在停机时预置，于是传输发生在"起 A/B 等链路"
+    // 那一步里，等判据去看时早传完了 —— 打空的两轮报红全是我的时序问题，不是产品的。
+    // ⚠️ 进程活着时写它的库是新用法：seed() 末尾的 wal_checkpoint(TRUNCATE) 撞上在写的
+    //    连接会 SQLITE_BUSY ⇒ 重试几次；真进不去就该换成"停机入队 + 大文件"那条路。
+    for (let i = 0; ; i++) {
+      try {
+        seed(INSTANCES[0].db, (db) => {
+          db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(xferId4);
+          db.prepare(
+            `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+             VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
+          ).run(xferId4, peerTo, srcFile4, `${xferId4}.bin`, KILL_BYTES, nowMs());
+        });
+        break;
+      } catch (e) {
+        if (i >= 5) throw e;
+        await sleep(300);
+      }
+    }
+    // waitFor 是 500ms 粒度，而实测一次 100 MB 传输只有 ~0.78s ⇒ 会打空。这里用 50ms 自旋。
+    // 打没打中窗口是**这条注入自己**的成败，必须红给看，不许悄悄当成"已通过"。
+    const inFlight = () => {
+      const n = partSize();
+      return n > 0 && n < KILL_BYTES;
+    };
+    let miss = "";
+    const until = nowMs() + 120_000;
+    while (nowMs() < until && !inFlight()) await sleep(50);
+    if (!inFlight()) {
+      miss =
+        `120s 内没出现"在飞"的 .part（实际 ${partSize()} 字节）—— ` +
+        `要么 A 没有在飞行中把这单捡起来，要么传得太快/太大没抓着`;
+    }
+    partAtKill = partSize();
+    const pB = procs.get(INSTANCES[1].n);
+    // ⚠️ 被信号杀死的子进程：`exitCode === null` + `signalCode === "SIGKILL"`。
+    //    拿 exitCode !== null 判"死了没有"永远等不到（第一版就在这里超时）。
+    const dead = () => !!pB && (pB.exitCode !== null || pB.signalCode !== null);
+    if (!dead()) pB.kill("SIGKILL");
+    await waitFor(dead, 15_000, "B 进程确认已死（SIGKILL 不给它收尾的机会）");
+    await sleep(2_000); // 让 A 把"写失败了"变成状态
+    const landedAtKill = fs.existsSync(landed);
+
+    check("窗口必须真打中：杀的那一刻 .part 在 0~全量之间",
+      !miss && partAtKill > 0 && partAtKill < KILL_BYTES,
+      `0 < .part < ${KILL_BYTES}`, miss || `${partAtKill} 字节`);
+    check("rename 才算完成：B 死在半路时接收目录不许出现终名文件",
+      !landedAtKill, "不存在", landedAtKill ? "已出现" : "不存在");
+    const aMid = openDb(INSTANCES[0].db, true);
+    const a4mid = aMid.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId4);
+    aMid.close();
+    check("发送端不许在对端没确认时宣布完成：对端被杀的那一刻 A 不能是 done",
+      a4mid?.status !== "done", "非 done", a4mid?.status ?? "无行");
+
+    // 重启 B：链路该自己回来、outbox 该自己重投，且必须**接着盘上那点字节**发
+    launch(INSTANCES[1]);
+    await waitFor(() => tcpOpen(INSTANCES[1].port), 60_000, `重启后的 B 的 TCP ${INSTANCES[1].port} 可连`);
+    await waitFor(() => (tailLog(INSTANCES[1].log, 60) || "").includes("AppState::init 完成"), 30_000,
+      "重启后的 B 打出 boot 完成行");
+    await waitFor(() => fs.existsSync(landed) || partSize() > partAtKill, 120_000,
+      "重启后这一单被重新拾起（.part 比死时更长，或终名文件出现）");
+    await sleep(15_000); // 让续传 / rename / 多轮重试都落定
+
+    const wantFrom = LIE ? partAtKill + 1 : partAtKill;
+    const aLog = tailLog(INSTANCES[0].log, 60000) || "";
+    const line = aLog.split("\n").filter((l) => l.includes(xferId4) && l.includes("接收端已有")).pop() || "";
+    const m = line.match(/接收端已有 (\d+) 字节/);
+    check("重启后必须从**盘上真实字节数**续发，不许从 0 重灌（接收端真实进度优先）",
+      !!m && Number(m[1]) === wantFrom, String(wantFrom),
+      m ? m[1] : "A 日志里没有针对这一单的续发行");
+    const exists4 = fs.existsSync(landed);
+    const got4 = exists4 ? createHash("sha256").update(fs.readFileSync(landed)).digest("hex") : null;
+    const wantSha4 = LIE ? LIE_SHA : srcSha4;
+    check("死前写的前缀 + 重启后续发的尾段 = 源文件（sha256 逐字节对得上）",
+      exists4 && got4 === wantSha4, wantSha4.slice(0, 12) + "…",
+      exists4 ? got4.slice(0, 12) + "…" : "未落地");
+    const bDb4 = openDb(INSTANCES[1].db, true);
+    const b4 = bDb4.prepare("SELECT status FROM file_transfers WHERE id=?1").all(xferId4);
+    bDb4.close();
+    const aDb4 = openDb(INSTANCES[0].db, true);
+    const a4 = aDb4.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId4);
+    const q4 = aDb4.prepare("SELECT COUNT(*) c FROM file_outbox WHERE transfer_id=?1").get(xferId4).c;
+    aDb4.close();
+    const both4 = `B=${b4.map((r) => r.status).join("/") || "无行"} A=${a4?.status ?? "无行"} outbox=${q4}`;
+    check("恢复的终局只有一个：两侧 done 且 outbox 已清（不许停在中间态，也不许弃单）",
+      b4.length === 1 && b4[0].status === "done" && a4?.status === "done" && q4 === 0,
+      "1 行 + 双侧 done + outbox=0", both4);
+    const kept4 = fs.existsSync(dl) ? fs.readdirSync(dl).filter((f) => f.includes(xferId4)) : [];
+    check("续完之后接收目录只剩 1 个终名文件：无 .part 残留、无半截副本",
+      kept4.length === 1 && kept4[0] === `${xferId4}.bin`, `${xferId4}.bin`, kept4.join(", ") || "空");
   });
 }
 

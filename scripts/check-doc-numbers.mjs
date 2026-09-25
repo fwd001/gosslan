@@ -129,14 +129,17 @@ for (const rel of LOCK_COUNT_BANNED) {
 const HARNESS = "scripts/e2e-multi-instance.mjs";
 /** 按「顶层 if (MODE) { … } 顶格 } 收尾」把 check( 调用归堆。
  *  只认顶格的 `}` 收块 —— 与这个文件的写法一致；缩进的 } 一律不算闭合。 */
+/// harness 里的注入模式 → 活文档里必须出现的轮次名。**加一条注入就得在这里登记一行**：
+/// 没登记的表现是"文档永远不会要求它 ⇒ 这一轮的断言数没人对账"，正是要拦的那种静默漏。
+const MODE_LABEL = { POISON: "脏前缀轮", RESUME: "续传轮", KILL: "杀进程轮" };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
   const per = {};
   let mode = null;
   let common = 0;
   for (const line of src.split("\n")) {
-    const open = line.match(/^\s*if \((POISON|RESUME|NEGATIVE)\) \{/);
-    if (open) { mode = open[1]; per[mode] = per[mode] || 0; continue; }
+    const open = line.match(/^\s*if \(([A-Z][A-Z_]*)\) \{/);
+    if (open) { mode = open[1]; if (mode !== "NEGATIVE") per[mode] = per[mode] || 0; continue; }
     if (/^}/.test(line)) { mode = null; continue; }
     // 只数「check("字符串名"」这种真断言调用点：`function check(` 与 `check(s.name, …)`
     //    （失败记录器）都不是断言，混进来会把数算大。
@@ -145,7 +148,16 @@ function harnessAsserts() {
     if (mode === "NEGATIVE") continue; // 反向模式复用同一条旅程，不新增断言数
     if (mode) per[mode] += n; else common += n;
   }
-  return { 默认轮: common, 脏前缀轮: common + (per.POISON || 0), 续传轮: common + (per.RESUME || 0) };
+  const unknown = Object.keys(per).filter((m) => !(m in MODE_LABEL));
+  if (unknown.length) {
+    throw new Error(
+      `harness 里有没登记的注入模式块：${unknown.join(" / ")} —— 加一条注入要在 MODE_LABEL 登记轮次名，` +
+        `否则这一轮的断言数永远不会被对账`,
+    );
+  }
+  const out = { 默认轮: common };
+  for (const [m, label] of Object.entries(MODE_LABEL)) out[label] = common + (per[m] || 0);
+  return out;
 }
 
 let e2e;
@@ -156,9 +168,9 @@ try {
   process.exit(1);
 }
 console.log(
-  `· 现算 E2E 断言数：默认轮 ${e2e["默认轮"]} / 脏前缀轮 ${e2e["脏前缀轮"]} / 续传轮 ${e2e["续传轮"]}`,
+  `· 现算 E2E 断言数：${Object.entries(e2e).map(([k, v]) => `${k} ${v}`).join(" / ")}`,
 );
-const E2E_CLAIM = /(默认轮|脏前缀轮|故障轮|续传轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
+const E2E_CLAIM = /(默认轮|脏前缀轮|故障轮|续传轮|杀进程轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
 const seenLabel = new Set();
 for (const rel of LIVE_DOCS) {
   const abs = path.join(ROOT, rel);
@@ -175,7 +187,7 @@ for (const rel of LIVE_DOCS) {
     );
   }
 }
-for (const label of ["默认轮", "脏前缀轮", "续传轮"]) {
+for (const label of Object.keys(e2e)) {
   if (!seenLabel.has(label)) {
     fails.push(`活文档里再没有「${label} N 断言」这种声明了 —— 删标签等于绕过判据 C，不许`);
   }
