@@ -30,6 +30,7 @@ import { todoCompletedForCreator, todoMentionsMe, type TodoImage } from "@/utils
 import { invalidateFilePreview } from "@/utils/filePreview";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
+import { mergePeerList } from "@/utils/peerMerge";
 import {
   onAction,
   registerActionTypes,
@@ -519,7 +520,9 @@ export const useChatStore = defineStore("chat", () => {
     const tok = refreshGuard.begin("peers");
     const list = await api.getPeers();
     if (!refreshGuard.isCurrent("peers", tok)) return;
-    peers.value = list;
+    // 整表直写会换掉数组与里面每个对象 ⇒ 凡读过 peers 的渲染全部失效（见 utils/peerMerge）。
+    const merged = mergePeerList(peers.value, list);
+    if (merged) peers.value = merged;
   }
   /** 按需探测：群发一次 who_has 后返回周围在线节点（添加好友时调用）。 */
   async function searchNearbyPeers() {
@@ -528,7 +531,8 @@ export const useChatStore = defineStore("chat", () => {
     // 被更新的一次探测抢走时：不写 peers、也不标注 online（online 是本结果的派生值，
     // 用旧探测结果标会把更新的状态盖回去），但**照常返回**给调用方它要的那份列表。
     if (!refreshGuard.isCurrent("peers", tok)) return peers.value;
-    peers.value = list;
+    const merged = mergePeerList(peers.value, list);
+    if (merged) peers.value = merged;
     const onlineIds = new Set(list.map((x) => x.device_id));
     friends.value.forEach((f) => (f.online = onlineIds.has(f.device_id)));
     return peers.value;
@@ -1788,7 +1792,10 @@ export const useChatStore = defineStore("chat", () => {
     });
     bindEvents({
       onPeers: (p) => {
-        peers.value = p;
+        // 这个事件最多每秒 3 次：不比对就直接换表，等于每 333ms 把整屏消息行重画一遍
+        // （消息行模板里的 nicknameOf 读的就是 peers）。没变就不写。
+        const merged = mergePeerList(peers.value, p);
+        if (merged) peers.value = merged;
         const onlineIds = new Set(p.map((x) => x.device_id));
         // 有活跃链路的节点即使在广播里缺席（局域网丢广播 / 刚被 sweep）也算在线，
         // 与后端 get_friends 的 friend_is_online 口径一致 ——

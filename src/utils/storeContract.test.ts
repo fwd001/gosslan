@@ -225,6 +225,26 @@ test("「已翻到顶」结论必须在每次重新加载时作废，且作废�
   );
 });
 
+test("peers 只许经 mergePeerList 写入：每拍换掉整表引用 = 每 333ms 重画一屏", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const sites = [...st.matchAll(/peers\.value\s*=\s*([A-Za-z_$][\w$]*)/g)];
+  assert.equal(
+    sites.length,
+    3,
+    `peers 的写入点应为 3 处（refreshPeers / searchNearbyPeers / onPeers），实际 ${sites.length} 处：` +
+      "多了就是有人又开始整表直写",
+  );
+  const bad = sites.filter((m) => m[1] !== "merged");
+  assert.deepEqual(
+    bad.map((m) => m[0]),
+    [],
+    "peers 必须写 mergePeerList 的结果：内容没变就不赋值，变了也只换真变的那台。" +
+      "直接 `peers.value = <整个列表>` 会让所有读过 peers 的渲染（消息行模板里的 nicknameOf 就是）" +
+      "每 333ms 全部失效一次",
+  );
+  assert.ok(st.includes('from "@/utils/peerMerge"'), "必须真的用那份合并函数，而不是就地再拼一遍");
+});
+
 test("冷加载必须一次 IPC 取到最新一页，不许退回「先问总数再按 offset 取」两轮串行", () => {
   const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
   const at = st.indexOf("async function loadMessages(");
