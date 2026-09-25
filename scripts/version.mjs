@@ -6,6 +6,7 @@
 // 一次 bump 会同步更新三处版本号：package.json / src-tauri/Cargo.toml / src-tauri/tauri.conf.json，
 // 并把 CHANGELOG.md 的 [Unreleased] 小节落为带日期的版本小节。
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 const mode = process.argv[2] ?? "show";
 
@@ -63,8 +64,34 @@ if (existsSync(lockPath)) {
   }
   writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
 }
-// 注：src-tauri/Cargo.lock（TOML）由 cargo 构建时自动同步，发版前跑一次
-// `cd src-tauri && cargo check` 保证 lock 与 Cargo.toml 版本一致后一并提交。
+// 5) Cargo.lock —— 这里以前只留一句注释"由 cargo 自动同步"，于是**发版提交里 lock
+//    停在旧版本号**（4.29.41 与 4.29.42 两次现场），而 lock 与 Cargo.toml 不一致
+//    正是 `--locked` 构建会直接拒绝的那种不一致。既然这一步能自动化就交给它，
+//    并且**断言真的跟上了**：没跟上就报错退出，而不是留下一句"记得手工跑一次"。
+const cargoLockPath = "src-tauri/Cargo.lock";
+if (existsSync(cargoLockPath)) {
+  const cargoName = /^name\s*=\s*"([^"]+)"$/m.exec(readFileSync(cargoPath, "utf8"))?.[1];
+  const synced = spawnSync("cargo", ["update", "--offline", "-p", cargoName], {
+    cwd: "src-tauri",
+    encoding: "utf8",
+  });
+  const block = new RegExp(
+    `\\[\\[package\\]\\][\\s\\S]*?name = "${cargoName}"\\nversion = "([^"]+)"`,
+  ).exec(readFileSync(cargoLockPath, "utf8"));
+  if (!block) {
+    console.error(`✗ Cargo.lock 里找不到包 ${cargoName}，无法核对版本一致性`);
+    process.exit(1);
+  }
+  if (block[1] !== next) {
+    console.error(
+      `✗ Cargo.lock 仍是 ${block[1]}，期望 ${next}（cargo update 退出码 ${synced.status}）` +
+        `\n  ${synced.stderr?.trim().slice(0, 200) || ""}\n` +
+        "  手工处理：cd src-tauri && cargo update -p ${cargoName}（离线加 --offline）",
+    );
+    process.exit(1);
+  }
+  console.log(`✓ Cargo.lock 已同步：${cargoName} ${block[1]}`);
+}
 
 // 5) CHANGELOG.md（可选）
 //    若不存在 [Unreleased] 小节则自动补一个占位小节，保证每次发版都有更新日志。
