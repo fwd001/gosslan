@@ -485,7 +485,7 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
    顺延为 §26），非空转由 7 段夹具自证 + 一条 `verify-guards` 变异用例（把 emit 注回锁内）钉住。
 4. 测试：`export_chat_text` 期间另一线程做一次 `insert_message`，断言等待时间上界（现在无上界可测）。
 
-### 第 4 步 · 状态机契约（**P7**）
+### 第 4 步 · 状态机契约（**P7**）—— ✅ 已收口 2026-09-25（四刀，详见下面每条的实测更正）
 
 1. ✅ **已落地 2026-09-25，但本条原本给的写法被证伪**：39 个写入点（实测 active 12 /
    failed 12 / done 6 / pending 3 / sent / cancelled）先枚举完才发现 ——
