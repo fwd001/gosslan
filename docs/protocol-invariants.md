@@ -27,6 +27,8 @@ Reconnect
 
 不得因为传输路径变化而变成不同业务消息。
 
+- 钩子：`db::tests::message_dedup_by_unique_msg_id` `db::tests::direct_and_gossip_same_msg_id_persist_single_row` `db::tests::outbox_identity_is_msg_id_not_payload` `db::tests::concurrent_same_msg_id_has_exactly_one_winner`
+
 ### 验证
 
 ```text
@@ -52,6 +54,8 @@ Notification: 不重复
 Read state: 不回退
 ACK: 可重复发送
 ```
+
+- 钩子：`db::tests::repeated_delivery_of_same_msg_id_yields_single_side_effect` `db::tests::unread_and_event_fire_only_for_the_winning_insert` `db::tests::group_msg_id_duplicate_counts_unread_and_event_once` `db::tests::late_ack_never_regresses_a_read_message`
 
 ### 推荐测试
 
@@ -83,6 +87,8 @@ socket write
 ```text
 message delivered
 ```
+
+- 钩子：`db::tests::message_and_outbox_are_written_atomically` `db::tests::ack_from_non_recipient_is_rejected` `db::tests::ack_sender_check_uses_group_file_owner` `db::tests::repeated_ack_is_idempotent`
 
 ### 发送方
 
@@ -133,6 +139,8 @@ ACK 到达：
 delete outbox
 ```
 
+- 钩子：`db::tests::message_and_outbox_are_written_atomically` `db::tests::outbox_offline_queue_dedup_and_delete` `tests::the_outbox_retry_decision_has_exactly_one_judge_and_one_caller` `tests::outbox_sweeper_emits_only_after_db_write_succeeds`
+
 ### 绝对禁止
 
 ```text
@@ -162,6 +170,8 @@ pending outbox
 
 并尝试补发。
 
+- 钩子：`db::tests::pending_read_survives_restart` `content::store::tests::failure_persists_resumable_or_terminal` `e2e:L-B 故障注入：两端重启后仍正确`
+
 ---
 
 ## 6. Retry
@@ -179,6 +189,8 @@ retry(msg_id)
 ```text
 create_new_message()
 ```
+
+- 钩子：`db::tests::duplicate_transfer_id_offer_is_idempotent` `content::policy::tests::resume_only_from_chunk_boundaries` `network::file::tests::unknown_attempt_count_is_not_a_death_sentence` `e2e:故障注入判据③`
 
 ### 界面上的「重发」是**已知例外**（2026-09-25 记）
 
@@ -217,6 +229,8 @@ fanout bounded
 
 禁止无限传播。
 
+- 钩子：`mesh::router::tests::zero_ttl_is_dropped` `mesh::router::tests::broadcast_with_ttl_one_delivers_without_forwarding` `gossip_engine::tests::bloom_and_lru_dedup` `network::transport::tests::business_duplicate_still_enters_the_propagation_layer`
+
 ---
 
 ## 8. Gossip + Direct
@@ -243,6 +257,8 @@ one UI message
 one logical delivery
 ```
 
+- 钩子：`db::tests::direct_and_gossip_same_msg_id_persist_single_row` `network::transport::tests::gossip_propagation_layer_stays_independent_of_local_persistence`
+
 ---
 
 ## 9. Ordering
@@ -267,6 +283,8 @@ Relay
 最终排序必须使用项目定义的消息时间/序列/稳定排序策略。
 
 不得用“最后收到的”作为业务真相。
+
+- 钩子：`db::tests::conversation_clock_is_monotonic` `db::tests::latest_page_breaks_seq_ties_by_id_exactly_like_the_ascending_query` `db::tests::late_ack_never_regresses_a_read_message`
 
 ---
 
@@ -302,6 +320,8 @@ decrypt failed
 → silently drop
 ```
 
+- 钩子：`network::transport::tests::plaintext_payload_is_rejected` `network::file::tests::tampered_chunk_fails_to_decrypt` `db::tests::own_sent_row_keeps_plaintext_selectable_by_sender`
+
 ---
 
 ## 11. Key Changes
@@ -327,6 +347,8 @@ warn
 ```
 
 当前实现若尚未具备完整 key rotation，应记录为已知限制，而不是让 AI 自行决定。
+
+- 钩子：`tests::friend_identity_anchor_has_one_binding_rule` `db::tests::update_friend_pubkeys_never_overwrites_a_bound_key` `guards:身份锚点的打标点必须留在 handle_message 的 Hello 分支` `guards:打标必须排在`
 
 ### 现在的决定（2026-09-13 实装，用户真机反馈后）
 
@@ -401,6 +423,8 @@ identity public key
 
 必须保持一致，除非用户显式重置身份。
 
+- 钩子：`db::migration_tests::migration_preserves_identity_data` `mesh::manager::tests::forget_identity_clears_keys_but_keeps_the_connection` `db::tests::friend_add_and_pubkey_persistence`
+
 ---
 
 ## 13. Protocol Version
@@ -428,6 +452,8 @@ ADR
 
 未知扩展应在协议允许的情况下安全忽略。
 
+- 钩子：`tests::unknown_wire_frame_is_tolerated_after_auth` `discovery::routed::tests::device_id_is_optional_and_backward_compatible` `db::migration_tests::migration_fresh_db_gets_latest_version`
+
 ---
 
 ## 14. Persistence
@@ -447,6 +473,8 @@ peer map
 ```text
 SQLite must be source of truth
 ```
+
+- 钩子：`db::tests::pending_read_survives_restart` `db::tests::gfile_transfer_record_persists_local_path` `content::store::tests::failure_persists_resumable_or_terminal`
 
 ---
 
@@ -470,6 +498,8 @@ UI should be able to rehydrate from DB / command
 
 不能因为一次 event 丢失而导致永久状态丢失。
 
+- 钩子：`guards:常驻窗口（设置窗口重新显示必须刷新环境数据）` `src/api/events.test.ts#每个 Rust 事件都必须有前端消费者` `db::tests::pending_read_survives_restart`
+
 ---
 
 ## 16. Error Handling
@@ -491,6 +521,8 @@ security_related
 ```text
 Err → failed
 ```
+
+- 钩子：`src/utils/errors.test.ts` `guards:用户取消不得记成失败`
 
 ---
 
@@ -530,6 +562,8 @@ arrival order
    ⇒ `Err(文件分片顺序错误)` ⇒ 整单死。两个方向都有单测钉住（`decide_offer` 三条用例 +
    `verify-guards.py` 两条变异用例）。
 
+- 钩子：`network::file::tests::receiver_hash_mismatch_fails` `file_relay::tests::chunks_stream_to_disk_and_completion_hands_back_a_path` `guards:中继收文件的哈希必须对组装后的明文算`
+
 ---
 
 ## 18. Security Boundary
@@ -545,6 +579,8 @@ Rust private key
 ```
 
 前端只能获得完成 UI 所需的公开信息或状态。
+
+- 钩子：NONE —— 私钥只在 Rust 侧读写、`generate_handler!` 里没有任何返回私钥材料的命令，但**这句话本身今天没有判据钉住**（改一条命令的返回结构就能悄悄破掉）。已登记为缺口 B-1a，见 `docs/stability-roadmap.md`。
 
 ---
 
@@ -566,6 +602,8 @@ sender_wall_clock 直接决定消息顺序
 receiver 纠正/猜测 sender 时钟
 ```
 
+- 钩子：`db::tests::conversation_clock_is_monotonic` `db::tests::clear_boundary_blocks_old_group_messages` `db::tests::latest_page_breaks_seq_ties_by_id_exactly_like_the_ascending_query` `network::file::tests::group_receive_rejects_gap_and_duplicate_seq`
+
 ---
 
 ## 20. Transport Priority
@@ -586,6 +624,8 @@ bulk 通道：FileChunk / GroupFileChunk / RelayChunk / FileDone / GroupFileDone
 ```text
 大文件分片占满唯一队列，导致聊天消息长时间排队
 ```
+
+- 钩子：`network::dispatch::tests::stress_mixed_priorities_no_starvation` `network::dispatch::tests::file_chunk_is_low_priority` `network::dispatch::tests::ack_is_high_priority` `network::dispatch::tests::ble_yield_fragments_allows_preemption`
 
 ---
 
@@ -623,6 +663,8 @@ friends / peers 中已绑定该 device_id 的 Ed25519 公钥？
 为「兼容旧版本」保留无签名的 Hello 分支
 ```
 
+- 钩子：`network::transport::tests::hello_auth_accepts_bound_identity` `network::transport::tests::hello_auth_rejects_attacker_declaring_own_key` `network::transport::tests::hello_auth_rejects_forged_sig_with_victim_pubkey` `network::transport::tests::hello_auth_rejects_missing_signature_and_tampering` `network::transport::tests::announced_attacker_key_cannot_bind_and_impersonate` `network::transport::relay_wiring_tests::negotiation_fails_closed_when_identity_does_not_match`
+
 ---
 
 ## 22. Invariant Exceptions
@@ -638,6 +680,8 @@ friends / peers 中已绑定该 device_id 的 Ed25519 公钥？
 
 两件事缺一不可，由 `scripts/check-invariant-exceptions.mjs` **双向**校验：
 代码标了而本节没登记 ⇒ FAIL；本节登记了而代码没标 ⇒ FAIL。
+
+- 钩子：`scripts/check-invariant-exceptions.mjs` `guards:自聊消息必须留在本地`
 
 ### 为什么必须有这一节（2026-09-16）
 
@@ -764,6 +808,8 @@ central 侧       btleplug 协商出的 ATT MTU          → 要减 ATT 头（3�
 
 末尾那个 `== b` 成立**正是因为外设侧不再减 ATT 头**。若有人给外设侧也减一次，
 这条立刻红 —— 而真机症状只是「某台设备收不到消息」，没有这条测试极难定位。
+
+- 钩子：`scripts/check-ble-constants.mjs` `transport::ble_framing::tests::both_sides_agree_on_the_same_link_budget` `transport::ble_framing::tests::notify_payload_budget_clamps_and_never_returns_zero`
 
 ### 为什么单列成一条不变量
 
@@ -894,6 +940,8 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 不适用（别过度实现）：只加字段、不改语义、且老代码会忽略未知字段的变更 ⇒ 兼容，
 不需要 `protocol_version` bump，也不需要 legacy 分支。
 
+- 钩子：`guards:未知帧类型必须降级而不是拆链` `guards:Hello 必须声明本机版本` `tests::unknown_wire_frame_is_tolerated_after_auth` `src/utils/versioning.test.ts`
+
 ---
 
 ## 25. Lock Scope
@@ -926,6 +974,8 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 `fail_taken_receive` 仍然写成"写库 + emit 连着两行"——同一个函数体里两条相邻语句，逐行 review
 谁都看不出毛病，只有全局扫才看得见。同一批还扫出中继收文件失败分支 3 处同样的形状。
 **注释管不住新写的分支**，所以从这天起它是一条有机器判据的不变量。
+
+- 钩子：`scripts/check-lock-scope.mjs` `guards:db 锁作用域守卫必须抓得住`
 
 ---
 
@@ -971,6 +1021,8 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 
 **非空转证明**：两条 `verify-guards` 变异用例 —— 摘掉 `WHERE status <> 'done'` ⇒ 正向判据红；
 照本条落地前的建议把集合写成 `NOT IN ('done','failed','cancelled')` ⇒ 反向判据红。
+
+- 钩子：`guards:upsert_transfer 的「done 不可降级」闸门不得被摘掉` `db::cascade_tests::a_completed_transfer_row_is_never_downgraded` `db::tests::complete_ack_failure_cannot_downgrade_completed`
 
 ---
 

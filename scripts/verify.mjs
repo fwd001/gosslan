@@ -168,6 +168,15 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "不变量钩子守卫",
+    why: "挡住「文档写着'必须'、下面没有任何东西在跑」——每条 INV-P 的 `- 钩子：` 必须当场解析成真实存在的"
+      + "用例/护栏/夹具；测试改名或被删而文档没回来改，这里就红（条数由该步自己打印）",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-invariant-hooks.mjs"],
+  },
+  {
+    group: "frontend",
     name: "db 锁作用域守卫",
     why: "挡住「锁还活着时 emit」——只有一条 SQLite 连接，前端收到事件后的第一次 IPC 抢同一把锁 ⇒ 那一刻界面冻一下；全部取锁点逐处判（条数由该步自己打印，别处不抄），判据自带 7 段夹具自证",
     cwd: ROOT,

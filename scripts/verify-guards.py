@@ -2526,6 +2526,23 @@ CASES: list[Case] = [
         expect_fail_hint="未登记",
         tags=["manifest", "frontend"],
     ),
+    Case(
+        name="不变量钩子：文档里的钩子名字解析不出来必须报出来（挡住「契约只有 prose」）",
+        why="`docs/protocol-invariants.md` 是 AI 必读清单直接指向的『物理定律』登记处，而它过去每条"
+            "只有一段伪码式的「验证」段 —— 没有任何**具名对象**在跑，所以改坏不变量时 CI 不会红。"
+            "现在每条都有一行 `- 钩子：` 指向真实存在的用例/护栏脚本/夹具名，本用例证明那一行不是装饰："
+            "把 INV-P01 的钩子换成一个不存在的用例名 ⇒ 必须红（否则「测试早已被删、文档还在指它」"
+            "这种最典型的腐烂又会变成静默的）。",
+        file=ROOT / "docs" / "protocol-invariants.md",
+        injections=[(
+            "`db::tests::message_dedup_by_unique_msg_id`",
+            "`db::tests::a_test_that_was_deleted_but_the_doc_still_points_at`",
+        )],
+        cmd=["node", "scripts/check-invariant-hooks.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="钩子解析失败",
+        tags=["docs", "invariant", "new-guards"],
+    ),
     # ---------------- 不变量例外登记（挡住「照文档误修」） ----------------
     # 守的是 `scripts/check-invariant-exceptions.mjs`：代码侧的 `INV-EXCEPTION:` 标记
     # 与 `docs/protocol-invariants.md` §22 登记区必须**双向**一致。
