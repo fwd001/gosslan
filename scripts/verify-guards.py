@@ -2543,6 +2543,25 @@ CASES: list[Case] = [
         expect_fail_hint="钩子解析失败",
         tags=["docs", "invariant", "new-guards"],
     ),
+    Case(
+        name="私钥边界：给 Identity 补一行 derive(Serialize) 必须报出来（INV-P18 靠构造，不靠人记得）",
+        why="私钥今天不外泄，只是因为 `Identity`/`EphKeypair` 没 derive `Serialize` —— "
+            "序列化不了就到不了前端（命令返回值与 emit 载荷都要求 Serialize）。"
+            "但这行防御是**一行改动就能破、破掉之后界面完全无症状**的安全边界："
+            "有人为了「顺手打印一下身份」给结构加一行 derive，整条 E2EE 就归零了。"
+            "`scripts/check-key-boundary.mjs` 判两条：A 任何可序列化类型都不许带密钥字段"
+            "（按名字 + 按类型双词表，所以 `ed25519_signing` 这种不含 secret 的名字也抓得住）；"
+            "B 命令不许把密钥放在「交出值」的位置。本用例注入的正是最可能的那次误改。",
+        file=TAURI / "src" / "crypto.rs",
+        injections=[(
+            "pub struct Identity {",
+            "#[derive(Clone, Debug, serde::Serialize)]\npub struct Identity {",
+        )],
+        cmd=["node", "scripts/check-key-boundary.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="可序列化类型 Identity 带密钥字段",
+        tags=["rust", "security", "new-guards"],
+    ),
     # ---------------- 不变量例外登记（挡住「照文档误修」） ----------------
     # 守的是 `scripts/check-invariant-exceptions.mjs`：代码侧的 `INV-EXCEPTION:` 标记
     # 与 `docs/protocol-invariants.md` §22 登记区必须**双向**一致。

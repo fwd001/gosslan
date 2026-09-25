@@ -580,7 +580,13 @@ Rust private key
 
 前端只能获得完成 UI 所需的公开信息或状态。
 
-- 钩子：NONE —— 私钥只在 Rust 侧读写、`generate_handler!` 里没有任何返回私钥材料的命令，但**这句话本身今天没有判据钉住**（改一条命令的返回结构就能悄悄破掉）。已登记为缺口 B-1a，见 `docs/stability-roadmap.md`。
+- 钩子：`scripts/check-key-boundary.mjs` `guards:私钥边界：给 Identity 补一行 derive`
+  —— 判据 A 钉住"任何可序列化类型都不许带密钥字段"（命令返回值与 emit 载荷都要求 `Serialize`，
+  所以一条判据同时盖住两个出口）；判据 B 钉住"命令不许把密钥放在交出值的位置"，并要求
+  `generate_handler!` 里每条命令都能被扫到。⚠️ 残余：**两步搬运**（先 `let k = …to_bytes()`
+  再 `Ok(encode(k))`）文本判据抓不住，彻底封死要把 `Identity` 的私钥字段改成私有、
+  只暴露 `sign()` / `dh()`（登记为 B-1a 的后续项）。
+
 
 ---
 

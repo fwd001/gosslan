@@ -177,6 +177,15 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "私钥边界守卫",
+    why: "钉住 INV-P18：可序列化类型（=命令返回值与 emit 载荷的共同要求）不许带密钥字段，"
+      + "命令也不许把密钥放在交出值的位置；破掉时**界面完全无症状**，所以只能靠机器判（条数由该步打印）",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-key-boundary.mjs"],
+  },
+  {
+    group: "frontend",
     name: "db 锁作用域守卫",
     why: "挡住「锁还活着时 emit」——只有一条 SQLite 连接，前端收到事件后的第一次 IPC 抢同一把锁 ⇒ 那一刻界面冻一下；全部取锁点逐处判（条数由该步自己打印，别处不抄），判据自带 7 段夹具自证",
     cwd: ROOT,
