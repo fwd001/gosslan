@@ -276,7 +276,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 | L2 行为单测（Rust） | `cargo test --features bluetooth` | **690**(mac)/487(win) | 协议/分片/队列/DB/选路/清理的进程内语义 | 真 socket、真进程、真重启 |
 | L3 契约对账 | api/events/domain/lock/invariant 等 6 个脚本 + 3 个 test | 20 余条判据 | 名字/归属/注册/取锁形状/双向存在 | 类型与 payload 形状、UI 可达性 |
 | L4 护栏非空转 | `verify-guards.py` | 181(提交)/185(树) | "把正确代码改坏必须红" | 反向（无对象时必须非 0）类判据 |
-| **L5 跨进程 E2E** | `scripts/e2e-multi-instance.mjs`（本地，未进 CI） | **默认轮 16 条断言 / J1+J2**（文本 6 + 文件 8 + 重启 2）；**故障轮再加 4 条 = 20**（脏 `.part` 前缀 → 错 hash → 重试补齐） | 两个真实进程之间：送达、只有一条、内容正确、outbox 被 Ack 清空、状态过 sending、**文件只有 rename 后落地且 sha256 一致**、两侧终态 `done`、重启后仍正确 | 除 J1/J2 之外的一切旅程；尺寸阶梯与断链/杀进程；UI 视觉腿；Windows 腿；routed/BLE/中继三条路径 |
+| **L5 跨进程 E2E** | `scripts/e2e-multi-instance.mjs`（本地，未进 CI） | **默认轮 16 条断言 / J1+J2**（文本 6 + 文件 8 + 重启 2）；**脏前缀轮 20 断言**（+4：脏 `.part` → 错 hash → 重试补齐）；**续传轮 21 断言**（+5：真前缀必须被续传复用）——三个数由 `check-doc-numbers.mjs` 现算对账 | 两个真实进程之间：送达、只有一条、内容正确、outbox 被 Ack 清空、状态过 sending、**文件只有 rename 后落地且 sha256 一致**、两侧终态 `done`、重启后仍正确 | 除 J1/J2 之外的一切旅程；尺寸阶梯与断链/杀进程；UI 视觉腿；Windows 腿；routed/BLE/中继三条路径 |
 
 ### 5.2 功能区覆盖矩阵（17 区 × 4 类证明）
 
@@ -406,7 +406,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 | A 账 / Smoke 矩阵 | PLANNED | 落文档，不需环境 |
 | R9 四条护栏 | **DONE**（UNIT_VERIFIED + GUARDS_LOCKED：4/4 注入验证通过） | — |
 | A-1 harness v0 | **DONE**（J1 5 连绿 → 接 J2 后 16 断言 5 连绿 + `--negative` 反向自证报红 + 残留进程 0；设计=§11，结果=§11.7） | 下一步接断链/杀进程与 Windows 腿，再谈进 CI |
-| A-2 故障注入 | **IMPLEMENTING → INTEGRATION_VERIFIED（第一格）**：`--fault=poison-part` 20 断言 2 连绿 + `--fault=poison-part-lie` 反向按设计报红；ADR-0010 从 Proposed 落到"有第一条真跑绿的注入" | §八清单 16 项里这算 1 项（`.part 已存在`+`错 hash`同源）；断链/杀进程/重复帧/乱序/旧 attempt/DB 锁竞争仍未做 |
+| A-2 故障注入 | **IMPLEMENTING → INTEGRATION_VERIFIED（两格）**：① `--fault=poison-part` 20 断言 2 连绿 + lie 模式按设计报红；② `--fault=resume-prefix` 21 断言 1 连绿（A 日志实证"按 65536 续传"）+ lie 模式 2/21 报红；ADR-0010 从 Proposed 落到"有两条真跑绿的注入" | §八 16 项里覆盖 3 格（`.part 已存在`、`错 hash`、`重启后前缀一致/续传`）；断链/杀进程/重复帧/乱序/旧 attempt/DB 锁竞争仍未做 |
 | A-3 文件实验室 | DISCOVERED | A-1 + A-2 |
 | A-8 `schema.sql` | AUDITED | 决定生成还是退役（属"数据契约"，需用户点头） |
 | A-6 Windows 基线 | BLOCKED(环境) | 需要 Windows 环境 |
@@ -530,7 +530,8 @@ L-A 之所以成立，靠一条已核对的实现细节：`transport.rs:4321` `r
 | 清理 | 残留 `pgrep` = **0**；用户原有 `gosslan-1/2.db` 每轮自动备份、结束时还原 |
 | 产物 | `test-results/run-<ts>/{summary.json,summary.html,instance-{A,B}.app.log,instance-*.stdout.log,sqlite-{A,B}/,recv/,after-*.db,backup-*/}` |
 | 覆盖 | **J1（文本 A→B + 重启后仍正确）+ J2（1 MB 文件 A→B）+ J3 的第一格（脏 `.part` 前缀 → 错 hash → 重试补齐）= 默认轮 16 断言 5 连绿 / 故障轮 20 断言 2 连绿**。J2 钉的是：只有 rename 后的 `<transfer_id>.bin` 才算落地、字节数 1 MB、sha256 与源一致、A 侧 `file_outbox` 收尾删除、两侧终态 `done`、同一条传输只记一次、接收目录无 `.part`/改名残留 |
-| 覆盖的**边界**（别把这句话读成"文件传输已覆盖"） | 只有「1 MB / 单文件 / 链路不断」+「前缀被污染」这两格。尺寸阶梯、并发多文件、**断链**、**杀进程**、**错 size**、目标目录变化**全部未做** → A-2/A-3。<br>⚠️ 一条实测排除掉的注入方向：**改 A 侧 DB 里存的 sha256 不是一条可用的注入** —— 发送侧的摘要是在发送时从磁盘重算的（`sha256_file_hex`），DB 那个值上不了线。要制造"线上 hash 不符"只能用脏前缀这类**接收侧**注入（本轮就是这么做的）。<br>另：`--negative` 目前只把**文本**那条腿钉红；文件腿的"没送到"红尚未单独演示过（机制上是 `waitFor` 120 s 超时抛异常 → 步骤 FAIL，但没跑出来看过）|
+| 注入②（续传轮）| `--fault=resume-prefix` = `npm run test:fault-injection:resume`：B 侧预置**源文件自己的前 64 KiB** 当 `.part`。**21 断言 1 连绿**，A 日志实测「接收端已有 65536 字节，从断点续发」⇒ 对**有效前缀**确实走续传而不是从 0 重灌，且拼出来的 sha256 == 源、两侧 done、outbox=0、只剩 1 个终名文件。`--fault=resume-prefix-lie`（期望字节数减半 + 期望摘要换 0）⇒ **恰好 2/21 报红**，红字带着 `预期 32768 / 实际 65536` 与 `实际 877f591f4162…` ⇒ 这两条也不是空转。 |
+| 覆盖的**边界**（别把这句话读成"文件传输已覆盖"） | 只有「1 MB / 单文件 / 链路不断」+「前缀被污染」+「真前缀续传」这三格。尺寸阶梯、并发多文件、**断链**、**杀进程**、**错 size**、目标目录变化**全部未做** → A-2/A-3。<br>⚠️ 一条实测排除掉的注入方向：**改 A 侧 DB 里存的 sha256 不是一条可用的注入** —— 发送侧的摘要是在发送时从磁盘重算的（`sha256_file_hex`），DB 那个值上不了线。要制造"线上 hash 不符"只能用脏前缀这类**接收侧**注入（本轮就是这么做的）。<br>另：`--negative` 目前只把**文本**那条腿钉红；文件腿的"没送到"红尚未单独演示过（机制上是 `waitFor` 120 s 超时抛异常 → 步骤 FAIL，但没跑出来看过）|
 
 五个 harness 自己的 bug／教训（值得记，因为它们现场长得像「产品坏了」，而且**其中四个是"假绿/假红"级别的**）：
 1. 断言读错了文件 —— 查 A 侧链路却去读 B 的日志、还拿 B 的 id 当目标，于是永远查不到；

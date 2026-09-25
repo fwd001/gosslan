@@ -19,6 +19,10 @@
  * **B. 禁令**：指定文件里不许再手写「取锁点」的条数 —— 真相是 `check-lock-scope.mjs`
  *    每次实算并打印的，抄一份进文档就等于制造第二个事实源。
  *
+ * **C. 双实例 E2E 的断言数由 harness 现算**：`scripts/e2e-multi-instance.mjs` 里按模式归堆数 `check(`
+ *    调用，文档凡声明「默认轮 N 断言 / 脏前缀轮 N 断言 / 续传轮 N 断言」必须等于现算值，
+ *    且三种标注**一种都不许消失**（否则「删掉标签」就是绕过这条守卫的最短路径）。
+ *
  * 退出码：0 = 通过；1 = 有漂移 / 有违规手写。
  */
 import { spawnSync } from "node:child_process";
@@ -120,6 +124,63 @@ for (const rel of LOCK_COUNT_BANNED) {
   }
 }
 
+
+// ---------- 判据 C：双实例 E2E 的断言数由 harness 现算 ----------
+const HARNESS = "scripts/e2e-multi-instance.mjs";
+/** 按「顶层 if (MODE) { … } 顶格 } 收尾」把 check( 调用归堆。
+ *  只认顶格的 `}` 收块 —— 与这个文件的写法一致；缩进的 } 一律不算闭合。 */
+function harnessAsserts() {
+  const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
+  const per = {};
+  let mode = null;
+  let common = 0;
+  for (const line of src.split("\n")) {
+    const open = line.match(/^\s*if \((POISON|RESUME|NEGATIVE)\) \{/);
+    if (open) { mode = open[1]; per[mode] = per[mode] || 0; continue; }
+    if (/^}/.test(line)) { mode = null; continue; }
+    // 只数「check("字符串名"」这种真断言调用点：`function check(` 与 `check(s.name, …)`
+    //    （失败记录器）都不是断言，混进来会把数算大。
+    const n = (line.match(/\bcheck\(\s*"/g) || []).length;
+    if (!n) continue;
+    if (mode === "NEGATIVE") continue; // 反向模式复用同一条旅程，不新增断言数
+    if (mode) per[mode] += n; else common += n;
+  }
+  return { 默认轮: common, 脏前缀轮: common + (per.POISON || 0), 续传轮: common + (per.RESUME || 0) };
+}
+
+let e2e;
+try {
+  e2e = harnessAsserts();
+} catch (e) {
+  console.error(`✗ 读不到 harness 断言数：${e.message}`);
+  process.exit(1);
+}
+console.log(
+  `· 现算 E2E 断言数：默认轮 ${e2e["默认轮"]} / 脏前缀轮 ${e2e["脏前缀轮"]} / 续传轮 ${e2e["续传轮"]}`,
+);
+const E2E_CLAIM = /(默认轮|脏前缀轮|故障轮|续传轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
+const seenLabel = new Set();
+for (const rel of LIVE_DOCS) {
+  const abs = path.join(ROOT, rel);
+  if (!fs.existsSync(abs)) continue;
+  const text = fs.readFileSync(abs, "utf8");
+  for (const m of text.matchAll(E2E_CLAIM)) {
+    const label = m[1] === "故障轮" ? "脏前缀轮" : m[1];
+    seenLabel.add(label);
+    const n = Number(m[3]);
+    if (n === e2e[label]) continue;
+    fails.push(
+      `${rel}：手写「${label} ${m[3]} 条断言」= ${n}，` +
+        `现算 ${HARNESS} 是 ${e2e[label]} —— 加/删断言后要改的是 harness 的注释口径，不是文档里的数字`,
+    );
+  }
+}
+for (const label of ["默认轮", "脏前缀轮", "续传轮"]) {
+  if (!seenLabel.has(label)) {
+    fails.push(`活文档里再没有「${label} N 断言」这种声明了 —— 删标签等于绕过判据 C，不许`);
+  }
+}
+
 if (fails.length) {
   console.error(`\n✗ 文档硬数字漂移 ${fails.length} 处：`);
   for (const f of fails) console.error(`  · ${f}`);
@@ -129,4 +190,6 @@ if (fails.length) {
   );
   process.exit(1);
 }
-console.log(`✓ 文档硬数字对账通过（${LIVE_DOCS.length} 份活文档；取锁点条数无手写）`);
+console.log(
+  `✓ 文档硬数字对账通过（${LIVE_DOCS.length} 份活文档；取锁点条数无手写；E2E 断言数现算对账）`,
+);

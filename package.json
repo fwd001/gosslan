@@ -43,6 +43,8 @@
     "test:e2e:multi-instance": "node scripts/e2e-multi-instance.mjs",
     "test:e2e:negative": "node scripts/e2e-multi-instance.mjs --negative",
     "test:fault-injection": "node scripts/e2e-multi-instance.mjs --fault=poison-part",
+    "test:fault-injection:resume": "node scripts/e2e-multi-instance.mjs --fault=resume-prefix",
+    "test:fault-injection:resume-selfproof": "node scripts/e2e-multi-instance.mjs --fault=resume-prefix-lie",
     "test:fault-injection:selfproof": "node scripts/e2e-multi-instance.mjs --fault=poison-part-lie"
   },
   "dependencies": {
