@@ -728,3 +728,49 @@ test("桌面端任务窗口的展开投递：两条路 + 独立于启动器 + �
   assert.ok(launchAt > 0, "找不到启动器调用点（守卫会空转）");
   assert.ok(reqAt < launchAt, "投递展开必须排在 launchAuxWindow 之前 —— 启动器会把后面那次调用整段合并掉");
 });
+
+/**
+ * 未读的"本地清零"只有一个家，而且旧快照不得把它点亮回来（架构复审第 5 步 · 3）。
+ *
+ * 复审原本这条写的是"未读收成单一来源（后端给值）"。核过之后前提不成立：
+ * 后端 `mark_read` 就是 `UPDATE conversations SET unread = 0`，`totalUnread` 也只由
+ * `conversations[].unread` 求和 —— 真相源本来就一个。漏的是**过渡**：乐观清零之后，
+ * 一份清零前发起的快照落地会把红点原样点亮（`refreshConversations` 里那句
+ * 「我没点它怎么又红了」就是这个），而 `StaleGuard` 挡不住它（同一份请求、数据是旧的）。
+ * 上一轮新加的"回到前台重拉会话"恰好放大了这条 —— 所以修它是收尾，不是新需求。
+ */
+test("本地清零只有一个家，且会话快照不得点亮已清零的未读", () => {
+  const store = read("stores/useChatStore.ts");
+  const codeLines = store
+    .split("\n")
+    .map((l, i) => ({ l: l.trim(), i: i + 1 }))
+    .filter((x) => x.l.length && !x.l.startsWith("//") && !x.l.startsWith("*") && !x.l.startsWith("/*"));
+
+  const writes = codeLines.filter((x) => x.l.includes(".unread = 0"));
+  assert.equal(
+    writes.length,
+    1,
+    `本地清零只能有一处实现，这些行还在各自写：${writes.map((w) => `${w.i}: ${w.l}`).join(" | ")}`,
+  );
+  assert.match(
+    store,
+    /function clearUnreadLocally\(convId: string\)[\s\S]{0,300}\.unread = 0/,
+    "唯一那处必须住在 clearUnreadLocally 里（它同时打水位，漏一个就不是同一个家）",
+  );
+  // 三个 markRead 回调 + 打开会话的乐观清零，至少四处都走这个入口
+  assert.ok(
+    (store.match(/clearUnreadLocally\(/g) ?? []).length >= 4,
+    "markRead 之后不许再各自手写清零 —— 水位漏打就等于豁免机制形同不存在",
+  );
+
+  // 接线：快照落地必须带上"发起时刻"，否则豁免无从判断；水位必须被回收
+  const refresh = store.slice(store.indexOf("async function refreshConversations("));
+  const body = refresh.slice(0, refresh.indexOf("\n  }", 10));
+  assert.match(body, /const issuedAt = Date\.now\(\);/, "必须在**发起前**取时刻（落地后取就晚了）");
+  assert.match(
+    body,
+    /applyConversationSnapshot\(\s*conversations\.value,\s*list,\s*unreadClearedAt,\s*issuedAt,?\s*\)/,
+    "refreshConversations 必须经 applyConversationSnapshot 落地，不能整表覆盖",
+  );
+  assert.match(body, /pruneUnreadClears\(/, "水位要回收，否则这个 Map 跟着会话数无界增长");
+});

@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   applyIncomingToConversations,
+  applyConversationSnapshot,
   applyReplacements,
   appendLocalOnly,
+  pruneUnreadClears,
   furthestStatus,
   mergeMessages,
   messageMentionsAll,
@@ -748,3 +750,57 @@ test("未读锚点：静默行被误传进来也不消耗额度（判据只有�
   ];
   assert.equal(unreadAnchorIndex(list, 1), 2);
 });
+
+/** 会话快照落地 + 乐观清零的竞态（`applyConversationSnapshot`）。 */
+function convRow(id: string, over: Partial<import("../types.ts").Conversation> = {}) {
+  return {
+    id,
+    kind: "single",
+    name: id,
+    avatar: null,
+    last_msg: "旧",
+    last_ts: 100,
+    unread: 0,
+    pinned: false,
+    ...over,
+  } as import("../types.ts").Conversation;
+}
+
+test(
+  "会话快照不得把「已乐观清零的未读」点亮回来，但其余字段仍要按快照更新",
+  () => {
+    // 用户在 t=500 打开会话 c1 ⇒ 本地立刻清零并打上水位；
+    // 而这次快照是 t=400 发起的（后端当时还没收到已读），带着清零前的 unread=3。
+    const prev = [convRow("c1", { unread: 0 }), convRow("c2", { unread: 1 })];
+    const snapshot = [convRow("c1", { unread: 3, last_msg: "新消息", last_ts: 600 }), convRow("c2", { unread: 1 })];
+    const clearedAt = new Map([["c1", 500]]);
+    const out = applyConversationSnapshot(prev, snapshot, clearedAt, 400);
+    const c1 = out.find((c) => c.id === "c1")!;
+    assert.equal(c1.unread, 0, "本地清零晚于快照发起 ⇒ 快照里那个数是过期的，不许点亮红点");
+    assert.equal(c1.last_msg, "新消息", "只豁免未读这一个字段：内容/时间/排序仍按后端快照走");
+    assert.equal(out.find((c) => c.id === "c2")!.unread, 1, "没有被本地清过的会话原样采纳后端值");
+  },
+);
+
+test(
+  "反过来：快照晚于本地清零时必须采纳后端的未读（否则真未读会被永久压掉）",
+  () => {
+    const prev = [convRow("c1", { unread: 0 })];
+    const snapshot = [convRow("c1", { unread: 2, last_ts: 900 })];
+    const clearedAt = new Map([["c1", 300]]); // 清零发生在 300，快照 500 才发起 ⇒ 快照更新
+    const out = applyConversationSnapshot(prev, snapshot, clearedAt, 500);
+    assert.equal(out.find((c) => c.id === "c1")!.unread, 2, "清零之后又来了两条 ⇒ 后端说了算，红点必须回来");
+  },
+);
+
+test(
+  "水位只活到被更晚的快照超过为止：过期条目要能被丢弃，且不得让 Map 无界增长",
+  () => {
+    const clearedAt = new Map<string, number>([
+      ["old", 1],
+      ["new", 900],
+    ]);
+    pruneUnreadClears(clearedAt, 1000, 500); // 现在=1000，窗口=500 ⇒ 只剩 new
+    assert.deepEqual([...clearedAt.keys()], ["new"]);
+  },
+);

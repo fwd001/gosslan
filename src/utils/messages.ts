@@ -299,6 +299,55 @@ export function sortConversations(list: Conversation[]): Conversation[] {
 }
 
 /**
+ * 会话快照落地：**以后端为准**，但不许把"已经本地乐观清零的未读"点亮回来。
+ *
+ * 为什么需要它（`StaleGuard` 挡不住的那一半）：本仓有一族同形缺陷是"后发的请求先回来"，
+ * `StaleGuard` 已经管住了那一类。这里挡的是另一类 —— **同一份请求，数据本身是旧的**：
+ * t=400 发起 `getConversations()`，t=500 用户打开会话并乐观清零（`useChatStore` 里那条
+ * 「所有异步操作尽量乐观更新」的口径），t=600 那份带着 `unread = 3` 的快照才落地
+ * ⇒ 红点自己亮回来、排序也跟着回退，就是用户报的「我没点它怎么又红了」。
+ *
+ * 只豁免 `unread` 这一个字段：`last_msg` / `last_ts` / `pinned` / 名称头像 一律以快照为准
+ * （它们没有"本地已推进"的状态会被覆盖）。方向也刻意只做这一侧：
+ * **快照晚于清零时必须照抄后端** —— 那才是"清零之后又来了新消息"的正常情形，
+ * 反过来豁免就会把真未读永久压掉（比红点多亮一下严重得多）。
+ */
+export function applyConversationSnapshot(
+  prev: Conversation[],
+  snapshot: Conversation[],
+  clearedAt: ReadonlyMap<string, number>,
+  snapshotIssuedAt: number,
+): Conversation[] {
+  if (clearedAt.size === 0) return sortConversations(snapshot);
+  const previous = new Map(prev.map((c) => [c.id, c] as const));
+  return sortConversations(
+    snapshot.map((row) => {
+      const cleared = clearedAt.get(row.id);
+      if (cleared === undefined || cleared <= snapshotIssuedAt) return row;
+      const before = previous.get(row.id);
+      if (!before) return row;
+      return before.unread === row.unread ? row : { ...row, unread: before.unread };
+    }),
+  );
+}
+
+/**
+ * 丢掉过期的"已清零"水位。
+ *
+ * 窗口外的一律无效：一次在飞的 `getConversations()` 再慢也不会慢过这个窗口，
+ * 留着只会让这个 Map 跟着会话数无界增长。
+ */
+export function pruneUnreadClears(
+  clearedAt: Map<string, number>,
+  now: number,
+  windowMs: number,
+): void {
+  for (const [id, at] of clearedAt) {
+    if (now - at > windowMs) clearedAt.delete(id);
+  }
+}
+
+/**
  * 将一批新消息应用到会话列表：更新 last_msg/last_ts、累计未读（活跃会话不计），
  * 再按 `sortConversations` 重排。纯函数，便于测试与复用。
  */

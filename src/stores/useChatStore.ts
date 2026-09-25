@@ -2,6 +2,7 @@ import { acceptHMRUpdate, defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 import { api, bindEvents } from "@/api";
 import {
+  applyConversationSnapshot,
   applyIncomingToConversations,
   applyReplacements,
   appendLocalOnly,
@@ -12,6 +13,7 @@ import {
   pickMediaContent,
   preserveDeliveryStatus,
   previewText,
+  pruneUnreadClears,
   selectCachedConversations,
   sortConversations,
   syncProfileFromPeers,
@@ -543,13 +545,44 @@ export const useChatStore = defineStore("chat", () => {
     if (!refreshGuard.isCurrent("pending", tok)) return;
     rawPendingRequests.value = list;
   }
+  /**
+   * 「这条会话我在本地已经判过已读」的水位（convId → 时刻）。
+   *
+   * 存在的理由见 `utils/messages.ts::applyConversationSnapshot`：`StaleGuard` 只挡
+   * "后发先至"，挡不住"同一份请求、数据本身是旧的" —— 乐观清零之后再落一份清零前的
+   * 快照，红点就会自己亮回来。
+   */
+  const unreadClearedAt = new Map<string, number>();
+  /** 水位窗：超过这个年纪的水位一定不会再被任何在飞快照引用，丢掉以免 Map 无界增长。 */
+  const UNREAD_CLEAR_TTL_MS = 30_000;
+
+  /**
+   * **全 store 唯一的"本地把未读清零"入口**：改内存 + 打水位两件事必须同时发生，
+   * 所以不许在别处再写一遍 `conv.unread = 0`（判据：`windowEntries` 之外的
+   * `storeContract` 结构守卫 —— 见该文件里那条 "只有一个家"）。
+   */
+  function clearUnreadLocally(convId: string) {
+    const conv = conversations.value.find((c) => c.id === convId);
+    if (conv && conv.unread !== 0) conv.unread = 0;
+    // 水位打在**发起前**的这一刻：晚于快照发起 ⇒ 那份快照里的数字是旧的，不许点亮红点
+    unreadClearedAt.set(convId, Date.now());
+  }
+
   async function refreshConversations() {
     const tok = refreshGuard.begin("conversations");
+    // 发起时刻：这是"快照里的数据至少有多新"的下界（单连接单锁 ⇒ 读一定发生在发起之后）
+    const issuedAt = Date.now();
     const list = await api.getConversations();
     // ⚠️ 这条最不是理论问题：`openConversation` 会**乐观清零**未读，而旧快照带着清零前的
     // `unread` ⇒ 红点自己亮回来、列表顺序也跟着回退（用户看到的"我没点它怎么又红了"）。
     if (!refreshGuard.isCurrent("conversations", tok)) return;
-    conversations.value = list;
+    conversations.value = applyConversationSnapshot(
+      conversations.value,
+      list,
+      unreadClearedAt,
+      issuedAt,
+    );
+    pruneUnreadClears(unreadClearedAt, Date.now(), UNREAD_CLEAR_TTL_MS);
   }
   async function refreshGroups() {
     const tok = refreshGuard.begin("groups");
@@ -733,11 +766,7 @@ export const useChatStore = defineStore("chat", () => {
     unreadJump.value = unreadBefore > 0 ? { convId: id, index: -1 } : null;
     // 未读清零走**乐观更新**（用户 2026-09-12 要求「所有异步操作尽量乐观更新」）：
     // 打开会话即视为已读，本地立刻清零，别让红点在 await 期间继续显示。
-    const optimisticClearUnread = (convId: string) => {
-      const conv = conversations.value.find((c) => c.id === convId);
-      if (conv && conv.unread !== 0) conv.unread = 0;
-    };
-    optimisticClearUnread(id);
+    clearUnreadLocally(id);
     // 会话行不存在（如新加好友还没发过消息）→ 后端补建，保证左侧列表有对应可高亮的项。
     // ⚠️ **不阻塞消息加载**：补建会话行与 loadMessages 互不依赖，串行 await 会让
     // 「切到一个全新会话」白等一次 IPC（骨架已经渲染，但内容迟迟不来）。
@@ -1745,10 +1774,7 @@ export const useChatStore = defineStore("chat", () => {
         // （移动端可能正盖着设置/新的朋友等整页浮层 —— 那时用户根本没看到这条消息，
         //  判已读等于替用户撒谎、还会把回执发回去。用户 2026-09-12 实测报告）。
         if (activeConv.value !== convId || document.hidden || !app.chatVisible) return;
-        void api.markRead(convId).then(() => {
-          const conv = conversations.value.find((c) => c.id === convId);
-          if (conv) conv.unread = 0;
-        });
+        void api.markRead(convId).then(() => clearUnreadLocally(convId));
       }, 300);
     };
     // 去抖里还排着一次 markRead：拆掉它，否则一个绑在废弃实例上的已读回执会在
@@ -1989,10 +2015,7 @@ export const useChatStore = defineStore("chat", () => {
         if (!convId && raw.extra?.conv_id) convId = String(raw.extra.conv_id);
         if (id != null) notifMap.delete(id);
         if (convId) {
-          void api.markRead(convId).then(() => {
-            const conv = conversations.value.find((c) => c.id === convId);
-            if (conv) conv.unread = 0;
-          });
+          void api.markRead(convId).then(() => clearUnreadLocally(convId));
         }
         return;
       }
@@ -2041,10 +2064,10 @@ export const useChatStore = defineStore("chat", () => {
       });
       // 同 `debounceMarkRead`：回到前台也要确认"聊天视图真的可见"才补发已读回执
       if (activeConv.value && app.chatVisible) {
-        void api.markRead(activeConv.value).then(() => {
-          const conv = conversations.value.find((c) => c.id === activeConv.value);
-          if (conv) conv.unread = 0;
-        });
+        // 刻意先把 id 取进局部变量：await 期间用户可能已经切走，回调里再读
+        // `activeConv.value` 会把**新**会话的红点清掉而根本没给它发已读。
+        const convId = activeConv.value;
+        void api.markRead(convId).then(() => clearUnreadLocally(convId));
       }
     };
     document.addEventListener("visibilitychange", onVisibility);

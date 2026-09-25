@@ -1167,7 +1167,7 @@ const INVARIANTS = [
   ["SQLite 不存 BLOB", "二进制全部落盘，前端按 cid / msgId 异步懒加载", "库体积失控 + 预览把整张图塞进消息行（当年就是这么炸的）", "<code>storage/mod.rs</code> 原则 + 预览字节三条 read_* 命令"],
   ["能力位门禁 + 「未知 ≠ 版本旧」", "缺对端能力记录按 0 处理（拒绝），但界面文案分两句：未知 / 版本旧", "把「没探到」说成「对方版本旧」是错误归因，用户会去升级一个不需要升级的东西", "<code>kind_required_feature</code> + 1:1 提示拆两句（4.24.1）"],
   ["在线 = 有活跃链路", "既不是有 IP，也不是 last_seen 新鲜；链路徽标唯一来源 <code>best_link_kind</code>", "Tailscale 网段被标成「蓝牙直连」、掉线节点仍算在线", "<code>should_keep_peer</code> + 一条非空转护栏"],
-  ["「什么算未读」只有一处判据", "<code>countsTowardUnread</code>；角标只有一处实现（列表与底栏共用）", "同一会话在两处显示不同未读数", "批次 k 收敛 + <code>channelState.test.ts</code>"],
+  ["「什么算未读」只有一处判据 + 本地清零只有一个家", "<code>countsTowardUnread</code>；角标只有一处实现（列表与底栏共用）；本地清零只准走 <code>clearUnreadLocally</code>（改内存与打水位同时发生）", "同一会话在两处显示不同未读数；以及<b>乐观清零后被一份清零前的旧快照点亮回来</b>（用户原话「我没点它怎么又红了」）—— <code>StaleGuard</code> 挡不住这种：请求确实是最新那次，数据本身是旧的", "批次 k 收敛 + <code>channelState.test.ts</code> 两条 + <code>applyConversationSnapshot</code> 行为测试（豁免方向两边都钉）"],
   ["浮层全局互斥只有一个注册表", "<code>popupRegistry</code> + <code>useExclusivePopup</code>", "同时开两个表情面板、点外面都不关（用户实测过的缺陷形状）", "注册表一处，组件不得各自 hold 状态"],
 ];
 
@@ -1440,7 +1440,7 @@ function buildDir() {
       '<div class="stat"><div class="num">29</div><div>后端事件名（表内合并成 ' + EVENTS.length + ' 行）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
       '<div class="stat"><div class="num">182</div><div>护栏非空转用例（改坏即红）</div></div>' +
-      '<div class="stat"><div class="num">685 / 589</div><div>Rust / 前端测试条数</div></div>' +
+      '<div class="stat"><div class="num">685 / 593</div><div>Rust / 前端测试条数</div></div>' +
     "</div>" +
     '<h2 class="sec">领域图（真源 <code>docs/domains.data.mjs</code> · 本页内嵌快照 · <code>check-domain-map.mjs</code> 守路径存在，<code>check-domain-deps.mjs</code> 守依赖方向）</h2>' +
     '<div class="tablewrap"><table><thead><tr><th>领域</th><th>tier</th><th>数据实际跑在哪个家（activeHome）</th><th>允许依赖（consumes）</th><th>不变量</th><th>备注里的坑</th></tr></thead><tbody>' +

@@ -527,7 +527,12 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
    先补最省的两个：主窗口 `visibilitychange`/`focus` ⇒ `refreshConversations + refreshTransfers`；
    群任务窗口 `onFocusChanged` ⇒ 重拉当前群。
 2. 只带 id 的事件补最小载荷（`message-acked{status}`、`message-failed{reason}`、`file-cancelled{status}`）。
-3. 未读收成单一来源（后端给值）。
+3. ✅ **已落地 2026-09-25，但这条的前提被核伪**：后端 `mark_read` 就是 `UPDATE … SET unread = 0`，
+   `totalUnread` 也只由 `conversations[].unread` 求和 ⇒ 真相源本来就一个，不需要"后端给值"。
+   真漏的是**过渡竞态**：乐观清零之后，一份**清零前发起**的快照落地会把红点点亮回来
+   （`StaleGuard` 挡不住 —— 请求确实是最新那次，数据是旧的）。现在由
+   `applyConversationSnapshot` 只豁免 `unread` 一个字段解决，本地清零收敛成唯一入口
+   `clearUnreadLocally`（改内存与打水位同时发生），并修掉一处"回调里才读 activeConv"的闭包错误。
 4. ✅ 测试：结构判据已加，但**"只钉了设置窗口"这件事比原先记的更糟** ——
    `AUX_WINDOWS_RESIDENT` 早就是 `false`（设置/日志关闭即销毁），那条守卫钉的是一扇
    已经不常驻的窗口，而真正常驻的 main / tasks 一个都没被覆盖。新判据改为**现场从 Rust 读
