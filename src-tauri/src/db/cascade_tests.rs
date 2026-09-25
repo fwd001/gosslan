@@ -451,3 +451,194 @@ fn transfer_progress_upsert_never_erases_the_known_path() {
     .unwrap();
     assert_eq!(read(&conn).as_deref(), Some("/d/a (1).bin"));
 }
+
+/// **传输行的终态契约（第 4 步 P7）**：`done` 是唯一不可降级的状态。
+///
+/// 为什么只有它：`done` 有磁盘证据（长度对 + sha256 对 + `sync_all()` 之后才 rename），
+/// 用户此刻能在文件管理器里打开那个文件；而 `failed` / `cancelled` / `sent` 都**没有**
+/// 这种证据 —— 尤其 `failed` 必须还能改回 `active`（见下面那条反向断言）。
+///
+/// 钉住的形状：39 个 `upsert_transfer` 调用点里有 12 处写 `failed`、12 处写 `active`，
+/// 任何一处晚到一步（清扫器 / 重复帧 / 上一轮 attempt 的残留）就会把"已收到"改成
+/// "失败"并把进度条从 100% 打回 0% —— 用户看到的是一个**打开就在那儿**的文件显示失败。
+#[test]
+fn a_completed_transfer_row_is_never_downgraded() {
+    let conn = fresh_db();
+    upsert_transfer(
+        &conn,
+        "t1",
+        "p1",
+        "a.bin",
+        10,
+        "receive",
+        "done",
+        Some("/d/a.bin"),
+        1.0,
+    )
+    .unwrap();
+
+    let read = |col: &str| -> String {
+        conn.query_row(
+            &format!("SELECT {col} FROM file_transfers WHERE id = 't1'"),
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap()
+    };
+    // progress 是 REAL 列，rusqlite 不会替它转成 String ⇒ 单独一个读数器
+    let progress = || -> f64 {
+        conn.query_row(
+            "SELECT progress FROM file_transfers WHERE id = 't1'",
+            [],
+            |r| r.get::<_, f64>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(read("status"), "done");
+
+    // 晚到的失败判定：状态、进度、路径三样都不许动
+    upsert_transfer(
+        &conn, "t1", "p1", "a.bin", 10, "receive", "failed", None, 0.0,
+    )
+    .unwrap();
+    assert_eq!(
+        read("status"),
+        "done",
+        "done 行不许被晚到的 failed 判定降级（文件确实在盘上，界面却说失败）"
+    );
+    assert_eq!(
+        progress(),
+        1.0,
+        "进度条不许从 100% 打回去 —— 它和 status 是同一条 DO UPDATE 的三个字段"
+    );
+    assert_eq!(
+        read("path"),
+        "/d/a.bin",
+        "已完成行的本地路径必须留住（前端靠它打开文件）"
+    );
+
+    // 晚到的"重新开收"同样不许把它复活成 active
+    upsert_transfer(
+        &conn, "t1", "p1", "a.bin", 10, "receive", "active", None, 0.1,
+    )
+    .unwrap();
+    assert_eq!(
+        read("status"),
+        "done",
+        "同一 transfer_id 的迟到帧/残留不得把 done 改回 active"
+    );
+}
+
+/// 反向断言：**非 done 的终态必须还能改回 `active`** —— 断点续传复用同一个 transfer_id
+/// （`retry_incomplete_content` 直接取 `rec.transfer_id` 发 `ContentRequest`）。
+///
+/// 所以"终态不可覆盖"这条规则**不能**顺手扩到 failed/cancelled/pending：那样一判死
+/// 就永远停在失败，而字节其实还在流 —— 症状恰好是本次要修的那个的反面。
+/// 这条测试今天就会过，它存在的意义是当下一次有人把集合写成
+/// `NOT IN ('done','failed','cancelled')` 时，让它红。
+#[test]
+fn a_failed_row_can_be_reactivated_by_the_next_attempt() {
+    let conn = fresh_db();
+    for (id, status) in [
+        ("t-failed", "failed"),
+        ("t-cancelled", "cancelled"),
+        ("t-pending", "pending"),
+    ] {
+        upsert_transfer(&conn, id, "p1", "x.bin", 10, "receive", status, None, 0.0).unwrap();
+        upsert_transfer(&conn, id, "p1", "x.bin", 10, "receive", "active", None, 0.0).unwrap();
+        let got: String = conn
+            .query_row(
+                "SELECT status FROM file_transfers WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            got, "active",
+            "{status} 行必须能被新一轮 attempt 改回 active，否则续传永远停在旧终态"
+        );
+    }
+}
+
+/// **终态写入只有一个家**：除 `db/file_transfer.rs` 之外，不许再有第二处直接
+/// `UPDATE file_transfers SET status = …`。
+///
+/// 为什么单独钉这条：`upsert_transfer` 加上"不得降级 done"之后，契约看起来就齐了 ——
+/// 可 `commands/files.rs::fail_file_job` 里还有一句**绕过它**的裸 UPDATE，
+/// 同一件事有两个家时，改一个忘一个是常态（本仓 P5/§9 那族"平行实现"反复就是这个形状）。
+/// 状态迁移一律走 `db/file_transfer.rs` 里的具名助手，判据测试才能只认一处。
+#[test]
+fn terminal_status_writes_have_one_home() {
+    let files = include_str!("../commands/files.rs");
+    let leaked: Vec<&str> = files
+        .lines()
+        .filter(|l| {
+            l.contains("UPDATE file_transfers")
+                && l.contains("status")
+                && !l.trim_start().starts_with("//")
+                && !l.trim_start().starts_with("///")
+        })
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "commands/files.rs 里出现了 {} 处绕过 db 助手的裸状态写：{:?}",
+        leaked.len(),
+        leaked
+    );
+}
+
+/// 队列判死助手：`pending` / `active` 都要能判死（起点不是 active，所以它不是
+/// `mark_transfer_failed_if_active` 的别名），而 `done` 必须挡住并回报 `false` ——
+/// 回报值就是调用方"要不要 emit"的依据（与审计 A3 的「emit 由写库结果门控」同一条口径）。
+#[test]
+fn queue_failure_fails_live_rows_but_never_a_done_one() {
+    let conn = fresh_db();
+    for (id, status) in [
+        ("q-pending", "pending"),
+        ("q-active", "active"),
+        ("q-done", "done"),
+    ] {
+        upsert_transfer(
+            &conn,
+            id,
+            "p1",
+            "x.bin",
+            10,
+            "send",
+            status,
+            Some("/d/x.bin"),
+            0.4,
+        )
+        .unwrap();
+    }
+    assert!(mark_queued_transfer_failed(&conn, "q-pending").unwrap());
+    assert!(mark_queued_transfer_failed(&conn, "q-active").unwrap());
+    assert_eq!(
+        conn.query_row(
+            "SELECT status FROM file_transfers WHERE id IN ('q-pending','q-active')
+             ORDER BY id",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+        "failed"
+    );
+    assert!(
+        !mark_queued_transfer_failed(&conn, "q-done").unwrap(),
+        "done 行不许被队列判死改写，且必须回报 false"
+    );
+    let kept: (String, f64, String) = conn
+        .query_row(
+            "SELECT status, progress, path FROM file_transfers WHERE id = 'q-done'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        kept,
+        ("done".to_string(), 0.4, "/d/x.bin".to_string()),
+        "状态、进度、路径三样都得原样留住"
+    );
+    // 库里没有的行：false，不 panic
+    assert!(!mark_queued_transfer_failed(&conn, "q-missing").unwrap());
+}

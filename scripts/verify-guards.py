@@ -3046,6 +3046,41 @@ CASES: list[Case] = [
         tags=["rust", "db", "stability", "startup", "new-guards"],
     ),
     Case(
+        name="upsert_transfer 的「done 不可降级」闸门不得被摘掉（第 4 步 P7 终态契约）",
+        why="`file_transfers` 有 39 个写入点（12 处写 failed、12 处写 active）。\n"
+        "     任何一处晚到一步 —— 清扫器、重复帧、上一轮 attempt 还堵在链路队列里的残留 ——\n"
+        "     都会把「已收到」改成「失败」并把进度从 100% 打回 0%，而那个文件此刻正躺在下载目录里能打开。\n"
+        "     注入方式：把 DO UPDATE 尾巴上那句 `WHERE file_transfers.status <> 'done'` 删掉\n"
+        "     （最自然的「简化」：看着像多余的 WHERE），正向判据必须红。",
+        file=TAURI / "src" / "db" / "file_transfer.rs",
+        injections=[(
+            "             progress = excluded.progress\n"
+            "         WHERE file_transfers.status <> 'done'\",",
+            "             progress = excluded.progress\",",
+        )],
+        cmd=cargo("test", "--lib", "a_completed_transfer_row_is_never_downgraded"),
+        cwd=TAURI,
+        expect_fail_hint="不许被晚到的",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="反向：failed/cancelled/pending 必须还能改回 active（续传复用同一个 transfer_id）",
+        why="这条规则最容易被「顺手扩大集合」破坏：复审原本建议的写法是\n"
+        "     `WHERE status NOT IN ('done','failed','cancelled')`，而 `retry_incomplete_content`\n"
+        "     复用同一个 `transfer_id` 发 `ContentRequest` ⇒ 把 failed 一起钉死 = 一判死就永远停在\n"
+        "     失败，而字节其实还在流（症状恰好是本次要修的那个的反面）。\n"
+        "     注入方式：照那份建议把集合写成三个状态（编译照过、正向判据照绿），反向判据必须红。",
+        file=TAURI / "src" / "db" / "file_transfer.rs",
+        injections=[(
+            "         WHERE file_transfers.status <> 'done'\",",
+            "         WHERE file_transfers.status NOT IN ('done', 'failed', 'cancelled')\",",
+        )],
+        cmd=cargo("test", "--lib", "a_failed_row_can_be_reactivated_by_the_next_attempt"),
+        cwd=TAURI,
+        expect_fail_hint="改回 active",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
         name="缓存清理器不得跟随符号链接（审计 1.1：软链目标会被当缓存永久删除）",
         why="缓存目录是远端输入可达面（收到的文件名/目录名不受信）。旧实现用 e.path().metadata()\n"
         "     判类型——它**跟随软链**：缓存里一个指向任意位置的软链会让其目标被收集进清理列表并\n"

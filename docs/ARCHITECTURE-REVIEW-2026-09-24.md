@@ -487,12 +487,21 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
 
 ### 第 4 步 · 状态机契约（**P7**）
 
-1. 写一张"传输状态机表"（谁能写什么、终态不可覆盖），落到 `db/file_transfer.rs` 的
-   `DO UPDATE ... WHERE file_transfers.status NOT IN ('done','failed','cancelled')`；
+1. ✅ **已落地 2026-09-25，但本条原本给的写法被证伪**：39 个写入点（实测 active 12 /
+   failed 12 / done 6 / pending 3 / sent / cancelled）先枚举完才发现 ——
+   `NOT IN ('done','failed','cancelled')` 会**打断断点续传**：`retry_incomplete_content`
+   复用同一个 `transfer_id` 发 `ContentRequest`（`transport.rs:2644`），把 `failed` 钉死
+   就等于"一判死永远停在失败、而字节还在流"。真正不可降级的只有 `done`（唯一有磁盘证据的
+   状态）。闸门落在 `upsert_transfer` 与新的 `mark_queued_transfer_failed` 两处 SQL 上，
+   判据一正一反（反向那条今天绿、存在的意义就是让下一次"顺手扩大集合"变红），
+   另有一条 `terminal_status_writes_have_one_home` 挡住第二个家。本文 = **INV-P26**（§26，
+   原「必测矩阵」顺延 §27）。
 2. `content_transfers` 发送侧接上 `mark_complete`（或删除该状态并改注释）；
 3. `file_outbox` 取消写 `cancelled` 而不是 `failed`；
-4. `fail_file_job` 的写序与 `finalize_expired_file` 对齐（破坏性写放最后），并把这条规则做成护栏
-   （现在只钉了后者一处）。
+4. ⏳ `fail_file_job` 的**写序**对齐仍未做（破坏性写放最后）；但本次顺手把它**绕过助手**的那句
+   裸 `UPDATE file_transfers SET status='failed'` 收进了 `db`，并且已经 `done` 时不再 emit
+   （`file-failed` 为一个收好的文件弹出来是谎话）。⚠️ 那条 emit 抑制**没有行为级测试**
+   （函数吃 `&AppState`，本仓造不出来），只有 SQL 层判据 + 读码保证。
 
 ### 第 5 步 · 事件与自愈（**P6**）
 

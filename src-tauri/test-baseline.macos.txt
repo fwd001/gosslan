@@ -61,12 +61,16 @@ crypto::tests::safety_number_is_symmetric
 crypto::tests::safety_number_separates_concatenated_fields
 crypto::tests::seal_open_roundtrip
 crypto::tests::signature_verifies
+db::cascade_tests::a_completed_transfer_row_is_never_downgraded
+db::cascade_tests::a_failed_row_can_be_reactivated_by_the_next_attempt
 db::cascade_tests::delete_conversation_purges_inflight_queues_and_keeps_cards
 db::cascade_tests::delete_group_cascade_clears_history_reads_and_queues
 db::cascade_tests::expired_rows_carry_peer_and_age_for_group_and_file_queues
 db::cascade_tests::fill_message_sha256_backfills_once_and_keeps_other_fields
 db::cascade_tests::migration_v7_purges_legacy_group_orphans_only
+db::cascade_tests::queue_failure_fails_live_rows_but_never_a_done_one
 db::cascade_tests::search_history_skips_orphan_conversations
+db::cascade_tests::terminal_status_writes_have_one_home
 db::cascade_tests::transfer_progress_upsert_never_erases_the_known_path
 db::migration_tests::downgrade_message_says_who_is_old_and_what_to_do
 db::migration_tests::downgrade_refusal_writes_nothing

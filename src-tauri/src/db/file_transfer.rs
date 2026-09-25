@@ -18,12 +18,24 @@ pub fn upsert_transfer(
     // 第一次进度 tick 就把建行时写入的本地路径擦成 NULL。前端把 `file_transfers.path`
     // 当作 content 缺 path 时的唯一兜底来源（useMessageFile），群图片预览失效的机制
     // 就有它一份。写法与 content_transfers 保持同口径。
+    //
+    // ★ `WHERE file_transfers.status <> 'done'` 是**终态契约**（第 4 步 P7）：本函数有 39 个
+    //   调用点（其中 12 处写 failed、12 处写 active），任何一处晚到一步 —— 清扫器、重复帧、
+    //   上一轮 attempt 还堵在链路队列里的残留 —— 都会把"已收到"改成"失败"并把进度从 100%
+    //   打回 0%，而那个文件此刻正躺在下载目录里能打开。
+    //   集合刻意**只含 `done`**：`failed` / `cancelled` / `pending` 都必须还能被新一轮
+    //   attempt 改回 active（`retry_incomplete_content` 复用同一个 transfer_id），
+    //   把它们一起钉死就是"一判死永远停在失败"。判据见
+    //   `cascade_tests::a_completed_transfer_row_is_never_downgraded`（正向）与
+    //   `cascade_tests::a_failed_row_can_be_reactivated_by_the_next_attempt`（反向，
+    //   专门给"顺手扩大集合"的下一次准备）。
     conn.execute(
         "INSERT INTO file_transfers(id, peer_id, name, size, direction, status, path, progress, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET status = excluded.status,
              path = COALESCE(excluded.path, file_transfers.path),
-             progress = excluded.progress",
+             progress = excluded.progress
+         WHERE file_transfers.status <> 'done'",
         params![id, peer_id, name, size as i64, direction, status, path, progress, now_ms()],
     )?;
     Ok(())
@@ -50,6 +62,24 @@ pub fn mark_transfer_failed_if_active(conn: &Connection, id: &str) -> Result<boo
     let n = conn.execute(
         "UPDATE file_transfers SET status = 'failed', progress = 0.0
          WHERE id = ?1 AND status = 'active'",
+        params![id],
+    )?;
+    Ok(n > 0)
+}
+
+/// 把一单**离线文件队列**的失败落进 `file_transfers`，返回是否有行被改。
+///
+/// 与 `mark_transfer_failed_if_active` 的差别只在**合法集合**，不是"写法不同"：
+/// 那条服务中继/接收态回收，只有确实在收的 `active` 该被判死；这条服务排队任务判死，
+/// 起点是 `pending`（不是 active），所以不能用它。两者共用同一条终态契约 ——
+/// **`done` 永远不许被降级**（磁盘证据已经成立，见 `upsert_transfer` 上面那段）。
+///
+/// 返回值给调用方决定要不要 emit：已经 done 的行改了就该**什么都不发**，
+/// 否则用户会为一个明明收好的文件收到一条"传输失败"。
+pub fn mark_queued_transfer_failed(conn: &Connection, id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE file_transfers SET status = 'failed', progress = 0.0
+         WHERE id = ?1 AND status <> 'done'",
         params![id],
     )?;
     Ok(n > 0)

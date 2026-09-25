@@ -272,24 +272,35 @@ fn build_file_message(
 }
 
 /// 永久失败收尾：队列置 failed，消息气泡置 failed，并通知前端。
+///
+/// ⚠️ 但**已经 `done` 的传输不是失败**。离线队列的过期清扫与"文件到底收没收成"是两件事：
+/// 传输行落到 `done` 意味着磁盘证据已经成立（长度对 + sha256 对 + `sync_all()` 后 rename），
+/// 这时再把气泡和传输行改成 failed，用户看到的就是"一个打开就在那儿的文件显示失败"。
+/// 所以队列行照常判死（那是它自己的状态机，不留活口），**面向用户的那两笔写与 emit 全部跳过**。
+/// 终态契约整体见 `db::file_transfer::upsert_transfer` 上面那段。
 fn fail_file_job(state: &AppState, transfer_id: &str, reason: &str) {
-    {
+    let announce = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::mark_file_outbox_failed(&dbc, transfer_id).ok();
-        db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed").ok();
-        // 保持 file_transfers 行已有的 name/size/path，仅把状态推进到 failed。
-        let _ = dbc.execute(
-            "UPDATE file_transfers SET status = 'failed', progress = 0.0 WHERE id = ?1",
-            rusqlite::params![transfer_id],
+        if db::is_transfer_done(&dbc, transfer_id).unwrap_or(false) {
+            // `unwrap_or(false)` 的方向是刻意的：查询出错时**当作"没收成"**继续判失败，
+            // 那正是加这道闸门之前的行为 —— 宁可维持现状，也不要在读不到状态时静默放过。
+            false
+        } else {
+            db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed").ok();
+            // 保持已有的 name/size/path，只把状态推进到 failed（`done` 行在助手里就被挡掉）。
+            db::mark_queued_transfer_failed(&dbc, transfer_id).unwrap_or(false)
+        }
+    };
+    if announce {
+        let _ = state.app.emit(
+            "file-failed",
+            &crate::state::FileFailedInfo {
+                transfer_id: transfer_id.to_string(),
+                reason: reason.to_string(),
+            },
         );
     }
-    let _ = state.app.emit(
-        "file-failed",
-        &crate::state::FileFailedInfo {
-            transfer_id: transfer_id.to_string(),
-            reason: reason.to_string(),
-        },
-    );
 }
 
 /// 尝试投递某 peer 的全部 pending 文件（同一 peer 串行，不同 peer 并行）。

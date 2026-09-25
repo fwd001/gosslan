@@ -929,7 +929,39 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 
 ---
 
-# 26. Required Test Matrix
+## 26. Terminal State
+
+### INV-P26 — 有磁盘证据的状态不可被降级
+
+`file_transfers.status` 今天有 39 个写入点（active 12 / failed 12 / done 6 / pending 3 / sent / cancelled），
+所以"谁能写什么"必须由**写入口**保证，而不是靠每个调用点自觉。
+
+规则只有一条：**`done` 不许被改写成别的状态**。状态、进度、路径三个字段走的是同一条
+`ON CONFLICT DO UPDATE`，闸门加在语句上就一起生效（`db/file_transfer.rs::upsert_transfer`）。
+队列判死走 `mark_queued_transfer_failed`，合法集合同样是"非 done"。
+
+为什么只有 `done`：它是唯一带**磁盘证据**的状态（长度对 + sha256 对 + `sync_all()` 之后才 rename）。
+`sent` 只证明字节写出去了、没有送达证据；`failed` / `cancelled` 更不是终点 ——
+
+> **`failed` 必须还能改回 `active`**：`retry_incomplete_content` 复用同一个 `transfer_id`
+> 发 `ContentRequest`（`network/transport.rs:2644`）。把 `failed` 一起钉死的后果是
+> "一判死就永远停在失败，而字节其实还在流" —— 那恰好是本条要修的缺陷的反面。
+> 反向判据：`cascade_tests::a_failed_row_can_be_reactivated_by_the_next_attempt`。
+
+配套的两条口径：
+
+* **同一个关注点只有一个家**：除 `db/file_transfer.rs` 之外不许再出现直接
+  `UPDATE file_transfers SET status`（守卫 `cascade_tests::terminal_status_writes_have_one_home`）。
+  有第二个家时，"改一个忘一个"是常态 —— 本仓 §9 那族平行实现反复就是这个形状。
+* **emit 由写库结果门控**（与 INV-P15 / 审计 A3 同一口径）：已经 `done` 的行没被改动，
+  就不该为它发 `file-failed`。为一个躺在下载目录里能打开的文件弹"传输失败"是谎话。
+
+**非空转证明**：两条 `verify-guards` 变异用例 —— 摘掉 `WHERE status <> 'done'` ⇒ 正向判据红；
+照本条落地前的建议把集合写成 `NOT IN ('done','failed','cancelled')` ⇒ 反向判据红。
+
+---
+
+# 27. Required Test Matrix
 
 核心消息功能至少覆盖：
 
@@ -957,4 +989,6 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 | 老版本对端 + 新帧能力 | 发送方按对端版本门控 ⇒ 退回旧行为，不产生无法解析的帧 |
 | 对端版本更高 | 界面给出可解释状态，不是错误弹窗/裸 JSON/永久转圈 |
 | 老端 Hello（不带版本字段） | 照常建链；面板/日志显示「未声明」，不猜成版本 1 |
+| 晚到的失败判定落在已 done 的传输行（INV-P26） | 状态/进度/路径三样都不许变，且不发 `file-failed` |
+| 同一 transfer_id 的新一轮续传落在 failed 行（INV-P26 反向） | 必须能改回 active，否则断点续传停在旧终态 |
 | 锁内 emit（INV-P25） | `check-lock-scope.mjs` 扫全部取锁点为 0；判不出作用域的那一处**直接红**，不算通过 |

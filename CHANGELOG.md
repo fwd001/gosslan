@@ -10,6 +10,38 @@
 
 ## [Unreleased]
 
+### Fix (2026-09-25 · 第 4 步 P7 第一刀：`file_transfers` 的终态契约 —— `done` 不可降级)
+
+`file_transfers.status` 今天有 **39 个写入点**（实测：`active` 12 处、`failed` 12 处、`done` 6 处、
+`pending` 3 处，另有 `sent` / `cancelled`），而没有任何一张"谁能写什么"的表。于是任何一处
+**晚到一步** —— 清扫器、重复帧、上一轮 attempt 还堵在链路队列里的残留 —— 都会把"已收到"
+改成"失败"、把进度条从 100% 打回 0%，而那个文件此刻正躺在下载目录里能打开。
+这正是复审 §P7 说的"两端状态互相矛盾"里最刺眼的一种。
+
+- `upsert_transfer` 的 `DO UPDATE` 加一句 `WHERE file_transfers.status <> 'done'`
+  —— 状态、进度、路径三个字段是同一条 DO UPDATE，闸门加在语句上就一起生效。
+- `commands/files.rs::fail_file_job` 里那句**绕过助手**的裸
+  `UPDATE file_transfers SET status='failed' WHERE id=?1` 收进 `db::mark_queued_transfer_failed`
+  （同一个契约，合法集合是"非 done"，与只认 active 的 `mark_transfer_failed_if_active` **不是一回事**：
+  队列判死的起点是 `pending`）。并且已经 done 时**连 `file-failed` 都不 emit** ——
+  为一个收好的文件弹"传输失败"是纯粹的谎话。队列行 `file_outbox` 照常判死，不留活口。
+- 新增源码守卫 `terminal_status_writes_have_one_home`：除 `db/file_transfer.rs` 之外
+  再出现直接 `UPDATE file_transfers SET status` 就红。理由与"闸门本身"同等重要 ——
+  **同一件事有两个家时，改一个忘一个是常态**（本仓 §9 那族平行实现反复就是这个形状）。
+
+⚠️ **复审原本建议的写法不能照抄**：它写的是
+`WHERE status NOT IN ('done','failed','cancelled')`。但 `retry_incomplete_content` 复用
+**同一个 `transfer_id`** 发 `ContentRequest`（`transport.rs:2644`）⇒ 把 `failed` 一起钉死就是
+"一判死永远停在失败，而字节其实还在流" —— 症状恰好是本次要修的那个的**反面**。
+所以不可降级的集合只有 `done`（唯一有磁盘证据的状态），并且专门留了一条**反向判据**
+`a_failed_row_can_be_reactivated_by_the_next_attempt`：`failed` / `cancelled` / `pending`
+必须还能改回 `active`。它今天就是绿的，它存在的意义是让下一次"顺手扩大集合"变红。
+
+不变量本文 = **INV-P26**（新 §26，原「必测矩阵」顺延 §27）。判据四条 + 两条变异用例
+（摘掉闸门 → 正向红；照复审那样扩大集合 → 反向红），护栏用例 177 → 179，Rust 基线 677 → 681。
+⚠️ `fail_file_job` 的 emit 抑制没有行为级测试（那个函数吃 `&AppState`，本仓造不出来）——
+它只有 SQL 层的判据与读码保证，真机验证归用户。
+
 ### Fix (2026-09-25 · #46：`is_fresh` 恒为假 —— 全新库不再重放整条迁移链)
 
 `init()` 里 `is_fresh = current == 0 && pre_table_count == 0`，可那句**数表**发生在
