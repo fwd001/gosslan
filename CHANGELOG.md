@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.29.41] - 2026-09-25
+
 ### Removed (2026-09-25 · 把 IPC 对账做成三段，顺手清掉门面之下那 5 条)
 
 0-A3 那批收了「注册表 ↔ 门面」这一层，但**门面之下**还留着 5 条谁都不调的包装
@@ -40,6 +42,13 @@
 - Rust 测试 693 → 688（−6 条死查询测试 +1 条搬到活查询上 −... 净 -5）；基线已同步。
 - clippy `-D warnings` 通过（删完命令后 `SearchResult` / `search_messages_in_conv`
   会变成 dead_code，正是靠它俩把"牵连到的私有件"找全的）。
+- ⚠️ **本机 clippy 全绿，是 Android 那条腿把它抓住的**：`close_log_window` 有两个
+  cfg 分支（desktop 真实现 + `#[cfg(mobile)]` 桩），我只删了第一个 ⇒ macOS 上
+  `cargo clippy` 与全部单测都干净，而 `check-mobile.sh --bluetooth` 报
+  `function close_log_window is never used`（0 warning 是铁律）。
+  ⇒ 删带 cfg 分支的东西必须**把所有分支一次删完**，并且这一层只有移动端口径看得见。
+  顺带把三处已经说谎的注释改掉（`chat_search.rs` 的职责边界与对比说明、
+  `transport.rs` 引用 `commands::send_file` 的那句 —— 它现在是私有实现）。
 - **修 Windows CI 那条腿上的清单守卫（#47 的一半）**：`fc8fb19` 的 Verify 在
   `Rust 单测 / 清单（windows-latest）` 上红，逐项排下来与代码无关 ——
   `cargo fmt` ✅、`cargo clippy -D warnings` ✅、`cargo test` **686 passed / 0 failed** ✅，
