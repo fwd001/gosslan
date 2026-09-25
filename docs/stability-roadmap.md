@@ -276,7 +276,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 | L2 行为单测（Rust） | `cargo test --features bluetooth` | **690**(mac)/487(win) | 协议/分片/队列/DB/选路/清理的进程内语义 | 真 socket、真进程、真重启 |
 | L3 契约对账 | api/events/domain/lock/invariant 等 6 个脚本 + 3 个 test | 20 余条判据 | 名字/归属/注册/取锁形状/双向存在 | 类型与 payload 形状、UI 可达性 |
 | L4 护栏非空转 | `verify-guards.py` | 181(提交)/185(树) | "把正确代码改坏必须红" | 反向（无对象时必须非 0）类判据 |
-| **L5 跨进程 E2E** | `scripts/e2e-multi-instance.mjs`（本地，未进 CI） | **默认轮 16 条断言 / J1+J2**（文本 6 + 文件 8 + 重启 2）；**脏前缀轮 20 断言**（+4：脏 `.part` → 错 hash → 重试补齐）；**续传轮 21 断言**（+5：真前缀必须被续传复用）；**杀进程轮 23 断言**（+7：接收中真 `SIGKILL`，100 MB 在飞窗口）——四个数由 `check-doc-numbers.mjs` 现算对账 | 两个真实进程之间：送达、只有一条、内容正确、outbox 被 Ack 清空、状态过 sending、**文件只有 rename 后落地且 sha256 一致**、两侧终态 `done`、重启后仍正确 | 除 J1/J2/J3 之外的一切旅程；尺寸阶梯（只有 1 MB 与 100 MB 两格实测）与断链/重复帧/乱序/DB 锁竞争；UI 视觉腿；Windows 腿；routed/BLE/中继三条路径 |
+| **L5 跨进程 E2E** | `scripts/e2e-multi-instance.mjs`；入口已接进 `npm run verify:e2e`（= `verify --group local`，四跑法里三条正向 + `verify:all` 串全量层与本地层；反向/lie 模式仍单独跑，因为它们**预期红**） | **默认轮 16 条断言 / J1+J2**（文本 6 + 文件 8 + 重启 2）；**脏前缀轮 20 断言**（+4：脏 `.part` → 错 hash → 重试补齐）；**续传轮 21 断言**（+5：真前缀必须被续传复用）；**杀进程轮 23 断言**（+7：接收中真 `SIGKILL`，100 MB 在飞窗口）——四个数由 `check-doc-numbers.mjs` 现算对账 | 两个真实进程之间：送达、只有一条、内容正确、outbox 被 Ack 清空、状态过 sending、**文件只有 rename 后落地且 sha256 一致**、两侧终态 `done`、重启后仍正确 | 除 J1/J2/J3 之外的一切旅程；尺寸阶梯（只有 1 MB 与 100 MB 两格实测）与断链/重复帧/乱序/DB 锁竞争；UI 视觉腿；Windows 腿；routed/BLE/中继三条路径 |
 
 ### 5.2 功能区覆盖矩阵（17 区 × 4 类证明）
 

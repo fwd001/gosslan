@@ -40,6 +40,8 @@
     "version:ledger": "node scripts/semver.mjs ledger --since main > docs/version-ledger.md",
     "version:release": "node scripts/semver.mjs release",
     "dist:mac:app": "tauri build --features bluetooth --bundles app --target aarch64-apple-darwin && bash scripts/pack-macos-app.sh",
+    "verify:e2e": "node scripts/verify.mjs --group local",
+    "verify:all": "npm run verify:full && npm run verify:e2e",
     "test:e2e:multi-instance": "node scripts/e2e-multi-instance.mjs",
     "test:e2e:negative": "node scripts/e2e-multi-instance.mjs --negative",
     "test:fault-injection": "node scripts/e2e-multi-instance.mjs --fault=poison-part",

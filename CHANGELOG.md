@@ -10,6 +10,22 @@
 
 ## [Unreleased]
 
+### Test（2026-09-26 · §15 统一入口：多实例 E2E 从「记得跑」变成门禁的一层）
+
+- 事实：`grep e2e-multi-instance scripts/verify.mjs` 此前**零命中** —— package.json 里那一整排
+  `npm run test:*` 脚本一直只活在脚本表里，没有任何门禁会跑它们（只有「某人记得跑」才算跑过）。
+- 现在 `scripts/verify.mjs` 多了一个显式的 **`local` 归属组**（`npm run verify:e2e` = `--group local`），
+  收四条正向轮次：默认轮、脏前缀注入、真前缀续传、接收中 SIGKILL；`verify:all` = 全量层 + 本地层。
+  反向 / lie 模式**故意不进**这一层 —— 它们预期红，进门禁会把「能红」变成「常红」。
+- **不假装 CI 覆盖了它**：归属列写 frontend/rust 会造出「CI 有这条 job」的假象，而 CI 现在真跑不动
+  （要 release 产物 + 桌面 GUI 会话 + 百 MB 磁盘，Windows 腿还卡在 #47）⇒ 用 `local` 显式声明「CI 不跑」，
+  且默认层与全量层都不收它 ⇒ **快速层 11 / 全量层 17 的计数一位没动**（这两个数有文档硬数字守卫
+  对着 `--list` 现算对账）。不带 `--group` 的每次运行都会先打印一行「本地专项层本轮没跑 + 原因 + 怎么跑」，
+  因为§十禁止把「没跑」暗示成「全绿」。
+- 已实测：`--list` 11 步 / `--list --full-gate` 17 步不变、`--list --group local` 恰好四条；
+  `npm run verify:e2e` 真跑 **4/4 全绿共 94.4 s**（含杀进程轮 `✅ 多实例 E2E 全绿（23 条断言）`）。
+
+
 ### Test（2026-09-26 · 故障注入第三格：接收中真 SIGKILL，100 MB 在飞窗口）
 
 - `scripts/e2e-multi-instance.mjs` 新增 `--fault=kill-mid` / `--fault=kill-mid-lie`

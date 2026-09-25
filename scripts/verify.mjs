@@ -358,8 +358,12 @@ function isHeavyStep(s) {
  *
  * 强制声明：漏写 `group` 的步骤会在下面当场红 —— 因为静默漏掉的后果正是
  * "本地有这条门禁、CI 永远不跑"，那比没有更危险。
+ *
+ * ⚠️ 但 `local` **不是第四个 CI job**，它是显式反过来的那一格："这一层 CI 就是跑不动，
+ * 并且要让所有人看见它没跑"。真把它并进 frontend/rust，CI 不会变强，只会把一个需要
+ * release 产物 + GUI 会话 + 百 MB 磁盘的层变成一条永远红的 job。
  */
-const GROUPS = ["frontend", "rust", "android"];
+const GROUPS = ["frontend", "rust", "android", "local"];
 
 /** `--group <frontend|rust|android>`：CI 的三个 job 各自只说"跑哪个组"，清单不再抄一份。 */
 const groupFlag = (() => {
@@ -369,6 +373,60 @@ const groupFlag = (() => {
 if (groupFlag && !GROUPS.includes(groupFlag)) {
   console.error(`✗ --group 只接受 ${GROUPS.join(" / ")}，收到 "${groupFlag}"`);
   process.exit(1);
+}
+
+/**
+ * 「本地专项层」（§十五要的 test:multi-instance / test:fault-injection）。
+ *
+ * 之前这四轮正向 E2E 只活在 package.json 的脚本里 —— `grep e2e-multi-instance scripts/verify.mjs`
+ * 零命中 ⇒ 没有任何门禁会跑它，等于"某人记得跑"才算跑过。现在接进同一个入口。
+ *
+ * 但**不假装 CI 覆盖了它**：归属列写 frontend/rust 会造出"CI 有这条 job"的假象，而 CI 现在真跑不动
+ * （要 release 产物 + 桌面 GUI 会话 + 百 MB 磁盘，Windows 那条腿还卡在 #47）。所以用一个显式的
+ * `local` 组声明"这一层 CI 不跑"，并且**默认层与全量层都不收它** ⇒ 快速层/全量层的计数一位没动
+ * （那两个数有 `check-doc-numbers.mjs` 对着 `--list` 现算对账）。
+ */
+const LOCAL_ONLY_WHY =
+  "本地专项：要 release 产物 + 桌面 GUI 会话 + 百 MB 级磁盘，CI 现在跑不动（Windows 腿卡在 #47）⇒ 宁可不跑，不许把没跑写成绿";
+if (groupFlag === "local") {
+  steps.push(
+    {
+      group: "local",
+      name: "双实例 E2E：默认轮（文本 + 文件 + 重启）",
+      why: `两个真实 release 进程对发，断言两侧 DB/日志/磁盘收敛一致；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：脏 .part 前缀注入",
+      why: `接收侧预置脏前缀 ⇒ 整体校验必须拦下、重试补齐；产品要么自愈要么明确失败，不许假 done；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=poison-part"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：真前缀必须被续传复用",
+      why: `接收侧已有源文件自己的前缀 ⇒ 发送端不许从 0 重灌整份（160 MB 真机事故那一格）；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=resume-prefix"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：接收中 SIGKILL 后重启续完",
+      why: `百 MB 文件在飞时杀掉接收端 ⇒ 半路不许出现终名、发送侧不许报 done，重启后按盘上真实字节续完；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=kill-mid"],
+    },
+  );
+} else if (!groupFlag) {
+  // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。
+  console.log(`· 本地专项层（4 轮多实例 E2E）本轮没跑：${LOCAL_ONLY_WHY}`);
+  console.log("  要跑它：npm run verify:e2e（或 --group local）");
 }
 
 /** 列出"不属于本组"的步骤：组模式下也必须点名未跑项，不许用一片绿暗示"全跑过了"。 */
