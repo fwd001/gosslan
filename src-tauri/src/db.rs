@@ -133,6 +133,28 @@ fn run_migrations(conn: &Connection, current: u32) -> Result<()> {
     Ok(())
 }
 
+/// **SCHEMA 表达不了、又必须每条启动路径都拿到**的形状，集中在这一个地方补。
+///
+/// 为什么存在：`init()` 里 `execute_batch(SCHEMA)` 跑在迁移**之前**，所以任何
+/// "建在只有迁移才会加的列上"的对象都进不了 SCHEMA —— 老库那一刻还没那一列，
+/// 写进去会让 `init()` 直接失败（`no such column: seq`，2026-09-25 真撞过一次，
+/// 判据是 `migration_tests::index_on_a_migration_added_column_must_not_live_in_schema`）。
+///
+/// 为什么**两条分支都要经过**：全新库走 `is_fresh` 不重放迁移，而会话内排序的
+/// 热查询（`db/messages.rs` 按 `(conv_id, seq)`）没有这条索引就是全表扫 ——
+/// 那比"少一条日志"严重得多。判据是恒等的：
+/// `migration_tests::fresh_schema_alone_has_exactly_the_migrated_shape`
+/// 逐条比对「SCHEMA + 这里」与「SCHEMA + 整条迁移链」的 `sqlite_master` 形状。
+///
+/// 加进来的每一条都必须是**幂等**的（`IF NOT EXISTS` / 先判存在），因为老库那条分支
+/// 已经由迁移建过一遍。
+fn ensure_post_schema_shape(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conv_id, seq);",
+    )?;
+    Ok(())
+}
+
 const MIGRATIONS: &[Migration] = &[
     // v1 → v2：friends 加公钥列
     Migration {
@@ -397,8 +419,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, ts);
 -- ⚠️ `idx_messages_conv_seq` **不在这里**，而且不能放进来：`seq` 是迁移 v2→v3 才加到
 -- `messages` 上的列，而 `execute_batch(SCHEMA)` 跑在迁移**之前** ⇒ 老库里这句会
 -- `no such column: seq` 直接让 `init()` 失败（用户打不开自己的库）。
--- 这条索引由 v2→v3 在建列之后创建 —— 顺序是语义，不是风格问题。
--- 判据测试：`migration_tests::index_on_a_migration_added_column_must_not_live_in_schema`。
+-- 它的家在 `ensure_post_schema_shape`（两条分支都经过：老库由 v2→v3 在建列之后建，
+-- 新库不重放迁移、由那个函数补）—— 顺序是语义，不是风格问题。
+-- 判据测试：`migration_tests::index_on_a_migration_added_column_must_not_live_in_schema`
+-- + `migration_tests::fresh_schema_alone_has_exactly_the_migrated_shape`。
 
 -- 每会话逻辑时钟（Lamport 风格，单调递增）。消息排序与群聊清空边界都以此为准，
 -- 不使用发送方或接收方的墙上时钟。
@@ -595,16 +619,10 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
         eprintln!("[gosslan-db] FATAL: {err}");
         return Err(err);
     }
-    conn.execute_batch(SCHEMA)?;
-    // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
-    crate::content::store::ensure_schema(&conn)?;
-    // ★ 预读状态：**今天它区分不了任何东西** —— `pre_table_count` 是在上面
-    // `execute_batch(SCHEMA)` **之后**才数的，而 SCHEMA 会建出全部表 ⇒ 新库也是 19 张，
-    // `is_fresh` 恒为假 ⇒ 走 else 分支：全新库会把整条迁移链重放一遍
-    // （空库上每一步都是幂等 no-op，代价是首次启动多打 9 行"正在迁移 v1→v2…"的**假日志**）。
-    // 修它 = 把这句数表挪到 SCHEMA 之前，但那是改启动行为，单独一轮。
-    // ⚠️ 别把"新库靠迁移补形状"当依赖：索引/表的形状一律以 SCHEMA 为准
-    //   （`migration_tests::fresh_db_has_every_hot_query_index` 钉的就是这件事）。
+    // ★ 数表必须发生在 `execute_batch(SCHEMA)` **之前**：SCHEMA 会建出全部 19 张表，
+    //   之后再数就区分不了"全新库"与"老库"—— 那正是本仓曾经的样子（`is_fresh` 恒为假，
+    //   于是全新库把整条迁移链重放一遍：9 行假的「running v1→v2…」日志、v7 两条
+    //   "孤儿清理跳过一条语句"的告警、以及先建 `idx_outbox_msg_id` 再在 v8→v9 删掉它）。
     let pre_table_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -612,6 +630,11 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
             |r| r.get(0),
         )
         .unwrap_or(0);
+    conn.execute_batch(SCHEMA)?;
+    // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
+    crate::content::store::ensure_schema(&conn)?;
+    // 判据：`user_version` 没写过 **且** 一张业务表都没有。只看前者会把
+    // "老库（v1/v2 时代根本不存在 user_version）"误判成新库 ⇒ 那条库的形状就永远补不回来。
     let is_fresh = current == 0 && pre_table_count == 0;
 
     if is_fresh {
@@ -619,6 +642,9 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     } else {
         run_migrations(&conn, current)?;
     }
+    // **两条分支都要经过**这里：有形状是 SCHEMA 表达不了的（见 `ensure_post_schema_shape`），
+    // 而 fresh 分支不重放迁移 —— 这个函数就是那笔差额，缺了它新安装会少一条热查询索引。
+    ensure_post_schema_shape(&conn)?;
     // 每次启动都把会话时钟同步到「该会话已有最大逻辑序号」
     conn.execute(
         "INSERT INTO conversation_clocks(conv_id, seq)

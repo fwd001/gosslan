@@ -3027,6 +3027,25 @@ CASES: list[Case] = [
         tags=["rust", "file", "stability", "locks", "new-guards"],
     ),
     Case(
+        name="数表必须早于 execute_batch(SCHEMA)（否则 is_fresh 恒假 ⇒ 全新库重放整条迁移链）",
+        why="`is_fresh = current == 0 && pre_table_count == 0` 里只有前半个条件是真话：SCHEMA 会建出\n"
+        "     全部 19 张表，所以数表一旦跑到 SCHEMA 之后，`is_fresh` 就恒为假 —— 全新库于是把 v1→v9\n"
+        "     整条链重放一遍（2026-09-25 之前正是这样）：首次启动多打 9 行假的「running v1→v2…」\n"
+        "     日志、v7 两句「孤儿清理跳过一条语句」告警、还先建 `idx_outbox_msg_id` 再在 v8→v9 删掉它。\n"
+        "     ⚠️ 这个退化在**形状上完全看不出来**（迁移全是幂等的，`user_version` 两种走法都停在\n"
+        "     DB_VERSION）⇒ 只有源码顺序能钉住它，所以本用例的注入就是「把两句话调换顺序」：\n"
+        "     编译照过、测试套照绿，只有这条守卫会红。",
+        file=TAURI / "src" / "db.rs",
+        injections=[(
+            "    let pre_table_count: i64 = conn\n        .query_row(\n            \"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'\",\n            [],\n            |r| r.get(0),\n        )\n        .unwrap_or(0);\n    conn.execute_batch(SCHEMA)?;\n",
+            "    conn.execute_batch(SCHEMA)?;\n    let pre_table_count: i64 = conn\n        .query_row(\n            \"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'\",\n            [],\n            |r| r.get(0),\n        )\n        .unwrap_or(0);\n",
+        )],
+        cmd=cargo("test", "--lib", "tables_are_counted_before_the_schema_is_applied"),
+        cwd=TAURI,
+        expect_fail_hint="恒为假",
+        tags=["rust", "db", "stability", "startup", "new-guards"],
+    ),
+    Case(
         name="缓存清理器不得跟随符号链接（审计 1.1：软链目标会被当缓存永久删除）",
         why="缓存目录是远端输入可达面（收到的文件名/目录名不受信）。旧实现用 e.path().metadata()\n"
         "     判类型——它**跟随软链**：缓存里一个指向任意位置的软链会让其目标被收集进清理列表并\n"

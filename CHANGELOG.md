@@ -10,6 +10,45 @@
 
 ## [Unreleased]
 
+### Fix (2026-09-25 · #46：`is_fresh` 恒为假 —— 全新库不再重放整条迁移链)
+
+`init()` 里 `is_fresh = current == 0 && pre_table_count == 0`，可那句**数表**发生在
+`execute_batch(SCHEMA)` **之后** —— 而 SCHEMA 会建出全部 19 张表 ⇒ `pre_table_count` 永远是 19
+⇒ `is_fresh` 恒为假 ⇒ 全新库走 else 分支，把 v1→v9 **整条迁移链重放一遍**。后果分两个量级：
+
+- 看得见的：首次启动多打 9 行假的「`[gosslan-db] running v1→v2: friends 加公钥列…`」日志、
+  v7 两句「孤儿清理跳过一条语句：no such column: id」告警（老库才有的形状，新库当然没有）。
+  用户第一次打开、翻日志排查别的问题时，这 11 行是**纯粹的误导**。
+- 看不见的：v5→v6 先建 `idx_outbox_msg_id`、v8→v9 再删掉它 —— 白做一轮写放大。
+
+**为什么以前"没坏"**：迁移全部幂等（`column_exists` / `IF NOT EXISTS` 守着），所以形状是对的。
+这也正是这个退化能活这么久的原因：**它在形状上完全看不出来**，`user_version` 两种走法都停在
+`DB_VERSION`，没有任何一条断言会因为重放而红。
+
+⚠️ **不能只把那句数表往上挪一行** —— 挪上去之前先量化了"新库今天靠重放拿到什么"：
+`migration_tests::fresh_schema_alone_has_exactly_the_migrated_shape` 逐条比对
+「SCHEMA + 一个共用出口」与「SCHEMA + 整条迁移链」的 `sqlite_master` 全集。
+它第一次跑就是红的，差集恰好一项：**`index idx_messages_conv_seq`** —— 这条索引只写在迁移 v2→v3 里
+（`seq` 是迁移才加到 `messages` 上的列，放进 SCHEMA 会让老库 `no such column: seq` 直接开不起来，
+0-B 那天真撞过）。也就是说：**新库那个会话排序的热查询索引，今天是靠"意外重放迁移"拿到的**。
+直接跳过迁移就会让它消失 —— 那比假日志严重一个量级。
+
+所以这次是三件事一起：
+
+- `pre_table_count` 移到 `execute_batch(SCHEMA)` **之前**（判据的位置就是本次的修复本体）。
+- 新增 `ensure_post_schema_shape()`：**两条分支都经过**，专门放"SCHEMA 表达不了、
+  又必须每条启动路径都拿到"的形状。今天里面只有一条索引；它存在的意义就是把那笔差额
+  收在一个看得见的地方，而不是散落在"新库恰好会重放迁移"这个意外里。
+- `is_fresh` 顶上那段"今天它区分不了任何东西"的自陈注释删掉了 —— 文档说谎比没文档更坏。
+
+判据三条：`fresh_schema_alone_has_exactly_the_migrated_shape`（形状恒等，防"跳过迁移少东西"）、
+`tables_are_counted_before_the_schema_is_applied`（源码顺序，防本退化复发）、
+以及既有那族（`fresh_db_has_every_hot_query_index` / `index_on_a_migration_added_column_must_not_live_in_schema`
+/ `hot_tables_carry_exactly_the_intended_indexes`）继续守住索引形状。
+第二条另配一条 `verify-guards` 变异用例：**把两句调换顺序**（编译照过、测试套照绿，
+只有这条守卫会红）—— 这正是"形状上看不出来"那个退化的反面证明。护栏用例 176 → 177，
+Rust 基线 675 → 677。
+
 ### Fix (2026-09-25 · 第 3 步 P5 的一小半：锁内 emit 清零，并把纪律做成全扫判据)
 
 生产环境只有一条 SQLite 连接（`AppState.db: Mutex<Connection>`，实测 292 处取锁点），

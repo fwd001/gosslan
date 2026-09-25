@@ -266,7 +266,7 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
 | `lib.rs:561-615 all_commands_src()` | **靠人记得登记**（今天恰好是全的） | 实测三份视图的分册数：commands 24 / db 16 / transport 3，**都等于各自的 `include!` 闭包减去 `*_tests.rs`**。所以这不是"已经漏了"，而是"漏了不会红"：它已经漏过两次（4.25.0 接线中继时 `commands/relay.rs` 与 `transport/relay.rs` 都只登记了 `include!` 与领域图，现场注释在 `lib.rs:611-613`、`network/mod.rs:229-231`），而漏登记的后果是**静默假绿** —— 以"全部命令面"为判据的守卫扫不到那个分册，永远通过 |
 | `useChatStore` 的 7 个导出 | 冗余导出（内部仍在用） | `groupReads/resetAfterDataCleared/refreshTopology/refreshAnnouncements/handleSelfRemovedFromGroup/sendFileRelayTo/enqueueMessage` 外部零引用 |
 | 5 个 `src/utils/*.ts` | 只被自己的测试引用 | `a11yLabels/cn/designGuards/templateBranches/tokenContrast`（`cn(` 从未被调用） |
-| ✅ `db.rs` 的 `idx_messages_conv_seq`、`idx_outbox_msg_id` | ~~只在迁移里建 ⇒ 新库缺~~ **判断有误**（0-B 实测） | 全新库其实**会**跑完整条迁移链（`is_fresh` 恒为假，见上表 ①），所以新库一直有这两条索引。<b>真实问题在别处</b>：`idx_outbox_msg_id` 与 `outbox.msg_id` 的内联 UNIQUE 是同一件事的两份 ⇒ 已由 v8→v9 删掉；`idx_messages_conv_seq` **只能**留在 v2→v3（它建在迁移才加的列上，挪进 SCHEMA 会让老库开不起来） |
+| ✅ `db.rs` 的 `idx_messages_conv_seq`、`idx_outbox_msg_id` | ~~只在迁移里建 ⇒ 新库缺~~ **判断有误**（0-B 实测） | 全新库其实**会**跑完整条迁移链（`is_fresh` 恒为假，见上表 ①），所以新库一直有这两条索引。<b>真实问题在别处</b>：`idx_outbox_msg_id` 与 `outbox.msg_id` 的内联 UNIQUE 是同一件事的两份 ⇒ 已由 v8→v9 删掉；`idx_messages_conv_seq` **只能**留在 v2→v3（它建在迁移才加的列上，挪进 SCHEMA 会让老库开不起来）。**2026-09-25 已按这条结论落地**：它改由 `db.rs::ensure_post_schema_shape`（两条启动分支都经过）补，于是新库不再靠重放迁移拿索引 |
 
 ### P11 / P12 前端末梢
 
@@ -386,7 +386,7 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
 
 | 验收 | 结果 |
 |---|---|
-| ① 迁移 / 新库幂等 / 降级守卫 | 新库幂等 ✓（`fresh_db_has_every_hot_query_index`）、老库补齐 ✓（`schema_alone_repairs_a_current_database`，版本保持最新 ⇒ 只可能是 SCHEMA 干的）、降级守卫仍拒绝 ✓（既有两条 `downgrade_*` 用例全绿，它们按 `DB_VERSION` 动态取值所以随版本 8→9 自动继续生效）。**顺带查出 `is_fresh` 恒为假**：`pre_table_count` 在 `execute_batch(SCHEMA)` 之后才数 ⇒ 新库会重放整条迁移链，首次启动因此打出一串**假的**「正在迁移 v1→v2…」日志。原判断「新库缺 `idx_messages_conv_seq`」因此**不成立**（它一直在，靠的是这个巧合）。 |
+| ① 迁移 / 新库幂等 / 降级守卫 | 新库幂等 ✓（`fresh_db_has_every_hot_query_index`）、老库补齐 ✓（`schema_alone_repairs_a_current_database`，版本保持最新 ⇒ 只可能是 SCHEMA 干的）、降级守卫仍拒绝 ✓（既有两条 `downgrade_*` 用例全绿，它们按 `DB_VERSION` 动态取值所以随版本 8→9 自动继续生效）。**顺带查出 `is_fresh` 恒为假**：`pre_table_count` 在 `execute_batch(SCHEMA)` 之后才数 ⇒ 新库会重放整条迁移链，首次启动因此打出一串**假的**「正在迁移 v1→v2…」日志。原判断「新库缺 `idx_messages_conv_seq`」因此**不成立**（它一直在，靠的是这个巧合）。**⇒ 2026-09-25 #46 已修**：数表挪到 SCHEMA 之前 + 新增 `ensure_post_schema_shape` 收那笔差额。恒等判据 `fresh_schema_alone_has_exactly_the_migrated_shape` 第一次跑就红在 `index idx_messages_conv_seq` 这一项 —— 正好证明「这个巧合」当时是**承重的**：直接跳过迁移会让新安装的那条热查询退回全表扫。 |
 | ② `EXPLAIN QUERY PLAN` 写成可跑断言 | ✓ `hot_queries_use_their_indexes` 把 5 条生产 SQL 本体钉成计划断言（判"走没走索引"，不判"索引在不在"）。 |
 | ③ 写性能回归 before/after | ✓ 实测（2000 行 × 21 次真实 upsert，A/B **换序各跑一轮**以排除缓存预热偏差）：`file_transfers` 883/890 → 903/911ms（噪声内）；`content_transfers` 1939/1963 → 2282/2290ms（**+17%**，与顺序无关）⇒ 折算**每个进度 tick 多约 8µs**（tick 间隔 250ms）。库文件 618,496 → 724,992 字节（+53 B/行）。结论：接受。<br>⚠️ 没有把耗时写成断言（CI 上必飘），钉的是**每表索引数量封顶**（`hot_tables_carry_exactly_the_intended_indexes`）—— 写放大的确定性代理。`dbstat` 在本构建里读不到（实测报错），空间成本改用文件大小量。 |
 | ④ "两处不能都写也不能都不写" | 规则**成立但边界不是原来说的那个**：形状归 SCHEMA 的前提是"这一列已经存在"。把 `idx_messages_conv_seq` 并进 SCHEMA 后三个老库升级用例全红 —— SCHEMA 跑在迁移**之前**，而 `seq` 是 v2→v3 才 ADD 的列 ⇒ 老库 `no such column: seq`，`init()` 直接失败 = **用户打不开自己的数据库**。所以最终形状是：4 条新索引进 SCHEMA（`content_transfers` 那条进它自己的 `ensure_schema`），**"删"被取代的索引**（`idx_outbox_msg_id`、旧 `idx_file_outbox_peer`）才是迁移 v8→v9 的活；`idx_messages_conv_seq` 留在 v2→v3 里（建列之后）。判据测试：`index_on_a_migration_added_column_must_not_live_in_schema`。 |

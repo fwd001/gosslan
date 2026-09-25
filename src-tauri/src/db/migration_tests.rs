@@ -24,7 +24,7 @@ use rusqlite::{params, Connection};
 use std::env;
 use std::path::PathBuf;
 
-use super::{init, InitError, DB_VERSION};
+use super::{ensure_post_schema_shape, init, run_migrations, InitError, DB_VERSION, SCHEMA};
 
 /// 每个测试创建一个独立临时 DB 文件，避免跨测试污染。
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -824,5 +824,100 @@ fn migration_zero_version_with_zero_tables_is_fresh() {
         read_user_version(&conn),
         DB_VERSION,
         "user_version=0 + 零表 = 全新库，直接标 DB_VERSION"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// S24-TEST 11：「只跑 SCHEMA」与「SCHEMA + 整条迁移链」必须长出同一个形状
+// ---------------------------------------------------------------------------
+
+/// sqlite_master 的全形状指纹（type + name + sql），排除 SQLite 自己的内部对象。
+fn shape(conn: &Connection) -> Vec<(String, String, String)> {
+    let mut st = conn
+        .prepare(
+            "SELECT type, name, COALESCE(sql, '') FROM sqlite_master \
+             WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+        )
+        .unwrap();
+    st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(|x| x.unwrap())
+        .collect()
+}
+
+/// `init()` 的 fresh 分支设计上是「标 DB_VERSION、不重放迁移」，可今天 `is_fresh` **恒为假**
+/// （数表发生在 `execute_batch(SCHEMA)` 之后 ⇒ 新库也 19 张）⇒ 全新库实际是**靠重放整条迁移链**
+/// 才拿到只写在 `MIGRATIONS` 里的那几样东西。
+///
+/// 修法不是"把索引塞进 SCHEMA"（老库那一刻还没有 `seq` 列，塞进去 `init()` 直接失败），
+/// 而是给两条分支共用一个 `ensure_post_schema_shape` —— 于是这条测试的左半边就是
+/// "fresh 分支实际会经过的全部写"，右半边是"今天新库的重放结果"，两者必须逐字节相等。
+/// 它红过一次是真的抓到了东西：当时的差集恰好一项 `index idx_messages_conv_seq`。
+#[test]
+fn fresh_schema_alone_has_exactly_the_migrated_shape() {
+    let schema_only = Connection::open_in_memory().unwrap();
+    schema_only.execute_batch(SCHEMA).unwrap();
+    crate::content::store::ensure_schema(&schema_only).unwrap();
+    ensure_post_schema_shape(&schema_only).unwrap();
+
+    let with_migrations = Connection::open_in_memory().unwrap();
+    with_migrations.execute_batch(SCHEMA).unwrap();
+    crate::content::store::ensure_schema(&with_migrations).unwrap();
+    // current = 0 ⇒ 与今天新库实际走的那条路一字不差
+    run_migrations(&with_migrations, 0).unwrap();
+
+    let only_migrated: Vec<_> = shape(&with_migrations)
+        .into_iter()
+        .filter(|x| !shape(&schema_only).contains(x))
+        .collect();
+    assert!(
+        only_migrated.is_empty(),
+        "有 {} 项形状**只有迁移链会给**（新库今天靠重放拿到）：{:?}\
+         ⇒ 想让 fresh 分支真的跳过迁移，必须先把它们挪进两条路都会经过的地方",
+        only_migrated.len(),
+        only_migrated
+            .iter()
+            .map(|(ty, name, _)| format!("{ty} {name}"))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `pre_table_count` 必须在 `execute_batch(SCHEMA)` **之前**。
+///
+/// 这是 `is_fresh` 唯一的有效条件：SCHEMA 会建出全部 19 张表，只要这句数表跑到 SCHEMA
+/// 后面去，`is_fresh` 就**恒为假** —— 全新库于是重放整条迁移链（假日志、v7 的两条
+/// "跳过一条语句"告警、先建 `idx_outbox_msg_id` 再在 v8→v9 删掉它），而这份代价在
+/// 形状上完全看不出来（迁移都是幂等的），所以只有源码顺序能钉住它。
+/// 判据只取 `init()` 的函数体，避免被本文件与 SCHEMA 注释里的同名文本干扰。
+#[test]
+fn tables_are_counted_before_the_schema_is_applied() {
+    let src = include_str!("../db.rs");
+    let body = {
+        let at = src
+            .find("pub fn init(")
+            .expect("init() 的签名变了？本测试的切片锚点失效");
+        let tail = &src[at..];
+        let end = tail
+            .find("\ninclude!(\"db/settings.rs\")")
+            .expect("init() 之后应当还有分册登记行；找不到说明切片终点锚点失效");
+        &tail[..end]
+    };
+    // ⚠️ 锚点必须带 `conn.` 与 `?;`：`init()` 顶上那段降级注释里也**提到了**
+    // `execute_batch(SCHEMA)`（不带前缀），只找 `execute_batch(SCHEMA)` 会先撞上注释、
+    // 于是这条守卫红在错误的理由上 —— 实测过。
+    let counted = body
+        .find("let pre_table_count")
+        .expect("init() 里必须数一次表（is_fresh 的条件之一）");
+    let applied = body
+        .find("conn.execute_batch(SCHEMA)?;")
+        .expect("init() 必须应用 SCHEMA");
+    assert_eq!(
+        body.matches("conn.execute_batch(SCHEMA)?;").count(),
+        1,
+        "SCHEMA 只准应用一次；两次说明锚点已经不能唯一定位这条守卫要判的语句"
+    );
+    assert!(
+        counted < applied,
+        "数表（第 {counted} 字符）发生在应用 SCHEMA（第 {applied} 字符）之后 ⇒ is_fresh 恒为假 ⇒ 全新库重放整条迁移链"
     );
 }

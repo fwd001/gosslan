@@ -71,6 +71,7 @@ db::cascade_tests::transfer_progress_upsert_never_erases_the_known_path
 db::migration_tests::downgrade_message_says_who_is_old_and_what_to_do
 db::migration_tests::downgrade_refusal_writes_nothing
 db::migration_tests::fresh_db_has_every_hot_query_index
+db::migration_tests::fresh_schema_alone_has_exactly_the_migrated_shape
 db::migration_tests::hot_queries_use_their_indexes
 db::migration_tests::hot_tables_carry_exactly_the_intended_indexes
 db::migration_tests::index_on_a_migration_added_column_must_not_live_in_schema
@@ -85,6 +86,7 @@ db::migration_tests::migration_v1_to_v6_full_chain
 db::migration_tests::migration_zero_version_with_zero_tables_is_fresh
 db::migration_tests::schema_alone_repairs_a_current_database
 db::migration_tests::superseded_indexes_are_dropped_and_uniquity_survives
+db::migration_tests::tables_are_counted_before_the_schema_is_applied
 db::offline_queue_tests::group_rows_survive_the_link_flap_window_that_kills_single_chats
 db::offline_queue_tests::list_expired_outbox_returns_peer_and_age_for_classification
 db::offline_queue_tests::offline_peer_is_held_while_reachable_peer_fails_at_deadline
