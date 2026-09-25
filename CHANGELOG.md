@@ -10,6 +10,21 @@
 
 ## [Unreleased]
 
+### Test（2026-09-26 · 故障注入第七格：连续多文件 + 两单同名 —— 「少一个文件」就是丢数据，所以这条必须在）
+- 新增 `--fault=multi-file`（+ `npm run test:fault-injection:multi` / `:multi-selfproof`，已接进 `verify --group local`）：
+  一次入队 3 个 transfer，其中**两单文件名完全相同、内容不同**（两份源放不同目录 —— offer 的 name 取自路径的 file_name）。
+  钉的是 §七「连续多文件」×「磁盘已有同名文件」的交叉：串行投递里后一单被挤死、或两单落成同一个路径互相覆盖，
+  用户看到的是**没有任何提示地少一张图**。
+- 两条证据：正向 22 断言全绿（实测 3 单入队 → **3.5 s** 全部终态，落地 `photo-x.bin` + `photo-x (1).bin` + `note-x.bin`、
+  三单各自 done、队列清空、两侧台账各一行、每单记的字节数各自等于自己那张源、无 `.part`）；
+  反向只把其中一份的期望摘要换掉 ⇒ **恰好 1/22 报红**、报在「落地内容多重集合 == 源内容多重集合」那条上。
+- ★ 判据为什么用**多重集合**而不是逐单比名字：落地名会被 `unique_path` 改，逐单比名字就退化成"对上三份里任意一份" ——
+  那正是内容串味能躲过去的缝隙。
+- ★ **边界写清楚，不假装 PASS**：这一格证明的是「同 peer 的 flush 串行 ⇒ 后一单 offer 时前一单已 rename，所以能让位」。
+  **没覆盖**"两个 offer 都在任一次 rename 之前到达" —— 那种交错下两单会拿到**同一个 final_path**、后一次 rename 直接覆盖前一次
+  （`file.rs:1599-1602` 的注释承认这个形状，但它只把 `.part` 改成按 transfer_id 命名，没解决 final 撞名）。
+  要造它需要**三个实例**（两个发送者 → 一个接收者），当前 harness 的实例表写死两个 ⇒ 记为边界，不是记为已测。
+
 ### Test（2026-09-26 · 故障注入第六格：§七「错误 size」里唯一真实会发生的那一半，顺带照出 A-11）
 - 新增 `--fault=src-shrunk`（+ `npm run test:fault-injection:shrink` / `:shrink-selfproof`，已接进 `verify --group local`）：
   先 `SIGSTOP` 冻住接收端 → **入队时把 `send_file` 那一刻该写的三行全写**（气泡 / 传输台账 / 队列）→

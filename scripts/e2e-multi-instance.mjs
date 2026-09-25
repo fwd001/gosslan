@@ -27,6 +27,8 @@
 //   --fault=peer-freeze-lie   → 同样的注入，只换期望摘要 ⇒ 预期报红
 //   --fault=src-shrunk        → 注入⑥：入队后源文件被改小 ⇒ 按磁盘真值收发，两侧终态一致
 //   --fault=src-shrunk-lie    → 同样的注入，只换期望摘要 ⇒ 预期报红
+//   --fault=multi-file        → 注入⑦：三单一起排队、其中两单同名 ⇒ 一张都不许丢、内容不许串味
+//   --fault=multi-file-lie    → 同样的注入，只把其中一份的期望摘要换掉 ⇒ 预期报红
 //   --fault=recv-readonly     → 注入⑤：接收目录只读（磁盘写不进去）⇒ 必须明确失败并止步，不许假 done、不许无限重试
 //   --fault=recv-readonly-lie → 同样的注入，只把"该落到哪个终态"换成 done ⇒ 预期报红
 //   （每轮各几条断言**不在这里写**：`check-doc-numbers.mjs` 从下面的 check(" 调用点现算，
@@ -90,6 +92,15 @@ const SHRINK = FAULT === "src-shrunk" || FAULT === "src-shrunk-lie";
 const SHRINK_BYTES = Number(process.env.E2E_SHRINK_MB || 1) * 1024 * 1024;
 const SHRINK_TO = Number(process.env.E2E_SHRINK_TO_BYTES || 4096);
 let xferId7, srcFile7;
+/// 注入⑦：§七「连续多文件」×「磁盘已有同名文件」这两格合起来测 —— 三个 transfer 一起排队，
+/// 其中**两个文件名完全相同、内容不同**（真机形状：一次选两张同名截图、或连发两版同名文档）。
+/// ⚠️ 为什么这一格值一次运行：接收端的落地名在 **offer 那一刻**由 `unique_path` 决定
+///   （`file.rs:1598`，规则 `a.bin → a (1).bin`）。同名两单若在这之前都还没 rename，
+///   两者会拿到**同一个 final_path** ⇒ 后一次 rename 直接覆盖前一次 = **静默数据丢失**
+///   （`file.rs:1599-1602` 那段注释只解决了 `.part` 交错，没解决 final 撞名）。
+///   少一个文件、或落地内容集合少一份，就是这条被判红 —— 不是"看着不顺眼"，是丢东西。
+const MULTI = FAULT === "multi-file" || FAULT === "multi-file-lie";
+let multiSpec = [];
 /// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
 /// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
 const LIE = FAULT.endsWith("-lie");
@@ -1080,6 +1091,110 @@ if (SHRINK) {
       `  · 实测 size 分歧：入队 ${SHRINK_BYTES} → 实发 ${landedBytes}` +
       ` | A 气泡 ${sent.bubbleSize} · A 台账 ${sent.a.size} · B 台账 ${sent.b.size}`,
     );
+  });
+}
+
+if (MULTI) {
+  step("故障注入判据⑦：三个文件一起排队、其中两个同名 ⇒ 一张都不许丢、内容不许串味", async () => {
+    const dl = path.join(RUN_DIR, "recv", "B");
+    fs.mkdirSync(dl, { recursive: true });
+    const token = Math.random().toString(36).slice(2, 8);
+    const photoName = `photo-${token}.bin`;
+    const noteName = `note-${token}.bin`;
+    // 同名的两张必须放在**不同目录**（同一路径放不下两个文件）：offer 的 name 取自路径的
+    // file_name（`file.rs:358`），所以"同名不同内容"只能这样造。
+    const layout = [
+      { dir: "p1", name: photoName, bytes: 1024 * 1024, fill: 0xa1 },
+      { dir: "p2", name: photoName, bytes: 64 * 1024, fill: 0xb2 },
+      { dir: "p1", name: noteName, bytes: 256 * 1024, fill: 0xc3 },
+    ];
+    multiSpec = layout.map((l, i) => {
+      const d = path.join(RUN_DIR, "src", l.dir);
+      fs.mkdirSync(d, { recursive: true });
+      const src = path.join(d, l.name);
+      fs.writeFileSync(src, Buffer.alloc(l.bytes, l.fill));
+      return {
+        tid: `e2e-m-${ISO}-${token}-${i}`,
+        src,
+        name: l.name,
+        bytes: l.bytes,
+        sha: createHash("sha256").update(fs.readFileSync(src)).digest("hex"),
+      };
+    });
+    // lie：注入完全一样，只把**其中一张**的期望摘要换掉 ⇒ 那条多重集合判据必须红。
+    // 用集合而不是"随便挑一张比对"，就是为了验证"每份内容各自对上了"，不是"对上了三份里的任意一份"。
+    const wantShas = multiSpec.map((s) => s.sha).sort();
+    if (LIE) wantShas[0] = LIE_SHA;
+    for (let i = 0; ; i++) {
+      try {
+        seed(INSTANCES[0].db, (db) => {
+          const ins = db.prepare(
+            `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+             VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
+          );
+          for (const s of multiSpec) {
+            db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(s.tid);
+            ins.run(s.tid, peerTo, s.src, s.name, s.bytes, nowMs());
+          }
+        });
+        break;
+      } catch (e) {
+        if (i >= 5) throw e;
+        await sleep(300);
+      }
+    }
+    const t0 = nowMs();
+    let snap = null;
+    await waitFor(() => {
+      const aDb = openDb(INSTANCES[0].db, true);
+      const rows = aDb
+        .prepare(`SELECT id,status FROM file_transfers WHERE id IN (${multiSpec.map(() => "?").join(",")})`)
+        .all(...multiSpec.map((s) => s.tid));
+      const queued = aDb
+        .prepare(`SELECT COUNT(*) c FROM file_outbox WHERE transfer_id IN (${multiSpec.map(() => "?").join(",")})`)
+        .get(...multiSpec.map((s) => s.tid)).c;
+      aDb.close();
+      const landed = fs.readdirSync(dl).filter((f) => f.includes(token));
+      const parts = landed.filter((f) => f.endsWith(".part"));
+      const files = landed.filter((f) => !f.endsWith(".part"));
+      if (rows.length === multiSpec.length && rows.every((r) => r.status === "done")
+        && queued === 0 && files.length === multiSpec.length) {
+        snap = { rows, queued, landed, parts };
+      }
+      return !!snap;
+    }, 180_000, "三单（含两张同名）要在同一批里全部投递完成");
+    console.log(
+      `  · 实测：入队 3 单 → 全部终态 ${((nowMs() - t0) / 1000).toFixed(1)}s · `
+      + `落地 ${JSON.stringify(snap.landed.sort())}`,
+    );
+    const files = snap.landed.filter((f) => !f.endsWith(".part"));
+    const gotShas = files
+      .map((f) => createHash("sha256").update(fs.readFileSync(path.join(dl, f))).digest("hex"))
+      .sort();
+    const photoLanded = files.filter((f) => f.includes(photoName.replace(".bin", "")));
+    check("一张都不许丢：三单必须各自落到一行 done 且队列已清空",
+      snap.rows.length === multiSpec.length && snap.rows.every((r) => r.status === "done")
+      && snap.queued === 0,
+      "3 行 done + outbox=0", JSON.stringify(snap.rows) + ` outbox=${snap.queued}`);
+    check("同名不许互相覆盖：接收目录里这张名字必须出现两次（少一次就是静默丢数据）",
+      photoLanded.length === 2, 2, `${photoLanded.length} → ${photoLanded.join(", ")}`);
+    check("每一张都必须是完整、各自对得上的内容（不许交错、不许串味、不许被顶掉）",
+      gotShas.join(",") === wantShas.join(","),
+      multiSpec.map((s) => s.sha.slice(0, 8)).join(","), gotShas.map((h) => h.slice(0, 8)).join(","));
+    check("不许留下 .part 半成品（串行里每一单都得收尾）",
+      snap.parts.length === 0, "无 .part", snap.parts.join(", ") || "无");
+    const bDb = openDb(INSTANCES[1].db, true);
+    const bRows = bDb
+      .prepare(`SELECT id,status,size FROM file_transfers WHERE id IN (${multiSpec.map(() => "?").join(",")})`)
+      .all(...multiSpec.map((s) => s.tid));
+    bDb.close();
+    check("接收侧每一单各记一行、都是 done（不重复记账、不把三单并成一条）",
+      bRows.length === 3 && bRows.every((r) => r.status === "done"),
+      "3 行 done", JSON.stringify(bRows));
+    check("接收侧每单记的字节数必须等于它自己那张源（串味在这里也会露出来）",
+      bRows.every((r) => multiSpec.some((s) => s.tid === r.id && s.bytes === r.size)),
+      "逐单相等", JSON.stringify(bRows.map((r) => `${r.id.slice(-1)}=${r.size}`))
+      + ` 期望 ${JSON.stringify(multiSpec.map((s) => s.bytes))}`);
   });
 }
 

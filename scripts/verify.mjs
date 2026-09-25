@@ -456,6 +456,19 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--fault=src-shrunk"],
     },
+    {
+      group: "local",
+      name: "双实例 E2E：三个文件一起排队（含两个同名）⇒ 一张都不许丢、内容不许串味",
+      why: `一次入队 3 个 transfer，其中两张**文件名相同、内容不同**（真机形状：一次选两张同名截图）。` +
+        `钉的是：三单各自落 done 且队列清空（串行投递不许把后面的挤死）、同名两单必须落在**两个不同路径**` +
+        `（少一次就是后一次 rename 覆盖前一次 = 静默丢数据）、落地内容多重集合 == 源内容多重集合` +
+        `（交错/串味/被顶掉都会露出来）、每单两侧台账各只一行、无 .part 残留。` +
+        `⚠️ 边界要写清：这一格证明的是「同 peer 串行 flush ⇒ 后一单的 offer 一定看得见前一单已 rename 的文件」，` +
+        `**没有**覆盖"两个 offer 都在任一次 rename 之前到达"那个真会撞 final_path 的交错（那需要三个实例：两个发送者 → 一个接收者）；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=multi-file"],
+    },
   );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。
