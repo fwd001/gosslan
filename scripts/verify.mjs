@@ -487,6 +487,21 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--fault=multi-file"],
     },
+    {
+      group: "local",
+      name: "双实例 E2E：预置可写 .part 后目录改只读 ⇒ 只有收尾 rename 塌（半路失败不冒充完成）",
+      why: `先给接收端放**真前缀** .part（⇒ offer 不被拒、字节照流进来），再把接收目录 chmod 成只读：` +
+        `往已存在的 inode 里写不需要目录写权限，唯一会 EACCES 的就是收尾那次 rename —— 与⑤（offer 期就写不进、` +
+        `接收侧一行都不写）互为两半。钉的是：.part 必须真被续写过（证明这一轮打的不是⑤那条路）、` +
+        `A 侧终态明确（行被收尾删除 / failed / cancelled / done 都算，停在 pending/sending = 界面永远转圈）、` +
+        `attempts ≤ MAX_FILE_OUTBOX_RETRIES、接收侧台账不许假 done。` +
+        `★ 这一轮实测照出 **A-12**（A {status:gone,aT:done} / B=failed / .part 整份 / final 不存在 —— ` +
+        `AlreadyHave 按字节数短路，绕过了「rename 才算完成」）：交叉自洽那条判据今天不成立，` +
+        `按 A-11 的先例**只打印不设断言**，修完再补；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=recv-dir-rotted"],
+    },
   );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。

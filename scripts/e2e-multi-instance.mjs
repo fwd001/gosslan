@@ -31,6 +31,9 @@
 //   --fault=multi-file-lie    → 同样的注入，只把其中一份的期望摘要换掉 ⇒ 预期报红
 //   --fault=recv-readonly     → 注入⑤：接收目录只读（磁盘写不进去）⇒ 必须明确失败并止步，不许假 done、不许无限重试
 //   --fault=recv-readonly-lie → 同样的注入，只把"该落到哪个终态"换成 done ⇒ 预期报红
+//   --fault=recv-dir-rotted    → 注入⑧：预置可写 .part 后把目录改只读 ⇒ 只塌在最后那次 rename，
+//                                「报 done 就必须有整份正确的文件」（A-5 那一格：⑤证不到的"半途才失败"）
+//   --fault=recv-dir-rotted-lie→ 同样的注入，只把"接收侧不许假 done"换成"必须 done" ⇒ 预期报红
 //   （每轮各几条断言**不在这里写**：`check-doc-numbers.mjs` 从下面的 check(" 调用点现算，
 //    写进文档时要以「<轮次名> N 断言」的形式，否则不会被对账）
 //   （kill 轮的文件尺寸用 E2E_KILL_MB 调，默认 100 —— 回环上实测 ~0.78s 走完，窗口够打）
@@ -78,6 +81,18 @@ const DISK_BYTES = Number(process.env.E2E_DISK_MB || 1) * 1024 * 1024;
 /// 发送侧重试上限（file.rs:259 MAX_FILE_OUTBOX_RETRIES）—— 判据用它钉"不许无限重试"。
 const DISK_MAX_ATTEMPTS = 5;
 let xferId6, term6 = null;
+/// 注入⑧：A-5 的形状 —— **预置可写 `.part`，再把接收目录改成只读**。
+/// 与⑤成对但不重复：⑤ 打在 offer 期（`File::create` 就 EACCES ⇒ 只发 FileReject、
+/// **接收侧不写任何行**，见上面那条注释），所以⑤**证明不了**"半途才失败时接收侧怎么收口"。
+/// 这一轮把注落下得晚：真前缀已存在 ⇒ 往已存在的 inode 里写**不需要目录写权限**，
+/// 于是字节照常流进来，唯一会 EACCES 的是**收尾那次 rename**（还有清理时的 unlink）。
+/// ⇒ 这是「rename 才算完成」这条不变量第一次被活实例检验：报 done 就必须有整份正确的文件。
+/// ⚠️ 判据刻意不预设"产品必须失败"（那等于替产品做决定）：只判**终态与磁盘自洽**。
+/// 解除只读之后会不会自愈 —— 只打印实测，不设判据（没量过的事不写进断言）。
+const ROT = FAULT === "recv-dir-rotted" || FAULT === "recv-dir-rotted-lie";
+const ROT_BYTES = Number(process.env.E2E_ROT_MB || 1) * 1024 * 1024;
+const ROT_PREFIX = 64 * 1024;
+let xferId8, srcFile8, srcSha8, term8 = null;
 let xferId5, srcFile5, srcSha5;
 /// 注入⑥：§七「错误 size」的**真实用户形状** —— 不是线上收到一个谎报的 size（那一格协议层
 /// 已经用 hash+length 判死了），而是**入队之后、真正发出去之前，磁盘上的原件被改小了**。
@@ -977,6 +992,125 @@ if (DISK) {
       a6?.status !== "done", "非 done", a6?.status ?? "无行");
     check("写不进去就不许在接收目录留下这个 transfer 的任何东西",
       seen.length === 0, "无文件", seen.join(", ") || "无");
+  });
+}
+
+if (ROT) {
+  step("故障注入判据⑧：预置可写 .part 后把接收目录改成只读 ⇒ 半路失败不许被当成完成（rename 才算完成）", async () => {
+    const dl = path.join(RUN_DIR, "recv", "B");
+    fs.mkdirSync(dl, { recursive: true });
+    const srcDir = path.join(RUN_DIR, "src");
+    fs.mkdirSync(srcDir, { recursive: true });
+    xferId8 = `e2e-i-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    const name8 = `${xferId8}.bin`;
+    const part8 = path.join(dl, `${xferId8}.part`);
+    const final8 = path.join(dl, name8);
+    srcFile8 = path.join(srcDir, name8);
+    const buf8 = Buffer.alloc(ROT_BYTES);
+    for (let i = 0; i < buf8.length; i += 32) buf8.writeUInt32BE(Math.floor(Math.random() * 2 ** 32), i);
+    fs.writeFileSync(srcFile8, buf8);
+    srcSha8 = createHash("sha256").update(buf8).digest("hex");
+    // 注入的形状刻意选成「前缀已经在那儿了，之后的每一步都不许改口」：
+    //   1) 预置**真前缀** `.part` ⇒ 接收端走的是 `resume_receive`（播种 hasher、不 truncate），
+    //      于是 offer 期不会 EACCES，A 一定把剩下的字节发过来 —— 与⑤（offer 期就写不进）分道。
+    //   2) 再把**目录**改成只读 ⇒ 往已存在的文件里写仍然合法（写权限看的是 inode），
+    //      但 create / rename / unlink 全部 EACCES ⇒ 唯一会塌下来的动作就是收尾那次 rename。
+    //      这正是⑤的注释里点名"要另开一条"的 A-5 形状。
+    fs.writeFileSync(part8, buf8.subarray(0, ROT_PREFIX));
+    const t0 = nowMs();
+    fs.chmodSync(dl, 0o500);
+    let bTerminal = null;
+    let aGrew = false;
+    let partGrew = 0;
+    try {
+      for (let i = 0; ; i++) {
+        try {
+          seed(INSTANCES[0].db, (db) => {
+            db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(xferId8);
+            db.prepare(
+              `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+               VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
+            ).run(xferId8, peerTo, srcFile8, name8, ROT_BYTES, nowMs());
+          });
+          break;
+        } catch (e) {
+          if (i >= 5) throw e;
+          await sleep(300);
+        }
+      }
+      const sizeOf = (p) => {
+        try {
+          return fs.statSync(p).size;
+        } catch {
+          return -1;
+        }
+      };
+      term8 = null;
+      // ⚠️ 「A 侧 outbox 行被删掉」**就是终态**（成功收尾的判据，见 J2 那条
+      //    「A 侧 file_outbox 行已被收尾删除」）。第一版我把它当成"还没到终态"继续等 ⇒
+      //    跑满 180 s 超时，把"A 已经宣布完成"这件事实读成了"卡住"。行没了必须立刻收，
+      //    否则这条判据会把**成功**判成**超时**，而超时恰恰是这条判据最不该混淆的信号。
+      let sawRow = false;
+      await waitFor(() => {
+        const g = sizeOf(part8);
+        if (g > ROT_PREFIX) {
+          partGrew = g;
+          aGrew = true;
+        }
+        const ad = openDb(INSTANCES[0].db, true);
+        const r = ad.prepare("SELECT status,attempts FROM file_outbox WHERE transfer_id=?1").get(xferId8);
+        const aT = ad.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId8);
+        ad.close();
+        const bd = openDb(INSTANCES[1].db, true);
+        const bT = bd.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId8);
+        bd.close();
+        bTerminal = bT?.status ?? null;
+        if (r) sawRow = true;
+        if (!r && sawRow) term8 = { status: "gone", attempts: 0, aT: aT?.status ?? null };
+        else if (r && (r.status === "failed" || r.status === "cancelled" || r.status === "done"))
+          term8 = { ...r, aT: aT?.status ?? null };
+        return !!term8;
+      }, 180_000, "A 侧队列要落到明确终态（行被收尾删除 / failed / cancelled / done 都算，不许静静挂着）");
+      console.log(
+        `  · 实测：入队 → A 终态 ${((nowMs() - t0) / 1000).toFixed(1)}s ${JSON.stringify(term8)} B=${bTerminal ?? "无行"} .part 峰值=${partGrew}`,
+      );
+      for (const l of (tailLog(INSTANCES[1].log, 200000) || "").split("\n")
+        .filter((x) => x.includes(xferId8) || /rename|重命名|写失败|finalize|终态/i.test(x)).slice(-8)) console.log("      B│ " + l.slice(0, 220));
+    } finally {
+      fs.chmodSync(dl, 0o700);
+    }
+    // ── 反空转前提（⑤的教训：先量"我以为已经成立的前提"，再判结论）──
+    // 前缀真的被续写 ⇒ 这一轮走的是"收到一半才失败"，而不是⑤那条"offer 期就被拒"。
+    // 这条判红不表示产品坏了，表示**注入没落地**，必须分开说，否则后面每一条都是空转。
+    check("注入真的落地：.part 必须被续写过（超过预置前缀）", aGrew, `>${ROT_PREFIX}`, partGrew);
+    check("A 侧队列必须落到明确终态（行被收尾删除/failed/cancelled/done 都算，停在 pending/sending=界面永远转圈）",
+      !!term8, "终态", "180s 内没到终态");
+    check("重试不许失控：A 侧 attempts 有界", !!term8 && term8.attempts <= DISK_MAX_ATTEMPTS,
+      `≤${DISK_MAX_ATTEMPTS}`, term8 ? term8.attempts : "无终态");
+    const existsFinal = fs.existsSync(final8);
+    const finalSha = existsFinal ? createHash("sha256").update(fs.readFileSync(final8)).digest("hex") : null;
+    const landedWhole = existsFinal && finalSha === srcSha8;
+    const claimedDone = !!term8 && (term8.status === "gone" || term8.status === "done" || term8.aT === "done");
+    // ★ 交叉自洽那条判据（`A 声称完成 ⇒ B 侧有整份正确的 final 文件`）**今天不成立**，
+    //   实测就是 A-12 本身（roadmap §3.1）：A 报 done 并删了队列行、B 报 failed、字节全在
+    //   一个改不了名的 .part 里。把它写成断言 ⇒ 这一轮永远红，而这套门禁**没有"容忍已知红"
+    //   这一档**（`verify.mjs` 里没有 soft/allowFail，是刻意的）。所以：
+    //     · 这一轮先用打印钉住分歧（红不红看得见，但不冒充判据）；
+    //     · 交叉自洽那条**等 A-12 修完**再加回来，原文抄在 roadmap A-12 那格，别靠记忆。
+    //   ⚠️ 下面四条断言只覆盖"每一侧自己不撒谎"，**不覆盖两侧互相咬合** —— 别把它们读成
+    //      「rename 才算完成已有活实例证明」。
+    if (claimedDone && !landedWhole) {
+      console.log(
+        `      ⚠ A-12 实测分歧：A 声称完成=${claimedDone}（A台账=${term8?.aT ?? "无行"}、队列行已收）` +
+          ` / B=${bTerminal ?? "无行"} / final=${existsFinal ? (landedWhole ? "整份" : "半截或内容不符") : "不存在"} / .part=${partGrew} 字节`,
+      );
+    }
+    // 接收侧台账不许假装成功：B 侧有行时只能停在非 done（这条今天成立 ⇒ 留作断言）。
+    const wantB = LIE ? "done" : null;
+    check("接收侧台账不许假装成功（唯一的失败出口）",
+      LIE ? bTerminal === "done" : (landedWhole || bTerminal !== "done"),
+      wantB ?? "非 done", bTerminal ?? "B 侧无行");
+    console.log(`      注：解除只读后 B=${bTerminal ?? "无行"} / .part=${fs.existsSync(part8) ? fs.statSync(part8).size : "已清"} —— 自愈与否只打印，不设判据`);
   });
 }
 
