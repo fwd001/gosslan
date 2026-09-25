@@ -2994,14 +2994,19 @@ mod tests {
     fn terminal_finalize_defers_the_destructive_write() {
         let src = crate::network::transport_src_for_guards();
 
-        let file_body = rust_fn_body(&src, "fn finalize_expired_file(");
+        // P7 之后实现并进了唯一出口 `db::finalize_file_failure`（`finalize_expired_file`
+        // 只剩一层 bool 包装）⇒ 这条逐函数守卫跟着挪到新家；迁移本身由
+        // `every_finalize_path_defers_the_destructive_write`（自动扫）与
+        // `expired_file_*` 那两条行为测试兜着。
+        let dbc = all_db_src();
+        let file_body = rust_fn_body(&dbc, "pub fn finalize_file_failure(");
         let destructive = file_body
             .find("mark_file_outbox_failed(")
-            .expect("文件终态必须仍由 mark_file_outbox_failed 落库");
+            .expect("文件终态必须仍由 mark_file_outbox_failed 关队列行");
         for anchor in ["set_message_status(", "upsert_transfer("] {
             let at = file_body
                 .rfind(anchor)
-                .unwrap_or_else(|| panic!("finalize_expired_file 少了 {anchor} 这一步"));
+                .unwrap_or_else(|| panic!("finalize_file_failure 少了 {anchor} 这一步"));
             assert!(
                 at < destructive,
                 "破坏性写（把行踢出重试集合）必须排最后：它先跑 ⇒ 后续步骤失败时行已是 failed，\
@@ -3057,7 +3062,6 @@ mod tests {
             "set_message_status(",
             "upsert_transfer(",
             "mark_transfer_failed_if_active(",
-            "mark_queued_transfer_failed(",
         ];
         let mut scanned = 0usize;
         let mut bad: Vec<String> = Vec::new();

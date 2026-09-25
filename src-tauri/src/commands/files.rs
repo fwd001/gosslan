@@ -286,20 +286,11 @@ fn build_file_message(
 ///
 /// 终态契约整体见 `db::file_transfer::upsert_transfer` 上面那段（INV-P26）。
 fn fail_file_job(state: &AppState, transfer_id: &str, reason: &str) {
+    // 全部落库都在唯一出口 `db::finalize_file_failure` 里（P7：三份收尾合成一份）：
+    // 气泡 → 台账 → 最后才关队列行，`done` 闸门也在那一处。
     let announce = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        // `unwrap_or(false)` 的方向是刻意的：查询出错时**当作"没收成"**继续判失败，
-        // 那正是加这道闸门之前的行为 —— 宁可维持现状，也不要在读不到状态时静默放过。
-        let already_done = db::is_transfer_done(&dbc, transfer_id).unwrap_or(false);
-        let mut changed = false;
-        if !already_done {
-            // 保持已有的 name/size/path，只把状态推进到 failed（`done` 行在助手里就被挡掉）。
-            if db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed").is_ok() {
-                changed = db::mark_queued_transfer_failed(&dbc, transfer_id).unwrap_or(false);
-            }
-        }
-        db::mark_file_outbox_failed(&dbc, transfer_id).ok();
-        changed
+        db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::GiveUp).unwrap_or(false)
     };
     if announce {
         let _ = state.app.emit(
@@ -488,15 +479,12 @@ pub async fn cancel_file_transfer(
     //    （INV-P26）。
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        // ★ 同 `fail_file_job`：先做完面向用户的写，最后才把队列行踢出重试集合
-        //（`mark_file_outbox_cancelled` 一跑，`list_expired_file_outbox` 与 flush 都再也看
-        // 不到它 ⇒ 前面任何一步失败就没人补了）。判据是自动扫全部收尾路径的，见
-        // `lib.rs::every_finalize_path_defers_the_destructive_write`。
-        let _ = db::set_message_status(&dbc, &format!("file-{transfer_id}"), "cancelled");
-        // 群文件消息前缀是 gfile-，也处理一下
-        let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "cancelled");
-        let _ = db::upsert_transfer(&dbc, &transfer_id, "", "", 0, "send", "cancelled", None, 0.0);
-        let _ = db::mark_file_outbox_cancelled(&dbc, &transfer_id);
+        // 落库并入唯一出口（同一份顺序与 `done` 闸门）。取消与失败的区别在这里说得通：
+        // 用户取消的是**整条消息**（1:1 与群文件共用这个入口）⇒ `gfile-` 该写；
+        // 而超时/放弃只代表"某一个收件人没收到"，不该改写群气泡（见
+        // `db::finalize_file_failure` 与 `expired_file_does_not_touch_the_group_bubble`）。
+        // 取消一律照实响应：不看返回值、emit 也不被门控。
+        let _ = db::finalize_file_failure(&dbc, &transfer_id, db::FileJobEnd::Cancelled);
     }
 
     // 3. 通知前端

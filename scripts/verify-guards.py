@@ -3086,16 +3086,34 @@ CASES: list[Case] = [
         "     而它调的是 `mark_file_outbox_failed` ⇒ 台账里落 failed。三条队列查询只认 pending/sending，\n"
         "     所以**功能等价、台账不等价**：下一个排查「这单为什么失败」的人（或照文档改代码的 AI）\n"
         "     读到的是用户自己按下的取消。\n"
-        "     注入方式：把那句调用换回 `mark_file_outbox_failed`（编译照过、队列行为一模一样），守卫必须红。\n"
+        "     注入方式（P7 合并后跟着搬家）：把取消那一路的口径从 `FileJobEnd::Cancelled` 改成\n"
+        "     `Expired` —— 编译照过、队列照样关掉，只有取消的台账口径错了，守卫必须红。\n"
         "     ⚠️ 反向也要成立：`mark_queued_transfer_failed`（自动判死）那边仍写 failed —— 两个口径不许合并。",
         file=TAURI / "src" / "commands" / "files.rs",
         injections=[(
-            "let _ = db::mark_file_outbox_cancelled(&dbc, &transfer_id);",
-            "let _ = db::mark_file_outbox_failed(&dbc, &transfer_id);",
+            "db::finalize_file_failure(&dbc, &transfer_id, db::FileJobEnd::Cancelled);",
+            "db::finalize_file_failure(&dbc, &transfer_id, db::FileJobEnd::Expired);",
         )],
         cmd=cargo("test", "--lib", "a_user_cancel_is_not_recorded_as_a_failure"),
         cwd=TAURI,
-        expect_fail_hint="用户取消被记成失败",
+        expect_fail_hint="取消必须走",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
+        name="群文件终态：取消要写 gfile 气泡、超时/放弃不许写（两个方向都钉）",
+        why="合并成一份出口之后，「哪些口径允许碰群气泡」变成这个函数里的一行 `if cancelled`。\n"
+        "     写窄了：用户取消群文件，气泡原地不动 —— 按了没反应。\n"
+        "     写宽了（当年清扫器就是宽的那一侧）：某一个收件人超时/放弃 ⇒ 整条群消息显示失败，\n"
+        "     而其余收件人其实收到了 ⇒ 用户重发，群里多出一份重复文件。\n"
+        "     注入方式：把 `if cancelled` 写成 `if true`（放宽到所有口径），反向判据必须红。",
+        file=TAURI / "src" / "db" / "file_transfer.rs",
+        injections=[(
+            "        if cancelled {\n            bubble &= set_message_status(conn, &format!(\"gfile-{transfer_id}\")",
+            "        if true {\n            bubble &= set_message_status(conn, &format!(\"gfile-{transfer_id}\")",
+        )],
+        cmd=cargo("test", "--lib", "expired_file_does_not_touch_the_group_bubble"),
+        cwd=TAURI,
+        expect_fail_hint="清扫器不许隔空改写",
         tags=["rust", "db", "files", "terminal-state", "new-guards"],
     ),
     Case(
@@ -3105,13 +3123,17 @@ CASES: list[Case] = [
         "     于是同一条被明令禁止的顺序在另外两处一直成立：outbox 行先变 failed/cancelled，\n"
         "     后面任何一步失败就没人补了（`list_expired_file_outbox` 只选 pending/sending）⇒\n"
         "     症状是那条气泡永久停在「发送中」，而且行已不在任何重试集合里，永远无人再修。\n"
-        "     判据已升级成自动扫（结构式，不是清单）。注入方式：把 `fail_file_job` 里那处破坏性写\n"
-        "     挪回面向用户的写之前（编译照过、跑起来也大概率正常，只有顺序错），守卫必须红。",
+        "     判据已升级成自动扫（结构式，不是清单）。\n"
+        "     注入方式刻意选在**调用方**：给 `fail_file_job` 加两行「自己先关行、再补一笔气泡状态」\n"
+        "     （= 有人嫌唯一出口麻烦、就地内联回旧写法）。逐函数守卫只盯着\n"
+        "     `db::finalize_file_failure`，看不见调用方里的这一笔；只有自动扫会红 ——\n"
+        "     这才是本用例要证明的那件事（判据要两头都命中才算命中：先关行、后有面向用户的写）。",
         file=TAURI / "src" / "commands" / "files.rs",
         injections=[(
-            "        let already_done = db::is_transfer_done(&dbc, transfer_id).unwrap_or(false);\n        let mut changed = false;",
-            "        let already_done = db::is_transfer_done(&dbc, transfer_id).unwrap_or(false);\n"
-            "        db::mark_file_outbox_failed(&dbc, transfer_id).ok();\n        let mut changed = false;",
+            "        db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::GiveUp).unwrap_or(false)",
+            "        let _ = db::mark_file_outbox_failed(&dbc, transfer_id);\n"
+            "        let _ = db::set_message_status(&dbc, &format!(\"file-{transfer_id}\"), \"failed\");\n"
+            "        db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::GiveUp).unwrap_or(false)",
         )],
         cmd=cargo("test", "--lib", "every_finalize_path_defers_the_destructive_write"),
         cwd=TAURI,
@@ -3230,26 +3252,22 @@ CASES: list[Case] = [
     ),
     Case(
         name="文件终态：把行踢出重试集合的那一次写必须排最后",
-        why="这是审计 A3 修法**自身**的缺陷（2026-09-23 review 查出）。`finalize_expired_file`\n"
+        why="这是审计 A3 修法**自身**的缺陷（2026-09-23 review 查出；P7 之后实现在\n"
+        "     `db::finalize_file_failure`，本用例的注入点跟着搬过去）。四步里只有\n"
+        "     `mark_file_outbox_failed`\n"
         "     四步里只有 `mark_file_outbox_failed` 会让 `list_expired_file_outbox` 再也扫不到这行\n"
         "     （它只选 pending/sending），所以它一旦排到最前面，「返回 false、下一 tick 重试」就变成\n"
         "     假话：后面任何一步失败，行已经是 failed，再没人重试 ⇒ 界面永久停在「发送中」。\n"
         "     注入方式 = 把它挪回第一位（就是修好之前的次序），顺序判据必须红；\n"
         "     只盯「调用了几次」是抓不到的 —— 次数一模一样。",
-        file=TAURI / "src" / "network" / "transport.rs",
+        file=TAURI / "src" / "db" / "file_transfer.rs",
         injections=[(
-            """fn finalize_expired_file(dbc: &rusqlite::Connection, transfer_id: &str) -> bool {
-    db::set_message_status(dbc, &format!("file-{transfer_id}"), "failed").is_ok()
-        && db::set_message_status(dbc, &format!("gfile-{transfer_id}"), "failed").is_ok()
-        && db::upsert_transfer(dbc, transfer_id, "", "", 0, "send", "failed", None, 0.0).is_ok()
-        && db::mark_file_outbox_failed(dbc, transfer_id).is_ok()
-}""",
-            """fn finalize_expired_file(dbc: &rusqlite::Connection, transfer_id: &str) -> bool {
-    db::mark_file_outbox_failed(dbc, transfer_id).is_ok()
-        && db::set_message_status(dbc, &format!("file-{transfer_id}"), "failed").is_ok()
-        && db::set_message_status(dbc, &format!("gfile-{transfer_id}"), "failed").is_ok()
-        && db::upsert_transfer(dbc, transfer_id, "", "", 0, "send", "failed", None, 0.0).is_ok()
-}""",
+            """    let mut changed = false;
+    if !already_done || cancelled {""",
+            """    let mut changed = false;
+    // 注入：把关行挪到最前面（= 修好之前的次序）
+    let _ = mark_file_outbox_failed(conn, transfer_id);
+    if !already_done || cancelled {""",
         )],
         cmd=cargo("test", "--lib", "terminal_finalize_defers_the_destructive_write"),
         cwd=TAURI,

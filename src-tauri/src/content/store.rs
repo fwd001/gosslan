@@ -221,25 +221,6 @@ pub fn touch_received(
     Ok(())
 }
 
-/// 把一条记录标记为完成（收/发皆可）。
-pub fn mark_complete(
-    conn: &Connection,
-    cid: &str,
-    peer_id: &str,
-    direction: Direction,
-    path: &str,
-    now_ms: i64,
-) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE content_transfers
-            SET status='complete', received=size, path=?4,
-                next_attempt_at=0, last_error=NULL, updated_at=?5
-          WHERE cid=?1 AND peer_id=?2 AND direction=?3",
-        params![cid, peer_id, direction.as_str(), path, now_ms],
-    )?;
-    Ok(())
-}
-
 /// 记录一份**本机完整持有**的内容（发送成功，或接收落盘完成）。
 ///
 /// 之后 find_source 就能按 cid 为任何请求方服务 —— 群聊里 A→B 成功后，C 也能从 B 拉

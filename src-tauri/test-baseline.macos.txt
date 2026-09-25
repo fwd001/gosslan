@@ -61,16 +61,15 @@ crypto::tests::safety_number_is_symmetric
 crypto::tests::safety_number_separates_concatenated_fields
 crypto::tests::seal_open_roundtrip
 crypto::tests::signature_verifies
+db::cascade_tests::a_cancelled_group_file_marks_its_own_bubble
 db::cascade_tests::a_completed_transfer_row_is_never_downgraded
 db::cascade_tests::a_failed_row_can_be_reactivated_by_the_next_attempt
 db::cascade_tests::a_user_cancel_is_not_recorded_as_a_failure
-db::cascade_tests::cancelled_file_outbox_rows_are_never_requeued
 db::cascade_tests::delete_conversation_purges_inflight_queues_and_keeps_cards
 db::cascade_tests::delete_group_cascade_clears_history_reads_and_queues
 db::cascade_tests::expired_rows_carry_peer_and_age_for_group_and_file_queues
 db::cascade_tests::fill_message_sha256_backfills_once_and_keeps_other_fields
 db::cascade_tests::migration_v7_purges_legacy_group_orphans_only
-db::cascade_tests::queue_failure_fails_live_rows_but_never_a_done_one
 db::cascade_tests::search_history_skips_orphan_conversations
 db::cascade_tests::terminal_status_writes_have_one_home
 db::cascade_tests::transfer_progress_upsert_never_erases_the_known_path
@@ -434,6 +433,8 @@ network::transport::tests::direct_open_rejects_corrupt_and_tampered_payloads
 network::transport::tests::direct_open_succeeds_with_current_keys
 network::transport::tests::directed_relay_target_routes_share_and_offer_frames
 network::transport::tests::e2e_gossip_encrypt_sign_decrypt
+network::transport::tests::expired_file_does_not_touch_the_group_bubble
+network::transport::tests::expired_file_never_rewrites_a_completed_transfer
 network::transport::tests::failover_delivers_on_next_link_when_selected_is_closed
 network::transport::tests::finalize_expired_file_failure_leaves_the_row_retryable
 network::transport::tests::finalize_expired_message_writes_both_and_gates_on_failure

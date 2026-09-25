@@ -10,6 +10,47 @@
 
 ## [Unreleased]
 
+### Fix (2026-09-25 · 第 4 步 P7 收口：文件终态三份收尾合并成一个出口 + 删一个零调用函数)
+
+**P7 第 1/2/3 刀**（done 不可降级 / 取消不记失败 / 写序）落完之后，剩下的正是那句
+"三份实现未合并"。这次合并了，另外删掉一个没人调的函数。
+
+`file_outbox` 的终态落库此前有**三份各写一遍**的实现：清扫器 `finalize_expired_file`、
+发送放弃 `fail_file_job`、用户取消 `cancel_file_transfer`。三处漂移全部实测到：
+
+- 写序（关行必须最后）只在两处成立 —— 第 3 刀已修；
+- `done` 闸门只装在两扇门上，**清扫器那扇没有**：本次给它补上（判据
+  `expired_file_never_rewrites_a_completed_transfer` 第一次跑就是红的）；
+- 清扫器还多写一句 `gfile-{transfer_id}`。⚠️ **诚实交代：我上一轮把它说成
+  "一个收件人超时 ⇒ 整条群消息显示失败、用户于是重发出重复文件"，那个后果不成立** ——
+  生产代码里唯一写 `file_outbox` 的地方 `group_id` 恒为 `None`（群文件的逐人台账在
+  `group_file_recipients`），那句永远命中 0 行；而且 `set_message_status` 本身拒绝把
+  `delivered`/`read` 改回失败，只有还在途中的气泡会被改写。所以它是**潜伏**缺陷而不是
+  活跃故障。仍按第 4 刀删掉，理由是「靠暂时没人这么写才不出事」的代码正是本仓一直在
+  出事的那类（`file_outbox` 的 schema 里就有 `group_id` 这一列）。
+
+合并成一个出口 `db::finalize_file_failure(conn, transfer_id, end)`，`end` 三档
+（`Expired` / `GiveUp` / `Cancelled`）。口径差别收敛成函数里一处 `if cancelled`：
+**取消**是用户动作且 1:1 与群共用这个入口 ⇒ 写 `file-` 也写 `gfile-`；
+**超时/放弃**只代表某一个收件人没收到 ⇒ 不碰群气泡。两个方向各有判据
+（`expired_file_does_not_touch_the_group_bubble` / `a_cancelled_group_file_marks_its_own_bubble`），
+另配一条变异用例（把 `if cancelled` 写成 `if true` ⇒ 反向判据必须红）。
+
+⚠️ 一个刻意的取舍：台账那笔写走 `upsert_transfer`，**不**走"回报改了几行"的助手 ——
+后者在台账行不存在时报 false，会让"要不要关行"的条件永不成立 ⇒ 清扫器每 tick 空转。
+"少一次 emit"不值得换来一个活锁；而"不许把 done 降级"由 `upsert_transfer` 自己守。
+顺带删掉因此变成零调用点的 `mark_queued_transfer_failed`（连同它的测试）——
+留着就是第二个家，正是本步一直在消灭的东西。
+
+① 另一个删掉的死实现：`content::store::mark_complete`（**全仓零调用点**，实测只有它
+自己的定义那一行）。它守着的判断也顺手被证伪：复审写的是"发送侧没接上标记完成"，
+其实发送侧一直在记完成 —— 走的是 `record_local`（实测 `Direction::Send` 3 处、
+`Direction::Receive` 3 处）。所以这不是"漏接线"，是一个长得像正主的岔路。
+
+判据：3 条新测试（1 条红→绿、1 条反向、1 条边界）、2 条旧变异用例随合并**搬过家**
+（锚点腐烂是这一步的固定副产物，跑 `--only` 逐条重证才算数）、新增 1 条 gfile 口径用例。
+护栏 180 → **182**，Rust 基线 683 → **685**。第 4 步 P7 至此收口。
+
 ## [4.29.40] - 2026-09-25
 
 ### Fix (2026-09-25 · 第 4 步 P7 第三刀：写序 —— 把行踢出重试集合的那一步必须排最后)

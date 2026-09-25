@@ -496,7 +496,9 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
    判据一正一反（反向那条今天绿、存在的意义就是让下一次"顺手扩大集合"变红），
    另有一条 `terminal_status_writes_have_one_home` 挡住第二个家。本文 = **INV-P26**（§26，
    原「必测矩阵」顺延 §27）。
-2. `content_transfers` 发送侧接上 `mark_complete`（或删除该状态并改注释）；
+2. ✅ 判定为**判断有误**（2026-09-25 枚举证伪）：`mark_complete` 全仓零调用点，而发送侧
+   一直在记完成 —— 走的是 `record_local`（实测 `Direction::Send` 3 处 / `Receive` 3 处）。
+   所以这不是"漏接线"，是一条长得像正主的岔路 ⇒ 按 0-A2 的纪律直接删。
 3. ✅ `file_outbox` 取消写 `cancelled` 而不是 `failed`（2026-09-25）：`cancel_file_transfer` 的
    注释本来就写着这个口径，代码调的却是 `mark_file_outbox_failed` —— 注释与代码相反。
    新增 `mark_file_outbox_cancelled`；`mark_queued_transfer_failed`（自动判死）仍写 failed，
@@ -507,7 +509,13 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
    升级成**自动扫全部收尾路径**（结构式，不靠清单），首次跑就自己找出那两处没被点名的违规。
    ⚠️ 上一刀的 emit 抑制**仍无行为级测试**（函数吃 `&AppState`，本仓造不出来），只有 SQL 层
    判据 + 读码保证。
-5. ⬜ **本次新查出、没动**：三份"落文件终态"的收尾**仍是三份**（只对齐了顺序，没合并实现）。
+5. ✅ 三份收尾**已合并成一个出口**（2026-09-25 第四刀）：`db::finalize_file_failure(conn, id, end)`，
+   `end ∈ {Expired, GiveUp, Cancelled}`。合并时又收掉两件事：清扫器缺 `done` 闸门（红测试实测到）、
+   清扫器多写一句 `gfile-`（潜伏缺陷，今天撞不到：群文件不入 `file_outbox`，且 `set_message_status`
+   拒绝把 delivered/read 改回失败）。口径差别收敛成一处 `if cancelled`，两个方向各有判据。
+   ⚠️ 合并的取舍记在函数注释里：台账那笔走 `upsert_transfer` 而不是"回报改了几行"的助手，
+   因为后者在台账行不存在时会让关行条件永不成立 ⇒ 清扫器空转。因此 `mark_queued_transfer_failed`
+   变成零调用点，一并删（留着就是第二个家）。
    合并的形状是一个 `db::finalize_file_failure(dbc, transfer_id, kind) -> bool` owning 全部四笔写，
    但它必须先回答"群气泡 `gfile-` 该不该被单个收件人的失败改写"—— 今天 `fail_file_job`
    **只写 `file-`**，看着像缺口，其实很可能是有意的（N 个收件人共用一条气泡）。

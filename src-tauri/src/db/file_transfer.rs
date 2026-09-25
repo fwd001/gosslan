@@ -67,22 +67,82 @@ pub fn mark_transfer_failed_if_active(conn: &Connection, id: &str) -> Result<boo
     Ok(n > 0)
 }
 
-/// 把一单**离线文件队列**的失败落进 `file_transfers`，返回是否有行被改。
+/// 一单文件"从此不再重发"的三种原因 —— 落库形状相同、口径不同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileJobEnd {
+    /// 超时（outbox 清扫器判死）
+    Expired,
+    /// 重试耗尽 / 明确不可重试的错误（发送侧放弃）
+    GiveUp,
+    /// 用户主动取消
+    Cancelled,
+}
+
+impl FileJobEnd {
+    fn status(self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Expired | Self::GiveUp => "failed",
+        }
+    }
+}
+
+/// **三份收尾合并成一份**（第 4 步 P7）：文件队列任务的终态落库只有这一个出口。
 ///
-/// 与 `mark_transfer_failed_if_active` 的差别只在**合法集合**，不是"写法不同"：
-/// 那条服务中继/接收态回收，只有确实在收的 `active` 该被判死；这条服务排队任务判死，
-/// 起点是 `pending`（不是 active），所以不能用它。两者共用同一条终态契约 ——
-/// **`done` 永远不许被降级**（磁盘证据已经成立，见 `upsert_transfer` 上面那段）。
+/// 合并之前有三份各写一遍的实现（清扫器 / 发送放弃 / 用户取消），后果都实测到了：
+///  · "把行踢出重试集合的那一步排最后"这条规矩只在其中两处成立（第三刀修的正是那两处）；
+///  · `done` 不可降级（INV-P26）的闸门只装在两扇门上，清扫器那扇没有；
+///  · 清扫器还多写了一句 `gfile-` —— 群文件的气泡不归这条路径管（群文件的逐人台账在
+///    `group_file_recipients`），今天撞不到只是因为没人往 `file_outbox` 写 `group_id`。
 ///
-/// 返回值给调用方决定要不要 emit：已经 done 的行改了就该**什么都不发**，
-/// 否则用户会为一个明明收好的文件收到一条"传输失败"。
-pub fn mark_queued_transfer_failed(conn: &Connection, id: &str) -> Result<bool> {
-    let n = conn.execute(
-        "UPDATE file_transfers SET status = 'failed', progress = 0.0
-         WHERE id = ?1 AND status <> 'done'",
-        params![id],
-    )?;
-    Ok(n > 0)
+/// ★ 顺序与"关行"的条件都是语义，不是风格：气泡 → 台账 → **只有面向用户的写都落地了**
+/// 才关队列行。`mark_file_outbox_*` 一跑，`list_expired_file_outbox` 就再也扫不到这一行，
+/// 所以前面任何一步失败时它必须**还在**集合里，否则"返回 false、下一 tick 再试"是假话
+/// （审计 A3 的自身缺陷；判据 `finalize_expired_file_failure_leaves_the_row_retryable`）。
+/// 唯一的例外是"台账已 done"：那时没有任何面向用户的写要做，行必须关掉 ——
+/// 不然它每个 tick 被重扫一遍又什么都不做（活锁）。
+///
+/// 台账那一笔写刻意走 `upsert_transfer` 而不是"返回改动与否"的助手：后者在**台账行不存在**时
+/// 报 false，会让上面的关行条件永不成立 ⇒ 清扫器空转。少一次 emit 不值得换来一个活锁，
+/// 而"不许把 done 降级"这件事由 `upsert_transfer` 自己守（INV-P26）。
+///
+/// 返回 `true` = 面向用户的状态真的推进了 ⇒ 调用方据此决定要不要 emit。
+pub fn finalize_file_failure(
+    conn: &Connection,
+    transfer_id: &str,
+    end: FileJobEnd,
+) -> Result<bool> {
+    let status = end.status();
+    let cancelled = end == FileJobEnd::Cancelled;
+    // 读失败当作"没收成"继续判失败 —— 那正是加这道闸门之前的行为：宁可维持现状，
+    // 也不要在读不到状态时静默放过一个真的失败。
+    let already_done = is_transfer_done(conn, transfer_id).unwrap_or(false);
+
+    let mut changed = false;
+    if !already_done || cancelled {
+        // 取消是用户动作：界面必须立刻响应。已 done 的行不会被真降级（闸门在 upsert 里）。
+        let mut bubble = set_message_status(conn, &format!("file-{transfer_id}"), status).is_ok();
+        // `gfile-` 只在取消时写：取消入口是 1:1 与群文件**共用**的（用户取消整条消息），
+        // 而超时/放弃只代表"某一个收件人没收到"，群气泡由 `group_file_recipients` 决定。
+        // 两个方向各有判据：`expired_file_does_not_touch_the_group_bubble` /
+        // `a_cancelled_group_file_marks_its_own_bubble`。
+        if cancelled {
+            bubble &= set_message_status(conn, &format!("gfile-{transfer_id}"), status).is_ok();
+        }
+        if bubble {
+            changed =
+                upsert_transfer(conn, transfer_id, "", "", 0, "send", status, None, 0.0).is_ok();
+        }
+    }
+
+    if changed || already_done {
+        // ★ 永远排在最后
+        match end {
+            FileJobEnd::Cancelled => mark_file_outbox_cancelled(conn, transfer_id)?,
+            _ => mark_file_outbox_failed(conn, transfer_id)?,
+        }
+    }
+    Ok(changed)
 }
 
 /// 该传输是否已完整收下（status='done'）。Offer 判据的单行查询（审计 A6）。

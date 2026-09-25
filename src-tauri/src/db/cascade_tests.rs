@@ -587,124 +587,6 @@ fn terminal_status_writes_have_one_home() {
     );
 }
 
-/// 队列判死助手：`pending` / `active` 都要能判死（起点不是 active，所以它不是
-/// `mark_transfer_failed_if_active` 的别名），而 `done` 必须挡住并回报 `false` ——
-/// 回报值就是调用方"要不要 emit"的依据（与审计 A3 的「emit 由写库结果门控」同一条口径）。
-#[test]
-fn queue_failure_fails_live_rows_but_never_a_done_one() {
-    let conn = fresh_db();
-    for (id, status) in [
-        ("q-pending", "pending"),
-        ("q-active", "active"),
-        ("q-done", "done"),
-    ] {
-        upsert_transfer(
-            &conn,
-            id,
-            "p1",
-            "x.bin",
-            10,
-            "send",
-            status,
-            Some("/d/x.bin"),
-            0.4,
-        )
-        .unwrap();
-    }
-    assert!(mark_queued_transfer_failed(&conn, "q-pending").unwrap());
-    assert!(mark_queued_transfer_failed(&conn, "q-active").unwrap());
-    assert_eq!(
-        conn.query_row(
-            "SELECT status FROM file_transfers WHERE id IN ('q-pending','q-active')
-             ORDER BY id",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .unwrap(),
-        "failed"
-    );
-    assert!(
-        !mark_queued_transfer_failed(&conn, "q-done").unwrap(),
-        "done 行不许被队列判死改写，且必须回报 false"
-    );
-    let kept: (String, f64, String) = conn
-        .query_row(
-            "SELECT status, progress, path FROM file_transfers WHERE id = 'q-done'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        kept,
-        ("done".to_string(), 0.4, "/d/x.bin".to_string()),
-        "状态、进度、路径三样都得原样留住"
-    );
-    // 库里没有的行：false，不 panic
-    assert!(!mark_queued_transfer_failed(&conn, "q-missing").unwrap());
-}
-
-/// 离线文件队列的状态集合里，`cancelled` 必须是"**不会再被任何一条重取/过期查询捞起来**"的。
-///
-/// 这条是"取消改写成 cancelled"的**前置证据**，不是它的回归：今天 `cancelled` 还没人写，
-/// 而三条队列查询的判据都是"只认 pending / sending"⇒ 写进去就等于永久出局。
-/// 不先钉这一条就改判死口径，等于凭直觉引入一个新状态。
-#[test]
-fn cancelled_file_outbox_rows_are_never_requeued() {
-    let conn = fresh_db();
-    let ins = |id: &str, status: &str| {
-        conn.execute(
-            "INSERT INTO file_outbox(transfer_id, peer_id, local_path, name, size, status,
-                                     attempts, next_attempt_at, created_at)
-             VALUES(?1, 'p1', '/d/x.bin', 'x.bin', 10, ?2, 0, 0, 1)",
-            params![id, status],
-        )
-        .unwrap();
-    };
-    for (id, status) in [
-        ("f-pending", "pending"),
-        ("f-sending", "sending"),
-        ("f-failed", "failed"),
-        ("f-cancelled", "cancelled"),
-    ] {
-        ins(id, status);
-    }
-
-    let mut due: Vec<String> = list_pending_file_outbox(&conn, "p1")
-        .unwrap()
-        .into_iter()
-        .map(|(id, _)| id)
-        .collect();
-    due.sort();
-    assert_eq!(
-        due,
-        vec!["f-pending".to_string()],
-        "flush 只准捞 pending —— cancelled/sending/failed 都不该被重发"
-    );
-
-    // created_at=1 < 今天 ⇒ 三条 pending/sending 都算过期候选，cancelled 不在其中
-    let expired: Vec<String> = list_expired_file_outbox(&conn, i64::MAX)
-        .unwrap()
-        .into_iter()
-        .map(|r| r.0.clone())
-        .collect();
-    assert!(
-        !expired.contains(&"f-cancelled".to_string()),
-        "过期清扫器不得把已取消的任务再判一次死：{expired:?}"
-    );
-    assert_eq!(expired.len(), 2, "只有 pending 与 sending 是清扫器的候选");
-
-    // 崩溃恢复同理：只回滚 sending，不许把 cancelled 复活
-    assert_eq!(reset_sending_to_pending(&conn).unwrap(), 1);
-    let after: String = conn
-        .query_row(
-            "SELECT status FROM file_outbox WHERE transfer_id = 'f-cancelled'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(after, "cancelled", "崩溃恢复不许复活用户主动取消的任务");
-}
-
 /// **用户主动取消不许记成失败**（第 4 步 P7 第 3 条）。
 ///
 /// `cancel_file_transfer` 自己的注释写着「用户主动停止用 cancelled，自动失败用 failed」，
@@ -725,12 +607,62 @@ fn a_user_cancel_is_not_recorded_as_a_failure() {
         .unwrap_or(tail.len());
     // 取到下一个顶层 `pub` 之前（本文件里取消命令之后紧跟 request_content）
     let body = &tail[..stop.max(1)];
+    // P7 之后取消路径不再自己写库，而是把口径交给唯一出口 ⇒ 判据跟着改成
+    // "必须声明 Cancelled 这一档，且不许自己碰队列状态写"。
     assert!(
-        !body.contains("mark_file_outbox_failed("),
-        "取消路径调了 mark_file_outbox_failed ⇒ file_outbox 里用户取消被记成失败（应有的是 mark_file_outbox_cancelled）"
+        body.contains("FileJobEnd::Cancelled"),
+        "取消必须走 `db::finalize_file_failure(.., FileJobEnd::Cancelled)` —— 三份收尾已合成一份"
     );
+    for raw in ["mark_file_outbox_failed(", "mark_file_outbox_cancelled("] {
+        assert!(
+            !body.contains(raw),
+            "取消路径里不该再出现 {raw}：队列状态只有唯一出口能写，两处各写一遍就是上次漂移的成因"
+        );
+    }
+}
+
+/// 反向的一半：**取消必须写群气泡**。上面那条"清扫器不碰 gfile-"不能被泛化成
+/// "谁都别碰 gfile-" —— 取消入口是 1:1 与群文件共用的，用户取消的是整条消息，
+/// 界面必须立刻变成"已取消"。（夹具刻意同时造 outbox 行与 `gfile-` 气泡：真实群文件
+/// 只有气泡那一半存在，outbox 写 0 行无害 —— 这里要钉的是气泡那笔写有没有发生。）
+#[test]
+fn a_cancelled_group_file_marks_its_own_bubble() {
+    let conn = fresh_db();
+    conn.execute(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+         VALUES('gfile-t5', 'group:g1', 'me', '', 'file', 'x', 1000, 1, 'sending')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO file_outbox(transfer_id, peer_id, local_path, name, size, status,
+                                 attempts, next_attempt_at, created_at)
+         VALUES('t5', 'p1', '/d/z.bin', 'z.bin', 10, 'pending', 0, 0, 1)",
+        [],
+    )
+    .unwrap();
+
     assert!(
-        body.contains("mark_file_outbox_cancelled("),
-        "取消路径必须走 mark_file_outbox_cancelled —— 与它自己那句注释同口径"
+        finalize_file_failure(&conn, "t5", FileJobEnd::Cancelled).unwrap(),
+        "取消是用户动作：面向用户的写落地后必须回报 true"
     );
+    let got: String = conn
+        .query_row(
+            "SELECT status FROM messages WHERE msg_id = 'gfile-t5'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        got, "cancelled",
+        "取消必须改写群气泡（与超时/放弃明确不同）"
+    );
+    let q: String = conn
+        .query_row(
+            "SELECT status FROM file_outbox WHERE transfer_id = 't5'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(q, "cancelled", "队列行走 cancelled 口径，不是 failed");
 }

@@ -6578,16 +6578,14 @@ fn finalize_expired_message(dbc: &rusqlite::Connection, msg_id: &str, group: boo
 /// 置 failed + transfer 落 failed + 标记 file_outbox 失败。**全部成功**才返回 true（门控
 /// `emit("file-failed")`）。
 ///
-/// ⚠️ 写序不能随便排：`mark_file_outbox_failed` 是**唯一会把行踢出重试集合**的写
-/// （`list_expired_file_outbox` 只选 pending/sending），必须放最后。放在最前面时，
-/// 一旦后面某步失败，返回 `false` 的"下轮重试"承诺就落空了 —— 行已经是 failed，
-/// 再也扫不到，界面永久停在"发送中"。前三步都可重复执行（`set_message_status`
-/// 带正向单调条件、`upsert_transfer` 是 upsert），所以整体重放无害。
+/// 写序、`done` 闸门、"这一路不碰群气泡"三条都在 `db::finalize_file_failure` 里 ——
+/// 本函数只是把它的 `Result<bool>` 折成清扫器要的 bool（见那里的注释与
+/// `expired_file_never_rewrites_a_completed_transfer` /
+/// `expired_file_does_not_touch_the_group_bubble` 两条判据）。
 fn finalize_expired_file(dbc: &rusqlite::Connection, transfer_id: &str) -> bool {
-    db::set_message_status(dbc, &format!("file-{transfer_id}"), "failed").is_ok()
-        && db::set_message_status(dbc, &format!("gfile-{transfer_id}"), "failed").is_ok()
-        && db::upsert_transfer(dbc, transfer_id, "", "", 0, "send", "failed", None, 0.0).is_ok()
-        && db::mark_file_outbox_failed(dbc, transfer_id).is_ok()
+    // 实现已并入唯一的出口 `db::finalize_file_failure`（P7：三份收尾合成一份）。
+    // 保留这一层是因为清扫器要的是 bool（emit 的门控条件），而顺序/闸门都在里面。
+    db::finalize_file_failure(dbc, transfer_id, db::FileJobEnd::Expired).unwrap_or(false)
 }
 
 /// 启动 outbox 超时清扫后台任务。
@@ -9081,6 +9079,114 @@ mod tests {
         assert!(
             expired_ids(&conn, deadline).contains(&"t2".to_string()),
             "失败的终态必须还能被下一轮清扫扫到（破坏性写要排最后）"
+        );
+    }
+
+    fn msg_status(conn: &rusqlite::Connection, msg_id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT status FROM messages WHERE msg_id = ?1",
+            rusqlite::params![msg_id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    fn ins_bubble(conn: &rusqlite::Connection, msg_id: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES(?1, 'c1', 'me', 'peer', 'file', 'x', 1000, 1, ?2)",
+            rusqlite::params![msg_id, status],
+        )
+        .unwrap();
+    }
+
+    /// INV-P26 的另一半：**已 `done` 的传输不是失败**，超时清扫也不例外。
+    ///
+    /// `fail_file_job` 上有这道闸门（台账 done ⇒ 面向用户的写与 emit 全部跳过），
+    /// 但同一件事的**另一份实现**（清扫器这条）没有 —— 三份收尾各写一遍的后果就是
+    /// 闸门只装在其中两扇门上。这条测试钉住第三个门：气泡已经是 `delivered`、
+    /// 台账已经是 `done`（文件真在盘上）时，清扫器不得把它改写成失败，
+    /// 而且必须回报 `false`（调用方据此**不 emit**，否则用户凭空收到一条失败提示）。
+    /// 队列行仍然要关掉：它不留活口，否则每 tick 重扫一遍又什么都不做。
+    #[test]
+    fn expired_file_never_rewrites_a_completed_transfer() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+
+        ins_bubble(&conn, "file-t3", "delivered");
+        db::upsert_transfer(
+            &conn,
+            "t3",
+            "peer",
+            "x.bin",
+            10,
+            "send",
+            "done",
+            Some("/d/x.bin"),
+            1.0,
+        )
+        .unwrap();
+        db::insert_file_outbox(&conn, "t3", "peer", None, "/d/x.bin", "x.bin", 10).unwrap();
+        db::mark_file_outbox_sending(&conn, "t3", 0).unwrap();
+
+        assert!(
+            !finalize_expired_file(&conn, "t3"),
+            "台账已 done ⇒ 这一单不是失败，必须回报 false（调用方据此不 emit file-failed）"
+        );
+        assert_eq!(
+            msg_status(&conn, "file-t3").as_deref(),
+            Some("delivered"),
+            "已送达的气泡不许被清扫器改写成失败"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT status FROM file_transfers WHERE id = 't3'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "done",
+            "INV-P26：done 不可降级"
+        );
+        assert_eq!(
+            file_outbox_status(&conn, "t3").as_deref(),
+            Some("failed"),
+            "队列行仍要关掉 —— 它是队列自己的状态机，不留活口"
+        );
+    }
+
+    /// 群气泡**不归这条路径管**：`file_outbox` 今天只服务单聊（群文件的逐人投递台账在
+    /// `group_file_recipients`，那里每人一行、状态各自推进）。而 `finalize_expired_file`
+    /// 里那句 `gfile-{transfer_id}` 写的是**共享气泡** —— 一旦哪天群文件也进了这个队列，
+    /// "一个收件人超时"就会把整条群消息标成失败，别人其实收到了。
+    ///
+    /// ⚠️ 诚实交代（本条写出来之前我先错过一次）：这句今天**撞不到** —— 生产代码里唯一写
+    /// `file_outbox` 的地方 `group_id` 恒为 `None`，所以它永远命中 0 行；而就算有行，
+    /// `set_message_status` 也拒绝把 `delivered`/`read` 改回失败 ⇒ 只有还在途中的气泡会被改写。
+    /// 那为什么还要删："**靠暂时没人这么写才不出事**"的代码，正是这个仓一直在出事的那类
+    /// （`file_outbox` 的 schema 里就有 `group_id` 这一列，哪天群文件进队列，它立刻变成
+    /// "一个收件人超时 ⇒ 整条群消息显示失败，而别人其实收到了"）。判据把边界钉住，
+    /// 合并三份收尾时那句一并删。
+    #[test]
+    fn expired_file_does_not_touch_the_group_bubble() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+
+        // 群文件气泡在投递途中就是 `sending`（`delivered` 是全员收齐之后）。
+        // 选这个状态是刻意的：`set_message_status` 本身拒绝把 delivered/read 改回失败，
+        // 只有"还在途中"的气泡会被这句隔空改写 —— 所以它是**潜伏**而不是活跃缺陷。
+        ins_bubble(&conn, "gfile-t4", "sending");
+        db::insert_file_outbox(&conn, "t4", "peer", None, "/d/y.bin", "y.bin", 10).unwrap();
+        db::mark_file_outbox_sending(&conn, "t4", 0).unwrap();
+
+        assert!(
+            finalize_expired_file(&conn, "t4"),
+            "单聊这一路的四步写应当照常成功"
+        );
+        assert_eq!(
+            msg_status(&conn, "gfile-t4").as_deref(),
+            Some("sending"),
+            "群文件的气泡状态由 `group_file_recipients` 那条路决定，清扫器不许隔空改写"
         );
     }
 

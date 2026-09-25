@@ -953,6 +953,7 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 * **同一个关注点只有一个家**：除 `db/file_transfer.rs` 之外不许再出现直接
   `UPDATE file_transfers SET status`（守卫 `cascade_tests::terminal_status_writes_have_one_home`）。
   有第二个家时，"改一个忘一个"是常态 —— 本仓 §9 那族平行实现反复就是这个形状。
+* **文件队列的终态只有一个出口**：`db::finalize_file_failure(conn, transfer_id, end)`，`end ∈ {Expired, GiveUp, Cancelled}`。三份各写一遍的时期，同一条规矩只在两处成立、`done` 闸门只装在两扇门上（2026-09-25 合并，实测到的漂移全写在函数注释里）。取消与失败的口径差别也在这里定：`cancelled` 写 `file-` + `gfile-`（取消整条消息），超时/放弃只写 `file-`（一个收件人没收到不代表群消息失败）。
 * **把行踢出重试集合的那一步必须排最后**：`mark_file_outbox_{failed,cancelled}` 与
   `delete_*_outbox_by_msg_id` 一跑，这一行就再也扫不到（三条队列查询只认 pending/sending），
   前面任何一步失败都永久无人补 —— 症状是气泡停在「发送中」且不再有任何人来修它。
