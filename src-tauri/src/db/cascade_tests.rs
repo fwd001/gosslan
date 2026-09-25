@@ -642,3 +642,95 @@ fn queue_failure_fails_live_rows_but_never_a_done_one() {
     // 库里没有的行：false，不 panic
     assert!(!mark_queued_transfer_failed(&conn, "q-missing").unwrap());
 }
+
+/// 离线文件队列的状态集合里，`cancelled` 必须是"**不会再被任何一条重取/过期查询捞起来**"的。
+///
+/// 这条是"取消改写成 cancelled"的**前置证据**，不是它的回归：今天 `cancelled` 还没人写，
+/// 而三条队列查询的判据都是"只认 pending / sending"⇒ 写进去就等于永久出局。
+/// 不先钉这一条就改判死口径，等于凭直觉引入一个新状态。
+#[test]
+fn cancelled_file_outbox_rows_are_never_requeued() {
+    let conn = fresh_db();
+    let ins = |id: &str, status: &str| {
+        conn.execute(
+            "INSERT INTO file_outbox(transfer_id, peer_id, local_path, name, size, status,
+                                     attempts, next_attempt_at, created_at)
+             VALUES(?1, 'p1', '/d/x.bin', 'x.bin', 10, ?2, 0, 0, 1)",
+            params![id, status],
+        )
+        .unwrap();
+    };
+    for (id, status) in [
+        ("f-pending", "pending"),
+        ("f-sending", "sending"),
+        ("f-failed", "failed"),
+        ("f-cancelled", "cancelled"),
+    ] {
+        ins(id, status);
+    }
+
+    let mut due: Vec<String> = list_pending_file_outbox(&conn, "p1")
+        .unwrap()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    due.sort();
+    assert_eq!(
+        due,
+        vec!["f-pending".to_string()],
+        "flush 只准捞 pending —— cancelled/sending/failed 都不该被重发"
+    );
+
+    // created_at=1 < 今天 ⇒ 三条 pending/sending 都算过期候选，cancelled 不在其中
+    let expired: Vec<String> = list_expired_file_outbox(&conn, i64::MAX)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.0.clone())
+        .collect();
+    assert!(
+        !expired.contains(&"f-cancelled".to_string()),
+        "过期清扫器不得把已取消的任务再判一次死：{expired:?}"
+    );
+    assert_eq!(expired.len(), 2, "只有 pending 与 sending 是清扫器的候选");
+
+    // 崩溃恢复同理：只回滚 sending，不许把 cancelled 复活
+    assert_eq!(reset_sending_to_pending(&conn).unwrap(), 1);
+    let after: String = conn
+        .query_row(
+            "SELECT status FROM file_outbox WHERE transfer_id = 'f-cancelled'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(after, "cancelled", "崩溃恢复不许复活用户主动取消的任务");
+}
+
+/// **用户主动取消不许记成失败**（第 4 步 P7 第 3 条）。
+///
+/// `cancel_file_transfer` 自己的注释写着「用户主动停止用 cancelled，自动失败用 failed」，
+/// 而它紧接着调的是 `mark_file_outbox_failed` ⇒ `file_outbox.status` 落在 'failed'。
+/// 三条队列查询都只认 pending/sending，所以**功能上没坏** —— 坏的是台账：
+/// 下一次有人按 status 统计/排查"为什么这单失败"，读到的是一个用户自己按下的取消。
+/// 注释与代码相反是本仓点过名的那类漂移（它会把下一个 AI 引去"照代码改注释"）。
+#[test]
+fn a_user_cancel_is_not_recorded_as_a_failure() {
+    let files = include_str!("../commands/files.rs");
+    let at = files
+        .find("pub async fn cancel_file_transfer(")
+        .expect("cancel_file_transfer 不见了 ⇒ 本测试的锚点失效");
+    let tail = &files[at..];
+    let stop = tail
+        .find("pub ")
+        .map(|i| if i == 0 { tail.len() } else { i })
+        .unwrap_or(tail.len());
+    // 取到下一个顶层 `pub` 之前（本文件里取消命令之后紧跟 request_content）
+    let body = &tail[..stop.max(1)];
+    assert!(
+        !body.contains("mark_file_outbox_failed("),
+        "取消路径调了 mark_file_outbox_failed ⇒ file_outbox 里用户取消被记成失败（应有的是 mark_file_outbox_cancelled）"
+    );
+    assert!(
+        body.contains("mark_file_outbox_cancelled("),
+        "取消路径必须走 mark_file_outbox_cancelled —— 与它自己那句注释同口径"
+    );
+}

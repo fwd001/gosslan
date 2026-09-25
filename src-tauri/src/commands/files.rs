@@ -469,10 +469,14 @@ pub async fn cancel_file_transfer(
     // 2. DB 层：单聊 outbox + 消息状态 + transfer
     //    群文件不走 file_outbox（走 group_files 表），但我们仍然 mark cancelled ——
     //    语义：用户主动停止用 "cancelled"，自动失败用 "failed"。
-    //    终态守卫保证幂等：已 delivered/read 的不会被覆盖。
+    //    ⚠️ 这句注释此前是**谎话**：紧接着调的是 `mark_file_outbox_failed`，
+    //    `file_outbox` 里落下的是 'failed' ⇒ 排查"这单为什么失败"的人会读到一个用户自己
+    //    按下的取消。三条队列查询只认 pending/sending，所以功能等价、台账不等价。
+    //    终态守卫保证幂等：已 delivered/read 的不会被覆盖；已 done 的传输行也不会被降级
+    //    （INV-P26）。
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::mark_file_outbox_failed(&dbc, &transfer_id);
+        let _ = db::mark_file_outbox_cancelled(&dbc, &transfer_id);
         let _ = db::set_message_status(&dbc, &format!("file-{transfer_id}"), "cancelled");
         // 群文件消息前缀是 gfile-，也处理一下
         let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "cancelled");

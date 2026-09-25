@@ -953,6 +953,11 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 * **同一个关注点只有一个家**：除 `db/file_transfer.rs` 之外不许再出现直接
   `UPDATE file_transfers SET status`（守卫 `cascade_tests::terminal_status_writes_have_one_home`）。
   有第二个家时，"改一个忘一个"是常态 —— 本仓 §9 那族平行实现反复就是这个形状。
+* **两个失败口径不许合并**：`file_outbox.status` 的 `failed` = **自动**判死（超时 / 重试耗尽 /
+  接收方不可达），`cancelled` = 用户主动取消。三条队列查询只认 `pending` / `sending`，
+  所以两者在功能上等价 —— 但台账不等价，混用之后"这一单为什么失败"就查不动了。
+  判据：`cascade_tests::cancelled_file_outbox_rows_are_never_requeued` +
+  `a_user_cancel_is_not_recorded_as_a_failure`。
 * **emit 由写库结果门控**（与 INV-P15 / 审计 A3 同一口径）：已经 `done` 的行没被改动，
   就不该为它发 `file-failed`。为一个躺在下载目录里能打开的文件弹"传输失败"是谎话。
 

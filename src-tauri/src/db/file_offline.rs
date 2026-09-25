@@ -36,7 +36,7 @@ pub fn list_pending_file_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<
 }
 
 /// 投递开始：pending → sending，并累计一次尝试。
-/// 加 `WHERE status = 'pending'` 守卫：cancel_file_transfer 可能已把这条标记 failed，
+/// 加 `WHERE status = 'pending'` 守卫：cancel_file_transfer 可能已把这条标记 cancelled，
 /// 此时不应该再被我们推进 sending —— 否则 spawn loop 后续可能再 mark pending 把 failed 覆盖掉。
 pub fn mark_file_outbox_sending(
     conn: &Connection,
@@ -75,10 +75,28 @@ pub fn delete_file_outbox(conn: &Connection, transfer_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// 永久失败：标记 failed，不再参与重试。
+/// 永久失败（**自动**判死：超时 / 重试耗尽 / 接收方不可达）：标记 failed，不再参与重试。
+/// 用户主动取消走 `mark_file_outbox_cancelled`，两者不许混用。
 pub fn mark_file_outbox_failed(conn: &Connection, transfer_id: &str) -> Result<()> {
     conn.execute(
         "UPDATE file_outbox SET status = 'failed' WHERE transfer_id = ?1",
+        params![transfer_id],
+    )?;
+    Ok(())
+}
+
+/// 用户主动取消：标记 cancelled，与"自动失败"分开记。
+///
+/// 三条队列查询（`list_pending_file_outbox` / `list_expired_file_outbox` /
+/// `reset_sending_to_pending`）都只认 `pending` / `sending` ⇒ `cancelled` 一旦写进去就是
+/// **永久出局**，不会被重发、不会被过期清扫再判一次死、也不被崩溃恢复复活
+/// （判据：`cascade_tests::cancelled_file_outbox_rows_are_never_requeued`）。
+///
+/// 为什么要单独一个状态而不是继续复用 `failed`：功能上两者今天等价，但台账不等价 ——
+/// 排查"这一单为什么失败"的人（或下一个照文档改代码的 AI）读到的会是用户自己按下的取消。
+pub fn mark_file_outbox_cancelled(conn: &Connection, transfer_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE file_outbox SET status = 'cancelled' WHERE transfer_id = ?1",
         params![transfer_id],
     )?;
     Ok(())

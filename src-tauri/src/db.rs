@@ -516,7 +516,7 @@ CREATE TABLE IF NOT EXISTS file_outbox (
     local_path      TEXT NOT NULL,
     name            TEXT NOT NULL,
     size            INTEGER NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'failed'
+    status          TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'failed' | 'cancelled'（后者=用户主动取消，见 INV-P26）
     attempts        INTEGER NOT NULL DEFAULT 0,
     next_attempt_at INTEGER NOT NULL,
     created_at      INTEGER NOT NULL

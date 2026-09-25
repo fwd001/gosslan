@@ -3081,6 +3081,24 @@ CASES: list[Case] = [
         tags=["rust", "db", "files", "terminal-state", "new-guards"],
     ),
     Case(
+        name="用户取消不得记成失败（file_outbox 的 cancelled 与 failed 是两个口径）",
+        why="`cancel_file_transfer` 自己的注释写着「用户主动停止用 cancelled，自动失败用 failed」，\n"
+        "     而它调的是 `mark_file_outbox_failed` ⇒ 台账里落 failed。三条队列查询只认 pending/sending，\n"
+        "     所以**功能等价、台账不等价**：下一个排查「这单为什么失败」的人（或照文档改代码的 AI）\n"
+        "     读到的是用户自己按下的取消。\n"
+        "     注入方式：把那句调用换回 `mark_file_outbox_failed`（编译照过、队列行为一模一样），守卫必须红。\n"
+        "     ⚠️ 反向也要成立：`mark_queued_transfer_failed`（自动判死）那边仍写 failed —— 两个口径不许合并。",
+        file=TAURI / "src" / "commands" / "files.rs",
+        injections=[(
+            "let _ = db::mark_file_outbox_cancelled(&dbc, &transfer_id);",
+            "let _ = db::mark_file_outbox_failed(&dbc, &transfer_id);",
+        )],
+        cmd=cargo("test", "--lib", "a_user_cancel_is_not_recorded_as_a_failure"),
+        cwd=TAURI,
+        expect_fail_hint="用户取消被记成失败",
+        tags=["rust", "db", "files", "terminal-state", "new-guards"],
+    ),
+    Case(
         name="缓存清理器不得跟随符号链接（审计 1.1：软链目标会被当缓存永久删除）",
         why="缓存目录是远端输入可达面（收到的文件名/目录名不受信）。旧实现用 e.path().metadata()\n"
         "     判类型——它**跟随软链**：缓存里一个指向任意位置的软链会让其目标被收集进清理列表并\n"

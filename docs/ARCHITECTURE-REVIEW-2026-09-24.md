@@ -497,7 +497,11 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
    另有一条 `terminal_status_writes_have_one_home` 挡住第二个家。本文 = **INV-P26**（§26，
    原「必测矩阵」顺延 §27）。
 2. `content_transfers` 发送侧接上 `mark_complete`（或删除该状态并改注释）；
-3. `file_outbox` 取消写 `cancelled` 而不是 `failed`；
+3. ✅ `file_outbox` 取消写 `cancelled` 而不是 `failed`（2026-09-25）：`cancel_file_transfer` 的
+   注释本来就写着这个口径，代码调的却是 `mark_file_outbox_failed` —— 注释与代码相反。
+   新增 `mark_file_outbox_cancelled`；`mark_queued_transfer_failed`（自动判死）仍写 failed，
+   两个口径不许合并。三条队列查询只认 pending/sending ⇒ 功能等价、台账不等价，
+   所以先用 `cancelled_file_outbox_rows_are_never_requeued` 证明"写进去就是永久出局"再引入。
 4. ⏳ `fail_file_job` 的**写序**对齐仍未做（破坏性写放最后）；但本次顺手把它**绕过助手**的那句
    裸 `UPDATE file_transfers SET status='failed'` 收进了 `db`，并且已经 `done` 时不再 emit
    （`file-failed` 为一个收好的文件弹出来是谎话）。⚠️ 那条 emit 抑制**没有行为级测试**

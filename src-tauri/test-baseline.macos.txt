@@ -63,6 +63,8 @@ crypto::tests::seal_open_roundtrip
 crypto::tests::signature_verifies
 db::cascade_tests::a_completed_transfer_row_is_never_downgraded
 db::cascade_tests::a_failed_row_can_be_reactivated_by_the_next_attempt
+db::cascade_tests::a_user_cancel_is_not_recorded_as_a_failure
+db::cascade_tests::cancelled_file_outbox_rows_are_never_requeued
 db::cascade_tests::delete_conversation_purges_inflight_queues_and_keeps_cards
 db::cascade_tests::delete_group_cascade_clears_history_reads_and_queues
 db::cascade_tests::expired_rows_carry_peer_and_age_for_group_and_file_queues

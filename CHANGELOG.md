@@ -10,6 +10,29 @@
 
 ## [Unreleased]
 
+### Fix (2026-09-25 · 第 4 步 P7 第二刀：用户取消不再记成失败)
+
+`cancel_file_transfer` 自己的注释写着「用户主动停止用 cancelled，自动失败用 failed」，
+而它紧接着调的是 `db::mark_file_outbox_failed` ⇒ `file_outbox.status` 落的是 `'failed'`。
+**注释与代码相反**是本仓点过名的漂移族（它会引导下一个人「照代码改注释」而不是改代码）。
+
+要紧的程度说清楚：三条队列查询（`list_pending_file_outbox` / `list_expired_file_outbox` /
+`reset_sending_to_pending`）只认 `pending` / `sending` ⇒ 写 `failed` 与写 `cancelled`
+在**功能上完全等价**，坏的是台账 —— 下一个排查"这一单为什么失败"的人（或 AI）读到的
+是用户自己按下的取消按钮。
+
+- 新增 `db::mark_file_outbox_cancelled`，取消路径改用它；`mark_queued_transfer_failed`
+  （自动判死）那边**仍然写 failed** —— 两个口径不许合并。
+- `file_outbox.status` 的注释补上 `cancelled`。
+- 先钉**前置证据**再引入状态：`cancelled_file_outbox_rows_are_never_requeued` 直接插四种状态，
+  断言三条队列查询各自只认什么 —— 它今天就能跑（`cancelled` 还没人写），
+  用途是证明"写进去 = 永久出局"，不是凭直觉新加状态。
+- 判据 `a_user_cancel_is_not_recorded_as_a_failure`（源码级，双向断言：不许出现
+  `mark_file_outbox_failed(`、必须出现 `mark_file_outbox_cancelled(`）+ 一条变异用例
+  （把那句调用换回去 ⇒ 编译照过、队列行为一模一样、只有守卫红）。护栏 179 → 180。
+- 顺带吃到上一刀的收益：`upsert_transfer(..., "cancelled", ...)` 现在**不会**再把一个
+  已经 `done` 的传输行改成"已取消"（INV-P26 的闸门覆盖这条路径）。
+
 ### Fix (2026-09-25 · 第 4 步 P7 第一刀：`file_transfers` 的终态契约 —— `done` 不可降级)
 
 `file_transfers.status` 今天有 **39 个写入点**（实测：`active` 12 处、`failed` 12 处、`done` 6 处、
