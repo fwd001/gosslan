@@ -10,6 +10,24 @@
 
 ## [Unreleased]
 
+### Test（2026-09-26 · 故障注入第五格：接收目录写不进去 —— 顺带把我自己写错的判据抓出来一次）
+- 新增 `--fault=recv-readonly`（+ `npm run test:fault-injection:disk` / `:disk-selfproof`，已接进 `verify --group local`）：
+  把接收端的**下载目录整体改成只读**再入队 1 MB。这一轮走的是"对端活着、照常发心跳"那条路，
+  与冻结轮互为对照 ⇒ 它是 `file_outbox` 的 GiveUp **第一次被真进程跑到**。
+- 两条证据：正向 22 断言全绿（实测入队 → **43.2 s** 后队列行落到 `failed` / `attempts=5`，
+  A 日志 `reason=连续重试超限`，B 日志 3 次 `Permission denied (os error 13)`，接收目录零残留）；
+  反向只把"该落到哪个终态"换成 `done` ⇒ **恰好 1/22 报红**、退出码 1。
+- ★ 第一版判据把 `sending` 当成了终态 ⇒ 在第 4 次尝试的 33.2 s 处抓到 `{status:'sending',attempts:4}` 判红。
+  `sending` 是"正在投递"的中间态 —— **红的是我的判据，不是产品**；已改，并把这个坑写进 harness 注释。
+- ★ 一度怀疑"崩溃后卡在 `sending` 就永远没人捞"（队列查询只认 `pending`）⇒ 查码确认
+  `reset_sending_to_pending` 在 AppState 初始化时正是为这件事存在的 ⇒ **不是缺口，没往路线图加账**。
+  留这条是为了记一个反面习惯：**怀疑成立之前先把码查完**。
+- 新发现登记 **A-10（待用户拍板，未动生产码）**：这一格命中的分支**接收侧不写库、不发事件**，
+  只有 `FileReject` + 一条 error 日志 ⇒ 磁盘满 / 接收目录设在只读盘时，**接收方完全不知道发生过这件事**
+  （发送方也要 43 s 后才看到失败）。补提示属于新增用户可见行为 ⇒ 当前阶段只记账不做。
+- 验证：`npm run verify` 快速层全绿（步数现算，未增不减）；带轮次名的声明（「磁盘轮 N 断言」）
+  已按现算值登记在 smoke 矩阵里，架构图卡片因为不再写任何总数所以无需跟改。
+
 ### Test（2026-09-26 · 故障注入第四格：对端失联用 SIGSTOP 冻住 —— 而它证伪了我自己的设计）
 - 新增 `--fault=peer-freeze`（+ `npm run test:fault-injection:freeze` / `:freeze-selfproof`，并已接进 `verify --group local`）：
   `SIGSTOP` 冻住接收端 ⇒ 进程活着、内核照样收 SYN、发送侧链路仍是 "open"，唯一缺的是对端回执；

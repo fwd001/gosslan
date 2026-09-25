@@ -144,6 +144,7 @@ const MODE_LABEL = {
   RESUME: "续传轮",
   KILL: "杀进程轮",
   FREEZE: "冻结轮",
+  DISK: "磁盘轮",
 };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
@@ -151,6 +152,12 @@ function harnessAsserts() {
   let mode = null;
   let common = 0;
   for (const line of src.split("\n")) {
+    // 注释行整条跳过。这条不是洁癖：09-26 在 harness 头部写了句"每轮几条断言不在这里写，由
+    // check-doc-numbers 从下面的 check 调用点现算"——那行里出现了字面的 `check("(`，
+    // 于是**每一轮各多算 1 条**（默认轮 16→17），文档全被判红。
+    // ⇒ 判据"从源码数调用点"就必须区分得了注释与代码，否则说明性文字会把自己算进去。
+    // 反证形状：这行注释现在还留在 harness 里，而数字回到了真值 ⇒ 跳过确实生效。
+    if (/^\s*\/\//.test(line)) continue;
     const open = line.match(/^\s*if \(([A-Z][A-Z_]*)\) \{/);
     if (open) { mode = open[1]; if (mode !== "NEGATIVE") per[mode] = per[mode] || 0; continue; }
     if (/^}/.test(line)) { mode = null; continue; }
@@ -184,7 +191,7 @@ console.log(
   `· 现算 E2E 断言数：${Object.entries(e2e).map(([k, v]) => `${k} ${v}`).join(" / ")}`,
 );
 const E2E_CLAIM =
-  /(默认轮|脏前缀轮|故障轮|续传轮|杀进程轮|冻结轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
+  /(默认轮|脏前缀轮|故障轮|续传轮|杀进程轮|冻结轮|磁盘轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
 const seenLabel = new Set();
 for (const rel of LIVE_DOCS) {
   const abs = path.join(ROOT, rel);

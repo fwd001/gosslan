@@ -25,6 +25,10 @@
 //   --fault=kill-mid-lie      → 同样的注入，只把"期望续发字节数/期望摘要"换成错值 ⇒ 预期报红
 //   --fault=peer-freeze       → 注入④：对端被 SIGSTOP 冻住（有写无 ACK）⇒ 不许宣布送达，解冻后补齐
 //   --fault=peer-freeze-lie   → 同样的注入，只换期望摘要 ⇒ 预期报红
+//   --fault=recv-readonly     → 注入⑤：接收目录只读（磁盘写不进去）⇒ 必须明确失败并止步，不许假 done、不许无限重试
+//   --fault=recv-readonly-lie → 同样的注入，只把"该落到哪个终态"换成 done ⇒ 预期报红
+//   （每轮各几条断言**不在这里写**：`check-doc-numbers.mjs` 从下面的 check(" 调用点现算，
+//    写进文档时要以「<轮次名> N 断言」的形式，否则不会被对账）
 //   （kill 轮的文件尺寸用 E2E_KILL_MB 调，默认 100 —— 回环上实测 ~0.78s 走完，窗口够打）
 //   （freeze 轮用 E2E_FREEZE_S 选调结长度，默认 30：**<45s** 是"链路还活着、只是没回执"，
 //    **>45s** 越过 watchdog（健康阈值 15s×3）⇒ 真的拆链 + 重拨 + 重试，两种都是同一组结局判据）
@@ -55,6 +59,21 @@ const FREEZE = FAULT === "peer-freeze" || FAULT === "peer-freeze-lie";
 /// 两种 regime 用同一组"结局空间"判据，不需要分叉。
 const FREEZE_MS = Number(process.env.E2E_FREEZE_S || 30) * 1000;
 const FREEZE_BYTES = Number(process.env.E2E_FREEZE_MB || 1) * 1024 * 1024;
+/// 注入⑤：接收端**磁盘写不进去**（用户把接收目录设到只读盘 / 磁盘满 / 外接盘被拔）。
+/// 与冻结轮正好成对：冻结轮里 A **一次都没尝试**（没有入站帧 ⇒ 没人触发 flush）；
+/// 这里 B 活着、照常发心跳 ⇒ A 一定尝试、一定被拒，于是真正走的是
+/// 「重试到上限 → GiveUp → 唯一出口记 failed」这条链（也是 outbox 第一次被真进程跑到 GiveUp）。
+/// ⚠️ 注入落在 **offer 期**（`File::create` 就 EACCES，file.rs:1604）⇒ 走的是
+///   `transport.rs:3720` 那条分支：只发 `FileReject{received:0}` + 记一条 error 日志，
+///   **不写任何接收侧 DB 行**。所以这一轮**不许**断言"B 侧记了 failed"（那行根本不存在）；
+///   B 侧可证的事实只有「日志里出现初始化失败」与「盘上没有这个 transfer 的任何东西」。
+///   要测"收到一半才写失败 ⇒ 接收侧 upsert failed"得另开一条（预置可写 `.part` 再把目录改只读），
+///   那是 A-5 的形状，不并进这一格。
+const DISK = FAULT === "recv-readonly" || FAULT === "recv-readonly-lie";
+const DISK_BYTES = Number(process.env.E2E_DISK_MB || 1) * 1024 * 1024;
+/// 发送侧重试上限（file.rs:259 MAX_FILE_OUTBOX_RETRIES）—— 判据用它钉"不许无限重试"。
+const DISK_MAX_ATTEMPTS = 5;
+let xferId6, term6 = null;
 let xferId5, srcFile5, srcSha5;
 /// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
 /// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
@@ -852,6 +871,86 @@ if (FREEZE) {
     const kept5 = fs.existsSync(dl) ? fs.readdirSync(dl).filter((f) => f.includes(xferId5)) : [];
     check("解冻之后不许留下第二次成功的痕迹",
       kept5.length === 1 && kept5[0] === `${xferId5}.bin`, `${xferId5}.bin`, kept5.join(", ") || "空");
+  });
+}
+
+if (DISK) {
+  step("故障注入判据⑤：接收目录写不进去 ⇒ 必须明确失败并止步，不许假 done、不许无限重试", async () => {
+    const dl = path.join(RUN_DIR, "recv", "B");
+    fs.mkdirSync(dl, { recursive: true });
+    const srcDir = path.join(RUN_DIR, "src");
+    fs.mkdirSync(srcDir, { recursive: true });
+    xferId6 = `e2e-g-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    const srcFile6 = path.join(srcDir, `${xferId6}.bin`);
+    fs.writeFileSync(srcFile6, Buffer.alloc(DISK_BYTES));
+    const t0 = nowMs();
+    // 注入：接收目录整个改成只读 —— 建 `.part` 与最终 rename 都需要目录写权限。
+    fs.chmodSync(dl, 0o500);
+    try {
+      for (let i = 0; ; i++) {
+        try {
+          seed(INSTANCES[0].db, (db) => {
+            db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(xferId6);
+            db.prepare(
+              `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+               VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
+            ).run(xferId6, peerTo, srcFile6, `${xferId6}.bin`, DISK_BYTES, nowMs());
+          });
+          break;
+        } catch (e) {
+          if (i >= 5) throw e;
+          await sleep(300);
+        }
+      }
+      term6 = null;
+      await waitFor(() => {
+        const db = openDb(INSTANCES[0].db, true);
+        const r = db
+          .prepare("SELECT status,attempts FROM file_outbox WHERE transfer_id=?1")
+          .get(xferId6);
+        db.close();
+        // 终态 = 队列行落到 failed/cancelled。
+        // ⚠️ 不要把 `sending` 当终态：它是"正在投递"的中间态（mark_file_outbox_sending 顺手 +1 attempts），
+        //    第一版就是这么判的，结果第 4 次尝试的 33.2 s 处抓到 `{status:'sending',attempts:4}` 判红。
+        //    （停在 sending 会不会永久卡住？不会 —— AppState 初始化有 reset_sending_to_pending，
+        //    file_offline.rs:135-146 的注释正是为这件事写的。）
+        if (r && (r.status === "failed" || r.status === "cancelled")) term6 = r;
+        return !!term6;
+      }, 180_000, "A 侧这一单要在重试上限内落到明确终态（不许静静挂着）");
+      console.log(
+        `  · 实测：入队 → 明确终态 ${((nowMs() - t0) / 1000).toFixed(1)}s ${JSON.stringify(term6)}`,
+      );
+      for (const l of (tailLog(INSTANCES[0].log, 60000) || "").split("\n")
+        .filter((x) => x.includes(xferId6)).slice(-6)) console.log("      A│ " + l.slice(0, 220));
+      for (const l of (tailLog(INSTANCES[1].log, 60000) || "").split("\n")
+        .filter((x) => x.includes("初始化失败")).slice(-3)) console.log("      B│ " + l.slice(0, 220));
+    } finally {
+      // ⚠️ 必须还原：否则这一轮的接收目录连同后续清理都带着只读位，
+      //    而且下一个模式会被这条注入的残留状态污染。
+      fs.chmodSync(dl, 0o700);
+    }
+    const seen = fs.readdirSync(dl).filter((f) => f.includes(xferId6));
+    // 反空转前提（冻结轮的教训：先量"我以为已经成立的前提"）：
+    // B 的日志必须真说过"初始化失败" ⇒ 注入确实生效、A 确实试过，而不是"这一单没跑"带来的假绿。
+    const bLog = tailLog(INSTANCES[1].log, 200000) || "";
+    check("注入真的生效：接收端日志必须出现「接收文件初始化失败」",
+      bLog.includes("接收文件初始化失败"), "≥1 次", (bLog.match(/接收文件初始化失败/g) || []).length);
+    check("重试真的发生过（与冻结轮的分水岭：这里对端活着、有入站帧）",
+      !!term6 && term6.attempts >= 2, "≥2", term6 ? term6.attempts : "无终态");
+    check("重试不许失控：次数不得超过 MAX_FILE_OUTBOX_RETRIES",
+      !!term6 && term6.attempts <= DISK_MAX_ATTEMPTS, `≤${DISK_MAX_ATTEMPTS}`,
+      term6 ? term6.attempts : "无终态");
+    // lie 模式：注入完全一样，只把"该落到哪个终态"换成 done ⇒ 这一条必须红。
+    const wantTerm = LIE ? "done" : "failed";
+    check("接收端写不进去时，发送侧必须落到明确终态（不许停在 pending/active，也不许假 done）",
+      !!term6 && term6.status === wantTerm, wantTerm, term6 ? term6.status : "始终没到终态");
+    const aDb = openDb(INSTANCES[0].db, true);
+    const a6 = aDb.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId6);
+    aDb.close();
+    check("发送侧台账不许是 done（唯一出口的判定）",
+      a6?.status !== "done", "非 done", a6?.status ?? "无行");
+    check("写不进去就不许在接收目录留下这个 transfer 的任何东西",
+      seen.length === 0, "无文件", seen.join(", ") || "无");
   });
 }
 

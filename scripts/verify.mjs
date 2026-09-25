@@ -432,6 +432,17 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--fault=peer-freeze"],
     },
+    {
+      group: "local",
+      name: "双实例 E2E：接收目录写不进去（磁盘满/只读）必须明确失败并止步",
+      why: `把接收端目录改成只读 ⇒ 对端在 offer 期就建不出临时文件、只能回 FileReject；` +
+        `钉"写不进去不等于传输成功"：发送侧必须在重试上限内落到明确终态（GiveUp→failed）、` +
+        `次数不许超过 MAX_FILE_OUTBOX_RETRIES、接收目录不许留下这个 transfer 的任何东西；` +
+        `与冻结轮互为对照（那一轮对端不回话⇒根本没尝试，这一轮对端活着⇒真跑到 GiveUp）；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=recv-readonly"],
+    },
   );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。
