@@ -1,5 +1,6 @@
 // 职责边界：
-// - 聊天历史搜索（search_messages / search_chat_history）
+// - 聊天历史搜索（search_chat_history —— 全仓唯一一份搜索 IPC，
+// -   旧的 search_messages「按会话摘要」那条因零调用点已删，见 CHANGELOG 4.29.41）
 // - 搜索结果结构体（ChatSearchMessage/ChatSearchGroup）
 // - ⚠️ 原混在 favorites.rs 里，因功能域独立而拆出
 /// 「搜索聊天记录」结果页的一条命中。
@@ -38,9 +39,10 @@ const SEARCH_HISTORY_MAX_HITS: i64 = 2000;
 
 /// 搜索聊天记录（跨会话，按会话分组）。
 ///
-/// 与 `search_messages`（会话列表里"内容命中的会话"摘要，只取每会话最新一条）的区别：
-/// 这里要的是**结果页**的数据形态 —— 每个会话的命中总数 + 命中消息列表（含发送者），
+/// 这里给的是**结果页**的数据形态 —— 每个会话的命中总数 + 命中消息列表（含发送者），
 /// 并支持微信搜索页那两个筛选：发送人、日期区间。
+/// （曾经还有一条更粗的 `search_messages`：只回"哪些会话命中"。它没有任何调用点，
+///   已于 4.29.41 删除 —— 两份搜索查询共用 `escape_like`，留着就是第二条会漂移的平行实现。）
 ///
 /// 为什么标 `(async)`：这是一次带 LIKE 的全表扫描（可能几千行），
 /// 同步命令会在 macOS 主线程上跑（见 `heavy_commands_run_off_the_main_thread` 守卫）。

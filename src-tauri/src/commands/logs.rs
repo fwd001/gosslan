@@ -1168,12 +1168,6 @@ pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 pub fn close_settings_window(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
-/// 移动端桩：见 `open_log_window` 的说明。
-#[cfg(mobile)]
-#[tauri::command]
-pub fn close_log_window(_app: tauri::AppHandle) -> Result<(), String> {
-    Ok(())
-}
 
 // ---------------- 测试 ----------------
 include!("logs_tests.rs");

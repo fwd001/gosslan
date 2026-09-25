@@ -3915,7 +3915,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     let rec = {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         let subtype = file::classify_file_subtype(&name);
-                        // 与发送端同口径（commands::send_file 4.22.1）：kind 只区分
+                        // 与发送端同口径（`commands::send_file`，4.22.1 起；现为 send_file_auto 的私有实现）：kind 只区分
                         // image|file，细分留 content.subtype —— 接收端不再按文件名
                         // 重新猜一遍（旧写法把 mp4 标成 kind="video"，前端渲染链
                         // 不认，气泡整个退化成 JSON；真机 2026-09-19）。
