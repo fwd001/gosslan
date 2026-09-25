@@ -2266,6 +2266,44 @@ CASES: list[Case] = [
         tags=["rust", "transport", "p1-isolation"],
     ),
     Case(
+        name="链路队列必须按字节封顶：折算槽数不许被换成常量深度",
+        why="第 2 步 · P3。四个建链点原本各写三条深 1024 的 `mpsc`；一片 LAN 分块上线约 341 KB ⇒ "
+        "**单链路最坏 ~350 MB**，多连接按连接翻倍，手机上就是 OOM / 整机变慢、进度假快。\n"
+        "     这里只改**容量语义**（优先级模型一字未动）：low 队列按 `LINK_QUEUE_BYTE_BUDGET` 折算，\n"
+        "     high/normal 保持按帧数（那里的帧被载荷上限卡着，不是内存问题）。\n"
+        "     注入 = 把折算换成直接取上限 —— 预算常量还在、函数还在、调用点也还在，"
+        "只是**没人再用它算深度**：这类「名字留着、线断了」的退化不会编译报错，只能这样咬。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[
+            (
+                "mpsc::channel(low_queue_slots(chunk_plain_bytes)),",
+                "mpsc::channel(LINK_QUEUE_MAX_SLOTS),",
+            ),
+        ],
+        cmd=cargo("test", "--lib", "link_queues_are_created_from_one_place"),
+        cwd=TAURI,
+        expect_fail_hint="low 队列必须由",
+        tags=["rust", "transport", "p3-queues"],
+    ),
+    Case(
+        name="链路队列的字节预算必须真的参与折算（不许绕过预算取上限）",
+        why="与上一条是一对：那条钉「接没接上」，这条钉「算得对不对」。"
+        "把 `BUDGET / wire` 换成常量上限，四条链路的代码形状一模一样、编译也一模一样，"
+        "但 1024 槽 × 341 KB 那条老路就回来了 —— 只有「槽数 × 单帧线上字节 ≤ 预算」这条"
+        "行为判据抓得住它（所以两条都要留，缺一不可）。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[
+            (
+                "    (LINK_QUEUE_BYTE_BUDGET / wire).clamp(LINK_QUEUE_MIN_SLOTS, LINK_QUEUE_MAX_SLOTS)",
+                "    LINK_QUEUE_MAX_SLOTS",
+            ),
+        ],
+        cmd=cargo("test", "--lib", "link_low_queue_is_bounded_by_bytes_not_frame_count"),
+        cwd=TAURI,
+        expect_fail_hint="超过预算",
+        tags=["rust", "transport", "p3-queues"],
+    ),
+    Case(
         name="写失败的分流两半都必须各自咬住（本地成帧失败 vs 真 socket 失败）",
         why="第 1 步 · 故障隔离（P2）。判据不是帧类型而是**字节有没有上过链路**：一个字节都没"
         "写出去 ⇒ 那是本机 bug，链路保留；写出去才失败 ⇒ 这条连接不可信，必须判死并拆写半。"

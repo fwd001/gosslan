@@ -1193,9 +1193,8 @@ async fn handle_incoming(
         );
         return;
     }
-    let (high_tx, high_rx) = mpsc::channel(1024);
-    let (normal_tx, normal_rx) = mpsc::channel(1024);
-    let (low_tx, low_rx) = mpsc::channel(1024);
+    let ((high_tx, high_rx), (normal_tx, normal_rx), (low_tx, low_rx)) =
+        link_channels(crate::protocol::FILE_CHUNK);
     // 本连接独立的取消信号（M3#6）：健康 watchdog 判定僵尸链路时精确断开这一条。
     let (cancel_tx, cancel_rx) = watch::channel(false);
     // 追加到该 peer 的连接列表（而非覆盖）—— 多连接支持的基础。
@@ -1410,6 +1409,48 @@ pub(crate) fn clear_file_wire_progress_in(
 fn mark_conn_failure(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     pm.mark_connection_failure(peer_id, endpoint);
+}
+
+// ---------------- 链路队列的容量策略（第 2 步 · P3） ----------------
+
+/// 一条链路 **low 队列**允许压住多少字节的待发分块。
+///
+/// 为什么是字节而不是帧数：旧形状是四个建链点各写三条 `mpsc::channel`、深度都是 1024，
+/// 而一片 LAN 分块上线约 341 KB ⇒ **单链路最坏 ~350 MB**，多链路/群文件按连接翻倍，
+/// 手机上就是 OOM 或整机变慢。背压本来就有（`send_on_link` 满了原地等 + `stall_tick`），
+/// 错的只是"缓冲先分配完才开始排队"。8 MB ≈ 24 片 LAN 分块，够 writer 连续排空用。
+pub const LINK_QUEUE_BYTE_BUDGET: usize = 8 * 1024 * 1024;
+
+/// 只**收紧**不放宽：今天就是 1024，小分片（BLE 4 KB）时保持原深度。
+const LINK_QUEUE_MAX_SLOTS: usize = 1024;
+
+/// 折算下限。必须 ≥1（`mpsc::channel(0)` 直接 panic），留 8 是为了还能流水。
+const LINK_QUEUE_MIN_SLOTS: usize = 8;
+
+/// high / normal 两条队列的深度（帧数）。这两条上只有消息与控制帧，被
+/// `MAX_MESSAGE_LEN` 与各类载荷上限卡着，不是内存问题 —— 保持今天的 1024 不动。
+/// 起名而不写字面量是为了让"只剩一处策略"这件事可被判据检查。
+const CONTROL_QUEUE_SLOTS: usize = 1024;
+
+/// 一条队列的收发两端（`mpsc` 的一对）。
+type LinkQueue = (mpsc::Sender<Message>, mpsc::Receiver<Message>);
+
+/// 按"这一条链路会装的最大分片"把字节预算折算成槽数。纯函数、单调。
+pub fn low_queue_slots(chunk_plain_bytes: usize) -> usize {
+    let wire = crate::network::file::chunk_wire_bytes(chunk_plain_bytes).max(1);
+    (LINK_QUEUE_BYTE_BUDGET / wire).clamp(LINK_QUEUE_MIN_SLOTS, LINK_QUEUE_MAX_SLOTS)
+}
+
+/// 一条链路的三条队列（high / normal / low），四个建链点共用这一份策略。
+///
+/// high/normal 仍按帧数；只有 low（分块通道）按字节预算 —— 分片是这里唯一能到几百 KB 的东西。
+/// 优先级模型一字未动，这次只改容量语义。
+pub(crate) fn link_channels(chunk_plain_bytes: usize) -> (LinkQueue, LinkQueue, LinkQueue) {
+    (
+        mpsc::channel(CONTROL_QUEUE_SLOTS),
+        mpsc::channel(CONTROL_QUEUE_SLOTS),
+        mpsc::channel(low_queue_slots(chunk_plain_bytes)),
+    )
 }
 
 /// 单次写出的结果（D8-4）。把"主动放弃"与"写失败"分开：
@@ -2472,9 +2513,8 @@ async fn connect_to_peer(
     let peer_id: String = device_id.clone();
     let learned_hello: Option<Message> = Some(first);
 
-    let (high_tx, high_rx) = mpsc::channel(1024);
-    let (normal_tx, normal_rx) = mpsc::channel(1024);
-    let (low_tx, low_rx) = mpsc::channel(1024);
+    let ((high_tx, high_rx), (normal_tx, normal_rx), (low_tx, low_rx)) =
+        link_channels(crate::protocol::FILE_CHUNK);
     // 本连接独立的取消信号（M3#6），语义同 `handle_incoming`。
     let (cancel_tx, cancel_rx) = watch::channel(false);
     state
@@ -8411,6 +8451,94 @@ mod tests {
         );
     }
 
+    /// 链路的 low 队列必须按**字节**封顶，而不是按帧数（第 2 步 · P3）。
+    ///
+    /// 旧形状是四个建链点各写死三条 1024 深的 `mpsc::channel`：一片 LAN 分块上线是
+    /// `base64(chunk + 28) ≈ 341 KB`，1024 槽 ⇒ **单链路最坏 ~350 MB**
+    /// （多链路、群文件多收件人按连接翻倍）。背压是有的，但**位置错了**：
+    /// 缓冲先分配完才开始排队。
+    ///
+    /// 这条断言故意只说"预算"与"不许为 0"，不说槽数是多少 —— 槽数是推导量，
+    /// 把 24 写进测试就等于每次调预算都要改一次测试。
+    #[test]
+    fn link_low_queue_is_bounded_by_bytes_not_frame_count() {
+        // `mpsc::channel(0)` 会 panic ⇒ 折算下限必须 ≥1，这里连极小与极大分片一起试
+        for plain in [crate::network::file::BLE_FILE_CHUNK, 1, 64] {
+            let slots = low_queue_slots(plain);
+            assert!(
+                slots >= 1,
+                "chunk={plain} 折算出 {slots} 槽，channel(0) 会直接 panic"
+            );
+        }
+        // 分片越大 ⇒ 槽越少（单调不增），否则"按字节封顶"这句话是空的
+        let mut prev = usize::MAX;
+        for plain in [
+            1usize,
+            4096,
+            65536,
+            256 * 1024,
+            1024 * 1024,
+            crate::protocol::MAX_FRAME,
+        ] {
+            let slots = low_queue_slots(plain);
+            assert!(
+                slots <= prev,
+                "chunk={plain} 反而比更小的分片排得更深（{slots} > {prev}）"
+            );
+            prev = slots;
+        }
+        // 真正的 P3 判据：两种生产分片尺寸下「槽数 × 单帧线上字节」都不许越过预算
+        for plain in [
+            crate::network::file::BLE_FILE_CHUNK,
+            crate::protocol::FILE_CHUNK,
+        ] {
+            let held = low_queue_slots(plain) * crate::network::file::chunk_wire_bytes(plain);
+            assert!(
+                held <= LINK_QUEUE_BYTE_BUDGET,
+                "chunk={plain} ⇒ 队列最坏装 {held} 字节，超过预算 {LINK_QUEUE_BYTE_BUDGET}"
+            );
+        }
+        // 旧形状必须真的被治好：256KB 分片下不可能再排到 1024 深
+        assert!(
+            low_queue_slots(crate::protocol::FILE_CHUNK) < 1024,
+            "LAN 分片的队列还是 1024 深 = 那条 ~350 MB 的老路没堵住"
+        );
+    }
+
+    /// 四条链路的三条队列必须由**同一个策略**开出来（P3 的防回归位置）。
+    ///
+    /// 为什么还要源码钉一层，纯函数已经测过了：`1024` 这个字面量散在 4 个建链点里
+    /// （入站 / 出站拨号 / BLE 两处）。只要还剩一份字面量，下一个加链路的人就会照抄那一份
+    /// ⇒ "字节预算"退化成"其中三处有预算"，而且这种事**只在真机大文件时才看得见**。
+    #[test]
+    fn link_queues_are_created_from_one_place() {
+        let mut src = crate::network::transport_src_for_guards();
+        src.push_str(include_str!("ble.rs"));
+        // 两个探针都**拼起来写**：本文件就是被扫的源码之一，直接写字面量会数进自己
+        // （今天已经在别处被这个坑咬过两次：一次假过、一次假红）。
+        let literal = "mpsc::channel(10".to_string() + "24)";
+        assert_eq!(
+            src.matches(literal.as_str()).count(),
+            0,
+            "还有写死的 1024 槽建链点：字节预算会被那一份绕过去"
+        );
+        let call = "link_chan".to_string() + "nels(";
+        assert_eq!(
+            src.matches(call.as_str()).count(),
+            5,
+            "应为「定义 1 处 + 四个建链点各 1 处」；少了就是有条链路还在自己开队列"
+        );
+        // 光"都走 link_channels"还不够：函数本身也得真的按预算折算开 low，
+        // 否则预算名存实亡（这一条是被变异测试逼出来的）。
+        let wired = "mpsc::channel(low_queue".to_string() + "_slots(";
+        assert_eq!(
+            src.matches(wired.as_str()).count(),
+            1,
+            "low 队列必须由 `low_queue_slots` 折算出来，不能直接给常量深度"
+        );
+    }
+
+    /// 定向中继判定：共享目录/中继文件在无直连时靠它借一跳；给本机或旧端无 to 的帧不转发。
     #[test]
     fn directed_relay_target_routes_share_and_offer_frames() {
         let me = "me";

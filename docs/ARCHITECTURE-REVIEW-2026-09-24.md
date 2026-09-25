@@ -432,12 +432,18 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
 
 ### 第 2 步 · 缓冲与内存（**P3 + P4**）
 
-1. low 队列改成**字节预算**：容量按 `FILE_CHUNK × base64 膨胀` 折算（例如 8–16 MB），
-   或引入 credit（发送方按已入队字节自我节流）。**先只改容量语义，不改优先级模型。**
-2. 中继借用接收改流式：`Reassembly` 落 `.part`（复用直连路径已有的 `begin_receiver/make_receiver`），
+> **进度（2026-09-25）**：**P3 已落地**（1. 那一条，只改容量语义、优先级模型一字未动）。
+> **P4 未动**，因为它的两个方案语义相反、要你拍板（见 ②下面那条）。
+
+1. ✅ low 队列改成**字节预算**：`LINK_QUEUE_BYTE_BUDGET = 8 MB`，`low_queue_slots(chunk)` 折算槽数
+   （LAN 24 槽 / BLE 仍 1024 / 下限 8 防 `channel(0)` panic），四个建链点统一 `link_channels`。
+   实测依据：一片 LAN 分块上线 = `base64(256 KiB + 12 + 16) ≈ 341 KB` ⇒ 旧形状最坏 ~350 MB/链路。
+   ⚠️ 没测吞吐影响（不猜，交给真机）。
+2. ⬜ 中继借用接收改流式：`Reassembly` 落 `.part`（复用直连路径已有的 `begin_receiver/make_receiver`），
    或（最小版）加 `RELAY_RECEIVE_MAX_BYTES` 闸 + 界面诚实提示"经邻居借用只支持 ≤N MB"。
    ⇒ 选流式更好，但它是"第二条实现向第一条看齐"，改动可控。
-3. 测试：2 GB 声明尺寸下 `RelayFileOffer` 不分配全量内存（可用"只发 offer + 一片"的构造测出分配行为）。
+   **待拍板**：两个方案对用户可见行为相反（一个静默续传、一个明说传不了大的）。
+3. ⬜ 测试：2 GB 声明尺寸下 `RelayFileOffer` 不分配全量内存（可用"只发 offer + 一片"的构造测出分配行为）。
 
 ### 第 3 步 · Persistence 读路径（**P5 剩余**）
 

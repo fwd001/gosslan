@@ -453,6 +453,8 @@ network::transport::tests::hello_avatar_is_capped_for_the_handshake_frame
 network::transport::tests::hello_binding_ignores_unverified_announced_keys
 network::transport::tests::inbound_dedup_truth_table
 network::transport::tests::insert_outcome_maps_to_side_effect_and_ack_policy
+network::transport::tests::link_low_queue_is_bounded_by_bytes_not_frame_count
+network::transport::tests::link_queues_are_created_from_one_place
 network::transport::tests::malformed_known_frame_still_errors
 network::transport::tests::member_removed_action_full_truth_table
 network::transport::tests::new_peer_entry_respects_friend_key_anchor

@@ -1038,9 +1038,8 @@ async fn finish_dial(
     }
 
     // ---- 登记链路（端点 = BLE 标识，路径 = Bluetooth）----
-    let (high_tx, high_rx) = mpsc::channel(1024);
-    let (normal_tx, normal_rx) = mpsc::channel(1024);
-    let (low_tx, low_rx) = mpsc::channel(1024);
+    let ((high_tx, high_rx), (normal_tx, normal_rx), (low_tx, low_rx)) =
+        crate::network::transport::link_channels(crate::network::file::BLE_FILE_CHUNK);
     let (cancel_tx, cancel_rx) = watch::channel(false);
     state
         .links
@@ -2045,9 +2044,8 @@ async fn try_accept_handshake(
         .map_err(|e| format!("回 Hello 失败：{e}"))?;
 
     // ---- 6. 登记链路（端点 = BLE central 标识，路径 = Bluetooth）----
-    let (high_tx, high_rx) = mpsc::channel(1024);
-    let (normal_tx, normal_rx) = mpsc::channel(1024);
-    let (low_tx, low_rx) = mpsc::channel(1024);
+    let ((high_tx, high_rx), (normal_tx, normal_rx), (low_tx, low_rx)) =
+        crate::network::transport::link_channels(crate::network::file::BLE_FILE_CHUNK);
     let (cancel_tx, cancel_rx) = watch::channel(false);
     state
         .links

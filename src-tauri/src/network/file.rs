@@ -59,6 +59,16 @@ pub fn sha256_file_hex(path: &Path) -> Result<String, String> {
 /// BLE 上每个文件分块的大小（见 `chunk_size_for_path` 的完整推导）。
 pub const BLE_FILE_CHUNK: usize = 4 * 1024;
 
+/// 一片分块**上线之后**占多少字节：`seal` 前置 12B nonce + Poly1305 16B tag，
+/// 整段再 base64（×4/3 向上取整）。
+///
+/// 为什么单独把这个算术抽出来：链路队列预算（`transport::low_queue_slots`）、
+/// 进度口径、deadline 换算都要用它，各处自己写一遍 `×4/3` 必然漂移
+/// （本文件 `send_deadline` 用的是"偏保守的 4/3"，而队列注释当年按明文 256KB 估 ⇒ 差 33%）。
+pub fn chunk_wire_bytes(plain: usize) -> usize {
+    plain.saturating_add(28).saturating_mul(4).div_ceil(3)
+}
+
 /// **文件分块大小必须匹配链路的字节层能力**（真机 2026-09-13：大图"两边都显示成功、
 /// 对方列表里却没有"的真因之一）。
 ///
