@@ -385,6 +385,16 @@ pub fn run() {
                             st.logger
                                 .info("relay", format!("清理过期中继态：{swept} 项"));
                         }
+                        // 同一趟里回收"再也没被喂片"的接收器（第 1 步 · 故障隔离 P1）。
+                        // 存在的理由：断链清理现在只在 peer 真的没链路时才动手，而协议里没有
+                        // cancel 帧 ⇒ 发送侧放弃的那一单在接收端没人管（表项 + 文件句柄 +
+                        // `.part` 一起永久留着，且 `sweep_stale_parts` 会因为"还在表里"而跳过它）。
+                        // 延迟 ≤ 本趟的节奏是有意的：它治的是**永久**泄漏，不是界面 spinner。
+                        let stalled = crate::network::transport::sweep_stalled_receives(&st);
+                        if stalled > 0 {
+                            st.logger
+                                .info("file", format!("回收静默接收器：{stalled} 个"));
+                        }
                         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                     }
                 });
@@ -4116,6 +4126,42 @@ mod tests {
         assert!(
             transport.contains("decide_forward("),
             "gossip 转发的 relay 授权闸（decide_forward）被删了？"
+        );
+    }
+
+    /// 每小时那一趟必须**三件事都做**（P1：断链清理改成"只在 peer 全掉线时清"之后，
+    /// 静默接收器的回收是唯一的兜底）。
+    ///
+    /// 为什么钉在这里而不是写成行为测试：这三件事的共同点是"对端不会再来敲这一单了，
+    /// 得有人替它收尾"。漏掉任何一件的**表现都是永不回收**（`.part` + 文件句柄 / 中继内存表 /
+    /// 静默接收器），既不报错也不影响别的功能可见性 —— 只有把它当成**一个集合**来钉才有意义。
+    ///
+    /// 顺序也有讲究：`sweep_stale_parts` 是"只删不在表里的"，所以接收器回收**必须在这一趟里**，
+    /// 否则它摘掉表项之后要再等一小时才会轮到 `.part`。
+    #[test]
+    fn hourly_sweep_covers_parts_relay_and_stalled_receivers() {
+        let src = include_str!("lib.rs");
+        let at = src
+            .find(".part 清扫任务失败")
+            .expect("找不到每小时清扫任务（这条护栏会空转）");
+        // 窗口必须**止于测试模块**：本文件末尾就有 `mod tests`，而它自己写着这些字面量 ——
+        // 取到文件末尾等于"护栏在自己的源码上找自己的名字"，永远命中、永远绿。
+        // （同一个自参照坑已经坑过两次：`!tail.contains(FILE_RECEIVE…)` 那半截也是这么假过的。）
+        let end = src[at..]
+            .find("#[cfg(test)]")
+            .map(|i| at + i)
+            .expect("清扫任务之后找不到测试模块边界");
+        let tail = &src[at..end];
+        for call in ["sweep_stale_relay(", "sweep_stalled_receives("] {
+            assert!(
+                tail.contains(call),
+                "每小时清扫少了 {call} —— 内存态就没人回收了"
+            );
+        }
+        // 超时判据必须只有一份，且在 network 侧（这里不许长出第二份"多久算静默"）
+        assert!(
+            !tail.contains("FILE_RECEIVE_IDLE"),
+            "lib.rs 不该自己算接收超时——判据在 file::receive_is_stale"
         );
     }
 }

@@ -1566,21 +1566,12 @@ async fn reader_loop(
             Err(_) => break,
         }
     }
-    file::fail_receives_for_peer(&state, &peer_id);
-    // 群文件接收状态同样按对端断链清理，避免 `.part` 与内存状态泄漏。
-    {
-        let group_ids: Vec<String> = state
-            .group_file_receivers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|(_, r)| r.peer_id == peer_id)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for tid in group_ids {
-            fail_group_file_chunk(&state, &tid);
-        }
-    }
+    // ⚠️ 这里**不再**清接收器（P1 故障隔离）。旧形状是"这条连接的读半一结束就按 peer 清"，
+    // 而同一 peer 完全可以同时挂着 LAN + Tailscale + BLE 多条链路 ⇒
+    // 断其中一条会连带杀掉另外几条链路上**正在收**的文件（下面 `:1563` 那段
+    // 早就写明了「断一条 ≠ peer 下线」，文件这两处一直与它自相矛盾）。
+    // 清理挪到下面算出 `peer_now_offline` 之后，只在"这个 peer 真的没有任何链路了"时做；
+    // "对端在线但这一单被放弃"那种情形由 `sweep_stalled_receives` 负责回收。
     // 只移除**这一条**连接（按 channel 身份匹配），不是整条删光：
     // 同一 peer 可能还连着别的端点（LAN + Tailscale），断一条 ≠ peer 下线 ——
     // 这正是 6b 的核心语义。旧实现整条 remove，会让另一条连接一起消失。
@@ -1625,6 +1616,23 @@ async fn reader_loop(
     // 所有连接都断了才标记离线；还剩别的连接则保持在线（failover 生效）
     if peer_now_offline {
         mark_peer_offline(&state, &peer_id).await;
+        // 只有到这一步才有资格清接收器：这个 peer 确实一条链路都不剩了。
+        // 单聊与群文件两张表同规矩（旧代码把它们放在上面，与 `:1563` 的"只删这一条"矛盾）。
+        file::fail_receives_for_peer(&state, &peer_id);
+        let group_ids: Vec<String> = {
+            let recv = state
+                .group_file_receivers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            recv.iter()
+                .filter(|(_, r)| r.peer_id == peer_id)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        // 锁外收尾：fail_group_file_chunk 自己会再锁这张表并 emit
+        for tid in group_ids {
+            fail_group_file_chunk(&state, &tid);
+        }
     }
 }
 
@@ -4965,6 +4973,40 @@ fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str) {
     let _ = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "failed", 0.0);
 }
 
+/// 回收"再也没被喂过片"的接收器（第 1 步 · 故障隔离 P1 的另一半）。
+///
+/// 为什么必须有：断链清理现在只在**该 peer 已无任何链路**时才动手（断一条 ≠ peer 下线），
+/// 于是"对端还在线、但这一单被发送侧放弃"的接收器没人回收。协议里**没有 cancel 帧**
+/// （`protocol.rs` 里 `Cancel` 零命中），发送侧 60s 停滞只是自己退回 `file_outbox`，
+/// 不会通知接收端。另外两个 TTL 都救不了它：`sweep_stale_parts` 明确跳过"还在表里"的
+/// `.part`（把泄漏的接收器当活跃证据），而 `resume_receive` 的 24h TTL 只在**有人再来敲
+/// 这一单**时才生效 —— 被放弃的单没人再来敲 ⇒ 表项与文件句柄永久留着。
+///
+/// 这里只摘**内存态**；摘掉之后那条 `.part` 就重新落回 `sweep_stale_parts` 的 24h 管辖，
+/// 磁盘侧不另立第二份清理 policy。判据只有一份：`file::receive_is_stale`，
+/// 且**与摘表同一次持锁**（`take_stalled_receive`）。落终态与 emit 一律在锁外，同 `sweep_stale_relay`。
+pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {
+    const REASON: &str = "接收超时：对端久未继续发送";
+    let now = db::now_ms();
+    let mut reclaimed = 0usize;
+    // 每轮只摘一条：判据与摘表在**同一次持锁**里完成（见 `file::take_stalled_receive`）。
+    // 不能"先快照一批 id 再逐个收尾"—— 那两步之间完全可以挤进一个新 FileOffer
+    // （同一 transfer_id 重建接收器、`fed_at_ms` 就是现在），按 id 收尾会把**正在收**的
+    // 那一单判死。循环必然终止：`take_*` 每次真的 remove 一条。
+    while let Some((id, r)) = file::take_stalled_receive(state, now) {
+        file::fail_taken_receive(state, &id, &r, REASON);
+        reclaimed += 1;
+    }
+    while let Some((id, r)) = file::take_stalled_group_receive(state, now) {
+        file::fail_taken_group_receive(state, &r);
+        // 剩下的收尾（气泡 / 会话密钥 / recipient）按 transfer_id 定位，与表项在不在无关；
+        // 其中的 `fail_group_receive` 会因为已摘而跳过 —— 正好复用同一份收尾，不另写一份。
+        fail_group_file_chunk(state, &id);
+        reclaimed += 1;
+    }
+    reclaimed
+}
+
 /// 群文件气泡状态推进：msg_id = gfile-{transfer_id}（收发双方本地记录）。
 fn set_gfile_bubble_status(state: &AppState, transfer_id: &str, status: &str) {
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -5568,6 +5610,8 @@ async fn handle_group_file_chunk(
             return;
         }
         r.received += plaintext.len() as u64;
+        // 群接收器与单聊共用 `FileReceiver` ⇒ 同一个 idle 时钟，回收判据也只有一份
+        r.fed_at_ms = db::now_ms();
         r.next_seq = r.next_seq.wrapping_add(1);
         let progress = if r.size == 0 {
             1.0
@@ -8288,7 +8332,85 @@ mod tests {
         );
     }
 
-    /// 定向中继判定：共享目录/中继文件在无直连时靠它借一跳；给本机或旧端无 to 的帧不转发。
+    /// 断链只清"这个 peer 真的一条链路都不剩"的接收器（P1 故障隔离的接线判据）。
+    ///
+    /// 为什么是源码护栏而不是行为测试：`reader_loop` 吃 `Arc<AppState>`（单测里造不出来），
+    /// 而这里要钉的是**顺序**——清理必须在 `peer_now_offline` 算出来之后。
+    /// 挪回前面就复现旧缺陷：同一 peer 的 LAN + Tailscale 双链路里断一条，
+    /// 会把另一条链路上**正在收**的文件一起判死（`fail_receives_for_peer` 按 peer 清，不按连接）。
+    /// 判"谁在 `if peer_now_offline` 之前"用位置而不是数量：数量不变、只有顺序变才是这次的形状。
+    #[test]
+    fn peer_wide_receiver_cleanup_is_gated_on_total_link_loss() {
+        let src = crate::network::transport_src_for_guards();
+        let start = src
+            .find("async fn reader_loop(")
+            .expect("找不到 reader_loop（这条护栏会空转）");
+        // 上界 = reader_loop 之后的第一个顶层函数。不能用某个远处函数的注释当边界：
+        // 那样切片会把中间几十个函数一起圈进来，`count == 1` 那类判据会因**切片过大**而假红。
+        let end = [
+            "\nasync fn ",
+            "\nfn ",
+            "\npub fn ",
+            "\npub(crate) fn ",
+            "\npub(crate) async fn ",
+        ]
+        .iter()
+        .filter_map(|pat| src[start + 1..].find(pat).map(|i| start + 1 + i))
+        .min()
+        .expect("reader_loop 之后找不到任何函数边界（护栏需同步）");
+        let body = &src[start..end];
+
+        let gate_at = body
+            .find("if peer_now_offline {")
+            .expect("reader_loop 里没有了 `if peer_now_offline` 这道门");
+        assert!(
+            body.contains("let peer_now_offline = "),
+            "门必须建立在\"确认这条连接确实没了\"之后算出的那个值上"
+        );
+
+        // 两处按 peer 清的收尾都必须落在门里面。
+        // 位置判据**排在数量判据之前**：注入"挪回前面"会变成两处调用，先报数量就看不出
+        // 位置判据到底有没有咬住（非空转验证要求红在该报的那一条上，不是"反正都红"）。
+        for anchor in ["fail_receives_for_peer(", "group_file_receivers"] {
+            let at = body
+                .find(anchor)
+                .unwrap_or_else(|| panic!("reader_loop 里找不到 `{anchor}` —— 清理被删了？"));
+            assert!(
+                at > gate_at,
+                "`{anchor}` 排在了 `if peer_now_offline` 之前：断一条链路就会杀掉该 peer 全部接收"
+            );
+        }
+        assert_eq!(
+            body.matches("fail_receives_for_peer(").count(),
+            1,
+            "单聊接收器的 peer-wide 清理必须只剩一处（多处 = 又有第二个判据）"
+        );
+        // 回收侧必须真的接上，而且**两张表都要有**（否则"延后清理"= 那半边永久泄漏）。
+        // 必须走 `take_*`：判据与摘表同一次持锁 —— 分开两步就会被"快照之后挤进来的新 Offer"
+        // 判死一条正在收的传输。
+        let s_start = src
+            .find("pub fn sweep_stalled_receives(")
+            .expect("sweep_stalled_receives 不见了 ⇒ 延后清理就没有任何东西兜底");
+        let s_end = src[s_start..]
+            .find("\n}\n")
+            .map(|i| s_start + i + 3)
+            .expect("sweep_stalled_receives 没有结尾");
+        let sweep = &src[s_start..s_end];
+        for call in [
+            "file::take_stalled_receive(",
+            "file::take_stalled_group_receive(",
+        ] {
+            assert!(
+                sweep.contains(call),
+                "回收漏了 {call}：那张表上的静默接收器没人摘，`.part` 与文件句柄就此永久留着"
+            );
+        }
+        assert!(
+            !sweep.contains("file::receive_is_stale("),
+            "判据不该在清扫器里重算一遍 —— 它必须与摘表同一次持锁（`take_stalled_*` 内部）"
+        );
+    }
+
     #[test]
     fn directed_relay_target_routes_share_and_offer_frames() {
         let me = "me";

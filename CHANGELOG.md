@@ -10,6 +10,48 @@
 
 ## [Unreleased]
 
+### Fixed (2026-09-25 · 第 1 步 · 故障隔离 P1：断一条链路不再杀掉该 peer 的全部文件接收)
+
+`reader_loop` 的收尾一开头就按 **peer** 清 `file_receivers` 与 `group_file_receivers`，
+而同一个函数下面那段「只删这一条连接」的注释早就写明了「**断一条 ≠ peer 下线**」——
+两处一直自相矛盾。后果：LAN + Tailscale 双链路时断其中一条，会把另一条上**正在收**的
+文件一起判死（用户看到的正是"传大文件传到一半失败，但网络明明是通的"）。
+
+- 两处清理都挪进 `if peer_now_offline { … }` 门内，即"这个 peer 一条链路都不剩"才动手。
+- 延后之后必须有兜底，否则只是把「杀错人」换成「泄漏」，所以补了 **`file::receive_is_stale`**
+  （5 分钟没被喂片）+ `transport::sweep_stalled_receives`（挂在每小时那一趟）。
+  为什么非补不可（实测，不是设想）：**`protocol.rs` 里没有任何 cancel 帧**，
+  发送侧 60s 停滞只是自己退回 `file_outbox`，**从不通知接收端**；
+  而 `sweep_stale_parts` 明确跳过"还在表里"的 `.part`（把静默接收器当活跃证据），
+  `resume_receive` 的 24h TTL 又只在**有人再来敲这一单**时才生效 ⇒ 被放弃的单永久留着
+  表项 + 文件句柄 + `.part`。
+- `FileReceiver` 加 `fed_at_ms`（单聊与群文件共用这一个结构 ⇒ 一处加字段两张表都受益）。
+  **不用 `last_report_ms` 顶替**：那是 IPC 节流用的、还有一处初始化成 0，不是"还在不在收"的证据。
+- 摘表与判据**必须在同一次持锁里**（`take_stalled_receive` / `take_stalled_group_receive`）：
+  先快照一批 id、释放锁、再逐个收尾 —— 这两步之间完全可以挤进一个新 `FileOffer`
+  （同一 transfer_id 重建接收器、`fed_at_ms` 就是现在），按 id 收尾就把**正在收**的那单判死了。
+- 收尾只有一份实现：`fail_receive` 拆成「摘表」+ `fail_taken_receive`（落终态 / Incomplete / emit），
+  `fail_group_receive` 同理拆出 `fail_taken_group_receive`；清扫器复用同一份，不另写一遍。
+- 窗口 5 分钟必须**宽于**发送侧 60s abort（否则会在对端重排队的间隙里清掉自己那半截）——
+  这条关系是断言，不是注释。
+- **有意接受的代价**：这条回收挂在每小时那一趟，所以"对端在线但这单被放弃"时 spinner
+  最长多留 1 小时。治的是永久泄漏，不是界面延迟；要更快就把它挂到 30s 那趟清扫器上（已记进契约图）。
+
+**判据**：行为侧 `stalled_receiver_is_reclaimed_only_after_the_idle_window`（边界 + 与发送侧
+窗口的关系）；接线侧 `peer_wide_receiver_cleanup_is_gated_on_total_link_loss` 与
+`hourly_sweep_covers_parts_relay_and_stalled_receivers`（`reader_loop` / 周期任务都吃
+`Arc<AppState>`，单测造不出来 ⇒ 只能源码钉，判据与副作用的分工写在各自身上）。
+`verify-guards.py` 新增 **3 条**变异用例：清理挪回门之前 / 每小时那趟不再回收 /
+退回"快照 id 再逐个杀" —— 三条都必须改坏即红。
+⚠️ 这一轮被非空转验证抓出来的两个"假红/假绿"都记下来了：护栏切片一路取到文件末尾，
+会把**测试模块里自己的字面量**数进去（永远命中 ⇒ 假过；删掉字面量后又红在编译错误上）；
+注入必须"照样编译、但语义变坏"，否则红的是 `cannot find value` 而不是判据。
+
+契约图同步（这次改的是跨层不变量，图比代码更容易腐烂）：文件管线加了一步「接收侧两种收尾、
+判据不是同一把」；每小时那一步补上接收器回收；`file_transfers` 那行「无索引」是 0-B 的遗留
+错误也已改对（顺手发现 0-B 漏改了这一行）；漂移表加 2 行（P1 已修 + 1 小时延迟是有意）。
+Rust 基线 670 → **673**。`Cargo.lock` 的 `gosslan` 版本这次才跟上 4.29.37（一并提交）。
+
 ### Fixed (2026-09-25 · CI：Windows 那条腿从 0-A2 起一直红着 —— 陈旧基线，不是代码坏了)
 
 `check-test-manifest.mjs` 的判据是单向致命的：**基线里有、实际没跑 ⇒ FAIL**（"静默跳过"必须拦），

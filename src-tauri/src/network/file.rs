@@ -197,6 +197,21 @@ pub const FILE_STALL_WARN_MS: i64 = 15_000;
 /// 比让发送任务在背压里干等到 deadline（最长 1h）诚实得多。
 pub const FILE_STALL_ABORT_MS: i64 = 60_000;
 
+/// 接收器静默到这个时长 ⇒ 回收（第 1 步 · 故障隔离 P1）。
+///
+/// 必须**宽于**发送侧的 abort：`protocol.rs` 里没有任何 cancel 帧（实测 `Cancel` 零命中），
+/// 发送侧 60s 停滞只是自己退回 `file_outbox`，接收端**收不到通知**。留太短会在
+/// "对端正在重排队、马上重新 Offer" 的间隙里把自己那半截清掉，续传点位与对端分裂。
+pub const FILE_RECEIVE_IDLE_ABORT_MS: i64 = 5 * 60_000;
+
+/// 纯判据：静默 `idle_ms` 的接收器该不该回收。副作用留给调用方（落终态 + emit 都在锁外）。
+///
+/// 只有一条比较，故意不再加"负数不算"的守卫：`now` 与 `fed_at_ms` 取自**同一个**
+/// `db::now_ms()`，倒挂只可能来自调用方算错（那是 bug，该由测试钉住，不是靠判据吞掉）。
+pub fn receive_is_stale(idle_ms: i64) -> bool {
+    idle_ms >= FILE_RECEIVE_IDLE_ABORT_MS
+}
+
 /// 停滞判定的档位（**纯函数**输出，副作用留给调用方：发事件 / 退出）。
 #[derive(Debug, PartialEq, Eq)]
 pub enum StallVerdict {
@@ -1386,6 +1401,7 @@ pub fn resume_receive(
                 final_path: final_path.clone(),
                 peer_id: peer_id.to_string(),
                 last_report_ms: crate::db::now_ms(),
+                fed_at_ms: crate::db::now_ms(),
                 file_key,
                 expected_sha256,
                 hasher,
@@ -1589,6 +1605,7 @@ fn make_receiver(
             final_path: final_path.clone(),
             peer_id: peer_id.to_string(),
             last_report_ms: 0,
+            fed_at_ms: crate::db::now_ms(),
             file_key,
             expected_sha256,
             hasher: {
@@ -1673,19 +1690,37 @@ pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
         .unwrap_or_else(|e| e.into_inner())
         .remove(transfer_id)
     {
-        // **保留 .part**（不删）：断点续传的前缀（群友从种子拉取时也走 resume_receive）。
-        let _ = &r.tmp_path;
-        // 统一状态：群文件中途失败/断链 ⇒ Incomplete（可恢复）⇒ 建链时按退避自动重取。
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = crate::content::store::record_failure(
-            &dbc,
-            &r.expected_sha256,
-            &r.peer_id,
-            crate::content::model::Direction::Receive,
-            crate::content::model::FailReason::Partial,
-            db::now_ms(),
-        );
+        fail_taken_group_receive(state, &r);
     }
+}
+
+/// 静默群接收器的**原子**回收单位（理由同 `take_stalled_receive`：判据与摘表必须同一次持锁）。
+pub fn take_stalled_group_receive(state: &AppState, now: i64) -> Option<(String, FileReceiver)> {
+    let mut recv = state
+        .group_file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let key = recv
+        .iter()
+        .find(|(_, r)| receive_is_stale(now - r.fed_at_ms))
+        .map(|(k, _)| k.clone())?;
+    recv.remove(&key).map(|r| (key, r))
+}
+
+/// 摘表之后的群接收收尾（与单聊同一份口径：`.part` 保留、状态记 Incomplete 可重取）。
+pub fn fail_taken_group_receive(state: &AppState, r: &FileReceiver) {
+    // **保留 .part**（不删）：断点续传的前缀（群友从种子拉取时也走 resume_receive）。
+    let _ = &r.tmp_path;
+    // 统一状态：群文件中途失败/断链 ⇒ Incomplete（可恢复）⇒ 建链时按退避自动重取。
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = crate::content::store::record_failure(
+        &dbc,
+        &r.expected_sha256,
+        &r.peer_id,
+        crate::content::model::Direction::Receive,
+        crate::content::model::FailReason::Partial,
+        db::now_ms(),
+    );
 }
 
 /// `FileCompleteAck` 的等待窗口：**安静**这么久没有"写出进展"才算失败。
@@ -1899,6 +1934,9 @@ pub fn write_chunk(
         r.hasher.update(&plaintext);
         r.file.write_all(&plaintext).map_err(|e| e.to_string())?;
         r.received += plaintext.len() as u64;
+        // 每片都记一次"还被喂得动"—— 这是 `receive_is_stale` 唯一的证据来源。
+        // 代价是一次 epoch 毫秒读取，相对上面的 `write_all` 可以忽略。
+        r.fed_at_ms = crate::db::now_ms();
         r.next_seq = r.next_seq.checked_add(1).ok_or("文件分片序号溢出")?;
         // 节流 500ms 落一次进度：这是断点续传的起点，也让统一状态显示真实进度。
         let now = crate::db::now_ms();
@@ -1926,7 +1964,7 @@ pub fn write_chunk(
     Ok(received)
 }
 
-/// 终止损坏或超时的接收，删除临时文件，避免留下永远占空间的 `.part` 文件。
+/// 终止损坏或超时的接收：摘表 → 收尾（见 `fail_taken_receive`）。
 pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: &str) -> bool {
     let mut recv = state
         .file_receivers
@@ -1939,6 +1977,31 @@ pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: 
         recv.insert(transfer_id.to_string(), r);
         return false;
     }
+    drop(recv);
+    fail_taken_receive(state, transfer_id, &r, reason);
+    true
+}
+
+/// 静默接收器的**原子**回收单位：判据与摘表在同一次持锁里完成。
+///
+/// 为什么不能"先快照一批 id、再逐个收尾"：那两步之间完全可以挤进一个新 FileOffer
+/// （同一 transfer_id 重新建接收器、`fed_at_ms` 就是现在）—— 按 id 收尾会把那个
+/// **正在收**的传输判死。宁可每轮只摘一个、循环到没有，也不留这个缝。
+pub fn take_stalled_receive(state: &AppState, now: i64) -> Option<(String, FileReceiver)> {
+    let mut recv = state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let key = recv
+        .iter()
+        .find(|(_, r)| receive_is_stale(now - r.fed_at_ms))
+        .map(|(k, _)| k.clone())?;
+    recv.remove(&key).map(|r| (key, r))
+}
+
+/// 摘表之后的收尾：落 failed 终态、记 Incomplete、emit。
+/// `fail_receive` 与清扫器共用这一份 —— 终态口径不许有两套。
+pub fn fail_taken_receive(state: &AppState, transfer_id: &str, r: &FileReceiver, reason: &str) {
     // **保留 .part**（不删）：这是断点续传的前缀。只有"确定是永久失败"（校验不符）
     // 才删；超时/断链属于可恢复。陈旧 .part 由 resume_receive 的 TTL 与后续清理收割。
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -1968,7 +2031,6 @@ pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: 
         db::now_ms(),
     );
     emit_failed(state, transfer_id, reason);
-    true
 }
 
 /// 对端断链时终止其所有未完成接收，避免下载目录长期堆积临时文件。
@@ -2347,8 +2409,9 @@ pub fn human_size(bytes: u64) -> String {
 mod tests {
     use super::{
         chunk_seq_decision, classify_file_subtype, clear_file_wire_progress_in, derive_file_name,
-        file_peer_key, safe_file_name, safe_transfer_id, unique_path, wire_progress_bytes,
-        ChunkSeq, WireLedger, MAX_FILE_OUTBOX_RETRIES,
+        file_peer_key, receive_is_stale, safe_file_name, safe_transfer_id, unique_path,
+        wire_progress_bytes, ChunkSeq, WireLedger, FILE_RECEIVE_IDLE_ABORT_MS,
+        MAX_FILE_OUTBOX_RETRIES,
     };
 
     /// 写出记账必须**随发送尝试一起回收**（v4.22.38）。
@@ -2987,6 +3050,35 @@ mod tests {
 
     /// 停滞判定的三档边界。钉的是"什么时候该提醒、什么时候该放弃"，
     /// 阈值本身写死在常量里，改常量必须同时改这里（防止有人顺手把 abort 调成 warn）。
+    /// 接收侧静默回收的边界（P1 的另一半：延后"断链就清"之后，必须有东西来清）。
+    ///
+    /// 为什么这条判据必须存在（实测出来的，不是设想）：协议里**没有 cancel 帧**
+    /// （`protocol.rs` 里 `Cancel` 零命中），发送侧 60s 停滞就自己 abort 并把这一单退回
+    /// `file_outbox` —— 但它**从不告诉接收端**。而 `sweep_stale_parts` 的规矩是
+    /// "只删不在这两张表里的 `.part`" ⇒ 一个被放弃的接收器会把**文件句柄 + `.part`
+    /// 一起永久钉住**（24h 的清扫反而永远跳过它）。
+    /// 所以"断一条链不再立刻清"必须配这条回收，否则只是把「杀错人」换成「泄漏」。
+    #[test]
+    fn stalled_receiver_is_reclaimed_only_after_the_idle_window() {
+        use super::FILE_STALL_ABORT_MS;
+        // 窗口内一律不回收：对端可能正在重连后重新 Offer（同一 transfer_id 会覆盖表项）
+        assert!(!receive_is_stale(FILE_RECEIVE_IDLE_ABORT_MS - 1));
+        assert!(!receive_is_stale(0));
+        // 到点即回收（含恰好等于边界）
+        assert!(receive_is_stale(FILE_RECEIVE_IDLE_ABORT_MS));
+        assert!(receive_is_stale(i64::MAX));
+        // 时钟倒挂（未来时间戳）不得被当成"已经静默了 2^63 毫秒"
+        assert!(!receive_is_stale(-1));
+        // 回收窗口必须**宽于**发送侧的 abort：否则接收端会在发送端还在重试的间隙里
+        // 把自己那半截清掉，续传点位与对端的记录就此分裂。
+        assert!(
+            FILE_RECEIVE_IDLE_ABORT_MS > FILE_STALL_ABORT_MS,
+            "接收侧窗口必须大于发送侧 abort（{} vs {}）",
+            FILE_RECEIVE_IDLE_ABORT_MS,
+            FILE_STALL_ABORT_MS
+        );
+    }
+
     #[test]
     fn stall_verdict_boundaries() {
         assert_eq!(stall_verdict(0), StallVerdict::Healthy);
@@ -3106,6 +3198,7 @@ mod tests {
             final_path: part_path.clone(),
             peer_id: "a".into(),
             last_report_ms: 0,
+            fed_at_ms: 0,
             file_key,
             expected_sha256: expected.clone(),
             hasher: {
@@ -3144,6 +3237,7 @@ mod tests {
             final_path: part_path.clone(),
             peer_id: "a".into(),
             last_report_ms: 0,
+            fed_at_ms: 0,
             file_key,
             expected_sha256: expected,
             hasher: {
@@ -3354,6 +3448,7 @@ mod tests {
             final_path: part_path,
             peer_id: "dev-a".into(),
             last_report_ms: 0,
+            fed_at_ms: 0,
             file_key,
             expected_sha256: expected,
             hasher: {
@@ -3756,6 +3851,7 @@ mod tests {
             final_path,
             peer_id: "dev-a".into(),
             last_report_ms: 0,
+            fed_at_ms: 0,
             file_key: [7u8; 32],
             expected_sha256: expected.to_string(),
             hasher: h,

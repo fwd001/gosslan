@@ -739,6 +739,13 @@ pub struct FileReceiver {
     pub peer_id: String,
     /// 上次进度上报时间（毫秒），用于节流 IPC 事件
     pub last_report_ms: i64,
+    /// 最近一次**被喂进一个合法分片**的时刻（ms）。创建时也算。
+    ///
+    /// 为什么必须有（P1）：`last_report_ms` 是 IPC 节流用的、且有一处初始化成 0，
+    /// 它不是"还在不在收"的证据；而协议里没有 cancel 帧，发送侧 abort 之后
+    /// **不会通知接收端** ⇒ 没有这个时钟，被放弃的接收器会永久钉住
+    /// 文件句柄与 `.part`（`sweep_stale_parts` 只删不在表里的）。
+    pub fed_at_ms: i64,
     /// 本 transfer 的文件会话密钥：FileOffer 中以我方公钥 E2EE 封装，
     /// 解封后仅存于内存；每个分片以此 AEAD 解密，密文绝不落盘。
     pub file_key: [u8; 32],

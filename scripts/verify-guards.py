@@ -2198,6 +2198,74 @@ CASES: list[Case] = [
         tags=["frontend", "peer", "display"],
     ),
     Case(
+        name="断链清理必须在「确认这个 peer 真的一条链路都不剩」之后（P1 故障隔离）",
+        why="`reader_loop` 的收尾顺序不是风格问题。旧形状是在函数开头就按 peer 清接收器，"
+        "而同一个 peer 完全可以同时挂 LAN + Tailscale + BLE —— 断其中一条会连带杀掉另外几条链路上"
+        "**正在收**的文件（同文件下面那段「只删这一条连接」的注释早就写明了「断一条 ≠ peer 下线」，"
+        "文件这两处一直与它自相矛盾）。注入 = 把清理挪回门之前，正是那次回归的形状。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "    // 只移除**这一条**连接（按 channel 身份匹配），不是整条删光：",
+            "    file::fail_receives_for_peer(&state, &peer_id);\n"
+            "    // 只移除**这一条**连接（按 channel 身份匹配），不是整条删光：",
+        )],
+        cmd=cargo("test", "--lib", "peer_wide_receiver_cleanup_is_gated_on_total_link_loss"),
+        cwd=TAURI,
+        expect_fail_hint="排在了 `if peer_now_offline` 之前",
+        tags=["rust", "transport", "p1-isolation"],
+    ),
+    Case(
+        name="每小时那一趟必须同时回收 .part / 中继内存表 / 静默接收器",
+        why="延后断链清理之后，「对端在线但这一单被发送侧放弃」的接收器只剩这一趟兜底："
+        "协议里没有 cancel 帧，发送侧 60s 停滞只是自己退回 outbox，不通知接收端。"
+        "摘掉这一行的表现是**永不回收**（表项 + 文件句柄 + `.part`），而 `sweep_stale_parts`"
+        "还会因为「还在表里」把它当活跃跳过 —— 不报错、不影响别的功能，只有护栏看得见。",
+        file=TAURI / "src" / "lib.rs",
+        injections=[(
+            "                        let stalled = crate::network::transport::sweep_stalled_receives(&st);\n",
+            # 变异必须"照样编译、但这趟不再回收"：
+            # 直接删整行会让下面的 `if stalled > 0` 引用未定义 ⇒ 红在编译错误上，什么也没证明；
+            # 而保留 `sweep_stalled_receives` 字面量又会让护栏的 contains() 假过。
+            "                        let stalled = 0usize;\n",
+        )],
+        cmd=cargo("test", "--lib", "hourly_sweep_covers_parts_relay_and_stalled_receivers"),
+        cwd=TAURI,
+        expect_fail_hint="内存态就没人回收了",
+        tags=["rust", "transport", "p1-isolation"],
+    ),
+    Case(
+        name="接收器回收必须走「判据与摘表同一次持锁」的 take_*（不许退回快照-再杀）",
+        why="先 `iter().filter(stale)` 拿到 id 列表、释放锁、再逐个收尾 —— 这两步之间完全可以"
+        "挤进一个新的 FileOffer（同一 transfer_id 重建接收器、`fed_at_ms` 就是现在），"
+        "于是按 id 收尾会把一条**正在收**的传输判死。护栏钉的是「清扫器里只准调 take_*，"
+        "不许自己算 stale」。",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {\n"
+            "    const REASON: &str = \"接收超时：对端久未继续发送\";\n"
+            "    let now = db::now_ms();",
+            "pub fn sweep_stalled_receives(state: &Arc<AppState>) -> usize {\n"
+            "    const REASON: &str = \"接收超时：对端久未继续发送\";\n"
+            "    let now = db::now_ms();\n"
+            "    let _snap: Vec<String> = state\n"
+            "        .file_receivers\n"
+            "        .lock()\n"
+            "        .unwrap_or_else(|e| e.into_inner())\n"
+            "        .iter()\n"
+            "        .filter(|(_, x)| file::receive_is_stale(now - x.fed_at_ms))\n"
+            "        .map(|(k, _)| k.clone())\n"
+            "        .collect();",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "peer_wide_receiver_cleanup_is_gated_on_total_link_loss",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="重算一遍",
+        tags=["rust", "transport", "p1-isolation"],
+    ),
+    Case(
         name="写失败的分流两半都必须各自咬住（本地成帧失败 vs 真 socket 失败）",
         why="第 1 步 · 故障隔离（P2）。判据不是帧类型而是**字节有没有上过链路**：一个字节都没"
         "写出去 ⇒ 那是本机 bug，链路保留；写出去才失败 ⇒ 这条连接不可信，必须判死并拆写半。"

@@ -390,6 +390,7 @@ network::file::tests::send_deadline_scales_with_size
 network::file::tests::sha256_file_hex_matches_in_memory_hash
 network::file::tests::stale_attempt_frames_are_filtered_but_legacy_frames_never_are
 network::file::tests::stall_verdict_boundaries
+network::file::tests::stalled_receiver_is_reclaimed_only_after_the_idle_window
 network::file::tests::tampered_chunk_fails_to_decrypt
 network::file::tests::the_active_receiver_is_the_authority_not_the_disk_prefix
 network::file::tests::unique_path_never_returns_existing_path
@@ -459,6 +460,7 @@ network::transport::tests::non_frame_bytes_still_error
 network::transport::tests::non_friend_chat_message_rejected
 network::transport::tests::only_routed_connection_still_dials_lan_path
 network::transport::tests::oversize_frame_is_a_local_failure_and_writes_nothing
+network::transport::tests::peer_wide_receiver_cleanup_is_gated_on_total_link_loss
 network::transport::tests::pending_reads_keeps_max_timestamp
 network::transport::tests::pick_member_x25519_prefers_peers_then_friends
 network::transport::tests::plaintext_payload_is_rejected
@@ -579,6 +581,7 @@ tests::group_audience_is_wired_and_keeps_three_states
 tests::group_file_cancel_registry_is_scoped_per_recipient
 tests::group_keys_always_precede_group_messages
 tests::guard_source_views_register_every_include_subfile
+tests::hourly_sweep_covers_parts_relay_and_stalled_receivers
 tests::in_flight_media_is_not_reported_as_deleted
 tests::incomplete_content_is_auto_retried_behind_capability_gate
 tests::jni_static_matches_kotlin_toplevel
