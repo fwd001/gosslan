@@ -3006,6 +3006,27 @@ CASES: list[Case] = [
         tags=["rust", "transport", "stability", "locks", "new-guards"],
     ),
     Case(
+        name="db 锁作用域守卫必须抓得住「emit 写回锁内」",
+        why="只有一条 SQLite 连接，前端收到事件后的第一次 IPC 要抢同一把锁 ⇒ 锁内 emit = 那一刻界面冻一下。\n"
+        "     这条纪律原先只有一句注释（transport.rs:89）加一个点的守卫，2026-09-25 补接收侧回收时\n"
+        "     `fail_taken_receive` 就在锁内 emit —— 逐行看谁都觉得没错，所以判据升级成 292 个取锁点全扫。\n"
+        "     注入方式：把那条 emit 挪回 `{ }` 里面（大括号平衡、照样能编译，就是「锁还活着时发事件」），\n"
+        "     check-lock-scope.mjs 必须报「存活期内在 emit」。",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "    }\n"
+            "    emit_failed(state, transfer_id, reason);\n"
+            "}",
+            "        emit_failed(state, transfer_id, reason);\n"
+            "    }\n"
+            "}",
+        )],
+        cmd=["node", "scripts/check-lock-scope.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="存活期",
+        tags=["rust", "file", "stability", "locks", "new-guards"],
+    ),
+    Case(
         name="缓存清理器不得跟随符号链接（审计 1.1：软链目标会被当缓存永久删除）",
         why="缓存目录是远端输入可达面（收到的文件名/目录名不受信）。旧实现用 e.path().metadata()\n"
         "     判类型——它**跟随软链**：缓存里一个指向任意位置的软链会让其目标被收集进清理列表并\n"

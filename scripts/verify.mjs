@@ -168,6 +168,14 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "db 锁作用域守卫",
+    why: "挡住「锁还活着时 emit」——只有一条 SQLite 连接，前端收到事件后的第一次 IPC 抢同一把锁 ⇒ 那一刻界面冻一下；292 个取锁点全扫（判据自带 7 段夹具自证）",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-lock-scope.mjs"],
+  },
+  {
+    group: "frontend",
     name: "BLE 常量单一事实来源",
     why: "挡住「同一个概念多处各算一遍」——CHANGELOG 4.18.7→4.18.10 连着四版修的就是它",
     cwd: ROOT,

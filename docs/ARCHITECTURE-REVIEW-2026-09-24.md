@@ -166,7 +166,8 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
   | `WHERE peer_id AND status ORDER BY updated_at` on `content_transfers` | `content/store.rs:149-160` | PK `(cid,peer_id,direction)` + `idx(status)`（`store.rs:32-34`） | peer_id 不是任何索引前缀 |
   | `WHERE peer_id+status+next_attempt_at<=?` on `file_outbox` | `db/file_offline.rs:26-28` | `(peer_id,status)`（`db.rs:455`） | `next_attempt_at` 未覆盖 |
   | `ORDER BY ts DESC` 跨会话搜索 | `db/messages.rs:317-333` | `(conv_id,ts)`（`db.rs:362`） | 无 `messages(ts)` |
-* 锁内 emit（把"锁内慢活"请回来）：`transport.rs:3399-3404`、`4454-4467`、`4485-4507`、`4520-4533`
+* 锁内 emit（把"锁内慢活"请回来）—— **✅ 已修，2026-09-25**：本行当时记的 4 处行号已失效，
+  实测 5 处（含 P1 新引入的一处），处置见「第 3 步 · 3」
   —— 而**同一个文件 `:89-90` 写着相反的规定**："锁只圈住写库，emit 一律出锁再做：
   在 db 锁内 emit 会把「锁内慢活」请回来（前端收到 file-failed 后的下一次 IPC 要抢同一把锁）"。
   正确写法在同文件 `:3108-3110`、`commands/group_file_dispatch.rs:181-201` 就有。
@@ -451,7 +452,14 @@ transport.rs:4511  save_received_bytes(state, &name, &full)
    把所有**纯读命令**逐个切过去（一次一批：先 `list_*`/`get_*` 的窗口路径，再 `search_*`，最后 `export`）。
 2. `list_group_files` 的 1+3N 收成 3 条批量查询（`WHERE transfer_id IN (...)`）；
    `refreshGroups` 的 N+1 IPC 收成一条 `get_group_reads_batch`。
-3. 锁内 emit 的 4 处改成"写库 → drop → emit"，并加一条通用护栏：**`db.lock()` 的作用域内不得出现 `emit`**。
+3. ✅ **锁内 emit（2026-09-25 已落地，第 3 步里唯一不需要拍板的一刀）**：报告写的"4 处"实测是
+   **5 处**，且那 4 个行号已被 9-25 这两天 P1/P2 的移动改废 —— 重新逐处读码定位后得到：
+   `file.rs::fail_taken_receive`（**P1 自己新引入的那一处**）、`transport.rs` 群 Ack 清 outbox 一处、
+   中继收文件失败分支三处。五处都改成「`{ }` 圈住写库、emit 出锁」，写序与终态一字未动。
+   通用护栏没有做成"第五处到第五处"的点守卫，而是新脚本 `scripts/check-lock-scope.mjs`
+   （挂进 `npm run verify` 快速层）：实测 **292 个取锁点全部可判定**（281 guard 绑定 +
+   11 语句级临时量），判不出作用域的直接算红。不变量本文 = **INV-P25**（§25，原「必测矩阵」
+   顺延为 §26），非空转由 7 段夹具自证 + 一条 `verify-guards` 变异用例（把 emit 注回锁内）钉住。
 4. 测试：`export_chat_text` 期间另一线程做一次 `insert_message`，断言等待时间上界（现在无上界可测）。
 
 ### 第 4 步 · 状态机契约（**P7**）

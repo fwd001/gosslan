@@ -3466,8 +3466,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             // 只清除该 peer 在该群中的待发记录；不存在时删除是安全的 no-op。
             // 命中失败不向外暴露，避免用伪造 Ack 探测本地 outbox。
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = db::delete_group_outbox(&dbc, &msg_id, &from);
+            {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = db::delete_group_outbox(&dbc, &msg_id, &from);
+            }
             let _ = state.app.emit(
                 "group-message-acked",
                 &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
@@ -4521,19 +4523,21 @@ async fn handle_relay_chunk(
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&transfer_id);
             if full.len() as u64 != expected_size {
-                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::upsert_transfer(
-                    &dbc,
-                    &transfer_id,
-                    &from,
-                    &name,
-                    expected_size,
-                    "receive",
-                    "failed",
-                    None,
-                    0.0,
-                )
-                .ok();
+                {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::upsert_transfer(
+                        &dbc,
+                        &transfer_id,
+                        &from,
+                        &name,
+                        expected_size,
+                        "receive",
+                        "failed",
+                        None,
+                        0.0,
+                    )
+                    .ok();
+                }
                 let _ = state.app.emit(
                     "file-failed",
                     &FileFailedInfo {
@@ -4552,28 +4556,30 @@ async fn handle_relay_chunk(
                     .map(|b| format!("{b:02x}"))
                     .collect();
                 if !actual_hex.eq_ignore_ascii_case(&rs.expected_sha256) {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::upsert_transfer(
-                        &dbc,
-                        &transfer_id,
-                        &from,
-                        &name,
-                        expected_size,
-                        "receive",
-                        "failed",
-                        None,
-                        0.0,
-                    )
-                    .ok();
-                    // 统一状态：校验失败 ⇒ Rejected（换源重取是唯一出路）。
-                    let _ = crate::content::store::record_failure(
-                        &dbc,
-                        &rs.expected_sha256,
-                        &from,
-                        crate::content::model::Direction::Receive,
-                        crate::content::model::FailReason::HashMismatch,
-                        db::now_ms(),
-                    );
+                    {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        db::upsert_transfer(
+                            &dbc,
+                            &transfer_id,
+                            &from,
+                            &name,
+                            expected_size,
+                            "receive",
+                            "failed",
+                            None,
+                            0.0,
+                        )
+                        .ok();
+                        // 统一状态：校验失败 ⇒ Rejected（换源重取是唯一出路）。
+                        let _ = crate::content::store::record_failure(
+                            &dbc,
+                            &rs.expected_sha256,
+                            &from,
+                            crate::content::model::Direction::Receive,
+                            crate::content::model::FailReason::HashMismatch,
+                            db::now_ms(),
+                        );
+                    }
                     let _ = state.app.emit(
                         "file-failed",
                         &FileFailedInfo {
@@ -4587,19 +4593,21 @@ async fn handle_relay_chunk(
             let path = match save_received_bytes(state, &name, &full) {
                 Ok(path) => path,
                 Err(reason) => {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::upsert_transfer(
-                        &dbc,
-                        &transfer_id,
-                        &from,
-                        &name,
-                        expected_size,
-                        "receive",
-                        "failed",
-                        None,
-                        0.0,
-                    )
-                    .ok();
+                    {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        db::upsert_transfer(
+                            &dbc,
+                            &transfer_id,
+                            &from,
+                            &name,
+                            expected_size,
+                            "receive",
+                            "failed",
+                            None,
+                            0.0,
+                        )
+                        .ok();
+                    }
                     let _ = state.app.emit(
                         "file-failed",
                         &FileFailedInfo {

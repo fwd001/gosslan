@@ -2014,32 +2014,34 @@ pub fn take_stalled_receive(state: &AppState, now: i64) -> Option<(String, FileR
 pub fn fail_taken_receive(state: &AppState, transfer_id: &str, r: &FileReceiver, reason: &str) {
     // **保留 .part**（不删）：这是断点续传的前缀。只有"确定是永久失败"（校验不符）
     // 才删；超时/断链属于可恢复。陈旧 .part 由 resume_receive 的 TTL 与后续清理收割。
-    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    db::upsert_transfer(
-        &dbc,
-        transfer_id,
-        &r.peer_id,
-        &r.name,
-        r.size,
-        "receive",
-        "failed",
-        None,
-        0.0,
-    )
-    .ok();
-    // 注意：**不能**把 .part 写进 path —— find_source 只看 path 非空就当作可服务内容，
-    // 那样会把"半截文件"当成完整种子发出去。.part 的位置由 transfer_id 推导。
-    let _ = &r.tmp_path;
-    // 统一状态：中途失败/超时/断链 ⇒ **Incomplete**（可恢复）。
-    // 于是建链时 retry_incomplete_content 会按退避自动重取，而不是永远停在 Active。
-    let _ = crate::content::store::record_failure(
-        &dbc,
-        &r.expected_sha256,
-        &r.peer_id,
-        crate::content::model::Direction::Receive,
-        crate::content::model::FailReason::Partial,
-        db::now_ms(),
-    );
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            &r.peer_id,
+            &r.name,
+            r.size,
+            "receive",
+            "failed",
+            None,
+            0.0,
+        )
+        .ok();
+        // 注意：**不能**把 .part 写进 path —— find_source 只看 path 非空就当作可服务内容，
+        // 那样会把"半截文件"当成完整种子发出去。.part 的位置由 transfer_id 推导。
+        let _ = &r.tmp_path;
+        // 统一状态：中途失败/超时/断链 ⇒ **Incomplete**（可恢复）。
+        // 于是建链时 retry_incomplete_content 会按退避自动重取，而不是永远停在 Active。
+        let _ = crate::content::store::record_failure(
+            &dbc,
+            &r.expected_sha256,
+            &r.peer_id,
+            crate::content::model::Direction::Receive,
+            crate::content::model::FailReason::Partial,
+            db::now_ms(),
+        );
+    }
     emit_failed(state, transfer_id, reason);
 }
 
