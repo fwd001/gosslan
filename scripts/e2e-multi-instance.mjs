@@ -23,7 +23,11 @@
 //   --fault=resume-prefix-lie → 同样的注入，只把"期望已收字节数/期望摘要"换成错值 ⇒ 预期报红
 //   --fault=kill-mid          → 注入③：接收中真 SIGKILL 对端，23 条断言，预期全绿
 //   --fault=kill-mid-lie      → 同样的注入，只把"期望续发字节数/期望摘要"换成错值 ⇒ 预期报红
+//   --fault=peer-freeze       → 注入④：对端被 SIGSTOP 冻住（有写无 ACK）⇒ 不许宣布送达，解冻后补齐
+//   --fault=peer-freeze-lie   → 同样的注入，只换期望摘要 ⇒ 预期报红
 //   （kill 轮的文件尺寸用 E2E_KILL_MB 调，默认 100 —— 回环上实测 ~0.78s 走完，窗口够打）
+//   （freeze 轮用 E2E_FREEZE_S 选调结长度，默认 30：**<45s** 是"链路还活着、只是没回执"，
+//    **>45s** 越过 watchdog（健康阈值 15s×3）⇒ 真的拆链 + 重拨 + 重试，两种都是同一组结局判据）
 
 const NEGATIVE = process.argv.includes("--negative");
 /// 故障注入模式（§八）。`--fault=poison-part` 见下方 preset 步骤的注释。
@@ -37,6 +41,21 @@ const KILL = FAULT === "kill-mid" || FAULT === "kill-mid-lie";
 /// 这一条注入专用的尺寸（与 J2 的 1 MB 分开，免得把默认轮也拖慢）。
 const KILL_BYTES = Number(process.env.E2E_KILL_MB || 100) * 1024 * 1024;
 let xferId4, srcFile4, srcSha4, partAtKill = 0;
+/// 注入④：对端**失联但没死** —— SIGSTOP 冻住 B。这一格钉的是
+/// 「对端没回执期间两侧都不许假成功，对端回来必须自己补齐」。
+/// ⚠️ 为什么不是"传输中途冻"：实测 100 MB 回环 0.78s 传完，而拆一条静默链路要 **45s**
+/// （watchdog = 健康阈值 15s × 3）⇒ 在飞窗口等不到冻结生效。时序只能是
+/// 「先冻 → 再入队 → 冻 N 秒 → 解冻」，N 决定落在哪个 regime（见 FREEZE_MS）。
+/// ⚠️ 实测撞出的产品现状（30s / 60s 两跑相同）：**失联期间这一单一次都没被尝试过**
+/// —— `file_outbox` 的重投只被入站事件触发，没有定时器 ⇒ 这一格**没覆盖**"到点重投"，
+/// 也**没覆盖**"write 成功 ≠ 已送达"。已按 A 类风险登记在 roadmap，改前别把话说满。
+const FREEZE = FAULT === "peer-freeze" || FAULT === "peer-freeze-lie";
+/// 调结长度。**<45s**：链路还活着，只是对端不回话；
+/// **>45s**：越过 watchdog ⇒ 拆链 + 重拨（解冻后由重拨/心跳重新触发 flush）。
+/// 两种 regime 用同一组"结局空间"判据，不需要分叉。
+const FREEZE_MS = Number(process.env.E2E_FREEZE_S || 30) * 1000;
+const FREEZE_BYTES = Number(process.env.E2E_FREEZE_MB || 1) * 1024 * 1024;
+let xferId5, srcFile5, srcSha5;
 /// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
 /// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
 const LIE = FAULT.endsWith("-lie");
@@ -737,6 +756,102 @@ if (KILL) {
     const kept4 = fs.existsSync(dl) ? fs.readdirSync(dl).filter((f) => f.includes(xferId4)) : [];
     check("续完之后接收目录只剩 1 个终名文件：无 .part 残留、无半截副本",
       kept4.length === 1 && kept4[0] === `${xferId4}.bin`, `${xferId4}.bin`, kept4.join(", ") || "空");
+  });
+}
+
+if (FREEZE) {
+  step("故障注入判据④：对端失联（进程被冻住）⇒ 失联期间不许假成功，对端回来必须自己补齐", async () => {
+    const dl = path.join(RUN_DIR, "recv", "B");
+    const srcDir = path.join(RUN_DIR, "src");
+    fs.mkdirSync(srcDir, { recursive: true });
+    xferId5 = `e2e-f-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    srcFile5 = path.join(srcDir, `${xferId5}.bin`);
+    fs.writeFileSync(srcFile5, Buffer.alloc(FREEZE_BYTES));
+    srcSha5 = createHash("sha256").update(fs.readFileSync(srcFile5)).digest("hex");
+    const landed = path.join(dl, `${xferId5}.bin`);
+    const partPath = path.join(dl, `${xferId5}.part`);
+    const sizeOf = (p) => { try { return fs.statSync(p).size; } catch { return -1; } };
+    // lie 模式：注入一模一样，只把"终局该等于哪个摘要"换掉 ⇒ 摘要那条必须红。
+    const wantSha5 = LIE ? LIE_SHA : srcSha5;
+    const pB = procs.get(INSTANCES[1].n);
+    if (!pB) throw new Error("拿不到 B 的子进程句柄 —— 这条注入没有可冻结的对象");
+    let thawed = false;
+    // ⚠️ 解冻必须放进 finally：**被 SIGSTOP 停住的进程收不到 SIGTERM 的处理**（信号挂起），
+    //    收尾的 stopAll() 会永久等一个不会来的 exit ⇒ 整条 harness 挂死、留一个僵尸。
+    pB.kill("SIGSTOP");
+    let mid = null;
+    try {
+      // 入队在冻结之后：与 kill 轮同一个教训 —— 注入时机必须在判据自己手里。
+      for (let i = 0; ; i++) {
+        try {
+          seed(INSTANCES[0].db, (db) => {
+            db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(xferId5);
+            db.prepare(
+              `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+               VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
+            ).run(xferId5, peerTo, srcFile5, `${xferId5}.bin`, FREEZE_BYTES, nowMs());
+          });
+          break;
+        } catch (e) {
+          if (i >= 5) throw e;
+          await sleep(300);
+        }
+      }
+      await sleep(FREEZE_MS);
+      const aMid = openDb(INSTANCES[0].db, true);
+      const st = aMid.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId5);
+      const q = aMid.prepare("SELECT COUNT(*) c FROM file_outbox WHERE transfer_id=?1").get(xferId5).c;
+      aMid.close();
+      const midLanded = sizeOf(landed);
+      const bMid = openDb(INSTANCES[1].db, true);
+      const b5mid = bMid.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId5);
+      bMid.close();
+      mid = {
+        status: st?.status ?? "无行", queued: q, b: b5mid?.status ?? "无行",
+        part: sizeOf(partPath), landed: midLanded,
+      };
+      // ⚠️ 实测到的**产品现状**（30s 与 60s 各跑一遍，结论相同；写在这里是防止下一个 AI 把这一轮
+      //   当成它看起来像在测的东西）：失联期间 A 侧 `attempts` 一次没涨、`file_transfers` 连行都没有
+      //   ⇒ **A 根本没有尝试过**。根因：`flush_pending_files` 只被建链 / Hello / 心跳 / BLE 这类
+      //   **入站事件**触发（transport.rs:2580/2902/3015、ble.rs:1102/2110），没有任何定时器去兑现
+      //   `file_outbox.next_attempt_at` 与那个 5s backoff；对端"活着但一句不回"时不会有入站事件。
+      //   ⇒ 这一轮证明的是：失联期间两侧都不许假成功 + 对端回来自己补齐。
+      //   它**没有证明**"write 成功 ≠ 已送达"（那需要一个真在飞的写），也**没覆盖**"失联期间到点重投"。
+      //   后者已按 A 类风险登记在 roadmap；修好之前不许把下面三条改名成"已覆盖重试"。
+      check("失联期间接收目录不许出现终名文件（没收下就没有完成可言）",
+        midLanded < 0, "不存在", midLanded >= 0 ? `已出现 ${midLanded} 字节` : "不存在");
+      check("失联期间发送侧不许记成 done", mid.status !== "done", "非 done", mid.status);
+      check("失联期间接收侧也不许记成 done（它一次回执都没发过）",
+        mid.b !== "done", "非 done", mid.b);
+      console.log(`  · 实测（失联 ${FREEZE_MS / 1000}s）：${JSON.stringify(mid)}`);
+      for (const l of (tailLog(INSTANCES[0].log, 60000) || "").split("\n")
+        .filter((x) => x.includes(xferId5)).slice(-8)) console.log("      A│ " + l.slice(0, 220));
+      pB.kill("SIGCONT");
+      thawed = true;
+      const t0 = nowMs();
+      await waitFor(() => sizeOf(landed) >= 0, 120_000, "解冻后 B 该把这一单收完并 rename 成终名");
+      console.log(`  · 实测：解冻 → 终名落地 ${(nowMs() - t0) / 1000}s`);
+    } finally {
+      if (!thawed) { try { pB.kill("SIGCONT"); } catch { /* 已经退了 */ } }
+    }
+    const got = sizeOf(landed) >= 0
+      ? createHash("sha256").update(fs.readFileSync(landed)).digest("hex") : null;
+    check("补齐之后的字节内容必须等于源文件（终局不许是坏内容）",
+      got === wantSha5, wantSha5.slice(0, 12) + "…", got ? got.slice(0, 12) + "…" : "未落地");
+    const bDb = openDb(INSTANCES[1].db, true);
+    const b5 = bDb.prepare("SELECT status FROM file_transfers WHERE id=?1").all(xferId5);
+    bDb.close();
+    const aDb = openDb(INSTANCES[0].db, true);
+    const a5 = aDb.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId5);
+    const q5 = aDb.prepare("SELECT COUNT(*) c FROM file_outbox WHERE transfer_id=?1").get(xferId5).c;
+    aDb.close();
+    const both5 = `B=${b5.map((r) => r.status).join("/") || "无行"} A=${a5?.status ?? "无行"} outbox=${q5}`;
+    check("对端解冻后必须自己补到终态：两侧 done 且 outbox 已清（不许停在中间态、不许弃单）",
+      b5.length === 1 && b5[0].status === "done" && a5?.status === "done" && q5 === 0,
+      "1 行 + 双侧 done + outbox=0", both5);
+    const kept5 = fs.existsSync(dl) ? fs.readdirSync(dl).filter((f) => f.includes(xferId5)) : [];
+    check("解冻之后不许留下第二次成功的痕迹",
+      kept5.length === 1 && kept5[0] === `${xferId5}.bin`, `${xferId5}.bin`, kept5.join(", ") || "空");
   });
 }
 

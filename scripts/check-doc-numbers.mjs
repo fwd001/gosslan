@@ -139,7 +139,12 @@ const HARNESS = "scripts/e2e-multi-instance.mjs";
  *  只认顶格的 `}` 收块 —— 与这个文件的写法一致；缩进的 } 一律不算闭合。 */
 /// harness 里的注入模式 → 活文档里必须出现的轮次名。**加一条注入就得在这里登记一行**：
 /// 没登记的表现是"文档永远不会要求它 ⇒ 这一轮的断言数没人对账"，正是要拦的那种静默漏。
-const MODE_LABEL = { POISON: "脏前缀轮", RESUME: "续传轮", KILL: "杀进程轮" };
+const MODE_LABEL = {
+  POISON: "脏前缀轮",
+  RESUME: "续传轮",
+  KILL: "杀进程轮",
+  FREEZE: "冻结轮",
+};
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
   const per = {};
@@ -178,7 +183,8 @@ try {
 console.log(
   `· 现算 E2E 断言数：${Object.entries(e2e).map(([k, v]) => `${k} ${v}`).join(" / ")}`,
 );
-const E2E_CLAIM = /(默认轮|脏前缀轮|故障轮|续传轮|杀进程轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
+const E2E_CLAIM =
+  /(默认轮|脏前缀轮|故障轮|续传轮|杀进程轮|冻结轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
 const seenLabel = new Set();
 for (const rel of LIVE_DOCS) {
   const abs = path.join(ROOT, rel);

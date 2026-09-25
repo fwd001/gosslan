@@ -422,10 +422,21 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--fault=kill-mid"],
     },
+    {
+      group: "local",
+      name: "双实例 E2E：对端失联（进程被冻住）后解冻续完",
+      why: `SIGSTOP 冻住接收端 ⇒ 失联期间两侧都不许 done、接收目录不许出现终名；解冻后对端自己补齐且只成功一次。` +
+        `⚠️ 这一轮**没有**覆盖"到点重投"：实测失联期间发送侧一次都没尝试（file_outbox 只由链路事件驱动 flush，没有到点定时器），` +
+        `所以也**不能**声称钉住了"write 成功 ≠ 已送达"；该缺口按 A 类风险登记在 roadmap，修好前别改口；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=peer-freeze"],
+    },
   );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。
-  console.log(`· 本地专项层（4 轮多实例 E2E）本轮没跑：${LOCAL_ONLY_WHY}`);
+  // 不写轮数：这一层的条目由上面的步骤表自己点名，写死数字就是下一个漂移点（同 CHANGELOG 的口径）。
+  console.log(`· 本地专项层（多实例 E2E，条目见 npm run verify:e2e）本轮没跑：${LOCAL_ONLY_WHY}`);
   console.log("  要跑它：npm run verify:e2e（或 --group local）");
 }
 
