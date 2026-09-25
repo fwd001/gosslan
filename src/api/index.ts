@@ -103,6 +103,15 @@ export const api = {
   requestContentByCid: (peerId: string, cid: string, name: string, size: number) =>
     invoke<boolean>("request_content_by_cid", { peerId, cid, name, size }),
   getMessageCount: (convId: string) => invoke<number>("get_message_count", { convId }),
+  /**
+   * 打开会话的冷加载：一次拿最新一页（正序）。
+   *
+   * 为什么单独一条：按 offset 取尾部要先 `COUNT(*)`，那是**两轮** IPC，而每轮都得排队过
+   * 全局那把 db 锁 —— 多出来的一轮正是"切到冷会话先看到骨架、后半拍才出内容"。
+   * 翻页不用它：那一页要的是 total（判"还有没有更早历史"）。
+   */
+  getLatestMessages: (convId: string, limit?: number) =>
+    invoke<MessageRecord[]>("get_latest_messages", { convId, limit }),
   getConversations: () => invoke<Conversation[]>("get_conversations"),
   ensureConversation: (friendId: string) =>
     invoke<Conversation>("ensure_conversation", { friendId }),

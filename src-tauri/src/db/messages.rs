@@ -105,6 +105,48 @@ pub fn get_messages(
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// 取「最新一页」：一次查询拿到会话尾部的 `limit` 条，返回顺序与 `get_messages` 一致（正序）。
+///
+/// ## 为什么要有这一条而不是用 `get_messages(limit, total - limit)`
+/// 后者要先 `COUNT(*)` 才知道 offset ⇒ 冷加载一个会话要打**两次** IPC，而每次都得排队过
+/// 全局那把 `Mutex<Connection>`（所有业务共用一个连接）。多出来的那一轮不是"慢一点"，
+/// 是用户切到冷会话时**先看到骨架、过一会儿才看到内容**的那半拍。
+/// 合成一条还顺带去掉一个窗口：原来 `COUNT` 与取页之间若插进新消息，拿旧 offset 去查新状态
+/// 会让这一页**漏掉最底部那几条**（要等下一次重查才出现）。
+///
+/// ## 顺序
+/// `ORDER BY seq DESC, id DESC` 是 `get_messages` 那份全序的镜像，取完再 `reverse()`
+/// 回来 —— 判据测试 `db::favorites_tests::latest_page_is_identical_to_the_count_plus_offset_two_step`
+/// 逐行比对两者。**不能只用 `seq`**：它是 Lamport 逻辑时钟，双方同时发送时同一会话内
+/// 会撞号，`id` 才是那根打破平局的稳定锚。
+pub fn get_latest_messages(
+    conn: &Connection,
+    conv_id: &str,
+    limit: i64,
+) -> Result<Vec<MessageRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
+         FROM messages WHERE conv_id = ?1 ORDER BY seq DESC, id DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![conv_id, limit], |r| {
+        Ok(MessageRecord {
+            id: r.get(0)?,
+            msg_id: r.get(1)?,
+            conv_id: r.get(2)?,
+            sender_id: r.get(3)?,
+            receiver_id: r.get(4)?,
+            kind: crate::protocol::display_kind(&r.get::<_, String>(5)?),
+            content: r.get(6)?,
+            ts: r.get(7)?,
+            seq: r.get(8)?,
+            status: r.get(9)?,
+        })
+    })?;
+    let mut out: Vec<MessageRecord> = rows.filter_map(|r| r.ok()).collect();
+    out.reverse();
+    Ok(out)
+}
+
 /// 预览取源：按 msg_id 返回 (sender_id, content)，供 read_file_preview 定位本地路径
 /// 并判定归属（本机的自选文件 / 接收方 downloads 路径），避免命令层直连 rusqlite。
 pub fn get_message_preview_source(conn: &Connection, msg_id: &str) -> Option<(String, String)> {

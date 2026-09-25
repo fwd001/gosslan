@@ -628,6 +628,7 @@ const CMDS = [
   ["get_conversations", "chat", "", "Conversation[]"],
   ["get_message_count", "chat", "conv_id str", "int"],
   ["get_messages", "chat", "conv_id str; limit int?; offset int?", "MessageRecord[]"],
+  ["get_latest_messages", "chat", "conv_id str; limit int?", "MessageRecord[]"],
   ["mark_read", "chat", "conv_id str", "()|err"],
   ["send_message", "chat", "friend_id str; content str; kind str", "MessageRecord|err"],
   ["set_conversation_pinned", "chat", "conv_id str; pinned bool", "()|err"],
@@ -755,7 +756,8 @@ const SEM = {
   /* ── commands/chat.rs · 单聊 ── */
   send_message: { d: "发单聊。门禁三关：<b>是好友 → ≤50 000 字符（拒断不截断）→ 该 kind 需要的能力位对端声明过吗</b>（缺记录按 0 = 拒绝）。取不到对方 x25519 会先 <code>who_has</code> 探一次并等 1.2s，仍无则明确报错。", w: "messages + outbox（同事务）", n: "自聊走纯本地分支" },
   get_messages: { d: "分页读会话消息。<b>排序用 <code>seq</code>（Lamport），不是 <code>ts</code></b>；返回体就是 <code>MessageRecord[]</code>。", w: "读 messages" },
-  get_message_count: { d: "该会话总条数（前端算「还能不能继续往前加载」）。" },
+  get_message_count: { d: "该会话总条数（前端算「还能不能继续往前加载」）。<b>冷加载不再问它</b>，只有翻页在用。" },
+  get_latest_messages: { d: "一次取会话<b>最新一页</b>（正序）。存在的理由：按 offset 取尾部得先知道总数 = 两轮 IPC，每轮各排一次全局 db 锁，冷会话「先骨架、后半拍才出内容」就是那一轮。等价性由 Rust 侧逐行钉（<code>latest_page_is_identical_to_the_count_plus_offset_two_step</code>）。", w: "读 messages" },
   get_conversations: { d: "会话列表（含 <code>unread / pinned / last_msg / last_ts</code>）。" },
   ensure_conversation: { d: "没有这一行就按好友资料建一行（打开一个从没聊过的好友时）。" },
   mark_read: { d: "清未读并触发已读回执；<b>发不出去先攒 <code>pending_reads</code></b>，建链 / 心跳时补发。", w: "conversations.unread · group_reads · pending_reads" },

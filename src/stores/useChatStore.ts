@@ -839,9 +839,10 @@ export const useChatStore = defineStore("chat", () => {
   //
   // 为什么从 4 提到 8（用户 2026-09-24 #29「切换会话要瞬间响应」）：这条上界直接决定
   // 「切过去是**当场有内容**还是**先看到骨架**」—— 骨架的判据就是
-  // `messages[convId] === undefined`。命中缓存 = 零 IPC、当场渲染；被淘汰 = 冷加载
-  // （`getMessageCount` + `getMessages` 两轮**串行** IPC，还要排队过后端那把全局
-  // `Mutex<Connection>`）。4 个槽位意味着常聊 5 个人时按 A→B→C→D→E→A 转一圈，
+  // `messages[convId] === undefined`。命中缓存 = 立刻有上一轮的内容可画（后台照样重查一页
+  // 把发送状态/撤回对齐，只是那期间不空白）；被淘汰 = 冷加载**只能等那一轮 IPC**
+  // （`get_latest_messages`，一次拿完，仍要排队过后端那把全局 `Mutex<Connection>`）。
+  // 4 个槽位意味着常聊 5 个人时按 A→B→C→D→E→A 转一圈，
   // **回到 A 的那一下必然**是冷的 —— 淘汰是纯 LRU 计数、与"多久没打开"无关，
   // 所以这个退化是确定会发生，不是偶发。
   // 代价核过账：每会话上界 = MAX_PAGES × PAGE_SIZE = 1000 条，一条记录（msg_id/conv_id/
@@ -909,9 +910,12 @@ export const useChatStore = defineStore("chat", () => {
     // 最新消息与文件都要靠后续滚动才出现。
     let list: MessageRecord[];
     try {
-      const total = await api.getMessageCount(convId);
-      const offset = Math.max(0, total - PAGE_SIZE);
-      list = await api.getMessages(convId, PAGE_SIZE, offset);
+      // 一次 IPC 拿最新一页（后端返回正序，前端整表覆盖不必再倒一遍）。
+      // 原先是「先 `COUNT(*)` 算 offset、再按 offset 取页」两轮**串行** —— 每轮都要排队过
+      // 全局那把 db 锁，而 count 这一轮在冷加载里除了算 offset 没有别的用处。
+      // 判据：`storeContract` 钉住"冷加载只发一次消息页 IPC"，Rust 侧钉住
+      // 「一次取尾 == 两轮按 offset 取，逐行同序」。
+      list = await api.getLatestMessages(convId, PAGE_SIZE);
     } catch {
       // 读库失败也要把该会话标记为「已加载」：留 undefined 会让 ChatWindow 的加载骨架
       // 永远停在那里（UI 先行就得保证"必有终态"）。给空列表 = 回到"暂无消息"的正常态。

@@ -351,6 +351,23 @@ pub fn get_message_count(state: State<'_, Arc<AppState>>, conv_id: String) -> i6
     db::count_messages(&dbc, &conv_id)
 }
 
+/// 一次拿到会话的**最新一页**（打开聊天时的冷加载）。
+///
+/// 与 `get_messages` + `get_message_count` 的关系：这条只服务"取尾部一页"这一个场景，
+/// 把那两轮串行 IPC 压成一轮；翻页仍然按 offset 走 `get_messages`（那里 total 是
+/// 判"还有没有更早历史"的依据，不是顺手拿来算 offset 的）。
+/// 返回正序，前端整表覆盖时不需要再倒一遍。
+#[tauri::command(async)]
+pub fn get_latest_messages(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+    limit: Option<i64>,
+) -> Vec<MessageRecord> {
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+    let safe_limit = limit.unwrap_or(100).clamp(1, 500);
+    db::get_latest_messages(&dbc, &conv_id, safe_limit).unwrap_or_default()
+}
+
 #[tauri::command(async)]
 pub fn get_conversations(state: State<'_, Arc<AppState>>) -> Vec<Conversation> {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());

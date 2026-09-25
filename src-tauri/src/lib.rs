@@ -443,6 +443,7 @@ pub fn run() {
             commands::respond_friend_request,
             commands::send_message,
             commands::get_messages,
+            commands::get_latest_messages,
             commands::get_conv_link,
             commands::get_message_count,
             commands::get_conversations,

@@ -153,6 +153,10 @@ db::tests::kind_class_lists_are_derived_from_the_single_table
 db::tests::lan_enabled_defaults_on_and_keeps_explicit_off
 db::tests::last_message_from_sender_ignores_own_and_other_senders
 db::tests::late_ack_never_regresses_a_read_message
+db::tests::latest_page_breaks_seq_ties_by_id_exactly_like_the_ascending_query
+db::tests::latest_page_is_identical_to_the_count_plus_offset_two_step
+db::tests::latest_page_is_scoped_to_its_conversation_and_returns_a_short_tail_whole
+db::tests::latest_page_returns_an_empty_page_instead_of_erroring_on_an_unknown_limit
 db::tests::list_group_files_scoped_and_newest_first
 db::tests::merge_payload_validation_and_summary
 db::tests::message_and_outbox_are_written_atomically

@@ -573,6 +573,83 @@ mod tests {
         assert_eq!(get_messages(&conn, "c1", 100, 0).unwrap().len(), 1);
     }
 
+    /// 按 `msg_id` 序列比对（`MessageRecord` 没有 `PartialEq`，而这里要的正是"同一批行、
+    /// 同一个顺序"，逐字段比对反而会把"内容不同"这种无关差异一起放进来）。
+    fn ids(rows: &[MessageRecord]) -> Vec<String> {
+        rows.iter().map(|r| r.msg_id.clone()).collect()
+    }
+
+    /// 插入 `n` 条 seq 递增的消息。`seq_start` 用来制造与别的会话交错的序号。
+    fn insert_seq_run(conn: &Connection, conv_id: &str, from: i64, n: i64) {
+        for i in 0..n {
+            let seq = from + i;
+            let mut m = rec(&format!("m{conv_id}-{seq}"), conv_id);
+            m.seq = seq;
+            insert_message(conn, &m).unwrap();
+        }
+    }
+
+    /// 「最新一页」必须与「先 `count` 再按 `offset` 取」**逐行同序等价** ——
+    /// 这条恒等判据是本刀的全部安全性：前端把两轮 IPC 合成一轮，读到的行集与顺序
+    /// 一个字都不能变（变了就是消息顺序画反、或底部停在第 100 条历史）。
+    #[test]
+    fn latest_page_is_identical_to_the_count_plus_offset_two_step() {
+        let conn = mem();
+        insert_seq_run(&conn, "c1", 1, 250);
+
+        let total = count_messages(&conn, "c1");
+        let offset = (total - 100).max(0);
+        let two_step = get_messages(&conn, "c1", 100, offset).unwrap();
+
+        assert_eq!(two_step.len(), 100, "前提：两轮取到的确实是尾部 100 条");
+        assert_eq!(ids(&get_latest_messages(&conn, "c1", 100).unwrap()), ids(&two_step));
+    }
+
+    /// seq 是 Lamport 时钟，**同一会话内可以撞号**（两侧同时各发一条时双方都可能给出
+    /// 同一个序号），所以 `get_messages` 用 `id` 兜底打破平局。取尾部必须沿用同一份
+    /// 全序 —— 否则平局那几条在"两轮"和"一轮"之间会换位。
+    #[test]
+    fn latest_page_breaks_seq_ties_by_id_exactly_like_the_ascending_query() {
+        let conn = mem();
+        // 4 条正常序号，再加 3 条**同 seq** 的行（后插入者 id 更大 = 更"新"）。
+        insert_seq_run(&conn, "c1", 1, 4);
+        for i in 0..3 {
+            let mut m = rec(&format!("tie-{i}"), "c1");
+            m.seq = 4;
+            insert_message(&conn, &m).unwrap();
+        }
+
+        let all = get_messages(&conn, "c1", 100, 0).unwrap();
+        assert_eq!(all.len(), 7, "前提：平局行没有被唯一约束吞掉");
+        assert_eq!(ids(&get_latest_messages(&conn, "c1", 3).unwrap()), ids(&all[4..]));
+        // 取满整表时也必须逐行等价（等价于"会话不满一页"的冷加载）。
+        assert_eq!(ids(&get_latest_messages(&conn, "c1", 100).unwrap()), ids(&all));
+    }
+
+    /// 会话隔离 + 短会话：不满一页时给全部，且绝不串到别的会话（前端整表覆盖，
+    /// 串一条就是把别人的消息画进当前会话）。
+    #[test]
+    fn latest_page_is_scoped_to_its_conversation_and_returns_a_short_tail_whole() {
+        let conn = mem();
+        insert_seq_run(&conn, "c1", 1, 2);
+        insert_seq_run(&conn, "c2", 1, 30);
+
+        let got = get_latest_messages(&conn, "c1", 100).unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|r| r.conv_id == "c1"));
+        assert_eq!(ids(&got), vec!["mc1-1", "mc1-2"], "短会话也要正序返回");
+        assert!(get_latest_messages(&conn, "no-such-conv", 100).unwrap().is_empty());
+    }
+
+    /// 与 P0-2 一样，"最新一页"不得把别人的会话行漏进来 —— 换会话瞬间的脏读形态。
+    #[test]
+    fn latest_page_returns_an_empty_page_instead_of_erroring_on_an_unknown_limit() {
+        let conn = mem();
+        insert_seq_run(&conn, "c1", 1, 3);
+        // limit 0 由命令层夹住，db 层保持与 `get_messages` 一致的裸语义：0 行就是 0 行。
+        assert!(get_latest_messages(&conn, "c1", 0).unwrap().is_empty());
+    }
+
     /// P0-2 根因（反面用例，锁定必须避免的写法）：真实 msg_id 一旦被「解密失败的占位
     /// 系统消息」占用，之后同一 msg_id 的正确副本会被 INSERT OR IGNORE 静默吞掉，
     /// 明文永久不可恢复。所以接收端解不开时绝不能写任何占用真实 msg_id 的行。

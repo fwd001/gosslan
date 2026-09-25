@@ -209,14 +209,42 @@ test("翻页单飞必须「并入在飞那一次」，不许把后来者直接�
 });
 
 test("「已翻到顶」结论必须在每次重新加载时作废，且作废点在任何 await 之前", () => {
-  const st = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
   const fn = st.slice(st.indexOf("async function loadMessages("));
   const body = fn.slice(0, fn.indexOf("\n  }"));
   const del = body.indexOf("historyTops.delete(convId)");
   assert.ok(del >= 0, "loadMessages 不作废 historyTops ⇒ IPC 失败/seq 被抢的早退路径会永久挡死翻页");
+  // ⚠️ 判据钉在**第一个 await**上，不钉在某条具体调用名上：以前写的是
+  // `del < body.indexOf("await api.getMessageCount")`，把冷加载换成一条新命令之后
+  // 那个字面量就消失了，这条红线会**永远绿灯** —— 而它守的是"早退路径漏清 historyTops"。
+  const firstAwait = body.indexOf("await");
+  assert.ok(firstAwait > 0, "loadMessages 里没有 await：判据前提塌了，改名要同步这条守卫");
   assert.ok(
-    del < body.indexOf("await api.getMessageCount"),
-    "作废点必须排在 await 之前：放在成功路径末尾时，catch 与过期早退都到不了那里",
+    del < firstAwait,
+    "作废点必须排在任何 await 之前：放在成功路径末尾时，catch 与过期早退都到不了那里",
+  );
+});
+
+test("冷加载必须一次 IPC 取到最新一页，不许退回「先问总数再按 offset 取」两轮串行", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const at = st.indexOf("async function loadMessages(");
+  assert.ok(at >= 0, "找不到 loadMessages —— 改名要同步这条守卫");
+  const body = st.slice(at, st.indexOf("\n  }", at));
+  const calls = [...body.matchAll(/\bapi\.(getMessageCount|getMessages|getLatestMessages)\b/g)];
+  // 为什么钉"次数"而不是钉"没出现 getMessageCount"：切会话的冷加载正中间夹一次
+  // `COUNT(*)` 查询，两轮都要排队过后端那把全局 `Mutex<Connection>` —— 多的一轮不是
+  // 快一点慢一点的问题，而是用户切到一个冷会话时**先看到骨架、后看到内容**的那半拍。
+  // 一个 await 的往返次数是本刀唯一可回归的东西，所以按调用点计数。
+  assert.equal(
+    calls.length,
+    1,
+    `冷加载发了 ${calls.length} 次消息页 IPC（${calls.map((c) => c[1]).join(" → ")}）：` +
+      "必须一次拿完，count 那一轮是给翻页用的，不参与冷加载",
+  );
+  assert.equal(
+    calls[0]?.[1],
+    "getLatestMessages",
+    "冷加载必须走「取尾部一页」那一条命令；退回 getMessages 需要 total 才能算 offset，等于把两轮串行带回来",
   );
 });
 
