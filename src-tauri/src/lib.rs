@@ -3582,15 +3582,24 @@ mod tests {
         );
     }
 
-    /// 中继收文件的完整性校验必须对**按 seq 组装出的明文一次性**计算（审计 1.8）。
+    /// 中继收文件：① 完整性校验必须对**已按 seq 归位的字节一次性**算（审计 1.8）；
+    /// ② 归位的字节必须在**磁盘上**，不在内存里（架构复审 P4）。
     ///
-    /// 后果链：旧实现逐片"到达即喂"增量哈希 —— 但中继链路分片天然**重复**（多邻居
-    /// 泛洪各送一份）且**乱序**（多路径时延不同），喂哈希发生在 add_chunk 去重/排序
+    /// 后果链（1.8）：旧实现逐片"到达即喂"增量哈希 —— 但中继链路分片天然**重复**
+    /// （多邻居泛洪各送一份）且**乱序**（多路径时延不同），喂哈希发生在去重/排序
     /// 之前 ⇒ 分片收齐却必然校验失败：接收端报"文件完整性校验失败"、发送端却显示
     /// 成功（无回执），两端状态互相矛盾且无重试路径。
     ///
-    /// 判据：`handle_relay_chunk` 体内不得出现 `.hasher`（增量喂哈希的旧写法）；
-    /// 校验点必须是 `Sha256::digest(&full)`（对组装结果一次算）。
+    /// 后果链（P4）：重组表原先是 `chunks: HashMap<u32, Vec<u8>>`，完成时再组装出第二份
+    /// ⇒ 峰值 ≈ 2× 文件大小（600MB 文件 = 1.2GB 内存，移动端必被系统杀掉），
+    /// 而当时的尺寸闸门只有一句 `size > i64::MAX`，等于没有。
+    ///
+    /// 判据分两组，都取**语义形状**：
+    /// ① `handle_relay_chunk` 里不得出现 `.hasher`（增量喂哈希的旧写法），
+    ///    校验点必须是对文件整体流式算的 `sha256_file_hex(`；
+    /// ② `file_relay.rs` 的 `Reassembly` 不得再持有 `Vec<u8>` 载荷、`add_chunk`
+    ///    必须真的 `seek + write_all` 落盘，且开档时预分配（`set_len`）——
+    ///    少任何一件，"内存与文件大小无关"这个结论就不成立。
     #[test]
     fn relay_receive_hashes_assembled_plaintext_once() {
         let src = crate::network::transport_src_for_guards();
@@ -3598,12 +3607,43 @@ mod tests {
         assert!(
             !body.contains(".hasher"),
             "handle_relay_chunk 里出现增量哈希：分片按到达顺序喂、在去重/排序之前，\
-             重复与乱序都会算错 ⇒ 收齐了也报校验失败（审计 1.8）。\
-             改为重组完成后对 full 一次性 Sha256::digest"
+             重复与乱序都会算错 ⇒ 收齐了也报校验失败（审计 1.8）"
         );
         assert!(
-            body.contains("sha2::Sha256::digest(&full)"),
-            "完整性校验必须对按 seq 组装出的明文一次性计算（Sha256::digest(&full)，审计 1.8）"
+            body.contains("sha256_file_hex("),
+            "完整性校验必须对**已归位的整份字节**一次性算（流式 `sha256_file_hex`，\
+             审计 1.8 + P4）：既不能逐片喂，也不能先把整份读回内存再 digest"
+        );
+        assert!(
+            !body.contains("Sha256::digest(&"),
+            "又出现了「把一份完整缓冲喂给 digest」的写法：中继接收的内存峰值必须与\
+             文件大小无关（P4）"
+        );
+
+        let relay = include_str!("file_relay.rs");
+        let begin = rust_fn_body(relay, "pub fn begin_reassemble(");
+        let add = rust_fn_body(relay, "pub fn add_chunk(");
+        assert!(
+            begin.contains("set_len("),
+            "开档必须预分配到声明的尺寸：既是「写到 offset 之外当场可判」的依据，\
+             也让乱序落盘不必自己补零（P4）"
+        );
+        assert!(
+            add.contains("SeekFrom::Start(") && add.contains("write_all("),
+            "add_chunk 必须按 `seq × chunk_size` 直接写盘，而不是把分片存进内存表（P4）"
+        );
+        let struct_at = relay
+            .find("pub struct Reassembly {")
+            .expect("找不到 Reassembly —— 改名要同步这条守卫");
+        let struct_body = &relay[struct_at..relay[struct_at..].find("\n}").unwrap() + struct_at];
+        assert!(
+            !struct_body.contains("Vec<u8>"),
+            "Reassembly 又持有 `Vec<u8>` 载荷 = 退回整份驻内存，那正是 P4 要消灭的形状：{struct_body}"
+        );
+        assert!(
+            struct_body.contains("HashSet<u32>") && struct_body.contains("file:"),
+            "Reassembly 只许持有「收到过哪些 seq」+「已打开的文件句柄」两样：\
+             多了任何一份字节缓冲都是 P4 复发"
         );
     }
 

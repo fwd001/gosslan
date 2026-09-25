@@ -1250,6 +1250,17 @@ pub enum Message {
         name: String,
         size: u64,
         total_chunks: u32,
+        /// 发送方**实际使用**的分片尺寸（字节）。接收方按 `seq × chunk_size` 直接落盘，
+        /// 于是整份文件不必驻内存（见 `file_relay::Reassembly`）。
+        ///
+        /// ⚠️ 为什么不能省：`total_chunks = ceil(size / chunk_size)` 是**不可逆**的，
+        /// 从 `(size, total_chunks)` 反推会得到错的数（size=65537、chunk=65536 ⇒
+        /// total=2 ⇒ 反推 32769），偏移全部错位、哈希必然不符。
+        ///
+        /// `default = 0` 表示"对端没声明"= 4 个版本之前的老发送方 ⇒ 接收侧**拒收并说明**，
+        /// 不退回"整份进内存"那条 OOM 老路。老接收方会忽略这个字段，不受影响。
+        #[serde(default)]
+        chunk_size: u32,
         sealed_file_key: String,
         file_sha256: String,
     },

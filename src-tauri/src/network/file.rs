@@ -723,6 +723,8 @@ async fn relay_push_file(
         name: name.clone(),
         size,
         total_chunks: chunk_count,
+        // 接收方按 `seq × chunk_size` 直接落盘，所以这个数必须随 offer 一起过去
+        chunk_size: chunk_size as u32,
         sealed_file_key: sealed_key_b64,
         file_sha256,
     };
@@ -3286,41 +3288,56 @@ mod tests {
             file_key,
             expected_sha256: expected,
             created_at: crate::db::now_ms(),
+            last_progress_at: 0,
         };
 
         // 模拟 handle_relay_chunk 的接收路径：解密 → add_chunk（去重 + 按 seq 组装）。
         // 分片**故意乱序到达且 seq=0 重复投递一次**（多邻居泛洪 + 多路径时延不同
         // 是该链路的常态）—— 修复前的增量哈希在这两种情况下都会算错，导致
         // 「分片齐了却报文件完整性校验失败」，发送端却显示成功。
+        // 乱序 + 重复投递的语义没变，变的只是"组出来的东西在哪"：
+        // 现在每片直接按 `seq × chunk_size` 落进 `.part`，完成时给的是**文件路径**。
+        let dir = std::env::temp_dir().join(format!("gosslan-relay-hash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
         let mut relay = crate::file_relay::RelayManager::new();
-        relay.begin_reassemble("t", "f.bin", 2, original.len() as u64);
+        relay
+            .begin_reassemble(
+                "t",
+                "f.bin",
+                2,
+                original.len() as u64,
+                FILE_CHUNK as u32,
+                &dir,
+            )
+            .unwrap();
         let sealed: Vec<Vec<u8>> = original
             .chunks(FILE_CHUNK)
             .map(|c| crypto::seal_symmetric(&rs.file_key, c).unwrap())
             .collect();
         // 乱序：先到 seq=1，再到 seq=0（此刻重组完成），然后 seq=0 再来一份（重复）
-        let mut completed: Option<(String, u64, Vec<u8>)> = None;
+        let mut done: Option<(String, u64, std::path::PathBuf)> = None;
         for (seq, s) in [(1u32, &sealed[1]), (0, &sealed[0]), (0, &sealed[0])] {
             let plain = crypto::open_symmetric(&rs.file_key, s).unwrap();
-            if let Some(done) = relay.add_chunk("t", seq, plain) {
-                completed = Some(done);
+            if let crate::file_relay::ChunkOutcome::Complete { name, size, path } =
+                relay.add_chunk("t", seq, &plain)
+            {
+                done = Some((name, size, path));
             }
         }
-        let Some((_, _, full)) = completed else {
+        let Some((_, _, part)) = done else {
             panic!("三条分片后必须完成重组");
         };
-        assert_eq!(full, original, "乱序+重复到达也要组装出原始明文");
+        let full = std::fs::read(&part).unwrap();
+        assert_eq!(full, original, "乱序+重复到达也要落出原始明文");
 
-        // 修复后的校验点：对组装结果一次性算哈希
-        use sha2::Digest;
-        let actual_hex: String = sha2::Sha256::digest(&full)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        // 修复后的校验点：对**已归位的字节**整体算一次哈希（生产用同一份流式实现）
         assert!(
-            actual_hex.eq_ignore_ascii_case(&rs.expected_sha256),
+            sha256_file_hex(&part)
+                .unwrap()
+                .eq_ignore_ascii_case(&rs.expected_sha256),
             "乱序+重复分片场景最终校验必须通过"
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ---------- 群文件 session key（GroupFileOffer 阶段） ----------

@@ -4115,6 +4115,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             name,
             size,
             total_chunks,
+            chunk_size,
             sealed_file_key,
             file_sha256,
         } => {
@@ -4127,6 +4128,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 name,
                 size,
                 total_chunks,
+                chunk_size,
                 sealed_file_key,
                 file_sha256,
             )
@@ -4399,6 +4401,7 @@ async fn handle_relay_file_offer(
     name: String,
     size: u64,
     total_chunks: u32,
+    chunk_size: u32,
     sealed_file_key: String,
     file_sha256: String,
 ) {
@@ -4447,12 +4450,34 @@ async fn handle_relay_file_offer(
             file_key,
             expected_sha256: file_sha256,
             created_at: db::now_ms(),
+            last_progress_at: 0,
         });
-    state
+    // 开好 `.part`（预分配、按 seq 落盘）。失败的两条出路都是**当场拒收**：
+    // `chunk_size == 0` = 对端没声明分片尺寸（老版本），不声明就没法流式接收，
+    // 而宁可可报错也不退回"整份进内存"—— 那条路就是 600MB 文件把手机撑死的入口。
+    let dl = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Err(reason) = state
         .relay
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .begin_reassemble(&transfer_id, &name, total_chunks, size);
+        .begin_reassemble(&transfer_id, &name, total_chunks, size, chunk_size, &dl)
+    {
+        let _ = state.app.emit(
+            "file-failed",
+            &FileFailedInfo {
+                transfer_id: transfer_id.clone(),
+                reason: reason.clone(),
+            },
+        );
+        state
+            .logger
+            .warn("file", format!("拒收中继文件 offer：{reason}"));
+        return;
+    }
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
@@ -4489,8 +4514,10 @@ async fn handle_relay_chunk(
     to: String,
     ttl: u8,
 ) {
+    // 三种结果的处理完全不同（忽略 / 判死 / 等下一片），见 `file_relay::ChunkOutcome`。
+    use crate::file_relay::ChunkOutcome;
     if to == state.device_id {
-        // 最终接收方：先解密（E2EE，密文不落盘），再交重组表去重/按 seq 组装。
+        // 最终接收方：先解密（E2EE，密文不落盘），再交重组表去重/按 seq 落盘。
         // ⚠️ 不在这里做任何增量哈希：分片按到达顺序解密，可能重复（多邻居泛洪
         // 每条路径都送一份）、可能乱序（多中继路径时延不同）—— 按到达顺序喂哈希
         // 在去重/排序之前必然算错。完整性校验在重组完成后对组装出的明文一次性
@@ -4513,16 +4540,108 @@ async fn handle_relay_chunk(
         };
         let completed = {
             let mut relay = state.relay.lock().unwrap_or_else(|e| e.into_inner());
-            relay.add_chunk(&transfer_id, seq, bytes)
+            relay.add_chunk(&transfer_id, seq, &bytes)
         };
-        if let Some((name, expected_size, full)) = completed {
-            // 重组结束（无论成败）：移除会话状态，对组装出的明文做完整性校验
+        // 三种非完成结果各自的处理完全不同，所以按枚举分派（见 `file_relay::ChunkOutcome`）。
+        let (name, expected_size, part_path) = match completed {
+            ChunkOutcome::Complete { name, size, path } => (name, size, path),
+            ChunkOutcome::Duplicate | ChunkOutcome::Unknown => return,
+            ChunkOutcome::Partial {
+                received_bytes,
+                total_bytes,
+            } => {
+                // 进度必须报（否则整单停在 0%），但**每秒最多一条**：BLE 上 4KiB 一片，
+                // 几百 KB 的文件就是上万片，逐片 emit 会把"正在收文件"变成"界面卡顿"。
+                // 判据与更新都在锁内，emit 出锁再做（INV-P25：状态锁内不 emit）。
+                let now = db::now_ms();
+                let announce = {
+                    let mut keys = state
+                        .relay_file_keys
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    match keys.get_mut(&transfer_id) {
+                        Some(rs) if now - rs.last_progress_at >= 1_000 => {
+                            rs.last_progress_at = now;
+                            true
+                        }
+                        _ => false,
+                    }
+                };
+                if announce {
+                    let _ = state.app.emit(
+                        "file-progress",
+                        &FileProgress {
+                            transfer_id,
+                            received: received_bytes,
+                            total: total_bytes,
+                        },
+                    );
+                }
+                return;
+            }
+            ChunkOutcome::Rejected(reason) => {
+                // 对端声明的形状自相矛盾 ⇒ 这一单当场判死。`.part` 已由 Reassembly 删掉，
+                // 这里只负责落库 + 说给人听（静默消失 = 前端永久卡 X%，审计 A2 那条老账）。
+                // 不重写 `upsert_transfer`：offer 到达时那行已经带着 name/size 落过库了，
+                // 这里要的是"把仍 active 的行推进到 failed"，正是 `mark_transfer_failed_if_active`。
+                {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::mark_transfer_failed_if_active(&dbc, &transfer_id).ok();
+                    state
+                        .relay_file_keys
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&transfer_id);
+                }
+                let _ = state.app.emit(
+                    "file-failed",
+                    &FileFailedInfo {
+                        transfer_id: transfer_id.clone(),
+                        reason: format!("中继分片形状不合法：{reason}"),
+                    },
+                );
+                return;
+            }
+        };
+        {
+            // 重组结束（无论成败）：会话状态一次性收走，不留"半拆"的中间态。
             let rs = state
                 .relay_file_keys
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&transfer_id);
-            if full.len() as u64 != expected_size {
+            // `rs` 为空只可能是回收器抢先摘走了（TTL 到点），此时没有任何依据可以
+            // 宣称这份文件可信 ⇒ 判失败。**不许**沿用旧的"跳过校验照样落盘"。
+            let Some(rs) = rs else {
+                let _ = std::fs::remove_file(&part_path);
+                {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::upsert_transfer(
+                        &dbc,
+                        &transfer_id,
+                        &from,
+                        &name,
+                        expected_size,
+                        "receive",
+                        "failed",
+                        None,
+                        0.0,
+                    )
+                    .ok();
+                }
+                let _ = state.app.emit(
+                    "file-failed",
+                    &FileFailedInfo {
+                        transfer_id: transfer_id.clone(),
+                        reason: "中继接收状态已过期，文件未完成".to_string(),
+                    },
+                );
+                return;
+            };
+            // 尺寸：声明与实际落盘必须一致（分片形状已在 add_chunk 判过，这里是最后一道）
+            let on_disk = std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
+            if on_disk != expected_size {
+                let _ = std::fs::remove_file(&part_path);
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     db::upsert_transfer(
@@ -4547,15 +4666,13 @@ async fn handle_relay_chunk(
                 );
                 return;
             }
-            // 文件级完整性：按 seq 组装出的明文一次性算 SHA-256，
-            // 与发送方声明比对，不一致不落盘（重复/乱序分片已被 add_chunk 归一）。
-            if let Some(rs) = rs {
-                use sha2::Digest;
-                let actual_hex: String = sha2::Sha256::digest(&full)
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect();
-                if !actual_hex.eq_ignore_ascii_case(&rs.expected_sha256) {
+            // 文件级完整性：**流式**算 SHA-256（边读边算，峰值只有一个读缓冲）。
+            // 分片按到达顺序解密时可能重复（多邻居泛洪）也可能乱序（多路径时延不同），
+            // 所以哈希只能在字节归位后整体算一次（2026-09-23 审计 1.8）。
+            let actual_hex = match file::sha256_file_hex(&part_path) {
+                Ok(hex) => hex,
+                Err(reason) => {
+                    let _ = std::fs::remove_file(&part_path);
                     {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         db::upsert_transfer(
@@ -4570,27 +4687,55 @@ async fn handle_relay_chunk(
                             0.0,
                         )
                         .ok();
-                        // 统一状态：校验失败 ⇒ Rejected（换源重取是唯一出路）。
-                        let _ = crate::content::store::record_failure(
-                            &dbc,
-                            &rs.expected_sha256,
-                            &from,
-                            crate::content::model::Direction::Receive,
-                            crate::content::model::FailReason::HashMismatch,
-                            db::now_ms(),
-                        );
                     }
                     let _ = state.app.emit(
                         "file-failed",
                         &FileFailedInfo {
                             transfer_id: transfer_id.clone(),
-                            reason: "文件完整性校验失败".to_string(),
+                            reason,
                         },
                     );
                     return;
                 }
+            };
+            if !actual_hex.eq_ignore_ascii_case(&rs.expected_sha256) {
+                let _ = std::fs::remove_file(&part_path);
+                {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::upsert_transfer(
+                        &dbc,
+                        &transfer_id,
+                        &from,
+                        &name,
+                        expected_size,
+                        "receive",
+                        "failed",
+                        None,
+                        0.0,
+                    )
+                    .ok();
+                    // 统一状态：校验失败 ⇒ Rejected（换源重取是唯一出路）。
+                    let _ = crate::content::store::record_failure(
+                        &dbc,
+                        &rs.expected_sha256,
+                        &from,
+                        crate::content::model::Direction::Receive,
+                        crate::content::model::FailReason::HashMismatch,
+                        db::now_ms(),
+                    );
+                }
+                let _ = state.app.emit(
+                    "file-failed",
+                    &FileFailedInfo {
+                        transfer_id: transfer_id.clone(),
+                        reason: "文件完整性校验失败".to_string(),
+                    },
+                );
+                return;
             }
-            let path = match save_received_bytes(state, &name, &full) {
+            // 校验已过 ⇒ 内容指纹就是这个已确证的 sha256，不再重算一遍整份文件。
+            let cid = rs.expected_sha256;
+            let path = match move_received_file(state, &name, &part_path) {
                 Ok(path) => path,
                 Err(reason) => {
                     {
@@ -4618,17 +4763,6 @@ async fn handle_relay_chunk(
                     return;
                 }
             };
-            // 内容指纹：接收方也算一份 cid —— 之后它自己就是种子
-            // （find_source 按 cid 服务；群聊里 C 可从已收完的 B 拉）。
-            let cid = {
-                use sha2::Digest;
-                let mut h = sha2::Sha256::new();
-                h.update(&full);
-                h.finalize()
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>()
-            };
             let path_str = path.to_string_lossy().to_string();
             let rec = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -4637,7 +4771,7 @@ async fn handle_relay_chunk(
                     &transfer_id,
                     &from,
                     &name,
-                    full.len() as u64,
+                    expected_size,
                     "receive",
                     "done",
                     Some(path_str.as_str()),
@@ -4650,7 +4784,7 @@ async fn handle_relay_chunk(
                     &from,
                     None,
                     &name,
-                    full.len() as u64,
+                    expected_size,
                     crate::content::model::Direction::Receive,
                     &path_str,
                     db::now_ms(),
@@ -4659,7 +4793,7 @@ async fn handle_relay_chunk(
                 let content = serde_json::json!({
                     "name": name.clone(),
                     "path": path_str.clone(),
-                    "size": full.len(),
+                    "size": expected_size,
                     "sha256": cid.clone(),
                     "subtype": file::classify_file_subtype(&name),
                 })
@@ -4697,12 +4831,11 @@ async fn handle_relay_chunk(
                 &FileDoneInfo {
                     transfer_id: transfer_id.clone(),
                     name: name.clone(),
-                    size: full.len() as u64,
+                    size: expected_size,
                     path: path_str,
                 },
             );
         }
-        // 重组中：进度可基于切片数上报，此处省略，完成时由 file-done 事件通知
     } else if ttl > 1 {
         // 中继转发给最终接收方 —— 授权闸同「定向借道」（2026-09-19 P0#5）：
         // 替谁转发按**提出请求的链路对端**判（Hello 验签背书），策略 Off/Friends/
@@ -4742,7 +4875,12 @@ async fn handle_relay_chunk(
     }
 }
 
-fn save_received_bytes(state: &AppState, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+/// 把已校验通过的 `.part` **改名**放进下载目录（重名自动加 `(N)`）。
+///
+/// 与旧的 `save_received_bytes` 的区别是要害：旧的那份收 `&[u8]`，等于"先把整份文件
+/// 读回内存再写一遍"—— 那正是 P4 的内存峰值来源。这里只做一次 `rename`，
+/// 峰值与文件大小无关。
+fn move_received_file(state: &AppState, name: &str, part: &Path) -> Result<PathBuf, String> {
     let dir = state
         .downloads_dir
         .lock()
@@ -4752,7 +4890,9 @@ fn save_received_bytes(state: &AppState, name: &str, bytes: &[u8]) -> Result<Pat
     let safe_name = file::safe_file_name(name).ok_or("文件名非法")?;
     let base = dir.join(safe_name);
     if !base.exists() {
-        std::fs::write(&base, bytes).map_err(|e| e.to_string())?;
+        std::fs::rename(part, &base)
+            .or_else(|_| std::fs::copy(part, &base).and_then(|_| std::fs::remove_file(part)))
+            .map_err(|e| e.to_string())?;
         return Ok(base);
     }
     let stem = base
@@ -4770,7 +4910,9 @@ fn save_received_bytes(state: &AppState, name: &str, bytes: &[u8]) -> Result<Pat
             dir.join(format!("{stem} ({i}).{ext}"))
         };
         if !cand.exists() {
-            std::fs::write(&cand, bytes).map_err(|e| e.to_string())?;
+            std::fs::rename(part, &cand)
+                .or_else(|_| std::fs::copy(part, &cand).and_then(|_| std::fs::remove_file(part)))
+                .map_err(|e| e.to_string())?;
             return Ok(cand);
         }
     }
@@ -8590,6 +8732,9 @@ mod tests {
         };
         assert_eq!(directed_relay_target(&file_req, me), Some("b"));
         let offer = Message::RelayFileOffer {
+            // 分片尺寸对本用例的路由判定无关，但要给一个"新对端"的真实值，
+            // 免得日后有人照着这条用例把 0（= 老对端）当默认值抄。
+            chunk_size: crate::file_relay::MIN_CHUNK_SIZE as u32,
             transfer_id: "t".into(),
             from: "a".into(),
             to: "b".into(),
