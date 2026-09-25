@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.29.38] - 2026-09-25
+
 ### Fixed (2026-09-25 · 第 1 步 · 故障隔离 P1：断一条链路不再杀掉该 peer 的全部文件接收)
 
 `reader_loop` 的收尾一开头就按 **peer** 清 `file_receivers` 与 `group_file_receivers`，
