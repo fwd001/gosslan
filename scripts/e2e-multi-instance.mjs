@@ -13,8 +13,21 @@
 // --negative 是**这条测试自己的非空转证明**（总指令§十四的「错误行为测试」）：
 // 两边照常起、照常建链，只把这条消息的收件人换成幽灵 id —— 链路是好的，投递注定失败。
 // 于是"报红"只能来自投递断言本身，而不是来自"B 没启动"这种基础设施噪声。
+//
+// 三种模式（每一个"正向绿"都要配一个"反向能红"，否则判据可能只是空转）：
+//   默认                      → J1 文本 + J2 文件 + 重启，16 条断言，预期全绿
+//   --negative                → 收件人换幽灵 id，投递断言预期报红
+//   --fault=poison-part       → 注入脏 .part 前缀，20 条断言，预期全绿（产品须自愈或明确失败）
+//   --fault=poison-part-lie   → 同样的注入，只把比对摘要换成必定不相等的值 ⇒ 预期报红
 
 const NEGATIVE = process.argv.includes("--negative");
+/// 故障注入模式（§八）。`--fault=poison-part` 见下方 preset 步骤的注释。
+const FAULT = (process.argv.find((a) => a.startsWith("--fault=")) || "").slice("--fault=".length);
+const POISON = FAULT === "poison-part" || FAULT === "poison-part-lie";
+/// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
+/// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
+const LIE = FAULT === "poison-part-lie";
+const LIE_SHA = "0".repeat(64);
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -69,15 +82,19 @@ if (!fs.existsSync(BIN)) {
   if (newest > binM + 1000) {
     const dirty = spawnSync("git", ["status", "--porcelain", "--", "src-tauri/src"],
       { cwd: ROOT, encoding: "utf8" }).stdout.trim();
-    const headIso = spawnSync("git", ["log", "-1", "--format=%cI"],
+    // 比的是**最后一次动过 src-tauri/src 的提交**，不是 HEAD。
+    // 踩过的坑：只改文档/脚本的提交会把 HEAD 推到二进制之后，于是这条守卫把
+    // "内容完全没变的二进制"判成过期 —— 守卫自己造假红，和被它挡住的旧二进制一样有害。
+    const srcHeadIso = spawnSync("git", ["log", "-1", "--format=%cI", "--", "src-tauri/src"],
       { cwd: ROOT, encoding: "utf8" }).stdout.trim();
-    const headMs = Date.parse(headIso);
-    if (!dirty && Number.isFinite(headMs) && binM > headMs) {
+    const srcHeadMs = Date.parse(srcHeadIso);
+    if (!dirty && Number.isFinite(srcHeadMs) && binM > srcHeadMs) {
       console.warn(`⚠️ 有 .rs 的 mtime 比二进制新，但 src-tauri/src 与 HEAD 内容完全一致，`
-        + `且二进制晚于 HEAD 提交 —— 判定为护栏写回造成的 mtime 抖动，继续测当前内容。`);
+        + `且二进制晚于最后一次改动 src-tauri/src 的提交 —— 判定为 mtime 抖动，继续测当前内容。`);
     } else {
       console.error(`✗ 二进制比源码旧（二进制 ${new Date(binM).toISOString()}，源码最新 ${new Date(newest).toISOString()}）`);
-      console.error(`  src-tauri/src 未提交改动：${dirty ? "有 ⇒ 源码真的动过" : "无"}；二进制晚于 HEAD：${Number.isFinite(headMs) && binM > headMs}`);
+      console.error(`  src-tauri/src 未提交改动：${dirty ? "有 ⇒ 源码真的动过" : "无"}；`
+        + `二进制晚于「最后一次改动 src 的提交」（${srcHeadIso || "?"}）：${Number.isFinite(srcHeadMs) && binM > srcHeadMs}`);
       console.error("  ⇒ 你正在测旧代码。重编：cd src-tauri && cargo build --release");
       process.exit(2);
     }
@@ -263,7 +280,7 @@ const linkStepIdx = () => steps.findIndex((s) => s.name.startsWith("起 A/B"));
 /// 失败时把两端日志里出现这条 trace 的行摘出来 —— §十六要的「日志关联」不是写个文件名，
 /// 而是要能顺着 msg_id / transfer_id 直接看见对端说过什么。
 function traceExcerpt() {
-  const ids = [msgId, xferId].filter(Boolean);
+  const ids = [msgId, xferId, xferId2].filter(Boolean);
   if (!ids.length) return {};
   const out = {};
   for (const i of INSTANCES) {
@@ -296,6 +313,7 @@ async function runStep(i, s) {
 
 // ── J1：文本消息 A→B 全链路 ────────────────────────────────────────
 let idA, idB, msgId, NODES, peerTo, xferId, srcFile, srcSha;
+let xferId2, srcFile2, srcSha2;
 step("停机预置：好友 + routed 端点 + 独立接收目录", () => seedPair(NODES));
 
 step("L-A 入队：在 A 的库里留下「已入队待发送」的事实", () => {
@@ -346,6 +364,39 @@ step("L-A 入队：A 的一个 1 MB 文件也排好队（停机窗口内）", ()
   });
 });
 
+// ── 故障注入（总指令§八 / roadmap A-2）：--fault=poison-part ─────────
+// 为什么选「给接收端预置一段脏 .part」，而不是「改 A 库里的 sha256」：
+//   发送侧的 hash 是 `sha256_file_hex()` **发送时从磁盘现算**的（network/file.rs:375/665），
+//   DB 里那一份改了就等于没改 —— 那条注入只会红得莫名其妙（我差点就写成那样）。
+//   而接收侧 `resume_receive` 明写「不再 truncate，用已有前缀播种 hasher」（file.rs:1317-1388），
+//   所以一个**严格短于文件**的脏 .part = 确定性地让最终 sha256 不匹配，零生产码改动、无竞态。
+if (POISON) {
+  step("故障注入：A 再排一个 1 MB 文件，同时给 B 预置 4 KB 脏 .part 前缀", () => {
+    xferId2 = `e2e-p-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    const dir = path.join(RUN_DIR, "src");
+    fs.mkdirSync(dir, { recursive: true });
+    srcFile2 = path.join(dir, `${xferId2}.bin`);
+    const buf = Buffer.alloc(1024 * 1024);
+    for (let i = 0; i < buf.length; i += 32) buf.writeUInt32BE(Math.floor(Math.random() * 2 ** 32), i);
+    fs.writeFileSync(srcFile2, buf);
+    srcSha2 = createHash("sha256").update(buf).digest("hex");
+    seed(INSTANCES[0].db, (db) => {
+      db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(xferId2);
+      db.prepare(
+        `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+         VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
+      ).run(xferId2, peerTo, srcFile2, `${xferId2}.bin`, buf.length, nowMs());
+    });
+    // 脏前缀必须严格短于文件：等长或更长会让接收端回 received >= size，那走的是
+    // AlreadyHave 分支（合法地宣布"我早收完了"），就不是在测 hash 拒收这一格。
+    const dl = path.join(RUN_DIR, "recv", "B");
+    fs.mkdirSync(dl, { recursive: true });
+    const junk = Buffer.alloc(4096);
+    for (let i = 0; i < junk.length; i += 32) junk.writeUInt32BE(Math.floor(Math.random() * 2 ** 32), i);
+    fs.writeFileSync(path.join(dl, `${xferId2}.part`), junk);
+    console.log(`      预置脏 .part = ${junk.length} 字节 / 真实文件 = ${buf.length} 字节`);
+  });
+}
 
 step("起 A/B 并等链路真的建立（routed 拨号一轮 10s）", async () => {
   for (const i of INSTANCES) launch(i);
@@ -423,6 +474,67 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
     : [];
   check("接收目录没有 .part / 改名副本残留", strays.length === 0, 0, strays.join(", ") || 0);
 });
+
+// §十四要的「错误行为测试」+ §七/§八的「文件 hash 不一致 / .part 已存在」：
+// 坏内容必须要么被拒收、要么被补齐成正确字节 —— 但绝不允许"报成功却没有正确文件"。
+if (POISON) {
+  step("故障注入判据：脏 .part 前缀不许污染结局（拒收 或 补齐，二选一，不许交叉）", async () => {
+    const recvB = path.join(RUN_DIR, "recv", "B");
+    const landed2 = path.join(recvB, `${xferId2}.bin`);
+    // 前提断言：B 真的动过这一单。没有它，下面几条会因为"链路根本没跑"而集体假绿 ——
+    // 那正是最像成功的一种失败。
+    let how = "";
+    await waitFor(() => {
+      const b = openDb(INSTANCES[1].db, true);
+      const r = b.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId2);
+      b.close();
+      if (r) { how = `B 侧有行 status=${r.status}`; return true; }
+      if ((tailLog(INSTANCES[1].log, 20000) || "").includes(xferId2)) { how = "B 日志提到过这个 transfer_id"; return true; }
+      return false;
+    }, 90_000, `B 侧出现对 ${xferId2} 的处理痕迹（先证明这一单真被投递过，再谈拒收）`);
+    console.log(`      观察：${how}`);
+    await new Promise((r) => setTimeout(r, 10_000)); // 让 hash 校验 / rename / 重试落定
+
+    const exists = fs.existsSync(landed2);
+    const gotSha = exists
+      ? createHash("sha256").update(fs.readFileSync(landed2)).digest("hex")
+      : null;
+    // 脏前缀被丢掉、整份重新收齐并改名 ⇒ 这是"自愈完成"，此时 done 才是**正确**终态。
+    const wantSha2 = LIE ? LIE_SHA : srcSha2;
+    const clean = !!exists && gotSha === wantSha2;
+
+    const bDb = openDb(INSTANCES[1].db, true);
+    const b2 = bDb.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId2);
+    bDb.close();
+    const aDb = openDb(INSTANCES[0].db, true);
+    const a2 = aDb.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId2);
+    const queued = aDb.prepare("SELECT COUNT(*) c FROM file_outbox WHERE transfer_id=?1").get(xferId2).c;
+    aDb.close();
+    const strays2 = fs.existsSync(recvB)
+      ? fs.readdirSync(recvB).filter((f) => f.includes(xferId2) && f !== `${xferId2}.bin`)
+      : [];
+    const both = `B=${b2?.status ?? "无行"} A=${a2?.status ?? "无行"} outbox=${queued}`;
+
+    // 四条合起来 = "结局只允许两种，且不许交叉"：
+    //   A) 补齐了 ⇒ 终名 sha256 == 源 + 两侧 done + outbox 已清（自愈完成）
+    //   B) 没补齐 ⇒ 没有正确终名 + 两侧都不许 done（明确没成功、还能重试）
+    // 交叉态才是真 bug：done 却没有正确文件 = 假成功；文件已正确落地却仍 failed = 恢复失败、界面永久转圈。
+    // ⚠️ 上一版这里写的是"必须非 done"——被实跑证伪了：它写的是"我以为失败长什么样"，不是产品契约。
+    check("坏内容不许冒充成功：终名要么不出现，出现则 sha256 必须等于源文件",
+      !exists || clean,
+      "不出现 或 " + wantSha2.slice(0, 12) + "…",
+      exists ? gotSha.slice(0, 12) + "…" : "未出现");
+    check("若脏前缀最终被补齐（字节正确）：两侧必须 done 且 outbox 已清 —— 不许停在中间态",
+      !clean || (b2?.status === "done" && a2?.status === "done" && queued === 0),
+      clean ? "双侧 done + outbox=0" : "不适用（未落地）", both);
+    check("若终名未落地或字节不对：两侧都不许 done —— 绝不许对坏内容宣布完成",
+      clean || (b2?.status !== "done" && a2?.status !== "done"),
+      clean ? "不适用（本轮走补齐分支）" : "双侧非 done", both);
+    check("污染过的前缀不许留在盘上：接收目录不得残留该 transfer 的 .part / 副本",
+      strays2.length === 0, 0, strays2.join(", ") || 0);
+  });
+}
+
 step("L-B 故障注入：两端重启后仍正确", async () => {
   await stopAll();
   await bootAndStop("重启");

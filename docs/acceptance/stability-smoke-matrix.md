@@ -22,15 +22,15 @@
 | 4 | 双向文本 + `msg_id` 幂等 | **AUTOMATED** | `e2e-multi-instance.mjs` J1（B 侧恰好一条 + `messages.msg_id UNIQUE`） | Windows 腿未跑 |
 | 5 | Outbox → Ack，Ack 只代表已持久化 | **AUTOMATED** | J1「A 侧 outbox 被 Ack 清空」+ `cascade_tests` | 反例（DB 错不得 Ack）只有进程内用例 |
 | 6 | 离线持久化与自动重发（离线 ≠ 2 分钟失败） | SIMULATED | `db/offline_queue.rs`、`fail_reason_separates_retryable_from_terminal` | 真离线对端的补发未跨进程 → J1n |
-| 7 | 网络恢复后不丢不重 | **部分 AUTOMATED** | J1「两端重启后仍只有一条 / outbox 不复活」 | 只覆盖 LAN 路径 + 优雅重启；**杀进程未测** → A-2 |
+| 7 | 网络恢复后不丢不重 | **部分 AUTOMATED** | J1「两端重启后仍只有一条 / outbox 不复活」+ **故障注入** `--fault=poison-part`（接收侧脏 `.part` 前缀 → 第 1 次 attempt 整体校验失败 → outbox 重试补齐，20 断言 2 连绿） | 只覆盖 LAN 路径 + 优雅重启 + 接收侧脏前缀；**断链 / 杀进程未测** → A-2 |
 | 8 | 已读回执与送达状态 | SIMULATED + 人工 | `storeContract.test.ts` 已读判据、`applyConversationSnapshot` | 移动端群已读「不见了」= #30，**未定位** → Smoke-4 |
 | 9 | 失败可见且可重试（重发必须重新加密） | SIMULATED | `resend_reseals_before_enqueue` 等护栏 + 不变量登记 | 见 `protocol-invariants.md` §6 例外 |
 | 10 | E2EE 身份锚定，未验签不建信任 | SIMULATED | `friend_identity_anchor_has_one_binding_rule`、INV-P21 用例 | 真实冒名建链未跨进程测 |
 | 11 | SQLite 持久化 + 重启恢复（含在途队列） | **部分 AUTOMATED** | J1 重启断言 + `migration_tests.rs` 19 条 + `fresh_schema_alone_has_exactly_the_migrated_shape` | 迁移**中途失败**不可恢复 → J7 |
-| 12 | 图片/文件消息（多选并发不丢件） | **部分 AUTOMATED** | J2 已 **3 连绿**（1 MB：只有 rename 后出现最终名 + 字节数 + sha256 + 发送侧 `sent → done`（必须等对端 `FileCompleteAck`）+ 接收侧 `done` + 无 `<tid>.part` 残留 + `file_outbox` 收尾删除） | 只覆盖单文件 1 MB；尺寸阶梯/并发/断连中断未做 → A-3 |
+| 12 | 图片/文件消息（多选并发不丢件） | **部分 AUTOMATED** | J2 已 **4 连绿**（另：故障注入轮 20 断言 **2 连绿** + `--fault=poison-part-lie` 反向按设计报红）（1 MB：只有 rename 后出现最终名 + 字节数 + sha256 + 发送侧 `sent → done`（必须等对端 `FileCompleteAck`）+ 接收侧 `done` + 无 `<tid>.part` 残留 + `file_outbox` 收尾删除） | 只覆盖单文件 1 MB；尺寸阶梯/并发/断连中断未做 → A-3 |
 | 13 | 通知（尊重开关、失败可观察） | MANUAL-HARDWARE | — | 见 Smoke-3 |
 | 14 | Win/mac/Android 三端构建与基本稳定 | **AUTOMATED**（构建层） | `verify.yml` 3 job + 三个 `build*.yml` | 构建≠运行；**三端都没跑过应用实例** |
-| 15 | 两台以上真实设备联调 | MANUAL-HARDWARE | 用户真机自测 | 同机双实例已跑绿 **J1 文本 + J2 文件**（16 条断言 / 4 连绿 / 反向自证成立），真机仍要人 → Smoke-5 |
+| 15 | 两台以上真实设备联调 | MANUAL-HARDWARE | 用户真机自测 | 同机双实例已跑绿 **J1 文本 + J2 文件 + 一条故障注入**（默认轮 16 断言 / 5 连绿；故障轮 20 断言 / 2 连绿；`--negative` 与 `--fault=poison-part-lie` 两个反向模式都按设计报红），真机仍要人 → Smoke-5 |
 
 ## P0 mesh 本体（16–22）
 

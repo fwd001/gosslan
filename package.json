@@ -40,7 +40,10 @@
     "version:ledger": "node scripts/semver.mjs ledger --since main > docs/version-ledger.md",
     "version:release": "node scripts/semver.mjs release",
     "dist:mac:app": "tauri build --features bluetooth --bundles app --target aarch64-apple-darwin && bash scripts/pack-macos-app.sh",
-    "test:e2e:multi-instance": "node scripts/e2e-multi-instance.mjs"
+    "test:e2e:multi-instance": "node scripts/e2e-multi-instance.mjs",
+    "test:e2e:negative": "node scripts/e2e-multi-instance.mjs --negative",
+    "test:fault-injection": "node scripts/e2e-multi-instance.mjs --fault=poison-part",
+    "test:fault-injection:selfproof": "node scripts/e2e-multi-instance.mjs --fault=poison-part-lie"
   },
   "dependencies": {
     "@headlessui/vue": "^1.7.23",
