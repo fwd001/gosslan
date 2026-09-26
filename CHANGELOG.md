@@ -48,7 +48,22 @@
 - §12.9 的"必须做"从三件改为四件，这新的一条被点名为**下一轮的第一件活**。
 
 
-### Docs（2026-09-26 · INV-P03 的钩子登记与真实覆盖面校准）
+### Docs（2026-09-26 · 补那格判据时撞出 v7 迁移的一处真缺陷，已建 #60）
+
+- 试着按上面说的"只加测试"补「迁移中途失败」判据：注入方式是给 `outbox` 装 `BEFORE DELETE` 触发器让 v5→v6 炸。
+  **跑出来红的是我的判据、不是产品** —— `outbox.msg_id` 有内联 UNIQUE ⇒ 那句"清重复"的 DELETE 一行都删不到
+  ⇒ 触发器根本不触发 ⇒ `run_migrations` 一路 `Ok` 跑到最新。⇒ 那格仍是零判据，
+  且**注入点必须先自证"它真的会发生写入"**（否则又是一条假绿）。测试已当场撤掉，未留在仓里。
+- ★★ 真正的收获在那一步的日志里：`v6→v7` 稳定报 `no such column: id` 且**被设计成吞掉**。
+  读源码证实：`orphan_group` 谓词用的是 `id`，而 `group_reads(group_id, reader_id, last_read_ts)` /
+  `pending_group_reads(group_id, peer_id, last_read_ts)` **两张表都没有 `id` 列**
+  ⇒ 那半条"清历史孤儿回执"的迁移从上线起**从未生效**（又一次注释说的比代码做的多）。
+  ⚠️ 同一谓词还套在 `group_outbox` / `file_outbox` 上，而那两张表的 `id` 是 rowid ⇒
+  拿 rowid 去比文本群 id 恒不成立，删除条件可能退化成"只要 `group_id` 非空就删"，
+  即**在册群的待发文件行也会被清掉**。这条**我只读了源码 + 一条日志，没跑反证**，
+  所以 #60 里写的是"先 RED 证伪再改"，判据为：种一个在册群 + 一条 `group_id` 非空行 + 一条孤儿行，
+  跑 v6→v7，断言在册那行必须还在。
+- 顺手把"补这格的正确做法"三条坑写进 §12.2（注入点要自证有写入 / 别指望返回 Err 因为 v7、v8 是软失败风格 / 收尾顺序）。
 
 - `docs/protocol-invariants.md` 的 INV-P03「ACK 只能代表持久化接收」原来只挂 4 条**发送侧/幂等侧** db 用例，
   接收侧已经存在的三条（`network::transport::tests::direct_open_rejects_corrupt_and_tampered_payloads`、
