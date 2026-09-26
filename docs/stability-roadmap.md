@@ -435,7 +435,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 ### 阶段 E — 稳定版终审（§第五步）
 
 15. 逐项回答 §19 七组验收 + §13 十四个审计维度；只有全部达到标准才宣布完成。
-    → **已作答，见 §12**。结论是**不宣布完成**：三组不成立（DB 契约实测不一致、网络非 LAN 腿无判据、
+    → **已作答，见 §12**。结论是**不宣布完成**：三组不成立（DB 契约实测不一致、网络缺"非 LAN 出口的跨实例真跑"、
     UI 只到结构级），其中两条等用户拍板（§12.9），一条属环境而非代码。
 
 **每阶段都走§十七小步闭环**：发现→根因→最小修改→测试→代码→局部测试→guard→E2E→文档→完整验证→提交。
@@ -667,7 +667,7 @@ CI 的 macOS / Windows / Android 三条腿跑的是**同一个 `scripts/verify.m
 ⚠️ 唯一的口子：这一组的"Contract 全过"只覆盖**已经建门的**契约（API 表、事件表、域依赖、
 不变量绑定、改动预算、文档数字、测试清单）。**DB 表结构没有门** ⇒ 记在 12.8，不在这条里混过去。
 
-### 12.2 数据 —— ✅ 四格具名，★ 但读出一格真缺口（上一版这张表把这组写弱了）
+### 12.2 数据 —— ✅ §19 那五个短语逐格具名，§9 点名的"部分失败"也已补上判据（#59 / #60 同日收口）
 
 判据全在 `src-tauri/src/db/migration_tests.rs`（下面每条都是**具名用例**，不是"有测试"）。
 条数现算：`grep -c "^#\[test\]" src-tauri/src/db/migration_tests.rs`。
@@ -678,9 +678,9 @@ CI 的 macOS / Windows / Android 三条腿跑的是**同一个 `scripts/verify.m
 | 新库正确 | ✅ | `migration_fresh_db_gets_latest_version`（点名 12 张必需表 + 版本落 `DB_VERSION`）、`fresh_db_has_every_hot_query_index`（新库首启即有热索引）、`migration_zero_version_with_zero_tables_is_fresh` |
 | 旧库正确、**不破坏旧数据** | ✅ | `migration_preserves_identity_data`（device_id + 两把私钥逐条查回）、`migration_preserves_message_data`（消息**条数**与**内容**、outbox 保留、`seq` 回填 > 0）、`migration_success_preserves_data_and_adds_columns`、`superseded_indexes_are_dropped_and_uniquity_survives`（删冗余索引后内联 UNIQUE 必须还挡重复） |
 | **不产生幽灵状态** | ✅ | ⚠️ 上一版我错挂到 `db/clocks.rs`（那两条判的是并发唯一性，不属这格）。真正证据是这四条：`downgrade_refusal_writes_nothing`（拒绝降级时**零张表**被建，本机 schema 一旦写进新库就回不去）、`migration_refuses_downgrade`（必须是带类型的 `InitError::Downgrade{current:99}`，不许按错误字符串猜）、`tables_are_counted_before_the_schema_is_applied`（数表必须早于建表，否则 `is_fresh` 恒假 ⇒ 每个新库都重放整条链）、`fresh_schema_alone_has_exactly_the_migrated_shape`（"只跑 SCHEMA"与"SCHEMA + 整条迁移链"的形状必须**逐项相等**；它红过一次，抓到的是 `index idx_messages_conv_seq` 这一项真差集）；幂等另有 `migration_double_start_does_not_reapply`（连起三次）与被删索引**不许被 SCHEMA 造回来**那半条 |
-| ★ **迁移中途失败**（§9 数据生命周期点名的"部分失败"） | ⚠️ **无任何判据** | 机制**在**：`db.rs` 有 5 处 `unchecked_transaction()` 把步骤包住（`grep -n unchecked_transaction src-tauri/src/db.rs` 现算）。但全仓**没有一条用例注入过一次失败** ⇒ "回滚真的发生吗"今天没被证明过。⚠️ 同一处还有个注释/代码不一致：用例里写"插入一条数据验证 rollback 后仍存在"，函数体紧跟着说"只验证正常跑成功"——**rollback 那半句没做**（§13 列过这一类）。 |
+| ★ **迁移中途失败**（§9 数据生命周期点名的"部分失败"） | ✅ **已补（2026-09-26 #59）** | 判据 `migration_tests::a_failing_migration_step_rolls_back_completely_and_never_advances_the_version`。注入点选 **v2→v3 的 seq 回填**，理由就是上一格撞的坑：`BEFORE UPDATE` 是**行触发器**，只有"确有行要被改"才触发 ⇒ `run_migrations` 返回 Err 这件事**同时证明了注入点真的在写数据**，不必再加"没装 trigger 时确实删/改到 N 行"的前置断言。判据五面：① 失败必须上抛（报错里要能认出注入的原文，否则分不清是注入挡的还是产品自己别的问题）② `user_version` 必须还停在 2 —— 前进一步就等于让下次启动**跳过这一步**，留下"版本号说升过、列却缺"的半吊子库，那比崩掉更坏 ③ 同一步里的 `ALTER TABLE` 必须**一起回滚**（SQLite 的 DDL 是事务性的，所以这句是可验证的事实）④ 原有 3 行消息一条不丢 ⑤ **拆掉注入源重放必须成功**并补上 seq + 回填 > 0（真实场景里"注入"就是磁盘/锁/权限抖动 ⇒ 这就是"重启后仍然正确"那一腿）。⚠️ ③ 与 ④/⑤ 互为正反：⑤ 证明 `column_exists(seq)` 在这张连接上**能为真**，所以 ③ 的取反不是空转。⚠️ 不走 `init()`：它会先 `execute_batch(SCHEMA)` + `ensure_post_schema_shape`（要在 messages 上建 `(conv_id, seq)` 索引），没有 seq 的老库那一刻就先失败 ⇒ 判据会红在错误的原因上。同时改掉了 `migration_success_preserves_data_and_adds_columns` 里"插入一条数据验证 rollback 后仍存在"那句**假注释**（它通篇没验回滚），并把真正的回滚判据指到新用例。 |
 | ★★★ **#60 已落锤并已修（2026-09-26）**：v6→v7 的孤儿谓词锚错了列 | ✅ **RED→GREEN 都跑过，判据具名** | 先红后修，逐条**实测**（把 v7 那 6 条 DELETE 原样在一份同形状的临时库上跑，每条打印行数）：**2 条删掉在册群的数据 / 2 条报错被吞、从上线起一次没生效过 / 2 条本来就是对的**。`orphan_group` 谓词写的是 `id NOT IN (SELECT id FROM groups)`，但 `group_outbox.id` 与 `file_outbox.id` 是 `INTEGER PRIMARY KEY AUTOINCREMENT`（**行号**）而 `groups.id` 是 TEXT 群 id ⇒ 两个域永不相交，条件退化成"只要这行不是零行号就删"；`group_reads` / `pending_group_reads` **连 `id` 列都没有** ⇒ 稳定报 `no such column: id`，而 v7 是软失败风格（`if let Err(e)` 只 `eprintln`）⇒ 没人看得见。实测数字：`group_outbox 2→0`（在册那行 `m-live` 一起没了）、`file_outbox 3→1`（两条群行全没，只剩 `group_id IS NULL` 的 1:1 那行）、`group_reads 2→2` 且 `pending_group_reads 2→2`（**孤儿一行没清**）、`messages 3→2`、`group_recalled_messages 2→1`（后两条走 `orphan_conv`，锚的是 `conv_id`，**本来就是对的**）。<br>⚠️ 注释自称"保守口径"是**反的**：它比要求的宽到能吞掉全部在册数据。<br>**修法只有一处**：`orphan_group` 改锚 `group_id`（四张表都有这一列），行号/文本 id 之别就此消失；谓词形状、软失败风格、事务边界、`DB_VERSION` 一字未动（§十八：不借修 bug 改迁移框架）。<br>**判据**：`migration_tests::v7_orphan_cleanup_keeps_live_group_rows_and_drops_true_orphans` —— 种一个在册群（`groups` 有行 + 会话在）+ 一张真孤儿，版本退回 6 走真实 6→DB_VERSION 路径，**11 条断言**：在册四张表的行都必须活、孤儿行都必须死、外加 1:1 待发行一个字节不许动。**两面都钉住才不空转**：只断"活下来"会被"整表不删"混过去，而那两张没有 `id` 列的表恰好只有**孤儿侧**断言能证明语句真跑通了（修之前它就是静默失败）。<br>🔶 **一条如实留下的账**：已经跨过 v7 的库**不会重放**（`run_migrations` 只跑 `from >= current`），所以它们盘上仍留着"已删掉群"的待发已读回执 —— 而 `db/read_receipts.rs::list_pending_group_reads` 只按 `peer_id` 查、不看群还在不在 ⇒ 这是一只**活的幽灵**（对端每次上线都会被重新捞出来投递），不是死数据。要不要补一条 v9→v10 把这笔存量清掉 = **待拍板 #61**；本轮**不补**（§十八：清存量不是修这个 P0 的必要条件，而"它到底会不会被用户看见"我只有读码证据、没有实测证据）。 |
-| 补这格的**正确做法**（含本轮踩到的两个坑） | — | ① 先证明注入点**真的会发生写入**（`BEFORE DELETE` 触发器只有在"确有行被删"时才触发；内联 UNIQUE 在场的清重复语句就是零写入）⇒ 判据必须自带前置断言"没装触发器时这条语句确实删掉 N 行"。② 别指望 `run_migrations` 返回 Err —— v7/v8 是**软失败风格**（`if let Err(e)` 只打日志），所以"失败会不会被吞"本身就是这一格要钉的第一件事。③ 收尾顺序照旧：`cargo fmt --all` → 新用例过 `check-test-manifest`（先 `--update` 再 `--sync-baselines`）→ `npm run verify:full`。 |
+| 补这格的**正确做法**（含本轮踩到的两个坑，其中第二条**已被实测推翻并改正**） | — | ① 注入点必须自带"真的发生了写入"的证据。两条路：要么像上一格那样前置断言"没装触发器时这条语句确实删/改到 N 行"，**要么直接选行触发器** —— `BEFORE UPDATE` / `BEFORE DELETE` 只在"确有行被动"时才触发，所以"报错了"本身就是"写入了"的证据（本轮走的这条，省掉一半脚手架）。② ❌ 我上一版写"别指望 `run_migrations` 返回 Err —— v7/v8 是软失败风格" —— **半句是错的**：`db.rs:130` 是 `(step.run)(conn)?`，循环**照上抛**；被吞的只是 v7/v8/v9 **闭包内部**那几处 `if let Err(e)` 的逐语句容错。所以"这一步会不会被吞"要分成两层问：**语句级**（会被吞，#60 就是被它藏了 7 个版本）和**步骤级**（一定上抛，`a_failing_migration_step_...` 已钉）。③ 判"迁移中途失败"不许走 `init()`：它会先 `execute_batch(SCHEMA)` + `ensure_post_schema_shape`，没有 `seq` 的老库在那一步就先塌 ⇒ 红在错误的原因上；要照生产那一刻的状态自己摆表。④ 收尾顺序照旧：`cargo fmt --all` → 新用例过 `check-test-manifest`（先 `--update` 再 `--sync-baselines`）→ `npm run verify:full`。 |
 | 边界（两条，其中一条是**上一版写错的**） | — | ① 我上一版说"全部跑在内存库"——**不对**：迁移一族走 `temp_db_path()`，是**磁盘上的真实临时文件**（连 wal/shm 一起清），只有形状恒等那条与 `db/clocks.rs` 那两条用内存库 ⇒ "迁移不坏盘上数据"这一层比我记的强。② 仍然成立的那条边界：**用户机器上真实老版本 `.db` 文件**没有被任何判据碰过 ⇒ 🔶 进 Smoke（矩阵"数据生命周期"组） |
 
 ### 12.3 网络 —— 只有两格真的是绿的
@@ -690,7 +690,7 @@ CI 的 macOS / Windows / Android 三条腿跑的是**同一个 `scripts/verify.m
 | LAN | ✅ | 双实例 harness 真跑（§11.7），默认轮 + 8 条注入轮全在同一台机器两个进程之间 |
 | 掉线恢复 | ✅ | 注入轮"对端失联后解冻自愈"（正向绿 + `-lie` 反向红），`npm run verify:e2e` 本地层 |
 | 多链路（选路正确） | ✅ | 前端 `src/utils/channelState.test.ts` 钉住同一份选路口径；Rust 侧具名用例见测试清单 |
-| Routed / Tailscale | ⚠️未执行 | 单机两个进程造不出"第二条真实路径"：伪造会被 route 优先级绕过（§11 已判过"单链路断开"同一形状）。要做得先有一台真的第二网络对端 ⇒ 属 🔶 |
+| Routed / Tailscale | ⚠️ **判据很厚（13 条具名），缺的同样是"跨实例只走这一条路真跑一趟"** | ❌ **我上一版这格写错了**（写成"⚠️未执行 / 无判据"）—— 同一个"凭记忆下笔"的毛病第三次抓到（前两格是 relay 与 gossip）。按门禁自己那份 Rust 清单现算，这一族有 **13 条**：`grep -icE "routed\|tailscale\|pick_link" src-tauri/test-baseline.macos.txt` ⇒ **13**。里面正是选路层的口径本体：`mesh::selection::tests::path_priority_lan_beats_routed_and_bluetooth`、`path_priority_routed_beats_bluetooth`、`path_priority_relay_beats_bluetooth_but_loses_to_routed`（三条优先级把 §三"链路优先级"钉住）、`unhealthy_lan_does_not_block_healthy_routed` + `network::transport::tests::route_order_skips_unhealthy_lan_when_routed_is_healthy` + `route_order_prefers_lan_over_routed_regardless_of_insertion`（健康度与插入序都不许翻转优先级）、`only_routed_connection_still_dials_lan_path`（**只有 routed 时仍会去拨 LAN** —— 这就是"只走 routed"那个场景在单元层的形状）、配置解析四族 `discovery::routed::tests::*`（端点 JSON 往返 / 畸形输入退空 / device_id 可选兼容 / 裸 IP 与显式端口）、`commands::tests::routed_endpoint_address_is_normalized_to_ipv4_socket`、`tests::relay_circuit_is_tagged_relay_not_routed`（中继与 VPN 不许混成一类）。<br>⇒ 真实缺口收窄成一句：**没有一次跨实例、且 LAN 不可用的真跑**（§五 的 `LAN + Tailscale` 组合那一格）。这属环境不属代码 ⇒ 🔶 平台 Smoke，不写成 PASS。⚠️ **与 §12.4 gossip、§七 最后一格是同一块欠账**：都要"第三个真实对端 / 非 LAN 出口"，一起补，别拆成三块账。 |
 | BLE | 🔶 | 常量层有门（`check-ble-constants.mjs`），**通信本体只能真机**；已在 Smoke 矩阵标 MANUAL-HARDWARE |
 | Relay | ⚠️ **判据很厚，缺的是"跨实例真跑一趟"** | 我上一版凭记忆写成"判据存在与否未复核"——**已按门禁自己那份清单复算并推翻**：`grep -ic relay src-tauri/test-baseline.macos.txt` 现算（口径=测试路径含 relay 的条数，含 `file_relay::` 接收侧、`mesh::relay_policy::` 转发真值表、`mesh::router::`、`commands::relay_config_tests`）。里面有**安全边界级**的几条：token 不进探针报告、配置 fail-closed、`offer_without_chunk_size_is_refused_instead_of_buffering`（P4 那刀的判据）、`unsafe_transfer_id_cannot_create_a_file_outside_the_dir`（路径逃逸）、重复分片不双计、零字节能收尾。**没有的那一件**：两个实例经中继真通一次（要一台活着的中继服务器 + 一条被封的直连，属环境不属代码）⇒ 记 ⚠️ 而不是 ❌ |
 
@@ -774,16 +774,18 @@ Rust 侧 `enqueue before deliver`、幂等 Ack、解密失败留空 `msg_id` 均
   **(B) 直接退役前者**，把"表结构只看程序里那一份"写进文档。**推荐 B** —— 它不需要新增门，
   少一份文件就少一次失守；A 要新增一条"生成 + 比对"的判据，收益只是留一份好看的文档。
   ⚠️ 这不是"顺手能改"的：那份文件被两处护栏当成敏感文件/域清单成员，退役要一起改名单，故等一句确认。
-- **网络非-LAN 腿**：需要先有"第二台机器 / 第二张网"的条件，属环境而非代码 ⇒ 保留 ⚠️ 不硬凑。
+- **网络缺"非 LAN 出口的跨实例真跑"**：需要先有"第二台机器 / 第二张网"的条件，属环境而非代码 ⇒ 保留 ⚠️/🔶 不硬凑。⚠️ **措辞修正（2026-09-26 第二次）**：这**不等于**"非 LAN 没有判据"——选路/优先级/配置解析那一层 **Routed 有 13 条具名单元判据**、Relay 的判据也很厚（见 §12.3 / §12.4 现算命令）。缺的只是"真跑一趟"，不是"没写判据"；这两句话差别很大：前者要环境，后者会让人去做一件重复覆盖的活。
 - **§7 三实例并发**：同一份文件同时被两个发送方推给同一接收方，
   **两个 offer 都在改名之前到达**时改名怎么收场。修法只有两种，语义相反：
   **(A) 两份都留下**（第二份自动换个名字共存）/ **(B) 只留第一份，第二份明确拒掉**。
   这条**必须用户拍板**，因为它是产品行为，不是实现细节；选完才能写判据。
 
-- **★ 第四件（本轮读 `migration_tests.rs` 读出来的，不依赖任何拍板）**：**"迁移中途失败"这一格零判据**
-  （见 §12.2 标 ★ 那行）。事务机制今天**已经在**（`db.rs` 五处步骤事务），但从没被证明过真的回滚；
-  同一处还有一句"验证 rollback 后仍存在"的注释，函数体只验了正常跑成功 —— 注释说的比代码做的多。
-  这一格是唯一一个"**会导致用户数据丢失、又不需要谁点头**"的必做项，因此它是**下一轮的第一件活**：
-  只加测试、不改生产码，判据三条（该步零写入 / 版本停在旧值 / 再启能续）。
+- **★ 第四件 ✅ 已做完（2026-09-26，#59）**：**"迁移中途失败"这一格已补上判据**
+  （见 §12.2 标 ★ 那行）。事务机制今天**已经在**（`db.rs` 五处步骤事务），现在它**也被证明过真的回滚**：
+  `a_failing_migration_step_rolls_back_completely_and_never_advances_the_version` 钉住
+  「失败上抛 / 版本停在旧值 / 连 `ALTER TABLE` 一起回滚 / 原行不丢 / 拆掉注入源重放能续」。
+  那句"验证 rollback 后仍存在"的**假注释**（函数体只验正常路径 ⇒ 注释说的比代码做的多）也已改掉。
+  这一格当初是唯一的"**会导致用户数据丢失、又不需要谁点头**"的必做项 ⇒ 它已清零；
+  同一天顺带照出的 #60（v7 真丢数据）也已修，剩下的"要不要清存量"退化成 **#61 一个点头**。
 - 12.3 / 12.4 / 12.6 里那些 ⚠️ 与 🔶 不需要现在解决 —— 它们的正确处置是
 **留在 Smoke 清单上并标成"未自动化"**，这正是 §10「绝不能把'没有测试'伪装成 PASS」要的形状。

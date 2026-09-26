@@ -382,7 +382,9 @@ fn migration_success_preserves_data_and_adds_columns() {
              PRAGMA user_version = 1;",
         )
         .unwrap();
-        // 插入一条数据验证 rollback 后仍存在
+        // 这条用例只判"正常跑成功之后原数据完好"，不判回滚 ——
+        // 回滚那一格由 `a_failing_migration_step_rolls_back_completely_and_never_advances_the_version` 负责。
+
         conn.execute(
             "INSERT INTO friends(device_id, nickname, added_at) VALUES ('f1', 'test', 0)",
             [],
@@ -390,11 +392,9 @@ fn migration_success_preserves_data_and_adds_columns() {
         .unwrap();
     }
 
-    // 直接跑 run_migrations — 它会尝试 v1→v2
-    // 但这里 conn 是独立的，走正常路径
-    // column_exists 守卫让 Migration 极难自然失败，
-    // 这里只验证：正常跑成功后 user_version 更新，
-    // 且 friends 里的数据完好
+    // column_exists 守卫让这一步极难自然失败，所以这里只验证：
+    // 正常跑成功后 user_version 更新、且 friends 里的数据完好。
+    // ⚠️ 函数名里的 success 是"正常路径"的意思，不是"验证过失败路径"。
     let conn = init(&path).expect("init should succeed");
     assert_eq!(read_user_version(&conn), DB_VERSION);
 
@@ -1039,5 +1039,102 @@ fn v7_orphan_cleanup_keeps_live_group_rows_and_drops_true_orphans() {
         count("SELECT COUNT(*) FROM pending_group_reads WHERE group_id='g-gone'"),
         0,
         "真孤儿的待发群已读回执没被清 ⇒ 对端每次上线都会被重新投递一次"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #59：**迁移中途失败**。§9「数据生命周期」点名的是"部分失败"，而这条判据真正要
+// 钉住的是三件事 —— ① 失败必须**上抛**（不能让调用方以为升好了）；
+// ② `user_version` 必须**还停在升级前**（否则下次启动直接跳过这一步，留下
+//    "版本号说升到 v3 但 seq 列不存在"的半吊子库，那比崩掉更坏）；
+// ③ 这一步已经写下去的东西必须**整步回滚**，包括 `ALTER TABLE` 那句 DDL。
+// SQLite 的 DDL 是事务性的，所以"步骤事务真的包住了整步"是可验证的，不是愿望。
+//
+// 为什么注入点选 v2→v3 里那句 seq 回填：它是**逐行 UPDATE**，而
+// `BEFORE UPDATE` 行触发器只在"确有行要被改"时才触发 ⇒
+// 只要 `run_migrations` 返回 Err，就**同时证明了注入点真的在写数据**
+// （上一轮我在 `outbox` 上装 `BEFORE DELETE` 触发器之所以是空的，正是因为
+// `outbox.msg_id` 的内联 UNIQUE 让那句清重复变成零行语句 —— 那条教训换成的判据）。
+// ⚠️ 不走 `init()`：`init()` 会先 `execute_batch(SCHEMA)`，而 `ensure_post_schema_shape`
+// 要在 messages 上建 `idx_messages_conv_seq(conv_id, seq)` —— 没有 seq 的老库那一刻
+// 就会失败（这正是 `index_on_a_migration_added_column_must_not_live_in_schema` 的成因），
+// 于是判据会红在错误的原因上。这里照生产状态直接摆一张"没有 seq 的 messages"。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_failing_migration_step_rolls_back_completely_and_never_advances_the_version() {
+    let path = temp_db_path();
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE friends (device_id TEXT PRIMARY KEY, nickname TEXT NOT NULL, added_at INTEGER NOT NULL);
+         CREATE TABLE conversations (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL, unread INTEGER NOT NULL DEFAULT 0);
+         CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, msg_id TEXT UNIQUE NOT NULL, conv_id TEXT NOT NULL, sender_id TEXT NOT NULL, receiver_id TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, ts INTEGER NOT NULL);
+         CREATE TABLE outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, msg_id TEXT NOT NULL UNIQUE, peer_id TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL);
+         INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts)
+             VALUES ('m-1','conv-1','A','B','text','one',1700000001),
+                    ('m-2','conv-1','A','B','text','two',1700000002),
+                    ('m-3','conv-1','A','B','text','three',1700000003);
+         PRAGMA user_version = 2;",
+    )
+    .unwrap();
+    // 注入源：这条 trigger 是测试自己装的，报错文本里必须能认出它，
+    // 否则分不清"是注入挡住的"还是"迁移自己有别的问题"。
+    conn.execute_batch(
+        "CREATE TRIGGER inject_refuse_msg_update BEFORE UPDATE ON messages
+         FOR EACH ROW BEGIN SELECT RAISE(ABORT, '注入：本用例不许改 messages'); END;",
+    )
+    .unwrap();
+
+    let err = run_migrations(&conn, 2)
+        .err()
+        .expect("v2→v3 的 seq 回填被注入挡住了，run_migrations 却返回了 Ok ⇒ 失败被吞");
+    assert!(
+        err.to_string().contains("注入：本用例不许改 messages"),
+        "报错必须来自这条注入 trigger，实际：{err}"
+    );
+
+    // ② 版本号一步都没前进。
+    assert_eq!(
+        read_user_version(&conn),
+        2,
+        "失败后 user_version 必须还停在 2 —— 前进一步就等于让下次启动跳过这一步"
+    );
+    // ③ 同一步里的 DDL 也必须一起回滚。
+    assert!(
+        !super::column_exists(&conn, "messages", "seq").unwrap(),
+        "seq 列还在 ⇒ 步骤事务没包住 ALTER，库里会留下「版本说升过、列却缺」的半吊子形状"
+    );
+    // ① 原有数据一个字节都没动。
+    let (n, content): (i64, String) = conn
+        .query_row(
+            "SELECT COUNT(*), (SELECT content FROM messages WHERE msg_id='m-2') FROM messages",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(n, 3, "失败的迁移不许吃掉任何一行消息");
+    assert_eq!(content, "two");
+
+    // ④ 恢复路径：拆掉注入源，同一条命令必须能从头把这一步跑完 ——
+    // 真实场景里"注入"就是磁盘/锁/权限抖动，下次启动会重放，所以重放必须可达。
+    conn.execute_batch("DROP TRIGGER inject_refuse_msg_update;")
+        .unwrap();
+    run_migrations(&conn, 2).expect("拆掉注入后重放必须成功（版本号停在 2 就是为了这一刻）");
+    assert_eq!(read_user_version(&conn), DB_VERSION);
+    assert!(
+        super::column_exists(&conn, "messages", "seq").unwrap(),
+        "重放之后 seq 必须补上"
+    );
+    let seq: i64 = conn
+        .query_row("SELECT seq FROM messages WHERE msg_id='m-3'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert!(seq > 0, "重放之后 seq 必须真的被回填，实际 {seq}");
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM messages", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        3,
+        "重放不许改消息条数"
     );
 }
