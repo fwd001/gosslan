@@ -1056,6 +1056,7 @@ async fn finish_dial(
             cancel: cancel_tx,
         });
     register_connection(&state, &peer_id, ep.clone(), PathKind::Bluetooth);
+    crate::network::transport::replay_group_frames_to(&state, &peer_id); // #77：蓝牙出站
     state.logger.info(
         "ble",
         format!(
@@ -2062,9 +2063,10 @@ async fn try_accept_handshake(
             cancel: cancel_tx,
         });
     register_connection(state, &peer_id, ep.clone(), PathKind::Bluetooth);
-    // 对端能连上我们 ⇒ 之前"我拨不上它"的失败计数已经过期，必须清掉。
-    // 不清的话：唯一的拨号方（大 id/不能被拨入的那侧）会被自己的退避锁住，
-    // 而它恰恰是断线后唯一会重连的一方（真机表现：好友申请等几分钟）。
+    crate::network::transport::replay_group_frames_to(state, &peer_id); // #77：蓝牙入站
+                                                                        // 对端能连上我们 ⇒ 之前"我拨不上它"的失败计数已经过期，必须清掉。
+                                                                        // 不清的话：唯一的拨号方（大 id/不能被拨入的那侧）会被自己的退避锁住，
+                                                                        // 而它恰恰是断线后唯一会重连的一方（真机表现：好友申请等几分钟）。
     clear_ble_dial_failure(state, central);
     state.logger.info(
         "ble",

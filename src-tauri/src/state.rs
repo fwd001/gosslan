@@ -974,6 +974,11 @@ pub struct AppState {
     /// 为什么缓存在内存：转发热路径上 gossip 可能每秒几十条，为了一个策略字段去锁
     /// SQLite 是纯浪费。启动时从 settings 读入，`save_settings` 时更新。
     pub relay_policy: Mutex<crate::mesh::relay_policy::RelayConfig>,
+    /// 替别人转发过的群信封（有界、进程内）—— 晚到成员下一次建链时从这里补递（#77）。
+    /// 为什么放内存不建表：转发热路径每秒可能几十条，为一份**注定会过期**的缓存去锁
+    /// SQLite 是纯浪费；代价是中间人重启后这段历史的补递窗口就没了（边界写进
+    /// `mesh/gossip_replay.rs` 与本文件的判据，不许读成"群消息最终一定一致"）。
+    pub gossip_relay: Mutex<crate::mesh::gossip_replay::GossipRelayCache>,
     /// 文件接收落盘目录（可变：设置页可改，改后新接收的文件落到新目录）。
     pub downloads_dir: Mutex<PathBuf>,
     /// 缓存目录：图片 / 音频 / 文件等二进制落盘于此（SQLite 不存 BLOB）
@@ -1380,6 +1385,7 @@ impl AppState {
             mesh_router: Mutex::new(MeshRouter::new(100_000, 10_000, 6, 4, 256)),
             relay: Mutex::new(RelayManager::new()),
             relay_policy: Mutex::new(relay_policy),
+            gossip_relay: Mutex::new(crate::mesh::gossip_replay::GossipRelayCache::default()),
             #[cfg(feature = "bluetooth")]
             ble: Mutex::new(None),
             #[cfg(feature = "bluetooth")]

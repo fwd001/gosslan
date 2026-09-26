@@ -14,6 +14,7 @@
 pub mod candidate;
 pub mod connection;
 pub mod endpoint;
+pub mod gossip_replay;
 pub mod manager;
 pub mod path;
 pub mod peer;

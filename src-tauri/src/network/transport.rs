@@ -1223,6 +1223,7 @@ async fn handle_incoming(
         });
     // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
     register_connection(&state, &peer_id, MeshEndpoint::Tcp(peer_addr), inbound_kind);
+    replay_group_frames_to(&state, &peer_id); // #77：入站新链路 ⇒ 补递窗口内的群历史
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
@@ -2533,6 +2534,7 @@ async fn connect_to_peer(
         });
     // 同步到 mesh 层（拨号侧同样登记，路径类型由调用方携带）
     register_connection(state, &peer_id, ep.clone(), path_kind);
+    replay_group_frames_to(state, &peer_id); // #77：出站新链路 ⇒ 补递窗口内的群历史
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),

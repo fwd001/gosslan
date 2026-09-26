@@ -16,6 +16,52 @@
 /// - 是否愿意替别人转发，由**中继授权（M4）**决定（`decide_forward`），不靠这条判据；
 /// - `sender` 必须在成员表里：签名只证明"是谁发的"，不证明"发送者有权把人拉进群"，
 ///   所以伪造者发的群信封即使广播过来，本机也不消费它。
+/// 新链路建立 ⇒ 把窗口内替别人转发过、当时这条链路还不存在的群信封补递一次（#77）。
+///
+/// 为什么 spawn 而不是就地 await：四个调用点全在**建链热路径**上（入站 accept、
+/// 出站拨号、BLE 两条），而 `try_send` 在信道满时有界补试 500ms —— 同步等就是
+/// 把握手后的第一步拖住。补递失败不另加补救：对端下一次建链还会再试，窗口本来
+/// 就是有界的（这一条是"尽力补递"，不是"必达"）。
+pub(crate) fn replay_group_frames_to(
+    state: &std::sync::Arc<crate::state::AppState>,
+    peer_id: &str,
+) {
+    let frames = {
+        let cache = state
+            .gossip_relay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        cache.eligible(peer_id, &state.device_id, crate::mesh::gossip_replay::now_ms())
+    };
+    if frames.is_empty() {
+        return;
+    }
+    let st = state.clone();
+    let peer = peer_id.to_string();
+    tokio::spawn(async move {
+        let mut sent = 0usize;
+        for mut env in frames {
+            // `eligible` 已保证 ttl >= 2 ⇒ 这里 -= 不会下溢，递出去的副本对端还能再转
+            env.ttl -= 1;
+            if try_send(&st, &peer, &Message::Gossip { envelope: env })
+                .await
+                .is_ok()
+            {
+                sent += 1;
+            }
+        }
+        if sent > 0 {
+            st.logger.info(
+                "link",
+                format!(
+                    "补递群消息 peer={peer} 条数={sent}（窗口 {}ms）",
+                    crate::mesh::gossip_replay::RELAY_WINDOW_MS
+                ),
+            );
+        }
+    });
+}
+
 pub(crate) fn group_envelope_consumable(
     kind: &GossipKind,
     members: &[String],
@@ -287,6 +333,19 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         };
         let mut fwd = env.clone();
         fwd.ttl -= 1;
+        // 记下这条**准备转发出去的原样信封**（#77）：窗口内新建成链路的成员由
+        // `replay_group_frames_to` 补递一次。只记 Group + 成员表非空的（口径同
+        // `group_envelope_consumable`）。
+        // ⚠️ 记在这里、**在 `targets` 之后**是刻意的：这一刻邻居可能一个都没有
+        //（`targets` 为空 ⇒ 一次也发不出去），而"当时递不到、以后要递"恰恰是这一格的产品行为。
+        // 记在发送成功之后就等于什么都没记。
+        {
+            let mut cache = state
+                .gossip_relay
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            cache.remember(&fwd, crate::mesh::gossip_replay::now_ms());
+        }
         let fwd_msg = Message::Gossip { envelope: fwd };
         // ⚠️ 转发**不阻塞本连接的读循环**：`try_send` 在信道满时有界补试 500ms，
         // 逐条 await 最坏 4 × 500ms = 2s —— 期间这条连接的后续帧（含心跳）都要排队，
