@@ -932,6 +932,37 @@ N6 先定语义（成员行 = @他 / 查看资料，代码块 = 复制）再动�
      ⇒ 想把"其余各格照常跑"这个好处在门禁层真拿到，得先做 **#93**（keep-going，
      或把"环境红"与"产品红"在短路上分开）。在那之前，锁屏时门禁层的净效果与拦停相同，
      **区别只在报告现在写着为什么**。
+  4. **落码时该怎么接（2026-09-27 逐条 `grep`/`sed` 现量过的四个卡点，别再重新找一遍）**：
+     ① 记录点 = `network/transport/gossip.rs` 里 `if may_forward { … }` 那段——那里已经有
+     `let mut fwd = env.clone(); fwd.ttl -= 1; let fwd_msg = Message::Gossip { envelope: fwd };`，
+     在 `fwd` 被移进 `fwd_msg` 之前 `remember(&fwd)` 就行。筛选条件照 `group_envelope_consumable`
+     的口径（`gossip.rs:20`）：只记 `kind == Group` 且 **`group_members` 非空**的那些 ——
+     空表是旧端信封，没有成员表就无从判别该补递给谁（不要退化成只查 `group_id`）。
+     ② 重递点 = `register_connection` 的**四个调用点**，定义在 `network/transport.rs:1856`：
+     `transport.rs:1225`（`handle_incoming`，签名 `state: Arc<AppState>`）、
+     `transport.rs:2535`（`connect_to_peer`，`state: &Arc<AppState>`）、
+     `ble.rs:1058`（`finish_dial`，`Arc`）、`ble.rs:2064`（`try_accept_handshake`，`&Arc`）。
+     ✅ **四处调用方本来就都握着 `Arc<AppState>`**（前两处 `&state`、后两处 `state` 是靠
+     deref coercion 喂给 `&AppState` 形参的）⇒ **不需要改 `register_connection` 的签名**。
+     ⚠️ 这一条是**推翻我自己几分钟前先写下的结论**（"从 `&T` 造不出 `Arc`，要改成 `&Arc<AppState>`"）
+     —— 那是没复跑调用方签名就落笔，而它的后果正好是这一格最不该做的事：为了架构漂亮去动
+     最热网络路径的函数签名。**最小组合**：新增一个 `pub(crate) fn replay_group_frames_to(&Arc<AppState>, peer_id)`，
+     在上面四点的 `register_connection(…)` 之后各插一行；三处 `unregister_connection`
+     （`ble.rs:425`、`transport.rs:353`、`transport.rs:1653`）不动。
+     ③ 判别"该不该补递给这个 peer"**不要查库**：信封自带 `group_members`
+     （`src-tauri/src/protocol.rs:840`，那是"这条消息当时该发给谁"的原始事实，而本地群记录可能已被后来的成员变更改掉）。
+     条件＝`peer ∈ env.group_members` 且 `peer != env.sender_id`（不把自己发出去的那份再递回给自己）
+     且 `peer != 本机`。接收侧已按 `message_id` 去重、而 `group_members` **不参与** `compute_message_id`
+     （`protocol.rs:836` 注释与实现）⇒ 重递不会破坏跨路径去重。缓存本身：每组 16 条 + 按 `env.ts` 过 10 分钟丢，
+     放 `AppState` 新字段（`state.rs:1355` 是**唯一**构造点，加字段安全）。
+     ④ **策略参数有现成先例，照它写不要新造**：FriendAccept 回执的有界补发
+     （`friend_accept_flush_decision`，真值表测试在 `transport.rs:7206` 起）已经把
+     "窗口 120s / 次数 3 / 间隔 5s" 三条边界钉成了判据 —— #77 的窗口/次数/上限三条应当复用同一形状，
+     这样反向判据（写坏一处必须红）也有现成的样板可抄。
+     ⑤ 验收：新增 `--round=gossip-late`（A 先发、C 后起、B 与 C 建链后 C 库里必须出现那一行），
+     反向 `-lie` 按"当前可达再过滤一遍"写坏 ⇒ 那条必须红。今天没做的原因写清楚：
+     **不是被屏幕挡住**（单轮入口已能跑），是我判断剩余回合不足以把"实现 + 那一轮 + 登记"一起跑绿，
+     而留一份接了一半的转发路径比不做更坏。
 
 ★ **#76 的实测证据是脚手架造的（2026-09-27 凌晨，我自己复跑推翻自己写的产品结论）**
 - 机制（三处现读，全都是一条命令能复跑的）：
