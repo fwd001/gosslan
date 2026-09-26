@@ -12,6 +12,27 @@
 >
 > 证据列写的是**具体名字**（测试名 / 判据脚本 / 用例标签），不是"有测试"。
 
+## 双实例 E2E 的轮次账（断言条数**只写在这一处**）
+
+`check-doc-numbers.mjs` 判据 C 从 `scripts/e2e-multi-instance.mjs` 现算每轮条数并与下面这几行对账。
+2026-09-26 之前这些数字散在十几段叙述里，加一条判据要改 11 处 —— 那是漂移的制造机而不是防漂移，
+所以按判据 C 自己的建议收成一份：**要改就只改这里，叙述性行子里不再抄数字。**
+
+- 默认轮 17 条断言 —— 反向：`--negative`（收件人换幽灵 id）
+- 脏前缀轮 21 条断言 —— 反向：`--fault=poison-part-lie`
+- 续传轮 22 条断言 —— 反向：`--fault=resume-prefix-lie`
+- 杀进程轮 24 条断言 —— 反向：`--fault=kill-mid-lie`
+- 冻结轮 23 条断言 —— 反向：`--fault=peer-freeze-lie`
+- 磁盘轮 23 条断言 —— 反向：`--fault=recv-readonly-lie`
+- 改小轮 23 条断言 —— 反向：`--fault=src-shrunk-lie`
+- 多文件轮 23 条断言 —— 反向：`--fault=multi-file-lie`
+- 改口轮 23 条断言 —— 反向：`--fault=recv-dir-rotted-lie`
+- 群聊轮 28 条断言 —— 反向：`--round=group-lie`
+
+⚠️ 这里只声明"反向模式按设计会红"，**不声明红几条**。红几条取决于当时翻掉了哪个期望值，
+写成常数就是第二个事实源（#64 之前那些「lie 恰好 1/22 报红」的分母，加一条断言后全要重算）。
+
+
 ## P0 地基（1–15）
 
 | # | 验收项 | 等级 | 证据 | 缺口 |
@@ -22,15 +43,15 @@
 | 4 | 双向文本 + `msg_id` 幂等 | **AUTOMATED** | `e2e-multi-instance.mjs` J1（B 侧恰好一条 + `messages.msg_id UNIQUE`） | Windows 腿未跑 |
 | 5 | Outbox → Ack，Ack 只代表已持久化 | **AUTOMATED** | J1「A 侧 outbox 被 Ack 清空」+ `cascade_tests` | 反例（DB 错不得 Ack）只有进程内用例 |
 | 6 | 离线持久化与自动重发（离线 ≠ 2 分钟失败） | SIMULATED | `db/offline_queue.rs`、`fail_reason_separates_retryable_from_terminal` | 真离线对端的补发未跨进程 → J1n |
-| 7 | 网络恢复后不丢不重 | **部分 AUTOMATED** | J1「两端重启后仍只有一条 / outbox 不复活」+ **故障注入** `--fault=poison-part`（接收侧脏 `.part` 前缀 → 第 1 次 attempt 整体校验失败 → outbox 重试补齐，20 断言 2 连绿） | 只覆盖 LAN 路径 + 优雅重启 + 接收侧脏前缀 + **接收中 SIGKILL（杀进程轮 23 断言 1 连绿、lie 2/23 报红）**+ **对端失联后解冻自愈（冻结轮 22 断言、lie 恰好 1/22 报红）**；**「断链」单机无 root 不可自动**（造不出"只断一条链路"，用中继伪造会被 route 优先级绕过 ⇒ 跑出来是假绿）；**重复帧 / 乱序帧要分层读，别当成"没测"**：L2 层 **AUTOMATED** 且点得出真测试（`file_relay.rs duplicate_chunk_is_ignored_not_double_counted`、`network/file.rs chunk_seq_rule_only_rejects_real_gaps`、`group_receive_rejects_gap_and_duplicate_seq`、`transport/ble_framing.rs out_of_order_chunks_still_complete` + `duplicate_and_partial_do_not_complete`、`network/file.rs stale_attempt_frames_are_filtered_but_legacy_frames_never_are`）；L5 帧级伪造判为**不可自动**（往对端塞一帧 = 伪造 E2EE 封装与签名，生产码路径不走 ⇒ 假绿）→ A-2 |
+| 7 | 网络恢复后不丢不重 | **部分 AUTOMATED** | J1「两端重启后仍只有一条 / outbox 不复活」+ **故障注入** `--fault=poison-part`（接收侧脏 `.part` 前缀 → 第 1 次 attempt 整体校验失败 → outbox 重试补齐，2 连绿） | 只覆盖 LAN 路径 + 优雅重启 + 接收侧脏前缀 + **接收中 SIGKILL（杀进程轮 1 连绿、lie 按设计报红）**+ **对端失联后解冻自愈（冻结轮 lie 按设计报红）**；**「断链」单机无 root 不可自动**（造不出"只断一条链路"，用中继伪造会被 route 优先级绕过 ⇒ 跑出来是假绿）；**重复帧 / 乱序帧要分层读，别当成"没测"**：L2 层 **AUTOMATED** 且点得出真测试（`file_relay.rs duplicate_chunk_is_ignored_not_double_counted`、`network/file.rs chunk_seq_rule_only_rejects_real_gaps`、`group_receive_rejects_gap_and_duplicate_seq`、`transport/ble_framing.rs out_of_order_chunks_still_complete` + `duplicate_and_partial_do_not_complete`、`network/file.rs stale_attempt_frames_are_filtered_but_legacy_frames_never_are`）；L5 帧级伪造判为**不可自动**（往对端塞一帧 = 伪造 E2EE 封装与签名，生产码路径不走 ⇒ 假绿）→ A-2 |
 | 8 | 已读回执与送达状态 | SIMULATED + 人工 | `storeContract.test.ts` 已读判据、`applyConversationSnapshot` | 移动端群已读「不见了」= #30，**未定位** → Smoke-4 |
 | 9 | 失败可见且可重试（重发必须重新加密） | SIMULATED | `resend_reseals_before_enqueue` 等护栏 + 不变量登记 | 见 `protocol-invariants.md` §6 例外 |
 | 10 | E2EE 身份锚定，未验签不建信任 | SIMULATED | `friend_identity_anchor_has_one_binding_rule`、INV-P21 用例 | 真实冒名建链未跨进程测 |
 | 11 | SQLite 持久化 + 重启恢复（含在途队列） | **部分 AUTOMATED** | J1 重启断言 + `migration_tests.rs` 19 条 + `fresh_schema_alone_has_exactly_the_migrated_shape` | 迁移**中途失败**不可恢复 → J7 |
-| 12 | 图片/文件消息（多选并发不丢件） | **部分 AUTOMATED** | J2 已 **4 连绿**（另：故障注入轮 20 断言 **2 连绿** + `--fault=poison-part-lie` 反向按设计报红）（1 MB：只有 rename 后出现最终名 + 字节数 + sha256 + 发送侧 `sent → done`（必须等对端 `FileCompleteAck`）+ 接收侧 `done` + 无 `<tid>.part` 残留 + `file_outbox` 收尾删除） | 只覆盖单文件；**尺寸阶梯已按形状进本地层**（1 KB 单片 / 10 MB 多片带零头，各跑整趟默认轮 16 断言、实测全绿，10 MB 整轮 11.2s；10 KB 与 1 KB 同形状由前者代表，100 MB 及以上不进本地层、由杀进程轮 100 MB 代偿）⇒ A-3 只剩**错 size** 一格**同日已补齐**（两层各一条：写盘**之前**的 chunk 级上限 `chunk_exceeds_declared` —— 恰好填满=放行 / 超一字节=拒 / 已收满再来片=拒 / size=0 不写字；加上收尾层原本就有的"字节数与声明不符 ⇒ 不算成功"。⚠️ 这条判据以前内联在吃 `AppState` 的 `write_chunk` 里所以一直没测试，见路线图 L-C 那格的 ⚠️）（⚠️ 这句以前连着写"并发未做"，与本行末尾自相矛盾 —— 并发多文件已由注入⑤覆盖，只是那条时序是"同 peer 串行 flush"）。**「目标目录变化」的另一半已做**：整个目录被删走 ⇒ 接收句柄挂在被 unlink 的 inode 上、写入与 fsync 照旧成功 ⇒ **只剩最后一次 rename 能发现成品无处安放**，由 L2 `network/file.rs::rotted_receive_directory_finishes_failed_never_done` 钉住（判据：必须 Err + 台账只能 `failed` 且不带路径 + 不许出现成品文件；已用"把 rename 失败吞掉就算成功"变异证明会报红）。它与本行末尾那条注入⑧不是重复 —— ⑧ 是目录仍在但不可写（`EACCES`、两个真实进程），这条是目录消失（`ENOENT`、生产单聊收尾函数）。**已做**：接收端写不进去（磁盘轮 22 断言 1 连绿、lie 恰好 1/22 报红 ⇒ 队列 5 次内 GiveUp、台账非 done、盘上零残留）；⚠️ 但**接收方自己完全无感**（offer 期只记日志、不写库不发事件）→ A-10。**已做**：收到一半才收尾失败（改口轮 22 断言、lie 恰好 1/22 报红 ⇒ .part 必须真被续写过、A 侧终态明确、attempts ≤ 5、接收侧台账不假 done）；★ 同一轮实测照出 **A-12** 并已修（修前实测 `A {status:gone, aT:done} / B=failed / .part=整份 / final 不存在`）：判据改成**字节数够 ≠ 收完、也 ≠ 进度**，那份没有成品的 `.part` 不再被报成 `received = size`（一个帧承载两个含义是这一格的病根）⇒ 发送侧只能落到 `failed`，交叉自洽那条已按原口径加回断言，另加一条防它变成永远为真的空转判据。**已做**：入队后源文件被改小（改小轮 22 断言 3 连绿、lie 恰好 1/22 报红 ⇒ offer 按截断后的真 size、落地字节+hash 与新源一致、两侧同 done、盘上只留终名那一份）；⚠️ 同一轮照出**发送侧的 size 没人更正**（实测 A 气泡/台账仍写入队时那份、B 写真实那份）→ A-11。**已做**：连续多文件 + 其中两单同名（多文件轮 22 断言、lie 恰好 1/22 报红 ⇒ 三单各自 done、同名落成两个不同路径、落地内容多重集合 == 源内容多重集合、无 `.part`）；⚠️ 只覆盖"同 peer 串行 flush"这条时序，**两个 offer 都在任一次 rename 之前到达**那个真会撞 final_path 的交错没覆盖（要三个实例）|
+| 12 | 图片/文件消息（多选并发不丢件） | **部分 AUTOMATED** | J2 已 **4 连绿**（另：脏前缀注入轮 **2 连绿** + `--fault=poison-part-lie` 反向按设计报红）（1 MB：只有 rename 后出现最终名 + 字节数 + sha256 + 发送侧 `sent → done`（必须等对端 `FileCompleteAck`）+ 接收侧 `done` + 无 `<tid>.part` 残留 + `file_outbox` 收尾删除） | 只覆盖单文件；**尺寸阶梯已按形状进本地层**（1 KB 单片 / 10 MB 多片带零头，各跑整趟默认轮、实测全绿，10 MB 整轮 11.2s；10 KB 与 1 KB 同形状由前者代表，100 MB 及以上不进本地层、由杀进程轮 100 MB 代偿）⇒ A-3 只剩**错 size** 一格**同日已补齐**（两层各一条：写盘**之前**的 chunk 级上限 `chunk_exceeds_declared` —— 恰好填满=放行 / 超一字节=拒 / 已收满再来片=拒 / size=0 不写字；加上收尾层原本就有的"字节数与声明不符 ⇒ 不算成功"。⚠️ 这条判据以前内联在吃 `AppState` 的 `write_chunk` 里所以一直没测试，见路线图 L-C 那格的 ⚠️）（⚠️ 这句以前连着写"并发未做"，与本行末尾自相矛盾 —— 并发多文件已由注入⑤覆盖，只是那条时序是"同 peer 串行 flush"）。**「目标目录变化」的另一半已做**：整个目录被删走 ⇒ 接收句柄挂在被 unlink 的 inode 上、写入与 fsync 照旧成功 ⇒ **只剩最后一次 rename 能发现成品无处安放**，由 L2 `network/file.rs::rotted_receive_directory_finishes_failed_never_done` 钉住（判据：必须 Err + 台账只能 `failed` 且不带路径 + 不许出现成品文件；已用"把 rename 失败吞掉就算成功"变异证明会报红）。它与本行末尾那条注入⑧不是重复 —— ⑧ 是目录仍在但不可写（`EACCES`、两个真实进程），这条是目录消失（`ENOENT`、生产单聊收尾函数）。**已做**：接收端写不进去（磁盘轮 1 连绿、lie 按设计报红 ⇒ 队列 5 次内 GiveUp、台账非 done、盘上零残留）；⚠️ 但**接收方自己完全无感**（offer 期只记日志、不写库不发事件）→ A-10。**已做**：收到一半才收尾失败（改口轮 lie 按设计报红 ⇒ .part 必须真被续写过、A 侧终态明确、attempts ≤ 5、接收侧台账不假 done）；★ 同一轮实测照出 **A-12** 并已修（修前实测 `A {status:gone, aT:done} / B=failed / .part=整份 / final 不存在`）：判据改成**字节数够 ≠ 收完、也 ≠ 进度**，那份没有成品的 `.part` 不再被报成 `received = size`（一个帧承载两个含义是这一格的病根）⇒ 发送侧只能落到 `failed`，交叉自洽那条已按原口径加回断言，另加一条防它变成永远为真的空转判据。**已做**：入队后源文件被改小（改小轮 3 连绿、lie 按设计报红 ⇒ offer 按截断后的真 size、落地字节+hash 与新源一致、两侧同 done、盘上只留终名那一份）；⚠️ 同一轮照出**发送侧的 size 没人更正**（实测 A 气泡/台账仍写入队时那份、B 写真实那份）→ A-11。**已做**：连续多文件 + 其中两单同名（多文件轮 lie 按设计报红 ⇒ 三单各自 done、同名落成两个不同路径、落地内容多重集合 == 源内容多重集合、无 `.part`）；⚠️ 只覆盖"同 peer 串行 flush"这条时序，**两个 offer 都在任一次 rename 之前到达**那个真会撞 final_path 的交错没覆盖（要三个实例）|
 | 13 | 通知（尊重开关、失败可观察） | MANUAL-HARDWARE | — | 见 Smoke-3 |
 | 14 | Win/mac/Android 三端构建与基本稳定 | **AUTOMATED**（构建层） | `verify.yml` 3 job + 三个 `build*.yml` | 构建≠运行；**三端都没跑过应用实例** |
-| 15 | 两台以上真实设备联调 | MANUAL-HARDWARE | 用户真机自测 | 同机双实例已跑绿 **J1 文本 + J2 文件 + 两格故障注入**（默认轮 16 断言 / 5 连绿；脏前缀轮 20 断言 / 2 连绿；续传轮 21 断言 / 1 连绿；`--negative`、`--fault=poison-part-lie`、`--fault=resume-prefix-lie` 三个反向模式都按设计报红），真机仍要人 → Smoke-5 |
+| 15 | 两台以上真实设备联调 | MANUAL-HARDWARE | 用户真机自测 | 同机双实例已跑绿 **J1 文本 + J2 文件 + 两格故障注入**（默认轮 5 连绿；脏前缀轮 2 连绿；续传轮 1 连绿；`--negative`、`--fault=poison-part-lie`、`--fault=resume-prefix-lie` 三个反向模式都按设计报红），真机仍要人 → Smoke-5 |
 
 ## P0 mesh 本体（16–22）
 
@@ -38,7 +59,7 @@
 |---|---|---|---|---|
 | 16 | 多路径 + 单条有序字节流钉住单链路 | SIMULATED | `transport.rs` 95 条用例含 `both_sides_agree_on_the_same_link_budget` | 真实断链切换未跨进程 → A-2 |
 | 17 | 中继转发 + 授权真的管到数据面 | SIMULATED | `commands/relay.rs` 8 条 + `relay_wiring_tests` | token **值**不得入日志/事件：有源码护栏，**无日志级断言** → A-2 |
-| 18 | 群聊/群文件/群任务/@提及 | 群聊文本族 **AUTOMATED**（2026-09-26 起）/ 其余 SIMULATED | `todos.test.ts` 22、`group_files` 相关；**群聊轮 27 条断言**（两个真实进程：两端预置群 → A 排「正文/撤回/第二条正文」→ 对端上线后由 `flush_group_outbox` 补发 → 判「各只落一行 + 明文真解得开 + 落的是群会话 + GroupAck 把队列清成 0 + 撤回物化 `kind=recalled` 且不删行 + 群消息一条都不许串进 1:1」；反向 `--round=group-lie` 只翻判据读的 id ⇒ 恰好 7 条红、4 条与 id 无关的保持绿） | ⚠️ 这一轮证明的是**接收侧的跨实例收敛**，不证明"发送内核自己怎么组信封"（群 payload 不做 re-seal，`transport.rs:6689-6693`，所以信封由 harness 自制）。仍**无自动化**：群文件端到端（只有 `group_files` 单元判据）、群任务/@提及/公告跨实例、群已读回执点亮、**三个实例**的群收敛 → J4 |
+| 18 | 群聊/群文件/群任务/@提及 | 群聊文本族 **AUTOMATED**（2026-09-26 起）/ 其余 SIMULATED | `todos.test.ts` 22、`group_files` 相关；**群聊轮 28 条断言**（两个真实进程：两端预置群 → A 排「正文/撤回/第二条正文」→ 对端上线后由 `flush_group_outbox` 补发 → 判「各只落一行 + 明文真解得开 + 落的是群会话 + GroupAck 把队列清成 0 + 撤回物化 `kind=recalled` 且不删行 + 群消息一条都不许串进 1:1」；反向 `--round=group-lie` 只翻判据读的 id ⇒ 恰好 7 条红、4 条与 id 无关的保持绿） | ⚠️ 这一轮证明的是**接收侧的跨实例收敛**，不证明"发送内核自己怎么组信封"（群 payload 不做 re-seal，`transport.rs:6689-6693`，所以信封由 harness 自制）。仍**无自动化**：群文件端到端（只有 `group_files` 单元判据）、群任务/@提及/公告跨实例、群已读回执点亮、**三个实例**的群收敛 → J4 |
 | 19 | 删除一致性（不留幽灵数据） | SIMULATED | `db/cascade_tests.rs` 14 条 | 跨窗口/重启后的残留未测 → J7 |
 | 20 | 蓝牙近场加入（预算同口径、大帧不静默丢） | SIMULATED + MANUAL-HARDWARE | `check-ble-constants.mjs`、`ble_framing` 10 条 | **真实 BLE 无硬件不可自动化** → Smoke-2 |
 | 21 | 跨版本优雅降级（INV-P24） | SIMULATED | `unknown_wire_frame_is_tolerated_after_auth`、`messageKinds.test.ts` | 「新旧安装包互发」= MANUAL-HARDWARE → Smoke-6 |

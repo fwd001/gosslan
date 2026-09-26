@@ -15,13 +15,15 @@
 // 于是"报红"只能来自投递断言本身，而不是来自"B 没启动"这种基础设施噪声。
 //
 // 三种模式（每一个"正向绿"都要配一个"反向能红"，否则判据可能只是空转）：
-//   默认                      → J1 文本 + J2 文件 + 重启，16 条断言，预期全绿
+//   默认                      → J1 文本 + J2 文件 + 重启，预期全绿
 //   --negative                → 收件人换幽灵 id，投递断言预期报红
-//   --fault=poison-part       → 注入脏 .part 前缀，20 条断言，预期全绿（产品须自愈或明确失败）
+//   E2E_NO_ROUTED=1           → 只清掉两端预置的 routed_endpoints（改的是**判据读的那个输入**）：
+//                                「Routed 端点拨出过链路」那条必须红，而旧的那圈 peer= 判据照常过
+//   --fault=poison-part       → 注入脏 .part 前缀，预期全绿（产品须自愈或明确失败）
 //   --fault=poison-part-lie   → 同样的注入，只把比对摘要换成必定不相等的值 ⇒ 预期报红
-//   --fault=resume-prefix     → 注入②：真前缀必须被续传复用，21 条断言，预期全绿
+//   --fault=resume-prefix     → 注入②：真前缀必须被续传复用，预期全绿
 //   --fault=resume-prefix-lie → 同样的注入，只把"期望已收字节数/期望摘要"换成错值 ⇒ 预期报红
-//   --fault=kill-mid          → 注入③：接收中真 SIGKILL 对端，23 条断言，预期全绿
+//   --fault=kill-mid          → 注入③：接收中真 SIGKILL 对端，预期全绿
 //   --fault=kill-mid-lie      → 同样的注入，只把"期望续发字节数/期望摘要"换成错值 ⇒ 预期报红
 //   --fault=peer-freeze       → 注入④：对端被 SIGSTOP 冻住（有写无 ACK）⇒ 不许宣布送达，解冻后补齐
 //   --fault=peer-freeze-lie   → 同样的注入，只换期望摘要 ⇒ 预期报红
@@ -41,6 +43,9 @@
 //    **>45s** 越过 watchdog（健康阈值 15s×3）⇒ 真的拆链 + 重拨 + 重试，两种都是同一组结局判据）
 
 const NEGATIVE = process.argv.includes("--negative");
+/// 反证开关（只喂给 `seedPair`）：清掉两端的手动 Routed 端点 ⇒ 那条 Routed 判据必须报红。
+/// 它改的是**判据读的那个输入**（配了什么端点），不是判据本身。
+const NO_ROUTED = process.env.E2E_NO_ROUTED === "1";
 // 判据自证先跑，**在任何实例启动之前**：这套 harness 用「日志里有没有某行」当就绪/投递证据，
 // 而那层读法今天真的塌过一次（10 MB 轮的 boot 行被 512 KB 轮转藏进 .old.log ⇒ 20s 超时红，
 // 连带 fail-fast 跳掉后面 9 步）。判据自己坏了的时候，必须以「判据坏了」退出，
@@ -193,7 +198,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { BOOT_LINE, bootBaseline, bootReady, readLogTail, selfcheckLogtail, stashLogs } from "./e2e-logtail.mjs";
+import { BOOT_LINE, bootBaseline, bootReady, countLog, readLogTail, selfcheckLogtail, stashLogs } from "./e2e-logtail.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const ISO = new Date().toISOString().replace(/[:.]/g, "-");
@@ -476,8 +481,10 @@ function seedPair(nodes) {
         `INSERT INTO friends(device_id,nickname,avatar,x25519_pubkey,ed25519_pubkey,added_at)
          VALUES(?1,?2,NULL,?3,NULL,?4)`,
       ).run(peer.runtimeId, `e2e-${peer.label}`, peer.x25519Pub, Date.now());
+      // E2E_NO_ROUTED=1 把这条预置清空 —— 给下面那条 Routed 判据当"只换判据的输入"的反证：
+      // 端点没配 ⇒ 那一格必须报红，其余格照常（LAN 广播还在，投递不该受影响）。
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('routed_endpoints',?1)")
-        .run(JSON.stringify([{ address: `127.0.0.1:${peer.port}` }]));
+        .run(NO_ROUTED ? "[]" : JSON.stringify([{ address: `127.0.0.1:${peer.port}` }]));
       // 陷阱：macOS 上 load() 优先信书签 ⇒ 只写路径，绝不写 downloads_dir_bookmark
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('downloads_dir',?1)").run(recv);
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('lan_enabled','true')").run();
@@ -764,6 +771,17 @@ step("起 A/B 并等链路真的建立（routed 拨号一轮 10s）", async () =
       `${side} 侧日志出现与 ${id.runtimeId} 的链路`,
     );
   }
+  // §19「网络」Routed 这一格第一次有跨实例判据。上面那圈 waitFor 只要求日志里出现
+  // `peer=<对端 id>`，而 LAN 广播也能让它出现 ⇒ "两端预置的那个 Routed 端点真被拨通过"
+  // 一直是被动发生却没人钉着的（把拨号循环改坏，这 12 轮照样全绿）。
+  // 判据是"两侧合计 ≥1"而不是"每一侧各 1"：谁先拨到谁记 routed、另一侧只看到入站连接，
+  // 11 轮实测里 A=routed/B=lan 与 A=lan/B=routed 两种都出现过 ⇒ 按侧断言会漂。
+  const routedDialed = () =>
+    countLog(INSTANCES[0].log, `建链 peer=${idB.runtimeId} path=routed`) +
+    countLog(INSTANCES[1].log, `建链 peer=${idA.runtimeId} path=routed`);
+  await waitFor(routedDialed, 45_000, "至少一侧打出与对端的 path=routed 建链行");
+  check("这对外部以手动配置的 Routed 端点拨出过链路（§19 网络·Routed）",
+    routedDialed() >= 1, "≥1 条 path=routed 建链", routedDialed());
 });
 
 step("A→B 送达 + Ack 回收 + 无重复", async () => {

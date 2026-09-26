@@ -697,7 +697,7 @@ CI 的 macOS / Windows / Android 三条腿跑的是**同一个 `scripts/verify.m
 | LAN | ✅ | 双实例 harness 真跑（§11.7），默认轮 + 8 条注入轮全在同一台机器两个进程之间 |
 | 掉线恢复 | ✅ | 注入轮"对端失联后解冻自愈"（正向绿 + `-lie` 反向红），`npm run verify:e2e` 本地层 |
 | 多链路（选路正确） | ✅ | 前端 `src/utils/channelState.test.ts` 钉住同一份选路口径；Rust 侧具名用例见测试清单 |
-| Routed / Tailscale | ⚠️ **判据很厚（13 条具名），缺的同样是"跨实例只走这一条路真跑一趟"** | ❌ **我上一版这格写错了**（写成"⚠️未执行 / 无判据"）—— 同一个"凭记忆下笔"的毛病第三次抓到（前两格是 relay 与 gossip）。按门禁自己那份 Rust 清单现算，这一族有 **13 条**：`grep -icE "routed\|tailscale\|pick_link" src-tauri/test-baseline.macos.txt` ⇒ **13**。里面正是选路层的口径本体：`mesh::selection::tests::path_priority_lan_beats_routed_and_bluetooth`、`path_priority_routed_beats_bluetooth`、`path_priority_relay_beats_bluetooth_but_loses_to_routed`（三条优先级把 §三"链路优先级"钉住）、`unhealthy_lan_does_not_block_healthy_routed` + `network::transport::tests::route_order_skips_unhealthy_lan_when_routed_is_healthy` + `route_order_prefers_lan_over_routed_regardless_of_insertion`（健康度与插入序都不许翻转优先级）、`only_routed_connection_still_dials_lan_path`（**只有 routed 时仍会去拨 LAN** —— 这就是"只走 routed"那个场景在单元层的形状）、配置解析四族 `discovery::routed::tests::*`（端点 JSON 往返 / 畸形输入退空 / device_id 可选兼容 / 裸 IP 与显式端口）、`commands::tests::routed_endpoint_address_is_normalized_to_ipv4_socket`、`tests::relay_circuit_is_tagged_relay_not_routed`（中继与 VPN 不许混成一类）。<br>⇒ 真实缺口收窄成一句：**没有一次跨实例、且 LAN 不可用的真跑**（§五 的 `LAN + Tailscale` 组合那一格）。这属环境不属代码 ⇒ 🔶 平台 Smoke，不写成 PASS。⚠️ **与 §12.4 gossip、§七 最后一格是同一块欠账**：都要"第三个真实对端 / 非 LAN 出口"，一起补，别拆成三块账。 |
+| Routed / Tailscale | ⚠️ **判据很厚（13 条具名），缺的同样是"跨实例只走这一条路真跑一趟"** | ❌ **我上一版这格写错了**（写成"⚠️未执行 / 无判据"）—— 同一个"凭记忆下笔"的毛病第三次抓到（前两格是 relay 与 gossip）。按门禁自己那份 Rust 清单现算，这一族有 **13 条**：`grep -icE "routed\|tailscale\|pick_link" src-tauri/test-baseline.macos.txt` ⇒ **13**。里面正是选路层的口径本体：`mesh::selection::tests::path_priority_lan_beats_routed_and_bluetooth`、`path_priority_routed_beats_bluetooth`、`path_priority_relay_beats_bluetooth_but_loses_to_routed`（三条优先级把 §三"链路优先级"钉住）、`unhealthy_lan_does_not_block_healthy_routed` + `network::transport::tests::route_order_skips_unhealthy_lan_when_routed_is_healthy` + `route_order_prefers_lan_over_routed_regardless_of_insertion`（健康度与插入序都不许翻转优先级）、`only_routed_connection_still_dials_lan_path`（**只有 routed 时仍会去拨 LAN** —— 这就是"只走 routed"那个场景在单元层的形状）、配置解析四族 `discovery::routed::tests::*`（端点 JSON 往返 / 畸形输入退空 / device_id 可选兼容 / 裸 IP 与显式端口）、`commands::tests::routed_endpoint_address_is_normalized_to_ipv4_socket`、`tests::relay_circuit_is_tagged_relay_not_routed`（中继与 VPN 不许混成一类）。<br>⇒ 真实缺口收窄成一句：**没有一次跨实例、且 LAN 不可用的真跑**（§五 的 `LAN + Tailscale` 组合那一格）。这属环境不属代码 ⇒ 🔶 平台 Smoke，不写成 PASS。⚠️ **与 §12.4 gossip、§七 最后一格是同一块欠账**：都要"第三个真实对端 / 非 LAN 出口"，一起补，别拆成三块账。<br>**2026-09-26 #64 把这一格往前挪了一小格，但没挪到位，别读成"已绿"**：默认轮的"起 A/B"步骤新增一条判据 —— 这一对实例之间**至少一侧**打出过 `建链 … path=routed`（两侧合计 ≥1；实测 11/11 轮里恰好一侧拨出、另一侧只看到入站 ⇒ 按侧断言会漂）。反证是把两端预置的 `routed_endpoints` 清空（`E2E_NO_ROUTED=1`，改判据读的那个输入而不是改判据）：新那条超时红，而**旧的那圈 `peer=<id>` 判据照常过** ⇒ 这就是"以前这条拨号坏了 12 轮也全绿"的实测证据。<br>⚠️ 它**仍然不是**"只走 Routed 那一趟"：出口还是回环（LAN 广播同时在跑，选路走的极可能是 LAN），所以本格态保持 ⚠️，欠的还是同一句话。 |
 | BLE | 🔶 | 常量层有门（`check-ble-constants.mjs`），**通信本体只能真机**；已在 Smoke 矩阵标 MANUAL-HARDWARE |
 | Relay | ⚠️ **判据很厚，缺的是"跨实例真跑一趟"** | 我上一版凭记忆写成"判据存在与否未复核"——**已按门禁自己那份清单复算并推翻**：`grep -ic relay src-tauri/test-baseline.macos.txt` 现算（口径=测试路径含 relay 的条数，含 `file_relay::` 接收侧、`mesh::relay_policy::` 转发真值表、`mesh::router::`、`commands::relay_config_tests`）。里面有**安全边界级**的几条：token 不进探针报告、配置 fail-closed、`offer_without_chunk_size_is_refused_instead_of_buffering`（P4 那刀的判据）、`unsafe_transfer_id_cannot_create_a_file_outside_the_dir`（路径逃逸）、重复分片不双计、零字节能收尾。**没有的那一件**：两个实例经中继真通一次（要一台活着的中继服务器 + 一条被封的直连，属环境不属代码）⇒ 记 ⚠️ 而不是 ❌ |
 
@@ -740,6 +740,12 @@ Rust 侧 `enqueue before deliver`、幂等 Ack、解密失败留空 `msg_id` 均
 一次覆盖两格组合 —— 「群聊 + 离线成员重新上线」（入队时对端进程还没起，只能靠建链后 flush 补发）
 与「聊天 + 群聊 + 文件 共用同一对实例且不串味」）。其余仍是单点判据；
 **三实例那一类**（群 gossip 多跳收敛、两个 offer 抢同一次 rename）要的是同一套基础设施，改法待拍板 → §12.9。
+
+**轮次账的账（#64，2026-09-26）**：加一条判据 ⇒ 每一轮各多 1 条，判据 C 当场把 **12 处**手写数字判红。
+这不叫"判据太严"，叫**文档结构在替代码还债**：同一个数抄在 11 段叙述里，它就是第二个到第七个事实源。
+已按判据 C 自己给的办法处理 —— **把数字从叙述里删掉**，收成验收矩阵顶部一处「双实例 E2E 的轮次账」（10 行），
+连带删掉「lie 恰好 1/22 报红」这类**分母**（红几条由当时翻掉哪个期望值决定，写成常数必漂）。
+⇒ 以后加一条断言要改的只有那 10 行，其余行子只许写"按设计会红"。
 
 **判据层自己的账（#63，2026-09-26）**：这一层的"自动化"以前只算了**被测产品**的账，没算**判据本身**的账。
 今天补上：harness 拿日志行当就绪/投递证据，而应用每 append 一次就量一次文件大小、超 512 KB 就把整份
