@@ -724,9 +724,11 @@ Rust 侧 `enqueue before deliver`、幂等 Ack、解密失败留空 `msg_id` 均
 - **落库那一半早就有具名判据**（不是我原先说的"整格没判据"）：`db::tests::failed_decrypt_leaves_msg_id_free_for_the_later_good_copy`
   + `ack_from_non_recipient_is_rejected` + `failure_ack_marks_recipient_failed`（`grep -nE "failed_decrypt|ack_from_non_recipient|failure_ack_marks" src-tauri/test-baseline.macos.txt` 现算）。
 - 真正没有的只有**"不许发出 Ack"这半边**，而且它**不是"补个夹具"就能到手的**：
-  `state.rs:874` 里 `AppState { pub app: AppHandle, … }` 是**具体 Wry 运行时**（不是泛型 `<R: Runtime>`），
+  `state.rs:873-874` 里 `AppState { pub app: AppHandle, … }` 是**具体 Wry 运行时**：结构体自身确实是泛型
+  `AppHandle<R: Runtime>`（`tauri-2.11.5/src/app.rs:386`），但**裸名**由同文件 `:384` 的
+  `#[default_runtime(crate::Wry, wry)]` 展开成 `AppHandle<Wry>` ⇒ 单开 `tauri::test` / 换 `MockRuntime` **也不通用**（两个不同类型）。
   所以任何走 `handle_message` 的行为测试要么把 `AppState` 泛型化（**动生产类型，全仓最热的一条路径**），
-  要么在测试里起真的 Wry 应用（CI 里起不来）。`tauri` 的 `test` feature / `MockRuntime` **单开也没用** —— 类型对不上。
+  要么在测试里起真的 Wry 应用（CI 里起不来）。
 - ⇒ 处置：与 §七 第 7 步"把 `handle_message` 分册 / 拆 store"同批**暂缓**（当时的判词是"纯搬家、短期只降稳定"，
   这条只是它的一个下游）。**别把这条读成"再写一个测试就行"**：先要一个"愿意为了可测性动这条路径"的点头。
 
