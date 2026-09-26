@@ -686,14 +686,18 @@ CI 的 macOS / Windows / Android 三条腿跑的是**同一个 `scripts/verify.m
 | 多链路（选路正确） | ✅ | 前端 `src/utils/channelState.test.ts` 钉住同一份选路口径；Rust 侧具名用例见测试清单 |
 | Routed / Tailscale | ⚠️未执行 | 单机两个进程造不出"第二条真实路径"：伪造会被 route 优先级绕过（§11 已判过"单链路断开"同一形状）。要做得先有一台真的第二网络对端 ⇒ 属 🔶 |
 | BLE | 🔶 | 常量层有门（`check-ble-constants.mjs`），**通信本体只能真机**；已在 Smoke 矩阵标 MANUAL-HARDWARE |
-| Relay | ⚠️未执行 | 判据存在与否**本轮未复核**——上一轮结论是"中继的失败分型靠真机取证"。不在这里写通过 |
+| Relay | ⚠️ **判据很厚，缺的是"跨实例真跑一趟"** | 我上一版凭记忆写成"判据存在与否未复核"——**已按门禁自己那份清单复算并推翻**：`grep -ic relay src-tauri/test-baseline.macos.txt` 现算（口径=测试路径含 relay 的条数，含 `file_relay::` 接收侧、`mesh::relay_policy::` 转发真值表、`mesh::router::`、`commands::relay_config_tests`）。里面有**安全边界级**的几条：token 不进探针报告、配置 fail-closed、`offer_without_chunk_size_is_refused_instead_of_buffering`（P4 那刀的判据）、`unsafe_transfer_id_cannot_create_a_file_outside_the_dir`（路径逃逸）、重复分片不双计、零字节能收尾。**没有的那一件**：两个实例经中继真通一次（要一台活着的中继服务器 + 一条被封的直连，属环境不属代码）⇒ 记 ⚠️ 而不是 ❌ |
 
 ### 12.4 消息 —— 混合，缺口是同一条
 
 发送 / 送达 / 重复 / 离线补发 ✅（harness 默认轮断言两侧同一条 `msg_id` 只出现一次 + outbox 清空；
 Rust 侧 `enqueue before deliver`、幂等 Ack、解密失败留空 `msg_id` 均具名）。
 **已读** ✅（判据唯一性有门；跨实例点亮链路上一轮刚修过竞态）。
-**gossip** ⚠️：只有单测形状，没有"两实例 + 一个成员离线"的真跑轮 —— 与 §9 群聊旅程**同一块欠账**。
+**gossip** ⚠️：判据比上一版记的多得多（`grep -ic gossip src-tauri/test-baseline.macos.txt` 现算，
+含信封签名/篡改检测、TTL 保留、fanout 排除发送者、群信封重签覆盖创建者与成员、
+`direct_and_gossip_same_msg_id_persist_single_row`（直连与 gossip 同 id 只落一行）、
+非成员不提前 bail、解密前去重）——但**全部在同进程内**。
+缺的是"三实例、其中一个成员离线再上线"的那一趟真跑，而它恰好**和 §7 最后一格要同一套三实例基础设施** ⇒ 两处欠账是同一块，不是两块。
 **异常（解密失败不 Ack）**：⚠️ 见 B-1a-P03 —— 前件已挂 3 条钩子，缺的是**能造出 `AppHandle` 的夹具**，不是缺断言。
 
 ### 12.5 文件 —— ✅ 是本表最完整的一组
@@ -750,7 +754,11 @@ Rust 侧 `enqueue before deliver`、幂等 Ack、解密失败留空 `msg_id` 均
 不是因为还有一堆 bug，而是因为 §19 自己要求的三条里有三条不成立：
 
 1. **文档 = 代码 不成立**（12.8 DB 契约那一行是实测反证，且 `schema.sql` 仍在被两个门当成"真源之一"）。
-2. **网络分组不成立**：Routed / Relay 两格无判据，BLE 只能真机 —— 而 §19 是把它们并列要求的。
+2. **网络分组不成立**——但缺口比上一版记的**窄**，这里改成实测口径：
+   真正的洞是"**没有任何一次跨实例真跑走过非 LAN 路径**"。
+   Routed/Tailscale 连判据都没有（单机伪造会被 route 优先级绕过）；
+   Relay **判据很厚、全在同进程**（缺的是中继服务器 + 一条被封直连这套环境）；BLE 只能真机。
+   ⇒ §19 把这三条与 LAN 并列要求，所以这一组仍算不成立。
 3. **UI 分组只做到了结构级**：运行时观感一层完全空白（12.6）。
 
 要收尾，只有这三件事是"必须做"，其余都是"可以延后"：
