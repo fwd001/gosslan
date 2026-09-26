@@ -2848,7 +2848,7 @@ CASES: list[Case] = [
     ),
     Case(
         name="Change Budget:L3 改动(含敏感文件)丢了 [impact] 标记 → FAIL",
-        why="碰 protocol.rs / crypto.rs / schema.sql 的改动**无论多小**都是 L3(一错就是安全/全库数据问题),"
+        why="碰 protocol.rs / crypto.rs 的改动**无论多小**都是 L3(一错就是安全/全库数据问题),"
         "必须有 Impact Report 的最小形态 [impact] 标记。fixture 里 a000003 只改 2 个文件,但因碰了"
         " protocol.rs 直接 L3;本用例删掉 [impact],守门必须红 —— 证明『敏感文件不豁免于规模』。",
         file=ROOT / "scripts" / "fixtures" / "change-budget.json",

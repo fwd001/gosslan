@@ -28,9 +28,12 @@
  * | L2 | ≤10 文件 && ≤500 LOC && ≤2 领域 && 不碰敏感文件 | commit message 必须含 `[plan]` |
  * | L3 | 其余,或碰了敏感文件 | commit message 必须含 `[impact]` |
  *
- * **敏感文件**(碰了直接 L3,与规模无关):`schema.sql`(全库数据)、
- * `protocol.rs`(线协议)、`crypto.rs`(E2EE)。这三个文件一错就是安全问题或
- * 全库数据问题,值得多一次显式声明。
+ * **敏感文件**(碰了直接 L3,与规模无关):`protocol.rs`(线协议)、`crypto.rs`(E2EE)。
+ * 这两个一错就是安全或全库数据问题,值得多一次显式声明。
+ * ⚠️ 这里**曾经还有第三个** `schema.sql`,2026-09-26 随该文件一起退役
+ * (表结构的唯一真源是 `db.rs` 的 SCHEMA 常量;那份手写 DDL 没有任何代码读它 ⇒
+ * 把它当"敏感真源"反而是在给一份没人核对的假事实源发牌照)。
+ * **别顺手把它加回来** —— 要防的是"手写第二份 DDL",不是"这个文件名"。
  *
  * **豁免文件**(不计入文件数/LOC):`*.md`、`*.txt`(含 test-baseline)、
  * `docs/**`、`.github/**`、`scripts/**`。理由:这些是工程仪式与文档,不是
@@ -120,7 +123,6 @@ const L2 = { files: 10, loc: 500, domains: 2 };
 
 /** 碰了直接升 L3 的文件(仓库相对路径)。一错就是安全/全库数据问题的三处。 */
 const SENSITIVE_FILES = new Set([
-  "src-tauri/src/schema.sql",
   "src-tauri/src/protocol.rs",
   "src-tauri/src/crypto.rs",
 ]);

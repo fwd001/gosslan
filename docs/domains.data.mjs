@@ -280,13 +280,12 @@ export default {
       paths: [
         "src-tauri/src/db.rs", // 438 行 / Schema + 16 include!
         "src-tauri/src/db", // 16 个子模块：settings / clocks / friends / messages / conversations / offline_queue / file_transfer / favorites(含 tests) / ...
-        "src-tauri/src/schema.sql",
         "src-tauri/src/export.rs", // 聊天记录导出（磁盘满 / 迁机时的自救）
       ],
       invariants: ["INV-P05", "INV-P14", "INV-008"],
       activeHome: "src-tauri/src/db", // 16 个子模块（include! 物理拆分）
       enforce: false,
-      consumes: [], // 叶子域：db.rs / export.rs / schema.sql 在生产代码内只被装配层 use(state/commands),对其他领域无生产代码引用；tests 内 use protocol 已被 check-domain-deps.mjs 排除
+      consumes: [], // 叶子域：db.rs / export.rs 在生产代码内只被装配层 use(state/commands),对其他领域无生产代码引用；tests 内 use protocol 已被 check-domain-deps.mjs 排除
       notes:
         "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。",
     },

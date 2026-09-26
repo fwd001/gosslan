@@ -155,6 +155,8 @@ fn ensure_post_schema_shape(conn: &Connection) -> Result<()> {
          -- 没有它时 `WHERE conv_id=? AND kind IN (...)` 会退化成本会话的**全行扫**，
          -- 而这个查询排在全局那一把 `Mutex<Connection>` 后面 —— 大群会冻住整个 UI。
          -- 与上面那条同理由放在这里（幂等、每次开库确认一次），不再动版本号。
+         -- 它让 messages 长出第三个索引，因此 `hot_tables_carry_exactly_the_intended_indexes`
+         -- 的期望值跟着从 2 改 3，写放大的实测数字记在那条判据的注释里。
          CREATE INDEX IF NOT EXISTS idx_messages_conv_kind ON messages(conv_id, kind);",
     )?;
     Ok(())
@@ -384,7 +386,10 @@ const MIGRATIONS: &[Migration] = &[
     },
 ];
 
-/// 建表脚本（与 `schema.sql` 保持一致）
+/// 建表脚本 —— 表结构的**唯一真源**（另有一张 `content` 表由
+/// `content/store.rs::ensure_schema` 建）。曾经另有一份手写 `schema.sql` 自称"与本文件一致"，
+/// 实测两边表名集合不等而全仓没有一行代码读它 ⇒ 2026-09-26 退役。要再留一份"给人看的 DDL"，
+/// 先回答"谁机器核对它一致"。
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,

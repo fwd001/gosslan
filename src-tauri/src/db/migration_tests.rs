@@ -789,13 +789,22 @@ fn hot_tables_carry_exactly_the_intended_indexes() {
         .unwrap()
     };
     // 期望值 = 这次定下来的形状。要加第三个索引的人必须先回答"写路径受不受得起"。
+    //
+    // `messages` 的第三个索引 `idx_messages_conv_kind(conv_id, kind)` 是这么回答的
+    // （2026-09-26 实测，A/B 换序各跑一轮 ⇒ 不是缓存热度的差别；结论进 CHANGELOG）：
+    //   写：20 000 行逐条插入 1 043/1 032ms → 1 264/1 224ms ⇒ **每条消息 +约 10µs**，
+    //       库文件 3 682 304 → 4 112 384 字节（+21.5 B/行）。消息到达率是人手级 ⇒ 付得起。
+    //   读：会话列表刷新要为**每个会话**跑那条 `kind IN ('todo','todo_update')` 的取数，
+    //       而它排在全局那把 `Mutex<Connection>` 后面。20 000 行的热会话上 4.6ms → 1.5ms（3.1 倍），
+    //       计划从 `idx_messages_conv (conv_id=?)`（扫光该会话所有行再回表判 kind）
+    //       变成命中 `idx_messages_conv_kind (conv_id=? AND kind=?)`。
     for (table, want) in [
         ("group_recalled_messages", 1),
         ("file_transfers", 1),
         ("content_transfers", 2),
         ("file_outbox", 2),
         ("outbox", 2),
-        ("messages", 2),
+        ("messages", 3),
     ] {
         assert_eq!(
             count(table),

@@ -120,7 +120,6 @@ gosslan/
         ├── db.rs             # SQLite 存储层 + Schema
         ├── protocol.rs       # 线格式（UDP 包 / TCP 帧 / 消息枚举 / Gossip 信封）
         ├── state.rs          # AppState 全局状态
-        ├── schema.sql        # 创表脚本（文档用）
         ├── commands.rs       # Tauri 命令层
         ├── network/
         │   ├── mod.rs        # 网络启动 / 停止

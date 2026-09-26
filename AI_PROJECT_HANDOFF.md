@@ -179,7 +179,6 @@ gosslan/
     ├── protocol.rs          # 线格式：UDP 包 / TCP 帧 / Message 枚举 / GossipEnvelope
     ├── gossip_engine.rs     # Bloom+LRU 去重 / fanout / 信封构建与验签
     ├── file_relay.rs     # 大文件切片 + 并行分发 + 乱序重组
-    ├── schema.sql           # 建表脚本（与 db.rs SCHEMA 保持一致，文档用）
     ├── tray.rs              # 桌面托盘（#[cfg(desktop)] 门控；CloseRequested→隐藏）
     ├── network/
     │   ├── mod.rs           # 网络启动/停止
@@ -464,4 +463,4 @@ CI：push `main` / push `v*` tag / 手动触发。tag 额外发布 Release。
 | `CHANGELOG.md` | 全部版本历史（每版 Added/Fixed/Changed 明细） |
 | `docs/adr/` | **架构决策记录**：协议版本化 / 状态机边界 / Rust-TS 契约 / 故障注入测试 |
 | `docs/templates/` | `BUG_FIX.md`（修复报告模板）、`ADR.md`（决策记录模板） |
-| `src-tauri/src/schema.sql` | 数据库 Schema（与 db.rs SCHEMA 一致） |
+| 表结构真源 | **只有 `src-tauri/src/db.rs` 的 `SCHEMA` 常量这一份**（另有一份 `content/store.rs::ensure_schema` 建的表）。原先那份手写 `schema.sql` 已于 2026-09-26 退役：它自称与 `db.rs` 一致而实测表名集合不等，且全仓没有任何代码读它 ⇒ 留着一份"看起来是事实源其实没人核对"的 DDL 比没有更坏 |

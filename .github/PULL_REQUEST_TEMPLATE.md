@@ -2,7 +2,7 @@
      分级由 CI 自动计算（check-change-budget.mjs），但你需要手动填下面三个 section。
      L1 改动（≤5 文件 / ≤200 LOC / 单领域）三个 section 都填 N/A 即可。
      L2 改动必须填 "[plan]" section。
-     L3 改动（或碰了 crypto.rs / protocol.rs / schema.sql）必须填 "[impact]" section。
+     L3 改动（或碰了 crypto.rs / protocol.rs）必须填 "[impact]" section。
      不填 → CI 里 check-change-budget 会红。 -->
 
 ## 改动摘要
@@ -21,7 +21,7 @@
 
 ## [impact] — 安全/数据/协议影响
 
-<!-- L3 必须填（碰了 crypto.rs / protocol.rs / schema.sql 无论多小都要）；L2 填 N/A -->
+<!-- L3 必须填（碰了 crypto.rs / protocol.rs 无论多小都要）；L2 填 N/A -->
 <!-- 回答：这次改动会影响谁？什么场景出问题？回滚路径是什么？ -->
 
 **影响范围**： <!-- 例：单聊消息发送路径 / 全库 schema / E2EE 握手 -->
