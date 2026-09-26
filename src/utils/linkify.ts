@@ -13,7 +13,11 @@
 export type LinkSegment =
   | { kind: "text"; value: string }
   | { kind: "link"; value: string; href: string }
-  | { kind: "mention"; value: string };
+  | { kind: "mention"; value: string }
+  /** @ 到的正是本机用户：同一个位置，但换成 `@你` 并由渲染端加重样式。
+   *  刻意与 `mention` 分成两个 kind —— 段里不携带"这是谁"的信息，
+   *  查看者身份只由调用方传进来的 `self` 决定（同一份文本在两端渲染成不同标签）。 */
+  | { kind: "mention-self"; value: string };
 
 /**
  * 中文句读 —— URL 里绝不会出现的全角标点。
@@ -120,11 +124,20 @@ function linkifyUrls(text: string): LinkSegment[] {
 /**
  * 聊天正文切分：链接 + @提及。mentions 传群成员名列表（@name 高亮）。
  * 返回 text/link/mention 段数组，渲染端按段拼回去即可（不要用 v-html 拼接，已天然防 XSS）。
+ *
+ * `self` 传"查看者自己是谁 + 该显示成什么"（用户 2026-09-26：自己看任何 @ 到自己的地方
+ * 都应是 `@你`，别人看到的仍然是名字）。⚠️ 标签由**调用方**传进来而不是在这里写死中文：
+ * 本模块是零依赖纯函数，i18n 归渲染端（键见 `i18n/locales.ts`）。
  */
-export function linkify(text: string, mentions: string[] = []): LinkSegment[] {
+export function linkify(
+  text: string,
+  mentions: string[] = [],
+  self?: { name: string; label: string },
+): LinkSegment[] {
   if (!text) return [];
   const mentionRe = buildMentionRe(mentions);
   if (!mentionRe) return linkifyUrls(text);
+  const selfName = self?.name.trim() ?? "";
 
   const segments: LinkSegment[] = [];
   let lastIndex = 0;
@@ -135,7 +148,12 @@ export function linkify(text: string, mentions: string[] = []): LinkSegment[] {
     if (mentionStart > lastIndex) {
       segments.push(...linkifyUrls(text.slice(lastIndex, mentionStart)));
     }
-    segments.push({ kind: "mention", value: `@${m[2]}` });
+    const name = m[2];
+    segments.push(
+      selfName !== "" && name === selfName
+        ? { kind: "mention-self", value: self!.label }
+        : { kind: "mention", value: `@${name}` },
+    );
     lastIndex = start + m[0].length;
   }
   if (lastIndex < text.length) {

@@ -23,6 +23,13 @@ const props = defineProps<{
   /** 群成员名列表：正文里的 @name 按此高亮（不传不高亮）。 */
   mentionNames?: string[];
   /**
+   * 查看者自己是谁（本机昵称 + 本地化标签）。传了以后，正文里 @到我自己 的那一段
+   * 渲染成「@你」并加重（用户 2026-09-26）。刻意由调用方传而不是在这里读 store ——
+   * 本组件是纯展示件（与 `mine` 同理），且**同一份文本在两端渲染成不同标签**，
+   * 绝不能在发送/落库侧改文案（那会污染对端视图与历史）。
+   */
+  selfMention?: { name: string; label: string } | null;
+  /**
    * 移动端「选择文字」模式（用户 2026-09-13）：
    * 触屏下气泡默认**不可选**（长按归消息菜单），只有进入这个模式才开放原生选字。
    * 见 style.css 里 `@media (pointer: coarse)` 的说明。
@@ -95,7 +102,7 @@ const segments = computed<RenderSegment[]>(() => {
     if (s.kind === "emoji") {
       out.push({ kind: "emoji", value: s.value, name: s.name, url: s.url });
     } else {
-      out.push(...linkify(s.value, props.mentionNames ?? []));
+      out.push(...linkify(s.value, props.mentionNames ?? [], props.selfMention ?? undefined));
     }
   }
   return out;
@@ -195,8 +202,9 @@ async function openLink(href: string) {
             class="emoji-img"
           />
           <span
-            v-else-if="seg.kind === 'mention'"
+            v-else-if="seg.kind === 'mention' || seg.kind === 'mention-self'"
             class="mention-token"
+            :class="{ 'mention-token--self': seg.kind === 'mention-self' }"
             :style="{ color: mentionFg || undefined, background: mentionBg || undefined }"
           >{{ seg.value }}</span>
           <span v-else>{{ seg.value }}</span>

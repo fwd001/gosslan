@@ -67,6 +67,8 @@ const props = withDefaults(
     highlightId?: string | number | null;
     /** 群成员名列表：文本气泡据此高亮 @提及（单聊不传） */
     mentionNames?: string[];
+    /** 查看者自己是谁（透传给正文/长文弹窗，用于把 @到自己 渲染成「@你」）。 */
+    selfMention?: { name: string; label: string } | null;
     /** 已折叠的表情回应（由会话层算好传入，避免每条消息各自 O(n) 重算）。 */
     reactions?: ReactionChip[];
     /** 该消息当前是否被置顶（决定菜单显示「置顶」还是「取消置顶」） */
@@ -92,6 +94,7 @@ const props = withDefaults(
     groupReaderIds: () => [],
     highlightId: null,
     mentionNames: () => [],
+    selfMention: null,
     selectMode: false,
     selected: false,
     todoLiveStatus: () => new Map(),
@@ -1199,6 +1202,7 @@ async function copyFileToClipboard() {
             :copied="copiedKey === 'text'"
             :mine="mine"
             :mention-names="mentionNames"
+            :self-mention="selfMention"
             :select-mode="textSelecting"
             @expand="openFullModal('text', $event)"
             @copy="copyContent('text', copyOut($event))"
@@ -1353,6 +1357,7 @@ async function copyFileToClipboard() {
     :kind="fullModalKind"
     :content="fullModalContent"
     :mention-names="mentionNames"
+            :self-mention="selfMention"
     :copied="copiedKey === 'full'"
     @close="fullModalOpen = false"
     @copy="copyContent('full', copyOut($event))"

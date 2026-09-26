@@ -105,6 +105,43 @@ test("linkify: 不匹配危险 scheme 与裸域名", () => {
   assert.equal(linkify("www.example.com 看看")[0].kind, "text");
 });
 
+// ---------------- @ 到自己（用户 2026-09-26：自己看是「@你」，别人看仍是名字） ----------------
+// ⚠️ 判据必须落在**渲染层**：如果为了显示去改写发送内容，对端与历史里那条消息就被污染了，
+// 而且换一台设备登录（昵称相同、身份不同）就会显示错。这里断言的正是"同一份文本、
+// 只有 self 参数不同 ⇒ 段不同"。
+
+test("@ 到自己 → 换成本地化标签；同一个串里的别人仍是名字", () => {
+  assert.deepEqual(
+    linkify("张三 @李四 和 @张三 到场", ["李四", "张三"], { name: "张三", label: "@你" }),
+    [
+      { kind: "text", value: "张三 " },
+      { kind: "mention", value: "@李四" },
+      { kind: "text", value: " 和 " },
+      { kind: "mention-self", value: "@你" },
+      { kind: "text", value: " 到场" },
+    ],
+  );
+});
+
+test("不传 self 时段形状完全不变（别人那侧的渲染不能被动到）", () => {
+  assert.deepEqual(linkify("@张三 到场", ["张三"]), [
+    { kind: "mention", value: "@张三" },
+    { kind: "text", value: " 到场" },
+  ]);
+});
+
+test("selfName 是别人名字的前缀时不许误判（长名字优先）", () => {
+  // 「张三」是自己、「张三丰」是别人：@张三丰 必须还是 @张三丰，不能被折成 @你
+  assert.deepEqual(
+    linkify("@张三丰 @张三", ["张三丰", "张三"], { name: "张三", label: "@你" }),
+    [
+      { kind: "mention", value: "@张三丰" },
+      { kind: "text", value: " " },
+      { kind: "mention-self", value: "@你" },
+    ],
+  );
+});
+
 test("linkify: URL 内部标点不切断（常见合法字符）", () => {
   const segs = linkify("https://a.com/path?q=1&x=2#hash");
   assert.equal(segs.length, 1);

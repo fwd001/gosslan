@@ -483,6 +483,14 @@ const mentionMembers = computed(() => {
  *  ⚠️ 自己的名字必须直接取本机昵称：`nicknameOf(我的 device_id)` 查不到——
  *  我既不在自己的好友表里、也不在 peers（那是"别的节点"），会退化成设备指纹，
  *  导致别人 @我 时匹配不上、不高亮，与 @其他人 的样式不一致。 */
+/** 「@到自己」在自己视角里显示成 `@你`（用户 2026-09-26）。
+ *  ⚠️ 名字必须与上面 `mentionNames` 里的"自己"取同一处（本机昵称，而不是
+ *  `nicknameOf(我的 device_id)`）—— 否则段永远匹配不上，只有别人那侧显示正常。 */
+const selfMention = computed(() => {
+  const name = app.device?.nickname ?? "";
+  return name ? { name, label: t("mention.self") } : null;
+});
+
 const mentionNames = computed(() => {
   const gid = activeGroupId.value;
   const g = gid ? chat.groups.find((x) => x.id === gid) : null;
@@ -1197,6 +1205,7 @@ function onLoadMore() {
             :show-unread-divider="index === unreadIndex"
             :highlight-id="highlightId"
             :mention-names="mentionNames"
+            :self-mention="selfMention"
             :reactions="reactionMap.get(item.msg_id) ?? []"
             :pinned="pinnedIds.includes(item.msg_id)"
             :select-mode="multiSelect"

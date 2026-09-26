@@ -18,6 +18,8 @@ const props = defineProps<{
   copied: boolean;
   /** 群成员名列表：与气泡共用同一套 @ 高亮，避免"气泡里高亮、全文里是纯文本"。 */
   mentionNames?: string[];
+  /** 查看者自己是谁：@到自己 那一段渲染成「@你」并加重（与 MessageTextBubble 同一份判据）。 */
+  selfMention?: { name: string; label: string } | null;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -31,7 +33,7 @@ const segments = computed<RenderSegment[]>(() => {
   const out: RenderSegment[] = [];
   for (const s of splitEmoji(props.content)) {
     if (s.kind === "emoji") out.push({ kind: "emoji", value: s.value, name: s.name, url: s.url });
-    else out.push(...linkify(s.value, props.mentionNames ?? []));
+    else out.push(...linkify(s.value, props.mentionNames ?? [], props.selfMention ?? undefined));
   }
   return out;
 });
@@ -91,8 +93,9 @@ async function openLink(href: string) {
             class="emoji-img"
           />
           <span
-            v-else-if="seg.kind === 'mention'"
+            v-else-if="seg.kind === 'mention' || seg.kind === 'mention-self'"
             class="mention-token"
+            :class="{ 'mention-token--self': seg.kind === 'mention-self' }"
             :style="{ color: mentionFg || undefined, background: mentionBg || undefined }"
           >{{ seg.value }}</span>
           <span v-else>{{ seg.value }}</span>
