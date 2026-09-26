@@ -62,10 +62,22 @@
   而填进去的 `nav.me.online` 又是"我在线…" ⇒ 两个"我"叠在一起。改模板为 `{status}，打开设置`
   （tooltip 那侧单独用 `nav.me.online`，语义不受影响；英文串本来就没这个重复，不动）。
 - 验证到什么程度（如实）：`node --test` 前端 **621 → 623** 条全绿（新增 2 条判据：夹具三例 + 全库扫描防空转）。
-  ⚠️ **改完之后的"再读一次真窗口控件树"没有做成** —— 重编后那个隔离实例的窗口跑到屏幕外
-  （`screencapture -R` 报 "could not create image from rect"，AX 侧读不到 `AXWebArea`），
-  是**测试环境**的问题不是产品缺陷，但结论就是：**① ② ③ ④ 四处修好的"运行时效果"目前没有实测证据**，
-  只有源码级判据。下一轮把窗口拉回屏内再读一次才算这一格闭合。
+- ⚠️ **改完之后的"再读一次真窗口控件树"仍然没做成**，而**我上一版写的原因是错的**：当时记成"窗口跑到屏幕外"。
+  今天（2026-09-27 凌晨）自己复跑了一遍取证：
+  · `CGWindowListCopyWindowInfo` 显示那个窗口**就在屏内**（`owner=gosslan layer=0 X=235 Y=123 1000×681`）
+    ⇒ "屏外"这个说法**被实测推翻**；
+  · 整屏 `screencapture` 抓回来是**纯黑一张**、`-R` 报 "could not create image from rect"
+    ⇒ 会话里没有可抓的表面；
+  · AX 侧 `AXWindows` 只回一个自指元素，子树里只有菜单栏（角色直方图实测 `AXMenuBar=2 AXApplication=1`，
+    `AXWebArea` 一个都没有）；
+  · 两条排除项也实测过：把裸二进制包进最小 `.app` bundle 重启（不是 bundle 的问题）、
+    `NSRunningApplication.unhide + activate` 之后再读（`activationPolicy=0` 常规、`hidden=false`，仍然读不到窗口）。
+  ⇒ 真正的原因是**这台机器当时屏幕被锁 / 显示器休眠**。它卡的是**会话状态**，不是产品缺陷。
+- ⇒ 结论不变、理由换掉：**① ② ③ ④ 四处修好的"运行时效果"至今只有源码级判据，这一格未闭合**。
+  复跑要等屏幕解锁，命令已交给用户（夹具库 `gosslan-4.db` 保留着，里面就是那四处形状）：
+  `GOSSLAN_INSTANCE=4 src-tauri/target/release/gosslan &` 之后 `axwalk <pid> 未读 @ 图片 设置`。
+  ★ 顺带一条真证据：这次启动在**真实库文件**上跑通了新迁移
+  （日志 `[gosslan-db] running v9→v10: 重跑群孤儿清理…`）⇒ #61 那条清理第一次在盘上执行过。
 - ⚠️ 边界：这条路**只有 macOS 一腿**。Windows / Linux / 移动端的读屏行为今天仍然没有判据，
   仍按 §十 Smoke 清单记人工项 —— 别把这一格读成"UI 无障碍已全覆盖"。
 

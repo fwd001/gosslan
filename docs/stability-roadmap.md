@@ -799,6 +799,17 @@ hover 那一行等于没读 —— 现在它参与计算，并有夹具证明"�
    应换成"图片消息"这类人话；
 ⑦ 导航栏自己那一行的名字是 **"我，我在线（局域网已连接），打开设置"**（"我"重复两遍）。
 ④⑥⑦ 都登记成任务，不在这条记录里顺手改（一次一个领域）。
+⚠️ **坑 ③（2026-09-27 凌晨补，并且它同时推翻了我给"复测没做成"编的第一个原因）**：改完 ④⑤⑥⑦ 之后要"再读一次"，
+我当时记的是"窗口跑到屏幕外"。今天复跑取证：`CGWindowListCopyWindowInfo` 显示那个窗口**就在屏内**
+（`owner=gosslan layer=0 X=235 Y=123 1000×681`）⇒ **屏外一说作废**；真正的形状是
+整屏 `screencapture` 抓回**纯黑一张**、`-R` 报 "could not create image from rect"、
+AX 侧 `AXWindows` 只回一个自指元素且子树只剩菜单栏（角色直方图 `AXMenuBar=2 AXApplication=1`，零个 `AXWebArea`）。
+两条候选解释都实测排除：把裸二进制包进最小 `.app` bundle 重启（没用）、
+`NSRunningApplication.unhide + activate` 后再读（`activationPolicy=0` 常规、`hidden=false`，还是没用）
+⇒ 原因是**这台机器当时屏幕被锁 / 显示器休眠**，会话里没有可抓的表面、AX 也拿不到窗口。
+**这一格因此仍未闭合**（④⑤⑥⑦ 的运行时效果至今只有源码级判据），复跑要等屏幕解锁；
+夹具库 `gosslan-4.db` 保留，命令：`GOSSLAN_INSTANCE=4 src-tauri/target/release/gosslan &`
+→ `axwalk <pid> 未读 @ 图片 设置`。★ 那次启动顺带在真实库上跑通了 `v9→v10`（#61 第一次在盘上执行）。
 
 三条事实都是这一轮现量的（复跑命令挂在每条后面）：
 
