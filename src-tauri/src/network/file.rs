@@ -4141,6 +4141,66 @@ mod tests {
         );
     }
 
+    /// 零字节文件走**单聊**收尾（§七里最后那半格）：群路径早就有 `group_done_empty_file_creates_zero_byte_file`，
+    /// 1:1 的 `finish_receiver_into` 却没有 —— 而 `size = 0` 恰好让两处判据都落到特殊分支上
+    /// （`decide_offer` 的磁盘前缀钳制带着 `size > 0` 条件、`chunk_exceeds_declared` 在 0 上恒拒），
+    /// 所以"空文件也必须能正常完成、且成品就是 0 字节"这条只能在这里钉住。
+    #[test]
+    fn empty_file_finishes_done_on_the_one_to_one_path_too() {
+        use super::finish_receiver_into;
+        let empty_sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let recv = receiver_holding("rcv-empty", b"", 0, empty_sha);
+        let (tmp, final_path) = (recv.tmp_path.clone(), recv.final_path.clone());
+        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
+
+        finish_receiver_into(&db, "t-empty", recv)
+            .expect("0 字节的空文件必须能正常完成，不许因 size=0 被判成「没收完」");
+        assert_eq!(
+            std::fs::metadata(&final_path).unwrap().len(),
+            0,
+            "成品必须是真实存在的 0 字节文件（用户点开应当看到空文件，而不是「文件不存在」）"
+        );
+        assert!(!tmp.exists(), "收尾之后不许留下 .part");
+        let row: (String, Option<String>) = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT status, path FROM file_transfers WHERE id = ?1",
+                rusqlite::params!["t-empty"],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "done", "空文件的终态只能是 done");
+        assert_eq!(
+            row.1.as_deref(),
+            Some(final_path.to_string_lossy().as_ref()),
+            "done 必须带着能打开的路径，否则前端显示一个不存在的气泡"
+        );
+        let _ = std::fs::remove_file(&final_path);
+
+        // ★ 反面（这条才让上面的用例真的能咬人）：`size = 0` **不是免检通行证**。
+        // 最像"合理优化"的回归就是把空文件写成"0 字节哪来的哈希可比，跳过校验"，
+        // 那等于让对端用一个空 payload 顶掉任何声明为空的文件。所以空文件也必须真比对。
+        let bad = receiver_holding("rcv-empty-bad", b"", 0, "不是真的哈希");
+        let bad_final = bad.final_path.clone();
+        assert!(
+            finish_receiver_into(&db, "t-empty-bad", bad).is_err(),
+            "空文件摘要不符 ⇒ 必须失败，不许因 size=0 免检"
+        );
+        assert!(!bad_final.exists(), "摘要不符的空文件不许被改名成交付成品");
+        let bad_status: String = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM file_transfers WHERE id = ?1",
+                rusqlite::params!["t-empty-bad"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bad_status, "failed", "failed 只能由这里裁决一次");
+    }
+
     // ---------------- 「错误 size」：分片长度越过声明长度（§七那一格） ----------------
 
     /// 接收端对"声明的 size"的裁决必须是**边界正确**的，两个方向都不能错：

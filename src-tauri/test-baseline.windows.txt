@@ -357,6 +357,7 @@ network::file::tests::derive_file_name_no_ext_anywhere
 network::file::tests::derive_file_name_normal
 network::file::tests::derive_file_name_temporal_file_missing_ext
 network::file::tests::distinct_transfers_have_distinct_keys
+network::file::tests::empty_file_finishes_done_on_the_one_to_one_path_too
 network::file::tests::empty_file_sha256_matches_known_value
 network::file::tests::file_cancel_keys_are_scoped_per_recipient
 network::file::tests::file_chunk_encrypt_roundtrip

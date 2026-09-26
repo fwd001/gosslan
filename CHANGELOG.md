@@ -10,6 +10,16 @@
 
 ## [Unreleased]
 
+### Test（2026-09-26 · §七最后半格：零字节文件在单聊收尾）
+
+- `finish_receiver_into` 的 `size = 0` 路径此前**只有群侧**有测试（`group_done_empty_file_creates_zero_byte_file`），
+  1:1 侧没有 ⇒ 补 `empty_file_finishes_done_on_the_one_to_one_path_too` 两侧各一条：
+  正例 `done` + 真实 0 字节成品 + 台账带可打开路径 + 不留 `.part`；
+  反例**摘要不符**时不许因 `size = 0` 免检（必须 `failed` 且不许改名）。
+  ⚠️ 这组用例第一次跑就绿 ⇒ 它证明"今天的行为正确"，不是"修了一个缺陷"；反面那半条才是让它能咬人的部分，
+  防的是"空文件哪来的哈希可比，跳过校验"这种看起来像优化的回归。
+- 生产码零改动。基线 `macos 696 / windows 685`（各 +1，只增不删已自证）。
+
 ### Test（2026-09-26 · §七「错误 size」补上唯一缺的那一层，并纠一处文档过度声明）
 
 - `network/file.rs` 的 chunk 级上限判据（`plaintext_len > size - received`）原先内联在吃 `&AppState` 的
