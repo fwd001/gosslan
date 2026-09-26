@@ -460,7 +460,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 | A-6 Windows 那条腿 | **DONE（2026-09-26）**：跨平台完整性判据 + 非空转夹具 + Windows 名单按门控推导 ⇒ **不再需要"等有 Windows 环境"**；★ 残留那一格已由 `9431d36` 的 `Rust 单测 / 清单（windows-latest）` = success 兑现（清单判据「基线里有、实际没跑 = FAIL」⇒ 绿灯即逐条核对通过，推导值转观测值） | 观测方式记录：job `108302557341` 第 7 步 = `node scripts/verify.mjs --group rust`，**与本地同一入口**（§十五要求）；今后再加平台无关用例，收尾仍是 `--sync-baselines`，不用等环境 |
 | B-1 不变量补钩子 | **GUARDS_LOCKED（2026-09-26）**：绑定本身已成判据（`check-invariant-hooks.mjs` 在快速层）+ 该判据的非空转夹具已登记（改坏即 FAIL、恢复即 PASS） | 26 条全部具名（0 条 NONE），尾巴拆成 B-1a 两格 |
 | **B-1a-P18** 私钥不跨 UI 边界 | **GUARDS_LOCKED（2026-09-26）**：`check-key-boundary.mjs` 两条判据在快速层 + 非空转夹具 1 条（给 `Identity` 补一行 derive ⇒ FAIL，撤掉 ⇒ PASS） | ⚠️ 残留：两步搬运扫不住，根治要密钥字段私有化（属重构核心码，另立） |
-| **B-1a-P03** 解密失败不 Ack | DISCOVERED | 需要一条行为用例，今天无专属钩子 |
+| **B-1a-P03** 解密失败不 Ack | **AUDITED（2026-09-26，缺口已按现物重读并收窄，见 §12.4 末）**：落库那一半有 3 条具名判据，缺的只有"不许发出 Ack"这半边 | 延后（不是缺夹具：`AppState` 持具体 Wry `AppHandle` ⇒ 补这条要先决定"愿不愿意为可测性动最热路径"，与 C-1/C-2 同批，见 §12.4 末） |
 | C-1/C-2 分册/拆 store | 延后 | 需要 A 阶段暴露具体故障 |
 | D 类 12 项 | 关闭 | 不再重开，除非有新证据 |
 
@@ -720,7 +720,15 @@ Rust 侧 `enqueue before deliver`、幂等 Ack、解密失败留空 `msg_id` 均
 仍然缺的是**多跳收敛**那一半 —— 三实例、其中一个成员离线再上线的那一趟真跑，而它恰好
 **曾和 §七 最后一格共用同一套三实例基础设施** —— 这句话今天塌了一半：§七 那一格收口时**根本没用第三个实例**（RCA 见 §12.9 / A-3 行）⇒ 三实例地基现在**只剩这一处欠账要用**，“两处共用一块”不再是省一次投入的理由。
 **⚠️ 上面那句"仍缺多跳收敛"在 2026-09-26 同日 #75 之后过期**：那一半已经由 `--round=gossip3` 补上（发版前层 `npm run verify:release`，判据 = "A 的逐成员直发队列里从来没有面向 C 的那一行" + C 侧四条落库判据，正向 25 断言全绿 / `-lie` 恰好 4 红，详见 §12.7 末）。同一轮实测出的**新产品缺口不是这一格的欠账**：中间人只在收到的那一瞬间扇给**当时可达**的邻居 ⇒ **晚到的群成员拿不到补推**（已另立待拍板，别把它读成"§12.4 gossip 已全绿"）。
-**异常（解密失败不 Ack）**：⚠️ 见 B-1a-P03 —— 前件已挂 3 条钩子，缺的是**能造出 `AppHandle` 的夹具**，不是缺断言。
+**异常（解密失败不 Ack）**：⚠️ 见 B-1a-P03。**2026-09-26 按现物重读，这一格的缺口比这里原先写的窄，也比我原先说的更难**：
+- **落库那一半早就有具名判据**（不是我原先说的"整格没判据"）：`db::tests::failed_decrypt_leaves_msg_id_free_for_the_later_good_copy`
+  + `ack_from_non_recipient_is_rejected` + `failure_ack_marks_recipient_failed`（`grep -nE "failed_decrypt|ack_from_non_recipient|failure_ack_marks" src-tauri/test-baseline.macos.txt` 现算）。
+- 真正没有的只有**"不许发出 Ack"这半边**，而且它**不是"补个夹具"就能到手的**：
+  `state.rs:874` 里 `AppState { pub app: AppHandle, … }` 是**具体 Wry 运行时**（不是泛型 `<R: Runtime>`），
+  所以任何走 `handle_message` 的行为测试要么把 `AppState` 泛型化（**动生产类型，全仓最热的一条路径**），
+  要么在测试里起真的 Wry 应用（CI 里起不来）。`tauri` 的 `test` feature / `MockRuntime` **单开也没用** —— 类型对不上。
+- ⇒ 处置：与 §七 第 7 步"把 `handle_message` 分册 / 拆 store"同批**暂缓**（当时的判词是"纯搬家、短期只降稳定"，
+  这条只是它的一个下游）。**别把这条读成"再写一个测试就行"**：先要一个"愿意为了可测性动这条路径"的点头。
 
 ### 12.5 文件 —— ✅ 是本表最完整的一组
 
