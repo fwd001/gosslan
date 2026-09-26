@@ -21,7 +21,10 @@
 **实测两面（同一份判据）**：正向轮 **18 条全绿** ⇒ 打印「已删 src + recv，释放 2.0 MB」，产物只剩 **4.1 MB**；
 `--fault=recv-dir-rotted-lie` **恰好 1/24 报红** ⇒ `src/` 与 `recv/` **两份都还在**（8.1 MB）。
 快速层 **13 步 / 10.7 s / exit 0**。
-⚠️ 如实留下的边界：释放量只打在 stdout 一行，**没写进 `summary.json`** ⇒ "这轮省了多少"今天还不可被机器读回。
+★ 同日 #73 补掉这条边界：删完之后把 `{policy, freed_bytes, deleted}` 回写进刚落盘的 `summary.json`，
+并用同一份 §十六 契约再判一次（回写若把契约字段弄丢就当场判红）⇒ 现在机器读得回这一轮删没删、省了多少。
+实测两面：绿轮 `retention={policy:'C',freed_bytes:2097152,deleted:['src','recv']}` · `PASS` · `exit 0`；
+红轮 `freed_bytes:0 · deleted:[]` · `FAIL` · `exit 1`，且 `src/` 与 `recv/` 两份都还在。
 
 ### Test（2026-09-26 · #70 §十六「失败沿链追踪」的日志过滤键改成按形状匹配 —— 以前会指到错的那一单）
 
