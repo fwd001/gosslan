@@ -774,6 +774,7 @@ Rust 侧 `enqueue before deliver`、幂等 Ack、解密失败留空 `msg_id` 均
 并**用同一份 §十六 契约再判一次**（回写要是把契约字段弄丢就当场判红）⇒ 现在机器读得回"这轮删没删、省了多少"。
 实测两面：绿轮 `retention = {policy:'C', freed_bytes:2097152, deleted:['src','recv']}` · `verdict=PASS` · `exit 0`；
 红轮 `freed_bytes:0 · deleted:[]` · `verdict=FAIL` · `exit 1`，且 `src/` 与 `recv/` **两份都还在**。
+★ 本地层在 `5936c7e` 上整层重跑过一次（#71/#73 落地后的第一次全量）：✅ --group local 那一组通过（14 步，共 495.8s） · LOCAL_EXIT=，层内 ❌ 标记 0 处 ⇒ 保留策略（只有判绿才删）没有把任何一轮判成假绿。
 
 **§十六 报告契约从"我核对过一次"变成"每轮自己核对"（#69，2026-09-26）**：
 上一轮我手工核对产物字段时，先误报"缺日志关联"（那格其实只在有失败步骤时才挂，且 `--negative`
