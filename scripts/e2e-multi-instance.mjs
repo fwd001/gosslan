@@ -367,10 +367,19 @@ if (!fs.existsSync(BIN)) {
       console.warn(`⚠️ 有 .rs 的 mtime 比二进制新，但 src-tauri/src 与 HEAD 内容完全一致，`
         + `且二进制晚于最后一次改动 src-tauri/src 的提交 —— 判定为 mtime 抖动，继续测当前内容。`);
     } else {
-      console.error(`✗ 二进制比源码旧（二进制 ${new Date(binM).toISOString()}，源码最新 ${new Date(newest).toISOString()}）`);
-      console.error(`  src-tauri/src 未提交改动：${dirty ? "有 ⇒ 源码真的动过" : "无"}；`
-        + `二进制晚于「最后一次改动 src 的提交」（${srcHeadIso || "?"}）：${Number.isFinite(srcHeadMs) && binM > srcHeadMs}`);
-      console.error("  ⇒ 你正在测旧代码。重编：cd src-tauri && cargo build --release");
+      // ⚠️ 文案必须是**归因准确**的：2026-09-27 我自己在"先 build 再 commit"这个最自然的顺序上
+      //   撞了它一次，屏幕上写的是"你正在测旧代码"—— 那是假指控（内容正是这份二进制编出来的）。
+      //   这一格分不出下面两种成因，所以两种都拒（保守方向 = 不跑，而不是跑完再说）：
+      const iso = (ms) => new Date(ms).toISOString();
+      console.error(`✗ 拒跑：无法证明这份 release 二进制是从当前这份源码内容构建的`);
+      console.error(`  二进制 ${iso(binM)} · 最新的 .rs mtime ${iso(newest)} · `
+        + `最后一次改动 src-tauri/src 的提交 ${srcHeadIso || "?"}`);
+      console.error(`  成因可能是这两种之一：`);
+      console.error(`   ① 源码真的动过而没重编（src-tauri/src 未提交改动：${dirty ? "有" : "无"}）；`);
+      console.error(`   ② **先 build 再 commit** —— 内容没错，只是提交时间戳晚于构建。`);
+      console.error(`      ②不改成放行，是因为"提交晚于构建"和"pull/checkout 带进新内容"在时间戳上长得一样，`);
+      console.error(`      而后者真的该拒（那种情况下测的是旧码）。⇒ 顺序纪律：**改完 Rust 先提交，再重编，再跑 E2E。**`);
+      console.error(`  两种情况的处置相同且只要一分半：cd src-tauri && cargo build --release`);
       process.exit(2);
     }
   }
