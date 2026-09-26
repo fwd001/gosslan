@@ -92,6 +92,13 @@ export const api = {
     invoke<MessageRecord>("send_message", { friendId, content, kind }),
   getMessages: (convId: string, limit?: number, offset?: number) =>
     invoke<MessageRecord[]>("get_messages", { convId, limit, offset }),
+  /**
+   * 一次拿回**多个群会话**的任务原始行（`todo` / `todo_update`），给"与我相关的未完成任务"
+   * 蓝色徽标用。⚠️ 这里只取原始行 —— 折叠与判定只有一份，在 `utils/todos.ts`
+   * （`foldTodos` + `openTodosForMe`）；在门面或后端再算一次就是第三个真源。
+   */
+  getGroupTodoMessages: (convIds: string[]) =>
+    invoke<MessageRecord[]>("get_group_todo_messages", { convIds }),
   getConvLink: (convId: string) => invoke<LinkState | null>("get_conv_link", { convId }),
   /** 请对端按 cid 再发一份内容（图片/文件「点击重取」）。false = 对方版本不支持。 */
   requestContent: (peerId: string, msgId: string) =>

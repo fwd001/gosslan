@@ -15,7 +15,9 @@ import {
   parseTodo,
   todoCompletedForCreator,
   todoMentionsMe,
+  openTodosForMe,
 } from "./todos.ts";
+import type { TodoItem } from "./todos.ts";
 import type { MessageRecord } from "../types";
 
 function rec(kind: string, msg_id: string, sender: string, content: unknown, seq: number): MessageRecord {
@@ -320,4 +322,49 @@ test("todoCompletedForCreator：只认「我创建的任务被完成」", () => 
 
   // 没有本机 id → 不提示
   assert.equal(todoCompletedForCreator(done, ""), null);
+});
+
+// ---------------- 与我相关的未完成任务（蓝色徽标的唯一判据，用户 2026-09-26） ----------------
+// 口径原话："除了完成和归档的其他数据都统计成一个蓝色的数值" ⇒ 排除的只有**完成**与**归档**两态，
+// 其余状态（待办/进行中/延期）都要算进来。判据只写这一份，会话列表与任务图标共用。
+
+const todoFixture = (
+  over: Partial<TodoItem> & Pick<TodoItem, "todoId">,
+): TodoItem => ({
+  title: "",
+  assignees: [],
+  status: TODO_STATUS_DEFAULT,
+  creator: "other",
+  description: "",
+  images: [],
+  archived: false,
+  doneAt: null,
+  createdAt: null,
+  ...over,
+});
+
+test("徽标只数「与我相关且还活着」：完成与归档都排掉，待办/进行中/延期都算", () => {
+  const items: TodoItem[] = [
+    todoFixture({ todoId: "a", assignees: ["me"] }),
+    todoFixture({ todoId: "b", assignees: ["me"], status: "doing" }),
+    todoFixture({ todoId: "c", assignees: ["me"], status: "overdue" }),
+    todoFixture({ todoId: "d", assignees: ["me"], status: "done" }), // 完成 → 不计
+    todoFixture({ todoId: "e", assignees: ["me"], archived: true }), // 手动归档 → 不计
+    todoFixture({ todoId: "f", creator: "me" }), // 我创建的 → 算相关
+    todoFixture({ todoId: "g", assignees: ["x"], creator: "x" }), // 与我无关 → 不计
+  ];
+  assert.deepEqual(
+    openTodosForMe(items, "me").map((t) => t.todoId),
+    ["a", "b", "c", "f"],
+  );
+});
+
+test("归档优先于状态：未完成但已归档的任务也不进徽标（用户说的「除了归档」）", () => {
+  const items = [todoFixture({ todoId: "z", assignees: ["me"], status: "doing", archived: true })];
+  assert.deepEqual(openTodosForMe(items, "me"), []);
+});
+
+test("本机 id 还没拿到时返回空 —— 身份未就绪不许点亮一个假数字", () => {
+  const items = [todoFixture({ todoId: "a", assignees: [""], creator: "" })];
+  assert.deepEqual(openTodosForMe(items, ""), []);
 });

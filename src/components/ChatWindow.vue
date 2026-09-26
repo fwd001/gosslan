@@ -264,6 +264,13 @@ const preview = useImagePreviewStore();
 /** 当前群的任务窗口是否正在打开（按钮 pending 反馈）。 */
 // 一扇固定 label 的窗口 ⇒ pending 状态与"当前是哪个群"无关（切群不换窗口，只换内容）。
 const tasksOpening = computed(() => isWindowOpening("tasks"));
+/** 当前会话「与我相关的未完成任务」数（任务图标上的蓝色徽标）。
+ *  数据只有一份，在 `chat.openTodoByConv`（判定见 `utils/todos::openTodosForMe`）；
+ *  这里只做取值，不在组件里重新折一遍任务。 */
+const openTasksForActive = computed(() => {
+  const id = chat.activeConv;
+  return id ? (chat.openTodoByConv[id] ?? 0) : 0;
+});
 
 /** 从任务卡片点进来时要直达详情的那条任务（null = 只是打开看板）。 */
 const taskFocusId = ref<string | null>(null);
@@ -1050,6 +1057,7 @@ function onLoadMore() {
       @open-members="membersOpen = true"
       @open-files="filesOpen = true"
       :tasks-opening="tasksOpening"
+            :open-tasks="openTasksForActive"
       @open-tasks="openTasks()"
       @rename="membersOpen = true"
       @open-share="emit('open-share')"
@@ -1326,6 +1334,7 @@ function onLoadMore() {
       @close="membersOpen = false"
       @open-tasks="membersOpen = false; openTasks()"
       :tasks-opening="tasksOpening"
+            :open-tasks="openTasksForActive"
     />
 
     <!-- 发布/修改群公告已并入「成员管理」弹窗（用户 2026-09-17：公告与群名/成员一起管）；

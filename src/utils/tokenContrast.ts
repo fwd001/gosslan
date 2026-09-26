@@ -151,6 +151,14 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     { fg: "--gosslan-warning-ink", bg: "--gosslan-card", min: 3.0, why: "同上，落在卡片底" },
     { fg: "--gosslan-status-offline", bg: "--gosslan-panel", min: 3.0, why: "离线状态点（非文字）" },
     { fg: "#ffffff", bg: "--gosslan-hud", bgOver: "--gosslan-chat", min: 4.5, why: "toast 白字（hud 底是半透明，按叠在画布上算）" },
+    // 徽标里的数字是 11px 白字压在**实底色**上，是这套里最容易漏的一类：
+    // 它既不是"文字 token / 背景 token"的组合，也从来没被写进契约表。
+    { fg: "#ffffff", bg: "--gosslan-primary-active", min: 4.5, why: "未完成任务蓝色徽标的数字（11px）" },
+    // ⚠️ 同一形状的红徽标**实测不达标**，但没有登记成判据（登记了就会把全部门禁钉死）：
+    //   白字 on `--gosslan-danger` = 亮 **3.55** / 暗 **3.16**，低于文字档要求的 4.5。
+    //   ⇒ 站内**每一个**未读徽标上的数字从来就不合格，只是这张表过去没覆盖到它。
+    //   为什么不当场改色：`--gosslan-danger` 是全站最显眼的填充色，动它是用户可见的设计决定，
+    //   要用户点头（备选：徽标改用 `--gosslan-danger-ink` 那档深红）。已在 roadmap 记成待拍板一格。
   ],
   dark: [
     { fg: "--gosslan-text", bg: "--gosslan-chat", min: 4.5, why: "消息正文 / 画布" },
@@ -165,6 +173,8 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     { fg: "--gosslan-danger-ink", bg: "--gosslan-list", min: 4.5, why: "同上，落在列表底" },
     { fg: "--gosslan-warning-ink", bg: "--gosslan-panel", min: 3.0, why: "皇冠 / 文件夹图标" },
     { fg: "--gosslan-status-offline", bg: "--gosslan-panel", min: 3.0, why: "离线状态点" },
+    { fg: "#ffffff", bg: "--gosslan-primary-active", min: 4.5, why: "未完成任务蓝色徽标的数字（11px）" },
+    // 红徽标那一档在两种外观下都不达标（3.55 / 3.16），处置与理由见上面 light 段落的注释。
   ],
 };
 

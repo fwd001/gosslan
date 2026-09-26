@@ -33,14 +33,29 @@ const props = withDefaults(
     count: number;
     /** 显示上限，超过显示 `{max}+`（默认 99） */
     max?: number;
+    /**
+     * 配色档。`danger`（红）＝未读/需要处理；`info`（蓝）＝"与我相关的未完成任务"这类
+     * **不紧急但有数量**的提醒（用户 2026-09-26 要求蓝色）。
+     *
+     * 两档都留在这一个组件里，是因为数字的光学补偿（`pb-[1.5px]` + `leading-none`）
+     * 必须跟尺寸同生死 —— 再开一个"蓝色徽标"组件就是当年那 5 份手写副本的第 6 份。
+     * 蓝色取 `--gosslan-primary-active` 而不是 `--gosslan-primary`：白字压在上面要过 4.5:1，
+     * 这条由 `tokenContrast.test.ts` 的配对表判，不由人眼判。
+     */
+    tone?: "danger" | "info";
   }>(),
-  { max: 99 },
+  { max: 99, tone: "danger" },
 );
 </script>
 
 <template>
   <span
-    class="flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 pb-[1.5px] text-[11px] font-medium leading-none text-white"
+    class="flex h-4 min-w-4 items-center justify-center rounded-full px-1 pb-[1.5px] text-[11px] font-medium leading-none text-white"
+    :class="
+      props.tone === 'info'
+        ? 'bg-[var(--gosslan-primary-active)]'
+        : 'bg-[var(--gosslan-danger)]'
+    "
   >
     {{ props.count > props.max ? `${props.max}+` : props.count }}
   </span>

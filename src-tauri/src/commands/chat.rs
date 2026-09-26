@@ -345,6 +345,25 @@ pub fn get_messages(
     db::get_messages(&dbc, &conv_id, safe_limit, safe_offset).unwrap_or_default()
 }
 
+/// 一次拿到**所有群会话**的任务行，供前端折叠出「与我相关的未完成任务」蓝色徽标。
+///
+/// 为什么需要它而不是让前端用内存里已有的消息：会话消息缓存有上限
+/// （`enforceMessageCacheBound` 会挤掉冷会话），用内存数据算徽标就等于"没缓存的群没有数字"
+/// —— 那是**假状态**，比不显示更糟。这一条只把 `kind IN ('todo','todo_update')` 的原始行取回来，
+/// 折叠与判定仍然只有前端 `utils/todos.ts::foldTodos` 那一份（理由见 `db::get_todo_messages_for_conns`）。
+#[tauri::command(async)]
+pub fn get_group_todo_messages(
+    state: State<'_, Arc<AppState>>,
+    conv_ids: Vec<String>,
+) -> Vec<MessageRecord> {
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+    // 群数量上限是个护栏而不是功能：调用方是会话列表，正常量级是几十；
+    // 截断方向是"少算几个群的徽标"，不会算错已经算出来的那些。
+    const MAX_CONVS: usize = 400;
+    db::get_todo_messages_for_conns(&dbc, &conv_ids[..conv_ids.len().min(MAX_CONVS)])
+        .unwrap_or_default()
+}
+
 #[tauri::command(async)]
 pub fn get_message_count(state: State<'_, Arc<AppState>>, conv_id: String) -> i64 {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());

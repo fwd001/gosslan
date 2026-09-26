@@ -47,6 +47,8 @@ const props = defineProps<{
   unreadTotal?: number;
   /** 群任务窗口正在打开（按钮 pending 反馈；桌面端开独立窗口时才可能为真）。 */
   tasksOpening?: boolean;
+  /** 「与我相关的未完成任务」数（蓝色徽标）。0 就不画；判定在 store 的 `openTodoByConv`。 */
+  openTasks?: number;
 }>();
 const emit = defineEmits<{
   (e: "back"): void;
@@ -58,6 +60,8 @@ const emit = defineEmits<{
 }>();
 
 const unreadOutside = computed(() => props.unreadTotal ?? 0);
+/** 蓝色徽标的数字。与会话列表那枚同源（`chat.openTodoByConv`），不在这再算一遍。 */
+const openTasks = computed(() => props.openTasks ?? 0);
 const backLabel = computed(() =>
   unreadOutside.value > 0
     ? t("chat.header.backUnread", { n: unreadOutside.value })
@@ -155,9 +159,10 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
            能改什么由面板按权限决定。 -->
       <button
         v-if="isGroup"
-        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe relative flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         :aria-busy="tasksOpening"
-        :title="t('chat.header.tasks')" :aria-label="t('chat.header.tasks')"
+        :title="t('chat.header.tasks')"
+        :aria-label="openTasks > 0 ? t('todo.openForMe', { n: openTasks }) : t('chat.header.tasks')"
         @click="emit('open-tasks')"
       >
         <!-- 正在开独立窗口时**换成转圈**，不是把图标调暗：`opacity-60` 在一个 18px 的图标上
@@ -166,6 +171,9 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
              连点会被启动器的单飞/防抖吃掉，所以"看起来没反应"必须靠这里补上。 -->
         <Loader2 v-if="tasksOpening" class="h-[18px] w-[18px] animate-spin" />
         <ListChecks v-else class="h-[18px] w-[18px]" />
+        <!-- 与我相关的未完成任务（蓝）。数字同时进 aria-label：只靠颜色区分"有活没干完"
+             对读屏用户等于没有提醒。 -->
+        <UnreadBadge v-if="openTasks > 0" :count="openTasks" tone="info" class="absolute -right-1.5 -top-1" />
       </button>
       <button
         v-if="isGroup && canRename"

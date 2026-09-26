@@ -105,6 +105,45 @@ pub fn get_messages(
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// 一次拿到**多个会话**里全部的任务行（`todo` / `todo_update`），供前端折叠出徽标数字。
+///
+/// 为什么只到"取原始行"为止：一条任务的真值是**多写者 LWW**（`(seq, msg_id)` 元组取最新）
+/// 加两态排除（完成 / 归档，其中归档还含"完成满 7 天自动归档"），这套折叠语义
+/// 今天在前端 `utils/todos.ts::foldTodos` 已经有一份、Rust `latest_todo_def` 有另一份，
+/// 再到 SQL 里数一遍就是**第三个真源** —— 那正是本仓反复付学费的漂移形状。
+/// 所以这里只负责"把料取回来"，判定仍然只有那一份。
+///
+/// 走 `idx_messages_conv_kind(conv_id, kind)`（见 `db.rs::ensure_post_schema_shape`）。
+pub fn get_todo_messages_for_conns(
+    conn: &Connection,
+    conv_ids: &[String],
+) -> Result<Vec<MessageRecord>> {
+    let mut out = Vec::new();
+    for conv_id in conv_ids {
+        let mut stmt = conn.prepare(
+            "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
+             FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update')
+             ORDER BY seq ASC, id ASC",
+        )?;
+        let rows = stmt.query_map(params![conv_id], |r| {
+            Ok(MessageRecord {
+                id: r.get(0)?,
+                msg_id: r.get(1)?,
+                conv_id: r.get(2)?,
+                sender_id: r.get(3)?,
+                receiver_id: r.get(4)?,
+                kind: crate::protocol::display_kind(&r.get::<_, String>(5)?),
+                content: r.get(6)?,
+                ts: r.get(7)?,
+                seq: r.get(8)?,
+                status: r.get(9)?,
+            })
+        })?;
+        out.extend(rows.filter_map(|r| r.ok()));
+    }
+    Ok(out)
+}
+
 /// 取「最新一页」：一次查询拿到会话尾部的 `limit` 条，返回顺序与 `get_messages` 一致（正序）。
 ///
 /// ## 为什么要有这一条而不是用 `get_messages(limit, total - limit)`

@@ -56,6 +56,11 @@ function openConv(conv: Conversation) {
 
 /** 群里有人 @ 我且未读（打开会话即清除）：微信式红色标签，显示在摘要前。 */
 const mentioned = computed(() => chat.mentionedConvs.has(props.conv.id));
+/** 「与我相关的未完成任务」数（蓝色徽标）。判定与聊天头那颗任务图标共用 `store.openTodoByConv`
+ *  这一份，两个地方各数一次就是两份真源。单聊没有群任务 ⇒ 恒为 0。 */
+const openTasks = computed(() =>
+  props.conv.kind === "group" ? (chat.openTodoByConv[props.conv.id] ?? 0) : 0,
+);
 
 function initials(name: string) {
   return avatarInitial(name);
@@ -223,6 +228,16 @@ const gridTiles = computed(() => {
             :aria-label="t('conv.announceBadge')"
           />{{ conv.name }}
         </span>
+        <!-- 与我相关的未完成任务（蓝色）。位置放在名字与时间之间：头像右上角那枚是**未读红点**，
+             两枚叠在同一个挂点上会互相遮，而且颜色不同承担的意思不同（红=有消息没看，蓝=有活没干完）。
+             徽标一律走全应用唯一的 `UnreadBadge`（designGuards 禁手写副本）。 -->
+        <UnreadBadge
+          v-if="openTasks > 0"
+          :count="openTasks"
+          tone="info"
+          :title="t('todo.openForMe', { n: openTasks })"
+          class="shrink-0"
+        />
         <span
           class="shrink-0 whitespace-nowrap text-[11px]"
           :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"

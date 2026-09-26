@@ -629,6 +629,9 @@ const CMDS = [
   ["get_conversations", "chat", "", "Conversation[]"],
   ["get_message_count", "chat", "conv_id str", "int"],
   ["get_messages", "chat", "conv_id str; limit int?; offset int?", "MessageRecord[]"],
+  // 群任务蓝色徽标（用户 2026-09-26）：只取 todo/todo_update 原始行，
+  // 折叠与"与我相关"判定都留在前端 utils/todos.ts —— 后端再算一遍就是第三个真源。
+  ["get_group_todo_messages", "chat", "conv_ids str[]", "MessageRecord[]"],
   ["get_latest_messages", "chat", "conv_id str; limit int?", "MessageRecord[]"],
   ["mark_read", "chat", "conv_id str", "()|err"],
   ["send_message", "chat", "friend_id str; content str; kind str", "MessageRecord|err"],

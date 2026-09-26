@@ -223,6 +223,31 @@ export function isEffectivelyArchived(
 }
 
 /**
+ * 「与我相关且还活着」的任务 —— 蓝色徽标的**唯一**判据（用户 2026-09-26）。
+ *
+ * 口径原话是"除了完成和归档的其他数据都统计"，所以排除的只有两态：
+ * - `status === "done"`（完成）；
+ * - **归档**，且必须走 [`isEffectivelyArchived`] 那一份 —— 它同时含"手动归档"与
+ *   "完成满 7 天自动归档"，在别处再写一遍 `item.archived` 就会与列表口径分叉。
+ * 其余状态（待办 / 进行中 / 延期）一律计入。
+ *
+ * "与我相关" = 指派里有我 **或** 我是创建人（我发的任务还挂着，用户也要看得见）。
+ * ⚠️ 会话列表与聊天头的任务图标**都必须调这一份**；两处各数一次就是两份真源。
+ * `myId` 为空 ⇒ 直接返回空：身份还没就绪时不许点亮一个假数字。
+ */
+export function openTodosForMe<
+  T extends Pick<TodoItem, "status" | "archived" | "doneAt" | "assignees" | "creator">,
+>(items: T[], myId: string, now: number = Date.now()): T[] {
+  if (!myId) return [];
+  return items.filter(
+    (t) =>
+      t.status !== "done" &&
+      !isEffectivelyArchived(t, now) &&
+      (t.assignees.includes(myId) || t.creator === myId),
+  );
+}
+
+/**
  * 我能不能改这条任务（**显示用**的镜像，后端 `commands::may_update_todo` 才是权威）。
  * 归档另有一档（比这里宽），见 [`canArchiveOrReopenTodo`]。
  *

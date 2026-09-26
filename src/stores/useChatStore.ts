@@ -26,7 +26,13 @@ import { StaleGuard } from "@/utils/staleGuard";
 import { actionableRequests } from "@/utils/friendRequests";
 import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/notifications";
 import { isRenderedInTimeline, countsTowardUnread } from "@/utils/messageKinds";
-import { todoCompletedForCreator, todoMentionsMe, type TodoImage } from "@/utils/todos";
+import {
+  foldTodos,
+  openTodosForMe,
+  todoCompletedForCreator,
+  todoMentionsMe,
+  type TodoImage,
+} from "@/utils/todos";
 import { invalidateFilePreview } from "@/utils/filePreview";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
@@ -491,6 +497,10 @@ export const useChatStore = defineStore("chat", () => {
         myDeviceId.value,
       );
     }
+    // 这批里出现了任务行 ⇒ 徽标要跟着动。这一条同时覆盖了三种来源：
+    // 收到别人的任务、自己创建/改任务（`createTodo` 走 `enqueueMessage` → 这里）、
+    // 以及 #82 之后本端收到的自己那份 emit。
+    if (batch.some((m) => m.kind === "todo" || m.kind === "todo_update")) void refreshOpenTodos();
   }
 
   function enqueueMessage(rec: MessageRecord) {
@@ -573,6 +583,39 @@ export const useChatStore = defineStore("chat", () => {
     unreadClearedAt.set(convId, Date.now());
   }
 
+  /** 每个群「与我相关且未完成未归档」的任务数 —— 蓝色徽标的唯一数据源（用户 2026-09-26）。
+   *  两处 UI（会话列表条目、聊天头的任务图标）都从这里取，**不在界面里各数一遍**。 */
+  const openTodoByConv = ref<Record<string, number>>({});
+  /** 单调序号：只有最后一次发起的结果能落地（任务连着变时会话刷新会挨个追上来）。 */
+  let openTodoSeq = 0;
+  async function refreshOpenTodos() {
+    const myId = myDeviceId.value;
+    // 身份还没就绪 ⇒ 什么都不做（既不清空也不点亮）：清成 0 会让徽标闪一下消失；
+    // 拿空串去比对又会把 `creator: ""` 那类畸形载荷算成"与我相关"。
+    if (!myId) return;
+    const ids = conversations.value.filter((c) => c.kind === "group").map((c) => c.id);
+    if (ids.length === 0) {
+      openTodoByConv.value = {};
+      return;
+    }
+    const mine = ++openTodoSeq;
+    const rows = await api.getGroupTodoMessages(ids);
+    if (mine !== openTodoSeq) return;
+    const byConv = new Map<string, MessageRecord[]>();
+    for (const r of rows) {
+      const list = byConv.get(r.conv_id) ?? [];
+      list.push(r);
+      byConv.set(r.conv_id, list);
+    }
+    const next: Record<string, number> = {};
+    // 折叠只有一份：`foldTodos` 出当前定义，`openTodosForMe` 出"还活着且与我相关"。
+    for (const [cid, list] of byConv) {
+      const n = openTodosForMe(foldTodos(list), myId).length;
+      if (n > 0) next[cid] = n;
+    }
+    openTodoByConv.value = next;
+  }
+
   async function refreshConversations() {
     const tok = refreshGuard.begin("conversations");
     // 发起时刻：这是"快照里的数据至少有多新"的下界（单连接单锁 ⇒ 读一定发生在发起之后）
@@ -588,6 +631,10 @@ export const useChatStore = defineStore("chat", () => {
       issuedAt,
     );
     pruneUnreadClears(unreadClearedAt, Date.now(), UNREAD_CLEAR_TTL_MS);
+    // 徽标跟着会话一起刷：冷启动与"切回会话列表"都走这里。
+    // ⚠️ 用内存里已有的消息算不行 —— 消息缓存有上限，冷会话根本不在内存里，
+    // 那样算出来的是"没缓存的群没有数字"这种假状态。
+    void refreshOpenTodos();
   }
   async function refreshGroups() {
     const tok = refreshGuard.begin("groups");
@@ -2114,6 +2161,8 @@ export const useChatStore = defineStore("chat", () => {
     refreshFriends,
     refreshPending,
     refreshConversations,
+    /** 群 → 「与我相关的未完成任务」数（蓝色徽标的数据源，判定见 `utils/todos::openTodosForMe`） */
+    openTodoByConv,
     refreshGroups,
     resetAfterDataCleared,
     refreshTransfers,
