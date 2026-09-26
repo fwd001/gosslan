@@ -2305,6 +2305,24 @@ try {
       console.log(`产物保留（C）：本轮判绿 ⇒ 已删可再生大文件副本 ${doomed.join(" + ")}` +
         `，释放 ${(freed / 1024 / 1024).toFixed(1)} MB；日志/DB/截图/summary 全留`);
     }
+    // 把这件事**回写进刚落盘的 summary.json**，让"这轮删没删、省了多少"可被机器读回；
+    // 回写之后**再用同一份 §十六 契约判一遍** —— 回写要是把契约字段弄丢了，必须当场判红。
+    const sumPath = path.join(RUN_DIR, "summary.json");
+    if (fs.existsSync(sumPath)) {
+      try {
+        const sum = JSON.parse(fs.readFileSync(sumPath, "utf8"));
+        sum.retention = { policy: "C", freed_bytes: freed, deleted: doomed };
+        fs.writeFileSync(sumPath, JSON.stringify(sum, null, 2));
+        const after = readReportContract(RUN_DIR);
+        if (after.length) {
+          console.error(`✗ 回写 retention 之后 §十六 报告契约反而不合格 ⇒ 回写弄坏了产物：\n  ${after.join("\n  ")}`);
+        }
+        REPORT_GAPS.push(...after);
+      } catch (e) {
+        console.error(`✗ 回写 retention 到 summary.json 失败：${e.message}`);
+        REPORT_GAPS.push(`回写 retention 失败：${e.message}`);
+      }
+    }
   }
   if (backups.size) console.log(`已还原用户原有实例库 ${backups.size} 个`);
   // 报告本身不合格 ⇒ 这一轮不许以"跑完了"收场。放在 finally 最末（清理之后、退出之前），
