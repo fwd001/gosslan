@@ -67,7 +67,8 @@
     "test:fault-injection:disk-selfproof": "node scripts/e2e-multi-instance.mjs --fault=recv-readonly-lie",
     "test:fault-injection:resume-selfproof": "node scripts/e2e-multi-instance.mjs --fault=resume-prefix-lie",
     "test:fault-injection:selfproof": "node scripts/e2e-multi-instance.mjs --fault=poison-part-lie",
-    "test:e2e:shot-selfproof": "node scripts/e2e-multi-instance.mjs --shot-selfcheck"
+    "test:e2e:shot-selfproof": "node scripts/e2e-multi-instance.mjs --shot-selfcheck",
+    "test:e2e:report-contract-selfproof": "node scripts/e2e-multi-instance.mjs --report-contract-selfcheck"
   },
   "dependencies": {
     "@headlessui/vue": "^1.7.23",

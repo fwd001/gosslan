@@ -74,6 +74,26 @@ const NO_ROUTED = process.env.E2E_NO_ROUTED === "1";
   }
   if (fails.length) throw new Error(`截图判据自证不成立，先修判据再跑轮：\n  ${fails.join("\n  ")}`);
 }
+// §十六 那份报告契约同理：契约里点名的字段（步骤/预期/实际/PASS-FAIL/耗时/日志关联/msg_id+transfer_id）
+// 以前只有人肉核对过一次，机器一句都没管 —— 谁把 `writeReport` 里的一行删掉，报告就少一格而没人报红。
+// 所以判据先跑，再启动实例；`--report-contract-selfcheck` 用合成夹具证明它「能判真也能判假」，
+// `--report-contract=<目录>` 拿这份判据读一份**已经落盘**的报告。
+{
+  const { fails, notes } = selfcheckReportContract();
+  if (process.argv.includes("--report-contract-selfcheck")) {
+    for (const f of fails) console.error(`  ❌ ${f}`);
+    console.log(fails.length ? `✗ 报告契约判据自证红 ${fails.length} 条` : `✅ 报告契约判据自证成立（${notes}）`);
+    process.exit(fails.length ? 1 : 0);
+  }
+  const one = (process.argv.find((a) => a.startsWith("--report-contract=")) || "").slice("--report-contract=".length);
+  if (one) {
+    const gaps = readReportContract(one);
+    for (const g of gaps) console.error(`  ❌ ${g}`);
+    console.log(gaps.length ? `✗ ${one} 的报告不合格（${gaps.length} 条）` : `✅ ${one} 的报告符合 §十六 契约`);
+    process.exit(gaps.length ? 1 : 0);
+  }
+  if (fails.length) throw new Error(`报告契约判据自证不成立，先修判据再跑轮：\n  ${fails.join("\n  ")}`);
+}
 /// 故障注入模式（§八）。`--fault=poison-part` 见下方 preset 步骤的注释。
 /// 另有**旅程轮** `--round=`（不是注入，是补一整条没测过的用户路径）：
 ///   --round=group    → 群聊这一族跨实例真跑：两端预置群 → A 排三条群消息（正文/撤回/正文）→
@@ -2020,6 +2040,80 @@ step("L-B 故障注入：两端重启后仍正确", async () => {
 });
 
 // ── 主流程 ─────────────────────────────────────────────────────────
+// §十六 报告契约：把「报告至少显示」那几条点名翻译成对**产物**的判据，不是对源码字面量的存在性检查。
+// 判据只吃一个已经落盘的 summary.json —— 所以「改坏报告生成器」和「手工改坏一份报告」走的是同一条判据。
+function reportContractGaps(s) {
+  const gaps = [];
+  if (!s || typeof s !== "object") return ["报告不是一个对象"];
+  if (!["PASS", "FAIL"].includes(s.verdict)) gaps.push("总 verdict 不是 PASS/FAIL");
+  if (!s.trace || !("msg_id" in s.trace) || !("transfer_id" in s.trace))
+    gaps.push("缺 trace 里的 msg_id / transfer_id（§十六 要求这两个 id 贯穿整轮）");
+  if (typeof s.duration_s !== "number") gaps.push("缺总耗时 duration_s");
+  if (!Array.isArray(s.steps) || !s.steps.length) gaps.push("缺「步骤」表");
+  for (const st of s.steps ?? []) {
+    if (!st.name) gaps.push("有条步骤连名字都没有 —— 报告读不出这是哪个功能");
+    if (!["PASS", "FAIL", "NO-ASSERT", "NOT-RUN"].includes(st.verdict))
+      gaps.push(`步骤「${String(st.name ?? "?").slice(0, 24)}」没有终态 verdict`);
+  }
+  if (!Array.isArray(s.assertions) || !s.assertions.length) gaps.push("缺「预期/实际」账本（assertions 为空）");
+  for (const a of s.assertions ?? []) {
+    if (!a.step || !a.name || !("expect" in a) || !("actual" in a) || !["PASS", "FAIL"].includes(a.verdict)) {
+      gaps.push(`有条断言缺 步骤/预期/实际/PASS-FAIL 之一：${JSON.stringify(a).slice(0, 90)}`);
+      break;
+    }
+  }
+  const failSteps = (s.steps ?? []).filter((x) => x.verdict === "FAIL");
+  if (s.verdict === "FAIL" && failSteps.length && !failSteps.some((x) => x.logs && Object.keys(x.logs).length))
+    gaps.push("报了 FAIL 却没有一步带「日志关联」—— §十六 要求失败能追到实例日志");
+  return gaps;
+}
+function readReportContract(dir) {
+  const p = path.join(dir, "summary.json");
+  if (!fs.existsSync(p)) return [`没有 ${p}`];
+  if (!fs.existsSync(path.join(dir, "summary.html"))) return ["§十六 要求 summary.html，但没落盘"];
+  let s;
+  try { s = JSON.parse(fs.readFileSync(p, "utf8")); } catch (e) { return [`summary.json 解析失败：${e.message}`]; }
+  return reportContractGaps(s);
+}
+// 步骤徽章：以前是写在模板里的三元式，「没有 verdict」直接落到 else ⇒ 没跑的步骤显示成 ✅。
+// 报告把没跑标成通过，和被它标成通过的那些格一起算进覆盖度 —— 这正是 §十 禁止的「把没有测试伪装成 PASS」。
+function stepBadge(v) {
+  return v === "FAIL" ? "❌"
+    : v === "NO-ASSERT" ? "⚠️"
+    : v == null || v === "NOT-RUN" ? "⛔ 未跑"
+    : "✅";
+}
+function selfcheckReportContract() {
+  const base = () => JSON.parse(JSON.stringify({
+    verdict: "PASS", duration_s: 1.2, trace: { msg_id: "m1", transfer_id: "t1" },
+    steps: [{ name: "跑通的一步", ms: 1, verdict: "PASS", checks: 1 }, { name: "没跑到的步骤", verdict: "NOT-RUN" }],
+    assertions: [{ step: "跑通的一步", name: "判据", expect: 1, actual: 1, verdict: "PASS" }],
+  }));
+  const mut = (f) => { const c = base(); f(c); return c; };
+  const cases = [
+    ["真：字段齐全判得出合格", reportContractGaps(base()), 0],
+    ["假：缺 msg_id 判得出", reportContractGaps(mut((c) => delete c.trace.msg_id)), 1],
+    ["假：缺耗时判得出", reportContractGaps(mut((c) => delete c.duration_s)), 1],
+    ["假：步骤没有终态判得出", reportContractGaps(mut((c) => delete c.steps[1].verdict)), 1],
+    ["假：断言少了「实际值」判得出", reportContractGaps(mut((c) => delete c.assertions[0].actual)), 1],
+    ["假：报 FAIL 却没日志关联判得出", reportContractGaps(mut((c) => { c.verdict = "FAIL"; c.steps[0].verdict = "FAIL"; })), 1],
+    ["真：FAIL 且带日志关联判得出合格", reportContractGaps(mut((c) => {
+      c.verdict = "FAIL"; c.steps[0].verdict = "FAIL"; c.steps[0].logs = { A: ["一行日志"] };
+    })), 0],
+    ["假：断言账本整体为空判得出", reportContractGaps(mut((c) => { c.assertions = []; })), 1],
+  ];
+  const fails = [];
+  for (const [name, got, want] of cases)
+    if (got.length !== want) fails.push(`${name} —— 期望判出 ${want} 条，实际 ${got.length} 条${got.length ? `（首条：${got[0].slice(0, 50)}）` : ""}`);
+  const badges = [
+    ["PASS 才是 ✅", stepBadge("PASS") === "✅"],
+    ["没终态不许是 ✅", stepBadge(undefined) !== "✅"],
+    ["NOT-RUN 要写明未跑", stepBadge("NOT-RUN").includes("未跑")],
+  ];
+  for (const [name, ok] of badges) if (!ok) fails.push(`步骤徽章：${name} 不成立`);
+  return { fails, notes: `${cases.length + badges.length} 格` };
+}
+const REPORT_GAPS = [];
 function writeReport(failed) {
   fs.mkdirSync(RUN_DIR, { recursive: true });
   for (const i of INSTANCES) {
@@ -2041,14 +2135,16 @@ function writeReport(failed) {
     instances: INSTANCES.map((i) => ({ label: i.label, n: i.n, port: i.port, runtimeId: (i.n === 1 ? idA : idB)?.runtimeId })),
     trace: { msg_id: msgId ?? null, transfer_id: xferId ?? null },
     shots: shotFiles.filter(Boolean).map((f) => path.relative(RUN_DIR, f)),
-    // §十六要的「步骤 + 耗时 + 日志关联」：把闭包剔掉，只留事实
-    steps: steps.map(({ fn, ...rest }) => rest),
+    // §十六要的「步骤 + 耗时 + 日志关联」：把闭包剔掉，只留事实。
+    // 没跑到的步骤（fail-fast 跳过的）必须自带终态 NOT-RUN —— 否则"没有 verdict"会在渲染时落到
+    // 「其他都算通过」那一支，报告就把没跑过的一格标成 ✅。
+    steps: steps.map(({ fn, ...rest }) => ({ verdict: "NOT-RUN", ...rest })),
     assertions,
   };
   fs.writeFileSync(path.join(RUN_DIR, "summary.json"), JSON.stringify(sum, null, 2));
   const esc = (x) => String(x ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
   const stepRows = steps.map((s) =>
-    `<tr><td>${s.verdict === "FAIL" ? "❌" : s.verdict === "NO-ASSERT" ? "⚠️" : "✅"}</td><td>${esc(s.name)}</td><td>${((s.ms ?? 0) / 1000).toFixed(1)}s</td><td>${s.checks ?? 0}</td></tr>`).join("\n");
+    `<tr><td>${stepBadge(s.verdict)}</td><td>${esc(s.name)}</td><td>${((s.ms ?? 0) / 1000).toFixed(1)}s</td><td>${s.checks ?? 0}</td></tr>`).join("\n");
   const logEx = steps.filter((s) => s.logs && Object.keys(s.logs).length)
     .map((s) => `<h4>❌ ${esc(s.name)} —— 日志里带这条 trace 的行</h4>` +
       Object.entries(s.logs).map(([label, lines]) =>
@@ -2076,7 +2172,10 @@ ${sum.shots.length
   ? sum.shots.map((rel) => `<p><code>${rel}</code></p><img src="${rel}" width="1000" alt="${esc(rel)}">`).join("\n")
   : `<p>⚠️ 本轮没有截图：本平台没有采集器 ⇒ §十六 这一格在它上面仍未做，不算通过。</p>`}
 <p style="color:#666">日志/DB 快照在本目录：<code>instance-*.app.log</code> · <code>sqlite-*/</code> · <code>recv/</code> · <code>after-*.db</code></p>
-<p style="color:#666">⚠️ 标 ⚠️ NO-ASSERT 的步骤只靠「超时即抛」把关，本身没下断言 —— 覆盖度按红字算，不按步骤数算。</p>`);
+<p style="color:#666">⚠️ 标 ⚠️ NO-ASSERT 的步骤只靠「超时即抛」把关，本身没下断言 —— 覆盖度按红字算，不按步骤数算。<br>⛔ 未跑 = 前面的步骤报红后 fail-fast 跳过的，什么都没验过，不许算进通过格。</p>`);
+  // 判据读的是**刚落盘的产物**，不是内存里的那个对象 —— 序列化会吞掉 undefined，
+  // 而"字段在内存里有、落盘后没了"正是这类契约最容易漏的那一格。
+  REPORT_GAPS.push(...readReportContract(RUN_DIR));
   console.log(`\n报告：${RUN_DIR}/summary.html`);
 }
 
@@ -2156,4 +2255,11 @@ try {
     }
   }
   if (backups.size) console.log(`已还原用户原有实例库 ${backups.size} 个`);
+  // 报告本身不合格 ⇒ 这一轮不许以"跑完了"收场。放在 finally 最末（清理之后、退出之前），
+  // 所以它盖得过上面任何一条 exitCode —— 包括反向模式那条"按设计退 0"。
+  if (REPORT_GAPS.length) {
+    console.error(`\n✗ §十六 报告契约不合格（缺的是**报告自己**的一格，不代表被测功能通过）：\n` +
+      REPORT_GAPS.map((g) => `  · ${g}`).join("\n") + `\n  产物 ${RUN_DIR}`);
+    process.exitCode = 1;
+  }
 }
