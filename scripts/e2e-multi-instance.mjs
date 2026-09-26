@@ -116,10 +116,15 @@ const FREEZE_BYTES = Number(process.env.E2E_FREEZE_MB || 1) * 1024 * 1024;
 /// ⇒ ④ 里根本不存在在飞字节。③ 杀进程轮则证明了在飞窗口**抓得住**
 /// （判据自己入队 + 自旋等 `.part` 涨到 786432 字节才动手），所以 ④ 那句
 /// "在飞窗口等不到冻结生效"写的是它当时的时序，不是这一轮的障碍。
-/// ⚠️ 判据写成**结局空间**，不写"我预期它失败"：这里有两个计时器在赛，谁先赢还没实测过 ——
+/// ⚠️ 判据写成**结局空间**，不写"我预期它失败"：这里本来以为有两个计时器在赛 ——
 ///   链路 watchdog 45 s（健康阈值 15 s × 3，越过就拆链）vs 发送侧停滞放弃 60 s
-///   （`FILE_STALL_ABORT_MS`，file.rs:208）。两条分支的可观测后果不同，所以只钉
-///   "两侧都不许假成功"+"这一轮必须有界退出"，把走哪条只打印出来。
+///   （`FILE_STALL_ABORT_MS`，file.rs:208）。**2026-09-26 实测：watchdog 先赢，而且赢得干净**
+///   （`run-…T05-31-30-478Z`：`05:31:36 → start streaming` → 冻 B → `05:32:21 COMPLETED ok=false`
+///   = 45 s 整），60 s 那一档在"对端完全冻死"下**结构上不可达**；全量 grep 156 份归档 run
+///   的 A 侧日志，`[STALL] transfer=` 命中 **0 行**（同批语料 `[FILE] COMPLETED` 4,230 行）
+///   ⇒ 登记为 roadmap **A-13**（含"15s 那一档只 emit 不写日志，所以今天无法回答它有没有出现过"）。
+///   仍然只钉"两侧都不许假成功"，把走哪条只打印出来 —— **一条从未出现过的出口不能当判据**
+///   （"日志里没有"写进断言就是同义反复，见 A-13 那格最后一段）。
 const STALL = FAULT === "stall-mid" || FAULT === "stall-mid-lie";
 const STALL_BYTES = Number(process.env.E2E_STALL_MB || 100) * 1024 * 1024;
 /// 冻结时长：必须 **>60 s** 才越过 `FILE_STALL_ABORT_MS`；留 10 s 余量给 5 s 一跳的停滞检查。
@@ -1375,8 +1380,9 @@ if (STALL) {
         mid.part === atFreeze, `冻结时刻的 ${atFreeze} 字节`,
         mid.part === atFreeze ? `${atFreeze} 字节（一字未涨）` : `涨到 ${mid.part} 字节`);
 
-      // 走的是哪条分支只打印、不判：45s watchdog 与 60s FILE_STALL_ABORT_MS 谁先赢还没实测过，
-      // 写成判据就是拿一个未量的前提当事实（冻结轮 A-9 那条教训的形状）。
+      // 走的是哪条分支只打印、不判：**2026-09-26 已量清** —— 先到的是 45 s 链路 watchdog（15 s × 3），
+      // 60 s 的 `FILE_STALL_ABORT_MS` 在"对端完全冻死"下够不到（156 份归档 run 里 `[STALL]` 命中 0 行），
+      // 所以把"看到 [STALL]"写成判据必然是永远不成立的空转 ⇒ 只打印。机制与那 0 行的账记在 roadmap A-13。
       const abandon = (tailLog(INSTANCES[0].log, 200000) || "").split("\n")
         .filter((x) => x.includes(idS) && /STALL|放弃|ok=false|失败|拒绝|error/i.test(x)).slice(-6);
       console.log(`  · 实测：抓到在飞 .part=${atGrowth}B → 冻结时 ${atFreeze}B → 冻后 ${mid.part}B`
