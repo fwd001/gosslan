@@ -576,6 +576,7 @@ storage::cache_cleaner::tests::walk_files_never_follows_symlinks
 tests::already_have_shortcut_shares_the_send_finalization
 tests::android_jni_signatures_match_kotlin
 tests::android_peripheral_paces_its_notifications
+tests::autostart_env_never_overrides_an_explicit_lan_off
 tests::aux_window_open_is_singleton_serialized_and_resident
 tests::aux_windows_open_their_own_document
 tests::ble_connect_cheap_path_requires_an_existing_connection

@@ -325,8 +325,13 @@ pub fn run() {
             }
             // 局域网默认开启：首次安装（以及尚未写入该键的旧版本升级）启动即自动联网；
             // 用户在设置页关闭后持久化为关闭，重启不再联网。「恢复默认」清除该键 ⇒ 回到默认开启。
-            // GOSSLAN_AUTOSTART=1 强制以 0.0.0.0 开启（headless 多实例互测，
-            // examples/e2e_peer.rs 依赖此行为），且不改动已持久化的偏好。
+            // GOSSLAN_AUTOSTART=1 的职责**只剩绑定地址**（以 0.0.0.0 起，headless 多实例互测用，
+            // examples/e2e_peer.rs 依赖此行为），它**不再**决定"开不开"（2026-09-27 改掉，见下）。
+            // ⚠️ 旧写法是 `if forced || enabled` ⇒ 库里显式写着"关"也会被这个 env 覆盖成"开"。
+            //    2026-09-26 那条"关掉局域网发现还能被别人学到"的产品结论就是这么来的——
+            //    预置明明写的是关，跑起来的却是开（复跑与改口见 roadmap §12.7「#76 的实测证据是脚手架造的」）。
+            //    现在"关"就是关：要联网的轮次由 harness **显式预置 lan_enabled**（e2e-multi-instance.mjs 的
+            //    L-A 预置里那条 `lan_enabled='true'`），而不是由环境变量替用户表态。
             // ⚠️ 不在 cfg(desktop) 里：移动端同样需要读 lan_enabled 设置并自动启动 ——
             // 用户在设置里打开后、杀掉 App 再进来，LAN 应该恢复上次的状态。
             {
@@ -339,7 +344,7 @@ pub fn run() {
                         let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
                         crate::db::get_lan_enabled(&dbc)
                     };
-                    if forced || enabled {
+                    if enabled {
                         // st 即将 move 进 start，先 clone 一份用于失败日志。
                         let st_log = st.clone();
                         let started = if forced {
@@ -2199,6 +2204,51 @@ mod tests {
         assert!(
             tm.contains("crate::db::get_bt_enabled(&dbc)"),
             "`TransportManager::new` 必须用 `db::get_bt_enabled`（缺省值才不会在各处漂移）"
+        );
+    }
+
+    /// **headless 开关不许覆盖用户显式关掉的局域网**（2026-09-27，根因级修法）。
+    ///
+    /// 现场：2026-09-26 有一条产品结论"关掉局域网发现还能被别人学到"，复跑发现**那个实例从来没真的
+    /// 关掉过** —— 启动路径写的是 `if forced || enabled`，`GOSSLAN_AUTOSTART=1` 把库里的"关"覆盖成"开"。
+    /// 现在这个 env 只剩一件事可做：**选绑定地址**（0.0.0.0），"开不开"只由持久化偏好决定。
+    ///
+    /// ⚠️ 这条钉的是源码形状（半个守卫）：换一种拼法（比如把 `forced` 并进 `enabled` 再判）它看不见。
+    ///    真判据是"预置 lan_enabled='0' 的那个实例，对端日志里不该出现它的 announce" —— 那需要
+    ///    单独一轮（第 4 处登记），已记在 roadmap #89，不在这里顺手接线。
+    #[test]
+    fn autostart_env_never_overrides_an_explicit_lan_off() {
+        let src = include_str!("lib.rs");
+        let at = src
+            .find("GOSSLAN_AUTOSTART")
+            .expect("启动路径必须还认这个 headless 开关");
+        // 只看**测试模块之前**那一段：本条判据自己的字符串里就写着被禁的那种拼法，
+        // 拿整份文件去 contains 会匹配到自己身上（第一次跑正是这么红的）。
+        let test_at = src
+            .find("#[cfg(test)]")
+            .expect("本文件必须有测试模块边界，否则这条判据的范围无从谈起");
+        assert!(
+            at < test_at,
+            "这个开关必须出现在启动路径里，而不是只活在测试里"
+        );
+        // 先抹掉行注释再匹配：本文件**启动块自己的注释**就写着"旧写法是 `if forced || enabled`"，
+        // 不抹的话这条禁令会因为一段说明文字而永远红（同一族坑见 `cmd_w_is_handled_by_our_own_menu_item`）。
+        let block: String = src[at..test_at]
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !block.contains("if forced || enabled"),
+            "GOSSLAN_AUTOSTART 不许再把用户显式关掉的局域网判成开（那条假产品结论就是这么来的）"
+        );
+        assert!(
+            block.contains("\n                    if enabled {"),
+            "开不开网络只能由 `enabled`（= db 里的 lan_enabled）决定，形状必须留在启动块里"
+        );
+        assert!(
+            block.contains("let started = if forced {") && block.contains("\"0.0.0.0\""),
+            "forced 剩下的职责必须是**选绑定地址**；它一旦无事可做就该整个删掉，而不是留着覆盖偏好"
         );
     }
 
