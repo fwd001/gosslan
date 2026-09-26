@@ -60,6 +60,7 @@ const NO_ROUTED = process.env.E2E_NO_ROUTED === "1";
   if (fails.length) throw new Error(`日志判据自证不成立，先修判据再跑轮：\n  ${fails.join("\n  ")}`);
 }
 // §十六 的截图判据同理：它自己也要能被秒级证明"既能真也能红"（红 = 空图/没落盘也判得过）。
+let envBlockReason = null;
 {
   const { fails, notes } = selfcheckShot();
   for (const n of notes) console.log(`  · ${n}`);
@@ -73,10 +74,17 @@ const NO_ROUTED = process.env.E2E_NO_ROUTED === "1";
     process.exit(fails.length ? 1 : 0);
   }
   if (fails.length) throw new Error(`截图判据自证不成立，先修判据再跑轮：\n  ${fails.join("\n  ")}`);
-  // 环境前置（与"二进制过旧"同一形状）：屏幕锁着时这一层的终局断言必然红在最后一步，
-  // 前面八分钟白烧 —— 所以起跑前一句话停住，而不是留一个人去猜"截图怎么又少了"。
-  const blocked = screenBlockedReason();
-  if (blocked) throw new Error(`环境不满足，跑轮之前先停下：\n  ${blocked}`);
+  // 屏幕锁着**不再拦停整轮**（2026-09-27 自我推翻上一条提交）。理由有两条：
+  // ① 锁屏只让"截图"这一格判不了，其余各格读的是两端 DB / 日志 / 磁盘，与屏幕状态无关 ——
+  //    拦停等于把十几格可用证据一起扔掉，还要人等着；
+  // ② 本仓既有口径（Windows 那条腿没有采集器时）就是"该格明着红 + 说清是环境"，不是整轮不跑。
+  // 上一版把"别让八分钟白烧后才红在最后一步"当成拦停的理由，但代价是 13 格根本不跑；
+  // 真正的解法是**红得有名**：把环境原因带进那一格的判定文本里。
+  envBlockReason = screenBlockedReason();
+  if (envBlockReason) {
+    console.log(`  ⚠️ 环境不完整：${envBlockReason.split("\n").join(" ")}`);
+    console.log("     ⇒ 本轮「报告带全屏帧」那一格会红（红在环境，不在产品），其余各格照常跑");
+  }
 }
 // §十六 那份报告契约同理：契约里点名的字段（步骤/预期/实际/PASS-FAIL/耗时/日志关联/msg_id+transfer_id）
 // 以前只有人肉核对过一次，机器一句都没管 —— 谁把 `writeReport` 里的一行删掉，报告就少一格而没人报红。
@@ -2097,9 +2105,20 @@ step("L-B 故障注入：两端重启后仍正确", async () => {
   //   2026-09-27 实测 —— 屏幕锁着（loginwindow 以 layer 2004 盖住整屏）时全屏抓帧
   //   拿到的是**桌面壁纸**，壁纸有多种颜色 ⇒ 连"不是纯色"这关也过得去。
   //   要证明"界面渲染了"必须按窗口 id 抓（`screencapture -l<id>`），那是另一件事（已登记）。
+  // ⚠️ 通过条件里**必须**有 `!envBlockReason`，这一半不是文案是判据：
+  //   2026-09-27 实测——把"锁屏就在起跑前拦停"删掉之后，同一趟锁屏跑里
+  //   `✅ 报告带两张全屏帧` 出现了 14 次、整层 0 红、`exit=0`。
+  //   这条判据能看见的三样输入（落盘 / PNG 结构 / 不是纯色）在锁屏时**一个都不会变**
+  //   （全屏抓到的是多色的桌面壁纸）⇒ 能挡住这个假绿的只有"环境信号进判据"这一条路。
+  //   缺信息时的方向必须是红，不是"少一条 ✅"。
+  const shotList = `${realShots.length} 张：`
+    + (realShots.map((f) => path.basename(f)).join(", ") || describeShotDir(RUN_DIR));
   check("报告带两张全屏帧（链路建立后 / 两端重启后；只证『抓得到且不是纯色』）",
-    realShots.length === 2, "2 张全屏 PNG，结构成立且不是纯色帧",
-    `${realShots.length} 张：${realShots.map((f) => path.basename(f)).join(", ") || describeShotDir(RUN_DIR)}`);
+    realShots.length === 2 && !envBlockReason,
+    "2 张全屏 PNG，结构成立且不是纯色帧" + (envBlockReason ? "，且起跑前环境自检未报缺 surface" : ""),
+    envBlockReason
+      ? `环境判不了（起跑前量到）：${envBlockReason.split("\n").join(" ")}\n     ${shotList}`
+      : shotList);
 });
 
 // §五「群聊 + gossip」这一族里最后一格：成员**不是 A 的直发对象**，只能靠中间人把 gossip 带给它。
