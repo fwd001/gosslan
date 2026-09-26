@@ -174,6 +174,28 @@ export function describeShotDir(runDir) {
 }
 
 /**
+ * 这台机器的会话现在是不是**锁着**（loginwindow 盖在整屏上面）。
+ * true / false / null = 问不出来（没装 pyobjc 的平台、python3 不在 PATH）。
+ *
+ * 为什么不能只靠"整屏纯色"：2026-09-27 实测 —— 锁屏时全屏抓到的是**桌面壁纸**，
+ * 壁纸有几十种颜色 ⇒ `pngIsBlank` 放它过，那一轮的"截图证据"其实什么都没拍到。
+ * 系统自带的 `CGSessionCopyCurrentDictionary` 直接给答案，不需要新依赖。
+ */
+export function screenLockedState() {
+  try {
+    const out = execFileSync("python3", ["-c",
+      "import Quartz;print(int(Quartz.CGSessionCopyCurrentDictionary()"
+      + ".get('CGSSessionScreenIsLocked', 0)))",
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (out === "1") return true;
+    if (out === "0") return false;
+    return null;
+  } catch {
+    return null; // 问不出来不算"锁着"：交给纯色那一道兜，别把没有 pyobjc 的机器全拦死
+  }
+}
+
+/**
  * **起跑前置**：这台机器的屏幕现在给不给得出真实帧。
  * 返回 null = 可以跑；返回字符串 = 停跑理由。
  *
@@ -187,6 +209,11 @@ export function describeShotDir(runDir) {
  */
 export function screenBlockedReason(tmpRoot = path.join(os.tmpdir(), `gosslan-screen-${Date.now()}`)) {
   if (!captureSupported()) return null;
+  const locked = screenLockedState();
+  if (locked === true) {
+    return "会话处于锁定状态（loginwindow 盖住整屏）⇒ 全屏抓到的是桌面壁纸，"
+      + "这一层要判的「真实界面截图」拿不到。解锁后再跑（不要去放宽截图判据 —— 那正是刚修掉的假绿）。";
+  }
   try {
     fs.mkdirSync(tmpRoot, { recursive: true });
     const probe = path.join(tmpRoot, "probe.png");

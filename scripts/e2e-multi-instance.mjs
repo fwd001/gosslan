@@ -2093,8 +2093,12 @@ step("L-B 故障注入：两端重启后仍正确", async () => {
   //    而 `shotIsReal` 现在会把纯色帧判掉（2026-09-27 实测到的洞）。报错里会说是哪一种。
   shotFiles.push(captureShot(RUN_DIR, "2-after-restart"));
   const realShots = shotFiles.filter(Boolean);
-  check("报告带两张真实界面截图（链路建立后 / 两端重启后）",
-    realShots.length === 2, "2 张全屏 PNG，且不是空图",
+  // ⚠️ 这条**只**证明"抓到了两帧、且不是纯色"。它证明不了"应用界面在那一帧里"：
+  //   2026-09-27 实测 —— 屏幕锁着（loginwindow 以 layer 2004 盖住整屏）时全屏抓帧
+  //   拿到的是**桌面壁纸**，壁纸有多种颜色 ⇒ 连"不是纯色"这关也过得去。
+  //   要证明"界面渲染了"必须按窗口 id 抓（`screencapture -l<id>`），那是另一件事（已登记）。
+  check("报告带两张全屏帧（链路建立后 / 两端重启后；只证『抓得到且不是纯色』）",
+    realShots.length === 2, "2 张全屏 PNG，结构成立且不是纯色帧",
     `${realShots.length} 张：${realShots.map((f) => path.basename(f)).join(", ") || describeShotDir(RUN_DIR)}`);
 });
 
