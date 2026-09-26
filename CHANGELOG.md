@@ -10,6 +10,25 @@
 
 ## [Unreleased]
 
+### Test（2026-09-26 · §七「错误 size」补上唯一缺的那一层，并纠一处文档过度声明）
+
+- `network/file.rs` 的 chunk 级上限判据（`plaintext_len > size - received`）原先内联在吃 `&AppState` 的
+  `write_chunk` 里 ⇒ **从来没有行为测试**。按仓内先例（`chunk_seq_decision` / `send_retry_verdict` /
+  `finish_receiver_into`）抽成纯函数 `chunk_exceeds_declared`，补
+  `chunk_length_may_fill_declared_size_but_must_not_exceed_it`：恰好填满=放行 / 单片即整份=放行 /
+  超一字节=拒 / 已收满再来片=拒（`saturating_sub` 承重，不许下溢成天文数字）/ `size=0` 不许写任何字节。
+  红→绿→变异各自跑过：测试先以 `E0432 unresolved import` 红（判据还不是一个单元），抽出后 64 条同模块用例全绿；
+  把 `>` 写成 `>=` ⇒ 新用例在"最后一片正好补到 size 必须放行"那句 FAIL（这条边界就是防"过度加固"把每一单打死）。
+- **接线没有再加一条文本守卫**：`chunk_exceeds_declared` 是 `pub(crate)`，删掉调用点后不带 `--test` 的
+  `cargo check` 打 `warning: function is never used`（实测），CI 的 clippy 是 `-D warnings` ⇒
+  编译器就是那条判据。理由记进 `docs/stability-roadmap.md` 的 L-C 那格，免得下一个人以为还缺一条。
+- ⚠️ 顺带纠一处漂移：路线图 L-C 那格把「错 size」和另外五格一起算成"早已有 L2 点名证据"，
+  但它列的六条锚点里**没有一条判 size** —— 那一格当时是被顺手算进去的。同格的"目标目录变化"上一轮已按格拆开。
+- 基线：`test-baseline.macos.txt` 与 `.windows.txt` 各 +1 条（先 `--update` 本平台、再 `--sync-baselines` 跨平台，
+  两次都自证"只增不删"）。
+- Windows 侧一次真实观测同时把 **A-6** 与 **A-12** 从"待观测 / GUARDS_LOCKED"推到 **DONE**
+  （`Rust 单测 / 清单（windows-latest）` = success，见路线图 A-6 段"反证已落地"）。
+
 ### Test（2026-09-26 · §七「尺寸阶梯」进本地层 —— 用**形状**分档，而不是把每个 MB 数扫一遍）
 - **接法选得最便宜**：harness 的传输尺寸本来就有旋钮（`E2E_FILE_MB`），所以这一格**不需要第 9 条注入轮**
   —— 只给 harness 加 `--size=N` 覆盖，再用不同档位重跑**整趟默认轮**（文本 + 文件 + 重启）。

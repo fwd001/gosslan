@@ -356,6 +356,7 @@ network::file::tests::all_recipients_share_one_session_key
 network::file::tests::ble_file_chunk_actually_fits_the_ble_fragment_layer
 network::file::tests::ble_only_link_must_not_start_a_hopeless_large_file
 network::file::tests::case_insensitive_and_multidot_and_chinese
+network::file::tests::chunk_length_may_fill_declared_size_but_must_not_exceed_it
 network::file::tests::chunk_seq_rule_only_rejects_real_gaps
 network::file::tests::code_extensions
 network::file::tests::completed_transfer_rejects_duplicate_offer_without_resend

@@ -1820,6 +1820,17 @@ pub(crate) fn chunk_seq_decision(seq: u32, next_seq: u32) -> ChunkSeq {
     }
 }
 
+/// 这片明文的长度会不会**越过声明的 `size`**（§七「错误 size」那格唯一的裁决点）。
+///
+/// 为什么这条判据必须在写盘**之前**、而不是留到收尾的"字节数与声明不符"：`.part` 是按片增长的，
+/// 不设上限就等于让对端决定这台机器往磁盘上写多少字节，而用户看到的是一条会跑到 100% 再失败的单。
+///
+/// ⚠️ 边界刻意取"恰好填满 = 放行"：`stream_file` 的最后一片通常正好把 `size` 补齐，
+/// 写成 `>=` 会让**每一单**都在最后一片上打死（与 [`chunk_seq_decision`] 只挡真空缺是同一类设计）。
+pub(crate) fn chunk_exceeds_declared(size: u64, received: u64, plaintext_len: u64) -> bool {
+    plaintext_len > size.saturating_sub(received)
+}
+
 /// 这一帧属于**当前这一轮**发送尝试吗（attempt epoch 判据，2026-09-23 真机 600MB 复核）。
 ///
 /// 病根：一轮超时后 outbox 重投，但**上一轮已经塞进链路队列的分片不会被撤回**
@@ -1951,7 +1962,7 @@ pub fn write_chunk(
         }
         let plaintext = crypto::open_symmetric(&r.file_key, data)
             .ok_or_else(|| "文件分片解密失败".to_string())?;
-        if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
+        if chunk_exceeds_declared(r.size, r.received, plaintext.len() as u64) {
             return Err("文件分片超出声明大小".to_string());
         }
         // 文件级完整性：明文增量哈希（与写盘同一份数据，无二次磁盘读取）
@@ -4128,6 +4139,40 @@ mod tests {
             !final_path.exists(),
             "放不下的东西不能被凭空造出来：不许出现成品文件"
         );
+    }
+
+    // ---------------- 「错误 size」：分片长度越过声明长度（§七那一格） ----------------
+
+    /// 接收端对"声明的 size"的裁决必须是**边界正确**的，两个方向都不能错：
+    /// - 把它写成 `>=` ⇒ **每一单**都在最后一片上失败（`stream_file` 的最后一片通常正好补到 size）；
+    /// - 写成 `>` 的反面（不设上限）⇒ 对端可以多灌任意字节，而 `.part` 会越写越大，
+    ///   最后 `finish_receiver_into` 才因"字节数与声明不符"判死 —— 用户看到的是"传到 100% 然后失败"，
+    ///   而且这段时间里磁盘被写掉了超出声明的量。
+    #[test]
+    fn chunk_length_may_fill_declared_size_but_must_not_exceed_it() {
+        use super::chunk_exceeds_declared;
+
+        // ① 恰好填满 ⇒ 允许（这条是防"过度加固"的那一半）
+        assert!(
+            !chunk_exceeds_declared(1024, 1000, 24),
+            "最后一片正好补到 size 必须放行"
+        );
+        assert!(
+            !chunk_exceeds_declared(1024, 0, 1024),
+            "单片就是整份（小文件只有一片）必须放行"
+        );
+        // ② 超一个字节 ⇒ 拒
+        assert!(
+            chunk_exceeds_declared(1024, 1000, 25),
+            "多一个字节就是越界，不能等到收尾才发现"
+        );
+        // ③ 已经收满还来一片 ⇒ 拒（`saturating_sub` 在这里是承重的：不许下溢成 u64 的天文数字）
+        assert!(
+            chunk_exceeds_declared(1024, 1024, 1),
+            "收完之后任何一片都是多余的，不许因减法下溢被判成合法"
+        );
+        // ④ 声明 0 字节的空文件 ⇒ 任何内容都算越界（空文件应当只有 Offer + Done，没有分片）
+        assert!(chunk_exceeds_declared(0, 0, 1), "size=0 时不许写进任何字节");
     }
 
     // ---------------- 投递失败之后的重试裁决（#25 第 2 段） ----------------
