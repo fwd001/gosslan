@@ -2576,6 +2576,27 @@ if (LANOFF) {
     check("关掉后 B 自己没起网：它的日志里 discovery_started 计数为 0",
       countLog(B.log, "discovery_started") === 0, 0, countLog(B.log, "discovery_started"));
 
+    // 关着的那段窗口里先把监听口的读数取走（**只打印**，理由见文件末尾那三行对照的注释）
+    const listenerPids = () => {
+      const r = spawnSync("lsof", ["-nP", "-tiTCP:" + B.port, "-sTCP:LISTEN"], { encoding: "utf8" });
+      return (r.stdout || "").trim().split("\n").filter(Boolean);
+    };
+    const psOf = (pid) => pid
+      ? (spawnSync("ps", ["-o", "pid=,comm=,lstart=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim()
+         || "(ps 查不到这个 pid)")
+      : "(没有 pid)";
+    const openWhileOff = await tcpOpen(B.port);
+    const whoHolds = listenerPids();
+    check("★ 关掉之后连 TCP 监听口都不存在（别人拨不进来，不只是「我不再广播」）",
+      openWhileOff === false, "连不上（false）",
+      `连得上=${openWhileOff}；监听者=[${whoHolds.map(psOf).join(" | ")}]；`
+      + `本轮 launch 起的 B 的 pid=${procs.get(B.n)?.pid}
+       ⚠️ 这条 2026-09-27 凌晨先被判成"红"过一次，原因是**探针放错窗口**：那一刻量的是
+       键翻回「开」之后重起的那个 B（日志尾巴上还留着它的 bc_directed 与 routed 建链），
+       于是三个读数互相矛盾。挪进关着的那段窗口之后：监听者列表是空的。
+       ⇒ 教训是「归因不清」和「探针读错了对象」长得一模一样，区别只在有没有把读数钉在事件上。`);
+
+
     // ③ 核心：A 活着且一直在听，两个广播周期内"学到 B"的次数一字不涨。
     const base = countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId));
     await sleep(26_000);
@@ -2598,11 +2619,23 @@ if (LANOFF) {
       grewBack, "> 上一段读数", countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId)));
     check("对照：翻回「开」之后 B 自己的日志里 discovery_started 又出现（与上面那个 0 成对）",
       countLog(B.log, "discovery_started") > 0, ">0", countLog(B.log, "discovery_started"));
-    // ⚠️ 这一格**不判**"TCP 监听口连不连得上"，理由是实测出来的：第一次跑这段时，
-    //   关着的 B 的 `discovery_started=0`、A 的 announce 也一字不涨，但 `tcpOpen(B.port)` 回了 true。
-    //   两种解释当时分不开（① 产品的 TCP 监听不受这个键管；② 上一轮 `stopOne` 抛错时留下的旧进程还占着那个口）。
-    //   ⇒ 拿一个**归因不清的读数**当判据，红的时候没人知道该修哪一边。已另立 #95 用一次干净的复跑把它定死；
-    //   在此之前这一轮只判能归因的那一半（不再广播 ⇒ 对端学不到），"也不接受连接"这句**没有被证明**。
+    // #95 的探针与它的两条对照（三条读数全设断言：①开=连得上、②闲口=连不上、③关=连不上）。
+    // ②是①③的非空转证明；①是③的对照物 —— 缺任何一条，剩下的那条都可能是半个守卫。
+    //   ① 开着的时候监听口在（正向，设断言）；
+    //   ② 谁也没占的那个口连不上（探针自己的负对照，设断言 —— 没有它，①与③都是半个守卫：
+    //      一个永远回 true 的 `tcpOpen` 能让①假绿、让③"看起来红在环境"）；
+    //   ③ 键为关时监听口不在（这一条才是 #95 要的答案）。
+    //   ⚠️ 它今晚**先被判错过一次**：探针最初放在"翻回开、重起 B"之后，量的是开着的那个进程，
+    //   于是出现"③=true 但 discovery_started=0、日志里还有 bc_directed 与 routed 建链"这种
+    //   三个读数互不相容的假矛盾；把读数挪回关着的那段窗口，监听者列表就是空的。
+    //   ⇒ 「归因不清」与「探针读错了对象」在报告里长得一模一样，区别只有读数钉没钉在事件上。
+    const openWhenOn = await tcpOpen(B.port);
+    check("对照：翻回「开」之后 B 的 TCP 监听口连得上（这个键开着时端口确实在听）",
+      openWhenOn === true, "连得上（true）", String(openWhenOn));
+    // 探针的负对照：挑一个本轮任何实例都不用的口，必须连不上。
+    const probeControl = await tcpOpen(65501);
+    check("对照：`tcpOpen` 读得出不存在的口（探针自己不是恒真机 —— 上面两条读数因此才算数）",
+      probeControl === false, "连不上（false）", String(probeControl));
   });
 }
 
