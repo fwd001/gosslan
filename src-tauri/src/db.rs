@@ -302,10 +302,15 @@ const MIGRATIONS: &[Migration] = &[
             // `NOT IN conversations` 单独用是数据事故：用户删群会话是合法操作
             // （commands::delete_conversation），groups 行还在，v7 升级会把
             // 一整段在册群的历史不可逆清空。
+            // ⚠️ 谓词必须锚 `group_id`，不能锚 `id`（#60）：这四张表的 `id` 是
+            // `INTEGER PRIMARY KEY AUTOINCREMENT` 行号（`group_reads` /
+            // `pending_group_reads` 干脆没有 `id` 列），而 `groups.id` 是 TEXT 群 id
+            // ⇒ 两个域永不相交。锚 `id` 的实际后果是**两条删在册群数据、两条报错被吞**：
+            // 判据 `migration_tests::v7_orphan_cleanup_keeps_live_group_rows_and_drops_true_orphans`。
             // 与 v3-v5 同风格：尽力清理、eprintln 容错，绝不 `?` 上抛把
             // db::init 变成 Err 让应用起不来（清不干净下次升级还会再来一遍）。
-            let orphan_group = "id NOT IN (SELECT id FROM groups) \
-                 AND ('group:' || id) NOT IN (SELECT id FROM conversations)";
+            let orphan_group = "group_id NOT IN (SELECT id FROM groups) \
+                 AND ('group:' || group_id) NOT IN (SELECT id FROM conversations)";
             let orphan_conv = "substr(conv_id, 7) NOT IN (SELECT id FROM groups) \
                  AND conv_id NOT IN (SELECT id FROM conversations)";
             let cleanup = |sql: &str| -> rusqlite::Result<()> { conn.execute(sql, []).map(|_| ()) };

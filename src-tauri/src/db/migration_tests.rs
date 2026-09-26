@@ -921,3 +921,123 @@ fn tables_are_counted_before_the_schema_is_applied() {
         "数表（第 {counted} 字符）发生在应用 SCHEMA（第 {applied} 字符）之后 ⇒ is_fresh 恒为假 ⇒ 全新库重放整条迁移链"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #60：v6→v7 的孤儿清理**只准清掉真孤儿**。
+//
+// v7 的 `orphan_group` 谓词写的是 `id NOT IN (SELECT id FROM groups)`，但
+// `group_outbox` / `file_outbox` 的 `id` 是 `INTEGER PRIMARY KEY AUTOINCREMENT`
+// （行号），`groups.id` 是 TEXT 群 id ⇒ 两个域根本不相交。"保守口径"因此不是保守，
+// 而是**每次有库从 v6 升到 v7 就清空这两张表的群行**（用户什么都没删）。
+// 同一个迁移里 `orphan_conv`（messages / group_recalled_messages 用的那条）是对的
+// —— 它比的是 `conv_id`。所以这条判据要同时钉住两面：在册的必须活、真孤儿必须死，
+// 缺一面都挡不住"整表不删"这种反向退化。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn v7_orphan_cleanup_keeps_live_group_rows_and_drops_true_orphans() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("init fresh db");
+
+    conn.execute_batch(
+        "INSERT INTO groups(id, name, creator, created_at) VALUES ('g-live','在册群','me',1);
+         INSERT INTO conversations(id, kind, name) VALUES ('group:g-live','group','在册群');
+         INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+             VALUES ('m-live','g-live','peer-1','{}',1);
+         INSERT INTO file_outbox(transfer_id, peer_id, group_id, local_path, name, size,
+                                 status, attempts, next_attempt_at, created_at)
+             VALUES ('t-live','peer-1','g-live','/tmp/live','live',1,'pending',0,1,1);
+         INSERT INTO group_reads VALUES ('g-live','me',1),('g-gone','me',1);
+         INSERT INTO pending_group_reads VALUES ('g-live','peer-1',1),('g-gone','peer-1',1);
+         INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts)
+             VALUES ('x-live','group:g-live','peer-1','me','text','hi',1);
+         -- 1:1 待发行（group_id 为 NULL）：v7 只清群行，这一行必须一个字节都不动
+         INSERT INTO file_outbox(transfer_id, peer_id, group_id, local_path, name, size,
+                                 status, attempts, next_attempt_at, created_at)
+             VALUES ('t-1to1','peer-1',NULL,'/tmp/one','one',1,'pending',0,1,1);
+
+         -- 真孤儿：群已不在册、会话也不在（delete_group 之前那版留下的历史）
+         INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+             VALUES ('m-dead','g-gone','peer-1','{}',1);
+         INSERT INTO file_outbox(transfer_id, peer_id, group_id, local_path, name, size,
+                                 status, attempts, next_attempt_at, created_at)
+             VALUES ('t-dead','peer-1','g-gone','/tmp/dead','dead',1,'pending',0,1,1);
+         INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts)
+             VALUES ('x-dead','group:g-gone','peer-1','me','text','bye',1);",
+    )
+    .unwrap();
+
+    // 退回 v6，重放真实的 6→DB_VERSION 升级路径。
+    conn.execute_batch("PRAGMA user_version = 6;").unwrap();
+    run_migrations(&conn, 6).expect("v6→v7 迁移本身不许报错");
+
+    let count = |sql: &str| -> i64 {
+        conn.query_row(sql, [], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("{sql} 查不动：{e}"))
+    };
+
+    // ① 在册群的三行都必须还在。
+    assert_eq!(
+        count("SELECT COUNT(*) FROM group_outbox WHERE msg_id='m-live'"),
+        1,
+        "在册群（groups 有行、会话也在）的待投递消息被 v7 清掉了 ⇒ 孤儿谓词锚错了列"
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM file_outbox WHERE transfer_id='t-live'"),
+        1,
+        "在册群的群文件待发行被 v7 清掉了 ⇒ 用户升级后群文件静默不再补发"
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM messages WHERE msg_id='x-live'"),
+        1,
+        "在册群的历史消息被 v7 清掉了（这条走的是 orphan_conv，本来应该是对的）"
+    );
+    // 这两张表**没有 `id` 列**，谓词用 `id` 会让语句直接报错、被 `if let Err` 吞掉
+    // ⇒ 清理从来没发生过（而且日志里只有 eprintln，没人看）。断言它们活着，
+    // 才把"静默失败"这一半也钉住。
+    assert_eq!(
+        count("SELECT COUNT(*) FROM group_reads WHERE group_id='g-live'"),
+        1,
+        "在册群的已读位被删（或这张表的清理语句根本没跑通）"
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM pending_group_reads WHERE group_id='g-live'"),
+        1,
+        "在册群的待发已读回执被删（这张表同样没有 id 列）"
+    );
+    // 1:1 待发行（group_id IS NULL）不属于这次清理的范围。
+    assert_eq!(
+        count("SELECT COUNT(*) FROM file_outbox WHERE transfer_id='t-1to1'"),
+        1,
+        "v7 只该清群文件行，把 1:1 待发行也带走是扩大伤害"
+    );
+
+    // ② 真孤儿必须清干净（否则①可以靠"整表不删"混过去）。
+    assert_eq!(
+        count("SELECT COUNT(*) FROM group_outbox WHERE group_id='g-gone'"),
+        0,
+        "真孤儿没被清 ⇒ 这条用例的另一半失效"
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM file_outbox WHERE group_id='g-gone'"),
+        0,
+        "真孤儿没被清 ⇒ 这条用例的另一半失效"
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM messages WHERE conv_id='group:g-gone'"),
+        0,
+        "真孤儿历史没被清"
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM group_reads WHERE group_id='g-gone'"),
+        0,
+        "真孤儿的已读位没被清"
+    );
+    // `list_pending_group_reads` 只按 peer_id 查（db/read_receipts.rs），所以这张表
+    // 留下的孤儿行会在对端每次上线时被重新捞出来 —— 它是活着的幽灵，不是死数据。
+    assert_eq!(
+        count("SELECT COUNT(*) FROM pending_group_reads WHERE group_id='g-gone'"),
+        0,
+        "真孤儿的待发群已读回执没被清 ⇒ 对端每次上线都会被重新投递一次"
+    );
+}
