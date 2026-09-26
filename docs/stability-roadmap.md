@@ -667,15 +667,19 @@ CI 的 macOS / Windows / Android 三条腿跑的是**同一个 `scripts/verify.m
 ⚠️ 唯一的口子：这一组的"Contract 全过"只覆盖**已经建门的**契约（API 表、事件表、域依赖、
 不变量绑定、改动预算、文档数字、测试清单）。**DB 表结构没有门** ⇒ 记在 12.8，不在这条里混过去。
 
-### 12.2 数据 —— ✅（附一条边界）
+### 12.2 数据 —— ✅ 四格具名，★ 但读出一格真缺口（上一版这张表把这组写弱了）
 
-| 格 | 态 | 判据 |
+判据全在 `src-tauri/src/db/migration_tests.rs`（下面每条都是**具名用例**，不是"有测试"）。
+条数现算：`grep -c "^#\[test\]" src-tauri/src/db/migration_tests.rs`。
+
+| 格 | 态 | 判据（点名到用例） |
 |---|---|---|
-| 迁移正确 | ✅ | `src-tauri/src/db/migration_tests.rs` 逐场景具名（含"旧库 `user_version=0` 有业务表 ⇒ Legacy 检测 + 完整迁移链"） |
-| 新库正确 | ✅ | 同上文件（空库 / 全新库两条）+ `cascade_tests.rs` 钉住当前 `PRAGMA user_version` |
-| 旧库正确、不破坏旧数据 | ✅ | 同上：Legacy 系列断言的是"迁移后旧行仍在、字段不丢"，不是"迁移没报错" |
-| 不产生幽灵状态 | ✅ | `db/clocks.rs` 两条并发判据（seq 连续不重号 / `msg_id` 唯一 / 一条不丢）+ 护栏层禁裸写终态 |
-| ⚠️ 边界 | — | 全部跑在**内存库或临时文件**上。**用户机器上真实老版本 `.db` 文件被新码打开**这一条没有被任何判据碰过 ⇒ 🔶 进 Smoke（矩阵"数据生命周期"组） |
+| 迁移正确 | ✅ | `migration_v1_to_v6_full_chain`、`migration_legacy_user_version_0_with_tables_runs_all_steps`（逐版本点名新增列，不是"没报错"）、`index_on_a_migration_added_column_must_not_live_in_schema`（老库必须先补列再建索引，顺序反了就打不开自己的库） |
+| 新库正确 | ✅ | `migration_fresh_db_gets_latest_version`（点名 12 张必需表 + 版本落 `DB_VERSION`）、`fresh_db_has_every_hot_query_index`（新库首启即有热索引）、`migration_zero_version_with_zero_tables_is_fresh` |
+| 旧库正确、**不破坏旧数据** | ✅ | `migration_preserves_identity_data`（device_id + 两把私钥逐条查回）、`migration_preserves_message_data`（消息**条数**与**内容**、outbox 保留、`seq` 回填 > 0）、`migration_success_preserves_data_and_adds_columns`、`superseded_indexes_are_dropped_and_uniquity_survives`（删冗余索引后内联 UNIQUE 必须还挡重复） |
+| **不产生幽灵状态** | ✅ | ⚠️ 上一版我错挂到 `db/clocks.rs`（那两条判的是并发唯一性，不属这格）。真正证据是这四条：`downgrade_refusal_writes_nothing`（拒绝降级时**零张表**被建，本机 schema 一旦写进新库就回不去）、`migration_refuses_downgrade`（必须是带类型的 `InitError::Downgrade{current:99}`，不许按错误字符串猜）、`tables_are_counted_before_the_schema_is_applied`（数表必须早于建表，否则 `is_fresh` 恒假 ⇒ 每个新库都重放整条链）、`fresh_schema_alone_has_exactly_the_migrated_shape`（"只跑 SCHEMA"与"SCHEMA + 整条迁移链"的形状必须**逐项相等**；它红过一次，抓到的是 `index idx_messages_conv_seq` 这一项真差集）；幂等另有 `migration_double_start_does_not_reapply`（连起三次）与被删索引**不许被 SCHEMA 造回来**那半条 |
+| ★ **迁移中途失败**（§9 数据生命周期点名的"部分失败"） | ⚠️ **无任何判据** | 机制**在**：`db.rs` 有 5 处 `unchecked_transaction()` 把步骤包住（`grep -n unchecked_transaction src-tauri/src/db.rs` 现算）。但全仓**没有一条用例注入过一次失败** ⇒ "回滚真的发生吗"今天没被证明过。⚠️ 同一处还有个注释/代码不一致：用例里写"插入一条数据验证 rollback 后仍存在"，函数体紧跟着说"只验证正常跑成功"——**rollback 那半句没做**（§13 列过这一类）。补法不用改生产码：造一个必然失败的步骤，断言 ①该步零写入 ②`user_version` 停在旧值 ③再次 `init` 能续上。**先写判据再决定要不要动码**：今天 `execute_batch(SCHEMA)` 在步骤事务**之外**，所以"部分失败"后的形状是"SCHEMA 已应用 + 失败步骤已回滚"，而 `schema_alone_repairs_a_current_database` 恰好证明这个方向能自愈 ⇒ 不一定要把 SCHEMA 也拖进事务（那是改核心，得先有反证） |
+| 边界（两条，其中一条是**上一版写错的**） | — | ① 我上一版说"全部跑在内存库"——**不对**：迁移一族走 `temp_db_path()`，是**磁盘上的真实临时文件**（连 wal/shm 一起清），只有形状恒等那条与 `db/clocks.rs` 那两条用内存库 ⇒ "迁移不坏盘上数据"这一层比我记的强。② 仍然成立的那条边界：**用户机器上真实老版本 `.db` 文件**没有被任何判据碰过 ⇒ 🔶 进 Smoke（矩阵"数据生命周期"组） |
 
 ### 12.3 网络 —— 只有两格真的是绿的
 
@@ -761,7 +765,7 @@ Rust 侧 `enqueue before deliver`、幂等 Ack、解密失败留空 `msg_id` 均
    ⇒ §19 把这三条与 LAN 并列要求，所以这一组仍算不成立。
 3. **UI 分组只做到了结构级**：运行时观感一层完全空白（12.6）。
 
-要收尾，只有这三件事是"必须做"，其余都是"可以延后"：
+要收尾，只有这四件事是"必须做"，其余都是"可以延后"：
 
 - **M-1′（原 A-8，需拍板，大白话）**：那份"给人看的建表脚本"和"程序真正执行的那份"**已经是两份东西**，
   而且缺 4 张表。两个选择：**(A) 让前者由后者自动生成**（永远一致，代价：那份文件不再手写、不再当文档读）；
@@ -774,5 +778,10 @@ Rust 侧 `enqueue before deliver`、幂等 Ack、解密失败留空 `msg_id` 均
   **(A) 两份都留下**（第二份自动换个名字共存）/ **(B) 只留第一份，第二份明确拒掉**。
   这条**必须用户拍板**，因为它是产品行为，不是实现细节；选完才能写判据。
 
-12.3 / 12.4 / 12.6 里那些 ⚠️ 与 🔶 不需要现在解决 —— 它们的正确处置是
+- **★ 第四件（本轮读 `migration_tests.rs` 读出来的，不依赖任何拍板）**：**"迁移中途失败"这一格零判据**
+  （见 §12.2 标 ★ 那行）。事务机制今天**已经在**（`db.rs` 五处步骤事务），但从没被证明过真的回滚；
+  同一处还有一句"验证 rollback 后仍存在"的注释，函数体只验了正常跑成功 —— 注释说的比代码做的多。
+  这一格是唯一一个"**会导致用户数据丢失、又不需要谁点头**"的必做项，因此它是**下一轮的第一件活**：
+  只加测试、不改生产码，判据三条（该步零写入 / 版本停在旧值 / 再启能续）。
+- 12.3 / 12.4 / 12.6 里那些 ⚠️ 与 🔶 不需要现在解决 —— 它们的正确处置是
 **留在 Smoke 清单上并标成"未自动化"**，这正是 §10「绝不能把'没有测试'伪装成 PASS」要的形状。
