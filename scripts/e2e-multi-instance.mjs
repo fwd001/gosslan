@@ -1091,25 +1091,20 @@ if (ROT) {
     const finalSha = existsFinal ? createHash("sha256").update(fs.readFileSync(final8)).digest("hex") : null;
     const landedWhole = existsFinal && finalSha === srcSha8;
     const claimedDone = !!term8 && (term8.status === "gone" || term8.status === "done" || term8.aT === "done");
-    // ★ 交叉自洽那条判据（`A 声称完成 ⇒ B 侧有整份正确的 final 文件`）**今天不成立**，
-    //   实测就是 A-12 本身（roadmap §3.1）：A 报 done 并删了队列行、B 报 failed、字节全在
-    //   一个改不了名的 .part 里。把它写成断言 ⇒ 这一轮永远红，而这套门禁**没有"容忍已知红"
-    //   这一档**（`verify.mjs` 里没有 soft/allowFail，是刻意的）。所以：
-    //     · 这一轮先用打印钉住分歧（红不红看得见，但不冒充判据）；
-    //     · 交叉自洽那条**等 A-12 修完**再加回来，原文抄在 roadmap A-12 那格，别靠记忆。
-    //   ⚠️ 下面四条断言只覆盖"每一侧自己不撒谎"，**不覆盖两侧互相咬合** —— 别把它们读成
-    //      「rename 才算完成已有活实例证明」。
-    if (claimedDone && !landedWhole) {
-      console.log(
-        `      ⚠ A-12 实测分歧：A 声称完成=${claimedDone}（A台账=${term8?.aT ?? "无行"}、队列行已收）` +
-          ` / B=${bTerminal ?? "无行"} / final=${existsFinal ? (landedWhole ? "整份" : "半截或内容不符") : "不存在"} / .part=${partGrew} 字节`,
-      );
-    }
-    // 接收侧台账不许假装成功：B 侧有行时只能停在非 done（这条今天成立 ⇒ 留作断言）。
-    const wantB = LIE ? "done" : null;
+    // ★ A-12 修完之后加回来的那条交叉自洽判据（原文照抄 roadmap A-12 那格，一字未改）
+    check("发送侧宣布完成（队列行被收尾删除或台账 done）⇒ 接收侧必须有整份且 sha256 相等的 final 文件",
+      !claimedDone || landedWhole,
+      claimedDone ? "整份 final" : "不声称完成（前件不成立）",
+      `A 队列=${term8?.status ?? "无"} / A 台账=${term8?.aT ?? "无"} / final=${existsFinal ? (landedWhole ? "整份" : "内容不符") : "不存在"} / .part=${partGrew}`);
+    // 上面那条是**蕴含式**，前件不成立时它自己永远红不了 ⇒ 必须再钉一条"本轮 rename 恒失败 ⇒
+    // 发送侧只能落到明确失败"。没有这条，上一条就会退化成 A-9 那次救过我的"永远为真的空转"；
+    // lie 轮翻的也正是这一条的期望值。
+    const wantA = LIE ? "done" : "failed";
+    check("改名永远做不成时，发送侧只能落到明确失败（不许 done，更不许把队列行删掉当收尾）",
+      !!term8 && term8.status === wantA, wantA, term8 ? term8.status : "180s 内没到终态");
+    // 接收侧台账不许假装成功：B 侧有行时只能停在非 done。
     check("接收侧台账不许假装成功（唯一的失败出口）",
-      LIE ? bTerminal === "done" : (landedWhole || bTerminal !== "done"),
-      wantB ?? "非 done", bTerminal ?? "B 侧无行");
+      landedWhole || bTerminal !== "done", "非 done", bTerminal ?? "B 侧无行");
     console.log(`      注：解除只读后 B=${bTerminal ?? "无行"} / .part=${fs.existsSync(part8) ? fs.statSync(part8).size : "已清"} —— 自愈与否只打印，不设判据`);
   });
 }

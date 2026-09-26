@@ -348,6 +348,7 @@ network::dispatch::tests::large_gossip_payload_downgrades_to_low
 network::dispatch::tests::message_priority_classification_coverage
 network::dispatch::tests::normal_scheduled_before_low
 network::dispatch::tests::stress_mixed_priorities_no_starvation
+network::file::tests::a_full_length_part_without_rename_is_not_progress
 network::file::tests::accepts_real_world_transfer_ids
 network::file::tests::all_recipients_share_one_session_key
 network::file::tests::ble_file_chunk_actually_fits_the_ble_fragment_layer

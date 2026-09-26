@@ -3568,6 +3568,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 active.is_some(),
                 active.unwrap_or(0),
                 disk_retained,
+                size,
                 from_bytes,
                 already_completed,
             );

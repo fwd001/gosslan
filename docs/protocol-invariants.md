@@ -190,7 +190,7 @@ retry(msg_id)
 create_new_message()
 ```
 
-- 钩子：`db::tests::duplicate_transfer_id_offer_is_idempotent` `content::policy::tests::resume_only_from_chunk_boundaries` `network::file::tests::unknown_attempt_count_is_not_a_death_sentence` `e2e:故障注入判据③`
+- 钩子：`db::tests::duplicate_transfer_id_offer_is_idempotent` `content::policy::tests::resume_only_from_chunk_boundaries` `network::file::tests::unknown_attempt_count_is_not_a_death_sentence` `network::file::tests::a_full_length_part_without_rename_is_not_progress` `e2e:故障注入判据③` `e2e:故障注入判据⑧`
 
 ### 界面上的「重发」是**已知例外**（2026-09-25 记）
 
@@ -561,6 +561,13 @@ arrival order
    还在排空的分片（队列 1024 槽 ≈ 262MB，丢 future 不排空队列）会被判成「跳号」
    ⇒ `Err(文件分片顺序错误)` ⇒ 整单死。两个方向都有单测钉住（`decide_offer` 三条用例 +
    `verify-guards.py` 两条变异用例）。
+3. **但"我有什么"这个数有上限：`.part` 长度 ≥ size 不算进度**（2026-09-26 A-12）。
+   `FileReject.received ≥ size` 在发送端读作「对方已完整收下」⇒ 记 `done` 并**删掉队列行**，
+   此后**再也没人重试**。一个帧同时承载"完成"与"进度"两种话时，"字节齐但没有成品"
+   （上一次收尾 `rename` 失败：目录只读 / 磁盘满 / 进程被杀在半步）就会被当成交付完成 ——
+   这与"接收端真实进度"和"rename 才算完成"两条同时冲突，取舍是：**台账 `done` 是唯一能点亮
+   「已收完」的事实**，≥ size 的磁盘前缀一律按 0 处理 ⇒ 重新整份收，走真实的哈希校验与真实的 rename。
+   **不补做那次 rename**：没成品的 `.part` 内容未经校验（脏前缀注入证明过它可以是随机字节）。
 
 - 钩子：`network::file::tests::receiver_hash_mismatch_fails` `file_relay::tests::chunks_stream_to_disk_and_completion_hands_back_a_path` `guards:中继收文件的哈希必须对组装后的明文算`
 

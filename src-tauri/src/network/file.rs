@@ -1501,10 +1501,21 @@ pub enum OfferDecision {
 /// 丢掉时它**已入队的分片还在 writer_loop 里往外排**（队列 1024 槽 ≈ 262MB，丢 future 不排空
 /// 队列），那些片的 seq 已到 160+，此时因一个 `from_bytes = 0` 的重复 offer 把 `next_seq`
 /// 拍回 0 ⇒ 它们变成「跳号」⇒ `Err(文件分片顺序错误)` ⇒ 整单被判死。
+///
+/// ⚠️ **磁盘前缀的长度上限也是判据的一部分**（A-12，2026-09-26 由注入⑧在真实双实例照出）：
+/// `FileReject.received` 承载两个含义 —— 发送端把 `received >= size` 读成"对方已完整收下"
+/// 并直接收尾（记 done、**删掉队列行**）。所以"`.part` 字节数够了"绝不能当续传位置报出去：
+/// 上一次收尾 `rename` 失败（目录只读 / 磁盘满 / 进程被杀在半步）时字节是整份的，
+/// **但磁盘上没有成品文件**，而"成品"才是「rename 才算完成」的唯一凭证。
+/// 那一格实测的形状就是这条判据要拦的：`A=done 且队列行已删 / B=failed / .part 整份 / final 不存在`
+/// —— 两边各给了用户一个结论，而且互相矛盾，且再也没人重试。
+/// 故：≥ size 的磁盘前缀**不算进度**，按 0 处理 ⇒ 重新整份收，走真实的哈希校验与真实的 rename。
+/// 活跃接收器的内存计数不走这条（它收完那一刻收尾就已经跑过了，见 `write_chunk` 的裁决分支）。
 pub fn decide_offer(
     has_active: bool,
     active_received: u64,
     disk_retained: u64,
+    size: u64,
     from_bytes: u64,
     already_completed: bool,
 ) -> OfferDecision {
@@ -1515,6 +1526,8 @@ pub fn decide_offer(
     }
     let held = if has_active {
         active_received
+    } else if size > 0 && disk_retained >= size {
+        0
     } else {
         disk_retained
     };
@@ -3783,7 +3796,7 @@ mod tests {
         use super::{decide_offer, OfferDecision};
         let held = 40 * 1024 * 1024;
         assert_eq!(
-            decide_offer(true, held, held, 0, false),
+            decide_offer(true, held, held, 100 * 1024 * 1024, 0, false),
             OfferDecision::ResumeFrom(held),
             "活跃接收器已收 40MB、对方却从 0 重发 ⇒ 必须回真实位置，不能裸 Accept"
         );
@@ -3799,15 +3812,21 @@ mod tests {
         // 位置对得上 ⇒ 答复仍然属于"接受"这一族，绝不退回 reject（那是被真机教育过的旧行为：
         // 两边都显示成功、接收侧列表里没有）。但**续传段**必须连带把段号归零 ⇒ 判据要能区分。
         assert_eq!(
-            decide_offer(true, held, held, held, false),
+            decide_offer(true, held, held, 100 * 1024 * 1024, held, false),
             OfferDecision::AcceptResumeSegment,
             "位置一致的续传段：接受 + 段号归零"
         );
         // 同一起点的重复 offer ⇒ **不许**归零：上一轮 attempt 已入队的分片还在排空，
         // 归零会把它们判成「跳号」⇒ `Err(文件分片顺序错误)` ⇒ 整单死。
-        assert_eq!(decide_offer(true, 0, 0, 0, false), OfferDecision::Accept);
+        assert_eq!(
+            decide_offer(true, 0, 0, 1024, 0, false),
+            OfferDecision::Accept
+        );
         // 全新传输：什么都没有，对方也从 0 开始
-        assert_eq!(decide_offer(false, 0, 0, 0, false), OfferDecision::Accept);
+        assert_eq!(
+            decide_offer(false, 0, 0, 1024, 0, false),
+            OfferDecision::Accept
+        );
     }
 
     /// 回归（2026-09-23 审计 A6）：「本机已收完」必须优先于一切位置判据。
@@ -3820,13 +3839,13 @@ mod tests {
         use super::{decide_offer, OfferDecision};
         // 三输入全零但已收完：必须 AlreadyHave，绝不能 Accept
         assert_eq!(
-            decide_offer(false, 0, 0, 0, true),
+            decide_offer(false, 0, 0, 1024, 0, true),
             OfferDecision::AlreadyHave,
             "已收完的传输收到重复 Offer：拒绝重推（审计 A6）"
         );
         // 即使残留了活跃接收器/磁盘前缀的形态，已收完也一票否决
         assert_eq!(
-            decide_offer(true, 1024, 1024, 1024, true),
+            decide_offer(true, 1024, 1024, 1024, 1024, true),
             OfferDecision::AlreadyHave
         );
     }
@@ -3839,15 +3858,51 @@ mod tests {
         use super::{decide_offer, OfferDecision};
         let (live, disk) = (30 * 1024 * 1024, 20 * 1024 * 1024);
         assert_eq!(
-            decide_offer(true, live, disk, 0, false),
+            decide_offer(true, live, disk, 100 * 1024 * 1024, 0, false),
             OfferDecision::ResumeFrom(live),
             "有活跃接收器时必须报内存里的真实值，不是 .part 大小"
         );
         // 没有活跃接收器（断链后进程没重启）⇒ 磁盘前缀才是唯一事实
         assert_eq!(
-            decide_offer(false, 0, disk, 0, false),
+            decide_offer(false, 0, disk, 100 * 1024 * 1024, 0, false),
             OfferDecision::ResumeFrom(disk),
             "无活跃接收器时仍以 .part 前缀为准（这条是既有行为，锁住别退回去）"
+        );
+    }
+
+    /// ★ A-12（2026-09-26 由注入⑧在真实双实例上照出）：**`.part` 字节数够了 ≠ 本机已收完**。
+    ///
+    /// 「rename 才算完成」的反面形状：上一次收尾那刀没落地（接收目录只读 / 磁盘满 /
+    /// 进程被杀在半步）⇒ 字节是整份的，但**磁盘上没有成品文件**。此时把 `size` 当"已收位置"
+    /// 回出去是致命的：发送端读的是 `received >= size ⇒ 对方已完整收下`，于是它记 `done`、
+    /// **删掉队列行**（此后再没有人重试这一单），而接收端只有一个改不了名的 `.part`。
+    /// 一次 `FileReject.received` 承载两个含义，而字节数恰好落在"整份"这个值上。
+    #[test]
+    fn a_full_length_part_without_rename_is_not_progress() {
+        use super::{decide_offer, OfferDecision};
+        let size = 1024 * 1024;
+        assert_eq!(
+            decide_offer(false, 0, size, size, 0, false),
+            OfferDecision::Accept,
+            "字节数够了却没有成品文件 ⇒ 既不认已收完，也不许把这个数当续传位置报出去"
+        );
+        // 超长（上一轮被改坏的前缀）同理：越界的"进度"一律不算进度
+        assert_eq!(
+            decide_offer(false, 0, size + 4096, size, 0, false),
+            OfferDecision::Accept
+        );
+        // ⚠️ 反向半边：**没到 size 的真前缀仍然必须照常续传**。
+        // 把它退化成"一律重收"会打掉跨 attempt 的进度累积 —— 那正是 160MB 传不完的老病根，
+        // 也是注入②（真前缀续传）/ 注入③（SIGKILL 后按真实字节数续完）两条活实例证明。
+        assert_eq!(
+            decide_offer(false, 0, size - 1, size, 0, false),
+            OfferDecision::ResumeFrom(size - 1),
+            "小于 size 的磁盘前缀仍是合法续传位置，不许被这条新判据顺手废掉"
+        );
+        // 真的收完过（台账 done）⇒ `AlreadyHave` 的一票否决不受影响（审计 A6）
+        assert_eq!(
+            decide_offer(false, 0, size, size, 0, true),
+            OfferDecision::AlreadyHave
         );
     }
 
