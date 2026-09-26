@@ -401,6 +401,7 @@ network::file::tests::relay_forwarded_ciphertext_still_decryptable
 network::file::tests::relay_receiver_hash_lifecycle_success
 network::file::tests::retryable_failure_at_the_budget_limit_gives_up
 network::file::tests::retryable_failure_within_budget_is_rescheduled
+network::file::tests::rotted_receive_directory_finishes_failed_never_done
 network::file::tests::send_deadline_scales_with_size
 network::file::tests::sha256_file_hex_matches_in_memory_hash
 network::file::tests::stale_attempt_frames_are_filtered_but_legacy_frames_never_are

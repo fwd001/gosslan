@@ -4044,6 +4044,92 @@ mod tests {
         assert_eq!(row("t-upper").0, "done");
     }
 
+    /// 「目标目录变化」（§七 列的那一格）在生产收尾路径上的覆盖。
+    ///
+    /// 为什么这条不是 ①–⑤ 的重复：那五条没有一条走进 rename 出口（全部在 size / SHA 两处
+    /// 就被判掉了），而唯一碰过 rename 失败的历史用例走的是 `finalize_group_receive` ——
+    /// 群侧另一份实现，生产单聊收尾改坏它照样绿。
+    ///
+    /// 真实形状：接收中途用户把下载目录删掉/移走。`FileReceiver.file` 是**已打开的句柄**，
+    /// POSIX 下目录被 unlink 后写入与 fsync 照旧成功（inode 还在），于是整条收尾只剩最后
+    /// 一次 rename 能发现"成品无处安放"。这条就是把 §三「rename 才算完成」钉在文件系统
+    /// 故障边界上：字节齐 + 哈希对都**不许**顶替它。
+    #[test]
+    fn rotted_receive_directory_finishes_failed_never_done() {
+        use super::finish_receiver_into;
+        use sha2::Digest as _;
+        use std::io::Write as _;
+
+        let payload: Vec<u8> = (0..257u32).map(|i| (i % 251) as u8).collect();
+        let real_sha: String = {
+            let mut h = sha2::Sha256::new();
+            h.update(&payload);
+            h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+        };
+
+        // 不复用 temp_part：它把 .part 直接放在 temp_dir() 根上，要模拟"整个下载目录消失"
+        // 就得连别人的临时文件一起删 —— 不碰。
+        let root = std::env::temp_dir().join(format!("gosslan-test-rot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dl = root.join("Downloads");
+        std::fs::create_dir_all(&dl).unwrap();
+
+        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
+        let row = |id: &str| -> (String, Option<String>) {
+            db.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT status, path FROM file_transfers WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+                )
+                .unwrap_or_else(|e| panic!("{id} 必须留下一行终态，实得 {e}"))
+        };
+
+        let tmp = dl.join("t-rot.part");
+        let final_path = dl.join("photo.jpg");
+        let mut f = std::fs::File::create(&tmp).unwrap();
+        f.write_all(&payload).unwrap();
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&payload);
+        let r = crate::state::FileReceiver {
+            file: f,
+            name: "photo.jpg".into(),
+            size: payload.len() as u64,
+            received: payload.len() as u64,
+            next_seq: 0,
+            attempt: 0,
+            stale_dropped: 0,
+            tmp_path: tmp,
+            final_path: final_path.clone(),
+            peer_id: "dev-a".into(),
+            last_report_ms: 0,
+            fed_at_ms: 0,
+            file_key: [7u8; 32],
+            expected_sha256: real_sha,
+            hasher,
+        };
+
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let err = finish_receiver_into(&db, "t-rot", r).err();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            err.is_some(),
+            "目录已消失 ⇒ 收尾必须失败（实得 Ok 意味着报成功而磁盘上根本没有成品）"
+        );
+        assert_eq!(
+            row("t-rot"),
+            ("failed".to_string(), None),
+            "只能记 failed 且不带路径 —— 带路径的 done 会让前端渲染一个点开就是「文件不存在」的气泡"
+        );
+        assert!(
+            !final_path.exists(),
+            "放不下的东西不能被凭空造出来：不许出现成品文件"
+        );
+    }
+
     // ---------------- 投递失败之后的重试裁决（#25 第 2 段） ----------------
     //
     // 这一格判据原先inline 在 `flush_pending_files` 的循环里 ⇒ 要吃 `AppState` 才能触发，
