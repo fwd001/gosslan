@@ -173,6 +173,36 @@ export function describeShotDir(runDir) {
   return `${files.length} 张里有 ${blanks} 张纯色帧`;
 }
 
+/**
+ * **起跑前置**：这台机器的屏幕现在给不给得出真实帧。
+ * 返回 null = 可以跑；返回字符串 = 停跑理由。
+ *
+ * 为什么要有这一道（与"二进制比源码旧 ⇒ 你正在测旧代码"同一形状）：截图判据补上
+ * 「纯色帧判假」之后，锁屏会让**每一轮**跑到最后一步才红 —— 前面八分钟白烧，
+ * 而红的那条看起来像产品问题。环境不满足就必须在起跑前用一句话说清，
+ * 否则下一个人为了"让门禁绿"会去降低判据的门槛（那正是今天这个假绿的来路）。
+ *
+ * 没有采集器的平台（Windows / `E2E_NO_CAPTURE=1`）**不在这里拦** ——
+ * 那里的处置早已定成"轮次里那条断言明着红，不是跳过"（§十），这里插手会改变它的语义。
+ */
+export function screenBlockedReason(tmpRoot = path.join(os.tmpdir(), `gosslan-screen-${Date.now()}`)) {
+  if (!captureSupported()) return null;
+  try {
+    fs.mkdirSync(tmpRoot, { recursive: true });
+    const probe = path.join(tmpRoot, "probe.png");
+    execFileSync("/usr/sbin/screencapture", ["-x", probe], { stdio: "ignore" });
+    if (!fs.existsSync(probe)) return null; // 截不出文件交给自证那条，这里不重复判
+    return pngIsBlank(probe)
+      ? "屏幕被锁 / 显示器休眠：screencapture 退出码 0 却只给得出纯色帧 ⇒ 这一层要判的"
+        + "「真实界面截图」今天拿不到。解锁后再跑（不要去放宽截图判据 —— 那正是刚修掉的假绿）。"
+      : null;
+  } catch {
+    return null; // 探测本身失败不算环境问题，交给自证/轮次去红
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 /** 自证用的最小 PNG 写入器：只写 8 位真彩、非隔行、逐行 filter 0/1 的合法块（CRC 不校验，本模块不读它）。 */
 function writeProbePng(file, w, h, colorAt) {
   const ihdr = Buffer.alloc(13);

@@ -73,6 +73,10 @@ const NO_ROUTED = process.env.E2E_NO_ROUTED === "1";
     process.exit(fails.length ? 1 : 0);
   }
   if (fails.length) throw new Error(`截图判据自证不成立，先修判据再跑轮：\n  ${fails.join("\n  ")}`);
+  // 环境前置（与"二进制过旧"同一形状）：屏幕锁着时这一层的终局断言必然红在最后一步，
+  // 前面八分钟白烧 —— 所以起跑前一句话停住，而不是留一个人去猜"截图怎么又少了"。
+  const blocked = screenBlockedReason();
+  if (blocked) throw new Error(`环境不满足，跑轮之前先停下：\n  ${blocked}`);
 }
 // §十六 那份报告契约同理：契约里点名的字段（步骤/预期/实际/PASS-FAIL/耗时/日志关联/msg_id+transfer_id）
 // 以前只有人肉核对过一次，机器一句都没管 —— 谁把 `writeReport` 里的一行删掉，报告就少一格而没人报红。
@@ -282,7 +286,7 @@ import net from "node:net";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BOOT_LINE, bootBaseline, bootReady, countLog, readLogTail, selfcheckLogtail, stashLogs } from "./e2e-logtail.mjs";
-import { captureShot, describeShotDir, selfcheckShot } from "./e2e-shot.mjs";
+import { captureShot, describeShotDir, screenBlockedReason, selfcheckShot } from "./e2e-shot.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const ISO = new Date().toISOString().replace(/[:.]/g, "-");
