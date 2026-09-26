@@ -418,6 +418,28 @@ if (groupFlag === "local") {
     },
     {
       group: "local",
+      name: "双实例 E2E：尺寸阶梯 · 1 KB（极小档）",
+      why: `同一趟旅程（文本 + 文件 + 重启）换 **1 KB** 重跑，证明默认轮不是"只在 1 MB 上成立"。` +
+        `极小档专打两件事：单片文件（不足一片）不许在收尾前被当成完成、` +
+        `以及"零头即整份"时进度与终态仍然自洽。断言条数与默认轮同源（阶梯不加新断言，只换尺寸）；` +
+        `${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--size=0.001"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：尺寸阶梯 · 10 MB（中段多片）",
+      why: `同一趟旅程换 **10 MB** 重跑：这是"多片 + 最后一片是零头"那一格 —— ` +
+        `阶梯里最容易藏 off-by-one 的位置（片数 = ⌈size/片长⌉，收尾只认最后一次 rename）。` +
+        `⚠️ 边界：100 MB 及以上不进本地层（一次几分钟、CI 与本地都会烂），` +
+        `那一档按 §十 记 SIMULATED/真机，由 `+"`E2E_KILL_MB`"+` 那条杀进程轮代偿覆盖大文件窗口；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--size=10"],
+    },
+    {
+      group: "local",
       name: "双实例 E2E：脏 .part 前缀注入",
       why: `接收侧预置脏前缀 ⇒ 整体校验必须拦下、重试补齐；产品要么自愈要么明确失败，不许假 done；${LOCAL_ONLY_WHY}`,
       cwd: ROOT,

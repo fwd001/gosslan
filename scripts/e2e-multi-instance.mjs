@@ -120,10 +120,22 @@ let multiSpec = [];
 /// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
 const LIE = FAULT.endsWith("-lie");
 const LIE_SHA = "0".repeat(64);
-/// 传输尺寸（默认 1 MB，`E2E_FILE_MB=N` 覆盖）。这个旋钮不是为了测"大文件"本身，
+/// 传输尺寸（默认 1 MB，`E2E_FILE_MB=N` 或 `--size=N` 覆盖）。这个旋钮不是为了测"大文件"本身，
 /// 而是先量出**一次传输在回环上真实耗时多久**：「接收中杀进程」这类注入能不能做成
 /// 非竞态，取决于窗口有没有那么长。量不出来就老实标 SIMULATED，不许伪装 PASS（§十）。
-const FILE_BYTES = Number(process.env.E2E_FILE_MB || 1) * 1024 * 1024;
+/// `--size=` 是给**尺寸阶梯**用的：同一轮旅程（文本 + 文件 + 重启）换档位重跑，
+/// 证明"换尺寸"不是一条只在一个尺寸上成立的测试。**故意不做成新的注入轮次** ——
+/// 加轮次要同步四处登记（MODE_LABEL / 门禁 local 层 / 判据 C 的轮次声明 / 正反两跑），
+/// 而阶梯要测的东西与故障无关，复用默认轮的断言才是这一格的正解。
+/// ⚠️ 必须 `Math.round`（实测，不是猜的）：`Buffer.alloc(1048.576)` **不抛错**，它静默给一个
+/// **1048 字节**的 buffer ⇒ 于是后面那条 `bytes.length === FILE_BYTES` 变成
+/// "1048 === 1048.576" = 假 ⇒ 报出来的红长得像产品 bug（"B 侧字节数与发送端一致"失败），
+/// 坏的实际是档位算术。本仓已多次踩"红的是脚本不是被保护的东西"，所以取整是这条阶梯的承重。
+const SIZE_ARG = process.argv.find((a) => a.startsWith("--size="));
+const FILE_MB = SIZE_ARG
+  ? Number(SIZE_ARG.slice("--size=".length))
+  : Number(process.env.E2E_FILE_MB || 1);
+const FILE_BYTES = Math.round(FILE_MB * 1024 * 1024);
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
