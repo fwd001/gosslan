@@ -460,7 +460,7 @@ flowchart LR
 |---|---|
 | `AI_PROJECT_HANDOFF.md` | 停在 **v1.0.0**（2026-09-08），完全没写 mesh / BLE / 中继 / 多路径选路 / 一窗一入口 |
 | `docs/acceptance/1.0-release.md` | 写着"不要实现蓝牙、跨子网、Mesh 优化"——**当时的结论已被后续需求推翻** |
-| `src-tauri/src/schema.sql` | 缺 `group_files`、`group_file_recipients` 两表（运行时以 `db.rs` 为准） |
+| `src-tauri/src/schema.sql` | 与运行时真源 `db.rs` 的 `SCHEMA` **表名集合不等**（运行时以 `db.rs` 为准）。⚠️ 差集**不在这里抄数字**：复跑 `stability-roadmap.md` §10 末那两条 grep 现算（本行原先写"缺两表"，2026-09-26 实测是四张 ⇒ 描述漂移的句子自己漂了，处置见 §12.8） |
 | `docs/adr/0014`–`0017` 头部 | 标注仍是 Proposed/Accepted，与实际落地进度不同步 |
 | `P2-P3-开发计划.md` | **同一个文件内 Phase 7/8 前后矛盾**：§8.1 写"已授权可开工"，§12 写"已落地" |
 | `mesh-architecture-evolution.md` | M3 状态过期（一处写"进行中/M3-b 是下一步"，后文已写全部完成）；旧文"Gossip 是单跳"也已标注为过时 |
