@@ -59,6 +59,21 @@ const NO_ROUTED = process.env.E2E_NO_ROUTED === "1";
   }
   if (fails.length) throw new Error(`日志判据自证不成立，先修判据再跑轮：\n  ${fails.join("\n  ")}`);
 }
+// §十六 的截图判据同理：它自己也要能被秒级证明"既能真也能红"（红 = 空图/没落盘也判得过）。
+{
+  const { fails, notes } = selfcheckShot();
+  for (const n of notes) console.log(`  · ${n}`);
+  if (process.argv.includes("--shot-selfcheck")) {
+    for (const f of fails) console.error(`  ❌ ${f}`);
+    console.log(fails.length
+      ? `✗ 截图判据自证红 ${fails.length} 条`
+      : notes.length
+        ? "✅ 截图判据自证成立（只证了「能判假」；本机没采集器 ⇒「能判真」这格今天没证）"
+        : "✅ 截图判据自证成立（能判假 + 能判真）");
+    process.exit(fails.length ? 1 : 0);
+  }
+  if (fails.length) throw new Error(`截图判据自证不成立，先修判据再跑轮：\n  ${fails.join("\n  ")}`);
+}
 /// 故障注入模式（§八）。`--fault=poison-part` 见下方 preset 步骤的注释。
 /// 另有**旅程轮** `--round=`（不是注入，是补一整条没测过的用户路径）：
 ///   --round=group    → 群聊这一族跨实例真跑：两端预置群 → A 排三条群消息（正文/撤回/正文）→
@@ -66,6 +81,9 @@ const NO_ROUTED = process.env.E2E_NO_ROUTED === "1";
 ///   --round=group-lie→ 预置与投递完全不动，只把判据读的 msg_id 换成不存在的值 ⇒ 预期按设计报红
 ///   断言条数不在这里写，由 check-doc-numbers 现算对账（同下面每一轮）。
 const FAULT = (process.argv.find((a) => a.startsWith("--fault=")) || "").slice("--fault=".length);
+//   --shot-selfcheck         → 只跑 §十六 截图判据的三格自证（假 PNG 判假 / 缺文件判假 / 真截图判真），
+//                             不起实例、不需要 release 产物：npm run test:e2e:shot-selfproof
+//   E2E_NO_CAPTURE=1         → 把采集器关掉（= 截图判据读的那个输入）⇒ 那条截图判据必须红
 const POISON = FAULT === "poison-part" || FAULT === "poison-part-lie";
 /// 注入②：接收端已有**真实前缀** ⇒ 必须按前缀续传，不许从 0 重灌整份。
 const RESUME = FAULT === "resume-prefix" || FAULT === "resume-prefix-lie";
@@ -199,6 +217,7 @@ import net from "node:net";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BOOT_LINE, bootBaseline, bootReady, countLog, readLogTail, selfcheckLogtail, stashLogs } from "./e2e-logtail.mjs";
+import { captureShot, selfcheckShot } from "./e2e-shot.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const ISO = new Date().toISOString().replace(/[:.]/g, "-");
@@ -494,6 +513,8 @@ function seedPair(nodes) {
 
 // ── 断言账本 ───────────────────────────────────────────────────────
 const steps = [];
+/** §十六 报告要的界面截图（真实文件路径，落 RUN_DIR/screenshots/）。 */
+const shotFiles = [];
 const assertions = [];
 let curStep = null;
 let curStepIdx = -1;
@@ -782,6 +803,8 @@ step("起 A/B 并等链路真的建立（routed 拨号一轮 10s）", async () =
   await waitFor(routedDialed, 45_000, "至少一侧打出与对端的 path=routed 建链行");
   check("这对外部以手动配置的 Routed 端点拨出过链路（§19 网络·Routed）",
     routedDialed() >= 1, "≥1 条 path=routed 建链", routedDialed());
+  // 两个实例的窗口此刻都在这台机器的桌面上：留一张"链路真建立了"的界面证据
+  shotFiles.push(captureShot(RUN_DIR, "1-link-established"));
 });
 
 step("A→B 送达 + Ack 回收 + 无重复", async () => {
@@ -1645,6 +1668,15 @@ step("L-B 故障注入：两端重启后仍正确", async () => {
   const again = aDb.prepare("SELECT COUNT(*) c FROM outbox WHERE msg_id=?1").get(msgId).c;
   aDb.close();
   check("重启不复活已 Ack 的 outbox 行（不二次投递）", again === 0, 0, again);
+  // §十六「报告要带 screenshots/」这一格第一次有产物。判据只管"截图真落盘、不是空图"，
+  // **不管界面对不对**（没有像素级判据；那一半仍按 §12.6 记结构级/MANUAL，写成绿就是假证据）。
+  // ⚠️ 非 macOS 没有采集器 ⇒ 这一条**是红，不是跳过**（§十禁止把没跑写成 PASS）：
+  //    Windows 腿要自己实现采集器，在那之前这格就明着红着。
+  shotFiles.push(captureShot(RUN_DIR, "2-after-restart"));
+  const realShots = shotFiles.filter(Boolean);
+  check("报告带两张真实界面截图（链路建立后 / 两端重启后）",
+    realShots.length === 2, "2 张全屏 PNG，且不是空图",
+    `${realShots.length} 张：${realShots.map((f) => path.basename(f)).join(", ") || "本平台无采集器"}`);
 });
 
 // ── 主流程 ─────────────────────────────────────────────────────────
@@ -1668,6 +1700,7 @@ function writeReport(failed) {
     binary: BIN, platform: process.platform, duration_s: totalS,
     instances: INSTANCES.map((i) => ({ label: i.label, n: i.n, port: i.port, runtimeId: (i.n === 1 ? idA : idB)?.runtimeId })),
     trace: { msg_id: msgId ?? null, transfer_id: xferId ?? null },
+    shots: shotFiles.filter(Boolean).map((f) => path.relative(RUN_DIR, f)),
     // §十六要的「步骤 + 耗时 + 日志关联」：把闭包剔掉，只留事实
     steps: steps.map(({ fn, ...rest }) => rest),
     assertions,
@@ -1699,6 +1732,9 @@ ${stepRows}
 ${tr}
 </table>
 ${logEx ? `<h2>失败步骤的日志关联</h2>${logEx}` : ""}
+${sum.shots.length
+  ? sum.shots.map((rel) => `<p><code>${rel}</code></p><img src="${rel}" width="1000" alt="${esc(rel)}">`).join("\n")
+  : `<p>⚠️ 本轮没有截图：本平台没有采集器 ⇒ §十六 这一格在它上面仍未做，不算通过。</p>`}
 <p style="color:#666">日志/DB 快照在本目录：<code>instance-*.app.log</code> · <code>sqlite-*/</code> · <code>recv/</code> · <code>after-*.db</code></p>
 <p style="color:#666">⚠️ 标 ⚠️ NO-ASSERT 的步骤只靠「超时即抛」把关，本身没下断言 —— 覆盖度按红字算，不按步骤数算。</p>`);
   console.log(`\n报告：${RUN_DIR}/summary.html`);
