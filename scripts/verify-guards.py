@@ -543,13 +543,14 @@ CASES: list[Case] = [
         why="多邻居泛洪会送来重复的 RelayFileOffer；覆盖式 insert 会清空已收到的切片 ⇒ "
             "文件永远缺片（完整性校验也必然失败）",
         file=TAURI / "src" / "file_relay.rs",
+        # 锚点 2026-09-27 更新：幂等修复把旧的 `entry().or_insert_with()` 换成了
+        # 「已存在就原样保留 + 早退」，旧锚点因此数到 0 次 ⇒ 这一格**注入不上**（护栏失效但不会假装绿）。
+        # 现在的坏法就一句：把那条早退摘掉 ⇒ 重复 offer 会重新开档 truncate 已写分片。
         injections=[(
-            "        self.reassemblies\n"
-            "            .entry(transfer_id.to_string())\n"
-            "            .or_insert_with(|| Reassembly {",
-            "        self.reassemblies.insert(\n"
-            "            transfer_id.to_string(),\n"
-            "            Reassembly {",
+            "        if self.reassemblies.contains_key(&id) {\n"
+            "            return Ok(());\n"
+            "        }",
+            "        // 注入：摘掉幂等早退（重复 offer 会覆盖式重开档）",
         )],
         cmd=cargo("test", "--lib", "begin_reassemble_is_idempotent"),
         cwd=TAURI,
@@ -3295,6 +3296,14 @@ CASES: list[Case] = [
         "     注入方式：把校验点从 digest(&full)（组装结果）改成 digest(&name)（哈希错了对象，\n"
         "     仍可编译），守卫 relay_receive_hashes_assembled_plaintext_once 必须红。",
         file=TAURI / "src" / "network" / "transport.rs",
+        # ⚠️ 这条锚点 2026-09-27 整跑时数到 0 次 —— **不是我的改动弄坏的**，是这道守卫后来被
+        #    改强了形状：lib.rs:3650 `relay_receive_hashes_assembled_plaintext_once` 现在断言的是
+        #    `handle_relay_chunk` 里**不得出现 `.hasher`**、校验必须走流式 `sha256_file_hex(`、
+        #    且不得再 `Sha256::digest(&…)`（审计 1.8 + P4：内存峰值必须与文件大小无关）。
+        #    ⇒ 旧的"把 digest(&full) 换成 digest(&name)"这个坏法所指向的形状已经整条不存在了。
+        #    该改成的新坏法（下一条接着做，别凭猜先动）：把 `.hasher` 塞回去 ——
+        #    在 `let actual_hex = match file::sha256_file_hex(&part_path) {` 前加
+        #    `let _ = r.hasher.clone().finalize();`，可编译、且第一条断言必红。
         injections=[(
             "let actual_hex: String = sha2::Sha256::digest(&full)",
             "let actual_hex: String = sha2::Sha256::digest(&name)",
@@ -3331,6 +3340,8 @@ CASES: list[Case] = [
         injections=[(
             """    let held = if has_active {
         active_received
+    } else if size > 0 && disk_retained >= size {
+        0
     } else {
         disk_retained
     };""",

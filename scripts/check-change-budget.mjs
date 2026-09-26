@@ -283,7 +283,7 @@ function classify(commit) {
           loc,
           domains,
           sensitive,
-          problem: `改动超出 L1(${files} 文件 / ${loc} 行 / ${domains.length} 领域)但 message 没有 [plan] 标记 —— 请在 commit message 里补 [plan] 并说明改动计划`,
+          problem: `改动超出 L1(${files} 文件 / ${loc} 行 / ${domains.length} 领域)但**标题行**没有 [plan] 标记 —— 补到 subject 末尾（本判据读的是 %s 标题行，正文里的 [plan] 看不见）并说明改动计划`,
         };
   }
 
