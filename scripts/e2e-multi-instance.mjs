@@ -2138,7 +2138,8 @@ step("L-B 故障注入：两端重启后仍正确", async () => {
 //   同形的一次晚到构造）里让 C 在 A 发完之后才第一次上线 ⇒ 90 s 内 C 库里 0 行：
 //   B 只在"收到的那一瞬间"把群 gossip 扇给**当时可达**的邻居，之后新上线的成员拿不到补推。
 //   那是产品行为，已按实测记进 roadmap 待拍板 —— 在这一轮里写成绿就是替产品许愿。
-//   ⇒ 所以三端**同场**起，C 必须在 A 发的那一会儿就在场。
+//   ⇒ 所以 **C 必须先于 A 起、且 B↔C 链路先建好再起 A**（2026-09-27：三端同时起会让这一格偶发红，
+//     同一份二进制一次 91.2s 四条红、一次 1.1s 全绿 ⇒ 判据当时不可复现，改法见下面启动那一段）。
 if (CHAIN) {
   step("链式三实例：A 从没直发给 C 的那条群消息，C 仍收敛到了（中间人在收到的一瞬间扇出）", async () => {
     // 上一步（L-B）收尾时 A/B 已被 stopAll 停干净 ⇒ 下面写的都是**停机库**。
@@ -2221,17 +2222,27 @@ if (CHAIN) {
         + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq").run(convId, 1);
     });
 
-    // 三端同场起。⚠️ C 必须**在这一刻**就在场：两轮实测（run-2026-09-26T09-24-08-894Z、
-    // run-2026-09-26T09-27-…）里让 C 晚到（A 已发完才上线）⇒ 90s 内 C 库里 0 行，
-    // 即 B 只在"收到的那一瞬间"把群 gossip 扇给**当时可达**的邻居，之后新上线的成员拿不到补推。
-    // 所以这一格判的是**多跳收敛**，不是"晚到成员补拉" —— 后者已按实测另记进 roadmap 待拍板，
-    // 在这里写成绿就是替产品许愿。
-    for (const inst of ALL_INST) launch(inst);
-    for (const inst of ALL_INST) {
+    // 三端同场起，但**时序有讲究**（2026-09-27 被一次实测推翻后改的）：
+    // 先起 B 与 C、等 B↔C 链路真的建成，**最后**才起 A。
+    // 为什么：中间人只在"收到的那一瞬间"把 gossip 扇给**当时可达**的邻居（这正是 #77 那一格的产品行为）。
+    // 旧写法三端同时起 ⇒ A 的排队群消息可能在 C 的链路建好之前就到 B ⇒ B 无处可扇，C 永远收不到。
+    // 现场：run-2026-09-26T18-33-35-042Z 里 C 侧四条断言全红、白等 91.2s，
+    //      而同一份二进制换个启动时序 7/7 只花 1.1s（run-2026-09-26T18-37-54-706Z）
+    //      ⇒ 这条判据当时**不可复现**，而"偶尔绿的门禁"比"没跑"更坏。
+    // ⚠️ 改的只是**测试的同步点**，产品行为一字未动：晚到的邻居拿不到补推仍是 #77。
+    for (const inst of [INSTANCES[1], INST_C]) launch(inst);
+    for (const inst of [INSTANCES[1], INST_C]) {
       await waitFor(() => tcpOpen(inst.port), 60_000, `链式轮：实例 ${inst.label} 的 TCP ${inst.port} 可连`);
       await waitFor(() => bootReady(inst.log, bootBaseOf.get(inst.n), BOOT_LINE), 30_000,
         `链式轮：实例 ${inst.label} 打出 boot 完成行`);
     }
+    // 投递的同步点：C 必须先与 B 建成链路，否则"C 没收到"只是链路没建起来，判不到产品头上。
+    await waitFor(() => countLog(INST_C.log, `建链 peer=${idB.runtimeId}`) > 0,
+      60_000, "前置：C 与 B 先建成链路（这一步不过就不起 A）");
+    launch(INSTANCES[0]);
+    await waitFor(() => tcpOpen(INSTANCES[0].port), 60_000, "链式轮：A 的 TCP 可连");
+    await waitFor(() => bootReady(INSTANCES[0].log, bootBaseOf.get(INSTANCES[0].n), BOOT_LINE),
+      30_000, "链式轮：A 打出 boot 完成行");
     const bDb = openDb(INSTANCES[1].db, true);
     let bRows = [];
     try {
@@ -2247,10 +2258,7 @@ if (CHAIN) {
       bRows.length === 1 && bRows[0]?.content === CHAIN_TEXT,
       `1 行 / ${CHAIN_TEXT}`, `${bRows.length} 行 / ${bRows[0]?.content}`);
 
-    // 投递的同步点：C 必须先与 B 建成链路，否则"C 没收到"只是链路没建起来，判不到产品头上。
-    await waitFor(() => countLog(INST_C.log, `建链 peer=${idB.runtimeId}`) > 0,
-      60_000, "前置：C 与 B 建成链路");
-
+    // （B↔C 链路这一前置已经上移到"起 A 之前"，这里不再等第二次。）
     // 反向模式（§十四「错误行为测试」）：上面全部照跑，只把判据要去找的那个 msg_id 换成必定不存在的值
     // ⇒ 报不出红就说明下面几条读的不是真落库行。
     const judgedId = CHAIN_LIE ? noteId(`${chainMsgId}-lie`) : chainMsgId;
