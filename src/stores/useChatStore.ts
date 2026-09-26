@@ -488,6 +488,7 @@ export const useChatStore = defineStore("chat", () => {
         conversations.value,
         activeConv.value,
         newByConv,
+        myDeviceId.value,
       );
     }
   }
@@ -1261,10 +1262,15 @@ export const useChatStore = defineStore("chat", () => {
     await refreshAnnouncements();
   }
 
-  // ---------------- 群任务（Card kind，不在时间线上渲染，只在任务面板里折叠展示） ----------------
+  // ---------------- 群任务（Card kind：**时间线上也渲染**，同时折进任务面板） ----------------
+  // ⚠️ 这行注释此前写的是"不在时间线上渲染"，与 `utils/messageKinds.ts` 的
+  // `CARD_KINDS` / `isRenderedInTimeline("todo") === true` 相反 —— 就是这句假话让
+  // "自己发的任务在主聊天窗看不见"被当成设计如此（2026-09-26 用户实测报出）。
   // 为什么都要 `enqueueMessage(rec)`：面板里的列表是 `foldTodos(该会话的消息)` 折出来的，
   // 事件不进 store 就折不出来 —— 界面要等下次重新拉全量（= 重进会话）才刷新
-  // （与置顶/公告同一条理由）。
+  // （与置顶/公告同一条理由）。⚠️ 但那只覆盖"发起方与接收方在同一个窗口"的情况：
+  // 任务看板跑在独立窗口、另有一份 store，所以本端回送必须由后端 emit（见
+  // `commands/window.rs::send_group_payload` 的自 emit 与 lib.rs 的同名形状守卫）。
 
   /** 新建一条群任务（任意成员）。description / images 可选。返回新建的消息记录（含 todo_id）。 */
   async function createTodo(

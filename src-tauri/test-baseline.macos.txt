@@ -413,6 +413,7 @@ network::file::tests::stall_verdict_boundaries
 network::file::tests::stalled_receiver_is_reclaimed_only_after_the_idle_window
 network::file::tests::tampered_chunk_fails_to_decrypt
 network::file::tests::the_active_receiver_is_the_authority_not_the_disk_prefix
+network::file::tests::two_same_named_transfers_do_not_overwrite_each_other
 network::file::tests::unique_path_never_returns_existing_path
 network::file::tests::unknown_attempt_count_is_not_a_death_sentence
 network::file::tests::wire_ledger_is_reclaimed_on_every_exit_path
@@ -605,6 +606,7 @@ tests::gossip_fanout_targets_reachable_links
 tests::group_audience_is_wired_and_keeps_three_states
 tests::group_file_cancel_registry_is_scoped_per_recipient
 tests::group_keys_always_precede_group_messages
+tests::group_send_kernel_emits_to_own_windows_after_commit_outside_the_lock
 tests::guard_source_views_register_every_include_subfile
 tests::hourly_sweep_covers_parts_relay_and_stalled_receivers
 tests::in_flight_media_is_not_reported_as_deleted

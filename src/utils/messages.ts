@@ -355,6 +355,7 @@ export function applyIncomingToConversations(
   conversations: Conversation[],
   activeConvId: string | null,
   incomingByConv: Map<string, MessageRecord[]>,
+  selfSenderId = "",
 ): Conversation[] {
   const next: Conversation[] = conversations.map((c) => ({ ...c }));
   for (const [convId, rawMsgs] of incomingByConv) {
@@ -374,7 +375,11 @@ export function applyIncomingToConversations(
     if (!conv) continue;
     conv.last_msg = previewText(last);
     conv.last_ts = last.ts;
-    if (convId !== activeConvId) conv.unread += msgs.length;
+    // 自己发的那条**不计未读**，但上面两行仍要跑：后端给自己的消息写库时未读就是 0
+    // （`commands/window.rs` 的 `touch_conversation(..., 0)`），前端照加就等于两边永久不一致。
+    // 判据取"是不是本机发的"而不是 kind —— 群文件/公告/任务都走自 emit，按 kind 挡会漏。
+    const notMine = selfSenderId ? msgs.filter((m) => m.sender_id !== selfSenderId) : msgs;
+    if (convId !== activeConvId) conv.unread += notMine.length;
   }
   return sortConversations(next);
 }

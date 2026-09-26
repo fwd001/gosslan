@@ -144,6 +144,38 @@ test("活跃会话收到消息不计未读，非活跃会话累计未读", () =>
   assert.equal(f2.last_ts, 20);
 });
 
+test("自己发的消息不给会话加未读，但预览与 last_ts 照更新（后端 touch_conversation 记的是 0）", () => {
+  // 场景是真的会走到的：主窗口在任务窗/公告那条链上会收到自己发的 `message-received`
+  // （`commands/group_announcements.rs` 早就在自 emit，补上群发送内核的自 emit 后每次群发都走这里）。
+  // 后端写库时未读传的是 0，所以前端若照加，会话列表就会与 DB 从此不一致。
+  const cs = [conv("g1", 0, 0)];
+  const byConv = new Map([
+    ["g1", [msg({ msg_id: "mine", conv_id: "g1", ts: 30, kind: "todo", content: "任务：交周报", sender_id: "dev-me" })]],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv, "dev-me");
+  const g1 = out.find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 0, "自己发的不计未读：后端 touch_conversation 那一步写进 DB 的未读就是 0");
+  assert.ok(g1.last_ts === 30, "预览时间仍要前进，否则会话列表排序会停在旧消息上");
+  assert.ok(g1.last_msg && g1.last_msg.length > 0, "摘要仍要更新（自己发的消息当然也是这个会话的最后一条）");
+});
+
+test("同批里自己发的与别人发的混在一起：只有别人那部分计未读", () => {
+  const cs = [conv("g1", 0, 0)];
+  const byConv = new Map([
+    [
+      "g1",
+      [
+        msg({ msg_id: "mine", conv_id: "g1", ts: 30, sender_id: "dev-me", content: "我发的" }),
+        msg({ msg_id: "theirs", conv_id: "g1", ts: 31, sender_id: "dev-them", content: "TA 发的" }),
+      ],
+    ],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv, "dev-me");
+  const g1 = out.find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 1);
+  assert.equal(g1.last_msg, "TA 发的"); // 预览取整批最后一条，含自己发的
+});
+
 test("会话按 last_ts 降序重排", () => {
   const cs = [conv("f1", 1), conv("f2", 2)];
   const byConv = new Map([["f1", [msg({ msg_id: "m1", conv_id: "f1", ts: 100, content: "新" })]]]);

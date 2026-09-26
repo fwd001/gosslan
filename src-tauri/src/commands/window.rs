@@ -217,6 +217,19 @@ async fn send_group_payload(
         tx.commit().map_err(|e| format!("群消息写入失败：{e}"))?;
     }
 
+    // 落库成功后，把这条消息回送给**本机所有窗口**。
+    //
+    // 为什么必须由后端做、而不是靠发起方乐观插入：群任务看板跑在独立窗口 `todos.html`
+    // 里，那份 `useChatStore` 是**另一个实例**，它 `enqueueMessage` 的记录主聊天窗完全看不见
+    // ⇒ 用户自己发的任务/投票/接龙在自己的时间线上不出现，要重进会话才看得见。
+    // 同形的群发送（群文件/公告 `group_announcements.rs`）早就在写库后自 emit，
+    // 缺的正是内核这一句 —— 补在这里，所有走内核的 kind 一起修好，不必每个入口挂一次。
+    //
+    // 位置两处都是硬约束：必须在上面的锁作用域**闭合之后**（持锁 emit 是既有不变量），
+    // 且 `tx.commit()` 成功之后（emit 一条没落库的消息会让前端显示一条刷新即消失的记录）。
+    // 重复渲染不用担心：前端 `applyIncoming` 按 `msg_id` upsert，自发的那条也不计未读。
+    let _ = s.app.emit("message-received", &rec);
+
     broadcast_gossip(s, env).await;
 
     // INV-P24 的群侧：**只报事实，不拦发送**。这条 kind 若有成员**确知**渲染不了，

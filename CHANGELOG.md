@@ -10,6 +10,31 @@
 
 ## [Unreleased]
 
+### 修复（2026-09-26 · 用户实测报出的群任务可见性缺陷）
+
+- **自己发的群任务，主聊天窗看不见那条卡片**（要重进会话才出现）。根因不是"消息没落库"，
+  也不是"自己的消息被过滤"：群任务看板跑在独立窗口 `todos.html`，那份 `useChatStore` 是
+  **另一个实例**，所以 `createTodo` 的乐观插入只写进了任务窗的 `messages`，主聊天窗完全不知情。
+  同形的群发送（群文件 / 公告）早就在写库成功后自 emit，缺的正是群发送内核那一句。
+  - `commands/window.rs::send_group_payload`：`tx.commit()` 成功、锁作用域闭合之后
+    补 `s.app.emit("message-received", &rec)` —— 接在**内核**，走它的 kind（文本/代码/合并/任务/投票）一起修好。
+    位置两处都是硬约束：早于 commit = emit 一条没落库的消息；落在锁里 = 持锁 emit（既有不变量）。
+  - 判据 `lib.rs::tests::group_send_kernel_emits_to_own_windows_after_commit_outside_the_lock`：
+    断言取**顺序 + 作用域**而不是"含不含那串字面量"。三条都拿错误写法撞过红：
+    缺 emit / emit 挪到 commit 之前 / emit 落在锁内。注入用完从备份还原，收尾 sha256 与备份一致。
+- **自己发的消息被算进前端未读**（既存缺陷，本次变成每次群发都可达）：
+  `utils/messages.ts::applyIncomingToConversations` 累加 `conv.unread` 时没有 sender 判据，
+  而后端给自己的消息写库时未读记的是 `0` ⇒ 两边永久不一致。判据加在第 4 个**可选**参数上
+  （默认空 = 行为不变，所以该文件原有的用例一行没改），**预览与 `last_ts` 仍照更**，
+  只有非本机发的那部分计未读。先写红测试再实现（两条断言：自发的不计未读但预览前进；混批只数别人的）。
+- **一处假注释是这个缺陷被当成"设计如此"的来源**：`useChatStore` 里那句
+  "Card kind，不在时间线上渲染" 与 `messageKinds.ts` 的 `CARD_KINDS` /
+  `isRenderedInTimeline("todo") === true` 相反，已就地改直并写清为什么。
+- 顺手补齐测试登记：本轮基线多出的第二条
+  `network::file::tests::two_same_named_transfers_do_not_overwrite_each_other` 不是本轮新写的用例，
+  而是先前那格撞名修复落地后**没人跑 `--update`**；清单守卫一直按"多名只 WARN"在提示，
+  这次跟着补上（不是守卫空转，是登记动作欠了一次 —— 判据方向写在 `check-test-manifest.mjs` 文件头）。
+
 ### Test（2026-09-26 · B-5 半收口：`useAppStore` 的直写面冻成「只许变小」的判据）
 
 roadmap 的 B-5 写着"`useAppStore` 直写未收，`storeContract` 禁令只扫 `useChatStore`"。动手前先复跑前提：

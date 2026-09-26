@@ -4234,6 +4234,43 @@ mod tests {
         );
     }
 
+    /// 群发送内核必须**在写库成功之后、且不持 DB 锁**时把这条消息回送给本机窗口（#82）。
+    ///
+    /// 为什么要这条：群任务看板跑在独立窗口里、有自己的 store 实例，所以 `createTodo`
+    /// 的乐观插入只落在任务窗那份 `messages` 上，主聊天窗完全不知情 ⇒ 用户自己发的任务
+    /// 在自己的时间线上看不见（重进会话才看见）。同类的群发送（群文件/公告
+    /// `commands/group_announcements.rs`）早就在写库后自 emit，缺的正是内核这一句。
+    ///
+    /// 判据刻意取**顺序 + 作用域**，不是"有没有那串字面量"：
+    /// - emit 早于 `tx.commit()` ⇒ 会 emit 一条没落库的消息（本仓不变量明令禁止）；
+    /// - emit 落在 `s.db.lock()` 的作用域里 ⇒ 持锁 emit（同样是既有不变量）。
+    /// 这两条任一被破坏，下面的相对位置断言都会红。
+    #[test]
+    fn group_send_kernel_emits_to_own_windows_after_commit_outside_the_lock() {
+        let commands = all_commands_src();
+        let body = rust_fn_body(&commands, "fn send_group_payload(");
+        let lock = body
+            .find("s.db.lock()")
+            .expect("群发送内核应当有一段持锁写库，找不到 `s.db.lock()` 说明形状变了");
+        let commit = body
+            .find("tx.commit()")
+            .expect("落库与入队必须在同一个事务里（`tx.commit()`）");
+        assert!(lock < commit, "持锁段必须包住 commit，否则写入不是原子的");
+        let emit = body
+            .find(r#"emit("message-received""#)
+            .expect("群发送内核没有把这条消息回送给本机窗口：别的窗口（群任务看板）自己发的东西，\
+                     主聊天窗收不到 ⇒ 用户看不见自己刚发的任务卡片。\n\
+                     对照 `commands/group_announcements.rs` 的同形写法：写库成功后 `let _ = s.app.emit(\"message-received\", &rec);`");
+        assert!(
+            commit < emit,
+            "emit 必须晚于 commit：先通知再落库，前端会渲染出一条其实没存的记录"
+        );
+        assert!(
+            body[commit..emit].contains("\n    }"),
+            "emit 不能落在 `s.db.lock()` 的作用域内（持锁 emit 是既有不变量）—— 它必须在锁作用域闭合之后"
+        );
+    }
+
     /// 「和自己聊天」必须是**纯本地**路径（用户 2026-09-16 的功能）。
     ///
     /// 为什么必须守：自聊一旦走成网络路径，会同时破坏两条不变量 ——
