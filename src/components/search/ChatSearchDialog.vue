@@ -84,6 +84,27 @@ const senderName = computed(
 const activeGroup = computed(
   () => groups.value.find((g) => g.conv_id === activeConvId.value) ?? groups.value[0] ?? null,
 );
+
+/**
+ * 键盘选结果（原生感走查 N2）。⚠️ 这里**只缺方向键**：Esc / 点遮罩关闭是 `BaseModal`
+ * 用的 HeadlessUI `Dialog` 自带的，再写一遍就是两套状态（那种"看着更保险"的重复实现
+ * 正是本仓反复反对的那类）。
+ * `activeIdx` 是当前高亮的那一条命中；回车打开它 —— 关键词还没搜过时回车仍是"立刻重搜"
+ * （保留原来的语义：输入时 150ms 防抖，回车是"我确定现在就查"）。
+ */
+const activeIdx = ref(0);
+/** 已经发过请求的那个关键词；与 `keyword` 不等 ⇒ 输入还没落成结果，此时回车=重搜。 */
+const searched = ref("");
+const listRef = ref<HTMLDivElement | null>(null);
+
+function stepHit(d: number) {
+  const n = activeGroup.value?.messages.length ?? 0;
+  if (!n) return;
+  activeIdx.value = Math.max(0, Math.min(n - 1, activeIdx.value + d));
+  listRef.value
+    ?.querySelector(`[data-hit="${activeIdx.value}"]`)
+    ?.scrollIntoView({ block: "nearest" });
+}
 const total = computed(() => totalHits(groups.value));
 const inputRef = ref<HTMLInputElement | null>(null);
 
@@ -108,6 +129,8 @@ async function runSearch(keepSenderOptions = false) {
     });
     if (mine !== seq) return; // 只接受最后一次请求的结果（连打时会有多个在途）
     groups.value = result;
+    searched.value = keyword.value;
+    activeIdx.value = 0;
     if (keepSenderOptions) senderOptions.value = senderOptionsFrom(result);
     // 选中态：保持当前选中；若它已不在结果里，落到第一条
     if (!result.some((g) => g.conv_id === activeConvId.value)) {
@@ -123,10 +146,22 @@ async function runSearch(keepSenderOptions = false) {
   }
 }
 
-/** 回车：立即按当前关键词重搜（输入时有 150ms 防抖，回车是"我确定，现在就查"）。 */
+/** 回车：关键词已经落成结果 ⇒ 打开高亮那一条；还没搜过 ⇒ 立刻重搜（原语义保留）。 */
 function onEnter(e: KeyboardEvent) {
   if (ime.isIme(e)) return;
+  if (searched.value === keyword.value && activeGroup.value?.messages.length) {
+    openHit(activeIdx.value);
+    return;
+  }
   void runSearch(senderFilter.value === null);
+}
+
+function openHit(idx: number) {
+  const g = activeGroup.value;
+  const msg = g?.messages[Math.max(0, Math.min((g?.messages.length ?? 1) - 1, idx))];
+  if (!g) return;
+  emit("open-conversation", { convId: g.conv_id, msgId: msg?.msg_id ?? "" });
+  emit("close");
 }
 
 function searchActive() {
@@ -190,11 +225,8 @@ function choosePreset(p: SearchDatePreset) {
 }
 
 function enterChat() {
-  const g = activeGroup.value;
-  if (!g) return;
-  const msgId = g.messages[0]?.msg_id ?? "";
-  emit("open-conversation", { convId: g.conv_id, msgId });
-  emit("close");
+  // 与键盘同一条路：打开**高亮那一条**（以前固定 `messages[0]` ⇒ 鼠标点的和回车跳的可能不是同一条）
+  openHit(activeIdx.value);
 }
 
 /** 单聊不重复显示发送者名字（微信同款）；群聊才显示"谁说的"。 */
@@ -232,6 +264,8 @@ function showSender(group: ChatSearchGroup): boolean {
           :aria-label="t('search.placeholder')"
           class="w-full bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)] outline-none focus:border-transparent"
           @keydown.enter.prevent="onEnter"
+          @keydown.down.prevent="stepHit(1)"
+          @keydown.up.prevent="stepHit(-1)"
           @compositionstart="ime.onStart"
           @compositionend="ime.onEnd"
         />
@@ -359,11 +393,14 @@ function showSender(group: ChatSearchGroup): boolean {
             <ChevronRight class="h-3.5 w-3.5" />
           </button>
         </div>
-        <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <div ref="listRef" class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <div
-            v-for="m in activeGroup?.messages ?? []"
+            v-for="(m, hi) in activeGroup?.messages ?? []"
             :key="m.msg_id"
-            class="flex gap-2.5 py-2.5"
+            :data-hit="hi"
+            :aria-current="hi === activeIdx ? 'true' : undefined"
+            class="flex gap-2.5 rounded-[var(--gosslan-radius-md)] px-2 py-2.5"
+            :class="hi === activeIdx ? 'bg-[var(--gosslan-hover)]' : ''"
           >
             <MessageAvatar :id="m.sender_id" :name="m.sender_name" />
             <div class="min-w-0 flex-1">

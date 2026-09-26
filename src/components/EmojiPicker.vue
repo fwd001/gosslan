@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { nextTick, ref, watch } from "vue";
 import { EMOJIS } from "@/utils/emoji";
+import { t } from "@/i18n";
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     open: boolean;
     /**
@@ -17,6 +19,57 @@ const emit = defineEmits<{
   (e: "select", displayName: string): void;
   (e: "close"): void;
 }>();
+
+/**
+ * 键盘出口（原生感走查 N1）：面板是一个**普通浮层**，不是 `BaseModal`
+ * （后者是 HeadlessUI 的 `Dialog`，Esc 与焦点管理是自带的）。所以这里必须自己补齐三件事，
+ * 否则键盘用户打开面板后就出不去、也走不了格子：
+ *   ① Esc 关闭；② 方向键在格子里移动（八列，见下面 COLS）；
+ *   ③ 关闭后把焦点**还给打开它的那个按钮** —— 不还的话焦点掉回 <body>，
+ *      键盘用户下一次按 Tab 要从页面开头重走（读屏用户等于丢了位置）。
+ */
+const COLS = 8; // ⚠️ 必须与模板里的 `grid-cols-8` 同步：改了列数不改这里，上下键会跳错行
+const panelRef = ref<HTMLDivElement | null>(null);
+let restoreFocusTo: HTMLElement | null = null;
+
+function buttons(): HTMLButtonElement[] {
+  return Array.from(panelRef.value?.querySelectorAll<HTMLButtonElement>("button") ?? []);
+}
+function focusAt(list: HTMLButtonElement[], idx: number) {
+  const at = Math.max(0, Math.min(list.length - 1, idx));
+  list[at]?.focus();
+  list[at]?.scrollIntoView({ block: "nearest" });
+}
+function onKey(e: KeyboardEvent) {
+  const list = buttons();
+  if (!list.length) return;
+  const cur = list.indexOf(document.activeElement as HTMLButtonElement);
+  if (e.key === "Escape") {
+    e.preventDefault();
+    emit("close");
+    return;
+  }
+  if (cur < 0) return; // 焦点不在格子上（比如刚打开还没落点）⇒ 不抢方向键
+  const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: COLS, ArrowUp: -COLS }[e.key];
+  if (step === undefined) return;
+  e.preventDefault(); // 不拦的话上下键会滚整页 / 光标在输入框里跳走
+  focusAt(list, cur + step);
+}
+
+watch(
+  () => props.open,
+  async (open) => {
+    if (open) {
+      restoreFocusTo = document.activeElement as HTMLElement | null;
+      await nextTick();
+      focusAt(buttons(), 0);
+    } else if (restoreFocusTo) {
+      // 只在"是我们自己关掉的"这一次还焦点；调用方重复传 open=false 不会误抢焦点
+      restoreFocusTo.focus?.();
+      restoreFocusTo = null;
+    }
+  },
+);
 </script>
 
 <template>
@@ -29,9 +82,14 @@ const emit = defineEmits<{
        8px 后留白翻倍，而可视高度 300 内仍是 7 行（36 + 44×6 = 300，正好 7 行）不损失行数。 -->
   <div
     v-if="open"
+    ref="panelRef"
     class="frost absolute left-0 z-50 w-[min(360px,calc(100vw-2rem))] select-none rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] shadow-xl"
     :class="placement === 'below' ? 'top-full mt-2' : 'bottom-full mb-2'"
+    role="dialog"
+    :aria-label="t('chat.composer.emoji')"
+    tabindex="-1"
     @click.stop
+    @keydown="onKey"
   >
     <div
       class="grid grid-cols-8 content-start gap-3 overflow-y-auto p-2"
