@@ -710,16 +710,32 @@ fn index_on_a_migration_added_column_must_not_live_in_schema() {
 /// 而 `outbox.msg_id` 的唯一性必须由内联约束继续守住 —— 所以下面顺带证明它还在生效。
 #[test]
 fn superseded_indexes_are_dropped_and_uniquity_survives() {
+    /// 删这两条索引的那一步自己的 `from`。
+    ///
+    /// 为什么不是 `DB_VERSION - 1`：那个写法把"我要重放的那一步"和"链上最后一步"绑死了。
+    /// v9→v10 一进来，`DB_VERSION - 1` 就变成 9 ⇒ 只重放 v9→v10，这一步**根本没跑**，
+    /// 于是这条用例只剩"SCHEMA 不许把删掉的东西造回来"那半截（它本来就会绿）。
+    const INDEX_DROP_STEP: u32 = 8;
+
+    // 前置自证：被钉的那一步必须还在链上。挪走/改名时报红，而不是静默跳过。
+    assert!(
+        super::MIGRATIONS
+            .iter()
+            .any(|m| m.from == INDEX_DROP_STEP && m.to == INDEX_DROP_STEP + 1),
+        "这条用例重放的是 v{INDEX_DROP_STEP}→v{}，可迁移链里已经没有这一步了",
+        INDEX_DROP_STEP + 1
+    );
+
     let path = temp_db_path();
     {
         let conn = init(&path).expect("first init");
-        // 造出"老库历史上确实建过这两条"的形状，再把版本退回上一档
+        // 造出"老库历史上确实建过这两条"的形状，再把版本退回这一步之前
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_outbox_msg_id ON outbox(msg_id);
              CREATE INDEX IF NOT EXISTS idx_file_outbox_peer ON file_outbox(peer_id, status);",
         )
         .unwrap();
-        conn.pragma_update(None, "user_version", DB_VERSION - 1)
+        conn.pragma_update(None, "user_version", INDEX_DROP_STEP)
             .unwrap();
     }
 
@@ -1146,4 +1162,54 @@ fn a_failing_migration_step_rolls_back_completely_and_never_advances_the_version
         3,
         "重放不许改消息条数"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #61：已经跨过"坏掉的 v7"的老库，那批真孤儿回执永远没人清
+// ---------------------------------------------------------------------------
+
+/// v7 的谓词在 2026-09-26 之前是错的（锚 `id` 而非 `group_id` ⇒ 该删的没删、还报错被吞）。
+/// 修好之后**只对新升级的库生效**：已经停在 `user_version >= 7` 的库不会重跑 v7，
+/// 于是那批"群早就不在册、待发已读回执还活着"的行留在库里 —— 每次对端上线都会
+/// 给一个已经不是群成员的设备发一条 `GroupReadReceipt`（说"我在某个我不在的群里读到哪了"）。
+/// 用户 2026-09-26 拍板＝加一次清理（v9→v10 重跑同一条**双锚**谓词，幂等）。
+#[test]
+fn v10_sweeps_orphan_pending_reads_in_dbs_that_already_passed_the_broken_v7() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("init fresh db");
+
+    conn.execute_batch(
+        "INSERT INTO groups(id, name, creator, created_at)
+             VALUES ('g-live','在册群','me',1), ('g-noconv','会话被删但群还在册','me',1);
+         INSERT INTO conversations(id, kind, name) VALUES ('group:g-live','group','在册群');
+         INSERT INTO pending_group_reads(group_id, peer_id, last_read_ts)
+             VALUES ('g-live','peer-1',1), ('g-noconv','peer-1',2), ('g-gone','peer-1',3);",
+    )
+    .unwrap();
+
+    // 模拟"已经跑过 v7（那还是坏版本）"的老库：版本号停在 9，只重放 v9→DB_VERSION。
+    conn.execute_batch("PRAGMA user_version = 9;").unwrap();
+    run_migrations(&conn, 9).expect("v9 之后的迁移不许报错");
+
+    let count = |sql: &str| -> i64 {
+        conn.query_row(sql, [], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("{sql} 查不动：{e}"))
+    };
+    assert_eq!(
+        count("SELECT COUNT(*) FROM pending_group_reads WHERE group_id='g-gone'"),
+        0,
+        "真孤儿（群不在册、会话也不在）的待发回执还在 ⇒ 老库每次对端上线都会发一条没人该收到的已读回执"
+    );
+    // 反向：两条**都该活着**。少一个锚就删在册群的数据是事故（#60 的教训）。
+    assert_eq!(
+        count("SELECT COUNT(*) FROM pending_group_reads WHERE group_id='g-live'"),
+        1,
+        "在册群（两个锚都在）的回执被清掉了 ⇒ 扩大伤害"
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM pending_group_reads WHERE group_id='g-noconv'"),
+        1,
+        "用户删掉群会话是合法操作（群仍在册）⇒ 双锚谓词必须让它活着"
+    );
+    assert_eq!(read_user_version(&conn), DB_VERSION);
 }

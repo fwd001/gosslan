@@ -17,7 +17,7 @@ use crate::state::{
 /// 建表 / 建索引不需要 step：`init()` 在版本分支**之前**跑 `execute_batch(SCHEMA)`，
 /// 而 SCHEMA 全是 `IF NOT EXISTS` ⇒ 新老库每次启动都会被补齐。
 /// 同一条索引同时写在 SCHEMA 与 MIGRATIONS 里 = 两个家（历史上有过，v8→v9 起收敛）。
-pub const DB_VERSION: u32 = 9;
+pub const DB_VERSION: u32 = 10;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -160,6 +160,38 @@ fn ensure_post_schema_shape(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_messages_conv_kind ON messages(conv_id, kind);",
     )?;
     Ok(())
+}
+
+/// 群孤儿清理 —— **谓词只有这一份**，v7 与 v10 共用（两处各写一份就是本仓反复付学费的漂移形状）。
+///
+/// 双锚：群不在 `groups` **且** 会话不在 `conversations` 才算孤儿。单用
+/// `NOT IN conversations` 是数据事故 —— 用户删群会话是合法操作（`delete_conversation`），
+/// `groups` 行还在，那样会把一整段在册群的历史不可逆清空。
+///
+/// 谓词必须锚 `group_id` / `substr(conv_id, 7)`，不能锚 `id`：那几张表的 `id` 是自增行号
+/// （`group_reads` / `pending_group_reads` 干脆没有 `id` 列），两个域永不相交 ⇒ 锚 `id` 的
+/// 实际后果是"两条删在册群数据、两条报错被吞"（#60，判据
+/// `migration_tests::v7_orphan_cleanup_keeps_live_group_rows_and_drops_true_orphans`）。
+///
+/// 返回失败语句的错误而不自己吞：调用方决定日志口径（v7 与 v10 都是"尽力清理、不拦启动"）。
+fn sweep_group_orphans(conn: &Connection) -> Vec<String> {
+    let orphan_group = "group_id NOT IN (SELECT id FROM groups) \
+         AND ('group:' || group_id) NOT IN (SELECT id FROM conversations)";
+    let orphan_conv = "substr(conv_id, 7) NOT IN (SELECT id FROM groups) \
+         AND conv_id NOT IN (SELECT id FROM conversations)";
+    [
+        format!("DELETE FROM messages WHERE conv_id LIKE 'group:%' AND {orphan_conv}"),
+        format!("DELETE FROM group_outbox WHERE {orphan_group}"),
+        format!("DELETE FROM file_outbox WHERE group_id IS NOT NULL AND {orphan_group}"),
+        format!("DELETE FROM group_reads WHERE {orphan_group}"),
+        format!("DELETE FROM pending_group_reads WHERE {orphan_group}"),
+        format!(
+            "DELETE FROM group_recalled_messages WHERE conv_id LIKE 'group:%' AND {orphan_conv}"
+        ),
+    ]
+    .iter()
+    .filter_map(|sql| conn.execute(sql, []).err().map(|e| format!("{sql} ⇒ {e}")))
+    .collect()
 }
 
 const MIGRATIONS: &[Migration] = &[
@@ -305,35 +337,11 @@ const MIGRATIONS: &[Migration] = &[
         to: 7,
         description: "清理历史孤儿群消息与投递/回执残留",
         run: |conn| {
-            // ⚠️ 口径修正（自审 #2）：**双锚都要不在册**才算孤儿 ——
-            // `NOT IN conversations` 单独用是数据事故：用户删群会话是合法操作
-            // （commands::delete_conversation），groups 行还在，v7 升级会把
-            // 一整段在册群的历史不可逆清空。
-            // ⚠️ 谓词必须锚 `group_id`，不能锚 `id`（#60）：这四张表的 `id` 是
-            // `INTEGER PRIMARY KEY AUTOINCREMENT` 行号（`group_reads` /
-            // `pending_group_reads` 干脆没有 `id` 列），而 `groups.id` 是 TEXT 群 id
-            // ⇒ 两个域永不相交。锚 `id` 的实际后果是**两条删在册群数据、两条报错被吞**：
-            // 判据 `migration_tests::v7_orphan_cleanup_keeps_live_group_rows_and_drops_true_orphans`。
-            // 与 v3-v5 同风格：尽力清理、eprintln 容错，绝不 `?` 上抛把
-            // db::init 变成 Err 让应用起不来（清不干净下次升级还会再来一遍）。
-            let orphan_group = "group_id NOT IN (SELECT id FROM groups) \
-                 AND ('group:' || group_id) NOT IN (SELECT id FROM conversations)";
-            let orphan_conv = "substr(conv_id, 7) NOT IN (SELECT id FROM groups) \
-                 AND conv_id NOT IN (SELECT id FROM conversations)";
-            let cleanup = |sql: &str| -> rusqlite::Result<()> { conn.execute(sql, []).map(|_| ()) };
-            for sql in [
-                &format!("DELETE FROM messages WHERE conv_id LIKE 'group:%' AND {orphan_conv}"),
-                &format!("DELETE FROM group_outbox WHERE {orphan_group}"),
-                &format!("DELETE FROM file_outbox WHERE group_id IS NOT NULL AND {orphan_group}"),
-                &format!("DELETE FROM group_reads WHERE {orphan_group}"),
-                &format!("DELETE FROM pending_group_reads WHERE {orphan_group}"),
-                &format!(
-                    "DELETE FROM group_recalled_messages WHERE conv_id LIKE 'group:%' AND {orphan_conv}"
-                ),
-            ] {
-                if let Err(e) = cleanup(sql) {
-                    eprintln!("[gosslan-db] v7 孤儿清理跳过一条语句（不影响启动）：{e}");
-                }
+            // 谓词见 `sweep_group_orphans`（双锚、必须锚 group_id，理由写在那里）。
+            // 与 v3-v5 同风格：尽力清理、eprintln 容错，绝不 `?` 上抛把 db::init 变成 Err
+            // 让应用起不来（清不干净下次升级还会再来一遍）。
+            for err in sweep_group_orphans(conn) {
+                eprintln!("[gosslan-db] v7 孤儿清理跳过一条语句（不影响启动）：{err}");
             }
             Ok(())
         },
@@ -380,6 +388,27 @@ const MIGRATIONS: &[Migration] = &[
                 if let Err(e) = conn.execute(sql, []) {
                     eprintln!("[gosslan-db] v9 删冗余索引跳过一条（不影响启动）：{e}");
                 }
+            }
+            Ok(())
+        },
+    },
+    // v9 → v10：把 v7 那段孤儿清理**再跑一遍**（#61，用户 2026-09-26 拍板＝加一次清理）。
+    //
+    // 为什么需要重跑而不是"修好 v7 就完了"：迁移链按 `user_version` 前进，
+    // **已经跨过 v7 的老库永远不会重放它** —— 那批"群早就不在册、待发已读回执还活着"的行
+    // 就留在库里。用户可见后果：那个设备每次上线，本机都会给它发一条
+    // `GroupReadReceipt`（"我在一个我并不存在的群里读到了某时刻"），而对端只能照单收下。
+    //
+    // 谓词与 v7 同一份（`sweep_group_orphans`），双锚 ⇒ 重跑对已经干净的库是纯空操作，
+    // 对"群仍在册但会话被用户删掉"的库一个字节都不动（这条反向断言在判据里）。
+    // 同 v7 的容错口径：尽力清理、清不动只留痕，绝不把 `init` 变成 Err。
+    Migration {
+        from: 9,
+        to: 10,
+        description: "重跑群孤儿清理（补上坏版本 v7 漏掉的存量）",
+        run: |conn| {
+            for err in sweep_group_orphans(conn) {
+                eprintln!("[gosslan-db] v10 存量清理跳过一条语句（不影响启动）：{err}");
             }
             Ok(())
         },
