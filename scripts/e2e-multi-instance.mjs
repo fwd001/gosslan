@@ -68,7 +68,7 @@ const NO_ROUTED = process.env.E2E_NO_ROUTED === "1";
     console.log(fails.length
       ? `✗ 截图判据自证红 ${fails.length} 条`
       : notes.length
-        ? "✅ 截图判据自证成立（只证了「能判假」；本机没采集器 ⇒「能判真」这格今天没证）"
+        ? "✅ 截图判据自证成立（能判假）；「能判真」这一格今天没证 —— 原因见上面每条 note"
         : "✅ 截图判据自证成立（能判假 + 能判真）");
     process.exit(fails.length ? 1 : 0);
   }
@@ -282,7 +282,7 @@ import net from "node:net";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BOOT_LINE, bootBaseline, bootReady, countLog, readLogTail, selfcheckLogtail, stashLogs } from "./e2e-logtail.mjs";
-import { captureShot, selfcheckShot } from "./e2e-shot.mjs";
+import { captureShot, describeShotDir, selfcheckShot } from "./e2e-shot.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const ISO = new Date().toISOString().replace(/[:.]/g, "-");
@@ -2085,11 +2085,13 @@ step("L-B 故障注入：两端重启后仍正确", async () => {
   // **不管界面对不对**（没有像素级判据；那一半仍按 §12.6 记结构级/MANUAL，写成绿就是假证据）。
   // ⚠️ 非 macOS 没有采集器 ⇒ 这一条**是红，不是跳过**（§十禁止把没跑写成 PASS）：
   //    Windows 腿要自己实现采集器，在那之前这格就明着红着。
+  //    同理 macOS 上**屏幕被锁**也红：`screencapture` 退 0 却截到一张整屏纯色，
+  //    而 `shotIsReal` 现在会把纯色帧判掉（2026-09-27 实测到的洞）。报错里会说是哪一种。
   shotFiles.push(captureShot(RUN_DIR, "2-after-restart"));
   const realShots = shotFiles.filter(Boolean);
   check("报告带两张真实界面截图（链路建立后 / 两端重启后）",
     realShots.length === 2, "2 张全屏 PNG，且不是空图",
-    `${realShots.length} 张：${realShots.map((f) => path.basename(f)).join(", ") || "本平台无采集器"}`);
+    `${realShots.length} 张：${realShots.map((f) => path.basename(f)).join(", ") || describeShotDir(RUN_DIR)}`);
 });
 
 // §五「群聊 + gossip」这一族里最后一格：成员**不是 A 的直发对象**，只能靠中间人把 gossip 带给它。

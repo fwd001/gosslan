@@ -15,6 +15,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 
 export const SHOTS_DIRNAME = "screenshots";
 /** 「不是空图」= **PNG 结构成立**（签名 + IHDR 宽高 > 0），字节下限只用来挡桩文件。
@@ -31,6 +32,88 @@ export function pngHeader(buf) {
   if (buf.length < 24 || !buf.subarray(0, 8).equals(PNG_SIG)) return null;
   if (buf.readUInt32BE(12) !== 0x49484452 /* "IHDR" */) return null;
   return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+}
+
+/**
+ * 整张是不是**纯色帧**（屏幕被锁 / 显示器休眠时 `screencapture` 退 0、结构完好、内容全黑）。
+ *
+ * 为什么必须有这条：今天的实测 —— 锁屏时截出来 106,973 B、签名与 IHDR 全对，
+ * 而 2026-09-26 那次"桌面近乎空白"的 106,973 B **一个字节都不差**
+ * ⇒ 体积与结构两条判据都分不开"真截图"和"一屏黑"，于是「报告带两张真实界面截图」
+ * 可以在屏幕锁着的情况下判绿。这正是§十禁止的那类假证据。
+ *
+ * 只解 8 位、非隔行的真彩/灰度（`screencapture` 就是这一类）；**解不了就返回 false**
+ * —— 这条判据只许把"确证是纯色"的判掉，不许因为看不懂就判掉（那会变成新的"判据坏了"红）。
+ */
+export function pngIsBlank(file, maxPixels = 400_000) {
+  let buf;
+  try {
+    buf = fs.readFileSync(file);
+  } catch {
+    return false;
+  }
+  const head = buf.length >= 33 ? pngHeader(buf) : null;
+  if (!head) return false;
+  const bitDepth = buf[24], colorType = buf[25], interlace = buf[28];
+  if (bitDepth !== 8 || interlace !== 0 || ![0, 2, 3, 4, 6].includes(colorType)) return false;
+  const channels = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[colorType];
+  const bpp = channels; // 8 位 ⇒ 每像素 bpp 字节
+  // 拼 IDAT
+  const idat = [];
+  let off = 8;
+  while (off + 8 <= buf.length) {
+    const len = buf.readUInt32BE(off);
+    const type = buf.readUInt32BE(off + 4);
+    if (len === 0 && type === 0x49454e44 /* IEND */) break;
+    if (type === 0x49444154 /* IDAT */) idat.push(buf.subarray(off + 8, off + 8 + len));
+    off += 12 + len;
+  }
+  let raw;
+  try {
+    raw = zlib.inflateSync(Buffer.concat(idat));
+  } catch {
+    return false;
+  }
+  const stride = head.w * bpp;
+  if (raw.length < (stride + 1) * head.h) return false;
+  // 逐行反过滤（0 None / 1 Sub / 2 Up / 3 Average / 4 Paeth）
+  const step = Math.max(1, Math.floor((head.w * head.h) / maxPixels));
+  const prev = Buffer.alloc(stride);
+  const cur = Buffer.alloc(stride);
+  const seen = new Set();
+  let idx = 0, sampled = 0;
+  for (let y = 0; y < head.h; y++) {
+    const ft = raw[idx++];
+    raw.copy(cur, 0, idx, idx + stride);
+    idx += stride;
+    for (let x = 0; x < stride; x++) {
+      const a = x >= bpp ? cur[x - bpp] : 0;
+      const b = prev[x];
+      const c = x >= bpp ? prev[x - bpp] : 0;
+      let v = cur[x];
+      if (ft === 1) v = (v + a) & 0xff;
+      else if (ft === 2) v = (v + b) & 0xff;
+      else if (ft === 3) v = (v + ((a + b) >> 1)) & 0xff;
+      else if (ft === 4) {
+        const p = a + b - c;
+        const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+        v = (v + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 0xff;
+      } else if (ft !== 0) return false;
+      cur[x] = v;
+    }
+    if (y % Math.max(1, Math.ceil(step / head.w)) === 0) {
+      for (let x = 0; x < head.w; x += Math.max(1, Math.floor(head.w / (maxPixels / 8)))) {
+        const o = x * bpp;
+        // 灰度/带 alpha 的都按"取第一个通道"算：纯色帧的每个通道都一样
+        seen.add(colorType === 2 || colorType === 6
+          ? `${cur[o]},${cur[o + 1]},${cur[o + 2]}` : String(cur[o]));
+        sampled++;
+        if (seen.size > 2) return false; // 早停：已经不止一色（允许一条分隔线级别的差异）
+      }
+    }
+    prev.set(cur);
+  }
+  return sampled > 0 && seen.size <= 1;
 }
 
 /** E2E_NO_CAPTURE=1 是这条判据的**反证开关**：假装本机没有采集器 ⇒ 那条断言必须红，
@@ -68,7 +151,53 @@ export function shotIsReal(file, minBytes = MIN_SHOT_BYTES) {
   }
   if (buf.length < minBytes) return false;
   const head = pngHeader(buf);
-  return !!head && head.w > 0 && head.h > 0;
+  if (!head || head.w <= 0 || head.h <= 0) return false;
+  // 结构成立还不够：锁屏时截到的就是一张结构完好的纯色帧。
+  return !pngIsBlank(file);
+}
+
+/** 给 harness 的报错用的：区分"这台机器没有采集器"与"采到了但是一屏黑"。 */
+export function describeShotDir(runDir) {
+  const dir = shotsDir(runDir);
+  let files = [];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith(".png"));
+  } catch {
+    return "screenshots/ 不存在（本机没有可用采集器？）";
+  }
+  if (!files.length) return "screenshots/ 里没有一张 PNG";
+  const blanks = files.filter((f) => pngIsBlank(path.join(dir, f))).length;
+  if (blanks === files.length) {
+    return `${blanks} 张全是纯色帧 ⇒ 屏幕被锁 / 显示器休眠，这一轮的截图证据不成立（不是产品缺陷）`;
+  }
+  return `${files.length} 张里有 ${blanks} 张纯色帧`;
+}
+
+/** 自证用的最小 PNG 写入器：只写 8 位真彩、非隔行、逐行 filter 0/1 的合法块（CRC 不校验，本模块不读它）。 */
+function writeProbePng(file, w, h, colorAt) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;   // bit depth
+  ihdr[9] = 2;   // color type: truecolor
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  let o = 0;
+  for (let y = 0; y < h; y++) {
+    raw[o++] = 0; // filter: None
+    for (let x = 0; x < w; x++) {
+      const [r, g, b] = colorAt(x, y);
+      raw[o++] = r; raw[o++] = g; raw[o++] = b;
+    }
+  }
+  const idat = zlib.deflateSync(raw);
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length, 0);
+    return Buffer.concat([len, Buffer.from(type, "ascii"), data, Buffer.alloc(4)]);
+  };
+  fs.writeFileSync(file, Buffer.concat([
+    PNG_SIG, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", Buffer.alloc(0)),
+  ]));
 }
 
 /** 判据自证：不跑实例，只证明上面这几条判据**既能真也能红**。返回失败原因数组（空=全过）。 */
@@ -102,6 +231,18 @@ export function selfcheckShot(tmpRoot = path.join(os.tmpdir(), `gosslan-shot-${D
       fs.writeFileSync(stub, Buffer.concat([head, Buffer.alloc(MIN_SHOT_BYTES)]));
     }
     has("③ 体积够但 IHDR 宽高为 0 的桩 PNG 必须被判为『不是真实截图』", !shotIsReal(stub));
+    // ⑤ **结构完好但整屏纯色**必须判假。今天（2026-09-27 凌晨）实测到的洞：屏幕被锁时
+    //   `screencapture` 退 0、截出 106,973 B、签名与 IHDR 全对，而 2026-09-26 那次
+    //   "桌面近乎空白"的产物**一个字节都不差** ⇒ 只靠体积与结构两条判据，
+    //   「报告带两张真实界面截图」可以在锁屏状态下判绿 —— 那是§十明令禁止的假证据。
+    const black = path.join(tmpRoot, "black.png");
+    writeProbePng(black, 800, 600, () => [0, 0, 0]);
+    has("⑤ 结构完好但整屏纯色的 PNG 必须被判为『不是真实截图』",
+      !shotIsReal(black, 0) && pngIsBlank(black));
+    // ⑥ 反向：同尺寸只多一条白线就必须判真 —— 否则 ⑤ 可以靠"什么图都判假"混过去。
+    const lined = path.join(tmpRoot, "lined.png");
+    writeProbePng(lined, 800, 600, (_x, y) => (y === 300 ? [255, 255, 255] : [0, 0, 0]));
+    has("⑥ 只多一条白线的同尺寸 PNG 必须判真（证明 ⑤ 不是「永远判假」）", shotIsReal(lined, 0));
     // ④ 真的截一张必须判真 —— 反过来钉住"判据没有苛刻到永远达不到"。
     //   ⚠️ 这一格在 2026-09-26 抓到过一次**判据自己坏**：桌面接近空白时截图只有 ~104 KB，
     //   当时那条按体积定的阈值（200 KiB）判它"不是真截图" ⇒ 每一轮 E2E 起跑前被拦停。
@@ -111,15 +252,26 @@ export function selfcheckShot(tmpRoot = path.join(os.tmpdir(), `gosslan-shot-${D
       fs.mkdirSync(dir, { recursive: true });
       const real = path.join(dir, "probe.png");
       execFileSync("/usr/sbin/screencapture", ["-x", real], { stdio: "ignore" });
-      const sz = fs.existsSync(real) ? fs.statSync(real).size : 0;
-      const head = sz >= 24 ? pngHeader(fs.readFileSync(real).subarray(0, 24)) : null;
-      has(`④ 真截一张必须判真（实测 ${sz} B，结构 ${head ? `${head.w}×${head.h}` : "不成立"}，下限 ${MIN_SHOT_BYTES} B）`,
-        shotIsReal(real));
+      if (!fs.existsSync(real)) {
+        // 说支持却截不出文件 = 判据层自己坏了（不是环境问题）⇒ 必须拦停
+        fails.push("④ 采集器被判定为可用，却一个文件都没写出 ⇒ 判据层坏了，不是环境问题");
+      } else if (pngIsBlank(real)) {
+        // 屏幕被锁 / 显示器休眠：screencapture 退 0、结构完好、内容全黑。
+        // 这**不是**判据坏了（那条会拦停所有轮次），是这一格的运行时证据今天拿不到
+        // —— 与 Windows 腿同一类处置：记说明，让轮次里那条断言自己红着（§十不许把没跑写成 PASS）。
+        const sz = fs.statSync(real).size;
+        notes.push(`④ 跳过：截到的是纯色帧（${sz} B，屏幕被锁 / 显示器休眠）`
+          + " ⇒ 判据没坏，但这一轮的截图证据不成立；轮次里那条断言会照实报红");
+      } else {
+        const sz = fs.existsSync(real) ? fs.statSync(real).size : 0;
+        const head = sz >= 24 ? pngHeader(fs.readFileSync(real).subarray(0, 24)) : null;
+        has(`④ 真截一张必须判真（实测 ${sz} B，结构 ${head ? `${head.w}×${head.h}` : "不成立"}，下限 ${MIN_SHOT_BYTES} B）`,
+          shotIsReal(real));
+      }
     } else {
       notes.push(`④ 跳过：本机没有可用采集器（${process.platform}${process.env.E2E_NO_CAPTURE === "1" ? "，E2E_NO_CAPTURE=1" : ""}）`
         + " ⇒ 只证了「能判假」；这一格在该平台仍未实现，不是判据坏了");
-    }
-  } catch (e) {
+    }  } catch (e) {
     fails.push(`自证本身抛错（这不该发生）：${e?.message ?? e}`);
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
