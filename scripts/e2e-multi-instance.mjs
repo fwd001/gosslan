@@ -98,6 +98,9 @@ let xferId4, srcFile4, srcSha4, partAtKill = 0;
 /// ⚠️ 为什么不是"传输中途冻"：实测 100 MB 回环 0.78s 传完，而拆一条静默链路要 **45s**
 /// （watchdog = 健康阈值 15s × 3）⇒ 在飞窗口等不到冻结生效。时序只能是
 /// 「先冻 → 再入队 → 冻 N 秒 → 解冻」，N 决定落在哪个 regime（见 FREEZE_MS）。
+/// ⚠️ 上面那句"等不到"在写它之后就被**推翻了一半**：那是"手动掐时机"等不到，
+/// 「判据自己入队 + 自旋等 .part 涨起来」是等得到的（③ 杀进程轮先做到，⑨ 停滞轮第二个做到）。
+/// ⇒ ④ 只覆盖了"先冻再入队"这个 regime；"在飞时被冻"是 ⑨，别把两轮的结论互相冒充。
 /// ⚠️ 实测撞出的产品现状（30s / 60s 两跑相同）：**失联期间这一单一次都没被尝试过**
 /// —— `file_outbox` 的重投只被入站事件触发，没有定时器 ⇒ 这一格**没覆盖**"到点重投"，
 /// 也**没覆盖**"write 成功 ≠ 已送达"。已按 A 类风险登记在 roadmap，改前别把话说满。
@@ -107,6 +110,20 @@ const FREEZE = FAULT === "peer-freeze" || FAULT === "peer-freeze-lie";
 /// 两种 regime 用同一组"结局空间"判据，不需要分叉。
 const FREEZE_MS = Number(process.env.E2E_FREEZE_S || 30) * 1000;
 const FREEZE_BYTES = Number(process.env.E2E_FREEZE_MB || 1) * 1024 * 1024;
+/// 注入⑨：**字节已经在飞**的时候把接收端冻住 —— §七「发送方提前放弃 / 接收方仍在线」
+/// 与 §19「文件·断线」的交叉格。冻结轮（④）**没有**覆盖它：④ 的时序是"先冻 → 再入队"，
+/// 而 ④ 自己实测出那一轮 A **一次都没尝试**（A-9：队列只被入站帧带动，没有定时器）
+/// ⇒ ④ 里根本不存在在飞字节。③ 杀进程轮则证明了在飞窗口**抓得住**
+/// （判据自己入队 + 自旋等 `.part` 涨到 786432 字节才动手），所以 ④ 那句
+/// "在飞窗口等不到冻结生效"写的是它当时的时序，不是这一轮的障碍。
+/// ⚠️ 判据写成**结局空间**，不写"我预期它失败"：这里有两个计时器在赛，谁先赢还没实测过 ——
+///   链路 watchdog 45 s（健康阈值 15 s × 3，越过就拆链）vs 发送侧停滞放弃 60 s
+///   （`FILE_STALL_ABORT_MS`，file.rs:208）。两条分支的可观测后果不同，所以只钉
+///   "两侧都不许假成功"+"这一轮必须有界退出"，把走哪条只打印出来。
+const STALL = FAULT === "stall-mid" || FAULT === "stall-mid-lie";
+const STALL_BYTES = Number(process.env.E2E_STALL_MB || 100) * 1024 * 1024;
+/// 冻结时长：必须 **>60 s** 才越过 `FILE_STALL_ABORT_MS`；留 10 s 余量给 5 s 一跳的停滞检查。
+const STALL_HOLD_MS = Number(process.env.E2E_STALL_S || 70) * 1000;
 /// 注入⑤：接收端**磁盘写不进去**（用户把接收目录设到只读盘 / 磁盘满 / 外接盘被拔）。
 /// 与冻结轮正好成对：冻结轮里 A **一次都没尝试**（没有入站帧 ⇒ 没人触发 flush）；
 /// 这里 B 活着、照常发心跳 ⇒ A 一定尝试、一定被拒，于是真正走的是
@@ -327,6 +344,38 @@ async function waitFor(cond, ms, what) {
     await sleep(500);
   }
   throw new Error(`超时（${ms}ms）等 ${what}`);
+}
+
+/// 有界等**发送侧自己走到终态**，返回最后一次快照（不抛 —— 到点就把实际值交给 check 判红）。
+///
+/// 为什么需要它：**「B 的终名文件出现了」不是 A 的同步点**。A 的 `done` 与删 `file_outbox` 行
+/// 发生在收到对端 `FileCompleteAck` 之后，而那条 ack 在接收端 rename **之后**才发
+/// ⇒ 天然顺序是"先见 B 落地、后见 A 终态"。
+/// 实测（2026-09-26 本地层第 12 步）：解冻→落地只 5.5s 的那一刻读 A ⇒ `{A:active, outbox:1}`
+/// 被判成红，而同一步里 B 已 done、字节与 sha 全对、无 `.part` 残留 —— **红的是判据读早了，不是产品分叉**。
+/// 窗口默认 60s：心跳 5s（transport.rs:1992）+ 文件队列退避 5s（file.rs:303）⇒ 该走得到的路最长也就几跳，
+/// 60s 还停在 `active`/`pending` 才是真红（用户界面就是"永远转圈"）。
+async function waitSendTerminal(id, timeoutMs = 60_000) {
+  const t0 = nowMs();
+  let row = null;
+  let queued = -1;
+  // 句柄只开一次：这一条循环最多要读 240 次，若每轮都 `openDb()`，
+  // 撞上 SQLITE_BUSY 的概率被放大两个量级，而那时抛的是"技术错误"不是断言红（读的是别人进程的库）。
+  const db = openDb(INSTANCES[0].db, true);
+  try {
+    const qRow = db.prepare("SELECT status,progress FROM file_transfers WHERE id=?1");
+    const qQ = db.prepare("SELECT COUNT(*) c FROM file_outbox WHERE transfer_id=?1");
+    for (;;) {
+      row = qRow.get(id) ?? null;
+      queued = qQ.get(id).c;
+      if (row && (row.status === "done" || row.status === "failed" || row.status === "cancelled")) break;
+      if (nowMs() - t0 >= timeoutMs) break;
+      await sleep(250);
+    }
+  } finally {
+    db.close();
+  }
+  return { row, queued, waitedMs: nowMs() - t0 };
 }
 function tcpOpen(port) {
   return new Promise((res) => {
@@ -843,10 +892,11 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
   const got = createHash("sha256").update(bytes).digest("hex");
   check("B 侧 sha256 与源文件一致（INV-P17 分片可验证）", got === srcSha, srcSha.slice(0, 12) + "…", got.slice(0, 12) + "…");
 
-  const aDb = openDb(INSTANCES[0].db, true);
-  const left = aDb.prepare("SELECT COUNT(*) c FROM file_outbox WHERE transfer_id=?1").get(xferId).c;
-  const aRow = aDb.prepare("SELECT status,progress FROM file_transfers WHERE id=?1").get(xferId);
-  aDb.close();
+  // ⚠️ 这里以前是"看到 B 的终名文件就立刻读 A"⇒ 判据读在 ack 之前（见 waitSendTerminal 的注释）。
+  //   默认轮一直绿只是因为 waitFor 的 500ms 轮询恰好盖住了 ack 的往返时间，不是这条链没有窗口。
+  const sentJ2 = await waitSendTerminal(xferId);
+  const left = sentJ2.queued;
+  const aRow = sentJ2.row;
   check("A 侧 file_outbox 行已被收尾删除", left === 0, 0, left);
   // 发送侧生命周期：pending → active → **sent（只是「我写完了 socket」）→ done（对端 FileCompleteAck 之后）**。
   // 钉 done 而不是 sent，正是总指令那条「不要因 TCP write 成功就认为已送达」的机器形状：
@@ -971,6 +1021,10 @@ if (POISON) {
     // 脏前缀被丢掉、整份重新收齐并改名 ⇒ 这是"自愈完成"，此时 done 才是**正确**终态。
     const wantSha2 = LIE ? LIE_SHA : srcSha2;
     const clean = !!exists && gotSha === wantSha2;
+    // ⚠️ 这一轮的"两侧 done"是**蕴含式**的后件 ⇒ 只在补齐分支才需要等 A 到终态
+    //   （不补齐那一支本来就允许停在 pending/重试中，等满 60s 只会白烧门禁时间）。
+    //   lie 模式下 clean 必为假 ⇒ 走的还是今天这条不等待的路，反向自证那 2 条红不受影响。
+    if (clean) await waitSendTerminal(xferId2);
 
     const bDb = openDb(INSTANCES[1].db, true);
     const b2 = bDb.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId2);
@@ -1028,10 +1082,11 @@ if (RESUME) {
     const bDb = openDb(INSTANCES[1].db, true);
     const b3 = bDb.prepare("SELECT status FROM file_transfers WHERE id=?1").all(xferId3);
     bDb.close();
-    const aDb = openDb(INSTANCES[0].db, true);
-    const a3 = aDb.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId3);
-    const q3 = aDb.prepare("SELECT COUNT(*) c FROM file_outbox WHERE transfer_id=?1").get(xferId3).c;
-    aDb.close();
+    // ⚠️ 上面那句 sleep 只是让**日志**落定，不等于 A 的终态到了：下面这条是无条件断"两侧 done"，
+    //   所以必须等 A 自己被 ack 点亮（见 waitSendTerminal），否则第 12 秒读早了照样假红。
+    const t3 = await waitSendTerminal(xferId3);
+    const a3 = t3.row;
+    const q3 = t3.queued;
     const both3 = `B=${b3.map((r) => r.status).join("/") || "无行"} A=${a3?.status ?? "无行"} outbox=${q3}`;
     check("同一条续传在 B 侧只记一次（不许一次传输落多行）", b3.length === 1, 1, b3.length);
     check("续传完成就是完成：两侧终态 done 且 outbox 已清（不许停在中间态）",
@@ -1134,10 +1189,11 @@ if (KILL) {
     const bDb4 = openDb(INSTANCES[1].db, true);
     const b4 = bDb4.prepare("SELECT status FROM file_transfers WHERE id=?1").all(xferId4);
     bDb4.close();
-    const aDb4 = openDb(INSTANCES[0].db, true);
-    const a4 = aDb4.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId4);
-    const q4 = aDb4.prepare("SELECT COUNT(*) c FROM file_outbox WHERE transfer_id=?1").get(xferId4).c;
-    aDb4.close();
+    // ⚠️ 上面那句 `sleep(15_000)` 只是把 ack 竞态**藏住**，不是解决它（读早了照样红）。
+    //   改成有界等 A 自己到终态：既不再靠运气，也不用白等 15s。
+    const t4 = await waitSendTerminal(xferId4);
+    const a4 = t4.row;
+    const q4 = t4.queued;
     const both4 = `B=${b4.map((r) => r.status).join("/") || "无行"} A=${a4?.status ?? "无行"} outbox=${q4}`;
     check("恢复的终局只有一个：两侧 done 且 outbox 已清（不许停在中间态，也不许弃单）",
       b4.length === 1 && b4[0].status === "done" && a4?.status === "done" && q4 === 0,
@@ -1230,10 +1286,10 @@ if (FREEZE) {
     const bDb = openDb(INSTANCES[1].db, true);
     const b5 = bDb.prepare("SELECT status FROM file_transfers WHERE id=?1").all(xferId5);
     bDb.close();
-    const aDb = openDb(INSTANCES[0].db, true);
-    const a5 = aDb.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId5);
-    const q5 = aDb.prepare("SELECT COUNT(*) c FROM file_outbox WHERE transfer_id=?1").get(xferId5).c;
-    aDb.close();
+    // ⚠️ 同 J2 /  kill 轮：解冻→落地 0.5s 太快，读 A 必须等它自己被 ack 点亮，不能拿 B 的 rename 当同步点。
+    const t5 = await waitSendTerminal(xferId5);
+    const a5 = t5.row;
+    const q5 = t5.queued;
     const both5 = `B=${b5.map((r) => r.status).join("/") || "无行"} A=${a5?.status ?? "无行"} outbox=${q5}`;
     check("对端解冻后必须自己补到终态：两侧 done 且 outbox 已清（不许停在中间态、不许弃单）",
       b5.length === 1 && b5[0].status === "done" && a5?.status === "done" && q5 === 0,
@@ -1241,6 +1297,127 @@ if (FREEZE) {
     const kept5 = fs.existsSync(dl) ? fs.readdirSync(dl).filter((f) => f.includes(xferId5)) : [];
     check("解冻之后不许留下第二次成功的痕迹",
       kept5.length === 1 && kept5[0] === `${xferId5}.bin`, `${xferId5}.bin`, kept5.join(", ") || "空");
+  });
+}
+
+if (STALL) {
+  step("故障注入判据⑨：字节在飞时冻住对端 ⇒ 冻结期间盘上进度一字不涨，解冻后必须补到源内容", async () => {
+    const dl = path.join(RUN_DIR, "recv", "B");
+    const srcDir = path.join(RUN_DIR, "src");
+    fs.mkdirSync(dl, { recursive: true });
+    fs.mkdirSync(srcDir, { recursive: true });
+    const idS = `e2e-s-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    const srcFileS = path.join(srcDir, `${idS}.bin`);
+    fs.writeFileSync(srcFileS, Buffer.alloc(STALL_BYTES));
+    const srcShaS = createHash("sha256").update(fs.readFileSync(srcFileS)).digest("hex");
+    const landedS = path.join(dl, `${idS}.bin`);
+    const partS = path.join(dl, `${idS}.part`);
+    const sizeOfS = (p) => { try { return fs.statSync(p).size; } catch { return -1; } };
+    // lie：注入完全相同，只换"补完之后该等于哪个摘要"⇒ 第 7 条必须红。
+    const wantShaS = LIE ? LIE_SHA : srcShaS;
+    const pB = procs.get(INSTANCES[1].n);
+    if (!pB) throw new Error("拿不到 B 的子进程句柄 —— 这条注入没有可冻结的对象");
+
+    seed(INSTANCES[0].db, (db) => {
+      db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(idS);
+      db.prepare(
+        `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+         VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
+      ).run(idS, peerTo, srcFileS, `${idS}.bin`, STALL_BYTES, nowMs());
+    });
+
+    let frozen = false;
+    let thawed = false;
+    let atGrowth = -1;
+    let atFreeze = -1;
+    let mid = null;
+    try {
+      // ⚠️ 自旋等 `.part` 真的开始长 —— 这一条是整轮的**世界前提**：
+      // 抓不到在飞字节，后面"不许假成功"那几条会因为链路根本没跑而集体假绿。
+      // 50ms 粒度（不是 waitFor 的 500ms）：100 MB 在回环上 ~0.78s 就走完了。
+      const spinT0 = nowMs();
+      for (;;) {
+        atGrowth = sizeOfS(partS);
+        if (atGrowth > 0) break;
+        if (sizeOfS(landedS) >= 0) throw new Error(`还没冻住就已经收完（${(nowMs() - spinT0) / 1000}s）—— 在飞窗口没抓到`);
+        if (nowMs() - spinT0 > 20_000) throw new Error("等 20s 仍没有 .part：这一单根本没被投递");
+        await sleep(50);
+      }
+      const freezeT0 = nowMs();
+      pB.kill("SIGSTOP");
+      frozen = true;
+      // 快照取在**冻结之后**：冻结前那几毫秒 B 还在写，拿 atGrowth 当基准会虚涨。
+      atFreeze = sizeOfS(partS);
+      await sleep(STALL_HOLD_MS);
+
+      const midDb = openDb(INSTANCES[0].db, true);
+      // ⚠️ `attempts` 在 `file_outbox` 上，不在 `file_transfers` 上（第一版在这里写了
+      //   `SELECT status,attempts FROM file_transfers` ⇒ no such column，红的是判据不是产品）。
+      const midA = midDb.prepare("SELECT status FROM file_transfers WHERE id=?1").get(idS) ?? null;
+      const midOut = midDb.prepare("SELECT status, attempts FROM file_outbox WHERE transfer_id=?1").get(idS) ?? null;
+      midDb.close();
+      const midBDb = openDb(INSTANCES[1].db, true);
+      const midB = midBDb.prepare("SELECT status FROM file_transfers WHERE id=?1").get(idS) ?? null;
+      midBDb.close();
+      mid = {
+        part: sizeOfS(partS), landed: sizeOfS(landedS),
+        a: midA?.status ?? null, b: midB?.status ?? null,
+        out: midOut ? `${midOut.status}/${midOut.attempts}` : "无行",
+      };
+      check("冻结期间接收目录不许出现终名文件（没写完就没有完成可言）",
+        mid.landed < 0, "不存在", mid.landed >= 0 ? `已出现 ${mid.landed} 字节` : "不存在");
+      check("冻结期间发送侧不许记成 done", mid.a?.status !== "done", "非 done", mid.a?.status ?? "无行");
+      check("冻结期间接收侧不许记成 done（它一次回执都没发出去）",
+        mid.b?.status !== "done", "非 done", mid.b?.status ?? "无行");
+      // ★ 这一条钉的是不变量「接收端真实进度」的跨实例形状：对端停止写盘之后，
+      //   盘上进度必须**一字不涨**。A 往 socket 里灌的字节、内核缓冲的字节都不算进度。
+      check("对端被冻住期间，接收端盘上进度不许继续涨（进度只能来自真实写入）",
+        mid.part === atFreeze, `冻结时刻的 ${atFreeze} 字节`,
+        mid.part === atFreeze ? `${atFreeze} 字节（一字未涨）` : `涨到 ${mid.part} 字节`);
+
+      // 走的是哪条分支只打印、不判：45s watchdog 与 60s FILE_STALL_ABORT_MS 谁先赢还没实测过，
+      // 写成判据就是拿一个未量的前提当事实（冻结轮 A-9 那条教训的形状）。
+      const abandon = (tailLog(INSTANCES[0].log, 200000) || "").split("\n")
+        .filter((x) => x.includes(idS) && /STALL|放弃|ok=false|失败|拒绝|error/i.test(x)).slice(-6);
+      console.log(`  · 实测：抓到在飞 .part=${atGrowth}B → 冻结时 ${atFreeze}B → 冻后 ${mid.part}B`
+        + `（冻结 ${(nowMs() - freezeT0) / 1000}s）`);
+      console.log(`  · 实测：A 侧这一单 ${mid.a ?? "无行"} / B 侧 ${mid.b ?? "无行"}`
+        + ` / 队列行 status/attempts=${mid.out}`);
+      for (const l of abandon) console.log("      A│ " + l.slice(0, 220));
+      if (!abandon.length) console.log("      · A 侧本轮没留下'这一单已结束'的日志痕迹（记下，待判是否 A-13）");
+
+      pB.kill("SIGCONT");
+      thawed = true;
+      const t0 = nowMs();
+      await waitFor(() => sizeOfS(landedS) >= 0, 180_000, "解冻后必须把这一单补完并 rename 成终名");
+      console.log(`  · 实测：解冻 → 终名落地 ${(nowMs() - t0) / 1000}s`);
+    } finally {
+      // ⚠️ 被 SIGSTOP 停住的进程收不到 SIGTERM ⇒ 不解冻会把整条 harness 挂死（冻结轮的教训）。
+      if (frozen && !thawed) { try { pB.kill("SIGCONT"); } catch { /* 已经退了 */ } }
+    }
+
+    const gotS = sizeOfS(landedS) >= 0
+      ? createHash("sha256").update(fs.readFileSync(landedS)).digest("hex") : null;
+    check("补完之后的字节内容必须等于源文件（半途放弃不许留下坏内容当成功）",
+      gotS === wantShaS, wantShaS.slice(0, 12) + "…", gotS ? gotS.slice(0, 12) + "…" : "未落地");
+    // ⚠️ 判终局之前必须**等 A 自己走到终态**，不能拿"B 的终名文件出现"当同步点
+    //   （理由与窗口取值都写在 `waitSendTerminal` 上；这一轮就是它被本地层判红的现场）。
+    //   读序：先等 A，再读 B —— 接收侧的 done 由 rename 触发、ack 在其后 ⇒ B 一定不比 A 晚。
+    const endS = await waitSendTerminal(idS);
+    const aS = endS.row;
+    const qS = endS.queued;
+    const bDbS = openDb(INSTANCES[1].db, true);
+    const bS = bDbS.prepare("SELECT status FROM file_transfers WHERE id=?1").all(idS);
+    bDbS.close();
+    console.log(`  · 实测：B 落地 → A 终态 ${(endS.waitedMs / 1000).toFixed(1)}s`
+      + `（A=${aS?.status ?? "无行"} outbox=${qS}）`);
+    check("终局只有一个：两侧 done 且 outbox 已清（不许停在中间态，也不许悄悄弃单）",
+      bS.length === 1 && bS[0].status === "done" && aS?.status === "done" && qS === 0,
+      "1 行 + 双侧 done + outbox=0",
+      `B=${bS.map((r) => r.status).join("/") || "无行"} A=${aS?.status ?? "无行"} outbox=${qS}`);
+    const keptS = fs.existsSync(dl) ? fs.readdirSync(dl).filter((f) => f.includes(idS)) : [];
+    check("补完之后接收目录只剩终名文件：那份半截 .part 不许残留",
+      keptS.length === 1 && keptS[0] === `${idS}.bin`, `${idS}.bin`, keptS.join(", ") || "空");
   });
 }
 

@@ -699,7 +699,11 @@ CI 的 macOS / Windows / Android 三条腿跑的是**同一个 `scripts/verify.m
 | 多链路（选路正确） | ✅ | 前端 `src/utils/channelState.test.ts` 钉住同一份选路口径；Rust 侧具名用例见测试清单 |
 | Routed / Tailscale | ⚠️ **判据很厚（13 条具名），缺的同样是"跨实例只走这一条路真跑一趟"** | ❌ **我上一版这格写错了**（写成"⚠️未执行 / 无判据"）—— 同一个"凭记忆下笔"的毛病第三次抓到（前两格是 relay 与 gossip）。按门禁自己那份 Rust 清单现算，这一族有 **13 条**：`grep -icE "routed\|tailscale\|pick_link" src-tauri/test-baseline.macos.txt` ⇒ **13**。里面正是选路层的口径本体：`mesh::selection::tests::path_priority_lan_beats_routed_and_bluetooth`、`path_priority_routed_beats_bluetooth`、`path_priority_relay_beats_bluetooth_but_loses_to_routed`（三条优先级把 §三"链路优先级"钉住）、`unhealthy_lan_does_not_block_healthy_routed` + `network::transport::tests::route_order_skips_unhealthy_lan_when_routed_is_healthy` + `route_order_prefers_lan_over_routed_regardless_of_insertion`（健康度与插入序都不许翻转优先级）、`only_routed_connection_still_dials_lan_path`（**只有 routed 时仍会去拨 LAN** —— 这就是"只走 routed"那个场景在单元层的形状）、配置解析四族 `discovery::routed::tests::*`（端点 JSON 往返 / 畸形输入退空 / device_id 可选兼容 / 裸 IP 与显式端口）、`commands::tests::routed_endpoint_address_is_normalized_to_ipv4_socket`、`tests::relay_circuit_is_tagged_relay_not_routed`（中继与 VPN 不许混成一类）。<br>⇒ 真实缺口收窄成一句：**没有一次跨实例、且 LAN 不可用的真跑**（§五 的 `LAN + Tailscale` 组合那一格）。这属环境不属代码 ⇒ 🔶 平台 Smoke，不写成 PASS。⚠️ **与 §12.4 gossip、§七 最后一格是同一块欠账**：都要"第三个真实对端 / 非 LAN 出口"，一起补，别拆成三块账。<br>**2026-09-26 #64 把这一格往前挪了一小格，但没挪到位，别读成"已绿"**：默认轮的"起 A/B"步骤新增一条判据 —— 这一对实例之间**至少一侧**打出过 `建链 … path=routed`（两侧合计 ≥1；实测 11/11 轮里恰好一侧拨出、另一侧只看到入站 ⇒ 按侧断言会漂）。反证是把两端预置的 `routed_endpoints` 清空（`E2E_NO_ROUTED=1`，改判据读的那个输入而不是改判据）：新那条超时红，而**旧的那圈 `peer=<id>` 判据照常过** ⇒ 这就是"以前这条拨号坏了 12 轮也全绿"的实测证据。<br>⚠️ 它**仍然不是**"只走 Routed 那一趟"：出口还是回环（LAN 广播同时在跑，选路走的极可能是 LAN），所以本格态保持 ⚠️，欠的还是同一句话。 |
 | BLE | 🔶 | 常量层有门（`check-ble-constants.mjs`），**通信本体只能真机**；已在 Smoke 矩阵标 MANUAL-HARDWARE |
-| Relay | ⚠️ **判据很厚，缺的是"跨实例真跑一趟"** | 我上一版凭记忆写成"判据存在与否未复核"——**已按门禁自己那份清单复算并推翻**：`grep -ic relay src-tauri/test-baseline.macos.txt` 现算（口径=测试路径含 relay 的条数，含 `file_relay::` 接收侧、`mesh::relay_policy::` 转发真值表、`mesh::router::`、`commands::relay_config_tests`）。里面有**安全边界级**的几条：token 不进探针报告、配置 fail-closed、`offer_without_chunk_size_is_refused_instead_of_buffering`（P4 那刀的判据）、`unsafe_transfer_id_cannot_create_a_file_outside_the_dir`（路径逃逸）、重复分片不双计、零字节能收尾。**没有的那一件**：两个实例经中继真通一次（要一台活着的中继服务器 + 一条被封的直连，属环境不属代码）⇒ 记 ⚠️ 而不是 ❌ |
+| Relay | ⚠️ **判据很厚，缺的是"跨实例真跑一趟"** | 我上一版凭记忆写成"判据存在与否未复核"——**已按门禁自己那份清单复算并推翻**：`grep -ic relay src-tauri/test-baseline.macos.txt` 现算（口径=测试路径含 relay 的条数，含 `file_relay::` 接收侧、`mesh::relay_policy::` 转发真值表、`mesh::router::`、`commands::relay_config_tests`）。里面有**安全边界级**的几条：token 不进探针报告、配置 fail-closed、`offer_without_chunk_size_is_refused_instead_of_buffering`（P4 那刀的判据）、`unsafe_transfer_id_cannot_create_a_file_outside_the_dir`（路径逃逸）、重复分片不双计、零字节能收尾。**没有的那一件**：两个实例经中继真通一次。⚠️ 2026-09-26 改判：缺的**不是**"一台活着的中继服务器"
+（它就在本机 `~/Documents/code/gosslan-relay-server`），而是"一条被封的直连"——
+`relay.rs:104` 会把**已有任何链路**（不分通道）的对端整个跳过，同机两实例靠 LAN 一定连得上
+⇒ 对端进不了中继候选，且仓库里没有只关 LAN announce 的开关。真跑需要 root 防火墙或第二台真机
+⇒ 按§十记 **Smoke-9**（见下表与 §12.7 的因果链），**不升 AUTOMATED** |
 
 ### 12.4 消息 —— 混合，缺口是同一条
 
@@ -756,6 +760,53 @@ Rust 侧 `enqueue before deliver`、幂等 Ack、解密失败留空 `msg_id` 均
 **A** 每轮跑完自动只保留最近 N 个 run 目录（默认建议 20）；**B** 不动旧目录，只把截图在
 "这轮绿了"之后删掉（保留 HTML/JSON/日志/DB，丢可随时重跑的位图）。
 两者都是删除动作，未拍板前 harness **照旧全留**，本行只是记账。
+
+★ **§19「网络·Relay」这一格今天被改判，根因不是"缺一台中继服务器"（#66 的前置调查）**：
+这一格原文写"要一台活着的中继服务器 + 一条被封的直连"，**前半句是错的** —— 服务器就在本机
+`~/Documents/code/gosslan-relay-server`（零依赖 Node，带 `selftest.mjs`，2026-09-22 移出主仓）。
+真墙是两条代码级事实：`network/transport/relay.rs:104` 的 `pick_relay_targets` 会把 `connected` 里的
+对端**整个跳过**，而 `connected` 来自 `relay_link_snapshot`（同文件 120-136 行）= `state.links` 里
+**任何一条**非空链路、**不分通道**；同机两实例靠 LAN announce 一定连得上（刚跑的 4 个 run 目录里
+`path=lan` 与 `path=routed` 同时稳定存在）⇒ 对端**根本进不了中继候选**，不是"拨了没成"。
+仓库里也**没有**只关 LAN announce 的开关（`discovery_mode` 全仓不存在，只有 `commands/dev_diag.rs:261`
+一个展示字符串；`GOSSLAN_AUTOSTART` 还强制 `network::start`）。⇒ 要造"只有中继"需要 root 防火墙或
+第二台真机，两者都越过「不碰系统 / 单机」这条线 ⇒ 这一格按§十 / §二十二-11 改记**平台 Smoke**
+（两台真实设备 + 一条被封直连），**不升 AUTOMATED**。§五 的 `LAN + Tailscale` 与 §12.4 gossip 多跳
+是同一块欠账。★ 顺带把 §七「发送方提前放弃」与「用户点取消」拆成两件事：后者要 IPC 调
+`cancel_file_transfer`（内存 `cancel_tx` + `AppHandle` emit），零改产码的 harness 够不着 ⇒ 取消那一格
+需要 WebView/WebDriver 驱动，或记 Smoke；**不许用前者冒充后者**。
+
+**注入⑨「停滞轮」（#66，2026-09-26）**：§七「发送方提前放弃 / 接收方仍在线」× §19「文件·断线」
+这一交叉此前**零跨实例判据**。时序：判据自己入队 → 自旋抓到 `.part` 真的在长（动手时刻实测在 1.8 MB / 7.1 MB
+之间摆，取决于自旋撞上 `SIGSTOP` 的时机 ⇒ 这个数只打印不设判据）
+→ `SIGSTOP` 接收端 → 冻 70 s → `SIGCONT`。三条实测结论：
+① ★ 不变量「接收端真实进度」第一次有跨实例机器证明 —— **冻结期间盘上字节一字不涨**
+（7,077,888 → 7,077,888），终名文件不存在、两侧台账都不是 done。发送端灌进 socket 与内核缓冲的字节
+没有被算成"已收到"。
+② ★ **我原本要钉的那条被判据自己否掉了**：先兑现的出口是 chunk loop 的
+`[FILE] COMPLETED … ok=false`（队列行退回 `pending`、`attempts=1`），**`[STALL]`（60s 停滞放弃）一行都没出现**。
+⇒ 这一轮只把"走的是哪条放弃出口"当打印信息；写成判据就是拿一条未兑现的路径许愿（假红形状）。
+③ 解冻后确实按真实进度补完：sha256 等于源、两侧 done、队列清零、半截 `.part` 不残留；
+但**解冻 → 落地实测 5.5 s / 28.6 s / 51.6 s 都出现过**（原链路直接续 vs 先退避再重拨），
+抓到在飞的字节也随机器负载在 1.8 MB / 7.1 MB 之间摆 ⇒ 恢复是**有界**的，
+但"多快"这一格今天仍没有判据（把随负载摆的量写成常数就是第二个事实源）。
+④ ★ **这一轮自己那条"终局"判据被本地层跑红，红的是同步点选错了**：判据拿"B 的终名文件出现"当
+A 该终态的时刻，可 A 的 `done` + 删 `file_outbox` 行是**收到 `FileCompleteAck` 之后**才写的，
+而那条 ack 在 rename **之后**才发 ⇒ 天然顺序就是"先见 B 落地、后见 A 终态"。
+本地层第 12 步实测：解冻→落地 5.5 s 的那一刻读 A ⇒ `{A:active, outbox:1}` 判红，
+而同一步里 B 已 done、字节与 sha 全对、无 `.part` 残留 ⇒ **不是产品分叉，是判据读早了**
+（单跑一次绿纯属运气；`-lie` 轮打印出 **B 落地 → A 终态 14.6 s**，量出了这个天然滞后 ——
+而改完之后同一格又打印出 **0.0 s** ⇒ 这段滞后**不是常数**，"这次赶上了"完全不构成可靠）。
+修法：`waitSendTerminal()` —— 有界等发送侧自己走到终态（60 s = 心跳 5 s + 队列退避 5 s 留余量，
+到不了才判红），耗时打进报告。**同一形状顺着 helper 把 harness 扫了一遍**：
+默认轮 J2 / 脏前缀轮① / 续传轮② / 杀进程轮⑥ / 冻结轮④ / 停滞轮⑨ 全部换用同一个 helper
+（① 那两条是蕴含式后件 ⇒ 只在"补齐"那一支才等，`-lie` 模式走的还是不等待的老路径，反向自证不受影响）
+—— 其中 ⑥ 原本用 `sleep(15_000)`、② 用 `sleep(12_000)` 把这类竞态**藏住**而不是解决它。
+`check(` 调用点一条没增减（判据 C 现算复核仍对得上）。
+⇒ 通用一条记进§十四：**跨实例判"终态"之前先问"这一侧的终态是被谁点亮的"**，对端产物不是本端的同步点。
+反证：`--fault=stall-mid-lie` 只换"补完该等于哪个摘要"这一份输入。
+⚠️ 与④ 的分工必须说清：④ 先冻再入队 ⇒ 那一轮**根本没有在飞字节**；④ 注释里那句"在飞窗口等不到"
+写的是它当时的掐时机方式，自旋抓法已被 ③/⑨ 两次证明做得到 —— 那句话已在 harness 里就地标注更正。
 
 **轮次账的账（#64，2026-09-26）**：加一条判据 ⇒ 每一轮各多 1 条，判据 C 当场把 **12 处**手写数字判红。
 这不叫"判据太严"，叫**文档结构在替代码还债**：同一个数抄在 11 段叙述里，它就是第二个到第七个事实源。
