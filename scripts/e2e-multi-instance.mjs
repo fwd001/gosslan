@@ -286,6 +286,22 @@ import { captureShot, selfcheckShot } from "./e2e-shot.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const ISO = new Date().toISOString().replace(/[:.]/g, "-");
+
+/// §十六「本轮每一单都要数得出来」：所有 trace id 一律从这里铸，铸出来就登记。
+/// 为什么非要注册表而不是最后把变量名抄一遍 —— 同一个坑 #70 踩过：手写名单在注入轮出现后
+/// 悄悄漏掉那些单，报告的 trace 指着别的一单，而没有任何一格会红。
+const MINTED_IDS = [];
+function eid(prefix = "", tail = Math.random().toString(36).slice(2, 8)) {
+  const id = `e2e-${prefix ? `${prefix}-` : ""}${ISO}-${tail}`;
+  MINTED_IDS.push(id);
+  return id;
+}
+/// 反向轮会拿真 id 拼一个**故意不存在**的 decoy 去查库。它同样是"报告里出现过的本形状 id"，
+/// 所以照样登记 —— 否则反向轮会因为报告契约不合格多红一次，把"红恰好落在断言上"那条证据搅浑。
+function noteId(id) {
+  MINTED_IDS.push(id);
+  return id;
+}
 const RUN_DIR = path.join(ROOT, "test-results", `run-${ISO}`);
 
 // ── 环境事实（不认识的平台直接退，不猜）────────────────────────────
@@ -695,7 +711,7 @@ let chainMsgId; // 链式轮那条群消息的 msg_id（信封里是 sha256，�
 step("停机预置：好友 + routed 端点 + 独立接收目录", () => seedPair(NODES));
 
 step("L-A 入队：在 A 的库里留下「已入队待发送」的事实", () => {
-  msgId = `e2e-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+  msgId = eid();
   // 反向模式：链路照建，只是注定送不到 —— 报红必须来自投递断言本身
   peerTo = NEGATIVE ? `${idB.runtimeId}-ghost` : idB.runtimeId;
   const ts = nowMs();
@@ -723,7 +739,7 @@ step("L-A 入队：在 A 的库里留下「已入队待发送」的事实", () =
 });
 
 step("L-A 入队：A 的一个 1 MB 文件也排好队（停机窗口内）", () => {
-  xferId = `e2e-x-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+  xferId = eid("x");
   const dir = path.join(RUN_DIR, "src");
   fs.mkdirSync(dir, { recursive: true });
   srcFile = path.join(dir, `${xferId}.bin`);
@@ -750,7 +766,7 @@ step("L-A 入队：A 的一个 1 MB 文件也排好队（停机窗口内）", ()
 //   所以一个**严格短于文件**的脏 .part = 确定性地让最终 sha256 不匹配，零生产码改动、无竞态。
 if (POISON) {
   step("故障注入：A 再排一个 1 MB 文件，同时给 B 预置 4 KB 脏 .part 前缀", () => {
-    xferId2 = `e2e-p-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    xferId2 = eid("p");
     const dir = path.join(RUN_DIR, "src");
     fs.mkdirSync(dir, { recursive: true });
     srcFile2 = path.join(dir, `${xferId2}.bin`);
@@ -784,7 +800,7 @@ if (POISON) {
 // **对有效前缀不许重灌**是行为契约，不是性能偏好。
 if (RESUME) {
   step("预置（注入②）：B 侧已有真前缀 64 KiB + A 侧待发一个 1 MB 文件", () => {
-    xferId3 = `e2e-r-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    xferId3 = eid("r");
     const dir = path.join(RUN_DIR, "src");
     fs.mkdirSync(dir, { recursive: true });
     srcFile3 = path.join(dir, `${xferId3}.bin`);
@@ -808,7 +824,7 @@ if (RESUME) {
 
 if (KILL) {
   step(`预置（注入③）：先生成一个 ${KILL_BYTES / 1024 / 1024} MB 源文件（行进库留到判据里，见下面那段注释）`, () => {
-    xferId4 = `e2e-k-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    xferId4 = eid("k");
     const dir = path.join(RUN_DIR, "src");
     fs.mkdirSync(dir, { recursive: true });
     srcFile4 = path.join(dir, `${xferId4}.bin`);
@@ -1291,7 +1307,7 @@ if (FREEZE) {
     const dl = path.join(RUN_DIR, "recv", "B");
     const srcDir = path.join(RUN_DIR, "src");
     fs.mkdirSync(srcDir, { recursive: true });
-    xferId5 = `e2e-f-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    xferId5 = eid("f");
     srcFile5 = path.join(srcDir, `${xferId5}.bin`);
     fs.writeFileSync(srcFile5, Buffer.alloc(FREEZE_BYTES));
     srcSha5 = createHash("sha256").update(fs.readFileSync(srcFile5)).digest("hex");
@@ -1388,7 +1404,7 @@ if (SENDKILL) {
     const srcDir = path.join(RUN_DIR, "src");
     fs.mkdirSync(dl, { recursive: true });
     fs.mkdirSync(srcDir, { recursive: true });
-    const idK = `e2e-k-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    const idK = eid("k");
     const srcFileK = path.join(srcDir, `${idK}.bin`);
     fs.writeFileSync(srcFileK, Buffer.alloc(SENDKILL_BYTES));
     const srcShaK = createHash("sha256").update(fs.readFileSync(srcFileK)).digest("hex");
@@ -1521,7 +1537,7 @@ if (STALL) {
     const srcDir = path.join(RUN_DIR, "src");
     fs.mkdirSync(dl, { recursive: true });
     fs.mkdirSync(srcDir, { recursive: true });
-    const idS = `e2e-s-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    const idS = eid("s");
     const srcFileS = path.join(srcDir, `${idS}.bin`);
     fs.writeFileSync(srcFileS, Buffer.alloc(STALL_BYTES));
     const srcShaS = createHash("sha256").update(fs.readFileSync(srcFileS)).digest("hex");
@@ -1647,7 +1663,7 @@ if (DISK) {
     fs.mkdirSync(dl, { recursive: true });
     const srcDir = path.join(RUN_DIR, "src");
     fs.mkdirSync(srcDir, { recursive: true });
-    xferId6 = `e2e-g-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    xferId6 = eid("g");
     const srcFile6 = path.join(srcDir, `${xferId6}.bin`);
     fs.writeFileSync(srcFile6, Buffer.alloc(DISK_BYTES));
     const t0 = nowMs();
@@ -1727,7 +1743,7 @@ if (ROT) {
     fs.mkdirSync(dl, { recursive: true });
     const srcDir = path.join(RUN_DIR, "src");
     fs.mkdirSync(srcDir, { recursive: true });
-    xferId8 = `e2e-i-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    xferId8 = eid("i");
     const name8 = `${xferId8}.bin`;
     const part8 = path.join(dl, `${xferId8}.part`);
     const final8 = path.join(dl, name8);
@@ -1841,7 +1857,7 @@ if (SHRINK) {
     fs.mkdirSync(dl, { recursive: true });
     const srcDir = path.join(RUN_DIR, "src");
     fs.mkdirSync(srcDir, { recursive: true });
-    xferId7 = `e2e-h-${ISO}-${Math.random().toString(36).slice(2, 8)}`;
+    xferId7 = eid("h");
     const name7 = `${xferId7}.bin`;
     srcFile7 = path.join(srcDir, name7);
     fs.writeFileSync(srcFile7, Buffer.alloc(SHRINK_BYTES));
@@ -1969,7 +1985,7 @@ if (MULTI) {
       const src = path.join(d, l.name);
       fs.writeFileSync(src, Buffer.alloc(l.bytes, l.fill));
       return {
-        tid: `e2e-m-${ISO}-${token}-${i}`,
+        tid: eid("m", `${token}-${i}`),
         src,
         name: l.name,
         bytes: l.bytes,
@@ -2208,7 +2224,7 @@ if (CHAIN) {
 
     // 反向模式（§十四「错误行为测试」）：上面全部照跑，只把判据要去找的那个 msg_id 换成必定不存在的值
     // ⇒ 报不出红就说明下面几条读的不是真落库行。
-    const judgedId = CHAIN_LIE ? `${chainMsgId}-lie` : chainMsgId;
+    const judgedId = CHAIN_LIE ? noteId(`${chainMsgId}-lie`) : chainMsgId;
     const cDb = openDb(INST_C.db, true);
     let rows = [];
     try {
@@ -2262,11 +2278,28 @@ if (CHAIN) {
 // §十六 报告契约：把「报告至少显示」那几条点名翻译成对**产物**的判据，不是对源码字面量的存在性检查。
 // 判据只吃一个已经落盘的 summary.json —— 所以「改坏报告生成器」和「手工改坏一份报告」走的是同一条判据。
 function reportContractGaps(s) {
+  /// 本轮铸出来的 trace id 的**形状**（`e2e-` + 可选单字母段 + 本轮 ISO + 尾巴）。
+  /// 按形状认，不按变量名点名 —— 理由同 `traceExcerpt()`：手写名单会漏新轮次。
+  /// 写成函数内的字面量而不是模块级 `const`：`selfcheckReportContract()` 在文件**第 82 行**就被调用，
+  /// 模块级常量那时还没初始化（TDZ 会直接抛，第一次跑就把整层判据打挂）。
+  const RUN_ID_RE = /e2e-(?:[a-z]-)?\d{4}-\d{2}-\d{2}T[\d-]+Z-[A-Za-z0-9-]+/g;
   const gaps = [];
   if (!s || typeof s !== "object") return ["报告不是一个对象"];
   if (!["PASS", "FAIL"].includes(s.verdict)) gaps.push("总 verdict 不是 PASS/FAIL");
   if (!s.trace || !("msg_id" in s.trace) || !("transfer_id" in s.trace))
     gaps.push("缺 trace 里的 msg_id / transfer_id（§十六 要求这两个 id 贯穿整轮）");
+  // ★ §十六 的另一半：一轮里**每一单**都要有自己那条 trace。多文件轮同时有 3 个 transfer_id，
+  // 只报一个标量就等于"报告说这轮只发过一单"。所以判：**报告里出现的每个本形状 id，都必须已登记**。
+  // 不登记的那一格会在追故障时凭空消失 —— 而它恰好就是"报告指到错的那一单"的形状。
+  if (!Array.isArray(s.trace?.ids)) {
+    gaps.push("trace.ids 不是数组（本轮造过的每一单都要在报告里数得出来）");
+  } else {
+    const reg = new Set(s.trace.ids);
+    const hay = JSON.stringify({ ...s, trace: { ...(s.trace ?? {}), ids: [] } });
+    for (const id of new Set(hay.match(RUN_ID_RE) ?? [])) {
+      if (!reg.has(id)) gaps.push(`报告里出现没登记进 trace.ids 的 id：${id}`);
+    }
+  }
   if (typeof s.duration_s !== "number") gaps.push("缺总耗时 duration_s");
   if (!Array.isArray(s.steps) || !s.steps.length) gaps.push("缺「步骤」表");
   for (const st of s.steps ?? []) {
@@ -2304,14 +2337,24 @@ function stepBadge(v) {
 }
 function selfcheckReportContract() {
   const base = () => JSON.parse(JSON.stringify({
-    verdict: "PASS", duration_s: 1.2, trace: { msg_id: "m1", transfer_id: "t1" },
+    verdict: "PASS", duration_s: 1.2,
+    trace: { msg_id: "m1", transfer_id: "t1", ids: ["e2e-2026-01-01T00-00-00-000Z-aaaaaa"] },
     steps: [{ name: "跑通的一步", ms: 1, verdict: "PASS", checks: 1 }, { name: "没跑到的步骤", verdict: "NOT-RUN" }],
-    assertions: [{ step: "跑通的一步", name: "判据", expect: 1, actual: 1, verdict: "PASS" }],
+    assertions: [{ step: "跑通的一步", name: "判据", expect: 1, actual: "e2e-2026-01-01T00-00-00-000Z-aaaaaa", verdict: "PASS" }],
   }));
   const mut = (f) => { const c = base(); f(c); return c; };
   const cases = [
     ["真：字段齐全判得出合格", reportContractGaps(base()), 0],
     ["假：缺 msg_id 判得出", reportContractGaps(mut((c) => delete c.trace.msg_id)), 1],
+    ["假：trace.ids 不是数组判得出", reportContractGaps(mut((c) => delete c.trace.ids)), 1],
+    // ★ 这一条是"本轮有一单没被登记进 trace"的形状：断言里出现了本形状 id，但 trace.ids 里没有它。
+    ["假：报告里出现没登记的 id 判得出",
+      reportContractGaps(mut((c) => { c.trace.ids = []; })), 1],
+    ["真：多单全部登记判得出合格",
+      reportContractGaps(mut((c) => {
+        c.trace.ids = ["e2e-2026-01-01T00-00-00-000Z-aaaaaa", "e2e-x-2026-01-01T00-00-00-000Z-bbbbbb"];
+        c.assertions.push({ step: "跑通的一步", name: "第二单", expect: 1, actual: "e2e-x-2026-01-01T00-00-00-000Z-bbbbbb", verdict: "PASS" });
+      })), 0],
     ["假：缺耗时判得出", reportContractGaps(mut((c) => delete c.duration_s)), 1],
     ["假：步骤没有终态判得出", reportContractGaps(mut((c) => delete c.steps[1].verdict)), 1],
     ["假：断言少了「实际值」判得出", reportContractGaps(mut((c) => delete c.assertions[0].actual)), 1],
@@ -2352,7 +2395,7 @@ function writeReport(failed) {
     negative: NEGATIVE,
     binary: BIN, platform: process.platform, duration_s: totalS,
     instances: INSTANCES.map((i) => ({ label: i.label, n: i.n, port: i.port, runtimeId: (i.n === 1 ? idA : idB)?.runtimeId })),
-    trace: { msg_id: msgId ?? null, transfer_id: xferId ?? null },
+    trace: { msg_id: msgId ?? null, transfer_id: xferId ?? null, ids: [...new Set(MINTED_IDS)] },
     shots: shotFiles.filter(Boolean).map((f) => path.relative(RUN_DIR, f)),
     // §十六要的「步骤 + 耗时 + 日志关联」：把闭包剔掉，只留事实。
     // 没跑到的步骤（fail-fast 跳过的）必须自带终态 NOT-RUN —— 否则"没有 verdict"会在渲染时落到
@@ -2521,17 +2564,21 @@ try {
     }
     // 把这件事**回写进刚落盘的 summary.json**，让"这轮删没删、省了多少"可被机器读回；
     // 回写之后**再用同一份 §十六 契约判一遍** —— 回写要是把契约字段弄丢了，必须当场判红。
+    // 只报**回写新增**的那几条：`writeReport` 末尾已经判过一次并塞进 REPORT_GAPS，
+    // 上一版这里不比较就复述全部 ⇒ 一次真·首次写盘的缺口会被写成"回写弄坏了产物"（误导归因），
+    // 还会把同一条 gap 打印两遍。实测锚点：LIE-79 那一轮 3 条 gap 打印成 6 条。
     const sumPath = path.join(RUN_DIR, "summary.json");
     if (fs.existsSync(sumPath)) {
       try {
         const sum = JSON.parse(fs.readFileSync(sumPath, "utf8"));
         sum.retention = { policy: "C", freed_bytes: freed, deleted: doomed };
         fs.writeFileSync(sumPath, JSON.stringify(sum, null, 2));
-        const after = readReportContract(RUN_DIR);
-        if (after.length) {
-          console.error(`✗ 回写 retention 之后 §十六 报告契约反而不合格 ⇒ 回写弄坏了产物：\n  ${after.join("\n  ")}`);
+        const before = new Set(REPORT_GAPS);
+        const newly = readReportContract(RUN_DIR).filter((g) => !before.has(g));
+        if (newly.length) {
+          console.error(`✗ 回写 retention 之后 §十六 报告契约反而不合格 ⇒ 回写弄坏了产物：\n  ${newly.join("\n  ")}`);
         }
-        REPORT_GAPS.push(...after);
+        REPORT_GAPS.push(...newly);
       } catch (e) {
         console.error(`✗ 回写 retention 到 summary.json 失败：${e.message}`);
         REPORT_GAPS.push(`回写 retention 失败：${e.message}`);
