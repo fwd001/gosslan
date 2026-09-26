@@ -227,7 +227,7 @@ Windows 基线曾烂到只有 mac 并集的一部分（487 vs 690）。
 | **B-8** | `review-step-3-2` `list_group_files` 1+3N 与 `refreshGroups` N+1 收批量 | **B** | 延后（性能类，无现场故障） | 先有 §7 旅程判据，再谈优化 |
 | **B-9** | `review-step-3-4` `export_chat_text` 等待时间上界测试 | **B** | 保留，并入 A-2 | 现在是"无上界可测"，属 harness 能力 |
 | **B-10** | §4-C clippy `--all-targets` 约 25 条测试代码告警 | **B** | 延后（口径外） | 门禁是 lib-only；改口径要连同 CI 一起想清楚 |
-| **B-11** | `verify:all` 与分层入口（§十五） | **B** | 优化，**排在 A-1/A-2 落地之后** | 现在只有 `verify`/`verify:full`，且 CI 用同一步骤表 ⇒ 一致性已达标；缺的是 `e2e`/`multi-instance`/`fault-injection` 这三层**还不存在**，先造层再造入口 |
+| **B-11** | `verify:all` 与分层入口（§十五） | **B** | 优化，**排在 A-1/A-2 落地之后** | **已完成（2026-09-26 复跑核对）**：五条入口 `verify` / `verify:full` / `verify:e2e`（`--group local`）/ `verify:release` / `verify:all` 都在，CI 与本地共用同一张步骤表 ⇒ 一致性达标；`e2e`/`multi-instance`/`fault-injection` 这三层**今天已被 `--group local` 认领**（每步都是双/三实例轮，含 SIGKILL·只读目录·冻进程·前缀污染注入）。逐轮清单只登记在 §12.7 轮次账一处，**本行不留条数**（总数型声明没有守卫）。 |
 
 ### 3.3 C 类——延后（无稳定收益或前置未成立）
 
@@ -302,7 +302,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 3. **M-3 Trace 贯穿**：`msg_id`/`transfer_id` 目前散在日志文本里，没有"一条消息跨层可串"的判据。
 4. **M-4 数据生命周期 E2E**：旧库→迁移→重启→清空→重初始化，今天只有迁移单测，没有"进程重启后仍正确"。
 5. **M-5 平台/硬件 Smoke 清单**：`docs/acceptance/1.0-release.md` 有 22 条 P0 但**零 checkbox、零状态** ⇒ 不是清单，是一份愿望列表。
-6. **M-6 `verify:all` 的 e2e/multi-instance/fault-injection 三层**：§十五列的入口里有 **3 层今天不存在**（不是命名问题，是没有被测物）。
+6. ~~**M-6 `verify:all` 的 e2e/multi-instance/fault-injection 三层**：§十五列的入口里有 **3 层今天不存在**（不是命名问题，是没有被测物）~~ ⇒ **已落地（2026-09-26 现跑核对）**：命令＝`npm run verify:e2e`（即 `--group local`）与 `npm run verify:release`（`--group release`），`verify:all` 已把 e2e 层串上（`package.json` 现读）。**不在此登记条数**——每步内容以 `scripts/verify.mjs` 的 group 声明为唯一事实源，逐轮账看 §12.7。
 7. **M-7 前端事件反向通道的架构判据**：`check-domain-deps` 明确不扫 `src/**` ⇒ 前端依赖方向只有 api 门面一条守得住。
 
 ---
@@ -427,7 +427,7 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 10. **B-2** 事件 payload 逐字段断言扩面（~10 个有真实消费者的事件）。
 11. ~~**A-6** Windows 基线在有 Windows 环境时 `--update` 收口~~ → **判据那一半已作废**（`--sync-baselines` 不需要 Windows 环境就能按门控推名单）。
     剩下的只有一格：**push 之后盯一次 Windows CI**，红了就按它点名的用例在 Windows 侧 `--update` 转观测值。
-12. **B-5 / B-9 / B-11** 小步补齐。
+12. **B-5 / B-9** 小步补齐。~~**B-11** 分层入口~~ → **已收口（2026-09-26 复跑核对）**，见 B-11 行与 §4.4 M-6。
 
 ### 阶段 D — 由数据决定要不要动 DB / 前端结构
 
