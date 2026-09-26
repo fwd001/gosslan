@@ -621,13 +621,18 @@ const anyFail = () => assertions.some((a) => a.verdict === "FAIL");
 const linkStepIdx = () => steps.findIndex((s) => s.name.startsWith("起 A/B"));
 /// 失败时把两端日志里出现这条 trace 的行摘出来 —— §十六要的「日志关联」不是写个文件名，
 /// 而是要能顺着 msg_id / transfer_id 直接看见对端说过什么。
+// 失败时"沿链追踪"要看的是**本轮自己造的那些单**的日志。
+// ⚠️ 以前这里手写四个变量名，于是注入轮（⑤⑥⑦⑧⑨⑩ 各自另造 id）的日志一行都摘不到，
+// 而报告里 `transfer_id` 还指着同一轮里另一单（J2 那一单）⇒ 追踪会指到错的那一单。
+// 实测锚点：run-2026-09-26T01-42-36-986Z —— 注入⑧ 的 `e2e-i-…-dqy5zx` 在 A 侧日志有 132 行，
+// 报告摘出的行里含它 **0 行**，`trace.transfer_id` = `e2e-x-…`。
+// 所有 id 都是 `e2e-…<本轮 ISO>-随机` 的形状 ⇒ 按形状匹配，新增轮次不必登记，也就不会再次漏。
 function traceExcerpt() {
-  const ids = [msgId, xferId, xferId2, xferId3].filter(Boolean);
-  if (!ids.length) return {};
+  const re = new RegExp(`e2e-\\S*${ISO.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
   const out = {};
   for (const i of INSTANCES) {
     const body = tailLog(i.log, 20000) || "";
-    out[i.label] = body.split("\n").filter((l) => ids.some((id) => l.includes(id))).slice(-8);
+    out[i.label] = body.split("\n").filter((l) => re.test(l)).slice(-8);
   }
   return out;
 }
