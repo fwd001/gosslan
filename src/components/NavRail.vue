@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { avatarSeedFor } from "@/utils/avatarSeed";
 import { MoreHorizontal, Moon, ScrollText, Settings, Sun } from "lucide-vue-next";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { t } from "@/i18n";
@@ -27,7 +27,7 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 const chat = useChatStore();
-const initials = computed(() => avatarInitial(app.device?.nickname));
+const seed = computed(() => avatarSeedFor(app.device?.device_id ?? app.device?.nickname));
 
 // ---------------- 二级菜单（设置 / 运行日志 收进这里，用户 2026-09-17） ----------------
 // 惯用法与 ConversationList 的「+」菜单完全一致（useExclusivePopup 互斥 + 键盘可达）。
@@ -111,7 +111,7 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
         class="gosslan-avatar-box flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition hover:opacity-90"
         :class="settingsOpening ? 'opacity-60' : ''"
         :aria-busy="settingsOpening"
-        :style="{ backgroundColor: nameToColor(app.device?.nickname ?? '') }"
+        :style="{ backgroundColor: seed?.bg }"
         :title="app.present ? t('nav.me.online') : t('nav.me.offline')"
         :aria-label="t('nav.me.openSettings', { status: app.present ? t('nav.me.online') : t('nav.me.offline') })"
         @click="emit('open-settings')"
@@ -119,9 +119,8 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
         <img alt="" v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
         <span
           v-else
-          class="gosslan-avatar-initial text-sm font-medium" aria-hidden="true"
-          :data-len="avatarInitialLen(app.device?.nickname)"
-          >{{ initials }}</span
+          class="gosslan-avatar-emoji" aria-hidden="true"
+          >{{ seed?.emoji }}</span
         >
       </button>
       <!-- 本人在线状态点 -->

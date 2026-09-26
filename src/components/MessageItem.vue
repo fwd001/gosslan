@@ -263,7 +263,7 @@ const avatarName = computed(() =>
 /**
  * 头像：自己取本机；对端从好友/在线节点表取（peer 改资料后由 syncProfileFromPeers
  * 同步到 friends / peers，这里读到的就是最新头像）。没有头像就走 MessageAvatar 的
- * nameToColor 默认块——同一名字在单聊/群聊/消息列表永远同色。
+ * avatarSeed 默认块——同一个人（同一个设备 id）在单聊/群聊/消息列表永远同一张脸。
  */
 const avatarSrc = computed(() => {
   if (mine.value) return app.device?.avatar ?? null;
@@ -1072,7 +1072,7 @@ async function copyFileToClipboard() {
            ⚠️ 不要加 `background-clip`、`-inset-*`、`w-fit`、`ring-*`，不要换回绝对定位的框，
            也不要把底色挪到这一行上（行盒 = 消息本身，挪过去就没有"头像上面/气泡下面"的间距了）。 -->
       <!-- 头像：每条消息独立完整渲染 -->
-      <MessageAvatar :name="avatarName" :avatar="avatarSrc" />
+      <MessageAvatar :id="message.sender_id" :name="avatarName" :avatar="avatarSrc" />
 
       <!-- 勾选框（微信款）：18px 圆、未选 1px 细边、选中实底 + 细白勾。
            为什么不用 border-2：2px 的环在 16-18px 的圆里内孔只剩 12-14px，深色下是一圈

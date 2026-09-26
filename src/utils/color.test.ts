@@ -6,56 +6,14 @@ import {
   darken,
   rgba,
   humanSize,
-  nameToColor,
-  mixHex,
+    mixHex,
   luma,
   mixToLuma,
   contrastRatio,
   adjustHsl,
   toHsl,
   hslToHex,
-  avatarInitial,
-  avatarInitialLen,
-} from "./color.ts";
-
-test("avatarInitial：纯英文取前 4 个字母、纯中文取首字、码点安全、空名兜底", () => {
-  assert.equal(avatarInitial("zhou"), "ZHOU");
-  assert.equal(avatarInitial("Zhou"), "ZHOU");
-  assert.equal(avatarInitial("ab"), "AB");
-  assert.equal(avatarInitial("a"), "A");
-  assert.equal(avatarInitial("abcdefg"), "ABCD", "超过 4 个字母只取前 4 个");
-  assert.equal(avatarInitial("周工"), "周");
-  assert.equal(avatarInitial("周san"), "周", "中文开头后面是英文 ⇒ 仍是首字");
-  // emoji 是代理对，slice(0,1) 会劈成半边；必须按码点取
-  assert.equal(avatarInitial("👍周工"), "👍");
-  assert.equal(avatarInitial(""), "?");
-  assert.equal(avatarInitial("   "), "?");
-  assert.equal(avatarInitial(null), "?");
-  assert.equal(avatarInitial(undefined), "?");
-});
-
-test("avatarInitial：字母 + 中文的截断规则（用户 2026-09-13 定稿 + 澄清）", () => {
-  // 分界点是 **3 个字母**：≤2 个字母带中文，≥3 个字母只截字母
-  assert.equal(avatarInitial("a中"), "A中", "1 个字母 ⇒ 字母 + 一个中文（用户澄清）");
-  assert.equal(avatarInitial("ab中"), "AB中", "2 个字母 ⇒ 两个字母 + 一个中文");
-  assert.equal(avatarInitial("abc中"), "ABC", "3 个字母 ⇒ 不加中文，只截字母");
-  assert.equal(avatarInitial("abcd中"), "ABCD", "4 个字母 ⇒ 前 4 个字母（不带中文）");
-  assert.equal(avatarInitial("abcde中"), "ABCD", "超过 4 个字母 ⇒ 前 4 个字母");
-  // 后跟空格/数字/符号的按英文处理（规则只对中英混排特判）
-  assert.equal(avatarInitial("John Smith"), "JOHN");
-  assert.equal(avatarInitial("lee_2"), "LEE");
-});
-
-test("avatarInitialLen：按**渲染结果**数字数（不是原始用户名长度）", () => {
-  assert.equal(avatarInitialLen("zhou"), 4);
-  assert.equal(avatarInitialLen("周工"), 1);
-  assert.equal(avatarInitialLen("abc中"), 3);
-  assert.equal(avatarInitialLen("ab中"), 3);
-  assert.equal(avatarInitialLen("a中"), 2);
-  assert.equal(avatarInitialLen("abcde中"), 4);
-  assert.equal(avatarInitialLen("👍周工"), 1);
-  assert.equal(avatarInitialLen(""), 1);
-});
+    } from "./color.ts";
 
 test("hexToRgb 解析 6 位与 3 位 hex", () => {
   assert.deepEqual(hexToRgb("#3b82f6"), [59, 130, 246]);
@@ -87,25 +45,6 @@ test("humanSize 单位换算与精度", () => {
   assert.equal(humanSize(1024 * 1024 * 1024), "1.0 GB");
   assert.equal(humanSize(1536), "1.5 KB");
 });
-
-test("nameToColor 同一名字稳定返回同一颜色", () => {
-  assert.equal(nameToColor("Alice"), nameToColor("Alice"));
-  assert.equal(nameToColor("张三"), nameToColor("张三"));
-  // 大小写/前后空格视为同一名字
-  assert.equal(nameToColor("Alice"), nameToColor("  alice  "));
-});
-
-test("nameToColor 不同名字大概率拿到不同颜色（10 人分发到 8 色）", () => {
-  const names = [
-    "Alice", "Bob", "Carol", "Dave", "Eve",
-    "Frank", "Grace", "Heidi", "Ivan", "Judy",
-  ];
-  const colors = new Set(names.map(nameToColor));
-  // 8 色调色板 + 10 个名字 → 至少出现 5 种不同颜色
-  assert.ok(colors.size >= 5, `只出现了 ${colors.size} 种颜色，不够分散`);
-});
-
-// ---------------- 暗色气泡柔化用的派生工具 ----------------
 
 test("luma: 黑白两端为 0/255，中间色介于其间", () => {
   assert.equal(Math.round(luma("#000000")), 0);
@@ -169,14 +108,3 @@ test("toHsl / hslToHex 往返一致", () => {
   }
 });
 
-test("nameToColor 空/空白名走兜底，不会返回 undefined", () => {
-  const c1 = nameToColor("");
-  const c2 = nameToColor("   ");
-  const c3 = nameToColor(undefined as unknown as string);
-  assert.ok(/^#[0-9a-f]{6}$/i.test(c1));
-  assert.ok(/^#[0-9a-f]{6}$/i.test(c2));
-  assert.ok(/^#[0-9a-f]{6}$/i.test(c3));
-  // 三个空输入应映射到同一兜底色
-  assert.equal(c1, c2);
-  assert.equal(c2, c3);
-});

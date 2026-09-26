@@ -3,7 +3,7 @@ import { t } from "@/i18n";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { avatarSeedFor } from "@/utils/avatarSeed";
 import { popupPlacement, popupWidth } from "@/utils/popupPosition";
 import type { SendState } from "@/composables/useMessageDisplay";
 import { Check, CheckCheck, Loader2, X } from "lucide-vue-next";
@@ -134,10 +134,10 @@ function readerAvatar(id: string): string | null {
         v-for="id in visibleReaders"
         :key="id"
         class="gosslan-avatar-box flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[11px] text-white"
-        :style="{ backgroundColor: nameToColor(readerName(id)) }"
+        :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
       >
         <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-        <span v-else class="gosslan-avatar-initial" aria-hidden="true" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
+        <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(id)?.emoji }}</span>
       </span>
       <span
         v-if="extraReaders.length > 0"
@@ -169,10 +169,10 @@ function readerAvatar(id: string): string | null {
       >
         <span
           class="gosslan-avatar-box flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
-          :style="{ backgroundColor: nameToColor(readerName(id)) }"
+          :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
         >
           <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-          <span v-else class="gosslan-avatar-initial" aria-hidden="true" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
+          <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(id)?.emoji }}</span>
         </span>
         <span class="max-w-28 truncate" :title="readerName(id)">{{ readerName(id) }}</span>
       </div>

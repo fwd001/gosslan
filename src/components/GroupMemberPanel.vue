@@ -5,7 +5,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { avatarSeedFor } from "@/utils/avatarSeed";
 import {
   TODO_STATUSES,
   TODO_STATUS_CLASS,
@@ -128,10 +128,6 @@ async function publishAnnouncement() {
   } finally {
     publishing.value = false;
   }
-}
-
-function initials(n: string) {
-  return avatarInitial(n);
 }
 
 /** 成员资料解析统一走 useMemberProfile（本机/好友表/在线节点），此处不再重复实现。 */
@@ -265,10 +261,10 @@ async function confirmAction() {
             <div
               class="gosslan-avatar-box flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
               :class="!memberProfile(id).online ? 'grayscale opacity-70' : ''"
-              :style="{ backgroundColor: nameToColor(memberProfile(id).name) }"
+              :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
             >
               <img alt="" v-if="memberProfile(id).avatar" :src="memberProfile(id).avatar ?? undefined" class="h-full w-full object-cover" />
-              <span v-else class="gosslan-avatar-initial text-xs font-semibold" aria-hidden="true" :data-len="avatarInitialLen(memberProfile(id).name)">{{ initials(memberProfile(id).name) }}</span>
+              <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(id)?.emoji }}</span>
             </div>
             <span
               class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
@@ -375,10 +371,10 @@ async function confirmAction() {
             >
               <div
                 class="gosslan-avatar-box flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-                :style="{ backgroundColor: nameToColor(f.nickname) }"
+                :style="{ backgroundColor: avatarSeedFor(f.device_id)?.bg }"
               >
                 <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
-                <span v-else class="gosslan-avatar-initial text-[11px] font-semibold" aria-hidden="true" :data-len="avatarInitialLen(f.nickname)">{{ initials(f.nickname) }}</span>
+                <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(f.device_id)?.emoji }}</span>
               </div>
               <span class="min-w-0 flex-1 truncate text-sm" :title="f.nickname">{{ f.nickname }}</span>
               <Plus class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />

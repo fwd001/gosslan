@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, onUnmounted } from "vue";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { avatarSeedFor } from "@/utils/avatarSeed";
 import { haptic } from "@/utils/haptics";
 import LinkIcon from "@/components/ui/LinkIcon.vue";
 import { linkIconName, linkLabelKey } from "@/utils/peerConnectionInfo";
@@ -50,10 +50,6 @@ const emit = defineEmits<{
   /** 右键 / 移动端长按：上报坐标，由父组件定位菜单（x/y 为视口坐标）。 */
   (e: "context", friend: Friend, x: number, y: number): void;
 }>();
-
-function initials(name: string) {
-  return avatarInitial(name);
-}
 
 function onContextMenu(friend: Friend, e: MouseEvent) {
   e.preventDefault();
@@ -158,10 +154,10 @@ onUnmounted(clearPress);
       <div
         class="gosslan-avatar-box flex items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
         :class="[compact ? 'h-8 w-8' : 'h-10 w-10', !friend.online ? 'grayscale opacity-70' : '']"
-        :style="{ backgroundColor: nameToColor(friend.nickname) }"
+        :style="{ backgroundColor: avatarSeedFor(friend.device_id)?.bg }"
       >
         <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
-        <span v-else class="gosslan-avatar-initial" aria-hidden="true" :class="compact ? 'text-xs font-medium' : 'text-sm font-medium'" :data-len="avatarInitialLen(friend.nickname)">{{ initials(friend.nickname) }}</span>
+        <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(friend.device_id)?.emoji }}</span>
       </div>
       <span
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"

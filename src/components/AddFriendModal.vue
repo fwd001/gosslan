@@ -9,7 +9,7 @@ import type { ChannelStatus, Peer } from "@/types";
 import { api } from "@/api";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { avatarSeedFor } from "@/utils/avatarSeed";
 import { Check, UserPlus, X } from "lucide-vue-next";
 
 const props = defineProps<{ open: boolean }>();
@@ -228,10 +228,6 @@ watch(
   },
 );
 
-function initials(name: string) {
-  return avatarInitial(name);
-}
-
 /** 发送好友申请后的冷却期：同一节点 3 秒内置灰防连点（显示「完成」）。 */
 const SEND_COOLDOWN_MS = 3000;
 const cooldown = ref<Record<string, number>>({});
@@ -365,10 +361,10 @@ async function add(peerId: string) {
         >
           <div
             class="gosslan-avatar-box flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-            :style="{ backgroundColor: nameToColor(p.nickname) }"
+            :style="{ backgroundColor: avatarSeedFor(p.device_id)?.bg }"
           >
             <img alt="" v-if="p.avatar" :src="p.avatar" class="h-full w-full object-cover" />
-            <span v-else class="gosslan-avatar-initial text-sm font-semibold" aria-hidden="true" :data-len="avatarInitialLen(p.nickname)">{{ initials(p.nickname) }}</span>
+            <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(p.device_id)?.emoji }}</span>
           </div>
           <div class="min-w-0 flex-1">
             <div class="truncate text-sm" :title="p.nickname">{{ p.nickname }}</div>

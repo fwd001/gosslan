@@ -323,7 +323,7 @@ function showSender(group: ChatSearchGroup): boolean {
             : 'hover:bg-[var(--gosslan-list-hover)]'"
           @click="activeConvId = g.conv_id"
         >
-          <MessageAvatar :name="g.name" :avatar="g.avatar" />
+          <MessageAvatar :id="g.conv_id" :name="g.name" :avatar="g.avatar" />
           <span class="min-w-0 flex-1">
             <span class="flex items-baseline gap-2">
               <span class="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--gosslan-text)]" :title="g.name">{{ g.name }}</span>
@@ -365,7 +365,7 @@ function showSender(group: ChatSearchGroup): boolean {
             :key="m.msg_id"
             class="flex gap-2.5 py-2.5"
           >
-            <MessageAvatar :name="m.sender_name" />
+            <MessageAvatar :id="m.sender_id" :name="m.sender_name" />
             <div class="min-w-0 flex-1">
               <div class="flex items-baseline gap-2">
                 <span

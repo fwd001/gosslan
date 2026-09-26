@@ -220,17 +220,18 @@ function enclosingTag(src: string, classIndex: number): string {
  * 注释里提到 `truncate` 会让护栏「因为注释而通过」。
  */
 /**
- * 默认头像的字母必须对读屏隐藏（`aria-hidden="true"`）。
+ * 默认头像（emoji 小动物，#32）必须对读屏隐藏（`aria-hidden="true"`）。
  *
- * 踩坑（2026-09-26 用系统无障碍控件树实测）：字母头像那一段文字（`KEEN` / `BRIG` / `HAPP`）
- * 会作为 `AXStaticText` 出现在树里 ⇒ 读屏把**无意义的截断字母**念在人名前面。
- * 同一位置的上传头像早就是 `alt=""`（装饰性、名字由旁边的文本承载），字母这一支却没人管。
- * 这条判据把两者拉回同一个口径，也防止新站点漏写。
+ * 踩坑（2026-09-26 用系统无障碍控件树实测，当时还是字母头像）：那一段文字
+ * （`KEEN` / `BRIG` / `HAPP`）会作为 `AXStaticText` 出现在树里 ⇒ 读屏把**无意义的装饰**
+ * 念在人名前面。同一位置的上传头像是 `alt=""`（装饰性、人名由旁边的文本承载）。
+ * 头像换成 emoji 之后这条口径不变：**装饰性图形一律对辅助技术隐藏**，
+ * 所以判据跟着换类名，而不是删掉 —— 新站点漏写时它必须报红。
  */
-export function findAvatarInitialWithoutAriaHidden(src: string): GuardIssue[] {
+export function findAvatarFaceWithoutAriaHidden(src: string): GuardIssue[] {
   const out: GuardIssue[] = [];
   for (const m of src.matchAll(CLASS_ATTR_RE)) {
-    if (!m[1].split(/\s+/).includes("gosslan-avatar-initial")) continue;
+    if (!m[1].split(/\s+/).includes("gosslan-avatar-emoji")) continue;
     const line = lineAt(src, m.index ?? 0);
     const open = src.lastIndexOf("<", m.index ?? 0);
     const close = src.indexOf(">", m.index ?? 0);
@@ -239,10 +240,31 @@ export function findAvatarInitialWithoutAriaHidden(src: string): GuardIssue[] {
       out.push({
         line,
         message:
-          "字母头像没有 `aria-hidden` —— 读屏会把截断字母（如 `KEEN`）当正文念出来。" +
-          "装饰性头像一律对辅助技术隐藏，人名由旁边的文本承载（上传头像那支已是 `alt=\"\"`）。",
+          "默认头像的 emoji 没有 `aria-hidden` —— 读屏会把装饰性图形念出来。" +
+          "人名由旁边的文本承载，上传头像那支已是 `alt=\"\"`，两支必须同口径。",
       });
     }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/**
+ * 字母头像这条渲染路径必须**不存在**（#32 用 emoji 头像整体换掉了它）。
+ *
+ * 为什么值得单独一条：换掉它的两个理由都**不会自己守住** —— 昵称可改（改一次换一张脸）、
+ * 昵称也能撞（两个人同名就同脸），而"按名字截字"看起来仍然是个合理实现，
+ * 下一个人完全可能顺手写回来。所以判据盯住那三个标识符 + 那个类名：
+ * 任一复活即红。只扫 `.vue`（渲染路径的家）—— 本文件的夹具里就写着这些名字。
+ */
+export function findRetiredLetterAvatarUsage(src: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(/\b(avatarInitialLen|avatarInitial|nameToColor)\b|gosslan-avatar-initial/g)) {
+    out.push({
+      line: lineAt(src, m.index ?? 0),
+      message:
+        `字母头像的标识符「${m[1] ?? m[0]}」复活了 —— 默认头像一律走 utils/avatarSeed.ts 的 emoji 头像` +
+        "（种子是设备 id / 群 id：昵称可改也会撞名，截字那条路两个理由都守不住）。",
+    });
   }
   return out.sort((a, b) => a.line - b.line);
 }

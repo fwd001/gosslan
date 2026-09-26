@@ -8,7 +8,7 @@ import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { haptic } from "@/utils/haptics";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { avatarSeedFor } from "@/utils/avatarSeed";
 import { classifyPaste } from "@/utils/clipboard";
 import { isImeKey } from "@/utils/ime";
 import { Folder, Smile, SquareCode, Users, X } from "lucide-vue-next";
@@ -630,12 +630,11 @@ async function onPaste(e: ClipboardEvent) {
           </span>
           <span
             v-else
-            class="gosslan-avatar-box flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
-            :style="{ backgroundColor: nameToColor(m.name) }"
+            class="gosslan-avatar-box flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-white"
+            :style="{ backgroundColor: avatarSeedFor(m.id)?.bg }"
           ><span
-            class="gosslan-avatar-initial" aria-hidden="true"
-            :data-len="avatarInitialLen(m.name)"
-          >{{ avatarInitial(m.name) }}</span></span>
+            class="gosslan-avatar-emoji" aria-hidden="true"
+          >{{ avatarSeedFor(m.id)?.emoji }}</span></span>
           <span class="min-w-0 flex-1 truncate" :title="m.name">{{ m.name }}</span>
         </button>
       </div>

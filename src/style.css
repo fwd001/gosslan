@@ -619,14 +619,13 @@ select,
   color: var(--gosslan-text);
 }
 
-/* 默认头像取字（用户 2026-09-13 的取字规则见 `utils/color.ts::avatarInitial`）。
-   1~2 个字沿用各调用点自己的 `text-*` 字号（零视觉变化）；3~4 个字（如英文名的
-   `ZHOU`）必须**随头像框宽度缩小**，否则会撑破圆形。这里用容器查询的 `cqw`
-   —— 字号 = 头像框宽度的百分比，因此 16px 的已读小头像与 64px 的资料页大头像
-   都自动合适，不需要在 12 个调用点各写一份字号。
-   `container-type: inline-size` 只做行内尺寸containment（不冻结高度），
-   对 `h-* w-*` 固定尺寸的框没有副作用；不支持容器查询的旧 WebView 直接跳过
-   这段 `@supports`，回落到调用点自身的字号（顶多略挤，不会看不见）。 */
+/* 默认头像（#32）：emoji 小动物 × 逐对挑过的背景色，种子是设备 id / 群 id
+   （`utils/avatarSeed.ts`）。字母头像那条渲染路径已整体退役 —— 用户要的是
+   "可辨识、稳定、**不撞脸**"，而昵称既可改又会撞名，字母头像因此被换掉。
+   emoji 字号 = 头像框宽度的百分比（容器查询 `cqw`），这样 16px 的已读小头像与
+   64px 的资料页大头像不用各写一份字号。`container-type: inline-size` 只做行内
+   containment，对 `h-* w-*` 固定尺寸的框没有副作用；不支持容器查询的旧 WebView
+   跳过这段 `@supports`，回落到调用点自己的 `text-*`（顶多偏小，不会看不见）。 */
 .gosslan-avatar-box {
   container-type: inline-size;
   /* 头像不参与文本选择（用户 2026-09-13：「头像部分应该是不能选择的。将来可能会有点击事件，
@@ -635,17 +634,12 @@ select,
   -webkit-user-select: none;
   user-select: none;
 }
-.gosslan-avatar-initial {
+.gosslan-avatar-emoji {
   line-height: 1;
 }
 @supports (container-type: inline-size) {
-  .gosslan-avatar-initial[data-len="3"] {
-    font-size: 44cqw;
-    letter-spacing: -0.03em;
-  }
-  .gosslan-avatar-initial[data-len="4"] {
-    font-size: 33cqw;
-    letter-spacing: -0.04em;
+  .gosslan-avatar-emoji {
+    font-size: 58cqw;
   }
 }
 

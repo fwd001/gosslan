@@ -3,7 +3,7 @@ import { t } from "@/i18n";
 import { computed, ref, watch } from "vue";
 import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useChatStore } from "@/stores/useChatStore";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { avatarSeedFor } from "@/utils/avatarSeed";
 import BaseModal from "@/components/BaseModal.vue";
 import type { MsgKind } from "@/types";
 
@@ -138,10 +138,10 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
           <span
             v-else
             class="gosslan-avatar-box flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-sm text-white"
-            :style="{ backgroundColor: nameToColor(c.name) }"
+            :style="{ backgroundColor: avatarSeedFor(c.id)?.bg }"
           >
             <img alt="" v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
-            <span v-else class="gosslan-avatar-initial" aria-hidden="true" :data-len="avatarInitialLen(c.name)">{{ avatarInitial(c.name) }}</span>
+            <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(c.id)?.emoji }}</span>
           </span>
           <span class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
         </button>

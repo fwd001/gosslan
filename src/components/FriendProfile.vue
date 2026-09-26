@@ -24,7 +24,7 @@ import { useClipboard } from "@/composables/useClipboard";
 import { Copy, MessageCircle, UserMinus } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
 import BackArrow from "@/components/ui/BackArrow.vue";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { Friend } from "@/types";
 
 const props = defineProps<{ friend: Friend }>();
@@ -39,7 +39,7 @@ const chat = useChatStore();
 const peer = computed(() => chat.peers.find((p) => p.device_id === props.friend.device_id));
 /** 这条资料是「我自己」（通讯录里的「自己」走同一渲染路径）：安全码/连接地址/删除好友都不适用。 */
 const isSelf = computed(() => props.friend.device_id === app.device?.device_id);
-const initial = computed(() => avatarInitial(props.friend.nickname));
+const seed = computed(() => avatarSeedFor(props.friend.device_id));
 /**
  * **安全码**：本机与这位好友之间那串双方一致的数字，供带外核对。
  *
@@ -141,10 +141,10 @@ const confirmRemove = ref(false);
           <div
             class="gosslan-avatar-box flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-xl font-medium text-white"
             :class="!friend.online ? 'grayscale opacity-70' : ''"
-            :style="{ backgroundColor: nameToColor(friend.nickname) }"
+            :style="{ backgroundColor: seed?.bg }"
           >
             <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
-            <span v-else class="gosslan-avatar-initial" aria-hidden="true" :data-len="avatarInitialLen(friend.nickname)">{{ initial }}</span>
+            <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ seed?.emoji }}</span>
           </div>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">

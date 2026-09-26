@@ -8,7 +8,8 @@ import {
   checkStyleCascade,
   checkUnreadBadgeComponent,
   findHandWrittenBadges,
-  findAvatarInitialWithoutAriaHidden,
+  findAvatarFaceWithoutAriaHidden,
+  findRetiredLetterAvatarUsage,
   findHoverRevealIssues,
   findOutlineNoneWithoutFocusRing,
   findSmallTapTargets,
@@ -636,39 +637,39 @@ test("src 下所有小尺寸可交互元素都带 tap-safe", () => {
   assert.deepEqual(bad, [], `以下元素点按目标过小：\n${bad.join("\n")}`);
 });
 
-test("字母头像的 aria-hidden：漏写就报，写了就放行（夹具）", () => {
-  const buggy = `<template><span class="gosslan-avatar-initial text-sm" :data-len="3">KEEN</span></template>`;
-  const fixed = `<template><span class="gosslan-avatar-initial text-sm" :data-len="3" aria-hidden="true">KEEN</span></template>`;
+test("默认头像（emoji）的 aria-hidden：漏写就报，写了就放行（夹具）", () => {
+  const buggy = `<template><span class="gosslan-avatar-emoji text-sm" :data-len="3">KEEN</span></template>`;
+  const fixed = `<template><span class="gosslan-avatar-emoji text-sm" :data-len="3" aria-hidden="true">KEEN</span></template>`;
   // 多行标签也要判得住（真实代码里一半是这种写法）
   const multilineFixed = `<template><span
-  class="gosslan-avatar-initial text-sm"
+  class="gosslan-avatar-emoji text-sm"
   aria-hidden="true"
 >{{ x }}</span></template>`;
   const multilineBuggy = `<template><span
-  class="gosslan-avatar-initial text-sm"
+  class="gosslan-avatar-emoji text-sm"
   :title="n"
 >{{ x }}</span></template>`;
-  assert.equal(findAvatarInitialWithoutAriaHidden(buggy).length, 1, "漏写 aria-hidden 必须报");
-  assert.deepEqual(findAvatarInitialWithoutAriaHidden(fixed), []);
-  assert.deepEqual(findAvatarInitialWithoutAriaHidden(multilineFixed), []);
-  assert.equal(findAvatarInitialWithoutAriaHidden(multilineBuggy).length, 1, "多行标签同样要判得住");
+  assert.equal(findAvatarFaceWithoutAriaHidden(buggy).length, 1, "漏写 aria-hidden 必须报");
+  assert.deepEqual(findAvatarFaceWithoutAriaHidden(fixed), []);
+  assert.deepEqual(findAvatarFaceWithoutAriaHidden(multilineFixed), []);
+  assert.equal(findAvatarFaceWithoutAriaHidden(multilineBuggy).length, 1, "多行标签同样要判得住");
 });
 
-test("src 下所有字母头像都对读屏隐藏", () => {
+test("src 下所有默认头像都对读屏隐藏", () => {
   const srcDir = join(import.meta.dirname, "..");
   const files = collectVueFiles(srcDir);
   const bad: string[] = [];
   let seen = 0;
   for (const f of files) {
     const src = readFileSync(f, "utf8");
-    seen += (src.match(/gosslan-avatar-initial/g) ?? []).length;
-    for (const issue of findAvatarInitialWithoutAriaHidden(src)) {
+    seen += (src.match(/gosslan-avatar-emoji/g) ?? []).length;
+    for (const issue of findAvatarFaceWithoutAriaHidden(src)) {
       bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
     }
   }
   // 判据不能空转：字母头像本来就有十几处，扫到 0 处说明扫描本身坏了
-  assert.ok(seen >= 10, `只扫到 ${seen} 处字母头像，扫描口径疑似失效`);
-  assert.deepEqual(bad, [], `以下字母头像会被读屏念出来：\n${bad.join("\n")}`);
+  assert.ok(seen >= 10, `只扫到 ${seen} 处默认头像，扫描口径疑似失效`);
+  assert.deepEqual(bad, [], `以下默认头像会被读屏念出来：\n${bad.join("\n")}`);
 });
 
 test("src 下所有 as=template 的插槽都干净（无注释、单节点）", () => {
@@ -1220,4 +1221,29 @@ test("`desktop:` 变体必须在 tailwind 里注册（拼错的后缀会静默�
     cfg.includes("html:not(.is-mobile)"),
     "变体的选择器必须是 html:not(.is-mobile) —— 与 useAppStore 写的那个类同名才对得上",
   );
+});
+
+test("字母头像那三个标识符：写回来就必须报（夹具）", () => {
+  for (const src of [
+    `<script setup>import { avatarInitial } from "@/utils/color";</script>`,
+    `<script setup>const c = nameToColor(n);</script>`,
+    `<template><span class="gosslan-avatar-initial">KEEN</span></template>`,
+  ]) {
+    assert.ok(findRetiredLetterAvatarUsage(src).length >= 1, `这条复活没被抓到：${src}`);
+  }
+  assert.deepEqual(
+    findRetiredLetterAvatarUsage(`<template><span class="gosslan-avatar-emoji" aria-hidden="true">{{ seed?.emoji }}</span></template>`),
+    [], "emoji 头像那条不该被误报");
+});
+
+test("src 下没有任何一处还在走字母头像", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findRetiredLetterAvatarUsage(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `字母头像复活了：\n${bad.join("\n")}`);
 });
