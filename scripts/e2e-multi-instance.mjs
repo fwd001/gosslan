@@ -2259,6 +2259,53 @@ try {
       else if (fs.existsSync(dbFile + s)) fs.rmSync(dbFile + s);
     }
   }
+  // §十六 产物保留（2026-09-26 拍板＝选项 C）：**只有这轮真判成绿**才删 `src/` + `recv/` 这两份
+  // 可再生、且字节数与哈希已写进 summary.json 的大文件副本；日志 / DB 快照 / 截图 / summary 一律留。
+  // 判据是纯函数 + 四格自证：每格只换一个它读的输入，少一格成立就说明这条是空的。
+  function retentionPlan({ green, negative, reportGaps }) {
+    if (negative || !green || reportGaps) return [];
+    return ["src", "recv"];
+  }
+  function selfcheckRetention() {
+    const fails = [];
+    const eq = (name, got, want) => {
+      const a = JSON.stringify(got), b = JSON.stringify(want);
+      if (a !== b) fails.push(`${name}：预期 ${b} / 实际 ${a}`);
+    };
+    eq("绿轮 ⇒ 删这两份", retentionPlan({ green: true, negative: false, reportGaps: false }), ["src", "recv"]);
+    eq("红轮 ⇒ 一份都不许删", retentionPlan({ green: false, negative: false, reportGaps: false }), []);
+    eq("反向模式（按设计退 0）⇒ 不删", retentionPlan({ green: true, negative: true, reportGaps: false }), []);
+    eq("报告自己不合格 ⇒ 不删", retentionPlan({ green: true, negative: false, reportGaps: true }), []);
+    return fails;
+  }
+  function dirBytes(d) {
+    if (!fs.existsSync(d)) return 0;
+    let n = 0;
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      n += e.isDirectory() ? dirBytes(p) : fs.statSync(p).size;
+    }
+    return n;
+  }
+  const retFails = selfcheckRetention();
+  if (retFails.length) {
+    console.error(`✗ 保留策略判据自证不成立 ⇒ 本轮一律不删（宁可留一堆，也不能删错）：\n  ${retFails.join("\n  ")}`);
+    process.exitCode = 1;
+  } else {
+    const green = !process.exitCode && !REPORT_GAPS.length;
+    const doomed = retFails.length ? [] : retentionPlan({ green, negative: NEGATIVE, reportGaps: false });
+    let freed = 0;
+    for (const name of doomed) {
+      const target = path.join(RUN_DIR, name);
+      if (!fs.existsSync(target)) continue;
+      freed += dirBytes(target);
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+    if (doomed.length) {
+      console.log(`产物保留（C）：本轮判绿 ⇒ 已删可再生大文件副本 ${doomed.join(" + ")}` +
+        `，释放 ${(freed / 1024 / 1024).toFixed(1)} MB；日志/DB/截图/summary 全留`);
+    }
+  }
   if (backups.size) console.log(`已还原用户原有实例库 ${backups.size} 个`);
   // 报告本身不合格 ⇒ 这一轮不许以"跑完了"收场。放在 finally 最末（清理之后、退出之前），
   // 所以它盖得过上面任何一条 exitCode —— 包括反向模式那条"按设计退 0"。
