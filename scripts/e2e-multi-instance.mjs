@@ -41,7 +41,25 @@
 //    **>45s** 越过 watchdog（健康阈值 15s×3）⇒ 真的拆链 + 重拨 + 重试，两种都是同一组结局判据）
 
 const NEGATIVE = process.argv.includes("--negative");
+// 判据自证先跑，**在任何实例启动之前**：这套 harness 用「日志里有没有某行」当就绪/投递证据，
+// 而那层读法今天真的塌过一次（10 MB 轮的 boot 行被 512 KB 轮转藏进 .old.log ⇒ 20s 超时红，
+// 连带 fail-fast 跳掉后面 9 步）。判据自己坏了的时候，必须以「判据坏了」退出，
+// 不能留一个人去猜超时是谁的错。`--logtail-selfcheck` 是同一条检查的独立入口（不需要 release 产物）。
+{
+  const fails = selfcheckLogtail();
+  if (process.argv.includes("--logtail-selfcheck")) {
+    for (const f of fails) console.error(`  ❌ ${f}`);
+    console.log(fails.length ? `✗ 日志判据自证红 ${fails.length} 条` : "✅ 日志判据自证 5 格全部成立");
+    process.exit(fails.length ? 1 : 0);
+  }
+  if (fails.length) throw new Error(`日志判据自证不成立，先修判据再跑轮：\n  ${fails.join("\n  ")}`);
+}
 /// 故障注入模式（§八）。`--fault=poison-part` 见下方 preset 步骤的注释。
+/// 另有**旅程轮** `--round=`（不是注入，是补一整条没测过的用户路径）：
+///   --round=group    → 群聊这一族跨实例真跑：两端预置群 → A 排三条群消息（正文/撤回/正文）→
+///                      对端上线后靠 flush_group_outbox 补发 → 判落库/解密/清队列/G-Set/不串味
+///   --round=group-lie→ 预置与投递完全不动，只把判据读的 msg_id 换成不存在的值 ⇒ 预期按设计报红
+///   断言条数不在这里写，由 check-doc-numbers 现算对账（同下面每一轮）。
 const FAULT = (process.argv.find((a) => a.startsWith("--fault=")) || "").slice("--fault=".length);
 const POISON = FAULT === "poison-part" || FAULT === "poison-part-lie";
 /// 注入②：接收端已有**真实前缀** ⇒ 必须按前缀续传，不许从 0 重灌整份。
@@ -116,6 +134,38 @@ let xferId7, srcFile7;
 ///   少一个文件、或落地内容集合少一份，就是这条被判红 —— 不是"看着不顺眼"，是丢东西。
 const MULTI = FAULT === "multi-file" || FAULT === "multi-file-lie";
 let multiSpec = [];
+/// 轮次（§九 旅程族，与 `--fault=` 的注入族并列）：`--round=group` = 群聊这一族跨实例真跑。
+/// 为什么这一格值一轮：此前 harness **从未建过群** —— `grep -c group` 只命中 file_outbox 的
+/// `group_id` 列名，§九「群聊：创建/同步/发送/成员离线/重新上线/撤回」在跨实例层面是零判据，
+/// 而群消息走的是一条与 1:1 完全不同的管道（`group_outbox` 按成员一行 + Gossip 信封 +
+/// `GroupAck` 删行 + G-Set 撤回）。
+/// ⚠️ 与 1:1 的关键差异（决定了这一轮为什么要自己签名加密）：
+///   `flush_group_outbox`（transport.rs:6689-6693）**不做 re-seal**，只是 `from_str` 之后原样
+///   `try_send` —— 而 1:1 的 `flush_outbox` 每条都过 `reseal_for_send`。所以停机写入的那段
+///   payload 必须**在写库那一刻就已经是合法、已密封、已签名的 Gossip 信封**，
+///   放占位串只会得到"B 静默丢弃"（verify_envelope 不过 ⇒ handle_gossip 直接 return，
+///   gossip.rs:61-99/194-204），那红的是脚本不是产品。
+/// 这一轮顺带就是 §五 点名的两格组合：`群聊 + 离线成员重新上线`（入队时对端进程还没起，
+/// 只能靠建链后的 flush 送达）与 `聊天 + 群聊 + 文件`（同一对实例同时背 1:1 与群两条管道，
+/// 判据里专门有一格查两者互不串味）。
+const ROUND = (process.argv.find((a) => a.startsWith("--round=")) || "").slice("--round=".length);
+const GROUP = ROUND === "group" || ROUND === "group-lie";
+/// 反向模式：注入与预置完全不动，只把**判据要去找的那个 msg_id** 换成一个必定不存在的值。
+/// 报不出红 ⇒ 那几条断言读的不是真落库行。
+const GROUP_LIE = ROUND === "group-lie";
+const GROUP_ID = "g-e2e-harness";
+const GROUP_NAME = "E2E-Group";
+/// 群对称密钥：settings 表 `gk:{group_id}` = base64 的**正好 32 字节**
+/// （transport.rs:5984-5986 解码后 `try_into::<[u8;32]>()`，长度不对直接 None ⇒ 永不解密）。
+/// 先例：`e2e_peer.rs:62` 的 `GROUP_KEY_B64` 就是同一形状。
+const GROUP_KEY_B64 = Buffer.alloc(32);
+for (let i = 0; i < 32; i += 4) GROUP_KEY_B64.writeUInt32BE(0x6e00_0000 + i, i);
+const GROUP_KEY_STR = GROUP_KEY_B64.toString("base64");
+/// `GossipEngine` 的 ttl（`GossipEngine::new(bloom, lru, fanout, ttl)` 第四参，见
+/// gossip_engine.rs:244 那组测试的形状）；转发每跳减一，写 0 会让对端直接丢。
+const GROUP_TTL = 6;
+let gTextId, gRecallId, gText2Id;
+
 /// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
 /// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
 const LIE = FAULT.endsWith("-lie");
@@ -138,12 +188,12 @@ const FILE_MB = SIZE_ARG
 const FILE_BYTES = Math.round(FILE_MB * 1024 * 1024);
 
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { createPrivateKey } from "node:crypto";
+import { createHash, createCipheriv, createPrivateKey, randomBytes, randomUUID, sign } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { BOOT_LINE, bootBaseline, bootReady, readLogTail, selfcheckLogtail, stashLogs } from "./e2e-logtail.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const ISO = new Date().toISOString().replace(/[:.]/g, "-");
@@ -263,8 +313,9 @@ function tcpOpen(port) {
     s.once("error", () => res(false));
   });
 }
-const tailLog = (file, n = 400) =>
-  fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").slice(-n).join("\n") : "";
+// 读实例日志一律走 e2e-logtail：应用会把超 512 KB 的日志整份轮转成 `.old.log`，
+// 只看当前档会让「这一单真跑过」这类判据在轮转瞬间凭空看不见（10 MB 轮实测踩过）。
+const tailLog = (file, n = 400) => readLogTail(file, n);
 
 // PKCS8 定长前缀 + 32 字节种子 → 导出公钥（Node 原生支持 X25519 / Ed25519）
 const PKCS8 = { x25519: "302e020100300506032b656e04220420", ed25519: "302e020100300506032b657004220420" };
@@ -274,9 +325,80 @@ function pubFromSecret(kind, b64secret) {
   return Buffer.from(jwk.x, "base64url").toString("base64"); // 应用侧统一标准 base64
 }
 
+/// 停机时刻自制一个**合法**的群 Gossip 信封（`--round=group` 专用）。
+/// 为什么必须由 harness 签名加密，而不是像 1:1 那样丢给应用去 re-seal：
+/// `flush_group_outbox`（transport.rs:6689-6693）只 `serde_json::from_str` 再原样 `try_send`，
+/// **不过 `reseal_for_send`** ⇒ 写进 `group_outbox.payload` 的那段 JSON 会被逐字节发上线。
+/// 三把材料 harness 全都有：A 的 ed25519 私钥（settings）、A 的两把公钥（readIdentity 已导出）、
+/// 以及 harness 自己写进 `settings['gk:{gid}']` 的群对称密钥。
+/// 每一处序列化都必须与 Rust 侧逐字对齐，错一处得到的就是"B 静默丢弃"（红在脚本）：
+/// - `message_id` = SHA-256(sender_id ‖ nonce ‖ payload) 的**小写 hex**（protocol.rs:856-863）
+/// - 签名材料 = 这 15 个字段的**紧凑 JSON 数组**，顺序照 `signing_bytes()`（protocol.rs:868-885），
+///   `ttl` 不在里面（中继会递减），`target` 为 `null`
+/// - 载荷 = base64(nonce12 ‖ ChaCha20-Poly1305(群密钥, {"kind":..,"content":..}))，无 AAD
+///   （crypto.rs:83-97 `seal`，`encrypt` 不带 associated data）
+/// - `kind` 恒为 `"group"`（GossipKind 的 snake_case），`encrypted` 恒 true
+function buildGroupEnvelope(o) {
+  const iv = randomBytes(12);
+  const c = createCipheriv("chacha20-poly1305", o.groupKey, iv, { authTagLength: 16 });
+  const sealed = Buffer.concat([
+    c.update(JSON.stringify({ kind: o.kind, content: o.content }), "utf8"),
+    c.final(),
+    c.getAuthTag(),
+  ]);
+  const payload = Buffer.concat([iv, sealed]).toString("base64");
+  const nonce = randomUUID();
+  const messageId = createHash("sha256")
+    .update(Buffer.concat([
+      Buffer.from(o.senderId, "utf8"),
+      Buffer.from(nonce, "utf8"),
+      Buffer.from(payload, "utf8"),
+    ]))
+    .digest("hex");
+  const signing = JSON.stringify([
+    messageId, o.senderId, nonce, o.x25519Pub, o.ed25519Pub,
+    "group", o.groupId, o.groupName, o.creator, o.members, payload, o.ts, o.seq, true, null,
+  ]);
+  const env = {
+    message_id: messageId,
+    sender_id: o.senderId,
+    nonce,
+    sender_pubkey: o.x25519Pub,
+    sender_ed25519: o.ed25519Pub,
+    sender_sig: sign(null, Buffer.from(signing, "utf8"), o.priv).toString("base64"),
+    ttl: GROUP_TTL,
+    kind: "group",
+    group_id: o.groupId,
+    group_name: o.groupName,
+    group_creator: o.creator,
+    group_members: o.members,
+    payload,
+    ts: o.ts,
+    seq: o.seq,
+    encrypted: true,
+  };
+  return { messageId, wire: JSON.stringify({ type: "gossip", envelope: env }) };
+}
+
+/// 从实例库里取回 ed25519 私钥对象（只有 harness 需要，产品侧从不导出私钥）。
+function ed25519Priv(inst) {
+  const db = openDb(inst.db, true);
+  try {
+    const b64 = db.prepare("SELECT value FROM settings WHERE key='ed25519_secret'").get()?.value;
+    if (!b64) throw new Error(`${inst.label} 库里没有 ed25519_secret`);
+    const der = Buffer.concat([Buffer.from(PKCS8.ed25519, "hex"), Buffer.from(b64, "base64")]);
+    return createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+  } finally { db.close(); }
+}
+
 // ── 生命周期 ───────────────────────────────────────────────────────
 const procs = new Map();
+let stashSeq = 0;
+/** 每次 launch 前把该实例的历史日志移进 run 目录（不删）；本轮写的行因此必然在当前档里。 */
+const bootBaseOf = new Map();
 function launch(inst) {
+  stashLogs(inst.log, RUN_DIR, `${inst.label}-${++stashSeq}`);
+  bootBaseOf.set(inst.n, bootBaseline(inst.log, BOOT_LINE));
   const out = fs.openSync(path.join(RUN_DIR, `instance-${inst.label}.stdout.log`), "a");
   const p = spawn(BIN, [], {
     env: { ...process.env, GOSSLAN_INSTANCE: String(inst.n), GOSSLAN_AUTOSTART: "1" },
@@ -311,10 +433,10 @@ function procsLeft() {
   return (r.stdout || "").trim().split("\n").filter(Boolean);
 }
 async function bootAndStop(what) {
-  for (const i of INSTANCES) launch(i);
+  for (const i of INSTANCES) launch(i); // launch 内部会先给该实例清档，基线随之一并重置
   for (const i of INSTANCES) {
     await waitFor(() => tcpOpen(i.port), 60_000, `${what}：实例 ${i.label} 的 TCP ${i.port} 可连`);
-    await waitFor(() => tailLog(i.log, 60).includes("AppState::init 完成"), 20_000,
+    await waitFor(() => bootReady(i.log, bootBaseOf.get(i.n), BOOT_LINE), 20_000,
       `${what}：实例 ${i.label} 打出 boot 完成行`);
   }
   await stopAll();
@@ -550,6 +672,83 @@ if (KILL) {
   });
 }
 
+/// 群聊这一族（`--round=group`）的预置。形状照 `e2e_peer.rs:300-338` 的 `ensure_test_group`
+/// （仓内既有先例：停机给真实例写群记录），两端各写三行：
+/// `settings['gk:{gid}']`（对称密钥，transport.rs:5981-5986 要求 base64 解出正好 32 字节）、
+/// `groups` + `group_members`（发送侧 window.rs:133-143 两者缺一就 `Err`）、
+/// `conversations`（e2e_peer 也写了；不写也能跑，但搜索谓词会漏掉无会话行的历史）。
+/// A 侧再排两条群消息（正文 seq=1、撤回 seq=2）：**入队时对端进程还没起** ⇒
+/// 这一轮只能靠建链后的 `flush_group_outbox` 送达，正是 §五「群聊 + 离线成员重新上线」那一格。
+if (GROUP) {
+  step("群聊预置：两端各写一份群 + 同一份群密钥，A 再排两条群消息（正文 + 撤回）", () => {
+    const members = [idA.runtimeId, idB.runtimeId];
+    const convId = `group:${GROUP_ID}`;
+    const ts = nowMs();
+    for (const inst of INSTANCES) {
+      seed(inst.db, (db) => {
+        db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)")
+          .run(`gk:${GROUP_ID}`, GROUP_KEY_STR);
+        db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
+          .run(GROUP_ID, GROUP_NAME, idA.runtimeId, ts);
+        db.prepare("DELETE FROM group_members WHERE group_id=?1").run(GROUP_ID);
+        for (const m of members) {
+          db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)")
+            .run(GROUP_ID, m);
+        }
+        db.prepare(
+          "INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at)"
+          + " VALUES(?1,'group',?2,NULL,0,?3)",
+        ).run(convId, GROUP_NAME, ts);
+      });
+    }
+    const base = {
+      groupKey: GROUP_KEY_B64, senderId: idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
+      x25519Pub: idA.x25519Pub, ed25519Pub: idA.ed25519Pub,
+      groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId, members,
+    };
+    const t = buildGroupEnvelope({ ...base, kind: "text", content: "hello from group harness", ts, seq: 1 });
+    const r = buildGroupEnvelope({
+      ...base, kind: "recall", content: JSON.stringify({ target: t.messageId }), ts: ts + 1, seq: 2,
+    });
+    // ⚠️ 第三条**不被撤回**的正文是必需的，不是为了凑数：第一轮实测（26/27 绿）只有 1 条正文
+    // 时，「内容是解密后的明文」与「撤回把正文清空成 ""」这两格**读同一行的同一列**，
+    // 于是先落的那格必红 —— 红在判据、不是产品（本项目第三次撞同一形状）。
+    // 「真解密成功」这一格只能由一条**永远不会被物化覆盖**的行来证。
+    const t2 = buildGroupEnvelope({ ...base, kind: "text", content: "second group message", ts: ts + 2, seq: 3 });
+    gTextId = t.messageId;
+    gRecallId = r.messageId;
+    gText2Id = t2.messageId;
+    seed(INSTANCES[0].db, (db) => {
+      db.prepare("DELETE FROM group_outbox WHERE group_id=?1").run(GROUP_ID);
+      for (const [env, seq, kind, content, at] of [
+        [t, 1, "text", "hello from group harness", ts],
+        [r, 2, "recall", JSON.stringify({ target: t.messageId }), ts + 1],
+        [t2, 3, "text", "second group message", ts + 2],
+      ]) {
+        db.prepare("DELETE FROM messages WHERE msg_id=?1").run(env.messageId);
+        // 逐列照发送内核（window.rs:179-190）：receiver_id 是**裸 group_id**、初始 status 是
+        // 'sent'（不是 1:1 的 'sending'），content 存**明文**（密文只在信封里）
+        db.prepare(
+          `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+           VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'sent')`,
+        ).run(env.messageId, convId, idA.runtimeId, GROUP_ID, kind, content, at, seq);
+        // 每个非自身成员一行（window.rs:210-216）；payload 就是那整条已签名帧
+        db.prepare(
+          `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
+           VALUES(?1,?2,?3,?4,?5)`,
+        ).run(env.messageId, GROUP_ID, idB.runtimeId, env.wire, at);
+      }
+      // 时钟必须一起推进，否则 A 之后自己发的消息会撞 seq（window.rs:127-130）
+      db.prepare(
+        "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
+        + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq",
+      ).run(convId, 3);
+    });
+    console.log(`  · 群 ${GROUP_ID}：正文一 ${gTextId.slice(0, 12)}… / 撤回 ${gRecallId.slice(0, 12)}…`
+      + ` / 正文二 ${gText2Id.slice(0, 12)}…`);
+  });
+}
+
 step("起 A/B 并等链路真的建立（routed 拨号一轮 10s）", async () => {
   for (const i of INSTANCES) launch(i);
   for (const i of INSTANCES) {
@@ -629,6 +828,83 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
 
 // §十四要的「错误行为测试」+ §七/§八的「文件 hash 不一致 / .part 已存在」：
 // 坏内容必须要么被拒收、要么被补齐成正确字节 —— 但绝不允许"报成功却没有正确文件"。
+if (GROUP) {
+  step("群聊判据：三条各只落一行、明文要真解得开、撤回只物化不删行、Ack 必须把队列清干净", async () => {
+    // 反向模式在这里翻的**只有判据读的 id**（预置、信封、投递全都一模一样）：
+    // 真投递已经完成，却拿必定不存在的 id 去比 ⇒ 红只能来自断言本身，不来自基础设施噪声。
+    const flip = (h) => h.slice(0, -1) + (h.endsWith("0") ? "1" : "0");
+    const want = (id) => (GROUP_LIE ? flip(id) : id);
+    const convId = `group:${GROUP_ID}`;
+    // 前提断言（等三条都到齐）：没有它，下面几条会因为"链路根本没跑"而集体假绿
+    await waitFor(() => {
+      const db = openDb(INSTANCES[1].db, true);
+      try {
+        return [gTextId, gRecallId, gText2Id]
+          .every((id) => db.prepare("SELECT COUNT(*) c FROM messages WHERE msg_id=?1").get(id).c > 0);
+      } finally { db.close(); }
+    }, 60_000, "B 侧三条群消息到齐（建链后 flush_group_outbox 送达）");
+    // 撤回物化与投递是两次独立写盘，给它一个**有界**的等待（不许无条件睡）
+    await waitFor(() => {
+      const db = openDb(INSTANCES[1].db, true);
+      try {
+        return db.prepare("SELECT kind FROM messages WHERE msg_id=?1").get(gTextId)?.kind
+          === "recalled";
+      } finally { db.close(); }
+    }, 20_000, "B 侧那条正文被撤回物化成 recalled");
+
+    const bDb = openDb(INSTANCES[1].db, true);
+    const q = (id) => bDb.prepare(
+      "SELECT m.conv_id,m.sender_id,m.kind,m.content,m.seq,m.status,c.kind conv_kind"
+      + " FROM messages m LEFT JOIN conversations c ON c.id=m.conv_id WHERE m.msg_id=?1",
+    ).all(id);
+    const t1 = q(want(gTextId));
+    const rec = q(want(gRecallId));
+    const t2 = q(want(gText2Id));
+    const leakedIntoOneToOne = bDb.prepare(
+      "SELECT COUNT(*) c FROM messages WHERE conv_id!=?1 AND msg_id IN (?2,?3,?4)",
+    ).get(convId, gTextId, gRecallId, gText2Id).c;
+    bDb.close();
+    const aDb = openDb(INSTANCES[0].db, true);
+    const stillQueued = aDb
+      .prepare("SELECT COUNT(*) c FROM group_outbox WHERE group_id=?1").get(GROUP_ID).c;
+    const aStatus = aDb
+      .prepare("SELECT status FROM messages WHERE conv_id=?1").all(convId).map((r) => r.status);
+    const aT1 = aDb.prepare("SELECT kind FROM messages WHERE msg_id=?1").get(gTextId);
+    aDb.close();
+
+    check("B 侧三条群消息各恰好一行（同 msg_id 多行=重复投递，少行=丢）",
+      t1.length === 1 && rec.length === 1 && t2.length === 1,
+      "1/1/1", `${t1.length}/${rec.length}/${t2.length}`);
+    check("落库的会话必须是群会话（conv_id 带 group: 前缀，且 conversations.kind='group'）",
+      t2.length === 1 && t2[0].conv_id === convId && t2[0].conv_kind === "group",
+      `${convId} / group`, `${t2[0]?.conv_id} / ${t2[0]?.conv_kind}`);
+    check("未被撤回那条的正文必须是**解密后的明文**（拿到密文或空串都说明没真解密）",
+      t2.length === 1 && t2[0].content === "second group message",
+      "second group message", JSON.stringify(t2[0]?.content));
+    check("发送方必须是 A 的 runtimeId、seq 必须照信封给（seq 是排序权威）",
+      t2.length === 1 && t2[0].sender_id === idA.runtimeId && t2[0].seq === 3,
+      `${idA.runtimeId} / seq=3`, `${t2[0]?.sender_id} / seq=${t2[0]?.seq}`);
+    check("B 侧终态必须是 delivered（收到即记，不等 Ack 回传）",
+      t2.length === 1 && t2[0].status === "delivered", "delivered", t2[0]?.status);
+    check("撤回必须把目标**物化**成 kind=recalled + 空正文，而且**不许删行**（G-Set 语义）",
+      t1.length === 1 && t1[0].kind === "recalled" && t1[0].content === "",
+      "行还在 + kind=recalled + content=''",
+      `${t1.length} 行 / ${t1[0]?.kind} / content=${JSON.stringify(t1[0]?.content)}`);
+    check("撤回事件自身也必须留一行（历史只增不减，不许被当成一次性通知丢掉）",
+      rec.length === 1, 1, rec.length);
+    check("三条群消息都不许串进 1:1 会话（两条管道共用同一对实例时的串味检查）",
+      leakedIntoOneToOne === 0, 0, leakedIntoOneToOne);
+    check("A 侧这个群的 group_outbox 必须被 GroupAck 清空（还留着=只发不认，重启会二次投递）",
+      stillQueued === 0, 0, stillQueued);
+    check("A 侧三条群气泡都不许被判成 failed（failed 的唯一裁决不能被群路径绕过）",
+      aStatus.length === 3 && !aStatus.includes("failed"),
+      "3 行且无 failed", JSON.stringify(aStatus));
+    check("A 侧那条正文此刻仍是 text —— ⚠️ **实测出来的边界**：harness 写的是入队形状，"
+      + "没有执行产品的撤回命令 ⇒ 发送侧本地物化不在这一格的证明范围里",
+      aT1?.kind === "text", "text（本格的已知边界）", aT1?.kind);
+  });
+}
+
 if (POISON) {
   step("故障注入判据：脏 .part 前缀不许污染结局（拒收 或 补齐，二选一，不许交叉）", async () => {
     const recvB = path.join(RUN_DIR, "recv", "B");
@@ -795,7 +1071,7 @@ if (KILL) {
     // 重启 B：链路该自己回来、outbox 该自己重投，且必须**接着盘上那点字节**发
     launch(INSTANCES[1]);
     await waitFor(() => tcpOpen(INSTANCES[1].port), 60_000, `重启后的 B 的 TCP ${INSTANCES[1].port} 可连`);
-    await waitFor(() => (tailLog(INSTANCES[1].log, 60) || "").includes("AppState::init 完成"), 30_000,
+    await waitFor(() => bootReady(INSTANCES[1].log, bootBaseOf.get(INSTANCES[1].n), BOOT_LINE), 30_000,
       "重启后的 B 打出 boot 完成行");
     await waitFor(() => fs.existsSync(landed) || partSize() > partAtKill, 120_000,
       "重启后这一单被重新拾起（.part 比死时更长，或终名文件出现）");

@@ -524,6 +524,24 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--fault=recv-dir-rotted"],
     },
+    {
+      group: "local",
+      name: "双实例 E2E：群聊这一族跨实例真跑（发送 / 离线成员补发 / 撤回 G-Set / Ack 清队列）",
+      why: `§九「群聊」此前在跨实例层面是**零判据**（harness 里 grep group 只命中 file_outbox 的列名，` +
+        `从没建过群），而群消息走的是一条与 1:1 不同的管道：group_outbox 按成员一行 + Gossip 信封 + ` +
+        `GroupAck 删行 + G-Set 撤回。这一轮停机预置两端群记录（形状照 e2e_peer.rs 的 ensure_test_group 先例）、` +
+        `A 排三条群消息（正文 / 撤回 / 第二条正文），**入队时对端进程还没起** ⇒ 只能靠建链后的 ` +
+        `flush_group_outbox 送达，顺带就是 §五 点名的「群聊 + 离线成员重新上线」与「聊天 + 群聊 + 文件」两格组合。` +
+        `群聊轮 27 条断言（默认轮 16 + 本轮 11）全绿；`+"`--round=group-lie`"+"` 只翻判据读的那个 id ⇒ 恰好 7 条红、" +
+        `4 条与 id 无关的保持绿（证明这 7 条读的是真落库行，不是同义反复）。` +
+        `⚠️ 边界两条：① 群 payload **不做 re-seal**（transport.rs:6689-6693），所以信封由 harness 自己签名加密 —— ` +
+        `这一轮的绿只证明"接收端能解出来并落库"，不证明"发送内核自己会怎么组信封"；` +
+        `② 发送侧本地的撤回物化**不设判据**（harness 写的是入队形状、没执行产品的撤回命令，` +
+        `按"我以为应该"去断言就是替产品许愿）；群文件/群任务/@提及 也仍不在这一格。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=group"],
+    },
   );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。

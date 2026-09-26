@@ -38,7 +38,7 @@
 |---|---|---|---|---|
 | 16 | 多路径 + 单条有序字节流钉住单链路 | SIMULATED | `transport.rs` 95 条用例含 `both_sides_agree_on_the_same_link_budget` | 真实断链切换未跨进程 → A-2 |
 | 17 | 中继转发 + 授权真的管到数据面 | SIMULATED | `commands/relay.rs` 8 条 + `relay_wiring_tests` | token **值**不得入日志/事件：有源码护栏，**无日志级断言** → A-2 |
-| 18 | 群聊/群文件/群任务/@提及 | SIMULATED | `todos.test.ts` 22、`group_files` 相关 | 群收敛 + 离线成员补齐完全无自动化 → J4 |
+| 18 | 群聊/群文件/群任务/@提及 | 群聊文本族 **AUTOMATED**（2026-09-26 起）/ 其余 SIMULATED | `todos.test.ts` 22、`group_files` 相关；**群聊轮 27 条断言**（两个真实进程：两端预置群 → A 排「正文/撤回/第二条正文」→ 对端上线后由 `flush_group_outbox` 补发 → 判「各只落一行 + 明文真解得开 + 落的是群会话 + GroupAck 把队列清成 0 + 撤回物化 `kind=recalled` 且不删行 + 群消息一条都不许串进 1:1」；反向 `--round=group-lie` 只翻判据读的 id ⇒ 恰好 7 条红、4 条与 id 无关的保持绿） | ⚠️ 这一轮证明的是**接收侧的跨实例收敛**，不证明"发送内核自己怎么组信封"（群 payload 不做 re-seal，`transport.rs:6689-6693`，所以信封由 harness 自制）。仍**无自动化**：群文件端到端（只有 `group_files` 单元判据）、群任务/@提及/公告跨实例、群已读回执点亮、**三个实例**的群收敛 → J4 |
 | 19 | 删除一致性（不留幽灵数据） | SIMULATED | `db/cascade_tests.rs` 14 条 | 跨窗口/重启后的残留未测 → J7 |
 | 20 | 蓝牙近场加入（预算同口径、大帧不静默丢） | SIMULATED + MANUAL-HARDWARE | `check-ble-constants.mjs`、`ble_framing` 10 条 | **真实 BLE 无硬件不可自动化** → Smoke-2 |
 | 21 | 跨版本优雅降级（INV-P24） | SIMULATED | `unknown_wire_frame_is_tolerated_after_auth`、`messageKinds.test.ts` | 「新旧安装包互发」= MANUAL-HARDWARE → Smoke-6 |
