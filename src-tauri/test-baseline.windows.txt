@@ -255,6 +255,7 @@ mesh::gossip_replay::tests::expired_frames_are_dropped_from_the_cache_not_just_f
 mesh::gossip_replay::tests::per_group_limit_keeps_the_newest_and_drops_the_oldest
 mesh::gossip_replay::tests::remember_skips_non_group_and_legacy_frames
 mesh::gossip_replay::tests::remembered_frame_reaches_the_late_joiner_and_nobody_else
+mesh::gossip_replay::tests::replay_is_spaced_so_a_warming_up_peer_gets_a_second_chance
 mesh::gossip_replay::tests::same_message_id_arriving_twice_is_stored_once
 mesh::gossip_replay::tests::worth_replaying_drops_frames_outside_the_window
 mesh::gossip_replay::tests::worth_replaying_never_replays_to_the_sender_or_to_me

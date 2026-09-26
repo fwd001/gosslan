@@ -26,40 +26,61 @@ pub(crate) fn replay_group_frames_to(
     state: &std::sync::Arc<crate::state::AppState>,
     peer_id: &str,
 ) {
-    let frames = {
-        let cache = state
-            .gossip_relay
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        cache.eligible(peer_id, &state.device_id, crate::mesh::gossip_replay::now_ms())
-    };
-    if frames.is_empty() {
-        return;
-    }
     let st = state.clone();
     let peer = peer_id.to_string();
     tokio::spawn(async move {
-        let mut sent = 0usize;
-        for mut env in frames {
-            // `eligible` 已保证 ttl >= 2 ⇒ 这里 -= 不会下溢，递出去的副本对端还能再转
-            env.ttl -= 1;
-            if try_send(&st, &peer, &Message::Gossip { envelope: env })
-                .await
-                .is_ok()
-            {
-                sent += 1;
-            }
+        let first = replay_group_frames_once(&st, &peer).await;
+        if first == 0 {
+            return; // 没递出去（多半是间隔门挡住了）⇒ 不占着一个 30s 的定时器
         }
-        if sent > 0 {
-            st.logger.info(
-                "link",
-                format!(
-                    "补递群消息 peer={peer} 条数={sent}（窗口 {}ms）",
-                    crate::mesh::gossip_replay::RELAY_WINDOW_MS
-                ),
-            );
-        }
+        // 第二趟是**这条链路的判据本身**，不是保险丝：对端刚上线那几秒还不认识发送方
+        // （`peers` 是内存态、群消息不在 TOFU 白名单里），第一趟必然被静默丢掉。
+        // 2026-09-27 第一次跑 `--round=gossip-late` 就是这个形状 —— B 记了成功、C 库里 0 行。
+        // 不能改成"等下一个链路事件"：对端会拒绝重复入站（实测 C 每 10s 拒一次），
+        // 那等于把第二趟的触发权交给不一定会发生的时序。
+        tokio::time::sleep(std::time::Duration::from_millis(
+            crate::mesh::gossip_replay::REPLAY_MIN_INTERVAL_MS as u64,
+        ))
+        .await;
+        replay_group_frames_once(&st, &peer).await;
     });
+}
+
+/// 一趟补递：取出这个 peer 此刻该补的信封、逐条发出去，返回发出去几条。
+async fn replay_group_frames_once(state: &std::sync::Arc<crate::state::AppState>, peer: &str) -> usize {
+    let frames = {
+        let mut cache = state
+            .gossip_relay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // take_due 而不是 eligible：同一个 peer 两次补递之间要有最小间隔 ——
+        // 链路会在几十秒里反复登记，每次都重发一遍既没用也费电。
+        cache.take_due(peer, &state.device_id, crate::mesh::gossip_replay::now_ms())
+    };
+    if frames.is_empty() {
+        return 0;
+    }
+    let mut sent = 0usize;
+    for mut env in frames {
+        // `eligible` 已保证 ttl >= 2 ⇒ 这里 -= 不会下溢，递出去的副本对端还能再转
+        env.ttl -= 1;
+        if try_send(state, peer, &Message::Gossip { envelope: env })
+            .await
+            .is_ok()
+        {
+            sent += 1;
+        }
+    }
+    if sent > 0 {
+        state.logger.info(
+            "link",
+            format!(
+                "补递群消息 peer={peer} 条数={sent}（窗口 {}ms）",
+                crate::mesh::gossip_replay::RELAY_WINDOW_MS
+            ),
+        );
+    }
+    sent
 }
 
 pub(crate) fn group_envelope_consumable(

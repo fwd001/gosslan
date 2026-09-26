@@ -30,6 +30,13 @@ pub fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
+/// 同一个 peer 两次补递之间的最小间隔（毫秒）。
+/// 为什么要有：对端**刚上线那几秒还不认识发送方**（`peers` 是内存态、群消息不在
+/// TOFU 白名单里 —— 见 `transport/gossip.rs` 的 `sender_trusted` 与 2026-09-19 审计 P0#3），
+/// 那一刻递过去必然被静默丢弃；只有靠"过一会儿再递一次"才补得到。
+/// 而链路本身会在几十秒里反复登记（真机/同机都会），没有间隔就变成每次重连都重发一遍。
+pub const REPLAY_MIN_INTERVAL_MS: i64 = 30_000;
+
 /// 每个群保留的条数上限（超出时丢最旧的）。
 pub const PER_GROUP_LIMIT: usize = 16;
 /// 一条转发记录的可补递窗口（毫秒）。
@@ -50,6 +57,8 @@ struct Entry {
 pub struct GossipRelayCache {
     /// group_id → 记录，**新在前**（`eligible` 直接按这个顺序补递）
     by_group: HashMap<String, Vec<Entry>>,
+    /// peer → 上一次**真的安排过补递**的时刻（本地时钟），用于 `REPLAY_MIN_INTERVAL_MS`
+    last_replay: HashMap<String, i64>,
 }
 
 impl GossipRelayCache {
@@ -76,6 +85,28 @@ impl GossipRelayCache {
         bucket.retain(|e| in_window(e.seen_at, now_ms));
         bucket.truncate(PER_GROUP_LIMIT);
         true
+    }
+
+    /// 到没到这个 peer 该再补递一次的时刻（纯函数，一正一反两条断言钉着）。
+    /// 第一次（`None`）立刻可递；刚递过（间隔内）不许再递。
+    pub fn replay_due(last: Option<i64>, now_ms: i64) -> bool {
+        match last {
+            Some(at) => now_ms - at >= REPLAY_MIN_INTERVAL_MS,
+            None => true,
+        }
+    }
+
+    /// 取走当前对 `peer` 可补递的信封（跨所有群，新在前），并**登记这次补递**
+    /// —— 名字里的"取走"是故意的：调用方拿到结果就意味着间隔开始计时。
+    pub fn take_due(&mut self, peer: &str, me: &str, now_ms: i64) -> Vec<GossipEnvelope> {
+        if !Self::replay_due(self.last_replay.get(peer).copied(), now_ms) {
+            return Vec::new();
+        }
+        let out = self.eligible(peer, me, now_ms);
+        if !out.is_empty() {
+            self.last_replay.insert(peer.to_string(), now_ms);
+        }
+        out
     }
 
     /// 当前对 `peer` 可补递的信封（跨所有群，新在前）。
@@ -266,6 +297,35 @@ mod tests {
         assert!(c.remember(&f, now));
         assert!(c.remember(&f, now + 10));
         assert_eq!(c.eligible("c", "b", now + 20).len(), 1);
+    }
+
+    /// 间隔判据（一正一反）：这一条决定了"对端还没学会认证发送方"那几秒之后**还会不会再递**
+    /// —— 没有这第二次，补递在真实时序里几乎必然落空（2026-09-27 第一次跑 `--round=gossip-late`
+    /// 就是这个形状：B 递了、`try_send` 返回成功、C 一声不响地丢了）。
+    #[test]
+    fn replay_is_spaced_so_a_warming_up_peer_gets_a_second_chance() {
+        let now = 1_000_000_000_i64;
+        let mut c = GossipRelayCache::default();
+        assert!(c.remember(&group_frame(6), now));
+        // 第一次：立刻可递
+        assert!(GossipRelayCache::replay_due(None, now));
+        assert_eq!(c.take_due("c", "b", now).len(), 1, "首递不该被间隔挡住");
+        // 间隔内：同一 peer 不许再递（链路反复登记时不能每次都重发一遍）
+        assert!(!GossipRelayCache::replay_due(
+            Some(now),
+            now + REPLAY_MIN_INTERVAL_MS - 1
+        ));
+        assert_eq!(c.take_due("c", "b", now + 10).len(), 0, "间隔内必须空手");
+        // 过了间隔：再递一次
+        assert!(GossipRelayCache::replay_due(
+            Some(now),
+            now + REPLAY_MIN_INTERVAL_MS
+        ));
+        assert_eq!(
+            c.take_due("c", "b", now + REPLAY_MIN_INTERVAL_MS).len(),
+            1,
+            "过了间隔要能给还在学身份的 peer 第二次机会"
+        );
     }
 
     #[test]
