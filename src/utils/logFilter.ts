@@ -48,3 +48,79 @@ export function matchesLogQuery(line: LogLineInput, query: string): boolean {
 export function filterLogLines<T extends LogLineInput>(lines: T[], query: string): T[] {
   return lines.filter((l) => matchesLogQuery(l, query));
 }
+
+// ---------------- 合并重复（用户看到的「×N」） ----------------
+
+/** 可参与合并的行：`time` 是已格式化的 `HH:MM:SS`，`target`/`message` 允许带高亮标记。 */
+export interface MergeableLogRow {
+  level: string;
+  time: string;
+  target: string;
+  message: string;
+}
+
+/** 剥掉 v-html 的高亮标记，回到屏幕上真正可读的那串字。 */
+const stripTags = (s: string): string => s.replace(/<[^>]+>/g, "");
+
+/**
+ * 合并用的比较键：先把"每次都变的那部分"折成占位符。
+ *
+ * 为什么非做不可：日志里最啰嗦的那几类行（BLE 退避的剩余毫秒、分片序号、`msg_id` /
+ * `seq` / 字节数）**几乎每行都带一个变化量**，逐字比较等于永不合并 —— 用户看到的
+ * 「×N」就是这么消失的（2026-09-26 实测，逻辑本身从没被删过）。
+ * 规则刻意只做两件事，宁可少折也不许把不同事件折成同一类：
+ *  - 16 位以上的十六进制串 → `<id>`（设备 id / msg_id / 密钥指纹）
+ *  - 连续数字 → `<n>`（毫秒、字节、分片号、seq、端口）
+ */
+export function logMergeKey(row: MergeableLogRow): string {
+  const message = stripTags(row.message)
+    .replace(/[0-9a-fA-F]{16,}/g, "<id>")
+    .replace(/\d+/g, "<n>");
+  return `${row.level}|${stripTags(row.target)}|${message}`;
+}
+
+/** `HH:MM:SS` → 当天秒数。解析不了返回 null：宁可少合并，也不在渲染路径上抛错。 */
+function secondsOfDay(time: string): number | null {
+  const m = /^(\d{1,2}):(\d{2}):(\d{2})/.exec(stripTags(time));
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mi = Number(m[2]);
+  const s = Number(m[3]);
+  if (h > 23 || mi > 59 || s > 59) return null;
+  return h * 3600 + mi * 60 + s;
+}
+
+/** 环形秒差：跨午夜时 `23:59:59` 与 `00:00:01` 差 2 秒，不是 86398 秒。 */
+function circularSecondGap(a: number, b: number): number {
+  const d = Math.abs(a - b);
+  return Math.min(d, 86400 - d);
+}
+
+/**
+ * 把同类行收成「第一条 + count」。与旧实现（组件里的相邻逐字比较）有两处必要差别：
+ *  1. 比归一化后的键，不是逐字原文；
+ *  2. 允许**非相邻**，但限制在 `windowSec` 秒内 —— 完全不限窗口会把几小时前那次同类
+ *     失败并进这一波，等于谎报"只发生了一次"。
+ *
+ * 输出保持**首次出现**的位置与原文（也就是显示的是第一条自带的数字 + `×N`，
+ * 这与各家日志聚合器一样是取舍，不是把每次的值都显示出来）。
+ */
+export function mergeLogRows<T extends MergeableLogRow>(
+  rows: T[],
+  windowSec = 5,
+): (T & { count: number })[] {
+  const out: (T & { count: number })[] = [];
+  const open = new Map<string, { idx: number; t0: number }>();
+  for (const r of rows) {
+    const key = logMergeKey(r);
+    const t = secondsOfDay(r.time);
+    const prev = open.get(key);
+    if (prev !== undefined && t !== null && circularSecondGap(t, prev.t0) <= windowSec) {
+      out[prev.idx].count += 1;
+      continue;
+    }
+    out.push({ ...r, count: 1 });
+    if (t !== null) open.set(key, { idx: out.length - 1, t0: t });
+  }
+  return out;
+}

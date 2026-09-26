@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LOG_LEVEL_TEXT, filterLogLines, logLineText, matchesLogQuery } from "./logFilter.ts";
+import { LOG_LEVEL_TEXT, filterLogLines, logLineText, matchesLogQuery, mergeLogRows } from "./logFilter.ts";
 
 const L = (time: string, level: string, target: string, message: string) => ({
   time,
@@ -15,6 +15,62 @@ const SAMPLE = [
   L("00:01:04", "warn", "routed", "拨号未成功：连接超时（5s 内未建立）"),
   L("00:01:05", "info", "presence", "学到远端节点 peer=gosslan-718562a258f7cf55"),
 ];
+
+// ---------------- 合并重复（mergeLogRows） ----------------
+// 用户可见承诺：开着「合并重复」时，同一件事刷了 N 次要收成一条 + ×N。
+// 2026-09-26 实测：这个承诺已经**几乎不再成立** —— 旧判据要求"连续相邻且逐字相同"，
+// 而日志文案里带着每次都变的量（`剩余=1200ms`、`分片=3`、`msg_id=`、`seq=`），
+// 于是永远不相等。下面这几条就是钉这个承诺的，先对着旧算法红一遍再改。
+
+const R = (time: string, level: string, target: string, message: string) => ({ time, level, target, message });
+
+test("带变化量的相邻同类行要折叠（这是旧算法今天漏掉的主场景）", () => {
+  const out = mergeLogRows([
+    R("00:01:01", "warn", "ble", "跳过候选 id=7 原因=退避中 剩余=1200ms"),
+    R("00:01:02", "warn", "ble", "跳过候选 id=7 原因=退避中 剩余=900ms"),
+    R("00:01:03", "warn", "ble", "跳过候选 id=7 原因=退避中 剩余=600ms"),
+  ]);
+  assert.equal(out.length, 1, "同一件退避不该按毫秒数拆成三行");
+  assert.equal(out[0].count, 3);
+});
+
+test("被别的 target 打断的同类行也要折叠（相邻这个前提在日志变多后不成立）", () => {
+  const out = mergeLogRows([
+    R("00:01:01", "info", "ble", "[SEND] bytes=1024 分片=1"),
+    R("00:01:01", "info", "transport", "另一次心跳"),
+    R("00:01:02", "info", "ble", "[SEND] bytes=1024 分片=2"),
+  ]);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].count, 2, "ble 那两行中间插了别的 target，也要算同一类");
+  assert.equal(out[1].target, "transport");
+});
+
+test("超出时间窗的同类行必须另起一组（不许把 60 秒前那次并进来说谎）", () => {
+  const out = mergeLogRows(
+    [
+      R("00:01:01", "warn", "routed", "拨号未成功 剩余=100ms"),
+      R("00:02:01", "warn", "routed", "拨号未成功 剩余=100ms"),
+    ],
+    5,
+  );
+  assert.equal(out.length, 2, "隔了一分钟的两次失败是两件事，合成一条会让人低估故障频率");
+});
+
+test("级别不同的同类行绝不合并", () => {
+  const out = mergeLogRows([
+    R("00:01:01", "info", "mesh", "链路建立 conns=1"),
+    R("00:01:02", "error", "mesh", "链路建立 conns=2"),
+  ]);
+  assert.equal(out.length, 2);
+});
+
+test("跨午夜的相邻同类行仍然合并（时间差要按环形算）", () => {
+  const out = mergeLogRows([
+    R("23:59:59", "warn", "ble", "跳过候选 id=7 剩余=100ms"),
+    R("00:00:01", "warn", "ble", "跳过候选 id=7 剩余=80ms"),
+  ]);
+  assert.equal(out.length, 1, "23:59:59 与 00:00:01 只差 2 秒，按线性差会算成 23 小时");
+});
 
 test("logLineText：按「时间 · 级别 · target · 消息」拼出屏幕上真实的行文本", () => {
   assert.equal(
