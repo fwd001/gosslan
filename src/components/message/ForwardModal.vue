@@ -141,7 +141,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
             :style="{ backgroundColor: nameToColor(c.name) }"
           >
             <img alt="" v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
-            <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(c.name)">{{ avatarInitial(c.name) }}</span>
+            <span v-else class="gosslan-avatar-initial" aria-hidden="true" :data-len="avatarInitialLen(c.name)">{{ avatarInitial(c.name) }}</span>
           </span>
           <span class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
         </button>

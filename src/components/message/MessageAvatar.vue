@@ -15,7 +15,7 @@ defineProps<{
     <img alt="" draggable="false" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
     <span
       v-else
-      class="gosslan-avatar-initial text-sm font-medium"
+      class="gosslan-avatar-initial text-sm font-medium" aria-hidden="true"
       :data-len="avatarInitialLen(name)"
       >{{ avatarInitial(name) }}</span
     >

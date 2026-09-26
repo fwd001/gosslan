@@ -91,7 +91,7 @@ async function create() {
           :style="{ backgroundColor: nameToColor(f.nickname) }"
         >
           <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
-          <span v-else class="gosslan-avatar-initial text-xs font-semibold" :data-len="avatarInitialLen(f.nickname)">{{ initials(f.nickname) }}</span>
+          <span v-else class="gosslan-avatar-initial text-xs font-semibold" aria-hidden="true" :data-len="avatarInitialLen(f.nickname)">{{ initials(f.nickname) }}</span>
         </div>
         <span class="flex-1 text-sm">{{ f.nickname }}</span>
         <span class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? t("common.online") : t("common.offline") }}</span>

@@ -62,6 +62,24 @@ const openTasks = computed(() =>
   props.conv.kind === "group" ? (chat.openTodoByConv[props.conv.id] ?? 0) : 0,
 );
 
+/**
+ * 这一行的 accessible name。**必须把三件事都念出来**：未读数、有人 @ 我、与我相关的开放任务数。
+ *
+ * 为什么不是"让读屏自己读子节点"：`role=button` 一旦带 `aria-label`，后代就被折叠掉。
+ * 2026-09-26 用系统无障碍控件树实测过：原来只写群名时，行里那两枚徽标的数字**完全不在树里**
+ * ⇒ 读屏用户看得到"验收群"却不知道有几条没读、有活没干完。数字在屏幕上看得见 ≠ 读得到。
+ */
+const rowAriaLabel = computed(() => {
+  const parts = [
+    props.conv.unread > 0
+      ? t("conv.unread", { name: props.conv.name, n: props.conv.unread })
+      : props.conv.name,
+  ];
+  if (mentioned.value) parts.push(t("msg.mentioned"));
+  if (openTasks.value > 0) parts.push(t("todo.openForMe", { n: openTasks.value }));
+  return parts.join("，");
+});
+
 function initials(name: string) {
   return avatarInitial(name);
 }
@@ -162,7 +180,7 @@ const gridTiles = computed(() => {
     :class="active
       ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
       : 'hover:bg-[var(--gosslan-list-hover)]'"
-    :aria-label="conv.unread > 0 ? t('conv.unread', { name: conv.name, n: conv.unread }) : conv.name"
+    :aria-label="rowAriaLabel"
     @click="openConv(conv)"
     @keydown.enter.prevent="openConv(conv)"
     @keydown.space.prevent="openConv(conv)"
@@ -185,7 +203,7 @@ const gridTiles = computed(() => {
           :style="{ backgroundColor: t.color }"
         >
           <img alt="" v-if="t.avatar" :src="t.avatar" class="h-full w-full object-cover" />
-          <span v-else class="gosslan-avatar-initial" :data-len="t.len">{{ t.label }}</span>
+          <span v-else class="gosslan-avatar-initial" aria-hidden="true" :data-len="t.len">{{ t.label }}</span>
         </div>
       </div>
       <div
@@ -195,7 +213,7 @@ const gridTiles = computed(() => {
         :style="{ backgroundColor: nameToColor(conv.name) }"
       >
         <img alt="" v-if="conv.avatar" :src="conv.avatar" class="h-full w-full object-cover" />
-        <span v-else class="gosslan-avatar-initial text-sm font-medium" :data-len="avatarInitialLen(conv.name)">{{ initials(conv.name) }}</span>
+        <span v-else class="gosslan-avatar-initial text-sm font-medium" aria-hidden="true" :data-len="avatarInitialLen(conv.name)">{{ initials(conv.name) }}</span>
       </div>
       <!-- 在线标识：群聊不显示；离线标灰半透 -->
       <span

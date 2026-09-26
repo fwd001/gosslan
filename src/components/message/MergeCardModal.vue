@@ -216,7 +216,7 @@ onBeforeUnmount(() => {
               <img
                 :src="imageSlots[i]?.url"
                 class="max-h-64 w-full rounded-[var(--gosslan-radius-md)] object-contain"
-                :alt="mediaName(it)"
+                :alt="t('msg.imageMessage')"
               />
             </button>
             <div

@@ -119,7 +119,7 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
         <img alt="" v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
         <span
           v-else
-          class="gosslan-avatar-initial text-sm font-medium"
+          class="gosslan-avatar-initial text-sm font-medium" aria-hidden="true"
           :data-len="avatarInitialLen(app.device?.nickname)"
           >{{ initials }}</span
         >

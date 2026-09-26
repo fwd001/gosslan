@@ -144,7 +144,7 @@ const confirmRemove = ref(false);
             :style="{ backgroundColor: nameToColor(friend.nickname) }"
           >
             <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
-            <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(friend.nickname)">{{ initial }}</span>
+            <span v-else class="gosslan-avatar-initial" aria-hidden="true" :data-len="avatarInitialLen(friend.nickname)">{{ initial }}</span>
           </div>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">

@@ -633,7 +633,7 @@ async function onPaste(e: ClipboardEvent) {
             class="gosslan-avatar-box flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
             :style="{ backgroundColor: nameToColor(m.name) }"
           ><span
-            class="gosslan-avatar-initial"
+            class="gosslan-avatar-initial" aria-hidden="true"
             :data-len="avatarInitialLen(m.name)"
           >{{ avatarInitial(m.name) }}</span></span>
           <span class="min-w-0 flex-1 truncate" :title="m.name">{{ m.name }}</span>

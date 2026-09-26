@@ -111,7 +111,7 @@ function open() {
     <img
       v-if="url"
       :src="url"
-      :alt="image.name"
+      :alt="t('msg.imageMessage')"
       class="h-full w-full object-cover"
       loading="lazy"
     />

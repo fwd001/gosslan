@@ -28,7 +28,7 @@ export const zhCN: MessageDict = {
   "nav.darkMode": "深色模式",
   "nav.me.online": "我在线（局域网已连接）",
   "nav.me.offline": "离线（局域网未连接）",
-  "nav.me.openSettings": "我，{status}，打开设置",
+  "nav.me.openSettings": "{status}，打开设置",
   "nav.chats.unread": "聊天，{n} 条未读",
   "nav.contacts.pending": "通讯录，{n} 条好友申请",
   "nav.logs": "日志",

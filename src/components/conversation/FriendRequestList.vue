@@ -41,7 +41,7 @@ function initials(name: string) {
           :style="{ backgroundColor: nameToColor(r.from_nickname) }"
         >
           <img alt="" v-if="r.from_avatar" :src="r.from_avatar" class="h-full w-full object-cover" />
-          <span v-else class="gosslan-avatar-initial text-sm font-semibold" :data-len="avatarInitialLen(r.from_nickname)">{{ initials(r.from_nickname) }}</span>
+          <span v-else class="gosslan-avatar-initial text-sm font-semibold" aria-hidden="true" :data-len="avatarInitialLen(r.from_nickname)">{{ initials(r.from_nickname) }}</span>
         </div>
         <div class="min-w-0 flex-1">
           <div class="truncate text-sm font-medium" :title="r.from_nickname">{{ r.from_nickname }}</div>

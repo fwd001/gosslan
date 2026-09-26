@@ -161,7 +161,7 @@ onUnmounted(clearPress);
         :style="{ backgroundColor: nameToColor(friend.nickname) }"
       >
         <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
-        <span v-else class="gosslan-avatar-initial" :class="compact ? 'text-xs font-medium' : 'text-sm font-medium'" :data-len="avatarInitialLen(friend.nickname)">{{ initials(friend.nickname) }}</span>
+        <span v-else class="gosslan-avatar-initial" aria-hidden="true" :class="compact ? 'text-xs font-medium' : 'text-sm font-medium'" :data-len="avatarInitialLen(friend.nickname)">{{ initials(friend.nickname) }}</span>
       </div>
       <span
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"

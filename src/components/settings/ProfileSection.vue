@@ -159,7 +159,7 @@ function processAvatar(file: File): Promise<string> {
         <img alt="" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
         <span
           v-else
-          class="gosslan-avatar-initial text-2xl font-semibold"
+          class="gosslan-avatar-initial text-2xl font-semibold" aria-hidden="true"
           :data-len="avatarInitialLen(nickname)"
           >{{ avatarInitial(nickname) }}</span
         >

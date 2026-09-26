@@ -137,7 +137,7 @@ function readerAvatar(id: string): string | null {
         :style="{ backgroundColor: nameToColor(readerName(id)) }"
       >
         <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-        <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
+        <span v-else class="gosslan-avatar-initial" aria-hidden="true" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
       </span>
       <span
         v-if="extraReaders.length > 0"
@@ -172,7 +172,7 @@ function readerAvatar(id: string): string | null {
           :style="{ backgroundColor: nameToColor(readerName(id)) }"
         >
           <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-          <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
+          <span v-else class="gosslan-avatar-initial" aria-hidden="true" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
         </span>
         <span class="max-w-28 truncate" :title="readerName(id)">{{ readerName(id) }}</span>
       </div>

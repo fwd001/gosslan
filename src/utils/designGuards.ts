@@ -219,6 +219,34 @@ function enclosingTag(src: string, classIndex: number): string {
  * ⚠️ 与 ③ 同样的教训：只看**真实 class 属性**，不能用 `src.includes("truncate")` 扫全文 ——
  * 注释里提到 `truncate` 会让护栏「因为注释而通过」。
  */
+/**
+ * 默认头像的字母必须对读屏隐藏（`aria-hidden="true"`）。
+ *
+ * 踩坑（2026-09-26 用系统无障碍控件树实测）：字母头像那一段文字（`KEEN` / `BRIG` / `HAPP`）
+ * 会作为 `AXStaticText` 出现在树里 ⇒ 读屏把**无意义的截断字母**念在人名前面。
+ * 同一位置的上传头像早就是 `alt=""`（装饰性、名字由旁边的文本承载），字母这一支却没人管。
+ * 这条判据把两者拉回同一个口径，也防止新站点漏写。
+ */
+export function findAvatarInitialWithoutAriaHidden(src: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(CLASS_ATTR_RE)) {
+    if (!m[1].split(/\s+/).includes("gosslan-avatar-initial")) continue;
+    const line = lineAt(src, m.index ?? 0);
+    const open = src.lastIndexOf("<", m.index ?? 0);
+    const close = src.indexOf(">", m.index ?? 0);
+    const tag = open >= 0 && close > open ? src.slice(open, close + 1) : "";
+    if (!tag.includes("aria-hidden")) {
+      out.push({
+        line,
+        message:
+          "字母头像没有 `aria-hidden` —— 读屏会把截断字母（如 `KEEN`）当正文念出来。" +
+          "装饰性头像一律对辅助技术隐藏，人名由旁边的文本承载（上传头像那支已是 `alt=\"\"`）。",
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
 export function findTruncationWithoutTitle(src: string): GuardIssue[] {
   if (src.includes("truncate-title-ok")) return [];
   const out: GuardIssue[] = [];
