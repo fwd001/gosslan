@@ -85,7 +85,9 @@
  * `npm run version:changelog`，**已纳入本入口** —— 结构是结构、记账是记账，
  * 不该因为"版本还没发"就连结构检查一起红掉（这正是它此前被判成护栏失效的原因）。
  *
- * 退出码：0 = 全部通过；1 = 有步骤失败（默认 fail-fast，不继续跑后面的）。
+ * 退出码：0 = 全部通过；1 = 有步骤失败。
+ * 默认 fail-fast（第一步红就停），**例外**是 `--group local` / `--group release`：
+ * 那两层的每一步都是独立的一轮 E2E ⇒ 默认跑完再汇总（见下面 `KEEP_GOING` 那段，红照样 exit 1）。
  */
 
 import { spawnSync } from "node:child_process";
@@ -396,6 +398,18 @@ if (groupFlag && !GROUPS.includes(groupFlag)) {
   console.error(`✗ --group 只接受 ${GROUPS.join(" / ")}，收到 "${groupFlag}"`);
   process.exit(1);
 }
+
+/**
+ * `local` / `release` 这两层的每一步都是**独立的一轮 E2E**，步骤之间没有"前一步不成就不能跑"的依赖
+ * ⇒ 默认**跑完再汇总**（要回旧行为：加 `--fail-fast`）。
+ * 为什么只有这一族反过来：fail-fast 省的只是时间，而**红的那一刻恰恰是最需要证据的时候**。
+ * 现场（2026-09-27 实测）：屏幕锁着 ⇒ 「报告带全屏帧」那一格按环境红 ⇒ 旧默认让本地层
+ * 第 1 轮 0.8s 判负、**后面 13 轮全部标"未跑"**，一次环境问题吃掉整层证据。
+ * ⚠️ 快速层/全量层**不改**：那里的步骤真有"编译 → 测试"的依赖，继续跑只会堆出一屏级联红。
+ * 退出码语义不变：**任何一步红 ⇒ 仍然 exit 1**，跑更多只是多拿证据，不是把红洗白。
+ */
+const KEEP_GOING =
+  !argv.includes("--fail-fast") && (groupFlag === "local" || groupFlag === "release");
 
 /**
  * 「本地专项层」（§十五要的 test:multi-instance / test:fault-injection）。
@@ -791,6 +805,11 @@ for (const [i, s] of active.entries()) {
       `\n❌ 第 ${i + 1} 步失败：${s.name}（${secs}s）` +
         (r.status === null ? `（未能执行：${r.error?.message ?? "未知原因"}）` : ""),
     );
+    if (KEEP_GOING) {
+      // 独立轮次：继续跑后面的，最后一起汇总。红**不会**被这样洗白 —— 见结尾的退出码。
+      console.error("   这一层各步是独立的轮次 ⇒ 继续跑后面的（要旧行为加 `--fail-fast`）。");
+      continue;
+    }
     console.error("   后面的步骤没有跑（fail-fast）。");
     break;
   }
