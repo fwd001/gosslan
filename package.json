@@ -41,6 +41,7 @@
     "version:release": "node scripts/semver.mjs release",
     "dist:mac:app": "tauri build --features bluetooth --bundles app --target aarch64-apple-darwin && bash scripts/pack-macos-app.sh",
     "verify:e2e": "node scripts/verify.mjs --group local",
+    "verify:release": "node scripts/verify.mjs --group release",
     "verify:all": "npm run verify:full && npm run verify:e2e",
     "test:e2e:multi-instance": "node scripts/e2e-multi-instance.mjs",
     "test:e2e:negative": "node scripts/e2e-multi-instance.mjs --negative",

@@ -381,7 +381,7 @@ function isHeavyStep(s) {
  * 并且要让所有人看见它没跑"。真把它并进 frontend/rust，CI 不会变强，只会把一个需要
  * release 产物 + GUI 会话 + 百 MB 磁盘的层变成一条永远红的 job。
  */
-const GROUPS = ["frontend", "rust", "android", "local"];
+const GROUPS = ["frontend", "rust", "android", "local", "release"];
 
 /** `--group <frontend|rust|android>`：CI 的三个 job 各自只说"跑哪个组"，清单不再抄一份。 */
 const groupFlag = (() => {
@@ -594,6 +594,41 @@ if (groupFlag === "local") {
   // 不写轮数：这一层的条目由上面的步骤表自己点名，写死数字就是下一个漂移点（同 CHANGELOG 的口径）。
   console.log(`· 本地专项层（多实例 E2E，条目见 npm run verify:e2e）本轮没跑：${LOCAL_ONLY_WHY}`);
   console.log("  要跑它：npm run verify:e2e（或 --group local）");
+}
+
+/**
+ * 「发版前专项层」：三实例链式轮（用户 2026-09-26 拍板＝**建，但只挂在发版前**，不进日常本地门禁）。
+ *
+ * 为什么单开一层而不是塞进 `local`：这一轮除了基础旅程那七步，还要**同时开三个真进程**、
+ * 并且为第三个实例多付一次"先单独起来自建身份、再停机写库、再三端同场"的重启。
+ * 塞进日常层会让每次 `verify:e2e` 都多等一节，而"太慢于是被人跳过"的门禁等于没有门禁。
+ * 所以它只在发版检查单里被点名，CI 也不认领（理由同 `local`：要 release 产物 + 桌面 GUI 会话）。
+ */
+const RELEASE_ONLY_WHY =
+  "发版前专项：第三个真进程 + 为它多重启一轮 ⇒ 日常层不收，发版检查单点名跑（npm run verify:release）";
+if (groupFlag === "release") {
+  steps.push(
+    {
+      group: "release",
+      name: "三实例链式 E2E：A 从没直发给 C 的那条群消息，C 仍收敛到了",
+      why:
+        `§五「群聊 + gossip」里唯一两实例测不到的那一半：**成员不在发送者的逐成员直发队列里，` +
+        `只能靠中间人把 gossip 扇给它**。判据钉两侧 —— A 的直发队列里没有任何面向 C 的行（这才是` +
+        `"不是直发"的正身，不依赖拓扑），以及 C 侧的落库：一行、明文、发送者仍是 A、` +
+        `conv_id/seq 与信封一致、且 B 自己不重复落库。` +
+        `⚠️ 两条已实测的边界（别把这一轮读成它们已被证明）：同机造不出"A-C 无链路"` +
+        `（关掉局域网发现仍在广播与验收），以及"C 晚到就收不到"（中间人只对当时可达的邻居扇出，` +
+        `不补推）—— 两条都另记进 roadmap 待拍板，不在测试任务里顺手改产品码。` +
+        `非空转由 ` +
+        "`--round=gossip3-lie`" +
+        ` 反向轮证：只翻判据读的那个 id ⇒ 读 C 库的那四条必须报红，而拓扑那两条照常绿。${RELEASE_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=gossip3"],
+    },
+  );
+} else if (!groupFlag) {
+  console.log(`· 发版前专项层（三实例链式 E2E）本轮没跑：${RELEASE_ONLY_WHY}`);
 }
 
 /** 列出"不属于本组"的步骤：组模式下也必须点名未跑项，不许用一片绿暗示"全跑过了"。 */

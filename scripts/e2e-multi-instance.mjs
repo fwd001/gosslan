@@ -228,6 +228,19 @@ const GROUP = ROUND === "group" || ROUND === "group-lie";
 /// 反向模式：注入与预置完全不动，只把**判据要去找的那个 msg_id** 换成一个必定不存在的值。
 /// 报不出红 ⇒ 那几条断言读的不是真落库行。
 const GROUP_LIE = ROUND === "group-lie";
+/// 链式轮（`--round=gossip3`，用户 2026-09-26 拍板＝建，但只挂在**发版前**那一层，不进日常本地门禁）。
+/// 钉的是 §五 点名的 `群聊 + gossip` 交叉里唯一没被跨实例判着的那一半：**经中间人转发的收敛**。
+/// 拓扑是 A—B—C 一条链：A 与 C **互相不是好友、也不给任何端点、C 侧关 LAN** ⇒ 它们之间不可能有链路
+/// ⇒ C 若收到 A 的群消息，只可能是 B 转发的（不是"直连也能过"的假绿）。
+/// ⚠️ 前置判据（"C 侧没有与 A 的建链行"）必须**先**成立，否则后面所有格都失去意义 ——
+///    没有它，这一轮测的就不是转发。生产侧的对应形状：gossip 扇出候选取
+///    `reachable_neighbors`（有活链路的邻居）而不是 `peers`（知识集），见 lib.rs 的
+///    `gossip_fanout_targets_reachable_links`（审计 P0#7）；那一半钉源码，这一半钉真跑。
+const CHAIN = ROUND === "gossip3" || ROUND === "gossip3-lie";
+/// 反向模式：拓扑、预置、投递全都一样，只把**判据要找的那条 msg_id** 换成必定不存在的值。
+const CHAIN_LIE = ROUND === "gossip3-lie";
+/// 转发轮的正文：判据里既要看 C 解出的明文等于它，也要把它写进 A 的 messages（明文列）。
+const CHAIN_TEXT = "two-hop group message via B";
 const GROUP_ID = "g-e2e-harness";
 const GROUP_NAME = "E2E-Group";
 /// 群对称密钥：settings 表 `gk:{group_id}` = base64 的**正好 32 字节**
@@ -354,6 +367,19 @@ const INSTANCES = [1, 2].map((n) => ({
   db: path.join(APPDATA, `gosslan-${n}.db`),
   log: path.join(APPDATA, "logs", `gosslan-${n}.log`),
 }));
+/// 第三实例（只有 `--round=gossip3` 会真启动它）。产品侧对实例号没有上限，也没有特判：
+/// 端口 = `TCP_PORT + instance*10`（state.rs:1282）、运行时身份 = `base-iN`（state.rs:1272）、
+/// 库与日志各自一份（state.rs:1186/1207）—— 所以"第三个实例"不需要动产品码，只是把同一套隔离再套一份。
+const INST_C = {
+  n: 3,
+  label: "C",
+  port: TCP_BASE + 3 * 10,
+  db: path.join(APPDATA, "gosslan-3.db"),
+  log: path.join(APPDATA, "logs", "gosslan-3.log"),
+};
+/// **可能被本轮真启动过**的全部实例。备份/还原、`after-*.db`、失败时的日志关联一律按这份清单走：
+/// 少算一格 = 把本轮写出来的测试库留在用户 appdata 里，而且第三实例红的时候报告里没有它的现场。
+const ALL_INST = [...INSTANCES, INST_C];
 
 // ── 小工具 ─────────────────────────────────────────────────────────
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -604,9 +630,13 @@ let curStep = null;
 let curStepIdx = -1;
 function step(name, fn) { steps.push({ name, fn }); }
 function check(name, pass, expect, actual) {
+  // `undefined` 会被 JSON.stringify **整个键丢掉** —— 于是"读不到那一行"的断言一红，
+  // summary.json 反而缺了 §十六 点名的「预期/实际」两栏（实测 run-2026-09-26T09-20-42-139Z：
+  // 报告契约判红两条，理由正是"有条断言缺 预期/实际 之一"）。判红的那一格必须依然读得出预期与实际。
+  const show = (v) => (v === undefined ? "<无此行/undefined>" : v);
   assertions.push({
     stepIdx: curStepIdx, step: curStep?.name ?? null,
-    name, verdict: pass ? "PASS" : "FAIL", expect, actual,
+    name, verdict: pass ? "PASS" : "FAIL", expect: show(expect), actual: show(actual),
   });
   console.log(`  ${pass ? "✅" : "❌"} ${name}${pass ? "" : `\n      预期 ${expect} / 实际 ${actual}`}`);
   return pass;
@@ -630,7 +660,7 @@ const linkStepIdx = () => steps.findIndex((s) => s.name.startsWith("起 A/B"));
 function traceExcerpt() {
   const re = new RegExp(`e2e-\\S*${ISO.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
   const out = {};
-  for (const i of INSTANCES) {
+  for (const i of ALL_INST) {
     const body = tailLog(i.log, 20000) || "";
     out[i.label] = body.split("\n").filter((l) => re.test(l)).slice(-8);
   }
@@ -661,6 +691,7 @@ async function runStep(i, s) {
 // ── J1：文本消息 A→B 全链路 ────────────────────────────────────────
 let idA, idB, msgId, NODES, peerTo, xferId, srcFile, srcSha;
 let xferId2, srcFile2, srcSha2, xferId3, srcFile3, srcSha3;
+let chainMsgId; // 链式轮那条群消息的 msg_id（信封里是 sha256，由 buildGroupEnvelope 算出来）
 step("停机预置：好友 + routed 端点 + 独立接收目录", () => seedPair(NODES));
 
 step("L-A 入队：在 A 的库里留下「已入队待发送」的事实", () => {
@@ -959,6 +990,7 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
 
 // §十四要的「错误行为测试」+ §七/§八的「文件 hash 不一致 / .part 已存在」：
 // 坏内容必须要么被拒收、要么被补齐成正确字节 —— 但绝不允许"报成功却没有正确文件"。
+
 if (GROUP) {
   step("群聊判据：三条各只落一行、明文要真解得开、撤回只物化不删行、Ack 必须把队列清干净", async () => {
     // 反向模式在这里翻的**只有判据读的 id**（预置、信封、投递全都一模一样）：
@@ -2044,6 +2076,188 @@ step("L-B 故障注入：两端重启后仍正确", async () => {
     `${realShots.length} 张：${realShots.map((f) => path.basename(f)).join(", ") || "本平台无采集器"}`);
 });
 
+// §五「群聊 + gossip」这一族里最后一格：成员**不是 A 的直发对象**，只能靠中间人把 gossip 带给它。
+// 两实例的群轮（`--round=group`）里 A→B 是直发（`group_outbox` 一发就中），
+// 「收到 gossip 之后再扇给自己当时可达的邻居」这条路径从头到尾没被走过 —— 那一半只有第三个实例能测。
+//
+// ⚠️ 边界一：这一格**证不了**"A 与 C 之间没有链路"（实测两次，都是红的）：
+//   run-2026-09-26T09-20-42-139Z 与 run-2026-09-26T09-24-08-894Z 里，C 库内 `lan_enabled='false'`、
+//   好友只有 B、端点只有 B，A 的日志仍然出现 `diag/announce_verified: from=<C 的 id>`
+//   ⇒ **关掉局域网发现并没有停止广播，也没有停止接收侧的 announce 验证**，同机三实例必然互相建链。
+//   所以拿"拓扑隔离"当前提会让这一轮常红。发现本身另立条目待拍板，不在测试任务里顺手改产品码。
+//
+// ★ 于是判据换成一条**机器可判定、且不依赖拓扑**的陈述：**A 的逐成员直发队列里从来没有面向 C 的行**
+//   （见下面那条 `group_outbox ... peer_id=C` 必须 0 行）。这才是"C 收到的不是直发"的正身。
+//
+// ⚠️ 边界二：这一格判的是**多跳收敛**，不是"晚到成员补拉"。实测（run-2026-09-26T09-24-08-894Z 与
+//   同形的一次晚到构造）里让 C 在 A 发完之后才第一次上线 ⇒ 90 s 内 C 库里 0 行：
+//   B 只在"收到的那一瞬间"把群 gossip 扇给**当时可达**的邻居，之后新上线的成员拿不到补推。
+//   那是产品行为，已按实测记进 roadmap 待拍板 —— 在这一轮里写成绿就是替产品许愿。
+//   ⇒ 所以三端**同场**起，C 必须在 A 发的那一会儿就在场。
+if (CHAIN) {
+  step("链式三实例：A 从没直发给 C 的那条群消息，C 仍收敛到了（中间人在收到的一瞬间扇出）", async () => {
+    // 上一步（L-B）收尾时 A/B 已被 stopAll 停干净 ⇒ 下面写的都是**停机库**。
+    // C 第一次拉起只为自建身份与库，而且单独拉（新库会广播 announce，别让它在这个窗口里被别人学到）。
+    launch(INST_C);
+    await waitFor(() => tcpOpen(INST_C.port), 60_000, "C 首启（只为建身份与库）：TCP 可连");
+    await waitFor(() => bootReady(INST_C.log, bootBaseOf.get(INST_C.n), BOOT_LINE),
+      30_000, "C 首启：打出 boot 完成行");
+    await stopAll(); // 此刻 procs 里只有 C —— stopAll 顺带保证"没清理干净"当场炸
+
+    const idC = readIdentity(INST_C);
+    const recvC = path.join(RUN_DIR, "recv", INST_C.label);
+    fs.mkdirSync(recvC, { recursive: true });
+    seed(INST_C.db, (db) => {
+      db.prepare(
+        `INSERT INTO friends(device_id,nickname,avatar,x25519_pubkey,ed25519_pubkey,added_at)
+         VALUES(?1,?2,NULL,?3,NULL,?4)`,
+      ).run(idB.runtimeId, `e2e-${INSTANCES[1].label}`, idB.x25519Pub, Date.now());
+      db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('routed_endpoints',?1)")
+        .run(JSON.stringify([{ address: `127.0.0.1:${INSTANCES[1].port}` }]));
+      // 陷阱：macOS 上 load() 优先信书签 ⇒ 只写路径（与 seedPair 同口径）
+      db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('downloads_dir',?1)").run(recvC);
+    });
+    // B：把 C 追加进好友与端点。⚠️ 端点必须**先读回再追加** —— 直接覆盖会把 A 的端点清没，
+    // 那样连 A-B 都断，整轮退化成「B 谁也没连上」的假红。
+    seed(INSTANCES[1].db, (db) => {
+      db.prepare(
+        `INSERT OR IGNORE INTO friends(device_id,nickname,avatar,x25519_pubkey,ed25519_pubkey,added_at)
+         VALUES(?1,?2,NULL,?3,NULL,?4)`,
+      ).run(idC.runtimeId, `e2e-${INST_C.label}`, idC.x25519Pub, Date.now());
+      const cur = db.prepare("SELECT value FROM settings WHERE key='routed_endpoints'").get();
+      const eps = JSON.parse(cur?.value || "[]");
+      const addr = `127.0.0.1:${INST_C.port}`;
+      if (!eps.some((e) => e.address === addr)) eps.push({ address: addr });
+      db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('routed_endpoints',?1)")
+        .run(JSON.stringify(eps));
+    });
+    // 三端各写一份群 + 同一份群密钥（逐列形状照群轮：content 存明文、receiver_id 是裸 group_id、
+    // 初始 status='sent'、时钟一起推进否则撞 seq）。
+    const members = [idA.runtimeId, idB.runtimeId, idC.runtimeId];
+    const convId = `group:${GROUP_ID}`;
+    const ts = nowMs();
+    for (const inst of ALL_INST) {
+      seed(inst.db, (db) => {
+        db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)")
+          .run(`gk:${GROUP_ID}`, GROUP_KEY_STR);
+        db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
+          .run(GROUP_ID, GROUP_NAME, idA.runtimeId, ts);
+        db.prepare("DELETE FROM group_members WHERE group_id=?1").run(GROUP_ID);
+        for (const m of members) {
+          db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)")
+            .run(GROUP_ID, m);
+        }
+        db.prepare(
+          "INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at)"
+          + " VALUES(?1,'group',?2,NULL,0,?3)",
+        ).run(convId, GROUP_NAME, ts);
+      });
+    }
+    const env = buildGroupEnvelope({
+      groupKey: GROUP_KEY_B64, senderId: idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
+      x25519Pub: idA.x25519Pub, ed25519Pub: idA.ed25519Pub,
+      groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId, members,
+      kind: "text", content: CHAIN_TEXT, ts, seq: 1,
+    });
+    chainMsgId = env.messageId;
+    seed(INSTANCES[0].db, (db) => {
+      db.prepare("DELETE FROM group_outbox WHERE group_id=?1").run(GROUP_ID);
+      db.prepare("DELETE FROM messages WHERE msg_id=?1").run(env.messageId);
+      db.prepare(
+        `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+         VALUES(?1,?2,?3,?4,'text',?5,?6,1,'sent')`,
+      ).run(env.messageId, convId, idA.runtimeId, GROUP_ID, CHAIN_TEXT, ts);
+      // 只给 B 一行：C 从始至终不是 A 的直发对象（这一条本身就是判据，见下面 aDb 那格）。
+      db.prepare(
+        `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
+         VALUES(?1,?2,?3,?4,?5)`,
+      ).run(env.messageId, GROUP_ID, idB.runtimeId, env.wire, ts);
+      db.prepare("INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
+        + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq").run(convId, 1);
+    });
+
+    // 三端同场起。⚠️ C 必须**在这一刻**就在场：两轮实测（run-2026-09-26T09-24-08-894Z、
+    // run-2026-09-26T09-27-…）里让 C 晚到（A 已发完才上线）⇒ 90s 内 C 库里 0 行，
+    // 即 B 只在"收到的那一瞬间"把群 gossip 扇给**当时可达**的邻居，之后新上线的成员拿不到补推。
+    // 所以这一格判的是**多跳收敛**，不是"晚到成员补拉" —— 后者已按实测另记进 roadmap 待拍板，
+    // 在这里写成绿就是替产品许愿。
+    for (const inst of ALL_INST) launch(inst);
+    for (const inst of ALL_INST) {
+      await waitFor(() => tcpOpen(inst.port), 60_000, `链式轮：实例 ${inst.label} 的 TCP ${inst.port} 可连`);
+      await waitFor(() => bootReady(inst.log, bootBaseOf.get(inst.n), BOOT_LINE), 30_000,
+        `链式轮：实例 ${inst.label} 打出 boot 完成行`);
+    }
+    const bDb = openDb(INSTANCES[1].db, true);
+    let bRows = [];
+    try {
+      const q = bDb.prepare("SELECT content,sender_id,conv_id FROM messages WHERE msg_id=?1");
+      const until = nowMs() + 60_000;
+      for (;;) {
+        bRows = q.all(chainMsgId);
+        if (bRows.length || nowMs() >= until) break;
+        await sleep(1000);
+      }
+    } finally { bDb.close(); }
+    check("前置：A 排的那条群消息先真到了 B（B 手里有过它，后面才谈得上转发）",
+      bRows.length === 1 && bRows[0]?.content === CHAIN_TEXT,
+      `1 行 / ${CHAIN_TEXT}`, `${bRows.length} 行 / ${bRows[0]?.content}`);
+
+    // 投递的同步点：C 必须先与 B 建成链路，否则"C 没收到"只是链路没建起来，判不到产品头上。
+    await waitFor(() => countLog(INST_C.log, `建链 peer=${idB.runtimeId}`) > 0,
+      60_000, "前置：C 与 B 建成链路");
+
+    // 反向模式（§十四「错误行为测试」）：上面全部照跑，只把判据要去找的那个 msg_id 换成必定不存在的值
+    // ⇒ 报不出红就说明下面几条读的不是真落库行。
+    const judgedId = CHAIN_LIE ? `${chainMsgId}-lie` : chainMsgId;
+    const cDb = openDb(INST_C.db, true);
+    let rows = [];
+    try {
+      const q = cDb.prepare("SELECT content,seq,sender_id,conv_id FROM messages WHERE msg_id=?1");
+      const until = nowMs() + 90_000;
+      for (;;) {
+        rows = q.all(judgedId);
+        if (rows.length || nowMs() >= until) break;
+        await sleep(1000);
+      }
+    } finally { cDb.close(); } // 句柄只开一次：这条循环最多读 90 遍，每遍重开会放大 BUSY 概率
+
+    check("★ C 的库里落了那条消息，且只有一行（A 从没直发给 C ⇒ 只能是中间人的 gossip 收敛）",
+      rows.length === 1, 1, rows.length);
+    check("C 侧解出的是明文正文（解密发生在 C 自己身上，不是谁代解后送明文）",
+      rows[0]?.content === CHAIN_TEXT, CHAIN_TEXT, rows[0]?.content);
+    check("C 侧记的发送者仍是 A（经手不改归属）",
+      rows[0]?.sender_id === idA.runtimeId, idA.runtimeId, rows[0]?.sender_id);
+    check("C 侧落在群会话、seq 与信封一致",
+      rows[0]?.conv_id === convId && rows[0]?.seq === 1, `${convId}/seq=1`,
+      `${rows[0]?.conv_id}/seq=${rows[0]?.seq}`);
+    const aDb = openDb(INSTANCES[0].db, true);
+    let outPeers = [];
+    try {
+      outPeers = aDb.prepare("SELECT peer_id FROM group_outbox WHERE msg_id=?1 AND peer_id=?2")
+        .all(chainMsgId, idC.runtimeId).map((r) => r.peer_id);
+    } finally { aDb.close(); }
+    check("A 的逐成员直发队列里**没有任何面向 C 的行**（C 从来不是 A 的直发对象）",
+      outPeers.length === 0, 0, JSON.stringify(outPeers));
+    const bAgain = openDb(INSTANCES[1].db, true);
+    let bCount = -1;
+    try {
+      bCount = bAgain.prepare("SELECT COUNT(*) c FROM messages WHERE msg_id=?1").get(chainMsgId).c;
+    } finally { bAgain.close(); }
+    check("B 自己仍只有一行（把消息递给下游不会让自己重复落库）", bCount, 1, bCount);
+
+    // C 的日志与库进产物：报告按 label 走（#74 之后判据是形状匹配），第三实例的现场不能只留在 appdata。
+    try {
+      fs.copyFileSync(INST_C.log, path.join(RUN_DIR, `instance-${INST_C.label}.app.log`));
+      fs.mkdirSync(path.join(RUN_DIR, `sqlite-${INST_C.label}`), { recursive: true });
+      for (const s of ["", "-wal", "-shm"]) {
+        if (fs.existsSync(INST_C.db + s)) {
+          fs.copyFileSync(INST_C.db + s, path.join(RUN_DIR, `sqlite-${INST_C.label}`, path.basename(INST_C.db + s)));
+        }
+      }
+    } catch { /* 产物复制失败不改判定（判定只看库与日志里的真事实） */ }
+  });
+}
+
 // ── 主流程 ─────────────────────────────────────────────────────────
 // §十六 报告契约：把「报告至少显示」那几条点名翻译成对**产物**的判据，不是对源码字面量的存在性检查。
 // 判据只吃一个已经落盘的 summary.json —— 所以「改坏报告生成器」和「手工改坏一份报告」走的是同一条判据。
@@ -2187,7 +2401,7 @@ ${sum.shots.length
 const backups = new Map();
 try {
   fs.mkdirSync(RUN_DIR, { recursive: true });
-  for (const i of INSTANCES) {
+  for (const i of ALL_INST) {
     if (fs.existsSync(i.db)) {
       const to = path.join(RUN_DIR, `backup-${i.label}`, path.basename(i.db));
       fs.mkdirSync(path.dirname(to), { recursive: true });
@@ -2249,7 +2463,7 @@ try {
   }
 } finally {
   await stopAll().catch((e) => console.error("清理失败：", e.message));
-  for (const i of INSTANCES) {
+  for (const i of ALL_INST) {
     try { fs.copyFileSync(i.db, path.join(RUN_DIR, `after-${i.label}.db`)); } catch { /* 没有 */ }
   }
   // 用户原来的库必须回来 —— 覆盖掉本轮写出来的测试库

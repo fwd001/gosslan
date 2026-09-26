@@ -153,6 +153,9 @@ const MODE_LABEL = {
   // `--round=group` 不是注入而是**旅程轮**（§九 群聊），但它同样必须在这里登记：
   // 不登记的表现就是"这一轮的断言数永远不会被对账"，与漏登记一条注入完全等价。
   GROUP: "群聊轮",
+  // `--round=gossip3`（#75 三实例链式轮）同理：它挂在**发版前**那一层，不在本地层里，
+  // 但"没被门禁点名"不等于"可以不登记"——恰恰相反，越少人跑的轮次越需要有人数它的断言。
+  CHAIN: "链式轮",
 };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
@@ -199,7 +202,7 @@ console.log(
   `· 现算 E2E 断言数：${Object.entries(e2e).map(([k, v]) => `${k} ${v}`).join(" / ")}`,
 );
 const E2E_CLAIM =
-  /(默认轮|脏前缀轮|故障轮|续传轮|杀进程轮|冻结轮|磁盘轮|改小轮|多文件轮|改口轮|停滞轮|发送端被杀轮|群聊轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
+  /(默认轮|脏前缀轮|故障轮|续传轮|杀进程轮|冻结轮|磁盘轮|改小轮|多文件轮|改口轮|停滞轮|发送端被杀轮|群聊轮|链式轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
 const seenLabel = new Set();
 for (const rel of LIVE_DOCS) {
   const abs = path.join(ROOT, rel);
@@ -235,48 +238,96 @@ function harnessFaultModes() {
   return out;
 }
 
-/** verify.mjs 里 `--group local` 那一段的原文（顶格 `}` 收尾，与判据 C 同一套取块约定）。 */
-function localGateBlock() {
+/** verify.mjs 里某个 `--group <g>` 那一段的原文（顶格 `}` 收尾，与判据 C 同一套取块约定）。 */
+function gateBlock(group) {
   const src = fs.readFileSync(path.join(ROOT, "scripts/verify.mjs"), "utf8").split("\n");
-  const start = src.findIndex((l) => /^if \(groupFlag === "local"\) \{$/.test(l));
-  if (start < 0) throw new Error('verify.mjs 里找不到 `if (groupFlag === "local") {` 这一段');
+  const start = src.findIndex((l) => l === `if (groupFlag === "${group}") {`);
+  if (start < 0) throw new Error(`verify.mjs 里找不到 \`if (groupFlag === "${group}") {\` 这一段`);
   let end = start + 1;
   while (end < src.length && !/^\}/.test(src[end])) end++;
-  if (end >= src.length) throw new Error("local 层那一段没找到顶格 } 收尾");
+  if (end >= src.length) throw new Error(`${group} 层那一段没找到顶格 } 收尾`);
   return src.slice(start, end).join("\n");
+}
+
+/** harness 自己声明的**旅程轮次**（`const X = ROUND === "…"`，含它的 `-lie` 反向兄弟）。
+ *  与 `--fault=` 同理：CLI 字符串一律从 harness 现读，手抄就是第二个事实源。 */
+function harnessRoundModes() {
+  const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
+  const out = [];
+  for (const m of src.matchAll(/ROUND === "([a-z0-9-]+)"/g)) if (!out.includes(m[1])) out.push(m[1]);
+  if (!out.length) throw new Error('harness 里解析不到任何 --round= 轮次（`const X = ROUND === "…"` 的写法变了？）');
+  return out;
+}
+
+/** 只从 `args: [ … ]` 里取 CLI 字符串。
+ *  ⚠️ 这条收窄是被一次**假红**逼出来的：`why:` 说明文字里也会写 `--round=group-lie`（那是交代
+ *  反向轮怎么自证），整段扫会把"讲到了"读成"跑上了" ⇒ 判出"门禁点名了预期红的轮次"这种根本不存在的红。
+ *  真正决定跑不跑的只有 args，所以判据的输入也必须是 args。 */
+function gatedFlags(block, flag) {
+  const out = [];
+  for (const a of block.matchAll(/args: \[[^\]]*\]/g)) {
+    for (const m of a[0].matchAll(new RegExp(`--${flag}=([a-z0-9-]+)`, "g"))) out.push(m[1]);
+  }
+  return out;
 }
 
 try {
   const modes = harnessFaultModes();
-  const block = localGateBlock();
-  const gated = [...block.matchAll(/--fault=([a-z0-9-]+)/g)].map((m) => m[1]);
+  const block = [gateBlock("local"), gateBlock("release")].join("\n");
+  const gated = gatedFlags(block, "fault");
   const lies = gated.filter((s) => s.endsWith("-lie"));
   if (lies.length) {
     fails.push(
-      `local 层里点名了反向模式（${lies.join(" / ")}）—— 它们**预期红**，` +
+      `门禁层里点名了反向注入模式（${lies.join(" / ")}）—— 它们**预期红**，` +
         `进门禁会把"能红"变成"常红"，那样整层会被静音掉`,
     );
   }
   for (const s of gated) {
     if (!modes.includes(s)) {
-      fails.push(`local 层点名了 harness 里不存在的注入 --fault=${s}（harness 现有：${modes.join(" / ")}）`);
+      fails.push(`门禁层点名了 harness 里不存在的注入 --fault=${s}（harness 现有：${modes.join(" / ")}）`);
     }
   }
   for (const s of modes) {
     if (!gated.includes(s)) {
       fails.push(
-        `harness 有正向轮次 --fault=${s}，但 verify.mjs 的 local 层没有它 —— ` +
+        `harness 有正向轮次 --fault=${s}，但 verify.mjs 的门禁层没有它 —— ` +
           `这条注入又从门禁里滑出去了（表现：verify:e2e 只报 3 步还全绿，谁都不记得少了一步）`,
+      );
+    }
+  }
+  // 旅程轮（`--round=`）走同一条对账：#75 新开 release 层之后，"正向轮只在某一层里被点名"
+  // 这件事有两个候选层，任何一层被删掉都不该是静默的。
+  const rounds = harnessRoundModes();
+  const gatedRounds = gatedFlags(block, "round");
+  const roundLies = gatedRounds.filter((s) => s.endsWith("-lie"));
+  if (roundLies.length) {
+    fails.push(`门禁层点名了反向旅程轮（${roundLies.join(" / ")}）—— 同 --fault 的 -lie 轮，预期红不许进门禁`);
+  }
+  for (const s of gatedRounds) {
+    if (!rounds.includes(s)) {
+      fails.push(`门禁层点名了 harness 里不存在的轮次 --round=${s}（harness 现有：${rounds.join(" / ")}）`);
+    }
+  }
+  for (const s of rounds) {
+    if (s.endsWith("-lie")) continue;
+    if (!gatedRounds.includes(s)) {
+      fails.push(
+        `harness 有正向旅程轮 --round=${s}，但 local / release 两层都没有它 —— ` +
+          `这一轮又变成"某人记得跑才算跑过"（表现同 --fault 那条：步数在，轮次没了）`,
       );
     }
   }
   const defaults = (block.match(/args: \[\s*"scripts\/e2e-multi-instance\.mjs"\s*\]/g) || []).length;
   if (defaults !== 1) {
-    fails.push(`local 层应当恰好 1 条"默认轮"（不带 --fault 的 harness 调用），实际 ${defaults} 条`);
+    fails.push(`门禁层应当恰好 1 条"默认轮"（不带 --fault/--round 的 harness 调用），实际 ${defaults} 条`);
   }
-  console.log(`· 现算门禁 local 层：${defaults} 条默认轮 + ${gated.length} 条注入轮（harness 正向模式 ${modes.length} 条）`);
+  console.log(
+    `· 现算门禁 local+release 层：${defaults} 条默认轮 + ${gated.length} 条注入轮 + ` +
+      `${gatedRounds.length} 条旅程轮（harness 正向注入 ${modes.length} 条 / 正向旅程轮 ` +
+      `${rounds.filter((s) => !s.endsWith("-lie")).length} 条）`,
+  );
 } catch (e) {
-  console.error(`✗ 对账 harness 轮次 ↔ 门禁 local 层失败：${e.message}`);
+  console.error(`✗ 对账 harness 轮次 ↔ 门禁层失败：${e.message}`);
   process.exit(1);
 }
 
@@ -291,5 +342,5 @@ if (fails.length) {
 }
 console.log(
   `✓ 文档硬数字对账通过（${LIVE_DOCS.length} 份活文档；取锁点条数无手写；E2E 断言数现算对账；` +
-    `harness 轮次与门禁 local 层互点对齐）`,
+    `harness 轮次与门禁 local+release 两层互点对齐）`,
 );
