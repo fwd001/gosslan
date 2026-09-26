@@ -10,6 +10,18 @@
 
 ## [Unreleased]
 
+### Docs（2026-09-26 · INV-P03 的钩子登记与真实覆盖面校准）
+
+- `docs/protocol-invariants.md` 的 INV-P03「ACK 只能代表持久化接收」原来只挂 4 条**发送侧/幂等侧** db 用例，
+  接收侧已经存在的三条（`network::transport::tests::direct_open_rejects_corrupt_and_tampered_payloads`、
+  `network::transport::tests::plaintext_payload_is_rejected`、`db::tests::failed_decrypt_leaves_msg_id_free_for_the_later_good_copy`）
+  没登记 ⇒ 钩子表读起来像"接收端拒收没人证"。已补进钩子行（`check-invariant-hooks` 26 条仍全部可解析）。
+- ⚠️ 同时把话说清：**这条不变量的"于是也不发 Ack"那一半今天没有行为测试**，只由 `Message::ChatMessage` 臂的
+  控制流保证（解密失败 `else { return; }`，Ack 那句在同臂更后）。原因写进文档以免下一个人重复调查：
+  `AppState` 只有 `init(app: AppHandle)` 一个构造器、`Cargo.toml` 无 `[dev-dependencies]`/`MockRuntime`、
+  全仓没有任何测试调用过 `handle_message` ⇒ 要补的是**能在测试里造 state 并捕获出站帧**这件基础设施，
+  不是再多加一条断言。#57 由"缺一条用例"改记为"缺夹具"。
+
 ### Test（2026-09-26 · §七最后半格：零字节文件在单聊收尾）
 
 - `finish_receiver_into` 的 `size = 0` 路径此前**只有群侧**有测试（`group_done_empty_file_creates_zero_byte_file`），

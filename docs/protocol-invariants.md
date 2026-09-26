@@ -88,7 +88,9 @@ socket write
 message delivered
 ```
 
-- 钩子：`db::tests::message_and_outbox_are_written_atomically` `db::tests::ack_from_non_recipient_is_rejected` `db::tests::ack_sender_check_uses_group_file_owner` `db::tests::repeated_ack_is_idempotent`
+- 钩子：`db::tests::message_and_outbox_are_written_atomically` `db::tests::ack_from_non_recipient_is_rejected` `db::tests::ack_sender_check_uses_group_file_owner` `db::tests::repeated_ack_is_idempotent` `network::transport::tests::direct_open_rejects_corrupt_and_tampered_payloads` `network::transport::tests::plaintext_payload_is_rejected` `db::tests::failed_decrypt_leaves_msg_id_free_for_the_later_good_copy`
+- ⚠️ **这些钩子各管一半，别读成"整条已被证明"**：上列后三条证明的是**接收侧前件** —— 密文损坏 / 被篡改 / 明文载荷都必须被 `open_direct_content` 拒收，且拒收后 `msg_id` 仍然空闲（⇒ 没落库）。而"于是也不发 Ack"这后半句今天**只由控制流保证**：`transport.rs` 的 `Message::ChatMessage` 臂里解密失败就是 `else { return; }`，Ack 那句在同一个臂的更后面，中间没有可注入的判定函数。
+  为什么没有行为用例（写清楚，免得下一个人重复调查）：本仓**造不出接收夹具** —— `AppState` 只有 `AppState::init(app: AppHandle)` 这一个构造器（`state.rs`），`Cargo.toml` 里**没有 `[dev-dependencies]`、全仓没有 `tauri::test` / `MockRuntime`**，所以既实例化不了 state，也拿不到 `try_send` 需要的链接；全仓没有任何测试调用过 `handle_message`。要补这条，先补的是"能在测试里造出 AppState 并发出可捕获的出站帧"这件基础设施，不是再加一条断言。
 
 ### 发送方
 
