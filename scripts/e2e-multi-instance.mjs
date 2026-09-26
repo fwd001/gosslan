@@ -115,7 +115,8 @@ const FREEZE_BYTES = Number(process.env.E2E_FREEZE_MB || 1) * 1024 * 1024;
 /// ⚠️ 这一格此前**零跨实例判据**：③ 杀的是**接收端**，全仓没有任何一轮从"发送端崩了"这一侧看过。
 /// 它钉的不是"能不能续传"（③/② 已证），而是**崩溃不许把"已入队"这个事实抹掉**：
 /// 队列行是"先入队再投递"那条物理定律的载体，如果一次崩溃能让它变成 done 或让它消失，
-/// 这一单就永久没人再发了 —— 而用户看到的气泡还在，是最难发现的一种丢法。
+/// 这一单就永久没人再发了。而**用户侧还有第二个结局**：气泡行（`messages`）也没了的话，
+/// 用户连"曾经发过这一单"都看不见 —— 两个结局各自钉一条，所以入队照⑥ 复刻产品的三行。
 const SENDKILL = FAULT === "sender-kill-mid" || FAULT === "sender-kill-mid-lie";
 /// 和 ③ 同档：100 MB 在回环上传 ~0.8 s，50 ms 自旋才抓得到在飞窗口。
 const SENDKILL_BYTES = Number(process.env.E2E_SENDKILL_MB || 100) * 1024 * 1024;
@@ -1166,6 +1167,15 @@ if (KILL) {
     await waitFor(dead, 15_000, "B 进程确认已死（SIGKILL 不给它收尾的机会）");
     await sleep(2_000); // 让 A 把"写失败了"变成状态
     const landedAtKill = fs.existsSync(landed);
+    // ★ 参考量取在**确认已死之后**，不取在按下 SIGKILL 之前：`.part` 只有 B 自己会写，
+    //   所以此刻起它永久冻结 —— 这才是"死的那一刻盘上有多少字节"。
+    //   原先拿 kill 前的快照当期望值，本地层实测把它判红了：快照 4,194,304，而重启后的 B 自己读到
+    //   4,456,448 并要求从这里续（差恰好一个 256 KiB 片）⇒ **产品服从的是盘上真值，红的是判据自己的读数窗口**
+    //   （从快照到真死 B 还在收片，且写入也要一会儿才在 stat 上显现；两种成因指向同一个修法）。
+    //   与 waitSendTerminal 同一族：先问"这个数是靠谁定格的"。下面那行打印就是这扇窗的探针。
+    const partAtDeath = partSize();
+    console.log(`  · 实测：按下 SIGKILL 前读到 ${partAtKill} 字节，确认已死后冻结在 ${partAtDeath} 字节`
+      + `（差 ${partAtDeath - partAtKill}，非零就是快照打早了 —— 期望值以冻结那个为准）`);
 
     check("窗口必须真打中：杀的那一刻 .part 在 0~全量之间",
       !miss && partAtKill > 0 && partAtKill < KILL_BYTES,
@@ -1183,11 +1193,12 @@ if (KILL) {
     await waitFor(() => tcpOpen(INSTANCES[1].port), 60_000, `重启后的 B 的 TCP ${INSTANCES[1].port} 可连`);
     await waitFor(() => bootReady(INSTANCES[1].log, bootBaseOf.get(INSTANCES[1].n), BOOT_LINE), 30_000,
       "重启后的 B 打出 boot 完成行");
-    await waitFor(() => fs.existsSync(landed) || partSize() > partAtKill, 120_000,
+    await waitFor(() => fs.existsSync(landed) || partSize() > partAtDeath, 120_000,
       "重启后这一单被重新拾起（.part 比死时更长，或终名文件出现）");
     await sleep(15_000); // 让续传 / rename / 多轮重试都落定
 
-    const wantFrom = LIE ? partAtKill + 1 : partAtKill;
+    // 期望值 = **确认已死后冻结的那个字节数**（不是按下 SIGKILL 之前的快照，见上面那段注释）。
+    const wantFrom = LIE ? partAtDeath + 1 : partAtDeath;
     const aLog = tailLog(INSTANCES[0].log, 60000) || "";
     const line = aLog.split("\n").filter((l) => l.includes(xferId4) && l.includes("接收端已有")).pop() || "";
     const m = line.match(/接收端已有 (\d+) 字节/);
@@ -1332,13 +1343,41 @@ if (SENDKILL) {
     const pA = procs.get(INSTANCES[0].n);
     if (!pA) throw new Error("拿不到 A 的子进程句柄 —— 这一格要杀的正是发送端");
 
-    seed(INSTANCES[0].db, (db) => {
-      db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(idK);
-      db.prepare(
-        `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
-         VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
-      ).run(idK, peerTo, srcFileK, `${idK}.bin`, SENDKILL_BYTES, nowMs());
-    });
+    // 入队 = 复刻 `send_file` 命令在点击那一刻写的**三行**（气泡 / 传输台账 / 队列），照⑥ 的同形状。
+    // 只写队列那一行就证不到"用户看得见的那一单"：崩溃后气泡没了 = 用户以为发过、其实没人再发，
+    // 而台账与队列都在时用户界面上至少还有个入口 —— 这两件事在 UI 上是两个不同的结局。
+    // ⚠️ 进程活着时写它的库是新用法：seed() 末尾的 wal_checkpoint(TRUNCATE) 撞上在写的连接会
+    //    SQLITE_BUSY ⇒ 有限重试；真进不去就该换成"停机入队 + 更大文件"那条路。
+    for (let i = 0; ; i++) {
+      try {
+        seed(INSTANCES[0].db, (db) => {
+          db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(idK);
+          db.prepare("DELETE FROM file_transfers WHERE id=?1").run(idK);
+          db.prepare("DELETE FROM messages WHERE msg_id=?1").run(`file-${idK}`);
+          const ts = nowMs();
+          const seq = db.prepare("SELECT COALESCE(MAX(seq),0)+1 s FROM messages WHERE conv_id=?1")
+            .get(peerTo).s;
+          db.prepare(
+            `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+             VALUES(?1,?2,?3,?4,'file',?5,?6,?7,'sent')`,
+          ).run(`file-${idK}`, peerTo, idA.runtimeId, peerTo,
+            JSON.stringify({ name: `${idK}.bin`, path: srcFileK, size: SENDKILL_BYTES, sha256: "", subtype: "file" }),
+            ts, seq);
+          db.prepare(
+            `INSERT INTO file_transfers(id,peer_id,name,size,direction,status,path,progress,created_at)
+             VALUES(?1,?2,?3,?4,'send','pending',?5,0,?6)`,
+          ).run(idK, peerTo, `${idK}.bin`, SENDKILL_BYTES, srcFileK, ts);
+          db.prepare(
+            `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+             VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
+          ).run(idK, peerTo, srcFileK, `${idK}.bin`, SENDKILL_BYTES, ts);
+        });
+        break;
+      } catch (e) {
+        if (i >= 5) throw e;
+        await sleep(300);
+      }
+    }
 
     // ★ 世界前提（抛异常，不设判据）：必须抓到"字节正在飞"。抓不到就等于什么都没注入，
     //   而后面几条"不许成功"会因为链路根本没跑而集体假绿 —— 那是最像成功的一种失败。
@@ -1373,9 +1412,15 @@ if (SENDKILL) {
     const aDeadDb = openDb(INSTANCES[0].db, true);
     const aDeadQ = aDeadDb.prepare("SELECT COUNT(*) c FROM file_outbox WHERE transfer_id=?1").get(idK).c;
     const aDeadRow = aDeadDb.prepare("SELECT status FROM file_transfers WHERE id=?1").get(idK) ?? null;
+    const aDeadBubble = aDeadDb
+      .prepare("SELECT COUNT(*) c FROM messages WHERE msg_id=?1").get(`file-${idK}`).c;
     aDeadDb.close();
     check("发送端崩溃之后队列行必须还在（1 行，等待重启后重投）—— 崩溃不许当成已送达",
       aDeadQ === 1, 1, aDeadQ);
+    // ★ 用户可见的那一半：崩溃不许把**会话里的那条气泡**一起带走。队列行没了 = 永久没人再发，
+    //   气泡没了 = 用户连"曾经发过这一单"都看不见；两者在 UI 上是两个不同的结局，所以要各钉一条。
+    check("发送端崩溃之后那条文件气泡必须还在（1 行）—— 崩溃不许把用户可见的这一单一起抹掉",
+      aDeadBubble === 1, 1, aDeadBubble);
     check("发送端崩溃的这一刻自己不许记成 done（对端一个字节都没确认过）",
       aDeadRow?.status !== "done", "非 done", aDeadRow?.status ?? "无行");
     console.log(`  · 实测：在飞 .part=${atKill}B 时 SIGKILL A → 死透后等 20s`
@@ -1460,6 +1505,10 @@ if (STALL) {
       pB.kill("SIGSTOP");
       frozen = true;
       // 快照取在**冻结之后**：冻结前那几毫秒 B 还在写，拿 atGrowth 当基准会虚涨。
+      // ⚠️ 还要再等一下：`kill("SIGSTOP")` 是**异步生效**的，信号排到队上之后 B 仍可能写完一片。
+      //   这一格的基准要是取早了，就会把"B 在信号生效前最后写的那片"算成"冻结期间涨了" ——
+      //   与注入③ 同族的读数竞态（那里是 SIGKILL 前快照，已改成确认已死后再读）。
+      await sleep(300);
       atFreeze = sizeOfS(partS);
       await sleep(STALL_HOLD_MS);
 

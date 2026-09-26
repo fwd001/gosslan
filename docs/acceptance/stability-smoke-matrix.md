@@ -28,7 +28,7 @@
 - 多文件轮 24 条断言 —— 反向：`--fault=multi-file-lie`
 - 改口轮 24 条断言 —— 反向：`--fault=recv-dir-rotted-lie`
 - 停滞轮 25 条断言 —— 反向：`--fault=stall-mid-lie`
-- 发送端被杀轮 25 条断言 —— 反向：`--fault=sender-kill-mid-lie`
+- 发送端被杀轮 26 条断言 —— 反向：`--fault=sender-kill-mid-lie`
 - 群聊轮 29 条断言 —— 反向：`--round=group-lie`
 
 §十六 要的 `screenshots/` 现在真的有了：每轮两张全屏 PNG（链路建立后 / 两端重启后），
