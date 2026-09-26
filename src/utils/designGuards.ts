@@ -269,6 +269,64 @@ export function findRetiredLetterAvatarUsage(src: string): GuardIssue[] {
   return out.sort((a, b) => a.line - b.line);
 }
 
+/**
+ * 模板里挂上的 **BEM 修饰类**（含 `--` 的那一类）必须在某处样式里有定义。
+ *
+ * 为什么单独一条：这类缺陷的形态是**界面静默退化** —— `:class="{ 'x--on': c }"` 挂上去了，
+ * 而 `.x--on` 那条规则被删了/没写，页面照常渲染、测试照常绿、vue-tsc 也管不着（它不是类型）。
+ * 用户看到的后果是"高亮没了 / 危险色没了"，而 @ 到自己加重样式（#85）正是这种修饰类驱动的。
+ *
+ * 覆盖面 = 模板 class 属性上**写死的类名**三种形态：静态 `class="a b--c"`、对象
+ * `:class="{ 'b--c': x }"`、三元/数组 `:class="ok ? 'b--c' : ''"` 与 `:class="['b--c']"`。
+ * 不覆盖**在脚本里拼出来的类名**（`rowLevelBg(r.level)` 那类函数返回值）—— 那是运行时信息，
+ * 静态扫不出来；仓里今天的 3 枚修饰类全是字面量，一旦有人改成拼接，这格判据就少守一枚，
+ * 所以「认出了几枚」由 `designGuards.test.ts` 现算兜底（少于 3 即红）。
+ * 反之**不拿** `src.includes("x--y")` 扫全文：注释里提一句就让护栏"因为注释而通过/报红"，
+ * 是本仓点过名的族。定义可以来自全局 `style.css`（由调用方传进来），也可以是**同文件**的 `<style>` 块。
+ */
+const MODIFIER_NAME_RE = /^[A-Za-z][A-Za-z0-9-]*--[A-Za-z0-9-]+$/;
+
+/** 从模板的 class 属性里认出写死的 BEM 修饰类名（按出现顺序去重）。 */
+export function modifierClassesUsed(src: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (t: string) => {
+    if (MODIFIER_NAME_RE.test(t) && !seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+  };
+  // class 绑定的三种真实写法各覆盖一处：静态（裸 token）、对象键 / 三元 / 数组（单引号字面量）
+  for (const m of src.matchAll(/\bclass="([^"]*)"/g)) {
+    for (const t of m[1].split(/\s+/)) add(t);
+    for (const lit of m[1].matchAll(/'([^']*)'/g)) add(lit[1]);
+  }
+  return out;
+}
+
+export function findModifierClassWithoutStyle(src: string, cssText: string): GuardIssue[] {
+  const uses = new Map<string, number>();
+  for (const name of modifierClassesUsed(src)) {
+    const at = src.indexOf(name);
+    if (!uses.has(name)) uses.set(name, lineAt(src, at < 0 ? 0 : at));
+  }
+  // 同文件 <style> 块也算定义处（SFC 的 scoped 样式就是这个形态）
+  const ownStyles = [...src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1] ?? "").join("\n");
+  const hay = `${cssText}\n${ownStyles}`;
+  const out: GuardIssue[] = [];
+  for (const [name, line] of uses) {
+    const defRe = new RegExp(`\\.${name}(?![\\w-])`);
+    if (!defRe.test(hay)) {
+      out.push({
+        line,
+        message: `修饰类「${name}」挂在了模板上，但全局 style.css 与本文件 <style> 里都没有它的定义 `
+          + "⇒ 界面会静默退化（高亮/危险色这类视觉提示消失而没有任何测试变红）。",
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
 export function findTruncationWithoutTitle(src: string): GuardIssue[] {
   if (src.includes("truncate-title-ok")) return [];
   const out: GuardIssue[] = [];

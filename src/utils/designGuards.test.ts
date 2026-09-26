@@ -9,6 +9,8 @@ import {
   checkUnreadBadgeComponent,
   findHandWrittenBadges,
   findAvatarFaceWithoutAriaHidden,
+  findModifierClassWithoutStyle,
+  modifierClassesUsed,
   findRetiredLetterAvatarUsage,
   findHoverRevealIssues,
   findOutlineNoneWithoutFocusRing,
@@ -1246,4 +1248,70 @@ test("src 下没有任何一处还在走字母头像", () => {
     }
   }
   assert.deepEqual(bad, [], `字母头像复活了：\n${bad.join("\n")}`);
+});
+
+test("模板里挂上的 BEM 修饰类必须在 CSS 里有定义（夹具）", () => {
+  const used = `<template><div class="mention-token" :class="{ 'mention-token--self': isMe }">x</div></template>`;
+  // ① 用了却没定义 ⇒ 报（这类缺陷的形态是"界面静默退化"，没有任何测试会红）
+  assert.equal(findModifierClassWithoutStyle(used, "").length, 1, "缺定义的修饰类必须报出来");
+  // ② 同文件 <style> 里定义了 ⇒ 放行
+  const withOwnStyle = used + `<style>.mention-token--self { font-weight: 600; }</style>`;
+  assert.deepEqual(findModifierClassWithoutStyle(withOwnStyle, ".x{}"), []);
+  // ③ 定义在全局 style.css 里也算
+  assert.deepEqual(
+    findModifierClassWithoutStyle(used, ".mention-token--self{color:red}"), [],
+    "定义在全局样式里也算数");
+  // ④ 多行 :class 对象写法同样要判得住（真实代码里就是这种）
+  const multiline = `<template><div :class="{
+      'a-mod--on': x,
+    }">y</div></template>`;
+  assert.equal(findModifierClassWithoutStyle(multiline, "").length, 1, "多行对象写法不能漏");
+  // ⑤ 只扫 class 属性：注释里写一句 `foo--bar` 不算使用（否则护栏会因为注释而红）
+  assert.deepEqual(
+    findModifierClassWithoutStyle(`<template><!-- foo--bar --><div class="ok">z</div></template>`, ""), []);
+  // ⑥ 三元字符串写法 —— 仓里真实存在（ChatSearchDialog 的筛选 chip），漏了它这枚类就没人守
+  assert.equal(
+    findModifierClassWithoutStyle(
+      `<template><div :class="on ? 'a-chip--on' : ''">y</div></template>`, "").length, 1,
+    "三元字符串写法不能漏");
+  // ⑦ 数组写法（多行，仓里有 14 处 :class="[")
+  assert.equal(
+    findModifierClassWithoutStyle(
+      `<template><div :class="[\n  'base',\n  'a-chip--on',\n]">y</div></template>`, "").length, 1,
+    "数组写法不能漏");
+  // ⑧ 反向：CSS 变量工具类里也含 `--`，不许被认成修饰类（否则全库几百处误报）
+  assert.deepEqual(
+    findModifierClassWithoutStyle(
+      `<template><div class="bg-[var(--gosslan-bg)] text-[color-mix(in_srgb,var(--gosslan-warning)_8%,transparent)] hover:bg-[var(--x)]">y</div></template>`,
+      ""),
+    [],
+    "Tailwind 的 CSS 变量工具类不是修饰类");
+});
+
+test("全库扫到的修饰类清单要非空转（同一个解析器，不靠第二条正则）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const names = new Set<string>();
+  for (const f of collectVueFiles(srcDir)) {
+    for (const n of modifierClassesUsed(readFileSync(f, "utf8"))) names.add(n);
+  }
+  // 下限取自今天仓里的三枚（@你加重 / 筛选 chip 选中 / 菜单危险项）。
+  // 只许"变少即红"：解析器哪天退化到什么都认不出，这条会红而不是安静地绿着。
+  assert.ok(
+    names.size >= 3,
+    `只认出 ${names.size} 枚修饰类（${[...names].join(", ")}）⇒ 扫描口径疑似失效，这条判据在空转`);
+});
+
+test("src 下每个修饰类都能在样式里找到定义", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const globalCss = readFileSync(join(srcDir, "style.css"), "utf8");
+  const bad: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    for (const issue of findModifierClassWithoutStyle(src, globalCss)) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  // "解析器今天到底认出了几枚"由上一条用例防空转（同一条口径，不留第二把尺子）
+  assert.deepEqual(bad, [], `这些修饰类挂上去了却没有样式定义：\n${bad.join("\n")}`);
 });
