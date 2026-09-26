@@ -62,6 +62,8 @@
     "test:fault-injection:multi-selfproof": "node scripts/e2e-multi-instance.mjs --fault=multi-file-lie",
     "test:fault-injection:stall": "node scripts/e2e-multi-instance.mjs --fault=stall-mid",
     "test:fault-injection:stall-selfproof": "node scripts/e2e-multi-instance.mjs --fault=stall-mid-lie",
+    "test:fault-injection:sendside": "node scripts/e2e-multi-instance.mjs --fault=sender-kill-mid",
+    "test:fault-injection:sendside-selfproof": "node scripts/e2e-multi-instance.mjs --fault=sender-kill-mid-lie",
     "test:fault-injection:disk-selfproof": "node scripts/e2e-multi-instance.mjs --fault=recv-readonly-lie",
     "test:fault-injection:resume-selfproof": "node scripts/e2e-multi-instance.mjs --fault=resume-prefix-lie",
     "test:fault-injection:selfproof": "node scripts/e2e-multi-instance.mjs --fault=poison-part-lie",
