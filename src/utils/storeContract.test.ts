@@ -321,8 +321,37 @@ test("store 里不许再有「x.value = await api.foo()」这种直写（后发�
     [],
     "IPC 无顺序保证：先发起的请求后回来就会用旧快照覆盖新状态（未读回退、红点亮回、\n" +
       "     刚收藏的条目从面板消失、进度条钉在 0%）。改走 utils/staleGuard 的 begin/isCurrent。\n" +
-      "     注意本仓 useAppStore 还有 4 处同形状（device/shareDir/interfaces/updateProfile），\n" +
-      "     多数是一次性初始化写、风险面不同，尚未纳入本判据 —— 收敛它们时要一起把范围扩过去。",
+      "     注意本仓 useAppStore 还有几处同形状（device/shareDir/interfaces），多数是一次性初始化写、\n" +
+      "     风险面不同，尚未按这条收掉 —— 但面积已被下一条'只许变小'的冻面判据钉住，长出新的即红。",
+  );
+});
+
+/**
+ * B-5 的"冻结半"（2026-09-26）。上一条约的是 useChatStore，而 `useAppStore` 今天仍有四处直写
+ * （`device` 两处 / `shareDir` / `interfaces`，多为一次性初始化写，风险面与 chat 侧不同），
+ * 按§十八 不在稳定任务里顺手改热路径 —— 于是先把**面积冻住**：
+ * 修掉一处仍然绿（那是收敛），**长出第五处或换成新的 ref 就红**。
+ * 两条断言各管一种 lie：同 ref 再加一处 ⇒ 计数红；引入新 ref ⇒ 名单红。
+ */
+test("useAppStore 的直写面冻在已知四处：长出第五处或新 ref 即红（B-5 冻结半）", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useAppStore.ts"), "utf8"));
+  const hits = st
+    .split("\n")
+    .map((l, i) => ({ l: l.trim(), n: i + 1 }))
+    .filter(({ l }) => /\.value\s*=\s*await\s+(api|invoke)\./.test(l));
+  const FROZEN = ["device", "shareDir", "interfaces"];
+  const novel = hits.filter(({ l }) => !FROZEN.some((ref) => l.startsWith(`${ref}.value`)));
+  assert.deepEqual(
+    novel.map(({ l, n }) => `${n}: ${l}`),
+    [],
+    `useAppStore 出现了冻结面之外的直写（冻结名单＝${FROZEN.join(" / ")}，当前共 ${hits.length} 处）。\n` +
+      "     IPC 无顺序保证，旧响应会用旧快照盖掉新状态：新点要么走 utils/staleGuard 的 begin/isCurrent，\n" +
+      "     要么按 useChatStore 那条判据收掉（那条不允许任何直写）。",
+  );
+  assert.ok(
+    hits.length <= 4,
+    `useAppStore 的直写点已从 4 处长到 ${hits.length} 处：\n` +
+      hits.map(({ l, n }) => `     ${n}: ${l}`).join("\n"),
   );
 });
 
