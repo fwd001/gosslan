@@ -530,7 +530,7 @@ const MODS = [
     note: "零 CHECK、零外键：状态枚举与级联全靠应用层。" },
   { id: "st-disk", l: "store", n: "磁盘目录", s: "downloads / cache / favorites / logs", cnt: "二进制",
     role: "接收落位、临时 .part、收藏独立副本、任务贴图、日志文件。",
-    in: ["tmp_path = {transfer_id}.part（<b>绝不从最终名派生</b>）", "unique_path 防同名互相打乱"],
+    in: ["tmp_path = {transfer_id}.part（<b>绝不从最终名派生</b>）", "unique_path 防同名互相打乱 —— <b>两处</b>：begin 定名 + 收尾 rename 前再确认一次（只在 begin 定名挡不住两份同名同时在途，后一次 rename 会覆盖前一份）"],
     out: ["rename 到 final_path = 完成的那一刻", "cache_cleaner 按 mtime + 配额回收（<b>跳过符号链接</b>）"],
     data: ["见 ⑤ 数据契约的磁盘表"],
     note: "多开实例用 gosslan-{N}.db，端口 +instance*10。" },

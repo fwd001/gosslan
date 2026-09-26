@@ -2130,7 +2130,7 @@ pub fn finish_receive(
 fn finish_receiver_into(
     db_lock: &std::sync::Mutex<rusqlite::Connection>,
     transfer_id: &str,
-    r: FileReceiver,
+    mut r: FileReceiver,
 ) -> Result<(String, u64, PathBuf, String), String> {
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
@@ -2191,6 +2191,15 @@ fn finish_receiver_into(
         return Err(reason);
     }
     drop(r.file);
+    // §七「两个 offer 都在任一次 rename 之前到达」：`final_path` 是 begin 时用 `unique_path` 定的，
+    // 而那一刻两份都还没落地 ⇒ 同名两单会拿到**同一个**名字，直接 rename 会在 POSIX 上覆盖掉先落地的
+    // 那一份（两行台账都 done、一个气泡指着已经不存在的字节）。落地前再确认一次：被占走就换名。
+    // （与群聊收尾同形状 —— 那边早就这么做了，其注释声称"单聊在写盘时才定名"与代码不符。）
+    if r.final_path.exists() {
+        if let Some(dir) = r.final_path.parent() {
+            r.final_path = unique_path(dir, &r.name);
+        }
+    }
     if let Err(e) = std::fs::rename(&r.tmp_path, &r.final_path) {
         let reason = e.to_string();
         let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -3951,6 +3960,82 @@ mod tests {
             expected_sha256: expected.to_string(),
             hasher: h,
         }
+    }
+
+    /// §七「两个 offer 都在任一次 rename 之前到达」＝ 两份**不同内容**的同名文件同时在途。
+    ///
+    /// 机制（不是猜测，逐处可查）：单聊的 `final_path` 在 `begin` 就用 `unique_path` 定死
+    /// （`make_receiver` 里那行注释自己写着"两张同名图同时在途时 begin 一刻磁盘上还没有同名文件"），
+    /// 而那一刻谁都没落地 ⇒ 两份拿到**同一个** `final_path` ⇒ 收尾那次 `rename` 在 POSIX 上
+    /// **直接覆盖前一份** ⇒ 两行台账都是 `done`、两个气泡都在，其中一份字节已经不在了。
+    /// 群聊收尾（`transport.rs`）已有"落盘前再确认名字、被占走就换名"的兜底，其注释断言
+    /// "单聊本来就是在写盘时才定名 ⇒ 没有这个竞态" —— 这句与 `make_receiver` 不符 ⇒ 钉这条。
+    /// 用户已拍板：改名让两份共存（不拒第二份）。
+    #[test]
+    fn two_same_named_transfers_do_not_overwrite_each_other() {
+        use super::finish_receiver_into;
+        use sha2::Digest as _;
+        let sha = |b: &[u8]| {
+            let mut h = sha2::Sha256::new();
+            h.update(b);
+            h.finalize()
+                .iter()
+                .map(|x| format!("{x:02x}"))
+                .collect::<String>()
+        };
+        let first: Vec<u8> = vec![0xA1u8; 4096];
+        let second: Vec<u8> = vec![0xB2u8; 4096];
+        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
+        let path_of = |id: &str| -> Option<String> {
+            db.lock()
+                .unwrap()
+                .query_row(
+                    "SELECT status, path FROM file_transfers WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| {
+                        let st: String = r.get(0)?;
+                        assert_eq!(st, "done", "{id} 的终态必须是 done，实得 {st}");
+                        r.get::<_, Option<String>>(1)
+                    },
+                )
+                .unwrap_or_else(|e| panic!("{id} 必须留下一行终态，实得 {e}"))
+        };
+
+        let a = receiver_holding("same-name-a", &first, first.len() as u64, &sha(&first));
+        let mut b = receiver_holding("same-name-b", &second, second.len() as u64, &sha(&second));
+        // 忠实复刻 begin 的结果：两次 unique_path 给出同一个名字（谁都没落地 ⇒ 都以为名字是空的）。
+        // 只改夹具读的输入，不改断言。
+        b.final_path = a.final_path.clone();
+        b.name = a.name.clone();
+
+        assert!(
+            finish_receiver_into(&db, "xfer-a", a).is_ok(),
+            "第一份收尾应当成功"
+        );
+        assert!(
+            finish_receiver_into(&db, "xfer-b", b).is_ok(),
+            "第二份也该收下（拍板＝改名共存，不是拒收）"
+        );
+
+        let pa = path_of("xfer-a").expect("xfer-a 要留下真实路径");
+        let pb = path_of("xfer-b").expect("xfer-b 要留下真实路径");
+        assert_ne!(
+            pa, pb,
+            "两份同名文件落在同一个路径 ⇒ 其中一份必然不存在（气泡指着空路径）"
+        );
+        assert_eq!(
+            std::fs::read(&pa).ok().as_deref(),
+            Some(first.as_slice()),
+            "先到的那份必须还在、内容还是它自己的字节（被后到的覆盖＝静默丢用户文件）"
+        );
+        assert_eq!(
+            std::fs::read(&pb).ok().as_deref(),
+            Some(second.as_slice()),
+            "后到的那份也必须自己完整地落在另一个名字下"
+        );
+        let _ = std::fs::remove_file(&pa);
+        let _ = std::fs::remove_file(&pb);
     }
 
     /// 「界面上那句『已收到』到底是不是真话」—— 直接驱动生产收尾 `finish_receiver_into`（#25）。
