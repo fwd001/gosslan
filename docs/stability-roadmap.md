@@ -298,7 +298,10 @@ F2 大文件不上 BLE(16MiB)｜F4 fsync 出锁｜F5 群同步①②④｜`#40` 
 ### 4.4 Missing——**没有任何地方记过，但按 §19 必须有**
 
 1. **M-1 契约漂移检测**（§十三）：现在文档数字漂移是既成事实（R4），但**没有任何判据**读它 ⇒ 需要"文档 == 实算"的门。
-2. **M-2 测试报告产物**（§十六）：~~仓库里一个都不存在~~ ⇒ **已落地，2026-09-26 复核并改写**：`test-results/run-<ISO>/{summary.json,summary.html,instance-{A,B}.app.log,instance-{A,B}.stdout.log,after-{A,B}.db,recv/,src/,backup-*/}` 每次跑都生成（本地已积累 60+ 轮目录）。`summary.json` 顶层含 `run/verdict/negative/binary/platform/duration_s/instances/trace/steps/assertions`，`trace` 就是 `{msg_id, transfer_id}`。**仍缺的一格：`screenshots/`** —— harness 走的是"两端 DB + 日志 + 文件"判据，没有任何 UI 驱动，所以截图要么补 WebDriver/CDP 那一层，要么按 §十 明确标成 MANUAL 而不算 PASS（**不许为了填目录名而放一张假图**）。
+2. **M-2 测试报告产物**（§十六）：~~仓库里一个都不存在~~ ⇒ **已落地**。⚠️ **这一行原来手写的三份清单全部被实测推翻**（2026-09-26 现读最新一轮产物），已全部换成指针 ⇒ 因为"抄一次清单就漂一次"，而这三格（#65 / #73 / #79）都在这行写完之后才落地：
+   · **目录内容与 `summary.json` 字段以代码为唯一事实源**：报告契约每轮由 harness 自己查（缺项当场红，含"未跑步骤被渲染成 ✅"那一格），文档不再抄字段名。实测当前 `trace` 已是 `{msg_id, transfer_id, ids}`（#79 的注册表），顶层还多出 `shots`（#65）与 `retention`（#73）。
+   · **run 目录条数不手写**（此处原写"60+"）：现算 `ls -1d test-results/run-* | wc -l`。
+   · ~~**仍缺的一格：`screenshots/`**~~ ⇒ **已落地**（#65：`scripts/e2e-shot.mjs`，每轮两张全屏 PNG，判据只钉"真落盘 + PNG 结构成立"）；**"界面长什么样对不对"仍归 §12.6 结构级 / MANUAL**，那一半没有被机器验证的东西就是没有被验证的东西。**平台边界**：采集器只实现了 macOS 的 `screencapture` ⇒ **Windows 上这一格是红、不是跳过**（§十禁止把没跑写成 PASS），别把它当成"两层都绿"。
 3. **M-3 Trace 贯穿**：`msg_id`/`transfer_id` 目前散在日志文本里，没有"一条消息跨层可串"的判据。
 4. **M-4 数据生命周期 E2E**：旧库→迁移→重启→清空→重初始化，今天只有迁移单测，没有"进程重启后仍正确"。
 5. **M-5 平台/硬件 Smoke 清单**：`docs/acceptance/1.0-release.md` 有 22 条 P0 但**零 checkbox、零状态** ⇒ 不是清单，是一份愿望列表。
