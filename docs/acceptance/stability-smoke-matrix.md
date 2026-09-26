@@ -31,6 +31,7 @@
 - 发送端被杀轮 26 条断言 —— 反向：`--fault=sender-kill-mid-lie`
 - 群聊轮 29 条断言 —— 反向：`--round=group-lie`
 - 链式轮 25 条断言 —— 反向：`--round=gossip3-lie`（三实例，跑在**发版前**那一层 `npm run verify:release`，日常本地层不收）
+- 补递轮 24 条断言 —— 反向：`--round=gossip-late-lie`（#77 晚到成员补递；同一族三实例拓扑、启动时序相反，也只挂在**发版前**那一层）
 - 关发现轮 23 条断言 —— 反向：`--round=lanoff-lie`（#89：判"把局域网发现关掉之后，对端再也学不到我"。
   这一轮**故意带着 `GOSSLAN_AUTOSTART=1` 跑** —— 要证的正是那个强制联网的环境变量不许越过用户显式写的"关"；
   三条腿：开着先学到 → 关掉后 announce 计数一字不涨（且它自己日志里 `discovery_started` 为 0）→ 翻回开又涨回来。

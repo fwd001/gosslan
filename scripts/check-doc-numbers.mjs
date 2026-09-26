@@ -159,6 +159,10 @@ const MODE_LABEL = {
   // `--round=lanoff`（#89 的隔离轮）同理：它判的是"用户那个键真的说话"，
   // 三条腿里中间那条是** absence 判据** ⇒ 登记与对账不能省，否则它的断言数永远没人核。
   LANOFF: "关发现轮",
+  // `--round=gossip-late`（#77 的补递轮）：它判的是**转发路径的接线**（四个建链点上的那一次
+  // 重递），纯函数那半边有 9 条单测兜着、这一轮兜的是接上的那半边 —— 少了它，
+  // "把补递改成按当前可达再过滤一遍"这种写坏在本地层一点声音都不会出。
+  LATE: "补递轮",
 };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
