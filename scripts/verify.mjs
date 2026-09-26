@@ -37,7 +37,7 @@
  *     npm run verify:full -- --no-guards  # 全量层但跳过护栏扫描（护栏工具缺失时的临时绕过，会留痕）
  *                                     #   （快速层本来就不含护栏扫描，那里加这个参数是无操作）
  *     npm run verify -- --list    # 只列出会跑哪些步骤（加 -- --full-gate 看全量层）
- *     node scripts/verify.mjs --group frontend|rust|android
+ *     node scripts/verify.mjs --group <组名>      # 组名只认下面 GROUPS 那份，非法值会自报全部合法值
  *                                 # 只跑某一个 CI job 的步骤（CI 用这个，见下面「CI 归属」）
  *
  * ### 为什么分两层（实测数据，不是猜的）
@@ -383,7 +383,11 @@ function isHeavyStep(s) {
  */
 const GROUPS = ["frontend", "rust", "android", "local", "release"];
 
-/** `--group <frontend|rust|android>`：CI 的三个 job 各自只说"跑哪个组"，清单不再抄一份。 */
+/**
+ * `--group <组名>`：组名的唯一真源是下面这份 `GROUPS`（别在注释或文档里再抄一份枚举 ——
+ * 抄过一次就会漂：这里曾长期写着 "frontend|rust|android" 三个，而 `local`/`release` 落地后没人回头改）。
+ * CI 的三个 job 各取 frontend / rust / android；local 与 release 是本地专项层。
+ */
 const groupFlag = (() => {
   const i = argv.indexOf("--group");
   return i >= 0 ? argv[i + 1] : null;
