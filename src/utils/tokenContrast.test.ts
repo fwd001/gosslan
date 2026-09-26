@@ -71,6 +71,28 @@ test("var() 链会被解析（list-active-text 指向 text）", () => {
   assert.equal(`${resolved.r},${resolved.g},${resolved.b}`, "15,23,42");
 });
 
+test("color-mix 派生的 hover 档要参与计算：朝白混必须报红，朝暗混才放行", () => {
+  // 这条夹具是"尺子自己"的判据。以前解析器认不出 color-mix 就返回 null，
+  // findTokenContrastFailures 把 null 当"判不了"跳过 ⇒ 「红底 hover 变浅、白字更看不见」
+  // 这一整类漂移是静默漏判的（护栏看着绿，其实那一行什么都没读）。
+  const shape = (mixTo: string) => `
+:root {
+  --gosslan-primary-active: #0a4bb5;
+  --gosslan-danger: #d43d43;
+  --gosslan-danger-hover: color-mix(in srgb, var(--gosslan-danger) 88%, ${mixTo});
+}
+`;
+  const hoverFails = (mixTo: string) =>
+    findTokenContrastFailures(shape(mixTo)).filter((f) => f.bg === "--gosslan-danger-hover");
+
+  const towardWhite = hoverFails("#ffffff");
+  assert.equal(towardWhite.length, 1, "hover 朝白混 = 白字更看不见，这条必须报红而不是被跳过");
+  assert.ok(towardWhite[0].ratio < 4.5, `报出的红要带真实比值，实际 ${towardWhite[0]?.ratio}`);
+
+  const towardBlack = hoverFails("#000000");
+  assert.equal(towardBlack.length, 0, "hover 朝暗混 = 对比度只升不降，不该报红");
+});
+
 test("注释里出现的 `.dark {` 不会把作用域解析带偏", () => {
   // 真实踩过：:root 的注释里写着「暗色版本不能靠 `.dark { --gosslan-primary: … }` 覆盖」，
   // 朴素的 indexOf(".dark {") 会先匹配到这句注释，于是 dark 解析到的是 :root 的内容。
@@ -120,8 +142,10 @@ test("亮色语义色的实际取值（钉住本次审计结论）", () => {
   assert.equal(light.get("--gosslan-danger-ink"), "#cc2418");
   assert.equal(light.get("--gosslan-warning-ink"), "#c67600");
   assert.equal(light.get("--gosslan-status-offline"), "#8e8e93");
-  // 填充档必须保持 Apple 系统色（它们承担实底/徽标，不该被文字档带偏）
-  assert.equal(light.get("--gosslan-danger"), "#ff3b30");
+  // 填充档：承担白字的那一族（danger）必须过 4.5，所以它**不**保持系统色
+  // （#ff3b30 白字只有 3.55 ⇒ 2026-09-26 压深到 #d43d43 = 4.62）；
+  // 不承担白字的填充（warning 橙，只当图标/进度条底）仍保持 Apple 系统色。
+  assert.equal(light.get("--gosslan-danger"), "#d43d43");
   assert.equal(light.get("--gosslan-warning"), "#ff9500");
 });
 

@@ -43,6 +43,8 @@ interface Rgba {
 const HEX6 = /^#[0-9a-f]{6}$/i;
 const HEX3 = /^#[0-9a-f]{3}$/i;
 const RGB_FN = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/i;
+/** `color-mix(in srgb, A 85%, B)` —— 第二色的百分比可省略（CSS 里就是省略的）。 */
+const COLOR_MIX = /^color-mix\(\s*in\s+srgb\s*,\s*(.+?)\s+([\d.]+)%\s*,\s*(.+?)\s*(?:,\s*[\d.]+%\s*)?\)$/i;
 
 function toHex(c: Rgba): string {
   const ch = (v: number) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
@@ -96,26 +98,47 @@ export function parseTokenScopes(css: string): { light: Map<string, string>; dar
   return { light: grab(":root"), dark: grab(".dark") };
 }
 
-/** 解析 token 值到不透明 hex；支持 var() 链与 rgba 复合。 */
-export function resolveToken(name: string, scope: Map<string, string>, over?: Rgba): Rgba | null {
-  const seen = new Set<string>();
-  let cur = name;
-  while (cur.startsWith("--")) {
-    if (seen.has(cur)) return null; // 循环引用
-    seen.add(cur);
-    const raw = scope.get(cur);
-    if (raw === undefined) return null;
-    const varMatch = /^var\(\s*(--[\w-]+)\s*(?:,\s*(.+))?\)$/.exec(raw.trim());
-    if (varMatch) {
-      cur = varMatch[1];
-      if (!scope.has(cur) && varMatch[2]) cur = varMatch[2].trim();
-      continue;
-    }
-    const c = parseColor(raw);
-    if (!c) return null;
-    return over && c.a < 1 ? composite(c, over) : c;
+/**
+ * 解析一个"值表达式"成不透明前的 RGB：认 token 名、`#hex`、`rgb/rgba()`、`var()` 链，
+ * 以及 `color-mix(in srgb, A N%, B)`。
+ *
+ * 为什么要认 color-mix：本项目的 hover 档（`--gosslan-danger-hover` 等）**全部**由它派生。
+ * 以前解析器认不出就 `return null`，而调用方把 null 当"这条判不了"直接跳过 ⇒
+ * 「红底变浅、白字更看不见」这一整类漂移是**静默漏判**的，护栏看着绿其实什么都没读。
+ * 现在它参与计算：把混色方向写反（朝白混而不是朝暗混）会当场报红。
+ */
+function resolveExpr(expr: string, scope: Map<string, string>, depth = 0): Rgba | null {
+  if (depth > 4) return null; // 环状引用兜底（真出现说明 token 定义本身有病）
+  const v = expr.trim();
+  if (/^--[\w-]+$/.test(v)) {
+    const raw = scope.get(v);
+    return raw === undefined ? null : resolveExpr(raw, scope, depth + 1);
   }
-  const c = parseColor(cur);
+  const varMatch = /^var\(\s*(--[\w-]+)\s*(?:,\s*(.+))?\)$/.exec(v);
+  if (varMatch) {
+    const raw = scope.get(varMatch[1]);
+    if (raw === undefined) return varMatch[2] ? resolveExpr(varMatch[2], scope, depth + 1) : null;
+    return resolveExpr(raw, scope, depth + 1);
+  }
+  const mix = COLOR_MIX.exec(v);
+  if (mix) {
+    const a = resolveExpr(mix[1], scope, depth + 1);
+    const b = resolveExpr(mix[3], scope, depth + 1);
+    if (!a || !b) return null;
+    const w = Math.min(100, Math.max(0, parseFloat(mix[2]))) / 100;
+    return {
+      r: a.r * w + b.r * (1 - w),
+      g: a.g * w + b.g * (1 - w),
+      b: a.b * w + b.b * (1 - w),
+      a: a.a * w + b.a * (1 - w),
+    };
+  }
+  return parseColor(v);
+}
+
+/** 解析 token 值到不透明 hex；支持 var() 链、color-mix 派生与 rgba 复合。 */
+export function resolveToken(name: string, scope: Map<string, string>, over?: Rgba): Rgba | null {
+  const c = resolveExpr(name, scope);
   if (!c) return null;
   return over && c.a < 1 ? composite(c, over) : c;
 }
@@ -154,11 +177,12 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     // 徽标里的数字是 11px 白字压在**实底色**上，是这套里最容易漏的一类：
     // 它既不是"文字 token / 背景 token"的组合，也从来没被写进契约表。
     { fg: "#ffffff", bg: "--gosslan-primary-active", min: 4.5, why: "未完成任务蓝色徽标的数字（11px）" },
-    // ⚠️ 同一形状的红徽标**实测不达标**，但没有登记成判据（登记了就会把全部门禁钉死）：
-    //   白字 on `--gosslan-danger` = 亮 **3.55** / 暗 **3.16**，低于文字档要求的 4.5。
-    //   ⇒ 站内**每一个**未读徽标上的数字从来就不合格，只是这张表过去没覆盖到它。
-    //   为什么不当场改色：`--gosslan-danger` 是全站最显眼的填充色，动它是用户可见的设计决定，
-    //   要用户点头（备选：徽标改用 `--gosslan-danger-ink` 那档深红）。已在 roadmap 记成待拍板一格。
+    // 红底白字这一族（未读徽标 / 删除按钮 / 错误 toast / 图片预览的删除浮层）。
+    // 2026-09-26 无障碍实测：原来 `--gosslan-danger` 是 Apple 系统红 #ff3b30，白字只有 **3.55**，
+    // 暗色 #ff5548 只有 **3.16** ⇒ 站内每一处红底白字都不合格，而这张表过去没覆盖到它。
+    // 现在填充档改深红 `#d43d43`（白字 4.62），hover 从"朝白混"改成"朝暗混"（越 hover 对比度越高）。
+    { fg: "#ffffff", bg: "--gosslan-danger", min: 4.5, why: "红徽标数字 / 删除按钮 / 错误 toast（11–14px 白字）" },
+    { fg: "#ffffff", bg: "--gosslan-danger-hover", min: 4.5, why: "上面那一族的 hover 态（混色结果，按实算判）" },
   ],
   dark: [
     { fg: "--gosslan-text", bg: "--gosslan-chat", min: 4.5, why: "消息正文 / 画布" },
@@ -174,7 +198,10 @@ export const TOKEN_CONTRAST_CONTRACT: Record<"light" | "dark", TokenPair[]> = {
     { fg: "--gosslan-warning-ink", bg: "--gosslan-panel", min: 3.0, why: "皇冠 / 文件夹图标" },
     { fg: "--gosslan-status-offline", bg: "--gosslan-panel", min: 3.0, why: "离线状态点" },
     { fg: "#ffffff", bg: "--gosslan-primary-active", min: 4.5, why: "未完成任务蓝色徽标的数字（11px）" },
-    // 红徽标那一档在两种外观下都不达标（3.55 / 3.16），处置与理由见上面 light 段落的注释。
+    // 暗色同理：填充档改深红（fg 是白字 ⇒ 与画布无关，只看这两档自身），
+    // 而 `--gosslan-danger-ink` 在暗色仍是鲜红 #ff5548 —— 那是**当文字用**的那一档，别混。
+    { fg: "#ffffff", bg: "--gosslan-danger", min: 4.5, why: "红徽标数字 / 删除按钮 / 错误 toast（暗色）" },
+    { fg: "#ffffff", bg: "--gosslan-danger-hover", min: 4.5, why: "上面那一族的 hover 态（暗色，混色结果按实算判）" },
   ],
 };
 

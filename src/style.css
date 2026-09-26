@@ -110,13 +110,19 @@
      每个语义色分「填充档」与「文字档」两条（与 --gosslan-success / -success-ink 同一套做法）：
      填充档（*-danger / *-warning）用于实底、徽标、hover 底；文字档（*-ink）用于文字与图标。
      ⚠️ 新增 :root token 必须同步核对 .dark，否则暗色会继承亮色的档位（方向正好反了）。 */
-  --gosslan-danger: #ff3b30;
+  /* 填充档这一族**承载白字**（未读徽标 11px、删除按钮 13–14px、错误 toast），
+     所以它和文字档受同一条 4.5 约束。2026-09-26 无障碍实测：原来的系统红 #ff3b30
+     白字只有 3.55，hover 混白后 3.11 —— 站内每一处红底白字从来就不合格，
+     而契约表当时还没覆盖"白字压实底"这一形状。压深到 #d43d43 → 白字 4.62。
+     ⚠️ 只有"上面有白字"的填充才要压深；不承担白字的填充（如 --gosslan-warning）保持系统色。 */
+  --gosslan-danger: #d43d43;
   /* 危险色「文字档」：系统红 #ff3b30 当文字只有 3.55（白底），11px 的「发送失败」这类提示读不动。
-     压暗到 #cc2418 → 面板 5.48 / 列表 5.00 / 卡片 4.73，全部达标；填充档保持系统红不变。 */
+     压暗到 #cc2418 → 面板 5.48 / 列表 5.00 / 卡片 4.73，全部达标。 */
   --gosslan-danger-ink: #cc2418;
-  --gosslan-danger-soft: rgba(255, 59, 48, 0.12);
-  /* 危险按钮 hover：比主危险色亮一档（color-mix 派生，不硬编码） */
-  --gosslan-danger-hover: color-mix(in srgb, var(--gosslan-danger) 85%, #ffffff);
+  --gosslan-danger-soft: rgba(212, 61, 67, 0.12);
+  /* 危险按钮 hover：朝**暗**混一档。原来朝白混（85% + 白）会把白字对比度从 3.55 再降到 3.11，
+     方向是反的 —— 实底上的白字要越 hover 越清楚，不是越淡。 */
+  --gosslan-danger-hover: color-mix(in srgb, var(--gosslan-danger) 88%, #000000);
   --gosslan-warning: #ff9500;
   /* 警告色「图标档」：琥珀当图标只有 2.20（白底），连图形档 3.0 都不到（群主皇冠 / 文件夹图标）。
      压暗到 #c67600 → 面板 3.50 / 列表 3.20 / 卡片 3.02，跨过图形档；填充档仍是系统橙。 */
@@ -235,12 +241,15 @@
   /* Apple 系统色（dark）：红/橙/绿都比浅色档更亮，因为深底上需要更高亮度才"跳得出来"。
      红取 #ff5548 而不是 #ff453a：后者当**文字**只有 4.29（不够 4.5），
      再亮又会拖低"白字压红底"（未读徽标）的对比，4.63 / 3.16 是两者的平衡点。 */
-  --gosslan-danger: #ff5548;
-  /* 文字档在暗色下与填充档同值：暗底上 #ff5548 已能当文字（列表底 4.63 / 画布 5.65），
-     不必像亮色那样再压暗。新增 :root 的 *-ink 时这里必须成对出现。 */
+  /* 填充档与亮色同值：前景是**白字**，所以能压住它的亮度上限由 4.5 决定，与画布无关
+     —— 暗色想要更鲜的红只能给"文字档"（下面那档），给填充加亮就是把白字重新推回不合格。 */
+  --gosslan-danger: #d43d43;
+  /* 文字档在暗色下仍是鲜红：暗底上 #ff5548 当文字读得动（列表底 4.63 / 画布 5.65）。
+     新增 :root 的 *-ink 时这里必须成对出现。 */
   --gosslan-danger-ink: #ff5548;
   --gosslan-danger-soft: rgba(255, 85, 72, 0.18);
-  --gosslan-danger-hover: color-mix(in srgb, var(--gosslan-danger) 85%, #ffffff);
+  /* hover 朝暗混（与 :root 同方向）：实底上的白字要越 hover 越清楚。 */
+  --gosslan-danger-hover: color-mix(in srgb, var(--gosslan-danger) 88%, #000000);
   --gosslan-warning: #ff9f0a;
   /* 琥珀在暗底上本来就够亮（面板底 7.12），文字档与填充档同值。 */
   --gosslan-warning-ink: #ff9f0a;
