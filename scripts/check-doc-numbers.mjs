@@ -156,6 +156,9 @@ const MODE_LABEL = {
   // `--round=gossip3`（#75 三实例链式轮）同理：它挂在**发版前**那一层，不在本地层里，
   // 但"没被门禁点名"不等于"可以不登记"——恰恰相反，越少人跑的轮次越需要有人数它的断言。
   CHAIN: "链式轮",
+  // `--round=lanoff`（#89 的隔离轮）同理：它判的是"用户那个键真的说话"，
+  // 三条腿里中间那条是** absence 判据** ⇒ 登记与对账不能省，否则它的断言数永远没人核。
+  LANOFF: "关发现轮",
 };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
@@ -201,8 +204,13 @@ try {
 console.log(
   `· 现算 E2E 断言数：${Object.entries(e2e).map(([k, v]) => `${k} ${v}`).join(" / ")}`,
 );
+/// 轮次名从 `MODE_LABEL` 现推，**不再手抄一份**：加一条轮次时要登记的地方只应该有一处
+/// （第一版在这里手抄过一遍名单，结果是"登记了 MODE_LABEL、文档声明却永远不被对账"，
+///  报出来的红还指着"文档没写"，而真正缺的是这张手抄表）。
+/// `故障轮` 是历史别名（文档里出现过），保留是因为它映射回 `脏前缀轮`。
+const CLAIM_LABELS = ["默认轮", "故障轮", ...Object.values(MODE_LABEL)];
 const E2E_CLAIM =
-  /(默认轮|脏前缀轮|故障轮|续传轮|杀进程轮|冻结轮|磁盘轮|改小轮|多文件轮|改口轮|停滞轮|发送端被杀轮|群聊轮|链式轮)([^。\n]{0,16}?)(\d{1,3})\s*条?\s*断言/g;
+  new RegExp(`(${CLAIM_LABELS.join("|")})([^。\\n]{0,16}?)(\\d{1,3})\\s*条?\\s*断言`, "g");
 const seenLabel = new Set();
 for (const rel of LIVE_DOCS) {
   const abs = path.join(ROOT, rel);

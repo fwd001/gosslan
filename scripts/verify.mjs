@@ -606,6 +606,17 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--round=group"],
     },
+    {
+      group: "local",
+      name: "双实例 E2E：局域网开关的隔离判据（关掉 ⇒ 对端学不到我，翻回来 ⇒ 重新学得到）",
+      why: `#89 剩下的那一半：**全程带着 GOSSLAN_AUTOSTART=1 跑**，证的就是"预置说关"连强制联网的环境变量都不许越过。` +
+        `三条腿——开着先学到 → 关掉之后 A 的 announce 计数一字不涨 → 把键翻回开又涨回来；` +
+        `中间那条的期望值在它的 -lie 反向轮里翻面（只翻判据、不动注入）。` +
+        `⚠️ 观察者 A 全程不重启：不然"不涨"就退化成"没人再看"的同义反复。` + LOCAL_ONLY_WHY,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=lanoff"],
+    },
   );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。

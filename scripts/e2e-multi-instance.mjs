@@ -251,6 +251,16 @@ const GROUP_LIE = ROUND === "group-lie";
 const CHAIN = ROUND === "gossip3" || ROUND === "gossip3-lie";
 /// 反向模式：拓扑、预置、投递全都一样，只把**判据要找的那条 msg_id** 换成必定不存在的值。
 const CHAIN_LIE = ROUND === "gossip3-lie";
+/// **#89 的那一半今天还缺的判据**：用户把"局域网发现"关掉之后，别的实例**真的学不到他**
+/// （而不是靠 `GOSSLAN_AUTOSTART` 替他重新打开）。
+/// 为什么必须单独一轮：2026-09-26 我据两轮实测写下"关掉了还能被学到"这个产品结论，
+/// 第二天复跑发现**那个"关掉"从未生效**（harness 给每个实例塞了强制联网的 env，
+/// 而产品码里它优先于用户那个键）。根因已拔掉（`lib.rs` 现在只看 `lan_enabled`），
+/// 但"键能说话"这件事本身还没有跨实例判据 —— 没有它，#76 仍然是"我以为对了"。
+/// ⚠️ 这一轮**故意继续带着那个 env 跑**（`launch()` 塞的）：要证的正是
+///    "预置说关 ⇒ 连强制联网的环境变量都不该把它打开"，摘掉 env 就等于把考题擦掉。
+const LANOFF = ROUND === "lanoff" || ROUND === "lanoff-lie";
+const LANOFF_LIE = ROUND === "lanoff-lie";
 /// 转发轮的正文：判据里既要看 C 解出的明文等于它，也要把它写进 A 的 messages（明文列）。
 const CHAIN_TEXT = "two-hop group message via B";
 const GROUP_ID = "g-e2e-harness";
@@ -593,6 +603,28 @@ async function stopAll() {
   // 残留必须是 0 —— 「没清理干净」本身就是失败，不许静默
   const left = procsLeft();
   if (left.length) throw new Error(`清理后仍有实例活着：${left.join(", ")}`);
+}
+/// 只停**一个**实例（`#89` 那一轮要用：观察者必须一直活着，被观察的那台重启）。
+/// ⚠️ 别用 `p.exitCode === null` 判"还活着"：**被信号杀死时 exitCode 就是 null**（第一次跑这条
+///    把自己判成了"SIGKILL 之后还没退"）。要看的是 pid 还在不在，与 `stopAll` 末尾那个残留扫描同一口径。
+async function stopOne(inst) {
+  const p = procs.get(inst.n);
+  if (!p) throw new Error(`stopOne(${inst.label})：procs 里没有这个实例（它没被 launch 过？）`);
+  const alive = () => {
+    try { process.kill(p.pid, 0); return true; } catch { return false; }
+  };
+  if (alive()) p.kill("SIGTERM");
+  await Promise.race([
+    new Promise((r) => p.once("exit", r)),
+    sleep(8000).then(() => { if (alive()) p.kill("SIGKILL"); }),
+  ]);
+  let gone = false;
+  for (let i = 0; i < 40 && !gone; i++) {
+    gone = !alive();
+    if (!gone) await sleep(250);
+  }
+  procs.delete(inst.n);
+  if (!gone) throw new Error(`stopOne(${inst.label})：SIGTERM + SIGKILL 之后 pid ${p.pid} 还在`);
 }
 function procsLeft() {
   if (process.platform === "win32") {
@@ -2317,6 +2349,78 @@ if (CHAIN) {
         }
       }
     } catch { /* 产物复制失败不改判定（判定只看库与日志里的真事实） */ }
+  });
+}
+
+// ── #89：局域网开关的跨实例隔离轮 ───────────────────────────────────
+// 三条腿：开着先学到 → 关掉之后学不到（核心）→ 翻回来又学得到（正向对照，证明中间那条不是空转）。
+// 观察者 A **全程不重启**：如果 A 也被停掉，"计数不涨"就变成"没人再看"的同义反复（那条假判据的形状）。
+if (LANOFF) {
+  step("局域网开关：关掉之后对端学不到我，翻回来必须重新学得到（env 不许替用户表态）", async () => {
+    /// 不是抛错的 waitFor：这一轮的"等不到"必须是**断言红**，不是步骤崩。
+    const within = async (fn, ms) => {
+      const until = nowMs() + ms;
+      for (;;) {
+        if (fn()) return true;
+        if (nowMs() >= until) return false;
+        await sleep(1000);
+      }
+    };
+    const B = INSTANCES[1];
+    const learnedNeedle = (id) => `announce_verified: from=${id}`;
+    const seedLan = (on) => seed(B.db, (db) => {
+      db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('lan_enabled',?1)")
+        .run(on ? "1" : "0");
+    });
+    const bootOf = async (inst) => {
+      await within(() => bootReady(inst.log, bootBaseOf.get(inst.n), BOOT_LINE), 30_000);
+    };
+
+    // 上一轮（默认旅程）收尾时 A/B 已被 stopAll 停干净 ⇒ 这里自己起。
+    launch(INSTANCES[0]);
+    launch(B);
+    await bootOf(INSTANCES[0]);
+    await bootOf(B);
+    // ① 前置：两边都开着（L-A 预置显式写了 lan_enabled='true'）时，A 要真学到过 B。
+    const sawFirst = await within(() => countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId)) > 0, 45_000);
+    check("前置：B 开着的时候 A 的日志里出现过它的 announce（否则下面那条「不涨」没有对照物）",
+      sawFirst, ">0 次", countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId)));
+
+    // ② 停机把 B 的键显式写成"关"，再带着 GOSSLAN_AUTOSTART=1 起它 —— 这一轮要的就是这一对。
+    await stopOne(B);
+    seedLan(false);
+    launch(B);
+    await bootOf(B);
+    check("关掉后 B 自己没起网：它的日志里 discovery_started 计数为 0",
+      countLog(B.log, "discovery_started") === 0, 0, countLog(B.log, "discovery_started"));
+
+    // ③ 核心：A 活着且一直在听，两个广播周期内"学到 B"的次数一字不涨。
+    const base = countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId));
+    await sleep(26_000);
+    const after = countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId));
+    // 反向模式：注入、时序、读的东西全都一样，**只把这一条的期望翻成"该涨"**
+    // ⇒ 产品没错时它必须红；报不出红就说明这条读的不是真日志行。
+    check("★ 关掉之后 A 再也学不到 B（announce 计数一字不涨；env 没能把它偷偷打开）",
+      LANOFF_LIE ? after > base : after === base,
+      LANOFF_LIE ? "> 基线（这是反向模式的期望，正常应当红）" : base, after);
+
+    // ④ 正向对照：翻回"开"并重启 B ⇒ 同一套读法必须立刻重新数得到 announce。
+    //    没有这一条，第 ③ 条可以由"A 瞎了/日志格式变了/needle 拼错"来冒充成功。
+    await stopOne(B);
+    seedLan(true);
+    launch(B);
+    await bootOf(B);
+    const grewBack = await within(
+      () => countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId)) > after, 45_000);
+    check("对照：把键翻回「开」并重启 B，A 的 announce 计数重新开始涨（证明第 ③ 条不是空转）",
+      grewBack, "> 上一段读数", countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId)));
+    check("对照：翻回「开」之后 B 自己的日志里 discovery_started 又出现（与上面那个 0 成对）",
+      countLog(B.log, "discovery_started") > 0, ">0", countLog(B.log, "discovery_started"));
+    // ⚠️ 这一格**不判**"TCP 监听口连不连得上"，理由是实测出来的：第一次跑这段时，
+    //   关着的 B 的 `discovery_started=0`、A 的 announce 也一字不涨，但 `tcpOpen(B.port)` 回了 true。
+    //   两种解释当时分不开（① 产品的 TCP 监听不受这个键管；② 上一轮 `stopOne` 抛错时留下的旧进程还占着那个口）。
+    //   ⇒ 拿一个**归因不清的读数**当判据，红的时候没人知道该修哪一边。已另立 #95 用一次干净的复跑把它定死；
+    //   在此之前这一轮只判能归因的那一半（不再广播 ⇒ 对端学不到），"也不接受连接"这句**没有被证明**。
   });
 }
 
