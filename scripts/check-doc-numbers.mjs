@@ -171,6 +171,11 @@ const MODE_LABEL = {
   // "把补递改成按当前可达再过滤一遍"这种写坏在本地层一点声音都不会出。
   LATE: "补递轮",
   TASK: "任务轮",
+  // `--round=groupcrash`（#121 的建群崩溃轮）：它判的是**投递那一半**（群名册在盘上、
+  // 那份"没送到"的登记只在内存里 ⇒ SIGKILL 之后必须还能靠建链重递自己收敛）。
+  // 与"重启后不许留下半个群"那种永绿断言的区别写在这轮的注释里 —— 登记不能省，
+  // 否则这八条断言永远不会被对账。
+  GCRASH: "建群崩溃轮",
 };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");

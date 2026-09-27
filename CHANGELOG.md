@@ -9,6 +9,27 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 测试（#121：§28「正在建群时退出」那一格第一次被跨进程判上（2026-09-27）
+- 新轮 `--round=groupcrash`（`npm run test:e2e:groupcrash`，已挂在**本地层**）。
+  钉的不是"重启后不许留下半个群"—— 真实建群路径把 groups / group_members / settings(gk:) / conversations
+  四张写放在同一个事务里（`commands/groups.rs:7`），那句断言**永远绿**，是本仓反复判过的"半个守卫"。
+- 有作用点的一半在**投递**：提交之后才逐成员推 GroupKey，而"没推出去"的那份重试登记
+  （`pending_group_keys`，`state.rs`）是**进程内**的一张表 ⇒ 一次 SIGKILL 必然抹掉它。
+  所以这轮证的是那句设计注释的另一半：**群名册才是事实源、链路活着就重递**
+  （`requeue_group_keys_for_peer` 在建链 / Hello / 心跳三处各重登记一遍）。
+- 时序：群只长在 A 的盘上（= 命令层已 commit、GroupKey 一次都没送到）→ 只起 A、对端缺席 15s
+  → 真 SIGKILL → 死透后再等 10s → 再起两端 → 有界等 B 自己长出这个群。八条断言含
+  "成员恰好 2 位"（重复 requeue 要幂等）、"密钥与 A 那份逐字节相同"、
+  以及"B 不许凭空多出一行会话"（关系同步 ≠ 聊天同步那条既有口径）。
+- ⚠️ **这条工单原本写的做法被实测否掉，别照抄**：它写的是"预置邀请队列行"，而那条队列在内存里，
+  从进程外写不进去 ⇒ 能写的只有 SQLite。改用地盘上可表达的等价坏状态之后，
+  "内存登记丢了"这一半是**构造出来的**，不是假设的。
+- 非空转实测：正向 8 条全绿（该步 26.5s，其中 25s 是刻意安排的两段缺席窗口）；
+  反向 `--round=groupcrash-lie` **恰好 3/26 报红**、退出码 1 —— 等待用真 id、判据读翻过的 id，
+  A 侧三条与那条 absence 判据照常绿 ⇒ 红只可能来自"读的不是真落库行"。
+- 零生产码改动。四处登记同步：harness 轮次旗标 / `MODE_LABEL` / 门禁本地层 / 验收矩阵顶部「轮次账」
+  （条数一律由 `check-doc-numbers` 现算，文档里不手抄）。
+
 ### 打包（#36：新增一档「把 WebView2 固定版本 runtime 装进安装包里」的 Windows 打包（2026-09-27）
 - 为什么要有第二档：默认那档走 Tauri 的 `downloadBootstrapper`（安装时联网现下 runtime），
   而**企业版 / Server 版 Windows 不带 WebView2 且常常装不上**（没商店、没联网权限、组策略拦着）

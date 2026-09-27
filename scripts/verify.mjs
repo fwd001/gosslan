@@ -647,6 +647,32 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--round=lanoff"],
     },
+    {
+      group: "local",
+      name: "双实例 E2E：正在建群时被 SIGKILL ⇒ 对端仍必须自己学到这个群（重递不许依赖内存登记）",
+      why: `§28「链路失效」那一族里今天做得成的那一格（另一格"断所有链路"要 root 或真设备）。` +
+        `⚠️ 它**刻意不是**"重启后不许留下半个群"那种形状：真实建群路径把 groups / group_members /` +
+        `settings(gk:) / conversations 四张写放在同一个事务里（` + "`commands/groups.rs:7`" + `）⇒ ` +
+        `那句断言永远绿，是本仓反复判过的"半个守卫"。有作用点的一半在**投递**：` +
+        `提交之后才逐成员推 GroupKey，而"没推出去"的重试登记 ` + "`pending_group_keys`" + ` 是**进程内**的一张表 ` +
+        `⇒ 一次 SIGKILL 必然抹掉它。所以这轮钉的是那句设计注释的另一半：**群名册才是事实源，` +
+        `链路活着就重递**（` + "`requeue_group_keys_for_peer`" + `，建链 / Hello / 心跳三处）。` +
+        `时序：群只写在 A 的盘上（= 命令层已 commit、GroupKey 一次都没送到）→ 只起 A、对端缺席 15s →` +
+        `真 SIGKILL A → 死透后再等 10s（这段是"A 根本不存在"的时间）→ 再起 A+B → 有界等 B 自己长出这个群。` +
+        `八条断言：预置侧 B 零行（正向轮那条"学到了"的对照物）+ 缺席期 A 名册 2 位 + A 那份密钥逐字节在盘上` +
+        `（重递的原料）+ 崩溃后名册仍是 2 位 + B 学到群行（creator/name 对）+ 成员恰好 2 位（重复 requeue 要幂等）+` +
+        `B 手里那把对称密钥与 A 那份逐字节相同 + B 不许凭空多出一行会话（关系同步 ≠ 聊天同步）。` +
+        `反证 ` + "`--round=groupcrash-lie`" + ` 照 group-lie 的先例：**等待用真 id、判据读翻过的 id** ⇒ ` +
+        `红的只能来自"读的不是真落库行"。` +
+        `⚠️ 边界三条：① 这轮造的是**磁盘能表达的那份等价坏状态**（那条内存队列从进程外写不进去），` +
+        `所以它不判"内存登记本身对不对"；② 群 payload 不做 re-seal，信封与密钥都由 harness 预置 ⇒ ` +
+        `绿只证明"接收端能学到并落库"，不证明发送内核自己怎么组 GroupKey 帧；` +
+        `③ 收敛靠的是"下一次建链/Hello/心跳带动重递"，所以这轮判的是**会收敛**，不判"多快"。` +
+        `每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」一处。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=groupcrash"],
+    },
   );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。

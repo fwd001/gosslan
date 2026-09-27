@@ -40,6 +40,8 @@
   `tcpOpen(端口)` 在关着的实例上回了 true，而两种解释（产品的 TCP 监听不受这个键管 / 上一轮报错留下的旧进程占着口）
   当场分不开 ⇒ 归因不清的读数不当判据，另立 #95 用一次干净复跑定死）
 
+- 建群崩溃轮 26 条断言 —— 反向：`--round=groupcrash-lie`（#121：§28「链路失效」那一族里今天做得成的那一格。⚠️ 它**刻意不是**「重启后不许留下半个群」那种形状 —— 真实建群路径四张写在同一个事务里，那句永远绿（半个守卫）。钉的是投递那一半：群只长在 A 的盘上 → 只起 A、对端缺席 15s → 真 SIGKILL → 死透后再等 10s → 再起两端 ⇒ B 必须**自己**学到这个群，而那份「没送到」的重试登记是**进程内**的表、已被这次崩溃抹掉 ⇒ 证明的是「群名册才是事实源、链路活着就重递」，不是「内存缓存活下来了」。反向照 group-lie 的先例：**等待用真 id、判据读翻过的 id**）
+
 §十六 要的 `screenshots/` 现在真的有了：每轮两张全屏 PNG（链路建立后 / 两端重启后），
 `summary.json.shots` 记相对路径、`summary.html` 内嵌图集；判据**只钉「落盘且不是空图」**，
 而"不是空图"的口径是 **PNG 结构成立**（签名 + IHDR 宽高 > 0），体积只留一条挡桩文件的下限。
@@ -66,7 +68,7 @@
 | 8 | 已读回执与送达状态 | SIMULATED + 人工 | `storeContract.test.ts` 已读判据、`applyConversationSnapshot` | 移动端群已读「不见了」= #30，**未定位** → Smoke-4 |
 | 9 | 失败可见且可重试（重发必须重新加密） | SIMULATED | `resend_reseals_before_enqueue` 等护栏 + 不变量登记 | 见 `protocol-invariants.md` §6 例外 |
 | 10 | E2EE 身份锚定，未验签不建信任 | SIMULATED | `friend_identity_anchor_has_one_binding_rule`、INV-P21 用例 | 真实冒名建链未跨进程测 |
-| 11 | SQLite 持久化 + 重启恢复（含在途队列） | **部分 AUTOMATED** | J1 重启断言 + `migration_tests.rs` 19 条 + `fresh_schema_alone_has_exactly_the_migrated_shape` | 迁移**中途失败**不可恢复 → J7 |
+| 11 | SQLite 持久化 + 重启恢复（含在途队列） | **部分 AUTOMATED** | J1 重启断言 + `migration_tests.rs` 19 条 + `fresh_schema_alone_has_exactly_the_migrated_shape` + **建群崩溃轮**（#121：群只长在 A 的盘上 → 真 `SIGKILL` 发送端（那份「没送到」的重试登记 `pending_group_keys` 是**进程内**的表，必然被抹掉）→ 再起两端 ⇒ B 必须**自己**学到这个群、成员恰好 2 位、密钥与 A 那份逐字节相同、且不凭空多出会话行） | 迁移**中途失败**不可恢复 → J7 |
 | 12 | 图片/文件消息（多选并发不丢件） | **部分 AUTOMATED** | J2 已 **4 连绿**（另：脏前缀注入轮 **2 连绿** + `--fault=poison-part-lie` 反向按设计报红）（1 MB：只有 rename 后出现最终名 + 字节数 + sha256 + 发送侧 `sent → done`（必须等对端 `FileCompleteAck`）+ 接收侧 `done` + 无 `<tid>.part` 残留 + `file_outbox` 收尾删除） | 只覆盖单文件；**尺寸阶梯已按形状进本地层**（1 KB 单片 / 10 MB 多片带零头，各跑整趟默认轮、实测全绿，10 MB 整轮 11.2s；10 KB 与 1 KB 同形状由前者代表，100 MB 及以上不进本地层、由杀进程轮 100 MB 代偿）⇒ A-3 只剩**错 size** 一格**同日已补齐**（两层各一条：写盘**之前**的 chunk 级上限 `chunk_exceeds_declared` —— 恰好填满=放行 / 超一字节=拒 / 已收满再来片=拒 / size=0 不写字；加上收尾层原本就有的"字节数与声明不符 ⇒ 不算成功"。⚠️ 这条判据以前内联在吃 `AppState` 的 `write_chunk` 里所以一直没测试，见路线图 L-C 那格的 ⚠️）（⚠️ 这句以前连着写"并发未做"，与本行末尾自相矛盾 —— 并发多文件已由注入⑤覆盖，只是那条时序是"同 peer 串行 flush"）。**「目标目录变化」的另一半已做**：整个目录被删走 ⇒ 接收句柄挂在被 unlink 的 inode 上、写入与 fsync 照旧成功 ⇒ **只剩最后一次 rename 能发现成品无处安放**，由 L2 `network/file.rs::rotted_receive_directory_finishes_failed_never_done` 钉住（判据：必须 Err + 台账只能 `failed` 且不带路径 + 不许出现成品文件；已用"把 rename 失败吞掉就算成功"变异证明会报红）。它与本行末尾那条注入⑧不是重复 —— ⑧ 是目录仍在但不可写（`EACCES`、两个真实进程），这条是目录消失（`ENOENT`、生产单聊收尾函数）。**已做**：接收端写不进去（磁盘轮 1 连绿、lie 按设计报红 ⇒ 队列 5 次内 GiveUp、台账非 done、盘上零残留）；⚠️ 但**接收方自己完全无感**（offer 期只记日志、不写库不发事件）→ A-10。**已做**：收到一半才收尾失败（改口轮 lie 按设计报红 ⇒ .part 必须真被续写过、A 侧终态明确、attempts ≤ 5、接收侧台账不假 done）；★ 同一轮实测照出 **A-12** 并已修（修前实测 `A {status:gone, aT:done} / B=failed / .part=整份 / final 不存在`）：判据改成**字节数够 ≠ 收完、也 ≠ 进度**，那份没有成品的 `.part` 不再被报成 `received = size`（一个帧承载两个含义是这一格的病根）⇒ 发送侧只能落到 `failed`，交叉自洽那条已按原口径加回断言，另加一条防它变成永远为真的空转判据。**已做**：入队后源文件被改小（改小轮 3 连绿、lie 按设计报红 ⇒ offer 按截断后的真 size、落地字节+hash 与新源一致、两侧同 done、盘上只留终名那一份）；⚠️ 同一轮照出**发送侧的 size 没人更正**（实测 A 气泡/台账仍写入队时那份、B 写真实那份）→ A-11。**已做**：连续多文件 + 其中两单同名（多文件轮 lie 按设计报红 ⇒ 三单各自 done、同名落成两个不同路径、落地内容多重集合 == 源内容多重集合、无 `.part`）；⚠️ 只覆盖"同 peer 串行 flush"这条时序，**两个 offer 都在任一次 rename 之前到达**那个真会撞 final_path 的交错没覆盖（要三个实例）|
 | 13 | 通知（尊重开关、失败可观察） | MANUAL-HARDWARE | — | 见 Smoke-3 |
 | 14 | Win/mac/Android 三端构建与基本稳定 | **AUTOMATED**（构建层） | `verify.yml` 3 job + 三个 `build*.yml` | 构建≠运行；**三端都没跑过应用实例** |
