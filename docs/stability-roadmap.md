@@ -102,6 +102,11 @@ P19 seq 权威、P20 聊天不被大文件饿死、P21 建链前先验身份等�
 
 **R4 文档硬数字与代码大面积漂移（本文件实测）**
 
+⚠️ **这张表是当天快照，别当现状读**：里面每一格今天都可能又漂了（复算 `grep -n "const DB_VERSION" src-tauri/src/db.rs`
+今天已是 10；护栏条数一律由 `grep -c "^    Case(" scripts/verify-guards.py` 现算）。
+**不要逐个回填** —— 回填会把"当初一次性发现了什么形状"这条记录抹掉；这一格的价值在结论：
+**没有守卫管住的数字一定会漂**（也正是判据 A/C/D/E 存在的理由）。
+
 | 位置 | 写的 | 真的 |
 |---|---|---|
 | `ARCHITECTURE-MAP.html:1404` | `DB_VERSION = 8` | **9**（`db.rs:20`） |
@@ -718,7 +723,9 @@ CI 的 macOS / Windows / Android 三条腿跑的是**同一个 `scripts/verify.m
 | BLE | 🔶 | 常量层有门（`check-ble-constants.mjs`），**通信本体只能真机**；已在 Smoke 矩阵标 MANUAL-HARDWARE |
 | Relay | ⚠️ **判据很厚，缺的是"跨实例真跑一趟"** | 我上一版凭记忆写成"判据存在与否未复核"——**已按门禁自己那份清单复算并推翻**：`grep -ic relay src-tauri/test-baseline.macos.txt` 现算（口径=测试路径含 relay 的条数，含 `file_relay::` 接收侧、`mesh::relay_policy::` 转发真值表、`mesh::router::`、`commands::relay_config_tests`）。里面有**安全边界级**的几条：token 不进探针报告、配置 fail-closed、`offer_without_chunk_size_is_refused_instead_of_buffering`（P4 那刀的判据）、`unsafe_transfer_id_cannot_create_a_file_outside_the_dir`（路径逃逸）、重复分片不双计、零字节能收尾。**没有的那一件**：两个实例经中继真通一次。⚠️ 2026-09-26 改判：缺的**不是**"一台活着的中继服务器"
 （它就在本机 `~/Documents/code/gosslan-relay-server`），而是"一条被封的直连"——
-`relay.rs:104` 会把**已有任何链路**（不分通道）的对端整个跳过，同机两实例靠 LAN 一定连得上
+`network/transport/relay.rs` 里的 `pick_relay_targets`（★ 原来这里抄的是 `:104` 这种"裸文件名 + 行号"写法：
+仓里有 `commands/relay.rs` 与 `network/transport/relay.rs` **两份同名文件**，行号又会漂 ⇒ 改成认路径认函数名）
+会把**已有任何链路**（不分通道）的对端整个跳过，同机两实例靠 LAN 一定连得上
 ⇒ 对端进不了中继候选，且仓库里没有只关 LAN announce 的开关。真跑需要 root 防火墙或第二台真机
 ⇒ 按§十记 **Smoke-9**（见下表与 §12.7 的因果链），**不升 AUTOMATED** |
 
@@ -964,12 +971,18 @@ N4/N5/N6/N7 已各自拆成独立任务（#127–#130，每格带自己的复跑
      ① 记录点 = `network/transport/gossip.rs` 里 `if may_forward { … }` 那段——那里已经有
      `let mut fwd = env.clone(); fwd.ttl -= 1; let fwd_msg = Message::Gossip { envelope: fwd };`，
      在 `fwd` 被移进 `fwd_msg` 之前 `remember(&fwd)` 就行。筛选条件照 `group_envelope_consumable`
-     的口径（`gossip.rs:20`）：只记 `kind == Group` 且 **`group_members` 非空**的那些 ——
+     的口径（`gossip.rs` 里的 `fn group_envelope_consumable` —— **行号不抄**，当时写的是 `:20`，
+     今天复算 `grep -n "fn group_envelope_consumable" src-tauri/src/network/transport/gossip.rs` 已在 86）：只记 `kind == Group` 且 **`group_members` 非空**的那些 ——
      空表是旧端信封，没有成员表就无从判别该补递给谁（不要退化成只查 `group_id`）。
-     ② 重递点 = `register_connection` 的**四个调用点**，定义在 `network/transport.rs:1856`：
+     ② 重递点 = `register_connection` 的**四个调用点**（2026-09-27 现数：`ble.rs` 两处 + `transport.rs` 两处；
+     函数定义在 `network/transport.rs` 的 `fn register_connection` —— **行号不抄了**，
+     复跑 `grep -n "fn register_connection" src-tauri/src/network/transport.rs`；本行原先写的 1856 今天已漂到 1857）：
      `transport.rs:1225`（`handle_incoming`，签名 `state: Arc<AppState>`）、
      `transport.rs:2535`（`connect_to_peer`，`state: &Arc<AppState>`）、
      `ble.rs:1058`（`finish_dial`，`Arc`）、`ble.rs:2064`（`try_accept_handshake`，`&Arc`）。
+     ⚠️ **上面这四个行号是写下那一刻的快照，没有任何守卫管得住**：今天复算
+     `grep -n "register_connection(" src-tauri/src/network/transport.rs src-tauri/src/network/ble.rs`
+     ⇒ 后两处已各漂一行（2536 / 2065），前两处还对。**认名字不认行号**（函数名都写在上面）。
      ✅ **四处调用方本来就都握着 `Arc<AppState>`**（前两处 `&state`、后两处 `state` 是靠
      deref coercion 喂给 `&AppState` 形参的）⇒ **不需要改 `register_connection` 的签名**。
      ⚠️ 这一条是**推翻我自己几分钟前先写下的结论**（"从 `&T` 造不出 `Arc`，要改成 `&Arc<AppState>`"）
