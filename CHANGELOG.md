@@ -9,10 +9,34 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 测试（§24 那把早就存在的锁第一次被证明会红）+ 判据（§13/§31：能被现算的总数不留第二份手抄）
+- ★ **这一格的前提被我自己证伪**：原本登记成「切群靠 `:key="groupId"` 重挂，零断言」。复跑发现
+  `channelState.test.ts` 里 `assert.match(win, /<GroupTasksBoard\s+:key="groupId"/)` **一直都在** ⇒
+  照原方案"新增"一条就是造第二份会互相漂的同判据（§6① 那类本仓已踩 3 次的坑）。缺的是另外两件事。
+- **第一件：这条断言从没进过非空转用例集** —— `grep -n "GroupTasksBoard" scripts/verify-guards.py` 命中 **0**，
+  而本仓自己的规矩是「每条护栏都要被证明会失败」。⇒ 登记一条用例：把常驻窗口那行的 `:key="groupId"` 摘掉
+  ⇒ 必须 FAIL、恢复 ⇒ 必须 PASS。实跑 `python3 scripts/verify-guards.py --only "换群必须靠"` ⇒ 退出 0，
+  打印「✅ 改坏即 FAIL、恢复即 PASS」。**用例总数因此 189 → 190。**
+- **第二件：注释里缺一条机制事实**，缺了它的人会以为"改成组件内 watch 也一样"：看板那份清
+  `draft/detailId/pendingDelete` 的 watch 键在 **`props.open` 的翻转**上（`GroupTasksBoard.vue:688`），
+  而常驻窗口这条调用**根本不传 open**（props 里是 `open?: boolean`）⇒ 那条重置在独立窗口里恒不触发。
+  摘掉 `:key` 的后果不是"界面旧一点"：`submitDraft` 读的是**当前** `props.groupId`，上一个群的半成品草稿
+  会被真建进这个群。已写进 `GroupTodosWindow.vue` 头部那段。
+- **判据 E**（`scripts/check-doc-numbers.mjs`）：用例数由 `verify-guards.py` 里顶格 `^    Case(` 现算，
+  契约图那张统计卡必须等于它，**且那一格被删掉也算红**（照判据 C 的「删标签=绕过」同型写法）。
+  上线当天就抓到**真**漂移而不是构造反证：我加了 1 条用例、图上仍写 189 ⇒ 第一次跑就报
+  「手写『护栏非空转用例 189』=189，现算是 190」。反证另一半也跑了：抹掉标签里的「用例」二字 ⇒
+  报「删标签等于绕过判据 E」，随后与备份逐字节比对为 identical。图的内嵌 script 按 INV-P26 `node --check` 过。
+- ⚠️ **边界照实写**：`--full` 整跑在 `f44d728` 上跑到 **53/189 全绿**（`❌` 计数 0）后被**主动中止** ——
+  剩下 136 条要 70+ 分钟，而那份内容已经不是要发的那份。⇒ **190 条的锚点全量核对至今没跑过**
+  （`--only` 那一次只核对被选中的 1 条），这句话仍由下一次整跑来结账。
+
 ### 文档（§13B 事实一致性复核：契约图那行取数戳里有一个数是错的，另有三个"口径"含糊到当场数不出来）
 - ★ **SQLite 表数 20 → 19**：拿真跑起来的库（`test-results/run-*/after-*.db`）查 `sqlite_master` 得 19 张，
   源码 `CREATE TABLE IF NOT EXISTS` 的字面名也正好是同样那 19 个 ⇒ 契约图与复审报告里"20 张表"**给不出可复现的数法，作废**。
-  这类总数**没有任何守卫管得到**（判据只管得上锁点条数与 E2E 断言数）⇒ 口径改成"去真库里数"。
+  这类总数**当时没有任何守卫管得到**（判据只管得上锁点条数、E2E 断数与门禁步数）⇒ 口径改成"去真库里数"。
+  ⚠️ 这句的括号**后来又被自己推翻了一次**：同日加判据 E 之后，「护栏非空转用例数」这一类总数已经有人现算对账了；
+  而**表数**这一类仍然没有守卫（守卫读不到"某个判据不存在"这种句子），口径保持"去真库里数"。
 - **IPC 命令面 130**：口径从"`lib.rs` 的 `generate_handler!` 块逐行数"换成权威那条 ——
   `node scripts/check-key-boundary.mjs` 自己打印"注册表 130 条 / 扫到 134 个命令体"。本轮实测：手工正则数出 **0**
   （注册表跨行且每项带模块前缀）⇒ 原来那句"逐行数"根本不可复现。

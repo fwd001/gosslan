@@ -31,6 +31,13 @@
  *    不在这里手抄；同时反向钉两条：门禁里出现 `-lie` 模式 = 红（预期红的东西不许进门禁），
  *    门禁里出现 harness 没有的 `--fault=` 值 = 红。
  *
+ * **E. 护栏非空转用例数由脚本自己数**：真值只存在于 `scripts/verify-guards.py` 的 `CASES` 列表里
+ *    （跑起来那一步自己打印「[48/189]」这种进度），而契约图给人看的那张统计卡是**手抄的第二份**。
+ *    今天它就在眼前漂了一次：本轮把常驻群任务窗口那条 `:key` 护栏登记进 CASES（它早就有断言、
+ *    从没被证明过会红），总数从 189 变 190，而图上那一格一字未动 ⇒ 光靠"记得改"是守不住的。
+ *    与判据 C 同一条立场：**能被现算的数字不许留第二份手抄**，并且**那一格被删掉也算红**
+ *    （否则"删掉标签"就是绕过这条守卫的最短路径）。
+ *
  * 退出码：0 = 通过；1 = 有漂移 / 有违规手写。
  */
 import { spawnSync } from "node:child_process";
@@ -344,12 +351,49 @@ try {
   process.exit(1);
 }
 
+// ---------- 判据 E：护栏非空转用例数由 verify-guards.py 自己数 ----------
+const GUARD_SCRIPT = "scripts/verify-guards.py";
+let guardCases = 0;
+try {
+  const src = fs.readFileSync(path.join(ROOT, GUARD_SCRIPT), "utf8");
+  // 只数 CASES 里顶格四空格的构造调用。类型标注 `list[Case]` 不带 `(` 所以不会被算进来；
+  // 2026-09-27 现算过：严格形状与宽松形状（全文任意 `Case(`）**同为 189** ⇒ 两个口径今天同值，
+  // 将来若分叉，分叉本身就说明"注释里写出了构造形状"，那时再收紧。
+  guardCases = (src.match(/^    Case\(/gm) ?? []).length;
+  if (guardCases === 0) throw new Error("数到 0 条 —— 锚定形状变了，先修这条判据再谈文档");
+} catch (e) {
+  console.error(`✗ 读不到护栏用例数：${e.message}`);
+  process.exit(1);
+}
+const GUARD_CLAIM = /<div class="num">(\d+)<\/div><div>([^<]*护栏非空转用例[^<]*)<\/div>/g;
+let guardSeen = false;
+for (const rel of LIVE_DOCS) {
+  const abs = path.join(ROOT, rel);
+  if (!fs.existsSync(abs)) continue;
+  for (const m of fs.readFileSync(abs, "utf8").matchAll(GUARD_CLAIM)) {
+    guardSeen = true;
+    const n = Number(m[1]);
+    if (n === guardCases) continue;
+    fails.push(
+      `${rel}：手写「护栏非空转用例 ${m[1]}」= ${n}，现算 ${GUARD_SCRIPT} 是 ${guardCases} —— ` +
+        `往 CASES 里加/删一条用例时，改的应该是那条用例而不是文档里的数字`,
+    );
+  }
+}
+if (!guardSeen) {
+  fails.push(
+    `活文档里再没有「护栏非空转用例 N」这一格了 —— 删标签等于绕过判据 E，不许` +
+      `（要真想撤掉手抄，就把那一格改成不带数字的说法，而不是留着旧数字没人管）`,
+  );
+}
+
 if (fails.length) {
   console.error(`\n✗ 文档硬数字漂移 ${fails.length} 处：`);
   for (const f of fails) console.error(`  · ${f}`);
   console.error(
-    `\n  改法：**把数字从文档里删掉**，让唯一事实源自己打印它。` +
-      `不要「改成对的」——那只是把下一次漂移排上队。`,
+    `\n  改法分两种：判据 B 那类（真相自己会打印出来的）把数字从文档里删掉；` +
+      `判据 A/C/E 那类（文档就是要给人看一个现状数）把数字改成现算值，并记住真正该动的是源头` +
+      `（harness 里的注释口径、CASES 里那条用例）—— 只改文档等于把下一次漂移排上队。`,
   );
   process.exit(1);
 }

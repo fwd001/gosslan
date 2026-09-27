@@ -1094,6 +1094,26 @@ CASES: list[Case] = [
         tags=["frontend", "lifecycle", "image"],
     ),
     Case(
+        name="常驻群任务窗口换群必须靠 :key 重挂（护栏早就在，这是第一次证明它会红）",
+        why="`channelState.test.ts` 里那条 `assert.match(win, /<GroupTasksBoard\\s+:key=\"groupId\"/)`\n"
+        "     不是新写的，它一直都在 —— 但它**从没进过本脚本** ⇒ 按本仓的规矩（「每条护栏都要被\n"
+        "     证明会失败」）它当时只是一条没被证过的锁，和 v4.22.31 那次假证明同形。\n"
+        "     这一条为什么值得钉：看板自己那份「清 draft/detailId/pendingDelete + 按来源收预览」的\n"
+        "     watch 键在 `props.open` 的翻转上（`GroupTasksBoard.vue:688`），而常驻窗口这条调用\n"
+        "     **根本不传 open**（props 里是 `open?: boolean`）⇒ 那条重置在独立窗口里恒不触发，\n"
+        "     换群清状态只剩 `:key` 一条路。摘掉它的表现是「在新群里点新建，草稿是上一个群的」，\n"
+        "     而 `submitDraft` 读的是当前 `props.groupId` ⇒ 上一个群的半成品会被真的建进这个群。",
+        file=ROOT / "src" / "components" / "GroupTodosWindow.vue",
+        injections=[(
+            '<GroupTasksBoard :key="groupId" ref="boardRef" :group-id="groupId" standalone />',
+            '<GroupTasksBoard ref="boardRef" :group-id="groupId" standalone />',
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="看板必须按群重挂",
+        tags=["frontend", "window", "todo"],
+    ),
+    Case(
         name="焦点可见（outline-none 必须有自己的焦点指示）",
         why="全局焦点环写在 `:where()` 里（特异性 0），会被 `.outline-none`（特异性 0,1,0）"
         "静默覆盖 —— 7 处输入框（含最高频的消息输入框）因此完全没有焦点指示，"

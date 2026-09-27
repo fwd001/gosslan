@@ -15,6 +15,11 @@
  *    不重读就是上一次那个群的列表；
  * 2. **重置看板内部状态** —— 筛选、正在编辑的草稿都属于上一个群。做法是给看板加
  *    `:key="groupId"` 让它整块重挂（比在组件里手写"切群清草稿"少一处会漏的地方）。
+ *    ⚠️ 别把这一刀换成"组件里 watch groupId 清状态"：看板自己那份清 `draft/detailId/pendingDelete`
+ *    的 watch 键在 **`props.open` 的翻转**上（`GroupTasksBoard.vue:688`），而本窗口这条调用**根本不传
+ *    open** ⇒ 那条重置在独立窗口里恒不触发。摘掉 `:key` 的后果不是"界面旧一点"，而是上一个群的
+ *    草稿会被 `submitDraft` 带着**当前** `props.groupId` 真建进这个群里。已由非空转用例钉住
+ *    （`verify-guards.py`「常驻群任务窗口换群必须靠 :key 重挂」）。
  *
  * 外壳 = `AuxWindowShell`（自绘标题栏），与设置/日志/预览窗口同一套。
  */
