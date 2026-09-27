@@ -13,6 +13,7 @@ import type { CSSProperties } from "vue";
  */
 import { computed } from "vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import { TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, parseTodo, type TodoStatus } from "@/utils/todos";
 import { t } from "@/i18n";
@@ -40,6 +41,25 @@ const { memberProfile } = useMemberProfile();
 
 const todo = computed(() => parseTodo(props.message));
 const todoId = computed(() => todo.value?.todoId);
+/**
+ * 卡片里的图走**全局那一份**预览（§12「要做就做完整」）。
+ *
+ * 为什么这一格单独值得写一句：`TodoImageThumb` 的 `clickable` 默认是 **false**，所以"调用点漏给
+ * 这一个 prop"不会编译报错、不会类型报错、单测也不红 —— 只是**图渲染出来了却点不动**。
+ * 收藏那一处就是这么修的（`a077850`），而修完那一轮**同一个开关在聊天时间线的任务卡上仍然漏着**
+ * ⇒ 现在由 `designGuards` 按形状数每个调用点，不靠人记得。
+ * 来源标记用 `task-card:` 前缀，与任务详情弹窗那处的 `task:<todoId>` **刻意不同**：
+ * 两处显示的是同一条任务的同一组图，但"按来源收预览"是精确匹配，共用一个 key 会让一边把另一边的收掉。
+ */
+const preview = useImagePreviewStore();
+const cardImages = computed(() => todo.value?.images ?? []);
+const cardGallery = computed(() =>
+  cardImages.value.map((im) => ({ cid: im.sha256, name: im.name })),
+);
+const cardSource = computed(() => (todoId.value ? `task-card:${todoId.value}` : null));
+function openCardImage(i: number) {
+  preview.openGallery(cardGallery.value, i, cardSource.value);
+}
 /**
  * 卡片显示的状态 = **当前**状态（折叠结果），查不到才退回创建时的快照。
  *
@@ -83,8 +103,14 @@ function statusText(s: TodoStatus): string {
       {{ todo.description }}
     </p>
 
-    <div v-if="todo?.images?.length" class="mt-1.5 flex flex-wrap gap-1 px-3">
-      <TodoImageThumb v-for="img in todo.images" :key="img.sha256" :image="img" />
+    <div v-if="cardImages.length" class="mt-1.5 flex flex-wrap gap-1 px-3">
+      <TodoImageThumb
+        v-for="(img, i) in cardImages"
+        :key="img.sha256"
+        :image="img"
+        clickable
+        @open="openCardImage(i)"
+      />
     </div>
 
     <div class="mt-1.5 flex min-w-0 flex-wrap items-center gap-1 px-3">

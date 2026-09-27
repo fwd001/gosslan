@@ -26,7 +26,13 @@ import { t } from "@/i18n";
 const props = withDefaults(
   defineProps<{
     image: TodoImage;
-    /** 可点开大图（任务详情 / 表单预览）。默认纯展示（聊天时间线的任务卡里不响应点击）。 */
+    /**
+     * 可点开大图。**默认 false = 纯展示** ⇒ 调用点漏给这一个 prop 的表现不是报错，而是
+     * "图渲染出来了但点不动"：编译过、类型过、单测过，只有真人去点才发现。
+     * 本仓真发生过两处：收藏那处（已修 `a077850`）、聊天时间线的任务卡（同一轮漏掉的那一面）。
+     * ⇒ 每个调用点必须同时给 `clickable` 与 `@open=`，由 `designGuards` 那条**按形状数调用点**
+     * 的判据兜着，不靠人记得数过。
+     */
     clickable?: boolean;
   }>(),
   { clickable: false },

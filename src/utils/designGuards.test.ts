@@ -1362,6 +1362,50 @@ test("整屏图片覆盖层只许长在统一渲染点（私有 viewer 是第二
   );
 });
 
+/**
+ * 每一个 `<TodoImageThumb>` 调用点都必须**同时**带 `clickable` 与 `@open=`（§12「要做就做完整」）。
+ *
+ * 为什么钉这一条而不是钉"文件名单"：`TodoImageThumb` 的 `clickable` 默认值是 **false**
+ * （`withDefaults(..., { clickable: false })`），于是"漏给一个 prop"这件事的形状是
+ * **代码看起来完全正常、图就是点不动** —— 编译过、类型过、单测过，只有真人去点才发现。
+ * 本仓真发生过两次：先是收藏（卡片图 + 详情 `<img>` 两处都没入口，已修 `a077850`），
+ * 修完那一轮**同一个开关在聊天时间线的任务卡上仍然漏着**（复审 §12 那一行当时写的原话
+ * 就包含「卡片图 clickable 默认 false」，说明这一类是被知道的，只是没被数完调用点）。
+ *
+ * 判据的输入由代码自己声明：扫组件目录数 `<TodoImageThumb` 的出现点，不手抄文件名单 ⇒
+ * 新增一个调用点而忘了给 `clickable`，这条当场点名。
+ */
+test("每个任务图片缩略图调用点都必须可点（clickable 默认 false 会静默吞掉预览入口）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(join(srcDir, "components")).concat(
+    collectVueFiles(join(srcDir, "layouts")),
+  );
+  const offenders: string[] = [];
+  let sites = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    const tplAt = src.indexOf("<template>");
+    if (tplAt < 0) continue;
+    // 剥注释的理由与上面那条一样：写在注释里的标签不是调用点（`[^>]*` 这个字符类匹配换行，
+    // 所以多行属性写法的标签也能整段取到）。
+    const tpl = src.slice(tplAt).replace(/<!--[\s\S]*?-->/g, "");
+    for (const m of tpl.matchAll(/<TodoImageThumb\b[^>]*>/g)) {
+      sites += 1;
+      const tag = m[0];
+      if (!/\bclickable\b/.test(tag) || !/@open=/.test(tag)) {
+        offenders.push(f.replace(srcDir + "/", ""));
+      }
+    }
+  }
+  // 空转前置：一个调用点都没数到 ⇒ 组件改名/被搬走，这条判据就变成恒过
+  assert.ok(sites > 0, "一个 <TodoImageThumb> 调用点都没数到 —— 组件改名的话这条判据已经空转");
+  assert.deepEqual(
+    [...new Set(offenders)].sort(),
+    [],
+    `这些调用点漏了 clickable 或 @open ⇒ 缩略图渲染出来但点不动（默认值 clickable:false）：${offenders.join(", ")}`,
+  );
+});
+
 
 /**
  * 「与我相关未完成任务数」这枚蓝色徽标只许一处算、两处消费同一份（第二阶段 §23）。

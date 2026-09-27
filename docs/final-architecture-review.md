@@ -15,7 +15,7 @@ node -e 'console.log(require("./package.json").version)'
 # 行数：git ls-tree -r HEAD --name-only → git cat-file -p HEAD:<f> | wc -l
 npm run verify          # 快速层
 npm run verify:full     # 19 步（含 Android）
-npm run verify -- --full   # 190 条注入整跑（>1.5 小时）
+npm run verify -- --full   # 191 条注入整跑（>1.5 小时）
 ```
 
 ## 一、基线（不是参考基线，是当天事实）
@@ -62,7 +62,7 @@ npm run verify -- --full   # 190 条注入整跑（>1.5 小时）
 
 | # | 缺陷 | 本轮处置 | 等级 |
 |---|---|---|---|
-| §12 | 收藏是第二个预览实例，且收藏里"点图片"根本没有入口（卡片图 `clickable` 默认 false、详情 `<img>` 无 click） | 已修：删私有覆盖层，改走 `openGallery`（单图 `dataSrc`、卡片图整组 `{cid,name}` ⇒ 顺带能左右翻）；补形状判据 | 必须改→已改 |
+| §12 | 收藏是第二个预览实例，且收藏里"点图片"根本没有入口（卡片图 `clickable` 默认 false、详情 `<img>` 无 click） | 已修：删私有覆盖层，改走 `openGallery`（单图 `dataSrc`、卡片图整组 `{cid,name}` ⇒ 顺带能左右翻）；补形状判据。**⚠️ 那一轮没把这处开关的调用点数完**：同一个 `clickable`（默认 false）在**聊天时间线的任务卡**上仍然漏着 ⇒ 图渲染出来点不动，本行当时写的原话其实已经包含这个形状。现由 `designGuards` 按形状数每个 `<TodoImageThumb` 出现点（必须同时带 `clickable` 与 `@open=`），并已登记成可重跑用例（摘掉卡片的 `clickable` 必须红）；`GroupFilesPanel` 那格经现算**没有可点击的内容图**（全文 0 个 `<img>`，点开走系统 `openLocalFile`）⇒ 属"无作用点"，不许写成"已覆盖" | 必须改→已改 |
 | §11 | 日志合并缺"target 不同不许误合并"的反例（原 14 条抓不到） | 已补锁，三步实测非空转 | 建议改→已改 |
 | §23 | 徽标单一事实源靠人自觉 | 已补两条锁（组件不得出现 `openTodosForMe(` + 两处必须真引用那份 map） | 建议改→已改 |
 | §13 | 图上取数戳手抄且无守卫，已漂 | 已换成现算值并**每格写口径**；决定不加相等判据 | 必须改→已改（守卫部分判为"不要加"） |
@@ -98,7 +98,7 @@ npm run verify -- --full   # 190 条注入整跑（>1.5 小时）
 | Build status | ✅ 前端构建 + `cargo clippy -D warnings` + Android 编译全过 | `npm run verify:full` |
 | Test status | ✅ 前端 **638/638**；Rust 单测在 full 层内全过；快速层 13 步、**full 层 19 步全绿 614.0s（`8f985d3`）** | `npm test` / `npm run verify:full` |
 | E2E status | ✅ 本地层 **16 步全绿 545.9s（`8f985d3`，含新的运行时探针步）**；发版前层 3 步最近一次全绿在 `13a5bc8`（67.1s），此后两笔只动本地层与探针，**未重跑发版前层** | `npm run verify:e2e` / `npm run verify:release` |
-| 注入腿 | ⚠️ 分三段说清：**整跑在 `f44d728` 上跑到 53/189、这 53 条全绿（`❌` 计数 0），随后被我主动中止** —— 判据 E 上线后总数变 190，而这一轮的证据属于 `f44d728` 那份内容，不能算到新 tip 头上。**起跑前的锚点全量核对**同理只在"被选中的那一条"上跑过（`--only` 选 1 条 ⇒ 核对也只 1 条），**190 条的全量核对要等下一次整跑**。新加那一条自己已当场验过：改坏即 FAIL、恢复即 PASS | `npm run verify -- --full`（整跑）；`python3 scripts/verify-guards.py --only "换群必须靠"`（单条自证） |
+| 注入腿 | ⚠️ 分三段说清：**整跑在 `f44d728` 上跑到 53/189、这 53 条全绿（`❌` 计数 0），随后被我主动中止** —— 判据 E 上线后总数变 191，而这一轮的证据属于 `f44d728` 那份内容，不能算到新 tip 头上。**起跑前的锚点全量核对**同理只在"被选中的那一条"上跑过（`--only` 选 1 条 ⇒ 核对也只 1 条），**191 条的全量核对要等下一次整跑**。新加那一条自己已当场验过：改坏即 FAIL、恢复即 PASS | `npm run verify -- --full`（整跑）；`python3 scripts/verify-guards.py --only "换群必须靠"`（单条自证） |
 | Cross-platform | ⚠️ macOS 完整（构建 + 本地三层门禁 + 真界面截图）。Android：编译门禁过、**未装机**。Windows：只有编译/clippy/跨平台完整性判据这一侧可核对，**远端 CI 状态本机核不了（没有 `gh`）**。iOS：`src-tauri/gen/` 下**只有 `android`** ⇒ iOS 工程从未生成，§25 那一串"iOS 启动/权限弹窗/首帧"结构性无法验 —— 是"没这条路径"，不是"验过了" | `ls src-tauri/gen/` / `npm run verify:full` |
 | Known issues | ① 重名群成员的 @ 误点亮（§10，需拍板协议字段）；② 徽标数字/自己发的任务当场可见 = 渲染层无行为判据（Smoke-10）；③ 未读红徽标对比度不达 4.5（#86，待拍板）；④ `test-results/` 无保留上限（522 个 run、约 13 GB），删除策略待拍板 | 见 roadmap §13.2/§13.3 |
 | Remaining risks | ① **非 LAN 真机路径**（BLE 硬件、Relay 真实服务器、跨网络/多链路并发）一条都没被自动化覆盖；② 真 WebView 里的键盘/焦点/首帧仍未证（Smoke-11）；③ 断链/全断链那一族轮次缺（§28）；④ 本机没有 `gh` ⇒ **远端 CI 状态我无法核对**，"CI 已过"这句话我不写 | 见下"哪些没验" |

@@ -1114,6 +1114,26 @@ CASES: list[Case] = [
         tags=["frontend", "window", "todo"],
     ),
     Case(
+        name="任务缩略图的调用点必须给 clickable（漏一个 prop 的形状是图点不动）",
+        why="`TodoImageThumb` 的 `clickable` 默认 **false** ⇒ 调用点漏给它的表现不是报错，而是"
+        "「图渲染出来了但点不动」：编译过、类型过、单测也过，只有真人去点才发现。"
+        "本仓真发生过两处：收藏那处（已修 `a077850`）、以及**修完那一轮之后聊天时间线的任务卡"
+        "仍然漏着的那一面** —— 复审 §12 那一行当时的原话就写着「卡片图 clickable 默认 false」，"
+        "说明这一类是被知道的，只是没人把调用点数完。\n"
+        "     新护栏按形状数每个 `<TodoImageThumb` 调用点（判据输入由代码自己声明，不手抄名单），"
+        "它的 RED 是拿**真缺陷态**跑出来的（修复前那条点名 components/TodoCardBubble.vue）；"
+        "本用例把这处破坏登记成可重跑的形态：摘掉卡片调用点的 `clickable` ⇒ 必须红。",
+        file=ROOT / "src" / "components" / "TodoCardBubble.vue",
+        injections=[(
+            "        :image=\"img\"\n        clickable\n        @open=\"openCardImage(i)\"",
+            "        :image=\"img\"\n        @open=\"openCardImage(i)\"",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="缩略图渲染出来但点不动",
+        tags=["frontend", "image", "todo"],
+    ),
+    Case(
         name="焦点可见（outline-none 必须有自己的焦点指示）",
         why="全局焦点环写在 `:where()` 里（特异性 0），会被 `.outline-none`（特异性 0,1,0）"
         "静默覆盖 —— 7 处输入框（含最高频的消息输入框）因此完全没有焦点指示，"
