@@ -9,6 +9,25 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 打包（#36：新增一档「把 WebView2 固定版本 runtime 装进安装包里」的 Windows 打包（2026-09-27）
+- 为什么要有第二档：默认那档走 Tauri 的 `downloadBootstrapper`（安装时联网现下 runtime），
+  而**企业版 / Server 版 Windows 不带 WebView2 且常常装不上**（没商店、没联网权限、组策略拦着）
+  ⇒ 那种机器上"安装包跑起来了但窗口是空的"。这一档把固定版本 runtime 直接打进 NSIS 包（约 +180 MB）。
+- 新增 `.github/workflows/build-windows-webview2.yml`，**只挂手动触发**；
+  现有三条打包（build.yml / build-macos.yml / build-android.yml）与 verify.yml **一行没改**，
+  产物名也刻意错开（`gosslan-windows-<arch>-webview2-bundled`）⇒ 两边不会互相覆盖。
+- 机制取自 clash-verge-rev（社区归档下 `.cab` → Windows 自带 `expand -F:*` 解进 `src-tauri` → `fixedRuntime`），
+  两处不照抄：① 用 `tauri build --config <内联 JSON>` 做覆盖，而不是把文件改名成 `tauri.windows.conf.json`
+  —— 那个文件是**平台级自动覆盖**，落进仓库会连普通档一起改掉（正是要避免的串味）；
+  ② 版本号来自手动输入，而 `expand` 走 `cmd /c` ⇒ 先按 `x.y.z.w` 四段白名单卡死（一个 `&` 就是命令注入）。
+- 核过的两处事实：字段名 `{"type":"fixedRuntime","path":…}` 取自本机 `tauri-utils 2.9.3` 的
+  `WebviewInstallMode`（`deny_unknown_fields` ⇒ 写错键名 CI 直接报错，不会静默退回 bootstrapper）；
+  `-c/--config` 的存在性由 `npx tauri build --help` 当场验。
+- ⚠️ **三条今天没被任何机器证明的事**，别读成已可用：① YAML 语法本机没有解析器可核（`pyyaml` 未装），
+  由远端那次运行来判；② 加完 `github.event_name == 'workflow_dispatch'` 这道 job 级事件闸之后，
+  "push 上它是 skipped" 我**无法自证**（本机没有 `gh`，Actions 页面渲染不出 event/结论字段）；
+  ③ **最关键的一条**：CI 的 runner 自带 WebView2 ⇒ "装到一台没有 runtime 的企业版 Windows 上真能打开"
+  这一格 CI 判不了，仍是真机人工项。
 
 ## [4.30.0] - 2026-09-27
 ### 测试（#122 的局限第一次变成可执行的说明，而不只是文档里一段话）
