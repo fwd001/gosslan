@@ -677,7 +677,7 @@ if (groupFlag === "release") {
     },
     {
       group: "release",
-      name: "任务专项 E2E：任务在两个真实进程之间**双向**收敛，且重启之后状态行不退",
+      name: "任务专项 E2E：任务在两个真实进程之间**双向**收敛，且扛得住重启与发送端崩溃",
       why:
         `第二阶段 §22 那一格。载荷形状逐字对齐 protocol.rs::TodoPayload（snake_case 无 rename），` +
         `群消息按 seq 定序：A 发起 todo(1) → todo_update(2,done) → todo_update(3,done+archived) → ` +
