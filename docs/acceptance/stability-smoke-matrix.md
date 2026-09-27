@@ -11,6 +11,13 @@
 >   否则这一格等于没写。
 >
 > 证据列写的是**具体名字**（测试名 / 判据脚本 / 用例标签），不是"有测试"。
+>
+> ★ **但证据列里凡「N 条用例」都只是当天读数，没有任何判据管得住**（判据 C 只管 E2E 轮次的断言数）。
+> 2026-09-27 逐格复算时发现两格已经变了（`mesh/`、`migration_tests.rs` ⇒ 已改成只给命令），
+> 当天还对得上的那几格（`discovery.rs` / `transport.rs` / `commands/relay.rs` / `cascade_tests.rs`）**同一条规矩**：
+> 下次动它们时换成命令，**不要回填一个新数**。复跑形状：`grep -rEc "#\[(tokio::)?test\]" <路径>`。
+> 同一次复算还抓到一格点名的**测试标签已经不存在**（见下面第 9 行那条改口）—— 名字比数更容易死，因为数变了顶多看着不对，
+> 名字死了就是一条指不到东西的证据。
 
 ## 双实例 E2E 的轮次账（断言条数**只写在这一处**）
 
@@ -60,18 +67,18 @@
 |---|---|---|---|---|
 | 1 | 局域网发现（多网卡/虚拟网卡不误判） | SIMULATED | `network/discovery.rs` 15 条用例 | 真实网卡组合无自动化 → Smoke-1 |
 | 2 | 好友请求/接受/删除/重加，两端最终一致 | SIMULATED | `friendRequests.test.ts`、`commands/` 相关用例 | **无跨进程一致性证明** → J4 |
-| 3 | 在线/离线（断链 ≠ 删节点） | SIMULATED | `mesh/` 79 条用例 | 同上 |
+| 3 | 在线/离线（断链 ≠ 删节点） | SIMULATED | `mesh/` 全部用例（★ 条数**不抄**：这一格原先手写 79，2026-09-27 现算已变 —— "某目录 N 条用例"这种数没有任何判据管得住，判据 C 只管 E2E 轮次断言数。复跑 `grep -rEc "#\[(tokio::)?test\]" src-tauri/src/mesh`） | 同上 |
 | 4 | 双向文本 + `msg_id` 幂等 | **AUTOMATED** | `e2e-multi-instance.mjs` J1（B 侧恰好一条 + `messages.msg_id UNIQUE`） | Windows 腿未跑 |
 | 5 | Outbox → Ack，Ack 只代表已持久化 | **AUTOMATED** | J1「A 侧 outbox 被 Ack 清空」+ `cascade_tests` | 反例（DB 错不得 Ack）只有进程内用例 |
 | 6 | 离线持久化与自动重发（离线 ≠ 2 分钟失败） | SIMULATED | `db/offline_queue.rs`、`fail_reason_separates_retryable_from_terminal` | 真离线对端的补发未跨进程 → J1n |
 | 7 | 网络恢复后不丢不重 | **部分 AUTOMATED** | J1「两端重启后仍只有一条 / outbox 不复活」+ **故障注入** `--fault=poison-part`（接收侧脏 `.part` 前缀 → 第 1 次 attempt 整体校验失败 → outbox 重试补齐，2 连绿） | 只覆盖 LAN 路径 + 优雅重启 + 接收侧脏前缀 + **接收中 SIGKILL（杀进程轮 1 连绿、lie 按设计报红）**+ **对端失联后解冻自愈（冻结轮 lie 按设计报红）**；**「断链」单机无 root 不可自动**（造不出"只断一条链路"，用中继伪造会被 route 优先级绕过 ⇒ 跑出来是假绿）；**重复帧 / 乱序帧要分层读，别当成"没测"**：L2 层 **AUTOMATED** 且点得出真测试（`file_relay.rs duplicate_chunk_is_ignored_not_double_counted`、`network/file.rs chunk_seq_rule_only_rejects_real_gaps`、`group_receive_rejects_gap_and_duplicate_seq`、`transport/ble_framing.rs out_of_order_chunks_still_complete` + `duplicate_and_partial_do_not_complete`、`network/file.rs stale_attempt_frames_are_filtered_but_legacy_frames_never_are`）；L5 帧级伪造判为**不可自动**（往对端塞一帧 = 伪造 E2EE 封装与签名，生产码路径不走 ⇒ 假绿）→ A-2 |
 | 8 | 已读回执与送达状态 | SIMULATED + 人工 | `storeContract.test.ts` 已读判据、`applyConversationSnapshot` | 移动端群已读「不见了」= #30，**未定位** → Smoke-4 |
-| 9 | 失败可见且可重试（重发必须重新加密） | SIMULATED | `resend_reseals_before_enqueue` 等护栏 + 不变量登记 | 见 `protocol-invariants.md` §6 例外 |
+| 9 | 失败可见且可重试（重发必须重新加密） | SIMULATED | ★ **这一格点名的证据名字今天已经不在了**：原先写 `resend_reseals_before_enqueue` 等护栏 —— 那条护栏是随 `resend_message`/`cancel_send` 那批"注册了但前端零引用"的命令一起**退役**的（0-A3，`ARCHITECTURE-MAP.html` 那张卡写明"那两条不变量没有丢，改记在 `protocol-invariants.md` §6 例外"）。现在真在跑的同一条不变量是 Rust 用例 **`reseal_with_current_receiver_key_recovers_where_retry_cannot`**（钉的是：接收方换身份后 outbox 里那份旧密文**重发多少次都解不开**、必须由持有明文的发送方用**当前**公钥重封；缺明文或缺公钥时一律 `None` ⇒ **绝不伪造内容**）。复跑：`cargo test --features bluetooth --lib reseal_with_current_receiver`（★ 这条命令的过滤词打空时 `cargo test` 仍会退 0，所以要看它打印的 `1 passed`，别只看退出码） | 见 `protocol-invariants.md` §6 例外（界面上的「重发」= 重发一条新消息，新 `msg_id`）；**"界面重发"这条路径本身没有跨进程判据** |
 | 10 | E2EE 身份锚定，未验签不建信任 | SIMULATED | `friend_identity_anchor_has_one_binding_rule`、INV-P21 用例 | 真实冒名建链未跨进程测 |
-| 11 | SQLite 持久化 + 重启恢复（含在途队列） | **部分 AUTOMATED** | J1 重启断言 + `migration_tests.rs` 19 条 + `fresh_schema_alone_has_exactly_the_migrated_shape` + **建群崩溃轮**（#121：群只长在 A 的盘上 → 真 `SIGKILL` 发送端（那份「没送到」的重试登记 `pending_group_keys` 是**进程内**的表，必然被抹掉）→ 再起两端 ⇒ B 必须**自己**学到这个群、成员恰好 2 位、密钥与 A 那份逐字节相同、且不凭空多出会话行） | 迁移**中途失败**不可恢复 → J7 |
+| 11 | SQLite 持久化 + 重启恢复（含在途队列） | **部分 AUTOMATED** | J1 重启断言 + `migration_tests.rs` 全部用例（★ 条数不抄，原先手写 19 条已变 —— #59/#60/#61 三格都是往这个文件里加断言的；复跑 `grep -cE "#\[(tokio::)?test\]" src-tauri/src/db/migration_tests.rs`）+ `fresh_schema_alone_has_exactly_the_migrated_shape` + **建群崩溃轮**（#121：群只长在 A 的盘上 → 真 `SIGKILL` 发送端（那份「没送到」的重试登记 `pending_group_keys` 是**进程内**的表，必然被抹掉）→ 再起两端 ⇒ B 必须**自己**学到这个群、成员恰好 2 位、密钥与 A 那份逐字节相同、且不凭空多出会话行） | 迁移**中途失败**不可恢复 → J7 |
 | 12 | 图片/文件消息（多选并发不丢件） | **部分 AUTOMATED** | J2 已 **4 连绿**（另：脏前缀注入轮 **2 连绿** + `--fault=poison-part-lie` 反向按设计报红）（1 MB：只有 rename 后出现最终名 + 字节数 + sha256 + 发送侧 `sent → done`（必须等对端 `FileCompleteAck`）+ 接收侧 `done` + 无 `<tid>.part` 残留 + `file_outbox` 收尾删除） | 只覆盖单文件；**尺寸阶梯已按形状进本地层**（1 KB 单片 / 10 MB 多片带零头，各跑整趟默认轮、实测全绿，10 MB 整轮 11.2s；10 KB 与 1 KB 同形状由前者代表，100 MB 及以上不进本地层、由杀进程轮 100 MB 代偿）⇒ A-3 只剩**错 size** 一格**同日已补齐**（两层各一条：写盘**之前**的 chunk 级上限 `chunk_exceeds_declared` —— 恰好填满=放行 / 超一字节=拒 / 已收满再来片=拒 / size=0 不写字；加上收尾层原本就有的"字节数与声明不符 ⇒ 不算成功"。⚠️ 这条判据以前内联在吃 `AppState` 的 `write_chunk` 里所以一直没测试，见路线图 L-C 那格的 ⚠️）（⚠️ 这句以前连着写"并发未做"，与本行末尾自相矛盾 —— 并发多文件已由注入⑤覆盖，只是那条时序是"同 peer 串行 flush"）。**「目标目录变化」的另一半已做**：整个目录被删走 ⇒ 接收句柄挂在被 unlink 的 inode 上、写入与 fsync 照旧成功 ⇒ **只剩最后一次 rename 能发现成品无处安放**，由 L2 `network/file.rs::rotted_receive_directory_finishes_failed_never_done` 钉住（判据：必须 Err + 台账只能 `failed` 且不带路径 + 不许出现成品文件；已用"把 rename 失败吞掉就算成功"变异证明会报红）。它与本行末尾那条注入⑧不是重复 —— ⑧ 是目录仍在但不可写（`EACCES`、两个真实进程），这条是目录消失（`ENOENT`、生产单聊收尾函数）。**已做**：接收端写不进去（磁盘轮 1 连绿、lie 按设计报红 ⇒ 队列 5 次内 GiveUp、台账非 done、盘上零残留）；⚠️ 但**接收方自己完全无感**（offer 期只记日志、不写库不发事件）→ A-10。**已做**：收到一半才收尾失败（改口轮 lie 按设计报红 ⇒ .part 必须真被续写过、A 侧终态明确、attempts ≤ 5、接收侧台账不假 done）；★ 同一轮实测照出 **A-12** 并已修（修前实测 `A {status:gone, aT:done} / B=failed / .part=整份 / final 不存在`）：判据改成**字节数够 ≠ 收完、也 ≠ 进度**，那份没有成品的 `.part` 不再被报成 `received = size`（一个帧承载两个含义是这一格的病根）⇒ 发送侧只能落到 `failed`，交叉自洽那条已按原口径加回断言，另加一条防它变成永远为真的空转判据。**已做**：入队后源文件被改小（改小轮 3 连绿、lie 按设计报红 ⇒ offer 按截断后的真 size、落地字节+hash 与新源一致、两侧同 done、盘上只留终名那一份）；⚠️ 同一轮照出**发送侧的 size 没人更正**（实测 A 气泡/台账仍写入队时那份、B 写真实那份）→ A-11。**已做**：连续多文件 + 其中两单同名（多文件轮 lie 按设计报红 ⇒ 三单各自 done、同名落成两个不同路径、落地内容多重集合 == 源内容多重集合、无 `.part`）；⚠️ 只覆盖"同 peer 串行 flush"这条时序，**两个 offer 都在任一次 rename 之前到达**那个真会撞 final_path 的交错没覆盖（要三个实例）|
 | 13 | 通知（尊重开关、失败可观察） | MANUAL-HARDWARE | — | 见 Smoke-3 |
-| 14 | Win/mac/Android 三端构建与基本稳定 | **AUTOMATED**（构建层） | `verify.yml` 3 job + 三个 `build*.yml` | 构建≠运行；**三端都没跑过应用实例** |
+| 14 | Win/mac/Android 三端构建与基本稳定 | **AUTOMATED**（构建层） | `verify.yml` 3 job（现算 `python3 -c` 读 `jobs:` 的顶层键 ⇒ `frontend` / `rust` / `android`）+ `build*.yml` **条数不抄**（★ 这里原先写"三个"，#36 那档内置 WebView2 落地后已多一条；复跑 `ls .github/workflows/` ⇒ 除 `verify.yml` 之外都算出包路径，**其中 `build-windows-webview2.yml` 只挂手动触发 ⇒ 它不在"自动"里，别把它算成绿**） | 构建≠运行；**三端都没跑过应用实例**；手动那档从未被点过（#36 剩的那半） |
 | 15 | 两台以上真实设备联调 | MANUAL-HARDWARE | 用户真机自测 | 同机双实例已跑绿 **J1 文本 + J2 文件 + 两格故障注入**（默认轮 5 连绿；脏前缀轮 2 连绿；续传轮 1 连绿；`--negative`、`--fault=poison-part-lie`、`--fault=resume-prefix-lie` 三个反向模式都按设计报红），真机仍要人 → Smoke-5 |
 
 ## P0 mesh 本体（16–22）
