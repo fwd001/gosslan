@@ -42,10 +42,14 @@ jobs:
           - target: aarch64-pc-windows-msvc
             label: arm64
     runs-on: windows-latest
-    # 只打选中的那个架构（both = 两个都打）
+    # 双保险：`on:` 只声明了 workflow_dispatch，但远端出现过一次看起来由 push 触发的运行
+    # （本机没有 gh，无法读到那次的触发详情 ⇒ 不去赌解析结果）。
+    # 这一条 job 级条件是硬闸：事件不是手动触发就整_job 跳过 ⇒ 这个文件在任何 push 上
+    # 都不会占 runner、不会产 artifact，也就不会碰到普通档那条打包。
     if: >
+      github.event_name == 'workflow_dispatch' && (
       github.event.inputs.arch == 'both' ||
-      github.event.inputs.arch == matrix.label
+      github.event.inputs.arch == matrix.label)
     env:
       WV2_VER: ${{ github.event.inputs.webview2_version }}
     steps:
