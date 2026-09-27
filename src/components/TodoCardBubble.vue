@@ -103,9 +103,14 @@ function statusText(s: TodoStatus): string {
       </span>
     </div>
 
+    <!-- 描述：卡片里只看得到前 3 **整行**（全文在详情弹窗）。
+         ⚠️ 高度必须落在整行上：这段行距是 `leading-relaxed`(1.625)，原先写的 `max-h-[4.2em]`
+         等于 2.58 行 ⇒ 第 3 行被削掉半截字，比"少显示一行"更像 bug。
+         改行数必须同步 `utils/messageHeight.ts` 的 `TODO_CARD_DESC`（渲染与估算成对，
+         否则虚拟列表按旧值排布 ⇒ 相邻消息互相遮挡，那是本仓另一条已记的契约）。 -->
     <p
       v-if="todo?.description"
-      class="mt-1 max-h-[4.2em] overflow-hidden whitespace-pre-wrap break-words px-3 text-[12px] leading-relaxed text-[var(--gosslan-card-ink)] opacity-70"
+      class="mt-1 max-h-[calc(3*1.625em)] overflow-hidden whitespace-pre-wrap break-words px-3 text-[12px] leading-relaxed text-[var(--gosslan-card-ink)] opacity-70"
     >
       <!-- 描述里的 @ 走与聊天正文**同一份**渲染件（§9）：段怎么切、@到算不算我、
            显示成什么，全部在 utils/linkify 那一处，这里只负责画出来。 -->

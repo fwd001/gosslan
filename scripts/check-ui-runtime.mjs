@@ -656,6 +656,35 @@ async function runTaskCard(cdp, url) {
     && pv.n === 1 && pv.index === 0,
     "open=true source=task-card:" + TODO_ID + " n=1 index=0", JSON.stringify(pv));
 
+  // —— #116：@ 色块落在**最后一行可见行**时，会不会被卡片那段固定行高的裁切盒削掉 ——
+  // `.mention-token` 有上下各 1px 内衬（`style.css`），而任务卡描述是 `max-h-[4.2em] overflow-hidden`。
+  // 判的是矩形，不是肉眼：色块底边越过裁切盒 = 削。
+  const clipMsg = JSON.parse(MSG);
+  clipMsg.content = JSON.stringify({
+    ...JSON.parse(clipMsg.content),
+    description: "第一行 @小布\n第二行\n第三行结尾 @小布",
+  });
+  await mount({
+    message: clipMsg,
+    mentionNames: ["小布"],
+    selfMention: { name: "小布", label: labels.selfTag },
+  });
+  const geo = await cdp.eval(`(() => {
+    const toks = document.querySelectorAll('.mention-token--self');
+    const last = toks[toks.length - 1];
+    if (!last) return { found: false };
+    const box = last.closest('p');
+    if (!box) return { found: false, reason: '色块不在 <p> 里' };
+    const t = last.getBoundingClientRect(), b = box.getBoundingClientRect();
+    return { found: true, count: toks.length,
+      bottomOver: +(t.bottom - b.bottom).toFixed(1), topUnder: +(b.top - t.top).toFixed(1),
+      boxH: +b.height.toFixed(1), tokH: +t.height.toFixed(1),
+      clipped: box.scrollHeight > box.clientHeight + 1 };
+  })()`);
+  check("#116：描述裁切盒落在整行上（最后一行的 @ 色块不被削半截；色块自带上下各 1px 内衬 ⇒ 容差 1px）",
+    geo.found === true && geo.bottomOver <= 1 && geo.topUnder <= 1,
+    "bottomOver<=1 且 topUnder<=1", JSON.stringify(geo));
+
   // —— 点「查看任务」必须带**这条**的 id（带错/带空就是开别人的任务）——
   await cdp.eval("window.__probe.reset()");
   const clicked = await cdp.eval(`(() => {

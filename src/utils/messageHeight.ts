@@ -38,8 +38,11 @@ const SYSTEM_ROW = 28;
 const MERGE_CARD = 96;
 /** 群任务卡片（TodoCardBubble）：头部(30) + 指派人行(24) + 底部按钮(38) + 余量。 */
 const TODO_CARD_BASE = 96;
-/** 任务卡片有描述时追加（描述最多 ~2.6 行 ≈ 50，留余量）。 */
-const TODO_CARD_DESC = 58;
+/** 任务卡片有描述时追加：描述预览 3 整行（12px × 行距 1.625 = 19.5）= 58.5，再加 `mt-1` 的 4 ⇒ 62.5，取 64。
+ *  ⚠️ 与 `TodoCardBubble.vue` 那句 `max-h-[calc(3*1.625em)]` **成对**：改渲染行数就得改这里，
+ *  否则就是低估 ⇒ 相邻消息互相遮挡（本文件顶部那条契约说的就是这件事）。
+ *  这一对的实测锁在运行时探针 `scripts/check-ui-runtime.mjs` 的 #116 那条（量矩形，不靠肉眼）。 */
+const TODO_CARD_DESC = 64;
 /** 任务卡片有图片时追加（一行 80px 缩略图 + 间距，留余量）。 */
 const TODO_CARD_IMAGES = 88;
 /**
