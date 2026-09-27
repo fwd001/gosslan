@@ -922,6 +922,10 @@ let taskReopenId = "";
 /// "任务只能由本端发起"这一半从头到尾没被判过，B 签名/对端 creator 这条授权输入也没人核。
 let taskBCreateId = "";
 let taskBDoneId = "";
+/// 崩溃那一腿的两条（发送端在"还没送达"的时刻被 SIGKILL）。判的不是"能不能续传"
+/// （②③⑩ 已证），而是**群任务这一族的「已入队」这个事实许不许被一次崩溃抹掉**。
+let taskCrashCreateId = "";
+let taskCrashDoneId = "";
 /// 任务轮预置：两端同一份群 + 群密钥（与群聊轮同形），A 排两条群载荷 ——
 /// `todo`（创建，seq=1，指派给 B）与 `todo_update`（B 视角下的完成，seq=2）。
 /// 载荷字段逐字对齐 `protocol.rs::TodoPayload`（todo_id/title/assignees/status/creator/
@@ -1355,6 +1359,154 @@ if (TASK) {
       bRowC[0]?.sender_id === idB.runtimeId, idB.runtimeId, bRowC[0]?.sender_id);
     check("B 侧这一单的 group_outbox 也被 Ack 清干净（发起方的队列残留=下次建链还会重发）",
       bQueued === 0, 0, bQueued);
+  });
+
+  // ── §28「正在任务同步时退出」这一格：群任务这一族的崩溃恢复（以前只有文件族有判据）──
+  // 钉的核心**不是**"能不能续传"（②③⑩ 已证），而是**一次崩溃不许把「已入队」这个事实抹掉**：
+  // `group_outbox` 行是"先入队再投递"这条不变量的载体。它若因发送端崩溃变成 0 行，
+  // 这两条任务就永久没人再发，而 A 的聊天气泡还在（§30 说的"最难发现的一种丢法"）。
+  // ★ 时序由判据自己造：停机入队 → **只起 A**（对端不存在 ⇒ 一条也送不出去）→ SIGKILL A →
+  //   再起 A+B（建链事件带动 flush，这是 A-9 那条缺口的机制面，这里当机制用，不等于认可那个缺口）。
+  step("任务崩溃判据：群任务还没送达时发送端被 SIGKILL ⇒ 队列行与气泡都不许消失，重启后必须自己送到", async () => {
+    await stopAll();
+    const ts = nowMs();
+    const convId = `group:${GROUP_ID}`;
+    const members = [idA.runtimeId, idB.runtimeId];
+    const todoId = "todo-e2e-3";
+    const mk = (over) => JSON.stringify({
+      todo_id: todoId, title: "e2e task crash", assignees: [idB.runtimeId], status: "todo",
+      creator: idA.runtimeId, deleted: false, description: "", images: [], archived: false,
+      done_at: null, ...over,
+    });
+    const base = {
+      groupKey: GROUP_KEY_B64, senderId: idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
+      x25519Pub: idA.x25519Pub, ed25519Pub: idA.ed25519Pub,
+      groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId, members,
+    };
+    const c1 = buildGroupEnvelope({ ...base, kind: "todo", content: mk({}), ts, seq: 7 });
+    const c2 = buildGroupEnvelope({
+      ...base, kind: "todo_update", content: mk({ status: "done", done_at: ts + 3 }), ts: ts + 1, seq: 8,
+    });
+    taskCrashCreateId = c1.messageId;
+    taskCrashDoneId = c2.messageId;
+    seed(INSTANCES[0].db, (db) => {
+      for (const [env, seq, kind, content, at] of [
+        [c1, 7, "todo", mk({}), ts],
+        [c2, 8, "todo_update", mk({ status: "done", done_at: ts + 3 }), ts + 1],
+      ]) {
+        db.prepare("DELETE FROM messages WHERE msg_id=?1").run(env.messageId);
+        db.prepare(
+          `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+           VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'sent')`,
+        ).run(env.messageId, convId, idA.runtimeId, GROUP_ID, kind, content, at, seq);
+        db.prepare(
+          `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
+           VALUES(?1,?2,?3,?4,?5)`,
+        ).run(env.messageId, GROUP_ID, idB.runtimeId, env.wire, at);
+      }
+      db.prepare(
+        "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
+        + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq",
+      ).run(convId, 8);
+    });
+
+    // 只起 A：这一格的坏状态是"对端整个不存在"，所以这两条**必须**只能待在队列里。
+    launch(INSTANCES[0]);
+    await waitFor(() => tcpOpen(INSTANCES[0].port), 60_000, `崩溃判据：A 的 TCP ${INSTANCES[0].port} 可连`);
+    await waitFor(() => bootReady(INSTANCES[0].log, bootBaseOf.get(INSTANCES[0].n), BOOT_LINE), 30_000,
+      "崩溃判据：A 打出 boot 完成行");
+    await sleep(15_000); // 一段"对端完全缺席"的时间
+
+    const readA = () => {
+      const db = openDb(INSTANCES[0].db, true);
+      try {
+        return {
+          queued: db.prepare("SELECT COUNT(*) c FROM group_outbox WHERE msg_id IN (?1,?2)")
+            .get(taskCrashCreateId, taskCrashDoneId).c,
+          bubbles: db.prepare("SELECT COUNT(*) c FROM messages WHERE msg_id IN (?1,?2)")
+            .get(taskCrashCreateId, taskCrashDoneId).c,
+        };
+      } finally { db.close(); }
+    };
+    const readB = () => {
+      const db = openDb(INSTANCES[1].db, true);
+      try {
+        return db.prepare("SELECT COUNT(*) c FROM messages WHERE msg_id IN (?1,?2)")
+          .get(taskCrashCreateId, taskCrashDoneId).c;
+      } finally { db.close(); }
+    };
+    // 缺席那一条读的是**真 id**（翻过的 id 必然查不到 ⇒ 那条断言就成了永远为真的空转）。
+    // 它的正向对照是同一步里后面那条"重启后 B 侧真收到" —— 缺席判据与到齐判据配对，才不是"没跑起来"。
+    check("对端缺席 15s 期间 B 侧不许有这两条的任何一行（还没送达就是没送达）",
+      readB() === 0, 0, readB());
+    const q1 = readA();
+    check("对端缺席期间 A 侧两条队列行都还在（「先入队再投递」的载体不许自己消失）",
+      q1.queued === 2, 2, q1.queued);
+
+    const pA = procs.get(INSTANCES[0].n);
+    // ⚠️ 被信号杀死的子进程 `exitCode === null`、只有 `signalCode` 有值（③⑩ 踩过同一个坑）。
+    const deadA = () => pA.exitCode !== null || pA.signalCode !== null;
+    pA.kill("SIGKILL");
+    await waitFor(deadA, 15_000, "崩溃判据：A 确认已死（SIGKILL 不给它收尾的机会）");
+    await sleep(10_000); // 一段"发送端根本不存在"的时间
+
+    const q2 = readA();
+    check("发送端崩溃后队列行必须还是 2 行 —— 崩溃不许把它当成已送达、更不许抹掉「已入队」",
+      q2.queued === 2, 2, q2.queued);
+    check("发送端崩溃后 A 侧那两条气泡必须还在 —— 队列没了是永久没人再发，气泡没了是用户连「发过」都看不见",
+      q2.bubbles === 2, 2, q2.bubbles);
+
+    launch(INSTANCES[0]);
+    launch(INSTANCES[1]);
+    for (const i of INSTANCES) {
+      await waitFor(() => tcpOpen(i.port), 60_000, `重启后实例 ${i.label} 的 TCP ${i.port} 可连`);
+      await waitFor(() => bootReady(i.log, bootBaseOf.get(i.n), BOOT_LINE), 30_000,
+        `重启后实例 ${i.label} 打出 boot 完成行`);
+    }
+    // 同步点选在**被断言那一侧自己到齐**：B 落库靠 A 建链后的 flush，A 的队列清空靠 B 的 GroupAck
+    // （⑨ 的教训：拿另一侧的产物当这一侧的同步点会天然晚一步）。
+    const flip = (h) => h.slice(0, -1) + (h.endsWith("0") ? "1" : "0");
+    const want = (id) => (TASK_LIE ? flip(id) : id);
+    await waitFor(() => {
+      const db = openDb(INSTANCES[1].db, true);
+      try {
+        return [taskCrashCreateId, taskCrashDoneId]
+          .every((id) => db.prepare("SELECT COUNT(*) c FROM messages WHERE msg_id=?1").get(id).c > 0);
+      } finally { db.close(); }
+    }, 90_000, "重启后这两条必须自己送到 B（建链带动 flush）");
+
+    const bDb = openDb(INSTANCES[1].db, true);
+    const rowsCrash = [want(taskCrashCreateId), want(taskCrashDoneId)].map((id) => bDb.prepare(
+      "SELECT conv_id,sender_id,kind,content,seq FROM messages WHERE msg_id=?1",
+    ).all(id));
+    bDb.close();
+    const safeParse = (rows) => {
+      if (rows.length !== 1) return null;
+      try { return JSON.parse(rows[0].content); } catch { return null; }
+    };
+    const pc = safeParse(rowsCrash[0]);
+    const pd = safeParse(rowsCrash[1]);
+    check("重启补送到的这两条在 B 侧各恰好一行、明文解得开、seq 7→8 且 todo→done（重放不许送坏内容）",
+      rowsCrash.every((r) => r.length === 1) && rowsCrash[0][0]?.conv_id === convId
+      && rowsCrash[0][0]?.sender_id === idA.runtimeId
+      && pc?.todo_id === todoId && pd?.todo_id === todoId
+      && pc?.status === "todo" && pd?.status === "done" && !!pd?.done_at
+      && rowsCrash[0][0]?.seq === 7 && rowsCrash[1][0]?.seq === 8,
+      "各 1 行 + 明文 todo→done + seq 7/8 + sender=A",
+      `${rowsCrash.map((r) => r.length).join("/")} ${pc?.status}→${pd?.status}`
+      + ` seq=${rowsCrash[0][0]?.seq}/${rowsCrash[1][0]?.seq} sender=${rowsCrash[0][0]?.sender_id}`);
+
+    // A 的队列清空只能**有界地等**它自己发生（GroupAck 在 B 落库之后才发）；
+    // 到不了终态就把最后一次读数交给 check 判红 —— 不写"兜底断言"（那种断言到不了就是死代码）。
+    let qEnd = -1;
+    const tEnd = nowMs();
+    for (;;) {
+      qEnd = readA().queued;
+      if (qEnd === 0 || nowMs() - tEnd >= 60_000) break;
+      await sleep(500);
+    }
+    check("重启后这两条的队列行最终被 GroupAck 清成 0（残留=下次建链还会重发一遍）",
+      qEnd === 0, 0, qEnd);
   });
 }
 
