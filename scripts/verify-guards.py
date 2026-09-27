@@ -3293,24 +3293,26 @@ CASES: list[Case] = [
         why="中继链路分片天然重复（多邻居泛洪各送一份）且乱序（多路径时延不同）。旧实现逐片「到达\n"
         "     即喂」增量哈希、喂在 add_chunk 去重/排序之前 ⇒ 分片收齐却必然校验失败：接收端报\n"
         "     「文件完整性校验失败」、发送端却显示成功（无回执），两端状态互相矛盾且无重试路径。\n"
-        "     注入方式：把校验点从 digest(&full)（组装结果）改成 digest(&name)（哈希错了对象，\n"
-        "     仍可编译），守卫 relay_receive_hashes_assembled_plaintext_once 必须红。",
+        "     注入方式（2026-09-27 换过一次，见下方锚点注释）：把流式校验换回**旧的退化形状** —— 整份\n"
+        "     `fs::read` 进内存再 `Sha256::digest(&…)`；可编译，且一次踩中守卫的两条断言\n"
+        "     （不再含 sha256_file_hex(、出现了 Sha256::digest(&）。守卫必须红，实测报的是\n"
+        "     「完整性校验必须对…」那一条。",
         file=TAURI / "src" / "network" / "transport.rs",
-        # ⚠️ 这条锚点 2026-09-27 整跑时数到 0 次 —— **不是我的改动弄坏的**，是这道守卫后来被
-        #    改强了形状：lib.rs:3650 `relay_receive_hashes_assembled_plaintext_once` 现在断言的是
-        #    `handle_relay_chunk` 里**不得出现 `.hasher`**、校验必须走流式 `sha256_file_hex(`、
-        #    且不得再 `Sha256::digest(&…)`（审计 1.8 + P4：内存峰值必须与文件大小无关）。
-        #    ⇒ 旧的"把 digest(&full) 换成 digest(&name)"这个坏法所指向的形状已经整条不存在了。
-        #    该改成的新坏法（下一条接着做，别凭猜先动）：把 `.hasher` 塞回去 ——
-        #    在 `let actual_hex = match file::sha256_file_hex(&part_path) {` 前加
-        #    `let _ = r.hasher.clone().finalize();`，可编译、且第一条断言必红。
+        # 锚点死因与新坏法（2026-09-27 修，roadmap #96）：旧坏法 `digest(&full)`→`digest(&name)`
+        # 指向的形状**已被 P4 有意消灭** —— 中继接收改成流式 `file::sha256_file_hex(&part_path)`，
+        # 而 lib.rs:3650 那道守卫现在反过来断言「体内不得出现 `Sha256::digest(&`」「校验必须走
+        # `sha256_file_hex(`」「不得有 `.hasher`」⇒ 不是谁弄坏了锚点，是**守卫变强后旧坏法写不出来了**。
+        # 新坏法取今天真能编译的退化形状（整份 fs::read 进内存再 digest）：一次踩中两条断言，
+        # 且正是 P4 要消灭的「内存峰值 ≈ 2× 文件大小」。
+        # ⚠️ 上一版注释里「把 r.hasher 塞回去」那个方案**编译不过**（Reassembly 早已没有该字段，
+        #    而那字面量正是断言①要抓的）⇒ 守卫变强时不许凭猜写新锚点，先确认新形状可编译。
         injections=[(
-            "let actual_hex: String = sha2::Sha256::digest(&full)",
-            "let actual_hex: String = sha2::Sha256::digest(&name)",
+            "            let actual_hex = match file::sha256_file_hex(&part_path) {\n",
+            "            let actual_hex = match (|| -> Result<String, String> {\n                use sha2::{Digest, Sha256};\n                let __b = std::fs::read(&part_path).map_err(|e| e.to_string())?;\n                Ok(Sha256::digest(&__b).iter().map(|b| format!(\"{b:02x}\")).collect())\n            })() {\n",
         )],
         cmd=cargo("test", "--lib", "relay_receive_hashes_assembled_plaintext_once"),
         cwd=TAURI,
-        expect_fail_hint="组装出的明文",
+        expect_fail_hint="完整性校验必须对",
         tags=["rust", "relay", "files", "stability", "new-guards"],
     ),
     Case(
