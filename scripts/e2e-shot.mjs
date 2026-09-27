@@ -142,6 +142,100 @@ export function captureShot(runDir, tag) {
   return shotIsReal(file) ? file : null;
 }
 
+/**
+ * 按 pid 枚举它自己名下**可见过**的窗口（#91）。
+ * 返回 null = **这台机器问不出来**（python3 或 pyobjc 不在）；数组 = 问到了（可能为空）。
+ * 三态必须分开（和群明文那个 `mentions` 同一个理由）：「没材料」与「材料是空的」不是一件事，
+ * 混起来会把"问不出窗口"读成"这个进程没有界面"。
+ *
+ * ⚠️ 必须用 `kCGWindowListOptionAll`，不能用 `OnScreenOnly`：2026-09-27 同一分钟实测
+ * 15 扇 vs 40 扇，而且**同一个 pid 在两次调用之间从"有窗口"变成"没窗口"**（切了 Space）
+ * ⇒ 拿瞬时读数当判据是本仓第二次踩这个形状（第一次见 roadmap §12.7 被撤掉的那条判据）。
+ */
+export function listPidWindows(pid = null) {
+  const py = `
+import sys,json
+try:
+    import Quartz
+except Exception:
+    sys.exit(3)
+arg=sys.argv[1]
+pid=None if arg=='-' else int(arg)
+wl=Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionAll,Quartz.kCGNullWindowID)
+out=[]
+for w in wl:
+    if int(w.get('kCGWindowLayer',1))!=0: continue
+    if pid is not None and int(w.get('kCGWindowOwnerPID',-1))!=pid: continue
+    b=w.get('kCGWindowBounds') or {}
+    ww,hh=int(b.get('Width',0)),int(b.get('Height',0))
+    if ww<80 or hh<80: continue
+    out.append({'id':int(w['kCGWindowNumber']),'w':ww,'h':hh,
+                'on':1 if w.get('kCGWindowIsOnscreen') else 0,
+                'pid':int(w.get('kCGWindowOwnerPID',-1))})
+out.sort(key=lambda r:(-r['on'],-(r['w']*r['h'])))
+print(json.dumps(out))
+`;
+  try {
+    const out = execFileSync("python3", ["-c", py, pid === null ? "-" : String(pid)],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 8000 });
+    const arr = JSON.parse(out);
+    return Array.isArray(arr) ? arr : null;
+  } catch {
+    return null; // 退码 3（没 pyobjc）与"python3 根本不在 PATH"都算问不出来，不冒充"没有窗口"
+  }
+}
+
+/** 那张 PNG 是不是**这一扇窗自己的**几何。整屏帧在 Retina 下与窗口帧同比例，所以只能按 bounds 核。 */
+function windowGeometryMatches(head, win) {
+  if (!head) return false;
+  const sx = head.w / win.w, sy = head.h / win.h;
+  return sx >= 0.9 && Math.abs(sx - sy) < 0.05 && Math.abs(sx - Math.round(sx)) < 0.06;
+}
+
+/** 抓指定那一扇窗。失败返回 `{ ok:false, why }` —— why 要能读，因为报告里那句"为什么只能用整屏"靠它。 */
+export function captureWindowBySpec(runDir, tag, win) {
+  if (!captureSupported()) return { ok: false, why: "本机没有可用采集器" };
+  if (!win) return { ok: false, why: "没有可读的窗口" };
+  const dir = shotsDir(runDir);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${tag}.png`);
+  fs.rmSync(file, { force: true }); // 截不出就必须没有文件：留着上一轮的旧图比没有更坏
+  try {
+    execFileSync("/usr/sbin/screencapture", ["-o", "-x", `-l${win.id}`, file],
+      { stdio: "ignore", timeout: 10_000 });
+  } catch {
+    /* 退码非 0 不下结论，看文件在不在 —— 实测：不在当前 Space 的窗口走这里 */
+  }
+  if (!fs.existsSync(file)) {
+    return { ok: false, why: `窗口 ${win.id} 截不出文件（不在当前 Space / 已最小化）` };
+  }
+  if (!shotIsReal(file)) {
+    fs.rmSync(file, { force: true });
+    return { ok: false, why: `窗口 ${win.id} 截出来不合格（空图或纯色帧）` };
+  }
+  const head = pngHeader(fs.readFileSync(file).subarray(0, 24));
+  if (!windowGeometryMatches(head, win)) {
+    fs.rmSync(file, { force: true });
+    return {
+      ok: false,
+      why: `窗口 ${win.id} 的几何对不上（png ${head?.w}×${head?.h} vs bounds ${win.w}×${win.h}）`,
+    };
+  }
+  return {
+    ok: true, file, windowId: win.id, pid: win.pid,
+    bounds: { w: win.w, h: win.h }, png: head, scale: Math.round(head.w / win.w),
+  };
+}
+
+/** 按**实例自己的 pid** 抓那一扇最大的窗。抓不到不是错误：调用方回落整屏，并把原因如实记进报告。 */
+export function captureWindowShot(runDir, tag, pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return { ok: false, why: "没有这个实例的 pid" };
+  const wins = listPidWindows(pid);
+  if (!wins) return { ok: false, why: "这台机器问不出窗口清单（没有 python3/pyobjc）" };
+  if (!wins.length) return { ok: false, why: `pid ${pid} 名下没有 ≥80×80 的窗口` };
+  return captureWindowBySpec(runDir, tag, wins[0]);
+}
+
 export function shotIsReal(file, minBytes = MIN_SHOT_BYTES) {
   let buf;
   try {
@@ -300,6 +394,53 @@ export function selfcheckShot(tmpRoot = path.join(os.tmpdir(), `gosslan-shot-${D
     const lined = path.join(tmpRoot, "lined.png");
     writeProbePng(lined, 800, 600, (_x, y) => (y === 300 ? [255, 255, 255] : [0, 0, 0]));
     has("⑥ 只多一条白线的同尺寸 PNG 必须判真（证明 ⑤ 不是「永远判假」）", shotIsReal(lined, 0));
+    // ⑦ ⑧ #91「按窗口 id 抓」这一格的自证。放在整屏那几格**之后**、真截整屏那格之前：
+    //   它们判的是"按窗口抓"这个机制成不成立，与屏幕上是谁的窗口无关。
+    const wins = listPidWindows(null);
+    if (wins === null) {
+      notes.push("⑦ 跳过：这台机器问不出窗口清单（没有 python3/pyobjc）⇒ 按窗口抓这一格在本机未实现，不是判据坏了");
+    } else if (!wins.length) {
+      notes.push("⑦ 跳过：本机此刻没有任何 ≥80×80 的 layer-0 窗口");
+    } else {
+      // 逐扇试（最多 5 扇）：macOS 拒绝给**不在当前 Space / 已最小化**的窗口出图（实测 `could not create image
+      // from window`、不落盘），那是环境状态而不是判据坏了 —— 所以这一格与 ④ 同一处置：拿不到就记 note，
+      // 只有"截出来了但几何不是那一扇窗自己的"才是判据真有毛病。
+      const tried = [];
+      let won = null;
+      for (const w of wins.slice(0, 5)) {
+        const r = captureWindowBySpec(tmpRoot, "7-window", w);
+        if (r.ok) { won = r; break; }
+        tried.push(r.why);
+      }
+      if (won) {
+        // ⚠️ 这一格**不许**回头调 `captureWindowBySpec` 里那个几何判据 —— 那样它就只是"我信我自己"，
+        //   正好是本仓反复判过的"半个守卫"（存在性/点名式断言）。所以判据只吃**产物**：
+        //   ① 窗口帧的宽高必须等于那扇窗自己的 bounds × 同一个整数倍（scale 只从宽度推，
+        //      于是"其实是整屏"会在高度上对不上 —— 实测整屏 1912 高 vs 窗口 1718 高）；
+        //   ② 同一时刻再抓一张整屏做对照：窗口比屏幕小时，两张几何必须**不同**。
+        const full = path.join(tmpRoot, "7-fullscreen.png");
+        execFileSync("/usr/sbin/screencapture", ["-x", full], { stdio: "ignore" });
+        const fh = pngHeader(fs.readFileSync(full).subarray(0, 24));
+        fs.rmSync(full, { force: true });
+        const screenWinW = fh.w / won.scale, screenWinH = fh.h / won.scale;
+        const winSmaller = won.bounds.w * won.bounds.h < screenWinW * screenWinH;
+        has(`⑦ 窗口帧必须读得出"它是那一扇窗、不是整屏"（窗口 ${won.bounds.w}×${won.bounds.h} × scale ${won.scale}`
+          + ` = 图 ${won.png.w}×${won.png.h}；同一时刻整屏 ${fh.w}×${fh.h}）`,
+          won.png.w === won.bounds.w * won.scale && won.png.h === won.bounds.h * won.scale
+          && (!winSmaller || won.png.w !== fh.w || won.png.h !== fh.h));
+      } else {
+        notes.push(`⑦ 跳过：本机这 ${Math.min(5, wins.length)} 扇窗口 macOS 都不肯出图（${tried[0] ?? "?"}）`
+          + " ⇒ 与屏幕被锁同一类：环境限制，不是判据坏了");
+      }
+      // ⑧ 反证：**不存在的窗口 id 必须一个文件都不留下**。
+      //   没有这一格，"id 写错了 / 窗口早关了"会静默变成一张别的图（最省事的一种假证据）。
+      //   这一格不依赖 ⑦ 成不成 —— 它只需要一个"肯定不存在的号"，所以环境挡住 ⑦ 时它照判。
+      const bogus = { id: Math.max(...wins.map((w) => w.id)) + 987654, w: 800, h: 600 };
+      const rb = captureWindowBySpec(tmpRoot, "8-bogus-window", bogus);
+      const left = fs.existsSync(path.join(shotsDir(tmpRoot), "8-bogus-window.png"));
+      has(`⑧ 不存在的窗口 id（${bogus.id}）必须截不出文件 —— 实测 ok=${rb.ok} 文件是否存在=${left}`,
+        !rb.ok && !left);
+    }
     // ④ 真的截一张必须判真 —— 反过来钉住"判据没有苛刻到永远达不到"。
     //   ⚠️ 这一格在 2026-09-26 抓到过一次**判据自己坏**：桌面接近空白时截图只有 ~104 KB，
     //   当时那条按体积定的阈值（200 KiB）判它"不是真截图" ⇒ 每一轮 E2E 起跑前被拦停。

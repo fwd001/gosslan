@@ -329,7 +329,7 @@ import net from "node:net";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { BOOT_LINE, bootBaseline, bootReady, countLog, readLogTail, selfcheckLogtail, stashLogs } from "./e2e-logtail.mjs";
-import { captureShot, describeShotDir, screenBlockedReason, selfcheckShot } from "./e2e-shot.mjs";
+import { captureShot, captureWindowShot, describeShotDir, screenBlockedReason, selfcheckShot } from "./e2e-shot.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const ISO = new Date().toISOString().replace(/[:.]/g, "-");
@@ -724,6 +724,32 @@ function seedPair(nodes) {
 const steps = [];
 /** §十六 报告要的界面截图（真实文件路径，落 RUN_DIR/screenshots/）。 */
 const shotFiles = [];
+/** #91：每张帧**从哪来的**逐张记下来 —— 窗口帧（属于某个实例进程的某扇窗）还是整屏兜底（带原因）。
+ *  这一格存在的意义就是"报告不许说自己拍到了界面，除非它真的拍到了那一扇窗"。 */
+const shotSources = [];
+
+/** 先按**被测实例自己的 pid** 抓那一扇窗；抓不到再回落整屏，两条路都如实记来源。
+ *  ⚠️ 刻意不把"必须抓到窗口帧"写成通过条件：macOS 对不在当前 Space / 已最小化的窗口直接拒绝出图
+ *  （实测 `could not create image from window`、不落盘），那是环境状态，写成通过条件会把它
+ *  乘成本层十几条同因红（与 roadmap §十六 那条"锁屏乘成 14 条同因红"同形）。
+ *  这一格的机器证明在 `selfcheckShot` 的 ⑦⑧ 两格（每轮起跑前跑，判据坏了就当场停轮）。 */
+function takeShot(tag, pid, note) {
+  const w = pid ? captureWindowShot(RUN_DIR, tag, pid) : { ok: false, why: note ?? "没有可读的 pid" };
+  if (w.ok) {
+    shotFiles.push(w.file);
+    shotSources.push({
+      file: path.relative(RUN_DIR, w.file), source: "window", pid, window_id: w.windowId,
+      bounds: `${w.bounds.w}x${w.bounds.h}`, png: `${w.png.w}x${w.png.h}`, scale: w.scale,
+    });
+    return;
+  }
+  const f = captureShot(RUN_DIR, tag);
+  if (f) shotFiles.push(f);
+  shotSources.push({
+    file: f ? path.relative(RUN_DIR, f) : null, source: "screen", pid: pid ?? null, why: w.why,
+  });
+}
+
 const assertions = [];
 let curStep = null;
 let curStepIdx = -1;
@@ -1205,7 +1231,7 @@ step("起 A/B 并等链路真的建立（routed 拨号一轮 10s）", async () =
   check("这对外部以手动配置的 Routed 端点拨出过链路（§19 网络·Routed）",
     routedDialed() >= 1, "≥1 条 path=routed 建链", routedDialed());
   // 两个实例的窗口此刻都在这台机器的桌面上：留一张"链路真建立了"的界面证据
-  shotFiles.push(captureShot(RUN_DIR, "1-link-established"));
+  takeShot("1-link-established", procs.get(INSTANCES[0].n)?.pid);
 });
 
 step("A→B 送达 + Ack 回收 + 无重复", async () => {
@@ -2705,7 +2731,8 @@ step("L-B 故障注入：两端重启后仍正确", async () => {
   //    Windows 腿要自己实现采集器，在那之前这格就明着红着。
   //    同理 macOS 上**屏幕被锁**也红：`screencapture` 退 0 却截到一张整屏纯色，
   //    而 `shotIsReal` 现在会把纯色帧判掉（2026-09-27 实测到的洞）。报错里会说是哪一种。
-  shotFiles.push(captureShot(RUN_DIR, "2-after-restart"));
+  takeShot("2-after-restart", procs.get(INSTANCES[0].n)?.pid,
+    "这一步开头 stopAll() 把两台都停了 ⇒ 此刻没有窗口可抓；这一张只是整屏现场，不是「界面在那个窗口里」的证据");
   const realShots = shotFiles.filter(Boolean);
   // ⚠️ 这条**只**证明"抓到了两帧、且不是纯色"。它证明不了"应用界面在那一帧里"：
   //   2026-09-27 实测 —— 屏幕锁着（loginwindow 以 layer 2004 盖住整屏）时全屏抓帧
@@ -3368,6 +3395,8 @@ function writeReport(failed) {
     instances: INSTANCES.map((i) => ({ label: i.label, n: i.n, port: i.port, runtimeId: (i.n === 1 ? idA : idB)?.runtimeId })),
     trace: { msg_id: msgId ?? null, transfer_id: xferId ?? null, ids: [...new Set(MINTED_IDS)] },
     shots: shotFiles.filter(Boolean).map((f) => path.relative(RUN_DIR, f)),
+    // #91：那几张帧各自的来源（窗口帧带 pid / 窗口 id / 几何；整屏兜底带"为什么"）。
+    shot_sources: shotSources,
     // §十六要的「步骤 + 耗时 + 日志关联」：把闭包剔掉，只留事实。
     // 没跑到的步骤（fail-fast 跳过的）必须自带终态 NOT-RUN —— 否则"没有 verdict"会在渲染时落到
     // 「其他都算通过」那一支，报告就把没跑过的一格标成 ✅。
@@ -3402,7 +3431,15 @@ ${tr}
 </table>
 ${logEx ? `<h2>失败步骤的日志关联</h2>${logEx}` : ""}
 ${sum.shots.length
-  ? sum.shots.map((rel) => `<p><code>${rel}</code></p><img src="${rel}" width="1000" alt="${esc(rel)}">`).join("\n")
+  ? sum.shots.map((rel) => {
+      // #91：图注必须说清这张是**谁的哪扇窗**，说不出就写"整屏兜底 + 原因" —— 不许只放一张图暗示"界面在里面"。
+      const src = (sum.shot_sources ?? []).find((x) => x.file === rel);
+      const note = !src ? "来源未记录"
+        : src.source === "window"
+          ? `按窗口 id 抓 · 实例 pid ${src.pid} · 窗口 ${src.window_id} · 该窗 ${src.bounds} · 图 ${src.png} · scale ${src.scale}`
+          : `整屏兜底 · ${src.why ?? "原因未记"}`;
+      return `<p><code>${rel}</code> · ${esc(note)}</p><img src="${rel}" width="1000" alt="${esc(rel)}">`;
+    }).join("\n")
   : `<p>⚠️ 本轮没有截图：本平台没有采集器 ⇒ §十六 这一格在它上面仍未做，不算通过。</p>`}
 <p style="color:#666">日志/DB 快照在本目录：<code>instance-*.app.log</code> · <code>sqlite-*/</code> · <code>recv/</code> · <code>after-*.db</code></p>
 <p style="color:#666">⚠️ 标 ⚠️ NO-ASSERT 的步骤只靠「超时即抛」把关，本身没下断言 —— 覆盖度按红字算，不按步骤数算。<br>⛔ 未跑 = 前面的步骤报红后 fail-fast 跳过的，什么都没验过，不许算进通过格。</p>`);
