@@ -38,6 +38,12 @@
   `messageMentionsMe(`」，搬完必然为空 —— 那会让守卫自己变成假红；
   改成 ① store 必须走 `freshMentionedConvs(`，② `freshMentionedConvs` 内部必须真的调
   `messageMentionsMe`。②是上面第三条 lie 实测抓到的那种坏法，不是设想出来的。
+- ★ 搬家之后**两层 E2E 都重跑了**（判层口径是"改动落在哪一层会执行的代码"：这份改动进的是前端 bundle，
+  两层都跑二进制，而任务轮那枚徽标正走被注入的 `alsoMentionsMe` ⇒ 不能只算本地层）：
+  本地层 18 步 **726.7s** / `❌` 计数 0 / 退码裸取 0（群聊轮 36 条全绿），
+  发版前层 3 步 **78.0s** / `❌` 0 / 退 0（gossip3 25、gossip-late 23、task 49）。
+  同批 `python3 scripts/verify-guards.py --only mention-identity` 那四条注入用例全部
+  「改坏即 FAIL、恢复即 PASS」（退 0）⇒ 三态那条注入锚点没有被搬家跑空。
 
 ### §三十二/§三十三 的收尾审计：第二阶段 35 节逐条对账表进了复审报告
 - `docs/final-architecture-review.md` 末尾新增「附：第二阶段总执行指令 35 节 · 逐条对账」——每行给
