@@ -320,6 +320,27 @@ window.__probe = (() => {
         registered: (window.__pinia && window.__pinia._s && window.__pinia._s.size) || -1 },
     };
   };
+  /**
+   * 量「描述里那枚 @ 高亮」与「描述那个带 max-h + overflow-hidden 的裁切框」两个矩形。
+   * 框用 class 片段找（Tailwind 那个 max-h-[…] 写成属性选择器最稳，不去猜具体值），
+   * 行高**由 computed style 现读**——写死 19.5px 就是下一个漂移点。
+   */
+  H.mentionClip = async () => {
+    const box = document.querySelector('[class*="max-h-"][class*="overflow-hidden"]');
+    if (!box) throw new Error('找不到描述那个裁切框（class 口径变了？）');
+    const tok = box.querySelector('.mention-token--self') || box.querySelector('.mention-token');
+    if (!tok) throw new Error('描述里找不到 @ 高亮那一段（渲染没发生）');
+    const b = box.getBoundingClientRect(), t = tok.getBoundingClientRect();
+    const cs = window.getComputedStyle(box);
+    return {
+      boxTop: Math.round(b.top * 100) / 100, boxBottom: Math.round(b.bottom * 100) / 100,
+      boxH: Math.round(b.height * 100) / 100,
+      scrollH: Math.round(box.scrollHeight), clientH: Math.round(box.clientHeight),
+      tokTop: Math.round(t.top * 100) / 100, tokBottom: Math.round(t.bottom * 100) / 100,
+      tokH: Math.round(t.height * 100) / 100,
+      lineHeight: cs.lineHeight, fontSize: cs.fontSize, selfToken: !!tok.classList.contains('mention-token--self'),
+    };
+  };
   H.grid = () => Array.from(document.querySelectorAll('button:not(#trigger)'));
   H.gridInfo = () => {
     const btns = H.grid();
@@ -700,6 +721,12 @@ async function runTaskCard(cdp, url) {
     msg_id: "m-probe-1", sender_id: "dev-me", kind: "todo",
     content: JSON.stringify(payload), ts: 1700000000000,
   });
+  // #116 用的第二份：描述长到必然超过那个框的三行 ⇒ 能证明"这层确实在裁"
+  const MSG_LONG = JSON.stringify({
+    msg_id: "m-probe-clip", sender_id: "dev-me", kind: "todo",
+    content: JSON.stringify({ ...payload, description: "@小布 " + "补齐到四行之多的填充文字。".repeat(24) }),
+    ts: 1700000000000,
+  });
   // 自己视角的标签从 i18n 取，不在这里抄「@你」字面量（本仓刚给这条加了禁令）
   const labels = await cdp.eval(`(async () => {
     const u = await import('/src/utils/todos.ts');
@@ -742,6 +769,32 @@ async function runTaskCard(cdp, url) {
   check("换成我的视角：同一段 @ 渲染成 i18n 里那个自我标签（§9 的运行时那一半）",
     t1.includes(labels.selfTag) && selfEls === 1, "标签出现且 --self 恰好 1 个",
     `${JSON.stringify(t1.slice(0, 60))} / --self=${selfEls}`);
+
+  // —— #116：描述里的 @ 高亮会不会被那层 `max-h + overflow-hidden` 裁一半 ——
+  // ⚠️ 只钉「高亮完整可见」会变成恒真（这层根本没裁的时候它也成立）⇒ 必须配一条
+  //    「裁切机制确实活着」的对照（③），两者同时成立才算判到了风险本身。
+  await mount({
+    message: JSON.parse(MSG), mentionNames: ["小布", "我"],
+    selfMention: { name: "小布", label: labels.selfTag },
+  });
+  const clip = await cdp.eval("window.__probe.mentionClip()");
+  const lhPx = Number(String(clip.lineHeight).replace(/[^0-9.]/g, "")) || 0;
+  check("描述里那枚 @ 高亮完整落在裁切框内（上缘与下缘都不被切）",
+    clip.tokTop >= clip.boxTop - 1 && clip.tokBottom <= clip.boxBottom + 1,
+    "token 上下缘都在框内", `tok=${clip.tokTop}..${clip.tokBottom} box=${clip.boxTop}..${clip.boxBottom}`);
+  check("高亮没把行盒撑破（token 高 ≤ computed line-height × 1.05；行高由样式现读不写死）",
+    lhPx > 0 && clip.tokH <= lhPx * 1.05, `≤ ${(lhPx * 1.05).toFixed(2)}（行高 ${clip.lineHeight}）`,
+    `${clip.tokH} / fontSize=${clip.fontSize}`);
+  const longDesc = await (async () => {
+    await mount({
+      message: JSON.parse(MSG_LONG), mentionNames: ["小布", "我"],
+      selfMention: { name: "小布", label: labels.selfTag },
+    });
+    return cdp.eval("window.__probe.mentionClip()");
+  })();
+  check("对照：把描述写到 4 行 ⇒ 那个框确实在裁（scrollHeight > clientHeight）—— 证明上面两条不是恒真",
+    longDesc.scrollH > longDesc.clientH, "scrollHeight > clientHeight",
+    `${longDesc.scrollH} > ${longDesc.clientH}? 高亮=${longDesc.tokH}px 行高=${longDesc.lineHeight}`);
 
   // —— 实时状态表那一环（#23：载荷是创建时快照，卡片必须查父层那张表）——
   await mount({
