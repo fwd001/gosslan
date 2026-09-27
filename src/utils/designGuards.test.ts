@@ -1315,3 +1315,49 @@ test("src 下每个修饰类都能在样式里找到定义", () => {
   // "解析器今天到底认出了几枚"由上一条用例防空转（同一条口径，不留第二把尺子）
   assert.deepEqual(bad, [], `这些修饰类挂上去了却没有样式定义：\n${bad.join("\n")}`);
 });
+
+/**
+ * 整屏图片覆盖层只许长在**统一渲染点**（§12：收藏里的图必须走统一图片预览）。
+ *
+ * 为什么上一那条判据不够：它数的是 `<ImageLightbox>` 标签与名字里带 `lightbox` 的本地 ref。
+ * 而"自己长一个查看层"这件事的**形状**根本不是这两条 —— 用户报的收藏页拿的是一个叫
+ * `viewer` 的本地 ref + 一句 `fixed inset-0` 的整屏按钮里包 `<img :src="viewer">`，
+ * 于是判据在、它抓不到 ⇒ 那是**半空转的判据**，比没有判据更坏（会让人以为这一格有人守着）。
+ *
+ * 这条按形状抓：模板里（剥掉 HTML 注释之后）凡是一个带 `fixed` 且带 `inset-0` 的元素**内部**
+ * 出现 `<img :src="X">`，而 X 是本组件 script 段里 `const X = ref(...)` 声明的 —— 就是第二个预览实例。
+ * 白名单只有那两个渲染点（壳层覆盖层 + 预览窗口）；缩略图不算（它不在整屏元素内部，
+ * 且绑的是数组/prop 而不是本地图像状态）。
+ *
+ * 反向自证（非空转）：把 FavoritePanel 接进统一预览之后这一条应当绿；
+ * 谁再写一个私有查看层 ⇒ 这一条点名报红，而上一那条不会。
+ */
+test("整屏图片覆盖层只许长在统一渲染点（私有 viewer 是第二个预览实例）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(join(srcDir, "components")).concat(collectVueFiles(join(srcDir, "layouts")));
+  const ALLOWED = new Set(["layouts/ResponsiveLayout.vue", "components/window/PreviewWindow.vue"]);
+  const offenders: string[] = [];
+  for (const f of files) {
+    const rel = f.replace(srcDir + "/", "");
+    if (ALLOWED.has(rel)) continue;
+    const full = readFileSync(f, "utf8");
+    const tplAt = full.indexOf("<template>");
+    if (tplAt < 0) continue;
+    const script = full.slice(0, tplAt);
+    const tpl = full.slice(tplAt).replace(/<!--[\s\S]*?-->/g, "");
+    const localRefs = new Set<string>();
+    for (const m of script.matchAll(/const\s+([A-Za-z_$][\w$]*)\s*=\s*ref[<(]/g)) localRefs.add(m[1]);
+    if (!localRefs.size) continue;
+    // 逐个找"整屏元素"：class 里同时出现 fixed 与 inset-0 的开标签，往后取到它内部 900 字符
+    for (const m of tpl.matchAll(/<([a-zA-Z]+)[^>]*class="[^"]*\bfixed\b[^"]*\binset-0\b[^"]*"[^>]*>/g)) {
+      const inner = tpl.slice(m.index, m.index + 900);
+      const img = /<img\b[^>]*:src="([A-Za-z_$][\w$]*)"/.exec(inner);
+      if (img && localRefs.has(img[1])) offenders.push(`${rel}（整屏元素里直出本地 ref ${img[1]}）`);
+    }
+  }
+  assert.deepEqual(
+    [...new Set(offenders)],
+    [],
+    "这些组件自己长了一层整屏图片查看器 ⇒ 必须改走 useImagePreviewStore.openGallery()（统一渲染点只有壳层覆盖层与预览窗口）",
+  );
+});

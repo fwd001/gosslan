@@ -10,6 +10,22 @@
 
 ## [Unreleased]
 
+### 修复（收藏里的图片是第二个预览实例，第二阶段 §12）
+- **现象比报告更严重一格**：收藏详情里那张 `<img>` **根本没有点击入口**，卡片（群任务）图用的
+  `TodoImageThumb` 又因 `clickable` 默认 `false` 而点不动 ⇒ "点图片看大图"在收藏里其实走不通；
+  唯一能看图的是一条私有路径：`previewImage()` 把 objectURL 塞进本地 `viewer` ref，模板末尾自己写了
+  一层 `fixed inset-0` 整屏覆盖层 —— 正是 §12 禁止的"每页各写一套 viewer"，而且没有左右切换。
+- **改法**：删掉那层私有覆盖段与 `viewer` 状态，统一走 `useImagePreviewStore.openGallery(items, i, from)`。
+  单图收藏用 `{name, dataSrc: objectURL}`（字节仍**按收藏 id 异步取**，不把 BLOB 塞回收录对象）；
+  卡片图用 `{cid: sha256, name}` 整组交给预览（与任务详情同一形状）⇒ 顺带修掉"收藏里的卡片图只能看被点那一张"。
+  `from` 传 `fav:<收藏id>`，返回时按 `closeIfFrom` 只收最上面那层（与任务详情/合并卡片同一套规矩）。
+- **顺带补的是判据自己的盲点**：已有的那条"图片预览只有一处渲染点"只数 `<ImageLightbox>` 标签与**名字里带
+  `lightbox`** 的本地 ref —— `viewer` 这个形状（本地 ref + 整屏元素里直出 `<img>`）从缝里过去，判据在而抓不到，
+  比没有判据更坏。新增一条按**形状**抓的：模板里 `fixed`+`inset-0` 元素内部直出本组件 `ref` ⇒ 只许那两个渲染点。
+  非空转＝同一份判据换输入：改码前它点名 `components/FavoritePanel.vue（整屏元素里直出本地 ref viewer）`，
+  改完 87/87 全绿（全仓此类裸 ref 绑定现算只有 4 处，另三处是缩略图/组件自身，不是整屏覆盖层）。
+
+
 ### 新增（⌘K / Ctrl+K 打开搜索，原生感走查 N3）
 - `src/utils/shortcuts.ts` 的映射多一条：`⌘K`（非 macOS 为 `Ctrl+K`）与既有的 `⌘F` 打开**同一个**搜索动作，
   不新造第二个动作名。判定仍是纯函数 ⇒ 有判据：先写用例看它红（`actual: null / expected: 'gosslan:focus-search'`），

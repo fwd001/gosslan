@@ -25,6 +25,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { useBackLayer } from "@/composables/useBackLayer";
 import ContextMenu from "@/components/ContextMenu.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
@@ -71,6 +72,8 @@ const emit = defineEmits<{ (e: "close"): void }>();
 
 const app = useAppStore();
 const chat = useChatStore();
+/** 看图只有一个入口：统一的预览能力（桌面走单例窗口、移动走壳层覆盖层，让位逻辑在 store 里）。 */
+const preview = useImagePreviewStore();
 const { copyContent } = useClipboard();
 
 /** 头部标题：选中某条收藏时显示该条名称，否则显示收藏总数/标题。 */
@@ -78,6 +81,9 @@ const favTitle = computed(() => (active.value ? displayName(active.value) : head
 
 /** 统一返回：详情态先退回列表，列表态再关闭整个收藏层（与框架返回键一致）。 */
 function onFavBack() {
+  // 预览开着时先收预览（与任务详情/合并卡片同一套「只收最上面那层」；
+  // `closeIfFrom` 保证只有这份相册确实是收藏给出去的才收，不误伤别的入口）。
+  if (active.value) preview.closeIfFrom(favSource(active.value.id));
   if (active.value) active.value = null;
   else emit("close");
 }
@@ -116,7 +122,6 @@ const active = ref<FavoriteEntry | null>(null);
 /** 图片缩略图：收藏 id → objectURL（按需加载；删除时释放）。 */
 const thumbs = ref<Record<string, string>>({});
 const menu = ref<{ x: number; y: number; item: FavoriteEntry } | null>(null);
-const viewer = ref<string | null>(null);
 const pendingDelete = ref<FavoriteEntry | null>(null);
 const forward = ref<FavoriteEntry | null>(null);
 
@@ -396,6 +401,11 @@ async function copyItem(f: FavoriteEntry) {
   }
 }
 
+/** 这份相册属于哪一条收藏：预览在来源页关闭时按它自收（见 store 的 `closeIfFrom`）。 */
+function favSource(id: string) {
+  return `fav:${id}`;
+}
+
 async function previewImage(f: FavoriteEntry) {
   if (!f.available) {
     app.toast(t("favorite.mediaGone"), "error");
@@ -406,7 +416,24 @@ async function previewImage(f: FavoriteEntry) {
     app.toast(t("favorite.mediaGone"), "error");
     return;
   }
-  viewer.value = url;
+  // 收藏不再自己攒一层查看器（§12）：看图交给统一能力，桌面走单例预览窗口、移动走壳层覆盖层。
+  // 字节仍**按收藏 id 异步取**，objectURL 放进 `dataSrc` —— 不把 BLOB 塞回收录对象。
+  preview.openGallery([{ name: displayName(f), dataSrc: url }], 0, favSource(f.id));
+}
+
+/**
+ * 卡片收藏（群任务）里的那组图：整组交给统一预览，于是**可以左右翻**
+ * （以前收藏详情只能看被点的那一张，且要点一下"查看"按钮才看得到）。
+ * 形状与任务详情一致：`{ cid: sha256, name }`，字节由预览侧按 cid 取。
+ */
+function openCardImage(i: number) {
+  const f = active.value;
+  if (!f || activeCardImages.value.length === 0) return;
+  preview.openGallery(
+    activeCardImages.value.map((im) => ({ cid: im.sha256, name: im.name })),
+    i,
+    favSource(f.id),
+  );
 }
 
 async function openItem(f: FavoriteEntry) {
@@ -698,8 +725,13 @@ async function confirmDelete() {
             <img
               v-else-if="active.kind === 'image'"
               :src="thumbs[active.id] ?? ''"
-              class="max-h-72 w-full rounded-[var(--gosslan-radius-md)] object-contain"
+              class="max-h-72 w-full cursor-zoom-in rounded-[var(--gosslan-radius-md)] object-contain"
               :alt="displayName(active)"
+              :title="t('favorite.viewImage')"
+              role="button"
+              tabindex="0"
+              @click="previewImage(active)"
+              @keydown.enter.prevent="previewImage(active)"
             />
 
             <div v-else-if="active.kind === 'merge'" class="space-y-2">
@@ -752,7 +784,13 @@ async function confirmDelete() {
                   <!-- 群任务图片：与聊天里任务卡**同一组件**（按 cid 取字节 + 退避重试）。
                        用户 2026-09-21：「收藏的详情里群任务图片不显示，你要做就做完整」。 -->
                   <div v-if="activeCardImages.length" class="mt-2 flex flex-wrap gap-1.5">
-                    <TodoImageThumb v-for="img in activeCardImages" :key="img.sha256" :image="img" />
+                    <TodoImageThumb
+                      v-for="(img, i) in activeCardImages"
+                      :key="img.sha256"
+                      :image="img"
+                      clickable
+                      @open="openCardImage(i)"
+                    />
                   </div>
                 </div>
               </div>
@@ -890,16 +928,6 @@ async function confirmDelete() {
         {{ t("favorite.delete") }}
       </button>
     </ContextMenu>
-
-    <!-- 图片查看：整屏点一下就走 -->
-    <button
-      v-if="viewer"
-      class="fixed inset-0 z-[90] flex items-center justify-center bg-black/80"
-      :aria-label="t('common.closeEsc')"
-      @click="viewer = null"
-    >
-      <img :src="viewer" class="max-h-[85vh] max-w-[92vw] object-contain" alt="" />
-    </button>
   </div>
 
   <!-- 转发弹窗：必须是根节点的同级，不能放进页面容器（页面一关会被一起卸载） -->
