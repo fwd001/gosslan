@@ -9,6 +9,7 @@
 import { computed, ref, watch } from "vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
+import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import { TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, type TodoItem, type TodoStatus } from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
@@ -36,6 +37,12 @@ const props = defineProps<{
   canEditAssignees: boolean;
   /** 名字解析（id → 昵称）；由看板注入 `memberProfile`，避免这里再依赖成员数据源。 */
   nameOf: (id: string) => string;
+  /**
+   * @ 渲染的判定输入（与聊天正文同一份推导）。同 `nameOf` 一样由看板注入 ——
+   * 本弹窗刻意不直接依赖成员数据源。
+   */
+  mentionNames?: string[];
+  selfMention?: { name: string; label: string } | null;
 }>();
 
 const emit = defineEmits<{
@@ -193,7 +200,12 @@ watch(
           v-if="item.description"
           class="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-[var(--gosslan-text)]"
         >
-          {{ item.description }}
+          <!-- 与聊天里的同一条 @ 走同一份渲染件（§9）：判定单源在 utils/linkify。 -->
+          <MentionText
+            :text="item.description"
+            :mention-names="mentionNames"
+            :self-mention="selfMention"
+          />
         </p>
         <p v-else class="text-[12px] text-[var(--gosslan-text-2)]">{{ t("todo.noDescription") }}</p>
       </div>

@@ -1134,6 +1134,45 @@ CASES: list[Case] = [
         tags=["frontend", "image", "todo"],
     ),
     Case(
+        name="任务描述的 @ 必须走统一渲染件（退回裸插值必须被点名）",
+        why="第二阶段 §9 要的是**同一份 @ 渲染覆盖聊天和任务**。语义早就单源在 `utils/linkify`，"
+        "缺的是覆盖面：任务卡与任务详情里是 `{{ todo.description }}` 这种裸插值 ⇒ 描述里 @ 到我时"
+        "既不高亮、也不显示「@你」，与同一条消息在聊天里的表现不一致（§6① 那一类：同一个判断两处各画一遍）。"
+        "新护栏按形状数任务这一族的描述渲染点（归属由代码自己声明：引用 TodoItem/parseTodo），"
+        "它的 RED 是拿**真缺陷态**跑出来的（迁移前点名 components/TodoCardBubble.vue 与 TodoDetailDialog.vue）。"
+        "本用例把那处破坏登记成可重跑形态：把卡片的渲染件退回裸插值 ⇒ 必须红。",
+        file=ROOT / "src" / "components" / "TodoCardBubble.vue",
+        injections=[(
+            '      <MentionText\n'
+            '        :text="todo.description"\n'
+            '        :mention-names="mentionNames"\n'
+            '        :self-mention="selfMention"\n'
+            '      />',
+            '      {{ todo.description }}',
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="这些任务描述是裸插值",
+        tags=["frontend", "mention", "todo"],
+    ),
+    Case(
+        name="查看者视角的 @ 文案不许写进生产码（写死就是把自我视角烧进公共文案）",
+        why="「@你」有两种相反方向的破坏：① 渲染端图省事直接把文案写死（换语言/换视角就错）；"
+        "② 更坏的在**发送或落库侧替换文案**，那等于把我的视角烧进公共数据，对端与历史跟着错 —— "
+        "方向②由群聊轮那条跨进程判据钉（库里那串字节必须逐字等于原文），本条钉方向①："
+        "文案唯一来源是 `src/i18n/locales.ts`，生产码只能 `t(\"mention.self\")` 取。"
+        "注入形态是真会写出来的那种：渲染件里对 `mention-self` 段直接三元写死字面量。",
+        file=ROOT / "src" / "components" / "message" / "MentionText.vue",
+        injections=[(
+            '    <span v-else>{{ seg.value }}</span>',
+            '    <span v-else>{{ seg.kind === "mention-self" ? "@你" : seg.value }}</span>',
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="把查看者视角的文案写死了",
+        tags=["frontend", "mention", "i18n"],
+    ),
+    Case(
         name="焦点可见（outline-none 必须有自己的焦点指示）",
         why="全局焦点环写在 `:where()` 里（特异性 0），会被 `.outline-none`（特异性 0,1,0）"
         "静默覆盖 —— 7 处输入框（含最高频的消息输入框）因此完全没有焦点指示，"

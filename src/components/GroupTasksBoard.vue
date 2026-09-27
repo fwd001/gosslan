@@ -25,6 +25,7 @@ import { isAndroid } from "@/utils/platform";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
+import { useMentionContext } from "@/composables/useMentionContext";
 import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
@@ -69,6 +70,8 @@ const chat = useChatStore();
 /** 全局图片预览（#40）：本组件只给数组与来源标记，渲染与切换在那唯一的一份实例里。 */
 const preview = useImagePreviewStore();
 const { memberProfile, myId } = useMemberProfile();
+/** @ 渲染的判定输入：与聊天正文同一份推导（`useMentionContext`），再注入给详情弹窗。 */
+const { mentionNames, selfMention } = useMentionContext(() => props.groupId);
 
 const convId = computed(() => (props.groupId ? `group:${props.groupId}` : ""));
 const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? null);
@@ -938,6 +941,8 @@ watch(
     :can-edit-structure="detailItem ? canEditStructure(detailItem) : false"
     :can-edit-assignees="detailItem ? canEditAssigneesOf(detailItem) : false"
     :name-of="(id: string) => memberProfile(id).name"
+    :mention-names="mentionNames"
+    :self-mention="selfMention"
     @close="closeDetail"
     @status="(s: TodoStatus) => detailItem && setStatus(detailItem, s)"
     @complete="detailItem && completeTodo(detailItem)"

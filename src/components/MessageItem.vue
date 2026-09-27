@@ -1291,6 +1291,8 @@ async function copyFileToClipboard() {
             :message="message"
             :card-style="cardStyle"
             :live-status="todoLiveStatus"
+            :mention-names="mentionNames"
+            :self-mention="selfMention"
             :mine="mine"
             @open="emit('open-tasks', $event)"
           />

@@ -1406,6 +1406,89 @@ test("每个任务图片缩略图调用点都必须可点（clickable 默认 fal
   );
 });
 
+/**
+ * 任务描述里的 @ 必须走**同一份**渲染件（第二阶段 §9「统一的 @ 渲染覆盖聊天和任务」）。
+ *
+ * 语义早就单源在 `utils/linkify`（`mention` / `mention-self` 两个 kind，由调用方传 `self` 决定
+ * 显示成什么），缺的是**覆盖面**：聊天气泡与长文弹窗都渲染 @，而任务卡与任务详情里
+ * `{{ todo.description }}` / `{{ item.description }}` 是裸插值 ⇒ 描述里 @ 到我时既不高亮、
+ * 也不显示「@你」，与同一条消息在聊天里的表现不一致。
+ *
+ * 判据的输入由代码自己声明（§6① 的教训：同一个判断在两处各写一次迟早分叉）：
+ * "属于任务这一族"= 该文件引用 `TodoItem` 或 `parseTodo`，**不是**我手抄的文件名单；
+ * "在渲染描述"= 模板里（剥掉 HTML 注释之后）出现 `{{ X.description }}` 这种裸插值。
+ * 看板上那两处是**输入框**（`v-model="draft.description"`），本来就该是纯文本 ⇒ 不算渲染点。
+ */
+test("任务描述必须经统一渲染件出 @，不许再裸插值", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(join(srcDir, "components"));
+  const offenders: string[] = [];
+  let sites = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    // 归属由代码声明：引用任务这一族的类型/解析函数，才算"任务描述"的宿主
+    if (!/TodoItem|parseTodo/.test(src)) continue;
+    const tplAt = src.indexOf("<template>");
+    if (tplAt < 0) continue;
+    const tpl = src.slice(tplAt).replace(/<!--[\s\S]*?-->/g, "");
+    // 分母数的是"这一族里渲染描述的点"，**两种写法都算**（裸插值与 `:text="x.description"`）：
+    // 只数违规那种的话，全部迁完之后 sites=0，这条判据就分不清"迁完了"与"整族被摘掉了"。
+    const renders = tpl.match(/[\w$]+(?:\.[\w$]+)*\.description\b/g) ?? [];
+    sites += renders.length;
+    for (const m of tpl.matchAll(/\{\{\s*[\w$]+(?:\.[\w$]+)*\.description\s*\}\}/g)) {
+      offenders.push(`${f.replace(srcDir + "/", "")}（${m[0]}）`);
+    }
+  }
+  // 空转前置：一个渲染点都没数到 ⇒ 任务描述被整族摘掉或改名了，这条判据就恒过
+  assert.ok(sites > 0, "一个「任务描述」渲染点都没数到 —— 改名/搬走的话这条判据已经空转");
+  assert.deepEqual(
+    offenders,
+    [],
+    `这些任务描述是裸插值 ⇒ 描述里的 @ 不高亮、@到我也不显示「@你」，与聊天里的同一句话不一致：` +
+      offenders.join("、") + " —— 改法是换 <MentionText :text=... />（语义仍走 utils/linkify）",
+  );
+});
+
+/**
+ * 「@你」「[任务@你]」这类**查看者视角的文案**不许写进生产码（第二阶段 §8 与 §9 的交叉锁）。
+ *
+ * 为什么钉字面量而不是钉调用：这一类缺陷有两种相反的发生方向 —— ① 渲染端图省事直接把
+ * `@你` 写死（换语言/换视角就错）；② 更坏的一种是**在发送或落库侧替换文案**，那等于把
+ * "我自己的视角"烧进公共数据，对端与历史都会跟着错。方向②由群聊轮的跨进程判据钉
+ * （库里那串字节必须逐字等于原文），这条钉方向①：文案的唯一来源是 `src/i18n/locales.ts`，
+ * 生产码只能通过 `t("mention.self")` / `t("todo.mentionYou")` 取。
+ *
+ * 剥注释是因为这些字面量在注释里大量出现在（说明机制），**注释不是文案来源**；测试文件豁免
+ * （`linkify.test.ts` 拿它当断言输入，那是判据不是产品文案）。
+ */
+test("查看者视角的 @ 文案只许存在于 i18n 名单里，生产码不许写死", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const walk = (dir: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full, out);
+      else if (/\.(vue|ts)$/.test(e.name)) out.push(full);
+    }
+    return out;
+  };
+  const LITERALS = ["@你", "[任务@你]"];
+  const offenders: string[] = [];
+  let scanned = 0;
+  for (const f of walk(srcDir)) {
+    const rel = f.replace(srcDir + "/", "");
+    if (rel === "i18n/locales.ts" || rel.endsWith(".test.ts")) continue;
+    scanned += 1;
+    const code = readFileSync(f, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "");
+    for (const lit of LITERALS) if (code.includes(lit)) offenders.push(`${rel}（含 ${lit}）`);
+  }
+  // 前置：真的扫到了东西，否则"零违规"只是因为路径写错
+  assert.ok(scanned > 50, `只扫到 ${scanned} 个文件 —— 目录口径不对，这条判据在空转`);
+  assert.deepEqual(offenders, [], `这些生产码把查看者视角的文案写死了：${offenders.join("、")}`);
+});
+
 
 /**
  * 「与我相关未完成任务数」这枚蓝色徽标只许一处算、两处消费同一份（第二阶段 §23）。

@@ -19,7 +19,7 @@ import MergeCardModal from "@/components/message/MergeCardModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { estimateMessageHeight } from "@/utils/messageHeight";
 import { launchAuxWindow, isWindowOpening } from "@/composables/useWindowLauncher";
-import { MENTION_ALL_TOKEN } from "@/utils/messages";
+import { useMentionContext } from "@/composables/useMentionContext";
 import { fileToDataUrl } from "@/utils/imageBytes";
 import { MAX_MERGE_ITEMS, buildMergePayload } from "@/utils/mergeCard";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
@@ -486,30 +486,13 @@ const mentionMembers = computed(() => {
   const me = app.device?.device_id;
   return g.members.filter((id) => id !== me).map((id) => ({ id, name: chat.nicknameOf(id) }));
 });
-/** 渲染端 @ 高亮用的成员名列表（含自己：别人发的消息里可以 @ 我）。
- *  ⚠️ 自己的名字必须直接取本机昵称：`nicknameOf(我的 device_id)` 查不到——
- *  我既不在自己的好友表里、也不在 peers（那是"别的节点"），会退化成设备指纹，
- *  导致别人 @我 时匹配不上、不高亮，与 @其他人 的样式不一致。 */
-/** 「@到自己」在自己视角里显示成 `@你`（用户 2026-09-26）。
- *  ⚠️ 名字必须与上面 `mentionNames` 里的"自己"取同一处（本机昵称，而不是
- *  `nicknameOf(我的 device_id)`）—— 否则段永远匹配不上，只有别人那侧显示正常。 */
-const selfMention = computed(() => {
-  const name = app.device?.nickname ?? "";
-  return name ? { name, label: t("mention.self") } : null;
-});
-
-const mentionNames = computed(() => {
-  const gid = activeGroupId.value;
-  const g = gid ? chat.groups.find((x) => x.id === gid) : null;
-  if (!g) return [];
-  const me = app.device?.device_id;
-  const myName = app.device?.nickname ?? "";
-  // 其余成员保持原样（nicknameOf 查不到时回退设备指纹，与插入端行为一致）；
-  // 只有"自己"这一项必须换成昵称，否则 @我 永远匹配不上。
-  // 「所有人」补进名单，让 @所有人 与 @成员 高亮样式一致（buildMentionRe 会去重，
-  // 真有成员叫这个名字也不会生成重复分支）。
-  return [...g.members.map((id) => (id === me ? myName || id : chat.nicknameOf(id))), MENTION_ALL_TOKEN];
-});
+/**
+ * @ 渲染的**判定输入**（成员名单 + "我自己是谁"）抽到 `useMentionContext`。
+ * 语义一直单源在 `utils/linkify`，缺的是输入的单一来源：任务卡与任务详情现在也要渲染
+ * 同一句话里的 @，两处各算一次迟早分叉（那两个坑的具体形状记在 composable 里：
+ * 自己那一项必须取本机昵称、「所有人」要补进名单）。
+ */
+const { mentionNames, selfMention } = useMentionContext(() => activeGroupId.value);
 
 /**
  * 当前会话第一条未读在**本列表（已过滤）**里的下标。

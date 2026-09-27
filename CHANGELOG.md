@@ -9,6 +9,35 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 修复（第二阶段 §9「同一份 @ 渲染要覆盖聊天和任务」：任务描述里的 @ 以前完全不渲染）
+- **机制**：@ 的语义一直单源在 `utils/linkify`（`mention` / `mention-self` 两个 kind，"算不算 @ 到我"
+  只由调用方传进来的 `self` 决定 ⇒ 同一条文本在我这边显示「@你」、在对端仍是名字）。缺的是**覆盖面**：
+  聊天气泡与长文弹窗都渲染，而任务卡与任务详情里是 `{{ todo.description }}` / `{{ item.description }}`
+  裸插值 ⇒ 描述里 @ 到我时既不高亮、也不显示「@你」，与同一条消息在聊天里的表现不一致。
+- **新增两件**：`src/components/message/MentionText.vue`（只负责把 `linkify` 的段画出来，样式走
+  `style.css` 全局的 `.mention-token` / `.mention-token--self`）与
+  `src/composables/useMentionContext.ts`（@ 判定的**输入**：成员名单 + 我自己是谁）。
+  `ChatWindow` 里原来那份推导改成消费同一个 composable ⇒ 不再有两处各算一次（§6① 那一类）。
+- **覆盖面**：任务卡（由 `MessageItem` 透传）与任务详情弹窗（由看板注入，沿用该弹窗既有的
+  "名字解析由看板给"的设计）。**看板上那两处是输入框**（`v-model="draft.description"`），
+  本来就该是纯文本 ⇒ 不动。
+- **顺带的一致性**：任务描述里的表情 token 现在也渲染成图片（与聊天同一套 `splitEmoji`），
+  否则同一句话在聊天里是图形、在任务里是 `:smile:` 字面 —— 那正是 §9 要避免的"两套渲染"。
+- ⚠️ **刻意没做的（§34 的取舍，不是遗漏）**：没有把 `MessageTextBubble` 迁进新渲染件。
+  那是全应用最热的渲染路径，而语义本来就已经单源；模板搬家的收益只有行数，代价是在**没有 DOM 地基**
+  的前提下重写气泡视觉（对比色那套是按每条消息实际底色现算的）。现在的事实是
+  **"一份语义 + 三处模板"**，将来谁要合并必须带运行时证据，不能凭"更漂亮"合。
+- **护栏两条**：① 按形状数任务这一族的描述渲染点（归属由代码自己声明：引用 `TodoItem`/`parseTodo`），
+  出现裸插值即点名 —— 它的 RED 是拿**真缺陷态**跑出来的（迁移前一次点名 `TodoCardBubble.vue` 与
+  `TodoDetailDialog.vue`）；② 「@你」「[任务@你]」这类查看者视角文案只许存在于 `src/i18n/locales.ts`，
+  生产码出现即红（剥注释、测试文件豁免；前置"真的扫到 >50 个文件"防自造假绿）。
+  两条都登记成可重跑用例 ⇒ **用例 191 → 193**。
+  ①那条还多校了一次自己：初版把分母写成"只数违规那种"，全部迁完之后 `sites=0` 会让判据**分不清
+  "迁完了"与"整族被摘掉了"** ⇒ 分母改成"两种写法都数"。
+- **边界照实写两句**：判定**仍然按昵称**（链路里没有 mention id，#103 待拍板）⇒ 重名群成员会互相
+  误点亮，这次改动没有解决它，也不假装解决；而「@你」在真界面上长什么样仍**没有机器验证**
+  （运行时探针目前只覆盖表情面板与搜索弹窗，任务卡那一格是 #97）。
+
 ### 修复（§12「要做就做完整」的**第二面**：聊天时间线里的任务卡图片点不动）
 - **机制**：`TodoImageThumb` 的 `clickable` 默认值是 **false**，而全文 4 个调用点里有 3 个给了
   `clickable`（任务详情弹窗 / 看板草稿 / 收藏卡片），**聊天时间线那张任务卡没给** ⇒ 形状是
@@ -35,7 +64,7 @@
 - **第一件：这条断言从没进过非空转用例集** —— `grep -n "GroupTasksBoard" scripts/verify-guards.py` 命中 **0**，
   而本仓自己的规矩是「每条护栏都要被证明会失败」。⇒ 登记一条用例：把常驻窗口那行的 `:key="groupId"` 摘掉
   ⇒ 必须 FAIL、恢复 ⇒ 必须 PASS。实跑 `python3 scripts/verify-guards.py --only "换群必须靠"` ⇒ 退出 0，
-  打印「✅ 改坏即 FAIL、恢复即 PASS」。**用例总数因此 189 → 191**（同批的第二条见下面 §12 那格）。
+  打印「✅ 改坏即 FAIL、恢复即 PASS」。**用例总数因此 189 → 193**（本批共 4 条：`:key` 重挂、任务缩略图 `clickable`、任务描述走统一渲染件、@ 文案不许写死）。
 - **第二件：注释里缺一条机制事实**，缺了它的人会以为"改成组件内 watch 也一样"：看板那份清
   `draft/detailId/pendingDelete` 的 watch 键在 **`props.open` 的翻转**上（`GroupTasksBoard.vue:688`），
   而常驻窗口这条调用**根本不传 open**（props 里是 `open?: boolean`）⇒ 那条重置在独立窗口里恒不触发。

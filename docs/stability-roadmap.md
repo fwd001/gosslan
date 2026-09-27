@@ -56,7 +56,7 @@
 | 前端测试用例 | **606** | `node --test --test-reporter=tap` 的 `^ok` 计数 |
 | Rust 用例基线 macOS | **690** | `src-tauri/test-baseline.macos.txt` 行数 |
 | Rust 用例基线 Windows | **679** | 同上 windows（2026-09-26 由 `--sync-baselines` 按源码门控推出；差额 14 条全部有名有据） |
-| 护栏非空转用例 | **191** | `verify-guards.py` 里顶格 `^    Case(` 的计数，**由 `check-doc-numbers.mjs` 判据 E 现算对账**（契约图那张统计卡就是被它抓出来的：加了一条用例而图上仍写 189）。最新两条是「常驻群任务窗口换群必须靠 `:key` 重挂」与「任务缩略图的调用点必须给 clickable」—— 那条断言在 `channelState.test.ts` 里早就有，**但从没进过非空转用例集**，所以它当时只是一条没被证明会红的锁 |
+| 护栏非空转用例 | **193** | `verify-guards.py` 里顶格 `^    Case(` 的计数，**由 `check-doc-numbers.mjs` 判据 E 现算对账**（契约图那张统计卡就是被它抓出来的：加了一条用例而图上仍写 189）。**本行不再点名最新用例**（名单型声明没有守卫，加一条就漂一格）—— 逐条的动机写在 `CHANGELOG.md` 的 `[Unreleased]` 里—— 那条断言在 `channelState.test.ts` 里早就有，**但从没进过非空转用例集**，所以它当时只是一条没被证明会红的锁 |
 | 登记不变量 | **26** | `protocol-invariants.md` 的 `^### INV-P` |
 | 其中**有具名钩子绑定** | **26 条全部具名**（P18 于同日补上 `check-key-boundary.mjs`） | 由 `scripts/check-invariant-hooks.mjs` 逐条现算并绑定（条数由该步打印） |
 | 门禁层 | 步数一律由 `verify.mjs --list` 现算（`check-doc-numbers.mjs` 对账），本行不抄数字；CI 3 job | `scripts/verify.mjs` 步骤表 |
@@ -1381,3 +1381,13 @@ A 台账 `active`、**A 队列行仍是 1**；A 重启后 **12.6 s** 从盘上�
    同轮改掉的一处假注释（`CARD_KINDS` 写着"进时间线"而判据相反）就是这条 bug 当初被当成设计如此的原因。
 5. **既存待拍板**：#86 未读红徽标白字对比度 3.55/3.16 不达 4.5（改色 or 记例外）；#57/P03
    "要不要为可测性动 `AppState`"；#36 Windows 内置 WebView2 打包；#91 按窗口 id 截图。
+6. **§12/§9/§24 三格 UI 完整化（2026-09-27 晚已落）**：① 聊天时间线里的任务卡图片**点不动**
+   （`clickable` 默认 false；收藏那一轮修的是同类的**另一个面**，调用点没数完）⇒ 卡片改走统一预览，
+   并加一条按形状数 `<TodoImageThumb` 调用点的护栏；② 任务描述里的 @ 完全不渲染 ⇒ 新增
+   `MentionText.vue` + `useMentionContext.ts`，`ChatWindow` 那份判定输入改为消费同一个 composable
+   （**刻意没迁最热的气泡模板**，理由写在复审 §四 的 §9 行）；③ 常驻群任务窗口那条 `:key` 断言
+   **一直在、但从没被证明会红** ⇒ 登记注入用例，并把「看板清草稿的 watch 键在 `props.open` 上、
+   而常驻窗口根本不传 open」这条机制事实补进注释。
+   ⚠️ 仍开着的是 **#97**（卡片真出现在时间线里这件事还没有运行时断言），而 @ 的判定仍按昵称
+   （链路里没有 mention id，#103 待拍板）。同批给护栏层加了**判据 E**（用例数由
+   `verify-guards.py` 现算对账、删标签也算红），上线后连着抓到两次真漂移。

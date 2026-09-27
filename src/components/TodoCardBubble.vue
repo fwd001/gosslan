@@ -14,6 +14,7 @@ import type { CSSProperties } from "vue";
 import { computed } from "vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
+import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import { TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, parseTodo, type TodoStatus } from "@/utils/todos";
 import { t } from "@/i18n";
@@ -31,6 +32,12 @@ const props = defineProps<{
    * 缺省空表 = 单测/别的宿主没传 ⇒ 退回卡片自己的快照。
    */
   liveStatus?: Map<string, TodoStatus>;
+  /**
+   * @ 渲染的判定输入（由 MessageItem 透传，与聊天正文同一份）。
+   * 缺省 = 单测/别的宿主没传 ⇒ 描述里的 @ 不高亮，但文案仍是原文（不会退化成「@你」）。
+   */
+  mentionNames?: string[];
+  selfMention?: { name: string; label: string } | null;
 }>();
 /** 带上 `todo_id`：点卡片要直达**这一条**任务的详情（用户 #23），不是只把看板打开。 */
 const emit = defineEmits<{ (e: "open", todoId: string | undefined): void }>();
@@ -100,7 +107,13 @@ function statusText(s: TodoStatus): string {
       v-if="todo?.description"
       class="mt-1 max-h-[4.2em] overflow-hidden whitespace-pre-wrap break-words px-3 text-[12px] leading-relaxed text-[var(--gosslan-card-ink)] opacity-70"
     >
-      {{ todo.description }}
+      <!-- 描述里的 @ 走与聊天正文**同一份**渲染件（§9）：段怎么切、@到算不算我、
+           显示成什么，全部在 utils/linkify 那一处，这里只负责画出来。 -->
+      <MentionText
+        :text="todo.description"
+        :mention-names="mentionNames"
+        :self-mention="selfMention"
+      />
     </p>
 
     <div v-if="cardImages.length" class="mt-1.5 flex flex-wrap gap-1 px-3">
