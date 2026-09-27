@@ -9,6 +9,25 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 文档（§13B 事实一致性复核：契约图那行取数戳里有一个数是错的，另有三个"口径"含糊到当场数不出来）
+- ★ **SQLite 表数 20 → 19**：拿真跑起来的库（`test-results/run-*/after-*.db`）查 `sqlite_master` 得 19 张，
+  源码 `CREATE TABLE IF NOT EXISTS` 的字面名也正好是同样那 19 个 ⇒ 契约图与复审报告里"20 张表"**给不出可复现的数法，作废**。
+  这类总数**没有任何守卫管得到**（判据只管得上锁点条数与 E2E 断言数）⇒ 口径改成"去真库里数"。
+- **IPC 命令面 130**：口径从"`lib.rs` 的 `generate_handler!` 块逐行数"换成权威那条 ——
+  `node scripts/check-key-boundary.mjs` 自己打印"注册表 130 条 / 扫到 134 个命令体"。本轮实测：手工正则数出 **0**
+  （注册表跨行且每项带模块前缀）⇒ 原来那句"逐行数"根本不可复现。
+- **后端事件名 27**：口径补一句"**必须允许跨行匹配**"。单行 grep 只得 **18** —— 差 9 个，全是被
+  "第一个参数是窗口句柄、事件名在下一行"的多行调用。不写清这句，下一个人（包括我）会拿着 18 去"改正"27。
+- **窗口数 6**：拆成"1 扇由 `tauri.conf.json` 声明（主窗）+ 5 个 `WebviewWindowBuilder::new` 构造点（4 个 App 入口 + 1 个外链）"。
+  ⚠️ 数 `WebviewUrl::App(` 或 `WebviewWindowBuilder::new` 的**出现次数都会得 6** —— 各多算一次"字符串出现在守卫/测试里"
+  （`lib.rs:4053` 测试在 split 源码文本、`lib.rs:979` 是 `window_markers` 名单）。
+- **HEAD 那格**换成当前值，并写明**它天生滞后**（改图要提交、提交又推进 HEAD）⇒ 判"图新不新"看日期与口径，别拿它当 HEAD 判据。
+- 复审报告（`docs/final-architecture-review.md`）随之刷新：两行"未做"（§22 / §29）改成本日已落地并带 commit；
+  新增 §8 / §19 / §30 三行；"哪些进下一版"移掉已完成两项；§33 那张表逐格改成"在哪个 tip 上跑的"，
+  并写明**发版前那一层最近一次全绿在 `13a5bc8`**、189 条注入整跑未在今天这个 tip 重跑（没跑就不写成跑）。
+- ⚠️ 顺带记一条结构性事实：`src-tauri/gen/` 下只有 `android` ⇒ **iOS 工程从未生成**，
+  所以第二阶段指令里"iOS 启动/权限弹窗/首帧"那一串是"没有这条路径"，不是"验过了"。
+
 ### 测试（§19/§20 运行时那一格从"人肉测过一次"换成仓内可重跑入口：`scripts/check-ui-runtime.mjs`）
 - #92 那两条键盘出口当时是**拿探针在浏览器里手工跑一遍**验的：结论落了文档，**验证本身没落进仓里** ——
   正是 §30 反对的形状（下一次同类回归还得靠人眼）。现在沉淀成 `npm run test:ui-runtime`，并接进本地层 `npm run verify:e2e`。
