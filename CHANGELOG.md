@@ -29,6 +29,14 @@
   （`locales.ts` 现读）⇒ 不是"名字里没有 @"的误读法。**但没有就此报成缺陷**：还剩一条没排掉的解释 ——
   列表排序键若取"最后一条消息"而不是 `conversations.updated_at`，被 @ 的群就仍是 `convs[0]`，
   抑制是正确行为。同一份树里 `以下是未读`=1、`hello from group`=0 这一对读数两种解释都吃得下。
+  ★ **上面那句"结论悬住"在写下几分钟后就被自己现读的证据解掉了**：`src-tauri/src/db/conversations.rs:90`
+  的排序键是 `ORDER BY pinned DESC, COALESCE(last_ts, updated_at, 0) DESC` —— decoy 没有消息 ⇒ 取
+  `updated_at = ts+10min`；群有消息 ⇒ 取 `last_ts`（= 那条 @ 的信封时间戳）⇒ **decoy 才是 `convs[0]`，
+  被 @ 的群当时没被自动打开**。配上 `4.31.5` 的"开着且真在看才抑制" ⇒ 那一刻红点**应该亮**而树里
+  `有人` 命中 0 ⇒ 这条从"悬住"升级成**真缺陷候选**。没排掉的解释换到另一头：这条群 outbox flush
+  路径的 emit 到底有没有把 `mention_ids` 送到前端（没送到 ⇒ 退昵称兜底 ⇒ 属 INV-P24 的降级设计，
+  缺陷就变成"emit 丢了字段"，改 emit 而不是改判定）。两种结局各自怎么落、以及"先写一条会红的判据
+  再改"的次序都写进工单 **#143**。
   ⇒ 下一轮第一刀：让同一步顺手打印 B 收到的会话顺序（或读 header 那条的 name）先定 `convs[0]` 是谁。
 - 便宜的复跑入口：`GOSSLAN_AX=1 npm run test:e2e:group`（约 1 分钟；不进任何门禁层，理由同 `verify:ax`：
   要辅助访问权限 + 人类 GUI 会话 + 只有 macOS）。
