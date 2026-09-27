@@ -100,7 +100,7 @@ npm run verify -- --full   # 193 条注入整跑（>1.5 小时）
 | Current version | `4.29.45`（三处一致） | `node -e 'console.log(require("./package.json").version)'` |
 | Actual HEAD | `fb2c393`（写本节时的 tip；**待推数按 `git rev-list --count origin/main..HEAD` 现算**，我在这一轮里就重算了两次——你中途 push 过） | `git log --oneline -1`；`git rev-list --count origin/main..HEAD` |
 | Build status | ✅ 前端构建 + `cargo clippy -D warnings` + Android 编译全过 | `npm run verify:full` |
-| Test status | ✅ 快速层 13 步全绿；**full 层 19 步本轮正在重跑（193 条用例那份内容）**，上一份 19 步全绿记在 `8f985d3`；前端与 Rust 的确切条数**不在这里抄**，由那两步自己打印（`npm run verify:full`） | `npm run verify:full` |
+| Test status | ✅ 快速层 13 步全绿（本批每次提交前都现跑过）。**full 层 19 步**：上一份全绿记在 `8f985d3`；本批那份内容（193 条用例）2026-09-27 已起跑，但**终态不写进本行** —— 看 `tail /tmp/full-final.out`（末行 `FULL_EXIT=0` 即全绿，用时印在「19 步，共 Ns」那行）。理由：把「正在跑 / 已跑完」这种时态写死在文档里，跑完那一刻就成过期口径（本仓这类自造漂移犯过好几次）。前端与 Rust 的确切条数同样**不抄**，由那两步自己打印 | `npm run verify:full`；`tail /tmp/full-final.out` |
 | E2E status | ✅ 本地层 **16 步全绿 691.2s（`❌` 计数 0，含探针三段）**、发版前层 **3 步全绿 82.4s**，两次都跑在本次这批代码落地之后的同一份内容上；比上一次记录的 545.9s 慢是**覆盖面变大**（探针多一段 + 任务轮多几条腿），不是回归 | `npm run verify:e2e`；`npm run verify:release` |
 | 注入腿 | ⚠️ 分三段说清：**整跑在 `f44d728` 上跑到 53/189、这 53 条全绿（`❌` 计数 0），随后被我主动中止** —— 判据 E 上线后总数从 189 一路变 193，而这一轮的证据属于 `f44d728` 那份内容，不能算到新 tip 头上。**起跑前的锚点全量核对**同理只在"被选中的那一条"上跑过（`--only` 选 1 条 ⇒ 核对也只 1 条），**193 条的全量核对要等下一次整跑**。新加那一条自己已当场验过：改坏即 FAIL、恢复即 PASS | `npm run verify -- --full`（整跑）；`python3 scripts/verify-guards.py --only "换群必须靠"`（单条自证） |
 | Cross-platform | ⚠️ macOS 完整（构建 + 本地三层门禁 + 真界面截图）。Android：编译门禁过、**未装机**。Windows：只有编译/clippy/跨平台完整性判据这一侧可核对，**远端 CI 状态本机核不了（没有 `gh`）**。iOS：`src-tauri/gen/` 下**只有 `android`** ⇒ iOS 工程从未生成，§25 那一串"iOS 启动/权限弹窗/首帧"结构性无法验 —— 是"没这条路径"，不是"验过了" | `ls src-tauri/gen/` / `npm run verify:full` |
