@@ -117,6 +117,7 @@ P19 seq 权威、P20 聊天不被大文件饿死、P21 建链前先验身份等�
 | `docs/AI_ENGINEERING_INDEX.md:14` | 138 条 | 129 |
 | `protocol-invariants.md:632` | 「上面 21 节」 | 26 节 |
 | `README.md:28`、`AI_ENGINEERING_INDEX.md:64` | INV-P01~P24 | P01~P26 |
+| 同上两处那句「INV-P01~PNN」（2026-09-28 又漂一次） | INV-P01~P26 | **已改成命令**：范围与条数以 `node scripts/check-invariant-hooks.mjs` 的打印为准（同一天第三次漂 P24→P26→P27 —— 每次都是新增一节而没人回头改 ⇒ 手抄范围就是这么烂掉的） |
 | `ARCHITECTURE-EXPLAINED.md:174/381` | 16 张表 | 19 |
 | `migration-ledger.md:43` | transport.rs 8836 行 | **10182** |
 | `migration-ledger.md:49` | file_relay 86 行 | **504** |

@@ -65,7 +65,7 @@
 
 > Earlier ADRs `0001`–`0006` (message idempotency, outbox+ACK, E2EE, transport, no-Web-Worker,
 > device fingerprint) were removed; their normative content now lives in
-> `docs/protocol-invariants.md` (INV-P01…P26) and `AI_RULES.md` (INV-001…008).
+> `docs/protocol-invariants.md` (INV-P01…P27) and `AI_RULES.md` (INV-001…008).
 > Do not re-create them as a second source of truth.
 
 ## Rule
