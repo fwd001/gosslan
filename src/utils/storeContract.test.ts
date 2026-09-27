@@ -554,3 +554,76 @@ test("「停滞」必须带得上原因：file-stalled 的 reason 要一路走�
     "stalledTransfers 必须是「id → 原因」的 Map，不许退回 Set + 另一张原因表",
   );
 });
+
+/**
+ * §30 第二条回归（#82「自己创建的群任务在聊天里看不见」的**形状**）。
+ *
+ * 那条 bug 的机制只有一句话：命令返回的那条消息记录**没被塞进 store**，
+ * 于是时间线（`ChatWindow` 过滤 `chat.messages`）里自然没有它 —— 后端一切正常、界面无症状。
+ *
+ * 判据不靠手抄名单，靠**两份权威事实源对账**：
+ * - 哪些命令"返回一条消息记录"？由 `src/api/index.ts` 自己声明：包装体里写的是
+ *   `invoke<MessageRecord>("cmd", …)`。加一个新命令 ⇒ 自动进名单，不需要有人记得改这里。
+ * - 它在 store 里的每个调用点都必须把结果 `enqueueMessage(...)`。少一行 ⇒ 红。
+ *
+ * 覆盖面自证（不这么写就会"少扫一处照样绿"）：`api.<key>(` 在全文件的出现次数必须等于
+ * 落在被扫描函数体里的次数 —— 调用点藏在函数体外（顶层、对象字面量、回调）会直接红，
+ * 而不是安静地被跳过。
+ */
+test("返回 MessageRecord 的每条命令，调用点必须把结果 enqueueMessage（#82 的形状）", () => {
+  const apiSrc = stripComments(readFileSync(join(ROOT, "api", "index.ts"), "utf8"));
+  const apiLines = apiSrc.split("\n");
+  const recKeys: string[] = [];
+  for (let i = 0; i < apiLines.length; i += 1) {
+    const head = apiLines[i].match(/^\s{2}(\w+):\s*\(/);
+    if (!head) continue;
+    for (let j = i; j < apiLines.length; j += 1) {
+      if (j > i && /^\s{2}\w+:\s*\(/.test(apiLines[j])) break; // 走到下一个包装 ⇒ 这个不返回记录
+      if (/invoke<\s*MessageRecord\s*>\(/.test(apiLines[j])) { recKeys.push(head[1]); break; }
+    }
+  }
+  // 前提变了（改名、换了泛型写法）时报的是这条，而不是"扫到 0 个 ⇒ 于是没有任何可判的 ⇒ 绿"
+  assert.ok(
+    recKeys.length >= 8,
+    `只认出 ${recKeys.length} 个返回 MessageRecord 的 api 包装（今天至少 8 个）`
+    + " —— 解析前提变了，先修这条守卫再谈别的",
+  );
+
+  const storeSrc = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const storeLines = storeSrc.split("\n");
+  // 函数体范围：`  function name(` / `  async function name(` 起，到下一条顶格两空格的 `}` 止
+  const fns: Array<{ name: string; from: number; to: number }> = [];
+  for (let i = 0; i < storeLines.length; i += 1) {
+    const m = storeLines[i].match(/^\s{2}(?:async )?function (\w+)/);
+    if (!m) continue;
+    let end = storeLines.length - 1;
+    for (let j = i + 1; j < storeLines.length; j += 1) {
+      if (/^\s{2}\}/.test(storeLines[j])) { end = j; break; }
+    }
+    fns.push({ name: m[1], from: i, to: end });
+  }
+  assert.ok(fns.length > 20, `只切出 ${fns.length} 个函数体 —— 切分前提变了`);
+
+  const inRange = new Map<string, number>();
+  const missing: string[] = [];
+  for (const fn of fns) {
+    const body = storeLines.slice(fn.from, fn.to + 1).join("\n");
+    for (const key of recKeys) {
+      const hits = (body.match(new RegExp(`api\\.${key}\\(`, "g")) || []).length;
+      if (!hits) continue;
+      inRange.set(key, (inRange.get(key) ?? 0) + hits);
+      if (!/enqueueMessage\(/.test(body)) missing.push(`${fn.name}() 调 api.${key} 却没 enqueueMessage`);
+    }
+  }
+  const total = recKeys.reduce((n, k) => n + (storeSrc.match(new RegExp(`api\\.${k}\\(`, "g")) || []).length, 0);
+  const scanned = [...inRange.values()].reduce((a, b) => a + b, 0);
+  assert.equal(
+    scanned, total,
+    `有 ${total - scanned} 个调用点落在被扫描的函数体之外 ⇒ 这条守卫会静默漏判（覆盖面自证）`,
+  );
+  assert.ok(
+    scanned >= recKeys.length,
+    `今天判的调用点只有 ${scanned} 处，比返回记录的命令数 ${recKeys.length} 还少 ⇒ 名单在变大而没人调？先看上面那条`,
+  );
+  assert.deepEqual(missing, [], "这些调用点必须把返回的消息记录塞进 store：\n" + missing.join("\n"));
+});

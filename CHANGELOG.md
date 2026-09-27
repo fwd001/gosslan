@@ -9,7 +9,25 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
-### 测试（§22 续：任务轮的发起方换成**两侧**，并补上「重启之后状态行不退」那一格）
+### 测试（§30：#82 那条「自己发的任务看不见」终于换来一把永久锁）
+- 当场修掉之后**回归锁一直缺着**（roadmap #97 记的就是这笔账）。现在补上，且刻意不钉成一个点，
+  钉的是"下次改动必须做一次决定"：`messageKinds.test.ts` 加三条 —— 时间线可见性的**逐项判决表**
+  （新增一种 kind 而这里没登记 ⇒ 当场红）、"不进时间线的那两种 Card 各自有具名去处"
+  （announcement 指到公告条；poll 钉的是"本客户端今天发不出投票"这个前提，哪天真加上入口，
+  这条会红着逼一次决定，而不是让新种出来的消息静默不可见）、"过滤判据只有一份 + todo 真的还在渲染链里"
+  （摘掉 `TodoCardBubble` 就退回原始 JSON，那是同一 bug 的另一半）。
+- `storeContract.test.ts` 加一条**跨文件对账**："哪些命令返回一条消息记录"由 `src/api/index.ts` 自己声明
+  （`invoke<MessageRecord>(…)` ⇒ 加新命令自动进名单，不需要有人记得改守卫），而它在 store 里的**每个**调用点
+  都必须把结果 `enqueueMessage(...)` —— 少那一行就是 #82 的机制本身。
+- 四条判据各自证过非空转（每次只改一处、跑完 `git checkout --` 还原并核对 diff 为空）：
+  删掉 `createTodo` 里那行 `enqueueMessage` ⇒ 红且点名 `createTodo() 调 api.sendGroupTodo 却没 enqueueMessage`；
+  摘掉 `|| kind === "todo"` ⇒ 判决表那条红；把 `async function` 换成箭头写法（调用点掉出被扫描的函数体）⇒
+  覆盖面自证那条红（`7 !== 8`，不是安静地少扫一条）；把 api 里那个泛型名整体改错 ⇒ 走"解析前提变了"那条红。
+- 顺手改掉一处**假注释**（正是这类注释让上面那条 bug 被当成设计如此）：`CARD_KINDS` 的文档原先写"Card 进时间线"，
+  与 `isRenderedInTimeline` 的实际判据相反。现在写明：Card 的口径只有"计未读 / 弹通知 / 清空记录不删"那几条，
+  可不可见**只由那一条判据逐项决定**。矩阵里 Smoke-10 同步改口：写清现在锁住的是哪几段形状，
+  以及"另一扇窗当场出现那张卡片"仍**没有**判据（跨窗事件超出浏览器探针的能力）。
+
 - 上一轮只有 A→B 一个方向 —— 也就是"任务只能由本端发起"这一半从头到尾没被判过。现在 B 自己也建一条
   （`todo-e2e-2`，`creator=B`）并改成 done（`seq=5/6`），判据读的是 **A 库**：那两行 harness 一字没预置，
   唯一可能的来源是 B 建链后 `flush_group_outbox` 真投递 + A 自己解密落库。同时把 `creator`（改/删授权的输入）、
