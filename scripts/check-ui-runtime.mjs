@@ -159,7 +159,7 @@ window.__probe = (() => {
   let clickCount = 0;
   const H = { events, get clicks() { return clickCount; } };
   H.reset = () => { events.length = 0; clickCount = 0; };
-  H.install = async (cmpPath, mountHtml) => {
+  H.install = async (cmpPath, mountHtml, propsJson) => {
     // 必须拿"页面已经在用的那一份 vue"，自己 import('vue') 会得到第二份（ref/reactive 互不相认）。
     // 而这条要**等**：Page.navigate 之后 vite 还在现编译依赖，resources 里出现 deps/vue.js 之前
     // 拿到的是空列表 —— 拿不到就当"构建产物变了"是误判。
@@ -192,18 +192,35 @@ window.__probe = (() => {
     document.body.appendChild(host);
     const state = Vue.reactive({ open: false, initialKeyword: '' });
     window.__st = state;
+    // 夹具原先把 props 写死成 open/initialKeyword + 三个回调；任务卡那一族要的是
+    // message / liveStatus / mentionNames / selfMention ⇒ 第三参收一份 JSON props。
+    // liveStatus 是 Map，JSON 传不了 ⇒ 约定用 liveStatusPairs（[[id,status],…]）在这里还原。
+    const extra = propsJson ? JSON.parse(propsJson) : {};
+    if (Array.isArray(extra.liveStatusPairs)) {
+      extra.liveStatus = new Map(extra.liveStatusPairs);
+      delete extra.liveStatusPairs;
+    }
+    // ★ 这个对象必须**建在渲染函数里面**：open: state.open 是对 reactive 状态的读，
+    //   提到外面求值一次就把 props 冻在 false 上 —— 表情面板那段当场整块不渲染（格子数 0），
+    //   是隔壁那两段把它照出来的（**夹具的重构也要跑全量，别只跑新写的那一段**）。
+    //   另：这一段是模板字符串里的源码，注释里也不许出现反引号（会提前结束模板）。
+    const mkProps = () => ({
+      open: state.open,
+      initialKeyword: state.initialKeyword,
+      onSelect: (v) => events.push(['select', v]),
+      onClose: () => events.push(['close']),
+      onOpenConversation: (p) => events.push(['open', JSON.stringify(p)]),
+      // 任务卡底部那个入口 emit 的是 "open"（载荷是 todo_id）。tag 刻意叫 open-id：
+      // 与上面那条 'open'（搜索弹窗的 open-conversation）区分开，免得两段互相污染判据。
+      onOpen: (v) => events.push(['open-id', String(v)]),
+    });
     const app = Vue.createApp({
       setup() {
-        return () => Vue.h(mod.default, {
-          open: state.open,
-          initialKeyword: state.initialKeyword,
-          onSelect: (v) => events.push(['select', v]),
-          onClose: () => events.push(['close']),
-          onOpenConversation: (p) => events.push(['open', JSON.stringify(p)]),
-        });
+        return () => Vue.h(mod.default, Object.assign(mkProps(), extra));
       },
     });
     if (pinia) app.use(pinia);
+    window.__pinia = pinia;
     app.mount(host);
     window.__probe.vue = Vue;
     window.__probe.state = state;
@@ -230,6 +247,35 @@ window.__probe = (() => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await new Promise((r) => setTimeout(r, 900)); // 组件里是 150ms 防抖 + 一次请求
     return { focused: document.activeElement === input, hits: document.querySelectorAll('[data-hit]').length };
+  };
+  /**
+   * 读统一预览 store 的当下状态。要点：**先 setActivePinia 到页面里那一份**，
+   * 自己 import('pinia') 会得到第二个实例 ⇒ 读到的永远是空 store，
+   * 看起来像"预览没开"（假红）。
+   */
+  H.previewState = async () => {
+    const piniaUrl = performance.getEntriesByType('resource')
+      .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
+    if (!piniaUrl) throw new Error('页面里没有 pinia 资源 —— 挂载那一步没成功');
+    const P = await import(piniaUrl);
+    P.setActivePinia(window.__pinia);
+    const m = await import('/src/stores/useImagePreview.ts');
+    const st = m.useImagePreviewStore();
+    return { open: st.open, source: st.source, index: st.index, n: (st.images || []).length };
+  };
+  H.text = () => document.body.innerText || '';
+  H.el = (sel) => {
+    const e = document.querySelector(sel);
+    if (!e) return null;
+    const r = e.getBoundingClientRect();
+    return { role: e.getAttribute('role'), tabindex: e.getAttribute('tabindex'),
+      aria: e.getAttribute('aria-label'), w: Math.round(r.width), h: Math.round(r.height) };
+  };
+  H.focusThumb = () => {
+    const t = document.querySelector('[role="button"]');
+    if (!t) return false;
+    t.focus();
+    return document.activeElement === t;
   };
   H.setOpen = async (v) => {
     window.__st.open = v;
@@ -348,8 +394,10 @@ async function main() {
 
     const emoji = !ONLY || ONLY === "emoji";
     const search = !ONLY || ONLY === "search";
+    const task = !ONLY || ONLY === "task";
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
+    if (task) await runTaskCard(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
@@ -503,6 +551,125 @@ async function runSearch(cdp, url) {
     "1 次 open 且 msgId=m2", `at=${beforeEnter.at} / ${JSON.stringify(opened)}`);
   check("跟着必须关一次弹窗（打开与关闭是同一次动作，不能只 emit 不关）",
     ev.filter((e) => e[0] === "close").length === 1, "1 次 close", JSON.stringify(ev));
+}
+
+/**
+ * 任务卡片那一段（#97：把「那张卡真出现在时间线里」从"没有断言"换成运行时断言）。
+ *
+ * 上游本来就有三道锁，但它们判的都不是界面：`storeContract` 判"记录进没进 store"、
+ * `messageKinds` 判"会不会被时间线过滤掉 / 有没有人渲染它"、`todos.test.ts` 判数据层。
+ * 用户最初报的是**看不见** —— 那件事只有真渲染一次才判得了，所以这一段挂的是
+ * `TodoCardBubble` 本身（不是 MessageItem：气泡容器要 Tauri 事件与一堆 store，
+ * 在探针里挂它会让人怀疑红的是夹具而不是产品）。
+ *
+ * 顺带把 #112（卡片图走统一预览）与 §9（描述里的 @）这两条在运行时层各判一次 ——
+ * 结构级判据说"调用点给了 clickable"，这里判"按 Enter 之后那份预览真的开了"。
+ */
+async function runTaskCard(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const TODO_ID = "todo-probe-1";
+  const CID = "a".repeat(64);
+  const payload = {
+    todo_id: TODO_ID,
+    title: "探针任务：把周报发出去",
+    assignees: ["dev-other"],
+    status: "todo",
+    creator: "dev-me",
+    deleted: false,
+    description: "@小布 记得带上周报",
+    images: [{ id: CID, name: "白板照片.jpg", size: 2048, sha256: CID, subtype: "image" }],
+    archived: false,
+    done_at: null,
+  };
+  const MSG = JSON.stringify({
+    msg_id: "m-probe-1", sender_id: "dev-me", kind: "todo",
+    content: JSON.stringify(payload), ts: 1700000000000,
+  });
+  // 自己视角的标签从 i18n 取，不在这里抄「@你」字面量（本仓刚给这条加了禁令）
+  const labels = await cdp.eval(`(async () => {
+    const u = await import('/src/utils/todos.ts');
+    const i = await import('/src/i18n');
+    return { todo: i.t(u.TODO_STATUS_LABEL_KEY.todo), done: i.t(u.TODO_STATUS_LABEL_KEY.done),
+      selfTag: i.t('mention.self') };
+  })()`);
+
+  const mount = async (props) => {
+    await cdp.eval(`window.__probe.install('/src/components/TodoCardBubble.vue', '', ${JSON.stringify(JSON.stringify(props))})`);
+    await sleep(1_200); // 缩略图那一族是"字节后到"的：先 mount 再等一次取字节的 promise
+  };
+  const text = () => cdp.eval("window.__probe.text()");
+
+  // —— 先按"对端视角"挂一次（没有 self 标签、没有实时状态表）——
+  await cdp.eval(`window.__probe.stubApi('readContentPreview', [137,80,78,71,13,10,26,10])`);
+  await mount({
+    message: JSON.parse(MSG),
+    mentionNames: ["小布", "我"],
+    selfMention: null,
+  });
+  const t0 = await text();
+  check("卡片渲染出这条任务的标题（用户报的是「看不见」，那就先判标题真在 DOM 里）",
+    t0.includes("把周报发出去"), "含标题", t0.slice(0, 80));
+  check("卡片不许把载荷当原始 JSON 画出来（内部字段名一个都不该露出）",
+    !t0.includes("todo_id") && !t0.includes("done_at"), "不出现内部字段名", t0.slice(0, 80));
+  check("状态胶囊显示载荷快照那一档（没传实时表 ⇒ 退回创建时）",
+    t0.includes(labels.todo) && !t0.includes(labels.done), labels.todo, t0.slice(0, 80));
+  check("对端视角里 @ 到的名字仍是原文（不是「@你」）",
+    t0.includes("@小布") && !t0.includes(labels.selfTag), "@小布", t0.slice(0, 80));
+
+  // —— 同一个数据换"我自己"的视角：同一段文本必须换标签 ——
+  await mount({
+    message: JSON.parse(MSG),
+    mentionNames: ["小布", "我"],
+    selfMention: { name: "小布", label: labels.selfTag },
+  });
+  const t1 = await text();
+  const selfEls = await cdp.eval(`document.querySelectorAll('.mention-token--self').length`);
+  check("换成我的视角：同一段 @ 渲染成 i18n 里那个自我标签（§9 的运行时那一半）",
+    t1.includes(labels.selfTag) && selfEls === 1, "标签出现且 --self 恰好 1 个",
+    `${JSON.stringify(t1.slice(0, 60))} / --self=${selfEls}`);
+
+  // —— 实时状态表那一环（#23：载荷是创建时快照，卡片必须查父层那张表）——
+  await mount({
+    message: JSON.parse(MSG),
+    mentionNames: ["小布"],
+    selfMention: null,
+    liveStatusPairs: [[TODO_ID, "done"]],
+  });
+  const t2 = await text();
+  check("传了实时表说这条已完成 ⇒ 胶囊换成已完成（查不到才退回快照，查到就不许再显示旧值）",
+    t2.includes(labels.done) && !t2.includes(labels.todo), labels.done, t2.slice(0, 80));
+
+  // —— 键盘可达 + 按 Enter 真的开了那份统一预览 ——
+  const thumb = await cdp.eval(`window.__probe.el('[role="button"]')`);
+  check("卡片里的缩略图是键盘可达的（role=button + tabindex=0 + 有可访问名）",
+    !!thumb && thumb.tabindex === "0" && !!thumb.aria, "role=button/tabindex=0/aria-label",
+    JSON.stringify(thumb));
+  const focused = await cdp.eval("window.__probe.focusThumb()");
+  await cdp.eval("window.__probe.reset()");
+  await cdp.key("Enter", "Enter", "\r", 13);
+  const pv = await cdp.eval("window.__probe.previewState()");
+  check("焦点在缩略图上按 Enter：统一预览 store 被打开，且来源标记是这张卡的 task-card:<todoId>",
+    focused === true && pv.open === true && pv.source === "task-card:" + TODO_ID
+    && pv.n === 1 && pv.index === 0,
+    "open=true source=task-card:" + TODO_ID + " n=1 index=0", JSON.stringify(pv));
+
+  // —— 点「查看任务」必须带**这条**的 id（带错/带空就是开别人的任务）——
+  await cdp.eval("window.__probe.reset()");
+  const clicked = await cdp.eval(`(() => {
+    const btns = Array.from(document.querySelectorAll('button'));
+    const b = btns[btns.length - 1];
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  const ev = await cdp.eval("window.__probe.events");
+  const opened = ev.filter((e) => e[0] === "open-id").map((e) => e[1]);
+  check("卡片底部那个入口 emit 的是**这条**的 todo_id（不是 undefined、也不是别条）",
+    clicked === true && opened.length === 1 && opened[0] === TODO_ID,
+    "1 次 open 且带 " + TODO_ID, JSON.stringify(ev));
 }
 
 await main();
