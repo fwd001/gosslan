@@ -409,6 +409,24 @@ if (ok) {
   if (pairs.length > 8) console.log(`      …其余 ${pairs.length - 8} 对未列`);
   console.log("      ⚠️ 这些**不判红**：把它们纳入判据会把按 use 口径建起来的 consumes 名单整片判红，"
     + "\n         而「补声明还是改代码」是要人拍板的面（#133-A）。先让洞有数。");
+  // ★ 但"有数"不等于"随便涨"：这里上一把**只许变小**的棘轮 —— 冻的不是处数（那是上界，
+  //   会被注释里的 `crate::` 之类的噪声牵着抖），冻的是**去重后的源域→目标域对数**。
+  //   为什么这样收：内联耦合每多一对，就是又有一条形同"已声明的生产依赖"（db→messaging 那种）
+  //   走到判据看不见的地方去；存量不判红是要人拍板，**新增**没有这个理由。
+  //   反证入口（不用改文件就能证明它会红）：`GOSSLAN_DOMAIN_INLINE_PAIR_MAX=12 node scripts/check-domain-deps.mjs`
+  //   ⚠️ 上限必须钉成**存量数字**而不是"当天的条数" —— 取后者等于恒真，棘轮永远不会咬。
+  //      存量 13 对是 2026-09-28 现算（复跑同一条命令看上面那行打印）；**只许调小**，
+  //      调大等于把洞重新变沉默 ⇒ 要调必须先在这行注释里写下谁同意、为什么。
+  const pairMax = Number(process.env.GOSSLAN_DOMAIN_INLINE_PAIR_MAX ?? "13");
+  if (pairs.length > pairMax) {
+    console.error(
+      `  ✗ 内联跨域引用对数 ${pairs.length} 超过棘轮上限 ${pairMax}`
+        + "\n      ⇒ 判据看不见的耦合**又长了一对**。修法只有两条：① 把这次新增的那条改成 use 并加进 consumes"
+        + "\n         （让它回到判据看得见的地方）；② 别新增。"
+        + "\n      ⚠️ 不许直接把上限调大：那等于把洞又变成沉默的。",
+    );
+    process.exit(1);
+  }
   process.exit(0);
 }
 console.error("\n✗ 跨领域依赖与 consumes 声明不一致 —— 先决定是修 consumes 还是删 use,别打补丁。");
