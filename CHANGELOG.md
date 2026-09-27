@@ -9,6 +9,8 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+
+## [4.30.0] - 2026-09-27
 ### 测试（#122 的局限第一次变成可执行的说明，而不只是文档里一段话）
 - `src/utils/linkify.test.ts` 加一条：群里两个同名成员时，呈现层的自我标签**只认名字** ⇒ 另一位的 `@周工`
   在我自己界面上也会换成自我标签。同一条里带反向对照（名字不同 ⇒ 绝不换标签），所以它不是恒过。
