@@ -293,6 +293,10 @@ const GROUP_KEY_STR = GROUP_KEY_B64.toString("base64");
 /// gossip_engine.rs:244 那组测试的形状）；转发每跳减一，写 0 会让对端直接丢。
 const GROUP_TTL = 6;
 let gTextId, gRecallId, gText2Id;
+/// §8「存储永远保存真实身份」那一格：A 打出来的 @ 正文（用的是 A 自己给 B 存的昵称）。
+/// 呈现层可以把它换成「@你」，**库里那串字节一个字都不许动** —— 所以文本与 id 都要留着当比对基准。
+let gMentionId = "";
+let gMentionText = "";
 
 /// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
 /// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
@@ -1109,15 +1113,22 @@ if (GROUP) {
     // 于是先落的那格必红 —— 红在判据、不是产品（本项目第三次撞同一形状）。
     // 「真解密成功」这一格只能由一条**永远不会被物化覆盖**的行来证。
     const t2 = buildGroupEnvelope({ ...base, kind: "text", content: "second group message", ts: ts + 2, seq: 3 });
+    // §8 那一格：A 打的一句 @B（用的是 A 库里给 B 存的昵称 —— `seedPair` 写的就是 `e2e-<label>`）。
+    // 为什么这条值得排：把「@你」做成"存的时候替换"是这条规则最自然的破坏方式，
+    // 而它的表现是**另一个人的屏幕上被烧进了我的视角**（同一条消息只能有一个正确存储形态）。
+    gMentionText = `@e2e-${INSTANCES[1].label} 帮忙看这条`;
+    const mt = buildGroupEnvelope({ ...base, kind: "text", content: gMentionText, ts: ts + 3, seq: 4 });
     gTextId = t.messageId;
     gRecallId = r.messageId;
     gText2Id = t2.messageId;
+    gMentionId = mt.messageId;
     seed(INSTANCES[0].db, (db) => {
       db.prepare("DELETE FROM group_outbox WHERE group_id=?1").run(GROUP_ID);
       for (const [env, seq, kind, content, at] of [
         [t, 1, "text", "hello from group harness", ts],
         [r, 2, "recall", JSON.stringify({ target: t.messageId }), ts + 1],
         [t2, 3, "text", "second group message", ts + 2],
+        [mt, 4, "text", gMentionText, ts + 3],
       ]) {
         db.prepare("DELETE FROM messages WHERE msg_id=?1").run(env.messageId);
         // 逐列照发送内核（window.rs:179-190）：receiver_id 是**裸 group_id**、初始 status 是
@@ -1136,10 +1147,10 @@ if (GROUP) {
       db.prepare(
         "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
         + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq",
-      ).run(convId, 3);
+      ).run(convId, 4);
     });
     console.log(`  · 群 ${GROUP_ID}：正文一 ${gTextId.slice(0, 12)}… / 撤回 ${gRecallId.slice(0, 12)}…`
-      + ` / 正文二 ${gText2Id.slice(0, 12)}…`);
+      + ` / 正文二 ${gText2Id.slice(0, 12)}… / @ 那条 ${gMentionId.slice(0, 12)}…`);
   });
 }
 
@@ -1553,20 +1564,20 @@ if (TASK) {
 }
 
 if (GROUP) {
-  step("群聊判据：三条各只落一行、明文要真解得开、撤回只物化不删行、Ack 必须把队列清干净", async () => {
+  step("群聊判据：每条各只落一行、明文要真解得开、@ 的那串字节不许被改写、撤回只物化不删行、Ack 必须把队列清干净", async () => {
     // 反向模式在这里翻的**只有判据读的 id**（预置、信封、投递全都一模一样）：
     // 真投递已经完成，却拿必定不存在的 id 去比 ⇒ 红只能来自断言本身，不来自基础设施噪声。
     const flip = (h) => h.slice(0, -1) + (h.endsWith("0") ? "1" : "0");
     const want = (id) => (GROUP_LIE ? flip(id) : id);
     const convId = `group:${GROUP_ID}`;
-    // 前提断言（等三条都到齐）：没有它，下面几条会因为"链路根本没跑"而集体假绿
+    // 前提断言（等四条都到齐）：没有它，下面几条会因为"链路根本没跑"而集体假绿
     await waitFor(() => {
       const db = openDb(INSTANCES[1].db, true);
       try {
-        return [gTextId, gRecallId, gText2Id]
+        return [gTextId, gRecallId, gText2Id, gMentionId]
           .every((id) => db.prepare("SELECT COUNT(*) c FROM messages WHERE msg_id=?1").get(id).c > 0);
       } finally { db.close(); }
-    }, 60_000, "B 侧三条群消息到齐（建链后 flush_group_outbox 送达）");
+    }, 60_000, "B 侧四条群消息到齐（建链后 flush_group_outbox 送达）");
     // 撤回物化与投递是两次独立写盘，给它一个**有界**的等待（不许无条件睡）
     await waitFor(() => {
       const db = openDb(INSTANCES[1].db, true);
@@ -1584,21 +1595,38 @@ if (GROUP) {
     const t1 = q(want(gTextId));
     const rec = q(want(gRecallId));
     const t2 = q(want(gText2Id));
+    const mt = q(want(gMentionId));
     const leakedIntoOneToOne = bDb.prepare(
-      "SELECT COUNT(*) c FROM messages WHERE conv_id!=?1 AND msg_id IN (?2,?3,?4)",
-    ).get(convId, gTextId, gRecallId, gText2Id).c;
+      "SELECT COUNT(*) c FROM messages WHERE conv_id!=?1 AND msg_id IN (?2,?3,?4,?5)",
+    ).get(convId, gTextId, gRecallId, gText2Id, gMentionId).c;
     bDb.close();
     const aDb = openDb(INSTANCES[0].db, true);
     const stillQueued = aDb
       .prepare("SELECT COUNT(*) c FROM group_outbox WHERE group_id=?1").get(GROUP_ID).c;
-    const aStatus = aDb
-      .prepare("SELECT status FROM messages WHERE conv_id=?1").all(convId).map((r) => r.status);
+    // 读的是**这一轮自己排的那四条**（按 id 取），不是"那个会话里现有多少行" ——
+    // 后者会让"再加一条预置"变成改判据的分母，加一行就把这条判成红（实测：加完 @ 那条就红了，
+    // 红的是判据不是产品）。id 列表在作用域里，条数由它推出来，不再写死。
+    const aSeededIds = [gTextId, gRecallId, gText2Id, gMentionId];
+    const aStatus = aDb.prepare(
+      "SELECT msg_id,status FROM messages WHERE msg_id IN (?1,?2,?3,?4)",
+    ).all(...aSeededIds).map((r) => r.status);
     const aT1 = aDb.prepare("SELECT kind FROM messages WHERE msg_id=?1").get(gTextId);
     aDb.close();
 
-    check("B 侧三条群消息各恰好一行（同 msg_id 多行=重复投递，少行=丢）",
-      t1.length === 1 && rec.length === 1 && t2.length === 1,
-      "1/1/1", `${t1.length}/${rec.length}/${t2.length}`);
+    check("B 侧四条群消息各恰好一行（同 msg_id 多行=重复投递，少行=丢）",
+      t1.length === 1 && rec.length === 1 && t2.length === 1 && mt.length === 1,
+      "1/1/1/1", `${t1.length}/${rec.length}/${t2.length}/${mt.length}`);
+    // ★ §8 的存储侧不变量：**@ 的那串字节不许被任何一层改写**。
+    // "被改写"有两种正好相反的死法 —— 替换成呈现层产物「@你」（把我的视角烧进公共数据），
+    // 或"规范化"成 device id（把可读的那份弄没）。所以一条判"逐字等于打出去的原文"，
+    // 一条判"这两个方向都没有出现"。前者是正向对照，缺了后者就不知道被换成了什么；
+    // 反过来缺了前者，后者会因为"根本没投递"而假绿（同一形状见上面那条前提断言的注释）。
+    check("A 打出的那句 @ 在 B 库里必须逐字等于原文（存储只保存真实昵称，「@你」是渲染时才换的）",
+      mt.length === 1 && mt[0].content === gMentionText, gMentionText, JSON.stringify(mt[0]?.content));
+    check("存储里既不许出现「@你」，也不许把昵称规范化成 device id（两个相反的破坏方向各钉一次）",
+      mt.length === 1 && !mt[0].content.includes("@你") && !mt[0].content.includes(idB.runtimeId)
+      && !mt[0].content.includes(idA.runtimeId),
+      "只含真实昵称那一串", JSON.stringify(mt[0]?.content));
     check("落库的会话必须是群会话（conv_id 带 group: 前缀，且 conversations.kind='group'）",
       t2.length === 1 && t2[0].conv_id === convId && t2[0].conv_kind === "group",
       `${convId} / group`, `${t2[0]?.conv_id} / ${t2[0]?.conv_kind}`);
@@ -1616,13 +1644,13 @@ if (GROUP) {
       `${t1.length} 行 / ${t1[0]?.kind} / content=${JSON.stringify(t1[0]?.content)}`);
     check("撤回事件自身也必须留一行（历史只增不减，不许被当成一次性通知丢掉）",
       rec.length === 1, 1, rec.length);
-    check("三条群消息都不许串进 1:1 会话（两条管道共用同一对实例时的串味检查）",
+    check("这几条群消息都不许串进 1:1 会话（两条管道共用同一对实例时的串味检查）",
       leakedIntoOneToOne === 0, 0, leakedIntoOneToOne);
     check("A 侧这个群的 group_outbox 必须被 GroupAck 清空（还留着=只发不认，重启会二次投递）",
       stillQueued === 0, 0, stillQueued);
-    check("A 侧三条群气泡都不许被判成 failed（failed 的唯一裁决不能被群路径绕过）",
-      aStatus.length === 3 && !aStatus.includes("failed"),
-      "3 行且无 failed", JSON.stringify(aStatus));
+    check("A 侧这一轮排的每条群气泡都不许被判成 failed（failed 的唯一裁决不能被群路径绕过）",
+      aStatus.length === aSeededIds.length && !aStatus.includes("failed"),
+      `${aSeededIds.length} 行都有状态且无 failed`, JSON.stringify(aStatus));
     check("A 侧那条正文此刻仍是 text —— ⚠️ **实测出来的边界**：harness 写的是入队形状，"
       + "没有执行产品的撤回命令 ⇒ 发送侧本地物化不在这一格的证明范围里",
       aT1?.kind === "text", "text（本格的已知边界）", aT1?.kind);

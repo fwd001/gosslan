@@ -29,7 +29,7 @@
 - 改口轮 24 条断言 —— 反向：`--fault=recv-dir-rotted-lie`
 - 停滞轮 25 条断言 —— 反向：`--fault=stall-mid-lie`
 - 发送端被杀轮 26 条断言 —— 反向：`--fault=sender-kill-mid-lie`
-- 群聊轮 29 条断言 —— 反向：`--round=group-lie`
+- 群聊轮 31 条断言 —— 反向：`--round=group-lie`
 - 链式轮 25 条断言 —— 反向：`--round=gossip3-lie`（三实例，跑在**发版前**那一层 `npm run verify:release`，日常本地层不收）
 - 补递轮 23 条断言 —— 反向：`--round=gossip-late-lie`（#77 晚到成员补递；同一族三实例拓扑、启动时序相反，也只挂在**发版前**那一层。⚠️ 原本 24 条、撤掉一条：那条「C 侧从来没有与 A 的建链行」把**某一瞬间的读数**当判据，而同机局域网迟早互达 ⇒ 换个时刻跑就从 0 变 1；详见 roadmap §12.7）
 - 关发现轮 26 条断言 —— 反向：`--round=lanoff-lie`（#95 之后这一轮把「关了就真的不监听」也钉住了：`tcpOpen` 三条读数=开时连得上 / 闲口连不上 / 关时连不上，第三条缺前两条就是半个守卫）（#89：判"把局域网发现关掉之后，对端再也学不到我"。
@@ -78,7 +78,7 @@
 |---|---|---|---|---|
 | 16 | 多路径 + 单条有序字节流钉住单链路 | SIMULATED | `transport.rs` 95 条用例含 `both_sides_agree_on_the_same_link_budget` | 真实断链切换未跨进程 → A-2 |
 | 17 | 中继转发 + 授权真的管到数据面 | SIMULATED | `commands/relay.rs` 8 条 + `relay_wiring_tests` | token **值**不得入日志/事件：有源码护栏，**无日志级断言** → A-2 |
-| 18 | 群聊/群文件/群任务/@提及 | 群聊文本族 **AUTOMATED**（2026-09-26 起）+ 多跳转发与晚到补递族 **AUTOMATED**（2026-09-27 起：`--round=gossip3` / `--round=gossip-late`，都挂在发版前那一层）/ 其余 SIMULATED | `todos.test.ts` 22、`group_files` 相关；**群聊轮**（条数只写在本文件顶部「轮次账」；两个真实进程：两端预置群 → A 排「正文/撤回/第二条正文」→ 对端上线后由 `flush_group_outbox` 补发 → 判「各只落一行 + 明文真解得开 + 落的是群会话 + GroupAck 把队列清成 0 + 撤回物化 `kind=recalled` 且不删行 + 群消息一条都不许串进 1:1」；反向 `--round=group-lie` 只翻判据读的 id ⇒ 恰好 7 条红、4 条与 id 无关的保持绿） | ⚠️ 这一轮证明的是**接收侧的跨实例收敛**，不证明"发送内核自己怎么组信封"（群 payload 不做 re-seal，`transport.rs:6689-6693`，所以信封由 harness 自制）。仍**无自动化**：群文件端到端（只有 `group_files` 单元判据）、群任务/@提及/公告跨实例、群已读回执点亮。**三个实例的群收敛（gossip 多跳）已于同日 #75 补上**（`--round=gossip3`，跑在 `npm run verify:release` 发版前那一层；判的是"A 从没直发给 C ⇒ C 靠中间人扇出收敛"，⚠️ 它**不**判"晚到的成员能不能补到"——那一格实测拿不到补推，是产品缺口不是测试缺口）|
+| 18 | 群聊/群文件/群任务/@提及 | 群聊文本族 **AUTOMATED**（2026-09-26 起）+ 多跳转发与晚到补递族 **AUTOMATED**（2026-09-27 起：`--round=gossip3` / `--round=gossip-late`，都挂在发版前那一层）+ **群任务族与 @ 存储侧 AUTOMATED**（2026-09-27 起：任务轮 + 群聊轮那条 @ 正文）/ 其余 SIMULATED | `todos.test.ts` 22、`group_files` 相关；**群聊轮**（条数只写在本文件顶部「轮次账」；两个真实进程：两端预置群 → A 排「正文/撤回/第二条正文/**一句 @**」→ 对端上线后由 `flush_group_outbox` 补发 → 判「各只落一行 + 明文真解得开 + 落的是群会话 + **@ 那串字节在对方库里逐字等于原文、既没被换成「@你」也没被规范化成 device id** + GroupAck 把队列清成 0 + 撤回物化 `kind=recalled` 且不删行 + 群消息一条都不许串进 1:1」；反向 `--round=group-lie` 只翻判据读的 id ⇒ 9 条红、其余与 id 无关的保持绿） | ⚠️ 这一轮证明的是**接收侧的跨实例收敛**，不证明"发送内核自己怎么组信封"（群 payload 不做 re-seal，`transport.rs:6689-6693`，所以信封由 harness 自制）。仍**无自动化**：群文件端到端（只有 `group_files` 单元判据）、公告跨实例、群已读回执点亮，以及「@你」在**真界面上长什么样**（库里存真实昵称已钉住，替换发生在渲染层 ⇒ 归 Smoke-10/11 那一类运行时判据）。**三个实例的群收敛（gossip 多跳）已于同日 #75 补上**（`--round=gossip3`，跑在 `npm run verify:release` 发版前那一层；判的是"A 从没直发给 C ⇒ C 靠中间人扇出收敛"，⚠️ 它**不**判"晚到的成员能不能补到"——那一格已由同日 #77 的 `--round=gossip-late` 补上）|
 | 19 | 删除一致性（不留幽灵数据） | SIMULATED | `db/cascade_tests.rs` 14 条 | 跨窗口/重启后的残留未测 → J7 |
 | 20 | 蓝牙近场加入（预算同口径、大帧不静默丢） | SIMULATED + MANUAL-HARDWARE | `check-ble-constants.mjs`、`ble_framing` 10 条 | **真实 BLE 无硬件不可自动化** → Smoke-2 |
 | 21 | 跨版本优雅降级（INV-P24） | SIMULATED | `unknown_wire_frame_is_tolerated_after_auth`、`messageKinds.test.ts` | 「新旧安装包互发」= MANUAL-HARDWARE → Smoke-6 |
