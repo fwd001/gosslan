@@ -103,6 +103,15 @@ export interface MessageRecord {
    * **它不落库**，只随本次投递过来，因为「有人@我」本来就是摄入时的一次性判定，重启即清空）。
    */
   mention_ids?: string[] | null;
+  /**
+   * 每条 @ 在正文里的**落点**（#122：群里两个人同名时，只有被点名的那一段该算"@到我"）。
+   * 与 `mention_ids` 同样三态；结构与后端 `protocol::MentionTarget` 一字不差
+   * （`n` = 该昵称在正文里第几次以 `@昵称` 出现，1 起 —— 不用字符偏移是因为 Rust 按字节、
+   * JS 按 UTF-16，偏移跨语言传必错）。
+   * ⚠️ 同样**不落库**（跟 `mention_ids` 一个待遇）⇒ 重启后读历史时这个字段是空的，
+   * 呈现层退回按昵称判（那是今天的既有边界，不是新回退）。
+   */
+  mention_targets?: { id: string; name: string; n: number }[] | null;
 }
 
 /**

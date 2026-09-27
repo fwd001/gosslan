@@ -35,7 +35,8 @@ export function useMentionContext(groupIdOf: () => string | null | undefined): M
 
   const selfMention = computed(() => {
     const name = app.device?.nickname ?? "";
-    return name ? { name, label: t("mention.self") } : null;
+    // id 一起给：#122 之后「这一段算不算 @ 到我」要按身份比，不再只比昵称
+    return name ? { name, label: t("mention.self"), id: app.device?.device_id ?? "" } : null;
   });
 
   const mentionNames = computed(() => {

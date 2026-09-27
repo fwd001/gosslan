@@ -254,3 +254,52 @@ test("linkify: 同名两人分不开 —— 呈现层的自我标签只认名字
     { kind: "text", value: " 帮忙看下" },
   ]);
 });
+
+/**
+ * #122：呈现层按身份标，不再按昵称猜。
+ * 用例与 Rust 侧 `build_mention_targets` 钉的是**同一条数法**（同一个 name 独立数第 n 次出现）——
+ * 两端各自数不一样，就会出现"发送方说第二个人，接收方把高亮贴到第一次出现上"。
+ */
+const SELF = { name: "张三", label: "@你", id: "me" };
+const NAMES = ["张三", "李四"];
+
+test("同名两个人：只有落点指到我那一段才渲染成「@你」", () => {
+  const text = "@张三 先看，然后 @张三 记得归档";
+  const withTargets = linkify(text, NAMES, SELF, [
+    { id: "other-zs", name: "张三", n: 1 },
+    { id: "me", name: "张三", n: 2 },
+  ]);
+  const kinds = withTargets.map((s) => s.kind);
+  assert.deepEqual(
+    kinds,
+    ["mention", "text", "mention-self", "text"],
+    "第一处属于别人、第二处才是我（末尾还有一段普通文字）",
+  );
+  assert.equal(withTargets[2].value, "@你");
+});
+
+test("没有落点（老对端 / 历史消息）⇒ 兜底按昵称，两人都算我（既有边界，不许悄悄变暗）", () => {
+  const text = "@张三 和 @张三";
+  const noTargets = linkify(text, NAMES, SELF);
+  assert.deepEqual(
+    noTargets.map((s) => s.kind),
+    ["mention-self", "text", "mention-self"],
+  );
+  assert.equal(noTargets.length, 3);
+  // 显式传空数组 = 发送方权威地说「这些段落都不是我」⇒ 一处都不该亮
+  const emptyTargets = linkify(text, NAMES, SELF, []);
+  assert.deepEqual(
+    emptyTargets.map((s) => s.kind).slice(0, 3),
+    ["mention", "text", "mention"],
+    "Some([]) 与 None 是两回事（INV-P24 的三态）",
+  );
+});
+
+test("落点里的名字对不上正文 ⇒ 不猜位置，该段按普通 mention 渲染", () => {
+  const seg = linkify("@李四 看一下", NAMES, SELF, [{ id: "ghost", name: "王五", n: 1 }]);
+  assert.deepEqual(
+    seg.map((s) => s.kind),
+    ["mention", "text"],
+    "名字对不上就不贴落点，也不许把「@李四」判成我",
+  );
+});

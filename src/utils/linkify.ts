@@ -132,7 +132,8 @@ function linkifyUrls(text: string): LinkSegment[] {
 export function linkify(
   text: string,
   mentions: string[] = [],
-  self?: { name: string; label: string },
+  self?: { name: string; label: string; id?: string },
+  targets?: { id: string; name: string; n: number }[] | null,
 ): LinkSegment[] {
   if (!text) return [];
   const mentionRe = buildMentionRe(mentions);
@@ -140,6 +141,7 @@ export function linkify(
   const selfName = self?.name.trim() ?? "";
 
   const segments: LinkSegment[] = [];
+  const occByName = new Map<string, number>();
   let lastIndex = 0;
   for (const m of text.matchAll(mentionRe)) {
     const start = m.index ?? 0;
@@ -149,9 +151,22 @@ export function linkify(
       segments.push(...linkifyUrls(text.slice(lastIndex, mentionStart)));
     }
     const name = m[2];
+    // 该昵称在正文里第几次出现（与后端 `build_mention_targets` 同一条数法：同名独立计数）
+    const occ = (occByName.get(name) ?? 0) + 1;
+    occByName.set(name, occ);
+    let hitSelf: boolean;
+    if (targets) {
+      // 有落点 ⇒ **按身份标**：这一段的第 n 次出现属于哪个 id 才算数
+      // ⇒ 群里两个人同名时，@ 其中一个，另一个自己界面上不再跟着亮（#122 的正身）
+      const hit = targets.find((tg) => tg.name === name && tg.n === occ);
+      hitSelf = !!hit && !!self?.id && hit.id === self.id;
+    } else {
+      // 没有落点（老对端 / 历史消息）⇒ 兜底按昵称：只能"更准"，不许让新版"变暗"（INV-P24）
+      hitSelf = selfName !== "" && name === selfName;
+    }
     segments.push(
-      selfName !== "" && name === selfName
-        ? { kind: "mention-self", value: self!.label }
+      hitSelf && self
+        ? { kind: "mention-self", value: self.label }
         : { kind: "mention", value: `@${name}` },
     );
     lastIndex = start + m[0].length;

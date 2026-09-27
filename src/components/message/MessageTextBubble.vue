@@ -28,7 +28,9 @@ const props = defineProps<{
    * 本组件是纯展示件（与 `mine` 同理），且**同一份文本在两端渲染成不同标签**，
    * 绝不能在发送/落库侧改文案（那会污染对端视图与历史）。
    */
-  selfMention?: { name: string; label: string } | null;
+  selfMention?: { name: string; label: string; id?: string } | null;
+  /** @ 的落点（#122）：传了才按身份判「这一段属于谁」，不传按昵称兜底。 */
+  mentionTargets?: { id: string; name: string; n: number }[] | null;
   /**
    * 移动端「选择文字」模式（用户 2026-09-13）：
    * 触屏下气泡默认**不可选**（长按归消息菜单），只有进入这个模式才开放原生选字。
@@ -102,7 +104,14 @@ const segments = computed<RenderSegment[]>(() => {
     if (s.kind === "emoji") {
       out.push({ kind: "emoji", value: s.value, name: s.name, url: s.url });
     } else {
-      out.push(...linkify(s.value, props.mentionNames ?? [], props.selfMention ?? undefined));
+      out.push(
+        ...linkify(
+          s.value,
+          props.mentionNames ?? [],
+          props.selfMention ?? undefined,
+          props.mentionTargets ?? null,
+        ),
+      );
     }
   }
   return out;

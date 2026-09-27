@@ -19,7 +19,9 @@ const props = defineProps<{
   /** 群成员名列表：与气泡共用同一套 @ 高亮，避免"气泡里高亮、全文里是纯文本"。 */
   mentionNames?: string[];
   /** 查看者自己是谁：@到自己 那一段渲染成「@你」并加重（与 MessageTextBubble 同一份判据）。 */
-  selfMention?: { name: string; label: string } | null;
+  selfMention?: { name: string; label: string; id?: string } | null;
+  /** @ 的落点（#122）：传了才按身份判「这一段属于谁」，不传按昵称兜底。 */
+  mentionTargets?: { id: string; name: string; n: number }[] | null;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -33,7 +35,15 @@ const segments = computed<RenderSegment[]>(() => {
   const out: RenderSegment[] = [];
   for (const s of splitEmoji(props.content)) {
     if (s.kind === "emoji") out.push({ kind: "emoji", value: s.value, name: s.name, url: s.url });
-    else out.push(...linkify(s.value, props.mentionNames ?? [], props.selfMention ?? undefined));
+    else
+      out.push(
+        ...linkify(
+          s.value,
+          props.mentionNames ?? [],
+          props.selfMention ?? undefined,
+          props.mentionTargets ?? null,
+        ),
+      );
   }
   return out;
 });

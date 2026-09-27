@@ -152,7 +152,24 @@ async fn send_group_payload(
     // 群密钥加密 + Gossip 信封（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
     // `mentions` 只在文本消息上有值，且**三态有意义**（None=不发这个键=旧语义），
     // 所以这里不能写成 `mentions.unwrap_or_default()`。形状与理由见 protocol 层。
-    let plaintext = crate::protocol::gossip_plaintext(kind, &content, mentions);
+    // #122：新对端除了名单还要落点（哪一段文字算谁）。名字取**发送当时**通讯录里的那份昵称；
+    // 查不到昵称的 id 不分配落点（蒙一个位置比留空更容易让对端把"@第二个人"对到第一次出现上）。
+    let targets: Option<Vec<crate::protocol::MentionTarget>> = mentions.map(|ids| {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        // 昵称取通讯录里那份（`get_friend` 返 `(nickname, avatar)`）。
+        // ⚠️ 刻意**不为自己的 id 造落点**：自己 @ 自己这条在本仓没有入口，
+        // 而为它去猜"本机昵称存在哪"会多引一份状态源 —— 查不到昵称就是没有落点，
+        // 那种情况下呈现层退回按昵称判（与老对端同一兜底路径），不是蒙一个位置。
+        crate::protocol::build_mention_targets(&content, ids, |id| {
+            db::get_friend(&dbc, id).map(|f| f.0)
+        })
+    });
+    let plaintext = crate::protocol::gossip_plaintext_with_targets(
+        kind,
+        &content,
+        mentions,
+        targets.as_deref(),
+    );
     let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let env = {

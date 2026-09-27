@@ -1203,6 +1203,7 @@ async function copyFileToClipboard() {
             :mine="mine"
             :mention-names="mentionNames"
             :self-mention="selfMention"
+            :mention-targets="message.mention_targets"
             :select-mode="textSelecting"
             @expand="openFullModal('text', $event)"
             @copy="copyContent('text', copyOut($event))"
@@ -1293,6 +1294,7 @@ async function copyFileToClipboard() {
             :live-status="todoLiveStatus"
             :mention-names="mentionNames"
             :self-mention="selfMention"
+            :mention-targets="message.mention_targets"
             :mine="mine"
             @open="emit('open-tasks', $event)"
           />
@@ -1360,6 +1362,7 @@ async function copyFileToClipboard() {
     :content="fullModalContent"
     :mention-names="mentionNames"
             :self-mention="selfMention"
+            :mention-targets="message.mention_targets"
     :copied="copiedKey === 'full'"
     @close="fullModalOpen = false"
     @copy="copyContent('full', copyOut($event))"

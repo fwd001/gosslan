@@ -24,7 +24,9 @@ const props = defineProps<{
   /** 群成员名列表：正文里的 @name 按此高亮（不传不高亮）。 */
   mentionNames?: string[];
   /** 查看者自己是谁（本机昵称 + 本地化标签）⇒ @到我自己 那一段换成「@你」并加重。 */
-  selfMention?: { name: string; label: string } | null;
+  selfMention?: { name: string; label: string; id?: string } | null;
+  /** @ 的落点（#122）：传了才按身份判，不传按昵称兜底。 */
+  mentionTargets?: { id: string; name: string; n: number }[] | null;
 }>();
 
 const app = useAppStore();
@@ -37,7 +39,10 @@ const segments = computed(() => {
   > = [];
   for (const s of splitEmoji(props.text ?? "")) {
     if (s.kind === "emoji") out.push({ kind: "emoji", value: s.value, url: s.url });
-    else out.push(...linkify(s.value, props.mentionNames ?? [], props.selfMention ?? undefined));
+    else
+      out.push(
+        ...linkify(s.value, props.mentionNames ?? [], props.selfMention ?? undefined, props.mentionTargets ?? null),
+      );
   }
   return out;
 });

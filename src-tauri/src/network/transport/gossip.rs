@@ -675,6 +675,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     kind,
                     content,
                     mentions,
+                    mention_targets,
                 } = crate::protocol::parse_gossip_plaintext(&pt);
                 // §29 可观测性：这一行是「有人@我 为什么亮 / 为什么不亮」唯一能事后归因的留痕。
                 // 修之前判不到根的机制就在这儿 —— 链路里只有昵称、没有「@ 了谁」，日志也就
@@ -684,9 +685,11 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     state.logger.info(
                         "group",
                         format!(
-                            "群消息@输入 msg={} mentions={}",
+                            "群消息@输入 msg={} mentions={} targets={}",
                             env.message_id,
-                            mentions.as_ref().map_or("none".to_string(), |v| v.len().to_string())
+                            mentions.as_ref().map_or("none".to_string(), |v| v.len().to_string()),
+                            // 只记条数：落点里带昵称，昵称不进日志（日志会进报告产物）
+                            mention_targets.as_ref().map_or("none".to_string(), |v| v.len().to_string())
                         ),
                     );
                 }
@@ -921,6 +924,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         &crate::state::IncomingMessage {
                             record: &out_rec,
                             mention_ids: mentions.as_deref(),
+                            mention_targets: mention_targets.as_deref(),
                         },
                     );
                 }

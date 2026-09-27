@@ -534,6 +534,20 @@ fn announcement_preview(content: &str) -> String {
 /// 单条消息 @ 名单允许携带的最大条数（超出直接截断，不报错）。
 pub const MAX_GOSSIP_MENTIONS: usize = 64;
 
+/// 一条 @ 在正文里的**落点**：谁（`id`）、当时显示成什么（`name`）、是该名字的第二次出现（`n`，1 起）。
+///
+/// 为什么是"第 n 次出现"而不是字符偏移：Rust 的 `String` 按字节、JS 按 UTF-16 码元，
+/// 一个 emoji 就能把两端的编号错开 —— 偏移跨语言传必错。而"`@张三` 在正文里第 n 次出现"
+/// 两端用同一份文本数出来是同一个东西（前端 `linkify.ts` 按同样的规则数，用例两边各钉一份）。
+/// 这一份信息的唯一用途是把呈现层从"按昵称猜"改成"按身份标"（#122：群里两人同名时
+/// @ 其中一个，另一个自己界面上不该亮）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct MentionTarget {
+    pub id: String,
+    pub name: String,
+    pub n: u32,
+}
+
 /// 解密后的群 / 单聊消息明文（Gossip 载荷的 `kind` + `content` 那一层）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GossipPlaintext {
@@ -541,6 +555,10 @@ pub struct GossipPlaintext {
     pub content: String,
     /// 这条消息 @ 了谁（设备 id）。**三态**，见 `gossip_plaintext`。
     pub mentions: Option<Vec<String>>,
+    /// 每条 @ 的落点（与 `mentions` 同条数、同顺序）。**同样三态**：
+    /// `None` = 发送方是不认识这个字段的版本 ⇒ 呈现层退回按昵称判（只能"更准"不能"变暗"）；
+    /// `Some([])` = 这条确实一个人都没 @。畸形/半截一律整份判成 `None`，不许收下一半。
+    pub mention_targets: Option<Vec<MentionTarget>>,
 }
 
 /// 组装群 / 单聊消息的加密前明文。
@@ -553,6 +571,51 @@ pub struct GossipPlaintext {
 /// 为什么要带 id 而不是靠昵称：昵称**可变**（改名后历史上那些 @ 就不再指向这个人）
 /// 又**不唯一**（群里可以两个人同名 ⇒ 一个人被 @，两个人同时亮红点）。
 pub fn gossip_plaintext(kind: &str, content: &str, mentions: Option<&[String]>) -> String {
+    gossip_plaintext_with_targets(kind, content, mentions, None)
+}
+
+/// 按 `mentions` 的顺序把每条 @ 落成正文里的第 n 次出现。
+///
+/// `name_of` 返回**发送当时**该 id 在群里显示的昵称（昵称是可变快照，这里要的就是当时那份）。
+/// 规则（前端 `linkify.ts` 必须同一条）：在正文里从左往右数 `@<name>` 的出现次数，
+/// 同一个 name 的第 k 条 mention 拿到 `n = k`；名字压根不在正文里的 id 不分配落点。
+pub fn build_mention_targets(
+    content: &str,
+    ids: &[String],
+    name_of: impl Fn(&str) -> Option<String>,
+) -> Vec<MentionTarget> {
+    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut out: Vec<MentionTarget> = Vec::new();
+    for id in ids {
+        let Some(name) = name_of(id) else { continue };
+        if name.is_empty() {
+            continue;
+        }
+        let needle = format!("@{name}");
+        // 名字不出现就不分配：把 n=1 蒙到别段文字上，比"这一条没有落点"更坏
+        if !content.contains(&needle) {
+            continue;
+        }
+        let k = seen.entry(name.clone()).and_modify(|v| *v += 1).or_insert(1_u32);
+        if *k > MAX_GOSSIP_MENTIONS as u32 {
+            continue;
+        }
+        out.push(MentionTarget {
+            id: id.clone(),
+            name,
+            n: *k,
+        });
+    }
+    out
+}
+
+/// 带落点的版本：`targets` 是三态的（`None` = 不写这个键，见 `GossipPlaintext::mention_targets`）。
+pub fn gossip_plaintext_with_targets(
+    kind: &str,
+    content: &str,
+    mentions: Option<&[String]>,
+    targets: Option<&[MentionTarget]>,
+) -> String {
     let mut v = serde_json::json!({ "kind": kind, "content": content });
     if let Some(ids) = mentions {
         // 出网前同样洗一遍：这条命令是 IPC 公开面，去重 + 丢空串 + 封顶，
@@ -568,6 +631,15 @@ pub fn gossip_plaintext(kind: &str, content: &str, mentions: Option<&[String]>) 
             }
         }
         v["mentions"] = serde_json::json!(clean);
+    }
+    if let Some(ts) = targets {
+        // 落点自己也要洗：空 id / 空 name / n=0 都是"半截"，留着比丢掉更容易让前端蒙错人
+        let clean: Vec<&MentionTarget> = ts
+            .iter()
+            .filter(|t| !t.id.is_empty() && !t.name.is_empty() && t.n >= 1)
+            .take(MAX_GOSSIP_MENTIONS)
+            .collect();
+        v["mention_targets"] = serde_json::json!(clean);
     }
     v.to_string()
 }
@@ -607,16 +679,50 @@ pub fn parse_gossip_plaintext(pt: &[u8]) -> GossipPlaintext {
             // 缺失 / null / 非数组：全都判成"不知道" ⇒ 接收端兜底按昵称判
             _ => None,
         };
+        let mention_targets = match v.get("mention_targets") {
+            // 缺失 / null ⇒ 不知道（老对端），呈现层按昵称兜底
+            None => None,
+            Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Array(items)) => {
+                let mut acc: Vec<MentionTarget> = Vec::new();
+                let mut ok = true;
+                for item in items {
+                    match item.as_object().and_then(|o| {
+                        let id = o.get("id")?.as_str()?.to_string();
+                        let name = o.get("name")?.as_str()?.to_string();
+                        let n = o.get("n")?.as_u64()? as u32;
+                        if id.is_empty() || name.is_empty() || n < 1 {
+                            return None;
+                        }
+                        Some(MentionTarget { id, name, n })
+                    }) {
+                        Some(t) if acc.len() < MAX_GOSSIP_MENTIONS && !acc.iter().any(|x| x.id == t.id) => {
+                            acc.push(t)
+                        }
+                        // 任何一条认不出来 ⇒ **整份**判成不知道：收下半截落点，
+                        // 前端就会把"第二个人"对到第一次出现上 —— 那比按昵称猜更错。
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                ok.then_some(acc)
+            }
+            Some(_) => None,
+        };
         GossipPlaintext {
             kind,
             content,
             mentions,
+            mention_targets,
         }
     } else {
         GossipPlaintext {
             kind: "text".to_string(),
             content: String::from_utf8_lossy(pt).to_string(),
             mentions: None,
+            mention_targets: None,
         }
     }
 }
@@ -2704,4 +2810,97 @@ mod tests {
             "能力位撞车：FILE_EPOCH 复用了已经被占用的 bit"
         );
     }
+
+    // ---------------- #122：呈现层要能区分"同名的两个人" ----------------
+    // 判定层早在 31eccbd 就绑了设备 id；剩下的这一半是**哪一段文字算谁**。
+    // 用「第几次出现」而不是字符偏移：Rust 按字节、JS 按 UTF-16，偏移跨语言一定错
+    // （一个 emoji 就能把两边的编号错开），而"@昵称 第 n 次出现"在两端数出来是同一个东西。
+    #[test]
+    fn build_mention_targets_numbers_repeated_names_in_text_order() {
+        let content = "辛苦 @张三 和 @李四，@张三 记得归档";
+        let ids = vec!["id-zs".to_string(), "id-ls".to_string(), "id-zs2".to_string()];
+        let name_of = |id: &str| match id {
+            "id-zs" | "id-zs2" => Some("张三".to_string()),
+            "id-ls" => Some("李四".to_string()),
+            _ => None,
+        };
+        let t = build_mention_targets(content, &ids, name_of);
+        assert_eq!(t.len(), 3);
+        assert_eq!((t[0].id.as_str(), t[0].n), ("id-zs", 1));
+        assert_eq!((t[1].id.as_str(), t[1].n), ("id-ls", 1));
+        // 同名第二个人拿到的是"第二次出现"，不是又指回第一次 ⇒ 这就是 #122 的正身
+        assert_eq!((t[2].id.as_str(), t[2].n), ("id-zs2", 2));
+        assert_eq!(t[2].name, "张三");
+    }
+
+    #[test]
+    fn build_mention_targets_skips_unknown_ids_and_absent_names() {
+        let content = "只有 @张三 在正文里";
+        let ids = vec!["ghost".to_string(), "id-zs".to_string()];
+        let t = build_mention_targets(content, &ids, |id| {
+            (id == "id-zs").then_some("张三".to_string())
+        });
+        assert_eq!(t.len(), 1, "查不到昵称的 id 不该造出一个落点");
+        assert_eq!(t[0].id, "id-zs");
+        // 名字压根不在正文里 ⇒ 不分配 n（否则接收端会把 n=1 对到别的那段文字上）
+        let t2 = build_mention_targets("正文里没有 at", &["id-zs".to_string()], |id| {
+            (id == "id-zs").then_some("张三".to_string())
+        });
+        assert!(t2.is_empty());
+    }
+
+    #[test]
+    fn gossip_plaintext_with_targets_roundtrips_and_old_shape_still_parses() {
+        let targets = vec![MentionTarget {
+            id: "id-zs".to_string(),
+            name: "张三".to_string(),
+            n: 1,
+        }];
+        let s = gossip_plaintext_with_targets(
+            "text",
+            "@张三 看一下",
+            Some(&["id-zs".to_string()][..]),
+            Some(&targets[..]),
+        );
+        let back = parse_gossip_plaintext(s.as_bytes());
+        assert_eq!(back.mentions.as_deref(), Some(&["id-zs".to_string()][..]));
+        assert_eq!(back.mention_targets.as_deref(), Some(&targets[..]));
+        // 老形状（只有 mentions 数组、没有 mention_targets）⇒ 新字段是 None，呈现层退回按昵称
+        let old = r#"{"kind":"text","content":"@张三","mentions":["id-zs"]}"#;
+        let b2 = parse_gossip_plaintext(old.as_bytes());
+        assert_eq!(b2.mentions.as_deref(), Some(&["id-zs".to_string()][..]));
+        assert!(b2.mention_targets.is_none(), "缺键 = 不知道，不是空数组");
+        // 三态不许压成两态：Some([]) 是"明确没 @ 任何人"，与 None 不同
+        let none = r#"{"kind":"text","content":"hi","mentions":[]}"#;
+        let b3 = parse_gossip_plaintext(none.as_bytes());
+        assert_eq!(b3.mentions.as_deref(), Some(&[][..]));
+        // 落点这个键**没带** ⇒ None（不是空数组）：呈现层按昵称兜底，但判定层仍吃上面那个 Some([])。
+        // 显式写 `"mention_targets":[]` 才是"发送方权威地说：一个落点都没有"。
+        assert!(b3.mention_targets.is_none(), "缺键 = 不知道");
+        let b5 = parse_gossip_plaintext(
+            r#"{"kind":"text","content":"hi","mentions":[],"mention_targets":[]}"#.as_bytes(),
+        );
+        assert_eq!(b5.mention_targets.as_deref(), Some(&[][..]));
+        let b4 = parse_gossip_plaintext(r#"{"kind":"text","content":"hi"}"#.as_bytes());
+        assert!(b4.mentions.is_none() && b4.mention_targets.is_none());
+    }
+
+    #[test]
+    fn malformed_mention_targets_degrade_to_none_not_partial() {
+        for raw in [
+            r#"{"kind":"text","content":"@x","mentions":["a"],"mention_targets":"nope"}"#,
+            r#"{"kind":"text","content":"@x","mentions":["a"],"mention_targets":[{"id":"a"}]}"#,
+            r#"{"kind":"text","content":"@x","mentions":["a"],"mention_targets":[{"id":"","name":"x","n":1}]}"#,
+            r#"{"kind":"text","content":"@x","mentions":["a"],"mention_targets":[{"id":"a","name":"x","n":0}]}"#,
+        ] {
+            let b = parse_gossip_plaintext(raw.as_bytes());
+            assert!(
+                b.mention_targets.is_none(),
+                "半截/畸形落点必须整份判成不知道，而不是收下一半：{raw}"
+            );
+            assert_eq!(b.mentions.as_deref(), Some(&["a".to_string()][..]), "另一条腿不受牵连");
+        }
+    }
+
 }
+

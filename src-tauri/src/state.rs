@@ -389,6 +389,9 @@ pub struct IncomingMessage<'a> {
     pub record: &'a MessageRecord,
     /// 三态：`None` = 发送方没带这个键（旧版本）；`Some(含空)` = 发送方的权威回答。
     pub mention_ids: Option<&'a [String]>,
+    /// @ 的落点（#122：群里同名两个人要分得开）。与 `mention_ids` 同样三态：
+    /// `None` = 对端版本不认识这个字段 ⇒ 呈现层退回按昵称判（只能更准，不许变暗）。
+    pub mention_targets: Option<&'a [crate::protocol::MentionTarget]>,
 }
 
 /// 一条收藏（与前端一致）。
@@ -1921,6 +1924,7 @@ mod tests {
         let with: serde_json::Value = serde_json::to_value(IncomingMessage {
             record: &rec,
             mention_ids: Some(&ids),
+            mention_targets: None,
         })
         .unwrap();
         assert_eq!(with.get("msg_id").and_then(|v| v.as_str()), Some("m1"));
@@ -1935,6 +1939,7 @@ mod tests {
         let none: serde_json::Value = serde_json::to_value(IncomingMessage {
             record: &rec,
             mention_ids: None,
+            mention_targets: None,
         })
         .unwrap();
         assert_eq!(none.get("mention_ids"), Some(&serde_json::Value::Null));

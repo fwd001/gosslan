@@ -1623,7 +1623,7 @@ test("「有人@我」只许走 messageMentionsMe：昵称判定不许在调用�
 //
 // ⚠️ 刻意只断"接缝在不在"，不断实现细节（不锁参数名顺序之外的东西）。真正的行为判据在
 //    protocol 层单测（三态编解码）、messages.test.ts（三态判定）、state.rs（emit 形状）。
-test("「有人@我」从输入框到对端的七段接缝必须齐全（跨语言链条断在中间是无声的）", () => {
+test("「有人@我」从输入框到对端、再到气泡的接缝必须齐全（跨语言链条断在中间是无声的）", () => {
   const rootDir = join(import.meta.dirname, "..", "..");
   const SEAMS: [string, string, string][] = [
     ["src/components/chat/MessageComposer.vue", "emit(\"send\", { content: text, kind: k, mentionIds });", "① 输入框没把名单随 send 交出去"],
@@ -1631,8 +1631,13 @@ test("「有人@我」从输入框到对端的七段接缝必须齐全（跨语�
     ["src/stores/useChatStore.ts", "api.sendGroupMessage(convId.slice(6), content, kind, mentionIds)", "③ store 发送时丢了这一参"],
     ["src/api/index.ts", "...(mentions ? { mentions } : {})", "④ 门面把『没带』和『空名单』压成了同一种（缺省必须不发这个键）"],
     ["src-tauri/src/commands/group_files.rs", "mentions: Option<Vec<String>>,", "⑤ 命令入口不再收这个参数"],
-    ["src-tauri/src/commands/window.rs", "crate::protocol::gossip_plaintext(kind, &content, mentions)", "⑥ 内核没把名单写进加密明文"],
+    ["src-tauri/src/commands/window.rs", "crate::protocol::gossip_plaintext_with_targets(", "⑥ 内核没把名单写进加密明文"],
     ["src-tauri/src/network/transport/gossip.rs", "mention_ids: mentions.as_deref(),", "⑦ 接收端解出来了却没回送给界面"],
+    // ↓ #122 新增的三条腿：落点（哪一段算谁）从发送侧算出来、随事件送到界面、并被渲染件真的收下。
+    //   这三段每一段被改动都不会有编译错误 —— 断掉的形状是"同名两个人又一起亮"，跟 #103 当初同族。
+    ["src-tauri/src/commands/window.rs", "build_mention_targets(&content, ids,", "⑧ 发送侧不再算 @ 的落点（同名两人又分不开）"],
+    ["src-tauri/src/network/transport/gossip.rs", "mention_targets: mention_targets.as_deref(),", "⑨ 解出的落点没回送给界面"],
+    ["src/components/message/MessageTextBubble.vue", "props.mentionTargets ?? null,", "⑩ 气泡没收下落点 ⇒ 只能退回按昵称猜"],
   ];
   const missing: string[] = [];
   for (const [rel, needle, why] of SEAMS) {
@@ -1640,7 +1645,7 @@ test("「有人@我」从输入框到对端的七段接缝必须齐全（跨语�
     if (!code.includes(needle)) missing.push(`${rel} —— ${why}`);
   }
   assert.deepEqual(missing, [], "「@ 了谁」这条链断了：\n" + missing.join("\n"));
-  // 非空转：第七段（emit 形状）最容易被顺手改成 `None`，这里当场演一遍"改坏必须报红"
+  // 非空转：emit 那一腿最容易被顺手改成 `None`，这里当场演一遍"改坏必须报红"
   const broken = SEAMS[6][1].replace("mentions.as_deref()", "None");
   assert.ok(!SEAMS[6][1].includes(broken), "锚点写得太松 ⇒ 改坏了也抓不到");
 });
