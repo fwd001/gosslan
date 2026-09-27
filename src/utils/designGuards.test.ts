@@ -1592,9 +1592,16 @@ test("「有人@我」只许走 messageMentionsMe：昵称判定不许在调用�
   const messagesSrc = readFileSync(join(srcDir, "utils", "messages.ts"), "utf8");
   // ① 唯一入口必须真的还在被消费者用着 —— 否则上面的"零违规"只是因为没人判 @ 了
   const storeSrc = readFileSync(join(srcDir, "stores", "useChatStore.ts"), "utf8");
+  // 2026-09-28：这三条规则整体搬进 `messages.ts::freshMentionedConvs`（搬的目的就是能吃单测）。
+  // ⇒ 消费者侧现在认的是**那个入口的调用**，同时**入口自己**必须还在调 `messageMentionsMe`：
+  //   两头都钉，才同时排掉「搬成一个没人调的空壳」与「store 里再各判一遍」这两种复活。
   assert.ok(
-    /\bmessageMentionsMe\s*\(/.test(storeSrc),
+    /\bfreshMentionedConvs\s*\(/.test(storeSrc),
     "useChatStore 不再判「有人@我」⇒ 红点整条消失，而上面那条零违规是假的",
+  );
+  assert.ok(
+    /function freshMentionedConvs[\s\S]*?messageMentionsMe\s*\(/.test(messagesSrc),
+    "freshMentionedConvs 里没在调 messageMentionsMe ⇒ 三态入口成了没人走的死代码，红点改由别处判 = 第二个入口",
   );
   // ② 三态的 id 那条分支必须还在（不许把 messageMentionsMe 压回"只看昵称"）
   assert.ok(

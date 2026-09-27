@@ -322,6 +322,40 @@ export function messageMentionsMe(
  * 纯函数，供 useChatStore 的消息缓存上界使用；调用方负责删除未保留的键。
  * 单独抽出来的原因：这是「会不会把用户正在看的会话淘汰掉」的唯一判定点，必须有单测锁定。
  */
+/**
+ * 「有人@我」红点的**摄入判定**（从 `useChatStore` 里抽出来的纯函数，规则一字未改）。
+ *
+ * 三条规则，一条都不能松：
+ *  - **只算群聊**（单聊不需要这个提醒）；
+ *  - **自己发的不算**；
+ *  - **正开着的那个会话不算** —— 这条与未读同源，也是 2026-09-28 拿真无障碍树读不出结论的原因
+ *    （读到 `E2E-Group，5 条未读` 而没有 @ 那句，分不清"该亮没亮"与"正开着所以不算"）。
+ * 入参只吃**本地真正新增**的那批（重复投递已在调用方剔掉），所以重递不会反复点亮。
+ *
+ * `alsoMentionsMe` 是注入点：任务卡"指派给我"那条判定住在 `todos.ts`，
+ * 让它由调用方传进来，这里就不引第二条依赖（也才能在没有 store 的情况下测到这一半）。
+ */
+export function freshMentionedConvs(
+  freshByConv: Map<string, MessageRecord[]>,
+  activeConvId: string | null,
+  me: { id: string; name: string },
+  opts: { alsoMentionsMe?: (rec: MessageRecord) => boolean } = {},
+): string[] {
+  const out: string[] = [];
+  for (const [cid, fresh] of freshByConv) {
+    if (cid === activeConvId || !cid.startsWith("group:")) continue;
+    for (const rec of fresh) {
+      if (rec.sender_id === me.id) continue;
+      // 「@所有人」与「点名」走的是同一个入口（`messageMentionsMe` 内部两条路），这里不再各判一次。
+      if (messageMentionsMe(rec, me) || opts.alsoMentionsMe?.(rec)) {
+        out.push(cid);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 export function selectCachedConversations(
   lruOrder: string[],
   activeId: string | null | undefined,

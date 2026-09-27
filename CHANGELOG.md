@@ -10,6 +10,35 @@
 
 ## [Unreleased]
 
+## [4.31.4] - 2026-09-28
+
+### ★ 「有人@我」的**摄入规则**从 store 搬成纯函数并补上单测（#117／#140 的前置，patch）
+- 起因是 #140 那趟真界面读数**判不出结论**：无障碍树读到的是 `E2E-Group，5 条未读` 而没有「有人@我」
+  那半句，而我分不清这到底是「该亮没亮」还是「正开着这个会话、按规则就不该亮」——
+  因为这三条规则（**只算群聊 / 自己发的不算 / 正开着的那个不算**）当时直接长在
+  `useChatStore` 的摄入循环里，**一条单测都没有**。规则只以注释存在 = 注释不参与推理，
+  下一次改这段谁也不知道它能不能改（§十「禁把没测试说成 PASS」的同族）。
+- 改法：判定整体搬进 `messages.ts::freshMentionedConvs`（纯函数，**规则一字未改**），store 只留调用。
+  「任务被指派给我也算 @」那条住在 `todos.ts`，由调用方经 `alsoMentionsMe` 注入 ——
+  这样 `messages.ts` 不多引一条依赖，而这一半也就在没有 store 的情况下测得到。
+- ★ 为什么这**不属**§十八「不为可测性动最热路径」那一类：搬走的是本来就是纯计算的那段判定，
+  它长在 store 里只是位置问题；Rust 侧 AppState 一字未动，store 里少了一个循环、没多任何一层。
+- 证据（先红后绿；三条注入**各自单独跑**，不是合在一起跑一次）：
+  ① RED 原文：`SyntaxError: The requested module './messages.ts' does not provide an export named 'freshMentionedConvs'`；
+  ② 实现后 `node --test src/utils/messages.test.ts src/utils/designGuards.test.ts` ⇒ **183 pass / 0 fail**；
+  ③ 三条 lie 逐条注入 ⇒ 每条都按名字咬住它管的那一条规则：
+  - 放开「正开着不算」 ⇒ fail 1，正是「正开着的那个会话不算被@」；
+  - 放开「只算群聊」 ⇒ fail 1，正是「单聊不计红点（这条规则按设计只管群聊），自己的消息也不计」；
+  - 让入口不再调 `messageMentionsMe` ⇒ fail 3，除两条行为用例外还咬住接缝守卫
+    「昵称判定不许在调用点直接出现」（三态入口成了没人走的死代码）；
+    三条都用内存原文还原，还原后 `git diff --stat` 仍只有这四个文件；
+  ④ 整仓 `npm test` ⇒ **672 tests / 672 pass / 0 fail**，退码 0（退码裸取、不经管道）；
+    `npx vue-tsc --noEmit` 退 0；`npm run build` 退 0。
+- 接缝守卫（`designGuards.test.ts` ⑲）**跟着搬家改准并加了一条**：原先判「store 里必须出现
+  `messageMentionsMe(`」，搬完必然为空 —— 那会让守卫自己变成假红；
+  改成 ① store 必须走 `freshMentionedConvs(`，② `freshMentionedConvs` 内部必须真的调
+  `messageMentionsMe`。②是上面第三条 lie 实测抓到的那种坏法，不是设想出来的。
+
 ### §三十二/§三十三 的收尾审计：第二阶段 35 节逐条对账表进了复审报告
 - `docs/final-architecture-review.md` 末尾新增「附：第二阶段总执行指令 35 节 · 逐条对账」——每行给
   **可复跑的产物名**而不是结论，状态只用四个词（成立 / 本机成立 / 部分 / 不成立），且**故意不写总计**

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   applyIncomingToConversations,
+  freshMentionedConvs,
   applyConversationSnapshot,
   applyReplacements,
   appendLocalOnly,
@@ -934,3 +935,70 @@ test(
     assert.deepEqual([...clearedAt.keys()], ["new"]);
   },
 );
+
+// ---------------- 「有人@我」红点的摄入判定（从 useChatStore 里抽出来的纯函数） ----------------
+// 为什么值得单独钉：这条规则的"开着的那个会话不算被@"那一半，2026-09-28 在真界面上把我引偏过一次 ——
+// 拿无障碍树读到 `E2E-Group，5 条未读` 而没有 @ 那句，当时分不清"该亮没亮"与"正开着所以不算"。
+// 规则本来就是这么写的（群聊、非自己发的、当前没开着这个会话），但它只长在 store 里、没有单测，
+// 于是每次读到"没亮"都得重新去翻源码。这里把它钉住。
+const ME = { id: "dev-me", name: "我" };
+
+test("群聊里别人 @ 我 ⇒ 那个会话该点亮红点；同一会话多条也只回一次", () => {
+  const byConv = new Map<string, MessageRecord[]>([
+    ["group:g1", [
+      msg({ msg_id: "a1", conv_id: "group:g1", sender_id: "other", mention_ids: ["dev-me"], content: "@我 看一下" }),
+      msg({ msg_id: "a2", conv_id: "group:g1", sender_id: "other", mention_ids: ["dev-me"], content: "再来一条" }),
+    ]],
+  ]);
+  assert.deepEqual(freshMentionedConvs(byConv, null, ME), ["group:g1"]);
+});
+
+test("正开着的那个会话不算被@（红点与未读同源：看着就不该再提醒）", () => {
+  const byConv = new Map<string, MessageRecord[]>([
+    ["group:g1", [msg({ msg_id: "b1", conv_id: "group:g1", sender_id: "other", mention_ids: ["dev-me"] })]],
+  ]);
+  assert.deepEqual(freshMentionedConvs(byConv, "group:g1", ME), []);
+});
+
+test("单聊不计红点（这条规则按设计只管群聊），自己的消息也不计", () => {
+  const byConv = new Map<string, MessageRecord[]>([
+    ["f1", [msg({ msg_id: "c1", conv_id: "f1", sender_id: "other", mention_ids: ["dev-me"] })]],
+    ["group:g1", [msg({ msg_id: "c2", conv_id: "group:g1", sender_id: "dev-me", mention_ids: ["dev-me"] })]],
+  ]);
+  assert.deepEqual(freshMentionedConvs(byConv, null, ME), []);
+});
+
+test("「@所有人」点亮；三态不许合并：缺 mention_ids 的旧消息退回昵称，名单为空是权威「谁都没@」", () => {
+  const allOf = new Map([["group:g1", [msg({
+    msg_id: "d1", conv_id: "group:g1", sender_id: "other", content: "@所有人 开会",
+  })]]]);
+  assert.deepEqual(freshMentionedConvs(allOf as Map<string, MessageRecord[]>, null, ME), ["group:g1"]);
+
+  const legacy = new Map([["group:g2", [msg({
+    msg_id: "d2", conv_id: "group:g2", sender_id: "other", content: "@我 看一下", mention_ids: undefined,
+  })]]]);
+  assert.deepEqual(freshMentionedConvs(legacy as Map<string, MessageRecord[]>, null, ME), ["group:g2"],
+    "旧对端没有这个字段 ⇒ 按昵称兜底（INV-P24：新字段只许让新版更准，不许让老消息变暗）");
+
+  const explicitNobody = new Map([["group:g3", [msg({
+    msg_id: "d3", conv_id: "group:g3", sender_id: "other", content: "@我 看一下", mention_ids: [],
+  })]]]);
+  assert.deepEqual(freshMentionedConvs(explicitNobody as Map<string, MessageRecord[]>, null, ME), [],
+    "空名单是「谁都没 @」这个肯定回答 ⇒ 正文里明明写着 @我，也不许亮（名单才是权威）");
+});
+
+test("指派给我的任务卡也算被@：走注入的那个谓词，判定不留在 store 里", () => {
+  const rec = msg({ msg_id: "e1", conv_id: "group:g1", sender_id: "other", kind: "todo" });
+  const byConv = new Map([["group:g1", [rec]]]);
+  assert.deepEqual(freshMentionedConvs(byConv as Map<string, MessageRecord[]>, null, ME,
+    { alsoMentionsMe: (r) => r.kind === "todo" && r.sender_id === "other" }), ["group:g1"]);
+  // 反向：没有注入谓词时，todo 那类消息不该亮（否则这条判据就不知道自己判的是哪一半）
+  assert.deepEqual(freshMentionedConvs(byConv as Map<string, MessageRecord[]>, null, ME), []);
+});
+
+test("我的 id 还没就绪时不许靠空串匹配到名单（身份未就绪 ≠ 被@）", () => {
+  const byConv = new Map([["group:g1", [msg({
+    msg_id: "f1", conv_id: "group:g1", sender_id: "other", mention_ids: [""],
+  })]]]);
+  assert.deepEqual(freshMentionedConvs(byConv as Map<string, MessageRecord[]>, null, { id: "", name: "我" }), []);
+});

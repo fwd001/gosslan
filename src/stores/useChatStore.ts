@@ -8,7 +8,7 @@ import {
   appendLocalOnly,
   furthestStatus,
   mergeMessages,
-  messageMentionsMe,
+  freshMentionedConvs,
   pickMediaContent,
   preserveDeliveryStatus,
   previewText,
@@ -435,23 +435,15 @@ export const useChatStore = defineStore("chat", () => {
       }
       if (fresh.length) newByConv.set(cid, fresh);
     }
-    // 被 @ 检测（微信式 [有人@我]）：仅群聊、非自己发的、且当前没开着这个会话。
-    // 与未读同源（本地真正新增的消息），重复投递不会反复触发。
-    // 「@所有人」与「点名」走的是同一个入口（`messageMentionsMe` 内部两条路），
-    // 在这里不再各判一次 —— 判两遍等于两个入口，迟早只修一个。
+    // 被 @ 检测（微信式 [有人@我]）的规则整体搬进 `messages.ts::freshMentionedConvs` ——
+    // 三条规则（只群聊 / 非自己发的 / 当前没开着这个会话）与"与未读同源、重复投递不反复触发"都在那里，
+    // 并且**有单测**（`messages.test.ts` 那 7 条）。搬走而不是再判一遍：这段原先长在 store 里，
+    // 判不到也测不到，2026-09-28 拿真无障碍树读数时因此分不清"该亮没亮"与"正开着所以不算"。
     const myName = app.device?.nickname ?? "";
     const myId = myDeviceId.value;
-    for (const [cid, fresh] of newByConv) {
-      if (cid === activeConv.value || !cid.startsWith("group:")) continue;
-      for (const rec of fresh) {
-        if (rec.sender_id === myId) continue;
-        // 任务被指派给我 ═ 被 @：显式 @ 指派的人（与 item 4 同口径），
-        // 走微信式 [有人@我] 红点，且不会被重复投递反复触发（与上面同源 fresh）。
-        if (messageMentionsMe(rec, { id: myId, name: myName }) || todoMentionsMe(rec, myId)) {
-          mentionedConvs.value.add(cid);
-          break;
-        }
-      }
+    for (const cid of freshMentionedConvs(newByConv, activeConv.value, { id: myId, name: myName },
+      { alsoMentionsMe: (rec) => todoMentionsMe(rec, myId) })) {
+      mentionedConvs.value.add(cid);
     }
     // 会话列表中不存在的会话（新好友 / 后端新创建）：本地合并不了，直接从后端拉取
     const knownIds = new Set(conversations.value.map((c) => c.id));
