@@ -926,6 +926,10 @@ let taskBDoneId = "";
 /// （②③⑩ 已证），而是**群任务这一族的「已入队」这个事实许不许被一次崩溃抹掉**。
 let taskCrashCreateId = "";
 let taskCrashDoneId = "";
+/// 任务描述里带的那两张图片**引用**（真实字节走群文件管线，SQLite 不存 BLOB）。
+/// 五个字段各有各的用途：`subtype` 决定卡片里是缩略图还是文件块、`sha256`/`id` 是接收方
+/// 在本地目录里找字节的键、`size` 用于进度与完整性 —— 少一个都是**静默**的（不会报错，只会显示不对）。
+let taskImages = [];
 /// 任务轮预置：两端同一份群 + 群密钥（与群聊轮同形），A 排两条群载荷 ——
 /// `todo`（创建，seq=1，指派给 B）与 `todo_update`（B 视角下的完成，seq=2）。
 /// 载荷字段逐字对齐 `protocol.rs::TodoPayload`（todo_id/title/assignees/status/creator/
@@ -1014,10 +1018,24 @@ if (TASK) {
     // 时钟这边预置到 6 不会挡住 A 的 1..4：接收侧走 `observe_clock`=`max(local,observed)`
     // （db/clocks.rs:41-48），只有发送侧的 `next_clock` 会分配新号 —— 已读源码确认，不是猜的。
     const todoId2 = "todo-e2e-2";
+    taskImages = [
+      {
+        id: createHash("sha256").update("e2e-task-image-1").digest("hex"),
+        name: "白板照片.jpg", size: 20480,
+        sha256: createHash("sha256").update("e2e-task-image-1").digest("hex"),
+        subtype: "image",
+      },
+      {
+        id: createHash("sha256").update("e2e-task-file-1").digest("hex"),
+        name: "合同.pdf", size: 98304,
+        sha256: createHash("sha256").update("e2e-task-file-1").digest("hex"),
+        subtype: "file",
+      },
+    ];
     const mk2 = (over) => JSON.stringify({
       todo_id: todoId2, title: "e2e task by B", assignees: [idA.runtimeId], status: "todo",
-      creator: idB.runtimeId, deleted: false, description: "", images: [], archived: false,
-      done_at: null, ...over,
+      creator: idB.runtimeId, deleted: false, description: "", images: taskImages,
+      archived: false, done_at: null, ...over,
     });
     const baseB = {
       groupKey: GROUP_KEY_B64, senderId: idB.runtimeId, priv: ed25519Priv(INSTANCES[1]),
@@ -1359,6 +1377,30 @@ if (TASK) {
       bRowC[0]?.sender_id === idB.runtimeId, idB.runtimeId, bRowC[0]?.sender_id);
     check("B 侧这一单的 group_outbox 也被 Ack 清干净（发起方的队列残留=下次建链还会重发）",
       bQueued === 0, 0, bQueued);
+
+    // §27「任务 + 图片」这一格：任务描述里带的图片**只有元数据过线**（真实字节走群文件管线，
+    // SQLite 不存 BLOB —— 这条原则必须继续保持）。五个字段每一个掉了都是静默的：
+    // `subtype` 错 ⇒ 卡片把图片渲染成文件块；`sha256`/`id` 错 ⇒ 接收方在本地目录里找不到字节；
+    // `size` 错 ⇒ 进度与完整性对不上。所以逐字段比，不按字符串比（序列化顺序不是契约）。
+    const imgSame = (a, b) => !!a && !!b && a.id === b.id && a.name === b.name
+      && a.size === b.size && a.sha256 === b.sha256 && a.subtype === b.subtype;
+    const imgsOk = (p) => {
+      const got = p?.images;
+      return Array.isArray(got) && got.length === taskImages.length
+        && taskImages.every((im, k) => imgSame(im, got[k]));
+    };
+    check("任务带的两张图片引用跨进程**逐字段**原样到齐、顺序不变（创建那条与改成完成那条都要带住）",
+      imgsOk(pbc) && imgsOk(pbu), `${taskImages.length} 条 × 5 字段全等`,
+      `c=${JSON.stringify(pbc?.images)} u.ok=${imgsOk(pbu)}`);
+    // 这一条钉的是产品侧写在注释里的一句等式："id 与 sha256 同值，接收方按它在本地解析"。
+    // 它一旦分叉，接收方就永远取不到那张图的字节 —— 而线上看着完全正常。
+    // ★ `every` 对**空数组恒为真** ⇒ 必须先钉"有一条以上"，否则对端一条都没到时这条照样绿
+    //   （实测：lie 模式下只加 `.every` 那半边是 18 红，补上前半句才是 19 红）。
+    const idsMatch = (p) => Array.isArray(p?.images) && p.images.length > 0
+      && p.images.every((im) => im.id === im.sha256 && im.sha256.length === 64);
+    check("每条图片引用的 id 必须等于 sha256（=64 位 hex）—— 接收方就是拿它在本地目录里找字节的",
+      idsMatch(pbc) && idsMatch(pbu), "id==sha256 且 64 位",
+      JSON.stringify((pbc?.images ?? []).map((im) => `${im.id === im.sha256}/${im.sha256?.length}`)));
   });
 
   // ── §28「正在任务同步时退出」这一格：群任务这一族的崩溃恢复（以前只有文件族有判据）──
