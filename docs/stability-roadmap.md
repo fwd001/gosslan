@@ -862,7 +862,7 @@ CHANGELOG 各有一份）；以本节的划掉为准，改的时候这几处一�
 |---|---|---|---|---|
 | N1 ✅ 已实现（2026-09-27，运行时待复测） | 表情面板不响应 Esc、不能用方向键走 | `EmojiPicker.vue`（全文 56 行）对 `keydown`/`Escape`/`focus`/`tabindex` **零命中**；`MessageComposer.vue:201-222` 的 Esc 只关 @ 选择器 | **只能真机 / B 那条无障碍路**（静态护栏这条路本轮试过并判为不成立，见下面那段"试过并推翻的一条"） | 高（同一族的 @ 选择器已有该行为，不一致） |
 | N2 ✅ 已实现（2026-09-27，运行时待复测） | 聊天记录弹窗的结果不能方向键选 | `search/ChatSearchDialog.vue:234` 只有 `@keydown.enter`，全文件无 `ArrowDown/ArrowUp` | 同上 | 中 |
-| N3 | 搜索没有 ⌘K / Ctrl+K | `utils/shortcuts.ts:23-36` 只登记 `,`/`f`/`n`；全仓 `'k'` 零命中（系统菜单里是 `CmdOrCtrl+F`，`menu.rs:161`） | 单测（`shortcuts.test.ts` 已在判"哪些键不许占"） | 低（已有 ⌘F，属习惯差异不是缺失） |
+| N3 ✅ 已实现并有单测（2026-09-27，`matchAppShortcut` 8/8） | 搜索没有 ⌘K / Ctrl+K | `utils/shortcuts.ts:23-36` 只登记 `,`/`f`/`n`；全仓 `'k'` 零命中（系统菜单里是 `CmdOrCtrl+F`，`menu.rs:161`） | 单测（`shortcuts.test.ts` 已在判"哪些键不许占"） | 低（已有 ⌘F，属习惯差异不是缺失） |
 | N4 | Windows 任务栏完全没有未读信号 | `tray.rs:262` 整块角标代码 `#[cfg(not(target_os = "windows"))]`；`:229` 写明刻意不用 `set_overlay_icon`（纯红方块） ⇒ Windows 只剩托盘 tooltip 里的数字（要悬停才看得见） | 只能真机（Windows 机器）；可加一条 Rust 侧"三端 badge 归宿"的说明性断言 | 中（用户看得见的不一致，但要 Win 真机才能验） |
 | N5 | macOS Dock 图标没有右键菜单 | `grep -rn "set_dock_menu\|DockMenu" src-tauri/src` **零命中**（托盘菜单有：`tray.rs:311`） | 只能真机 | 低 |
 | N6 | 代码块 / 群成员行 / 群文件行没有右键菜单 | 这三处文件里 `contextmenu` 零命中，而消息行/会话行/好友行/收藏行都有（`MessageItem.vue:1176`、`ConversationListItem.vue:183`、`FriendListItem.vue:142`、`FavoritePanel.vue:606`） | 静态护栏可判"列表行是否挂了菜单入口"，但**该不该挂是产品判断** | 中（要先定语义：成员行= @他/查看资料；代码块=复制） |

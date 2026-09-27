@@ -38,3 +38,16 @@ test("未映射的键 → 不处理", () => {
     assert.equal(matchAppShortcut({ ...noMod, mod: true, key }), null, `key=${key}`);
   }
 });
+
+// ── N3（原生感走查）：⌘K / Ctrl+K 是桌面端"打开搜索"的事实标准，⌘F 是应用内已有的那条
+test("⌘K / Ctrl+K 与 ⌘F 打开同一个搜索（原生感走查 N3）", () => {
+  const base = { alt: false, shift: false, isComposing: false };
+  assert.equal(matchAppShortcut({ ...base, mod: true, key: "k" }), APP_ACTION.focusSearch);
+  assert.equal(matchAppShortcut({ ...base, mod: true, key: "K" }), APP_ACTION.focusSearch);
+});
+
+test("⌘⇧K / ⌘⌥K 不算打开搜索（组合键一律放行，与其余条目同一套规矩）", () => {
+  const base = { mod: true, isComposing: false };
+  assert.equal(matchAppShortcut({ ...base, alt: true, shift: false, key: "k" }), null);
+  assert.equal(matchAppShortcut({ ...base, alt: false, shift: true, key: "k" }), null);
+});

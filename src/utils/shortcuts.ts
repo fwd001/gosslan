@@ -27,7 +27,10 @@ export function matchAppShortcut(input: ShortcutInput): string | null {
   switch (key) {
     case ",":
       return APP_ACTION.openSettings;
+    // ⌘K 是桌面端"打开搜索"的事实标准（macOS 尤其如此），⌘F 是应用内既有那条 ——
+    // 两条映射到同一个动作，不做第二个动作名（原生感走查 N3，2026-09-27）。
     case "f":
+    case "k":
       return APP_ACTION.focusSearch;
     case "n":
       return APP_ACTION.addFriend;
