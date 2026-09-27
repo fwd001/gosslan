@@ -110,13 +110,29 @@ npm run verify -- --full   # 193 条注入整跑（>1.5 小时）
 > **2026-09-28 第二趟现算对账（tip `bbd69a3`，版本号 4.31.3）** —— 上面那段是**改动之前**那次跑，
 > 之后又落了迁移 v10→v11 与两条 #138，所以**两层 E2E 在这一刻的代码上重跑过**：
 > **本地层 18 步 713.3s 退 0**、**发版前层 3 步 99.4s 退 0**（复跑：`npm run verify:e2e` / `npm run verify:release`）。
-> 全量层整体**仍是红的**（同一条 Change Budget 判据 3，等处置），但它掩盖的那几步今天按单条命令各自跑过：
+> 全量层整体**仍是红的**（~~同一条 Change Budget 判据 3，等处置~~ ⇒ **当天第三次现算：判据 3 已经不红了，
+> 挡住第 11 步的是判据 1/2**，账写在下面那段；复跑 `node scripts/check-change-budget.mjs` 会自己点名是哪一条），
+> 但它掩盖的那几步今天按单条命令各自跑过：
 > `cargo fmt --check --all` 退 0、`cargo clippy --features bluetooth -- -D warnings` 退 0、
 > `cargo test --features bluetooth` **735 passed / 0 failed**、`check-test-manifest --only rust` 退 0（基线 735 条全部在跑）、
 > `scripts/check-mobile.sh` **PASS**（Android aarch64，0 warning）、`npm run build` 退 0、`npm test` 666 pass / 0 fail。
 > ⚠️ **今天仍未跑的那一格要明说**：197 条护栏非空转**整跑**没跑（要 70–90 分钟，且它会注入并还原源文件 ——
 > 会话收尾期不起长跑，是把门禁留在工作树里比"没跑"更坏的那种错）。便宜替代 = 起跑前锚点全量静态核对
 > `verify-guards.py --list` ⇒ **197 条锚点各恰好命中一次**（这只证明锚点活着，**不**证明每条用例改坏仍会红）。
+>
+> ★ **第三次现算：挡路的那条红换了对象**（复跑 `node scripts/check-change-budget.mjs`，范围 = `origin/main..HEAD`）。
+> 判据 3「同一领域最近 5 个修补形状提交里 ≥3 次」现在显示 `presentation: 2 次` ⇒ **不红了**，
+> 但**这不是被处置掉的** —— 是窗口随新提交前移、把最早那一条挤了出去；而这次滑动本身的可信度还要打折：
+> **#139** 那条口径缺陷（只改测试文件的提交也被算成"一个领域"）仍在污染这个计数。
+> ⇒ 我之前推给用户的那份「等你处置判据 3」的**前提已经不成立**，已就地改口并重发一次。
+> 现在挡在第 11 步的是**判据 1/2（变更分级缺声明）**，`origin/main..HEAD` 里 5 条未推送提交：
+> 两条缺 `[plan]`（`docs(consistency,ledger)` 那一条与 `feat(ui) #35-N7`）、三条 L3 缺 `[impact]`
+> （两条 #122 的 `feat(group)` 与 `fix(settings) #125`，它们都碰了 `protocol.rs` 或 ≥3 领域）。
+> 出口只有两个，且**都不该我替他选**：① 补这 5 条声明 —— 要改写 5 条未推送提交，
+> 并且仓里有若干处文档引用这些 sha 必须一起重指向（今天数过一次：`a94b144` 4 处、`0b84f11` 2 处、
+> `591b8fc`/`6c6efcb` 各 1 处，全在 `docs/final-architecture-review.md`、`docs/stability-roadmap.md`、
+> `CHANGELOG.md` 三个文件里 ⇒ 复跑 `grep -rn --include="*.md" -oE "(a94b144|0b84f11|591b8fc|6c6efcb)" docs CHANGELOG.md`）；
+> ② 他明确接受这条红继续发版。**这两个方向之间的差别是"改历史"与"留一条已知红"，正是该由负责人定的那种。**
 
 
 **判定（2026-09-28 第二趟改口，tip `bbd69a3`）：tag `v4.30.0` 仍存在且是最后一个 tag（`git tag --sort=-creatordate | head -1`），
