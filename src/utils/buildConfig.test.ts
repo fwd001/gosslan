@@ -75,3 +75,27 @@ test("打生产包的命令必须带 --features bluetooth（否则产物静默�
       "\n请补上 `--features bluetooth`（Tauri 的 feature 默认关闭，ADR-0015 §2）。",
   );
 });
+
+/**
+ * #126（2026-09-27 用户拍板）：门禁里跑双实例 E2E 的那份二进制，**必须与打包同一 feature 集**。
+ *
+ * 判的形状：`scripts/verify.mjs` 的 local 层必须存在一步"用 `--features bluetooth` 编 release 二进制"，
+ * 且 harness 自己打印的补救提示也带这个 flag（人照着提示做的事，就是门禁实际做的事 —— 两处不一致时
+ * 下一次一定按提示做，于是又测回不带蓝牙的那份）。
+ */
+test("门禁的 E2E 二进制必须与打包同 feature 集（测的那份＝发的那份，#126）", () => {
+  const verify = readFileSync(new URL("../../scripts/verify.mjs", import.meta.url), "utf8");
+  const harness = readFileSync(new URL("../../scripts/e2e-multi-instance.mjs", import.meta.url), "utf8");
+  const step = /group: "local",\s*name: "构建与打包同 feature 集[^]*?args: \["build", "--release", "--features", "bluetooth"\]/.exec(
+    verify,
+  );
+  assert.ok(
+    step,
+    "verify.mjs 的 local 层必须有一步 `cargo build --release --features bluetooth`，否则 E2E 测的是不含蓝牙的那份二进制",
+  );
+  assert.match(
+    harness,
+    /cargo build --release --features bluetooth/,
+    "harness 的补救提示必须与门禁实际做的事一致（不带 feature 的提示会把人带回旧的缺口）",
+  );
+});

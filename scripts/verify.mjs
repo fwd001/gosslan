@@ -455,6 +455,21 @@ if (groupFlag === "local") {
     },
     {
       group: "local",
+      name: "构建与打包同 feature 集的 release 二进制（#126：测的那份必须就是发的那份）",
+      why: `双实例 E2E 跑的是 src-tauri/target/release/gosslan。五条打包命令全都带 --features bluetooth` +
+        `（那件事由 buildConfig.test.ts 钉着），但这份门禁二进制过去是靠人手动 cargo build --release 编的 ——` +
+        `不带这个 feature ⇒ 这一层测到的二进制里根本没有蓝牙代码 = "测的那份 ≠ 发的那份"，` +
+        `而 E2E 报告不会为此说任何话。现在门禁自己先编一次同 feature 集的那份：` +
+        `cargo 是增量的，没改过就是秒级 no-op，代价只出现在"确实变了"的时候。` +
+        `★ 日常快速层照样不碰 cargo（这条在 local 层，不是 quick）—— 用户 2026-09-27 明确要求` +
+        `"日常快速 verify 不必每次强制完整 BLE 重编译，但涉及 Rust/Transport/Bluetooth/构建配置与正式 release 必须验含 Bluetooth 的真实构建"。` +
+        LOCAL_ONLY_WHY,
+      cwd: TAURI,
+      cmd: "cargo",
+      args: ["build", "--release", "--features", "bluetooth"],
+    },
+    {
+      group: "local",
       name: "双实例 E2E：默认轮（文本 + 文件 + 重启）",
       why: `两个真实 release 进程对发，断言两侧 DB/日志/磁盘收敛一致；${LOCAL_ONLY_WHY}`,
       cwd: ROOT,

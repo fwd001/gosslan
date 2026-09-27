@@ -108,6 +108,19 @@ export function accumulate(version, levels) {
  * 也不许把「什么都没判」当成静音通过（那是最像成功的一种失败）。
  */
 /**
+ * 这条路径是不是**会被打包发出去的应用码**。
+ * 口径：前端 `src/**` 与 Rust `src-tauri/src/**`，**但测试文件不算**
+ * （`*.test.ts` 与 Rust 侧的 `*_tests.rs` / `mod tests` 所在分册都是给门禁跑的，不进产物）。
+ * 判错这一条的代价不对称：把测试算成应用码 ⇒ 每次补用例都被迫提版本号（版本号会通胀）；
+ * 把应用码算成测试 ⇒ 才是真漏。所以两边都点名，用现算命令可核（见 VERSIONING.md）。
+ */
+export function isAppCodePath(p) {
+  if (/\.(test|spec)\.tsx?$/.test(p)) return false;
+  if (/^src-tauri\/src\/.+(_tests|tests)\.rs$/.test(p)) return false;
+  return /^src\//.test(p) || /^src-tauri\/src\//.test(p);
+}
+
+/**
  * 这条提交**是否算已声明**：
  * - 标题带 `[plan]`（本仓既有标记，Change Budget 也读它）⇒ 视为"零影响声明"，不动版本；
  * - 否则必须有 `Version-Bump: <级别>`，且与自己被定级的那一档一致。
@@ -161,7 +174,7 @@ export function collectCommits(since) {
         churn += (Number(parts[0]) || 0) + (Number(parts[1]) || 0);
         // 口径：只看**将要发出去的应用码**（前端 src/ 与 Rust src-tauri/src/）；
         // 门禁脚本、文档、workflow 不算 ⇒ 它们仍可走 [plan] 零影响豁免。
-        if (/^(src\/|src-tauri\/src\/)/.test(parts[2] ?? "")) touchesCode = true;
+        if (isAppCodePath(parts[2] ?? "")) touchesCode = true;
       }
       return { hash, short, date, subject, message: rest.join("\x1f"), churn, files, touchesCode };
     });

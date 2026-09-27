@@ -19,6 +19,7 @@ import {
   BUMP_TRAILER,
   declaresBump,
   filterUnpushed,
+  isAppCodePath,
 } from "../../scripts/semver.mjs";
 
 test("解析 conventional commit（类型/范围/破坏性标记）", () => {
@@ -120,6 +121,15 @@ test("零影响声明用现有 [plan] 标记，其余提交必须写 Version-Bum
     declaresBump({ subject: "feat(y): 新增", message: "feat(y): 新增\n\nVersion-Bump: patch", level: "minor" }),
     false, // 被定级为 minor，声明 patch ⇒ 仍算没声明对
   );
+});
+
+test("测试文件不算应用代码（src/*.test.ts 是给门禁跑的，不发出去）", () => {
+  // 口径：只有"会被打包发出去的应用码"才算 —— 前端测试与 Rust 测试都不算。
+  assert.equal(isAppCodePath("src/utils/buildConfig.test.ts"), false);
+  assert.equal(isAppCodePath("src/style.css"), true);
+  assert.equal(isAppCodePath("src-tauri/src/db/settings.rs"), true);
+  assert.equal(isAppCodePath("src-tauri/src/db/migration_tests.rs"), false);
+  assert.equal(isAppCodePath("docs/VERSIONING.md"), false);
 });
 
 test("[plan] 只能豁免**不动应用代码**的提交（否则声明门禁就是装饰）", () => {

@@ -11,6 +11,22 @@
 ## [Unreleased]
 
 ## [4.30.2] - 2026-09-27
+### 门禁（#126：测的那份必须就是发的那份 —— E2E 二进制现在与打包同 feature 集）
+- 缺口形状：五条打包命令全都带 `--features bluetooth`（旧判据只钉住这一半），
+  而双实例 E2E 跑的 `src-tauri/target/release/gosslan` 过去靠人手动 `cargo build --release`（**不带这个 feature**）编出来
+  ⇒ 这一层测到的二进制里**根本没有蓝牙代码**，报告也不会为此说任何话。
+- 处置（按用户口径"日常快速层不必每次 BLE 全编译；涉及 Rust/Transport/Bluetooth/构建配置与正式 release 必须验含 Bluetooth 的真实构建"）：
+  `verify:e2e`（local 层）**自己先编一次同 feature 集的 release 二进制**，再跑任何双实例轮；
+  快速层仍然不碰 cargo。`cargo build` 是增量的 ⇒ 没改过就是秒级 no-op，代价只出现在"确实变了"的时候。
+- 新加一条静态判据（`buildConfig.test.ts`）：门禁必须有那一步、且 harness 打印的补救提示也得带这个 flag
+  （**人照着提示做的事必须与门禁实际做的事一致**，否则下一次又会编出不带蓝牙的那份）。
+  当场验过非空转：把门禁那步的 flag 去掉 ⇒ 该用例立刻红（3 pass / 1 fail），换回来 ⇒ 4 pass / 0 fail。
+- ★ 顺带把"什么算应用码"的口径写清楚（`isAppCodePath`）：前端 `src/**`、Rust `src-tauri/src/**`，
+  但 **`*.test.ts` 与 Rust 的 `*_tests.rs` 不算**（它们是给门禁跑的、不进产物）。
+  判错的代价不对称：把测试算成应用码 ⇒ 每次补用例都被迫提版本号（版本号通胀）；
+  把应用码算成测试 ⇒ 才是真漏。两边都有点名用例（5 条，现算 `node --test src/utils/versioning.test.ts`）。
+- ⚠️ 本轮我自己写坏过一次 `verify.mjs`（模板串换行处漏了一段，整个门禁脚本 SyntaxError），
+  是 `verify --group local --list` 现跑抓到的 ⇒ 改门禁脚本后**必须跑一次它的 `--list`**，别只看单测。
 ### 体验（#35-N7 选中文本与原生控件的颜色跟随主题）
 - 之前全仓**没有** `::selection` 也没有 `accent-color`（只有 `caret-color`）⇒ 选中文字永远是浏览器默认蓝、
   勾选/滑杆/进度条永远是系统强调色，在深色面板里既不跟手也刺眼。

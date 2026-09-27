@@ -381,7 +381,9 @@ if (!APPDATA || !fs.existsSync(APPDATA)) {
   process.exit(2);
 }
 if (!fs.existsSync(BIN)) {
-  console.error(`✗ 没有二进制：${BIN}\n  先 npm run build && (cd src-tauri && cargo build --release)`);
+  console.error(
+    `✗ 没有二进制：${BIN}\n  先 npm run build && (cd src-tauri && cargo build --release --features bluetooth)`\n  /* ★ 必须带 --features bluetooth：打包五条命令全都带，门禁若测不带蓝牙的那份 ⇒ "测的那份 ≠ 发的那份"（#126） */,
+  );
   process.exit(2);
 }
 // 测旧代码 = 白测（本项目真踩过）。判据：二进制必须不比源码新文件更旧。
@@ -419,7 +421,7 @@ if (!fs.existsSync(BIN)) {
       console.error(`   ② **先 build 再 commit** —— 内容没错，只是提交时间戳晚于构建。`);
       console.error(`      ②不改成放行，是因为"提交晚于构建"和"pull/checkout 带进新内容"在时间戳上长得一样，`);
       console.error(`      而后者真的该拒（那种情况下测的是旧码）。⇒ 顺序纪律：**改完 Rust 先提交，再重编，再跑 E2E。**`);
-      console.error(`  两种情况的处置相同且只要一分半：cd src-tauri && cargo build --release`);
+      console.error(`  两种情况的处置相同且只要一分半：cd src-tauri && cargo build --release --features bluetooth（#126：与打包同 feature 集）`);
       process.exit(2);
     }
   }
