@@ -559,7 +559,7 @@ pub fn gossip_plaintext(kind: &str, content: &str, mentions: Option<&[String]>) 
         // 免得某条路径把整份通讯录塞进每一条消息。
         let mut clean: Vec<&str> = Vec::new();
         for id in ids {
-            if id.is_empty() || clean.iter().any(|x| *x == id.as_str()) {
+            if id.is_empty() || clean.contains(&id.as_str()) {
                 continue;
             }
             clean.push(id.as_str());

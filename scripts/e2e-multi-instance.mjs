@@ -297,6 +297,9 @@ let gTextId, gRecallId, gText2Id;
 /// 呈现层可以把它换成「@你」，**库里那串字节一个字都不许动** —— 所以文本与 id 都要留着当比对基准。
 let gMentionId = "";
 let gMentionText = "";
+/// `--round=group` 里 #103（@ 绑身份）那两条线级判据读的 id：一条明文带 `mentions`，一条不带这个键。
+let gMentionOnlyId = "";
+let gLegacyShapeId = "";
 
 /// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
 /// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
@@ -544,8 +547,13 @@ function pubFromSecret(kind, b64secret) {
 function buildGroupEnvelope(o) {
   const iv = randomBytes(12);
   const c = createCipheriv("chacha20-poly1305", o.groupKey, iv, { authTagLength: 16 });
+  // 明文形状必须与产品侧 `protocol::gossip_plaintext` 逐字同形，**包括 mentions 的三态**：
+  // 键不存在 = 旧版本发出来的样子；键存在（含空数组）= 发送方的权威回答。
+  // 这一格要能在 harness 里分别造出这两种，所以由调用方"传不传 o.mentions"决定。
+  const plain = { kind: o.kind, content: o.content };
+  if (o.mentions !== undefined) plain.mentions = o.mentions;
   const sealed = Buffer.concat([
-    c.update(JSON.stringify({ kind: o.kind, content: o.content }), "utf8"),
+    c.update(JSON.stringify(plain), "utf8"),
     c.final(),
     c.getAuthTag(),
   ]);
@@ -1118,10 +1126,23 @@ if (GROUP) {
     // 而它的表现是**另一个人的屏幕上被烧进了我的视角**（同一条消息只能有一个正确存储形态）。
     gMentionText = `@e2e-${INSTANCES[1].label} 帮忙看这条`;
     const mt = buildGroupEnvelope({ ...base, kind: "text", content: gMentionText, ts: ts + 3, seq: 4 });
+    // #103 的线级那一半（原来只有单元判据，跨进程没人证过）：**同一条管道**上排两封，
+    // 一封明文带 `"mentions":["<B 的 id>"]`，一封**没有这个键**（旧版本的原样形状）。
+    // 正文刻意不含任何 `@` ⇒ "B 被点名"这件事只能从名单里读到，按名字一律判不出 ——
+    // 这正是"改过名字的人收不到历史上那些 @"的线上形态。
+    const mo = buildGroupEnvelope({
+      ...base, kind: "text", content: "这条只带身份号，正文里没有名字",
+      mentions: [idB.runtimeId], ts: ts + 4, seq: 5,
+    });
+    const lg = buildGroupEnvelope({
+      ...base, kind: "text", content: "旧形状的一条正文", ts: ts + 5, seq: 6,
+    });
     gTextId = t.messageId;
     gRecallId = r.messageId;
     gText2Id = t2.messageId;
     gMentionId = mt.messageId;
+    gMentionOnlyId = mo.messageId;
+    gLegacyShapeId = lg.messageId;
     seed(INSTANCES[0].db, (db) => {
       db.prepare("DELETE FROM group_outbox WHERE group_id=?1").run(GROUP_ID);
       for (const [env, seq, kind, content, at] of [
@@ -1129,6 +1150,8 @@ if (GROUP) {
         [r, 2, "recall", JSON.stringify({ target: t.messageId }), ts + 1],
         [t2, 3, "text", "second group message", ts + 2],
         [mt, 4, "text", gMentionText, ts + 3],
+        [mo, 5, "text", "这条只带身份号，正文里没有名字", ts + 4],
+        [lg, 6, "text", "旧形状的一条正文", ts + 5],
       ]) {
         db.prepare("DELETE FROM messages WHERE msg_id=?1").run(env.messageId);
         // 逐列照发送内核（window.rs:179-190）：receiver_id 是**裸 group_id**、初始 status 是
@@ -1147,10 +1170,11 @@ if (GROUP) {
       db.prepare(
         "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
         + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq",
-      ).run(convId, 4);
+      ).run(convId, 6);
     });
     console.log(`  · 群 ${GROUP_ID}：正文一 ${gTextId.slice(0, 12)}… / 撤回 ${gRecallId.slice(0, 12)}…`
-      + ` / 正文二 ${gText2Id.slice(0, 12)}… / @ 那条 ${gMentionId.slice(0, 12)}…`);
+      + ` / 正文二 ${gText2Id.slice(0, 12)}… / @ 那条 ${gMentionId.slice(0, 12)}…`
+      + ` / 带名单 ${gMentionOnlyId.slice(0, 12)}… / 旧形状 ${gLegacyShapeId.slice(0, 12)}…`);
   });
 }
 
@@ -1574,10 +1598,10 @@ if (GROUP) {
     await waitFor(() => {
       const db = openDb(INSTANCES[1].db, true);
       try {
-        return [gTextId, gRecallId, gText2Id, gMentionId]
+        return [gTextId, gRecallId, gText2Id, gMentionId, gMentionOnlyId, gLegacyShapeId]
           .every((id) => db.prepare("SELECT COUNT(*) c FROM messages WHERE msg_id=?1").get(id).c > 0);
       } finally { db.close(); }
-    }, 60_000, "B 侧四条群消息到齐（建链后 flush_group_outbox 送达）");
+    }, 60_000, "B 侧六条群消息到齐（建链后 flush_group_outbox 送达）");
     // 撤回物化与投递是两次独立写盘，给它一个**有界**的等待（不许无条件睡）
     await waitFor(() => {
       const db = openDb(INSTANCES[1].db, true);
@@ -1596,9 +1620,16 @@ if (GROUP) {
     const rec = q(want(gRecallId));
     const t2 = q(want(gText2Id));
     const mt = q(want(gMentionId));
+    const mo = q(want(gMentionOnlyId));
+    const lg = q(want(gLegacyShapeId));
+    // 这一轮自己排的那六条（id 列表是唯一一处，条数由它推出来）：SQL 的占位符必须跟着长，
+    // 写死 `IN (?2,?3,?4,?5)` 的话，加两条会让 node:sqlite 直接抛参数个数不符 —— 那是技术性红，
+    // 不是判据红，读日志的人只会看见一个没头没尾的异常。
+    const seededIds = [gTextId, gRecallId, gText2Id, gMentionId, gMentionOnlyId, gLegacyShapeId];
+    const inList = (from) => seededIds.map((_, i) => `?${i + from}`).join(",");
     const leakedIntoOneToOne = bDb.prepare(
-      "SELECT COUNT(*) c FROM messages WHERE conv_id!=?1 AND msg_id IN (?2,?3,?4,?5)",
-    ).get(convId, gTextId, gRecallId, gText2Id, gMentionId).c;
+      `SELECT COUNT(*) c FROM messages WHERE conv_id!=?1 AND msg_id IN (${inList(2)})`,
+    ).get(convId, ...seededIds).c;
     bDb.close();
     const aDb = openDb(INSTANCES[0].db, true);
     const stillQueued = aDb
@@ -1606,16 +1637,16 @@ if (GROUP) {
     // 读的是**这一轮自己排的那四条**（按 id 取），不是"那个会话里现有多少行" ——
     // 后者会让"再加一条预置"变成改判据的分母，加一行就把这条判成红（实测：加完 @ 那条就红了，
     // 红的是判据不是产品）。id 列表在作用域里，条数由它推出来，不再写死。
-    const aSeededIds = [gTextId, gRecallId, gText2Id, gMentionId];
+    const aSeededIds = seededIds;
     const aStatus = aDb.prepare(
-      "SELECT msg_id,status FROM messages WHERE msg_id IN (?1,?2,?3,?4)",
+      `SELECT msg_id,status FROM messages WHERE msg_id IN (${inList(1)})`,
     ).all(...aSeededIds).map((r) => r.status);
     const aT1 = aDb.prepare("SELECT kind FROM messages WHERE msg_id=?1").get(gTextId);
     aDb.close();
 
-    check("B 侧四条群消息各恰好一行（同 msg_id 多行=重复投递，少行=丢）",
-      t1.length === 1 && rec.length === 1 && t2.length === 1 && mt.length === 1,
-      "1/1/1/1", `${t1.length}/${rec.length}/${t2.length}/${mt.length}`);
+    check("B 侧六条群消息各恰好一行（同 msg_id 多行=重复投递，少行=丢）",
+      [t1, rec, t2, mt, mo, lg].every((rows) => rows.length === 1),
+      "六条各 1 行", [t1, rec, t2, mt, mo, lg].map((r) => r.length).join("/"));
     // ★ §8 的存储侧不变量：**@ 的那串字节不许被任何一层改写**。
     // "被改写"有两种正好相反的死法 —— 替换成呈现层产物「@你」（把我的视角烧进公共数据），
     // 或"规范化"成 device id（把可读的那份弄没）。所以一条判"逐字等于打出去的原文"，
@@ -1627,6 +1658,20 @@ if (GROUP) {
       mt.length === 1 && !mt[0].content.includes("@你") && !mt[0].content.includes(idB.runtimeId)
       && !mt[0].content.includes(idA.runtimeId),
       "只含真实昵称那一串", JSON.stringify(mt[0]?.content));
+    // #103 的线级那一半：`mentions` 到底能不能穿过"seal → 网络 → 解密 → 解析"到达对端进程。
+    // 读的是 **B 自己的日志**（不是 harness 写进去的东西）⇒ 判的是对端自己解出来的结果，
+    // 不是"我发了"。两条成对：前一条红在"名单某一跳丢了"，后一条挡住
+    // "把缺键也当成空名单"那种实现（那样旧对端发的 @ 会永久判不出来，比原缺陷更糟）。
+    // ⚠️ 这一格判不到那枚红点：徽标活在 webview 的 store 里（不落库、也不进日志）
+    //    ⇒ "界面上真的亮了"仍归 Smoke-10/11 人工（#117 记的就是这剩下的一半）。
+    const mentionLineCount = countLog(
+      INSTANCES[1].log, `群消息@输入 msg=${gMentionOnlyId} mentions=1`);
+    const legacyLineCount = countLog(
+      INSTANCES[1].log, `群消息@输入 msg=${gLegacyShapeId} mentions=none`);
+    check("带 @ 名单那条：B 自己解密后读到 1 个身份号（名单穿过 seal→网络→解析没丢）",
+      mentionLineCount >= 1, "≥1 行 mentions=1", mentionLineCount);
+    check("没带这个键那条（旧形状）：B 判成「不知道」而不是「谁都没 @」——第三态跨进程成立",
+      legacyLineCount >= 1, "≥1 行 mentions=none", legacyLineCount);
     check("落库的会话必须是群会话（conv_id 带 group: 前缀，且 conversations.kind='group'）",
       t2.length === 1 && t2[0].conv_id === convId && t2[0].conv_kind === "group",
       `${convId} / group`, `${t2[0]?.conv_id} / ${t2[0]?.conv_kind}`);
