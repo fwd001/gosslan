@@ -119,14 +119,18 @@ impl GossipRelayCache {
                 }
             }
         }
-        // 分桶遍历的顺序不稳定，而补递顺序要稳定（新在前）：按 seen_at 倒序排。
-        out.sort_by(|a, b| b.ts.cmp(&a.ts));
+        // 分桶遍历的顺序不稳定，而补递顺序要稳定（新的在前）：按发送时刻倒序排。
+        out.sort_by_key(|env| std::cmp::Reverse(env.ts));
         out
     }
 
     /// 缓存里还剩多少条（判据用它证明"过窗口的被物理清掉"而不是只被过滤）
     pub fn len(&self) -> usize {
         self.by_group.values().map(|v| v.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
