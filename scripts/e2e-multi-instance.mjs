@@ -869,6 +869,11 @@ async function runStep(i, s) {
 let idA, idB, msgId, NODES, peerTo, xferId, srcFile, srcSha;
 let xferId2, srcFile2, srcSha2, xferId3, srcFile3, srcSha3;
 let chainMsgId; // 链式轮那条群消息的 msg_id（信封里是 sha256，由 buildGroupEnvelope 算出来）
+/// #143 正面判据用的"就绪之后才送"的那条 @。
+/// **在这里构造、但不入库**：采样点（群聊轮中段）没有 `base`/`ts`/`convId` 这些闭包变量，
+/// 所以把 seed 需要的整份纯数据一次性带出来；真正写进 A 的 `group_outbox` 发生在
+/// "B 的界面已被证明渲染过"之后 —— 那正是这条判据与开机那次的唯一区别。
+let gLateSeed = null;
 step("停机预置：好友 + routed 端点 + 独立接收目录", () => seedPair(NODES));
 
 step("L-A 入队：在 A 的库里留下「已入队待发送」的事实", () => {
@@ -1226,8 +1231,16 @@ if (GROUP) {
         //       ⇒ 纪律：读旋转日志的时间戳**必须先确认是同一个文件（同一个进程）**，跨文件比时刻=废数。
         //    ★ 前端"当时在不在"另有直接证据：ax-B-tree.txt 里 AXWebArea 存在、会话行与正文名字都读得到
         //       ⇒ 采样那一刻界面确实渲染了（这不能反推"摄入那一刻"也渲染了 —— 那正是待判的那件事）。
-        //    最后一测（B 完全就绪之后再送一条 @）与"要不要在加载时用已落库的 mention_targets 重算"
-        //    这个语义决定都在 #143 里 —— 后者要推翻"重启不该再亮一次红点"的既定口径，已交给用户拍板。
+        //    ★ 最后一测**已做完并出结论**（同日几分钟后，就是下面 `[ax-late]` 那一段）：
+        //      就绪门 = 重试到树里出现 `AXWebArea`，然后才把一条带 `mentions=[B]` 的群 @ 写进 A 的
+        //      `group_outbox`（靠心跳冲队列送达，`transport.rs:3011-3014`），等 B 自己打日志确认摄入后
+        //      再采一次 ⇒ 读到 `AXButton=E2E-Group，7 条未读，[有人@我]`
+        //      （产物 `run-2026-09-27T22-50-07-508Z/ax-B-tree-late.txt`）。
+        //      ⇒ 同一轮、同一进程、同一扇窗的对照成立：**开机那一瞬投的不亮、就绪之后投的亮**
+        //      ⇒ 未亮的成因 = 启动窗口错过那一次 `message-received`，而这枚红点只有一个写入点、无重算路径；
+        //      "就绪后也点不亮"（更糟的那种形状）被排除。
+        //    ⚠️ 这条读数证的是"能亮"，**不是**"启动窗口的丢法已关闭"。要不要在加载时用已落库的
+        //      `mention_targets` 重算 = 会推翻"重启不该再亮一次红点"的既定口径 ⇒ 语义决定仍摆给用户拍板。
         if (process.env.GOSSLAN_AX === "1" && inst === INSTANCES[1]) {
           db.prepare(
             "INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at)"
@@ -1285,6 +1298,19 @@ if (GROUP) {
     gMentionId = mt.messageId;
     gMentionOnlyId = mo.messageId;
     gLegacyShapeId = lg.messageId;
+    // ★ #143 正面判据那条 @ 的信封（只在 `GOSSLAN_AX=1` 构造，**此刻不入库**）
+    if (process.env.GOSSLAN_AX === "1") {
+      const LATE_CONTENT = "这条在界面就绪之后才送";
+      const late = buildGroupEnvelope({
+        ...base, kind: "text", content: LATE_CONTENT, ts: ts + 60, seq: 7,
+        mentions: [idB.runtimeId],
+      });
+      noteId(late.messageId);
+      gLateSeed = {
+        messageId: late.messageId, wire: late.wire, content: LATE_CONTENT,
+        convId, groupId: GROUP_ID, senderId: idA.runtimeId, peerId: idB.runtimeId, at: ts + 60,
+      };
+    }
     seed(INSTANCES[0].db, (db) => {
       db.prepare("DELETE FROM group_outbox WHERE group_id=?1").run(GROUP_ID);
       for (const [env, seq, kind, content, at] of [
@@ -1870,6 +1896,88 @@ if (GROUP) {
         }
       } catch (e) {
         console.log(`  [ax] 采样不可用 ⇒ 跳过并说明原因：${e.message}`);
+      }
+    }
+    // ★ #143 的**正面判据**（仍只在 `GOSSLAN_AX=1` 走，仍**有意不调 `check()`**）：
+    //   上面那次读数是"开机同一秒就投递"⇒ 分不清「前端还没注册 listen 所以错过」与
+    //   「摄入路径本身在真界面上也不点亮」。这里补上"界面**先证明渲染过**、再送一条 @"的那一格。
+    //   送达靠的是**心跳也会 flush 群待发队列**（transport.rs:3011-3014，心跳 5 s），
+    //   所以只往 A 的 `group_outbox` 写一行、不动生产码、不重启任何实例。
+    //   三种结局各自的意思写在下面的打印里 —— 别再拿其中一种去当另一种的证据。
+    if (process.env.GOSSLAN_AX === "1") {
+      try {
+        const { probeTree } = await import("./ax-tree.mjs");
+        const bpid = procs.get(INSTANCES[1].n)?.pid;
+        if (!bpid) console.log("  [ax-late] 拿不到 B 的 pid ⇒ 跳过");
+        else {
+          // ① 就绪门：重试到树里出现 AXWebArea（= 前端真的挂载并渲染过），最多 ~24 s
+          let ready = null;
+          for (let i = 0; i < 8; i += 1) {
+            ready = probeTree(bpid, { tries: 3, gapMs: 1500 });
+            if (ready.text.includes("AXWebArea")) break;
+            await sleep(1500);
+          }
+          const isReady = ready.text.includes("AXWebArea");
+          console.log(`  [ax-late] 就绪门：AXWebArea=${isReady ? "在" : "不在"}`
+            + ` 节点=${ready.parsed.total} 带名字=${ready.parsed.names.length} 个`);
+          if (!isReady) {
+            console.log("  [ax-late] ⇒ 前端没证明渲染过 ⇒ **这次读数按无效处理**，不判任何东西");
+          } else if (!gLateSeed) {
+            console.log("  [ax-late] 那条 @ 的信封没构造出来（非 AX 档或被跳过）⇒ 本次无效");
+          } else {
+            // ② 就绪之后才入库投递（seq=7 比时钟现有值 6 大，否则 A 自己后面发的会撞 seq）
+            const L = gLateSeed;
+            seed(INSTANCES[0].db, (db) => {
+              db.prepare("DELETE FROM messages WHERE msg_id=?1").run(L.messageId);
+              db.prepare(
+                `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+                 VALUES(?1,?2,?3,?4,'text',?5,?6,7,'sent')`,
+              ).run(L.messageId, L.convId, L.senderId, L.groupId, L.content, L.at);
+              db.prepare(
+                `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
+                 VALUES(?1,?2,?3,?4,?5)`,
+              ).run(L.messageId, L.groupId, L.peerId, L.wire, L.at);
+              db.prepare(
+                "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
+                + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq",
+              ).run(L.convId, 7);
+            });
+            // ③ 等 B 自己把这条摄入（日志行是发送侧那条判据用的同一族读数）
+            let ingested = false;
+            try {
+              await waitFor(
+                () => countLog(INSTANCES[1].log,
+                  `群消息@输入 msg=${L.messageId} mentions=1`) >= 1,
+                75_000, "B 摄入就绪后补送的那条 @",
+              );
+              ingested = true;
+            } catch { /* 交给下面的三态打印 */ }
+            console.log(`  [ax-late] 就绪后那条 @：摄入=${ingested ? "已发生" : "75 s 内没等到（读数无效，先修探针）"}`);
+            if (ingested) {
+              // ④ 摄入**之后**再采一次：徽标是响应式的，留几秒给渲染
+              let lateTree = null;
+              for (let i = 0; i < 3; i += 1) {
+                lateTree = probeTree(bpid, { tries: 3, gapMs: 2000 });
+                if (lateTree.text.includes("有人")) break;
+                await sleep(1500);
+              }
+              const at = lateTree.parsed.names.filter(
+                (n) => n.label.includes("@") || n.label.includes("有人"));
+              fs.writeFileSync(path.join(RUN_DIR, "ax-B-tree-late.txt"), lateTree.text);
+              console.log(`  [ax-late] 摄入后读数：带「有人／@」的名字 ${at.length} 个`
+                + `${at.length ? `：${at.map((h) => `${h.role}=${h.label}`).join(" | ")}` : ""}`);
+              console.log("  [ax-late] 全部名字："
+                + lateTree.parsed.names.map((n) => n.label).join(" ｜ "));
+              console.log(`  [ax-late] 原始读数：${path.join(RUN_DIR, "ax-B-tree-late.txt")}`);
+              console.log("  [ax-late] 三种结局的读法：①出现「[有人@我]」⇒ 摄入路径在真界面上是通的"
+                + "⇒ 先前那次未亮的成因就是启动窗口错过 emit（结构性事实：只有摄入那一个 .add()、无重算路径）；"
+                + "②没出现⇒ 不只是启动窗口，就绪后收到也不亮⇒ 更严重，得查渲染链；"
+                + "③这条压根没摄入⇒ 本次无效（心跳没冲到 / 外部写库没生效），别写进结论。");
+            }
+          }
+        }
+      } catch (e) {
+        console.log(`  [ax-late] 正面判据不可用 ⇒ 跳过并说明原因：${e.message}`);
       }
     }
     // 两个键都缺（`lg`）那一格**不再单独钉一次**：它读的是同一行日志、同一条 map_or 分支，
