@@ -9,6 +9,15 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 验证（197 条护栏注入锚点的全量核对，第一次脱离整跑单独跑到）
+- `python3 scripts/verify-guards.py --list` 现在会先打印「起跑前核对：197 条用例的注入锚点都在各自文件里恰好命中一次」
+  再列用例；这条自证在 `--list` 分支**之前**执行 ⇒ 既不编译也不跑测试，秒级完成、`git status` 跑完干净。
+- 为什么值得单记：这一句以前只在 `--only` 选中那条上跑过（选 1 条 ⇒ 核对也只有 1 条），
+  而"整跑"上次停在 53/189（`f44d728` 那份内容，其后主动中止）。锚点过期的表现是**注入 0 次命中**，
+  即护栏还在纸上但已经不演那次故障了 —— 那是一种静默失效，不会有人被拦停。
+- ⚠️ **它只买到"没有一条护栏是死锚点"**，不买到"197 次注入的编译与测试结局都验过"；后者仍是待整跑的账，
+  §六「注入腿」那一行按这两半分别写清。
+
 ### 测试（#121：§28「正在建群时退出」那一格第一次被跨进程判上（2026-09-27）
 - 新轮 `--round=groupcrash`（`npm run test:e2e:groupcrash`，已挂在**本地层**）。
   钉的不是"重启后不许留下半个群"—— 真实建群路径把 groups / group_members / settings(gk:) / conversations
