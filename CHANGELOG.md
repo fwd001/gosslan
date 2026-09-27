@@ -9,6 +9,15 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 可观测性（第二阶段 §29 的第二处留痕：把"本端为什么看得见"变成可判的事）
+- 群发送内核 `send_group_payload`（在 `commands/window.rs`，不在 transport）自 emit 之后补一行
+  `群消息已回送本机窗口 msg=<id> kind=<kind>`。为什么必须留这一行：harness 没有任何"让应用自己执行一次动作"
+  的入口（全仓只认 `GOSSLAN_INSTANCE` / `GOSSLAN_AUTOSTART`），所以"A 库里那行任务"永远是 harness 自己写的
+  ⇒ 判它等于循环论证；而"本机确实被通知过"只有在这里留痕才判得了 —— 这是任务专项 E2E 轮（#99）A 侧那半的**前置**。
+- 判据同样取顺序（`emit < 痕迹`）。非空转两次实测：抹掉痕迹 ⇒ 红（"回送后没留痕"）；
+  把痕迹挪到 emit **之前**（仍可编译的坏法）⇒ 红（"会记出一条其实没通知出去的消息"）；复原 ⇒ 绿。
+- 顺带确认：#82 那条 `commit < emit` 的形状断言在新日志加入后**仍然绿**（它只锁到 emit 为止，痕迹在 emit 之后）。
+
 
 ### 可观测性（第二阶段 §29：任务这条链以前一行日志都不打）
 - 现算证据：`src-tauri/src/commands` 里 29 处 `logger.` 调用**无一与任务有关**，全仓密度都在网络层

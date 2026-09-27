@@ -230,6 +230,15 @@ async fn send_group_payload(
     // 重复渲染不用担心：前端 `applyIncoming` 按 `msg_id` upsert，自发的那条也不计未读。
     let _ = s.app.emit("message-received", &rec);
 
+    // §29 可观测性：这一行是「发起方自己为什么看得见」唯一的**行为**证据 —— 双实例 harness
+    // 没有任何入口让应用自己执行一次动作（全仓只认 `GOSSLAN_INSTANCE`/`GOSSLAN_AUTOSTART`），
+    // 所以"A 库里那行"永远是 harness 自己写的、判了就是循环论证；而"本机回送确实发生过"
+    // 只有在这里留痕才判得了。位置硬约束同 emit：晚于 commit、在锁作用域之外。只记 id 与 kind。
+    s.logger.info(
+        "group",
+        format!("群消息已回送本机窗口 msg={} kind={}", rec.msg_id, kind),
+    );
+
     broadcast_gossip(s, env).await;
 
     // INV-P24 的群侧：**只报事实，不拦发送**。这条 kind 若有成员**确知**渲染不了，

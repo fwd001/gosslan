@@ -3665,6 +3665,20 @@ mod tests {
                 "{head} 的任务日志把用户内容（标题/描述）铺进了日志行"
             );
         }
+        // 内核自 emit 之后必须留一行痕迹：双实例 harness 没有任何入口让应用自己执行动作，
+        // 所以「A 为什么看得见自己发的那条」只能靠这一行来判（否则永远是循环论证）。
+        // 判据仍取顺序：痕迹早于 emit 就成了"还没通知就先记账"，与上面那条同族。
+        let kernel = rust_fn_body(&commands, "async fn send_group_payload(");
+        let emit = kernel
+            .find(r#"emit("message-received""#)
+            .expect("群发送内核没有回送本机窗口 ⇒ #82 那格修复被移走了");
+        let klog = kernel
+            .find("群消息已回送本机窗口 msg=")
+            .expect("群发送内核回送后没留痕 ⇒ harness 无法判「本端确实被通知」（§29）");
+        assert!(
+            emit < klog,
+            "自 emit 的痕迹早于 emit 本身：会记出一条其实没通知出去的消息"
+        );
     }
 
     /// 中继收文件：① 完整性校验必须对**已按 seq 归位的字节一次性**算（审计 1.8）；
