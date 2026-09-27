@@ -3511,6 +3511,78 @@ try {
       }
     }
   }
+  // 跨轮上限（2026-09-27 用户拍板"按你建议"）：绿轮只留最近 N 个，**红轮与跑不出结论的轮次一个都不删**。
+  // 上面那条策略 C 只管"本轮内部"省空间，从没管过"历史攒多少" ⇒ `test-results/` 才会涨到几百轮十几 GB。
+  // 删目录不可逆，所以三条硬约束：① 先自证（每格只换一个输入），自证不过 ⇒ 这一趟一个都不删并把本轮判红；
+  // ② 只允许碰 `test-results/run-*`，且**跳过本轮自己**；③ 想多留用 GOSSLAN_KEEP_RUNS 调大上限。
+  const KEEP_GREEN_RUNS = Number(process.env.GOSSLAN_KEEP_RUNS || 30);
+  function prunePlan({ runs, keep, negative }) {
+    if (negative) return [];
+    if (!Number.isFinite(keep) || keep < 0) return [];
+    const greens = runs
+      .filter((r) => r.outcome === "green")
+      .sort((a, b) => (a.name < b.name ? 1 : -1)); // 目录名是 ISO 时间戳 ⇒ 字典序倒排 = 新的在前
+    // 返回**按名字升序**（= 从最老的删起），让调用侧与自证都不依赖 sort 的方向
+    return greens.slice(keep).map((r) => r.name).sort();
+  }
+  /** 自证：每格只换一个输入。不这么写的话"上限生效"可以只是"绿轮恰好都被留着"。 */
+  function selfcheckPrune() {
+    const fails = [];
+    const eq = (name, got, want) => {
+      const a = JSON.stringify(got), b = JSON.stringify(want);
+      if (a !== b) fails.push(`${name}：预期 ${b} / 实际 ${a}`);
+    };
+    const mk = (tag, outcome) => (outcome ? { name: "run-" + tag, outcome } : { name: "run-" + tag });
+    const greens = [mk("a", "green"), mk("b", "green"), mk("c", "green")]; // c 最新
+    eq("绿轮超上限 ⇒ 删最老的那几个", prunePlan({ runs: greens, keep: 1, negative: false }), ["run-a", "run-b"]);
+    eq("没超上限 ⇒ 一个都不删", prunePlan({ runs: greens, keep: 9, negative: false }), []);
+    eq("红轮永远保留（哪怕上限 0）", prunePlan({ runs: [mk("x", "green"), mk("y", "red")], keep: 0, negative: false }), ["run-x"]);
+    eq("跑不出 summary ⇒ 按红处理", prunePlan({ runs: [mk("z", "unknown")], keep: 0, negative: false }), []);
+    eq("反向模式 ⇒ 一趟都不删", prunePlan({ runs: greens, keep: 1, negative: true }), []);
+    eq("上限写坏了（NaN/负数）⇒ 不删", prunePlan({ runs: greens, keep: Number.NaN, negative: false }), []);
+    return fails;
+  }
+  function classifyRun(dir) {
+    const sum = path.join(dir, "summary.json");
+    if (!fs.existsSync(sum)) return "unknown"; // 崩在半路 ⇒ 现场比"省空间"值钱
+    try {
+      const v = JSON.parse(fs.readFileSync(sum, "utf8")).verdict;
+      return v === "PASS" ? "green" : v === "FAIL" ? "red" : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+  function pruneOldRuns() {
+    const root = path.join(ROOT, "test-results");
+    if (!fs.existsSync(root)) return { deleted: [], bytes: 0, left: 0 };
+    const cur = path.basename(RUN_DIR);
+    const runs = fs.readdirSync(root, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith("run-") && e.name !== cur)
+      .map((e) => ({ name: e.name, outcome: classifyRun(path.join(root, e.name)) }));
+    const doomed = prunePlan({ runs, keep: KEEP_GREEN_RUNS, negative: NEGATIVE });
+    let bytes = 0;
+    const gone = [];
+    for (const name of doomed) {
+      const dir = path.join(root, name);
+      if (name === cur || !dir.startsWith(root + path.sep)) continue; // 双保险：不碰本轮、不跑出根目录
+      bytes += dirBytes(dir);
+      fs.rmSync(dir, { recursive: true, force: true });
+      gone.push(name);
+    }
+    const left = fs.readdirSync(root, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith("run-")).length;
+    return { deleted: gone, bytes, left };
+  }
+  const pruneFails = selfcheckPrune();
+  if (pruneFails.length) {
+    console.error(`✗ 跨轮保留自证不成立 ⇒ 旧轮次一律不删（宁可留一堆，也不能删错）：\n  ${pruneFails.join("\n  ")}`);
+    REPORT_GAPS.push(`跨轮保留自证不成立：${pruneFails.join(" / ")}`);
+  } else {
+    const pr = pruneOldRuns();
+    console.log(`跨轮保留：绿轮上限 ${KEEP_GREEN_RUNS} ⇒ 删最老的绿轮 ${pr.deleted.length} 个` +
+      `（释放 ${(pr.bytes / 1024 / 1024).toFixed(1)} MB），现存 ${pr.left} 个 run-*；` +
+      `红轮与没有 summary.json 的轮次一个都不删（GOSSLAN_KEEP_RUNS 可调上限）`);
+  }
   if (backups.size) console.log(`已还原用户原有实例库 ${backups.size} 个`);
   // 报告本身不合格 ⇒ 这一轮不许以"跑完了"收场。放在 finally 最末（清理之后、退出之前），
   // 所以它盖得过上面任何一条 exitCode —— 包括反向模式那条"按设计退 0"。
