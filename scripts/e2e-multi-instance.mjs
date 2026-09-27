@@ -916,6 +916,8 @@ if (KILL) {
 /// 这一轮只能靠建链后的 `flush_group_outbox` 送达，正是 §五「群聊 + 离线成员重新上线」那一格。
 let taskCreateId = "";
 let taskUpdateId = "";
+let taskArchId = "";
+let taskReopenId = "";
 /// 任务轮预置：两端同一份群 + 群密钥（与群聊轮同形），A 排两条群载荷 ——
 /// `todo`（创建，seq=1，指派给 B）与 `todo_update`（B 视角下的完成，seq=2）。
 /// 载荷字段逐字对齐 `protocol.rs::TodoPayload`（todo_id/title/assignees/status/creator/
@@ -957,13 +959,28 @@ if (TASK) {
     const u = buildGroupEnvelope({
       ...base, kind: "todo_update", content: mk({ status: "done", done_at: ts + 5 }), ts: ts + 1, seq: 2,
     });
+    // §7 那两条迁移（完成后归档 ⇒ 与我相关的数从 1 掉到 0；再重开 ⇒ 又回到 1）。
+    // 载荷形状与命令层一致：`resolve_done_archive` 只允许 done 带 archived，
+    // 重开则 status 回 doing、archived=false、done_at 清空 —— 照抄这个口径，不自创一套。
+    const ar = buildGroupEnvelope({
+      ...base, kind: "todo_update",
+      content: mk({ status: "done", done_at: ts + 5, archived: true }), ts: ts + 2, seq: 3,
+    });
+    const re = buildGroupEnvelope({
+      ...base, kind: "todo_update",
+      content: mk({ status: "doing", done_at: null }), ts: ts + 3, seq: 4,
+    });
     taskCreateId = c.messageId;
     taskUpdateId = u.messageId;
+    taskArchId = ar.messageId;
+    taskReopenId = re.messageId;
     seed(INSTANCES[0].db, (db) => {
       db.prepare("DELETE FROM group_outbox WHERE group_id=?1").run(GROUP_ID);
       for (const [env, seq, kind, content, at] of [
         [c, 1, "todo", mk({}), ts],
         [u, 2, "todo_update", mk({ status: "done", done_at: ts + 5 }), ts + 1],
+        [ar, 3, "todo_update", mk({ status: "done", done_at: ts + 5, archived: true }), ts + 2],
+        [re, 4, "todo_update", mk({ status: "doing", done_at: null }), ts + 3],
       ]) {
         db.prepare("DELETE FROM messages WHERE msg_id=?1").run(env.messageId);
         db.prepare(
@@ -978,7 +995,7 @@ if (TASK) {
       db.prepare(
         "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
         + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq",
-      ).run(convId, 2);
+      ).run(convId, 4);
     });
   });
 }
@@ -1148,17 +1165,17 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
 // 坏内容必须要么被拒收、要么被补齐成正确字节 —— 但绝不允许"报成功却没有正确文件"。
 
 if (TASK) {
-  step("任务判据：B 收到创建与完成两条、明文解得开、指派就是我、seq 决定 LWW 终态", async () => {
+  step("任务判据：B 收到创建/完成/归档/重开四条、明文解得开、指派就是我、seq 决定 LWW 终态", async () => {
     const flip = (h) => h.slice(0, -1) + (h.endsWith("0") ? "1" : "0");
     const want = (id) => (TASK_LIE ? flip(id) : id);
     const convId = `group:${GROUP_ID}`;
     await waitFor(() => {
       const db = openDb(INSTANCES[1].db, true);
       try {
-        return [taskCreateId, taskUpdateId]
+        return [taskCreateId, taskUpdateId, taskArchId, taskReopenId]
           .every((id) => db.prepare("SELECT COUNT(*) c FROM messages WHERE msg_id=?1").get(id).c > 0);
       } finally { db.close(); }
-    }, 60_000, "B 侧两条任务载荷到齐（建链后 flush_group_outbox 送达）");
+    }, 60_000, "B 侧四条任务载荷到齐（建链后 flush_group_outbox 送达）");
 
     const bDb = openDb(INSTANCES[1].db, true);
     const q = (id) => bDb.prepare(
@@ -1166,14 +1183,16 @@ if (TASK) {
     ).all(id);
     const rowC = q(want(taskCreateId));
     const rowU = q(want(taskUpdateId));
+    const rowA = q(want(taskArchId));
+    const rowR = q(want(taskReopenId));
     const leak1to1 = bDb.prepare(
-      "SELECT COUNT(*) c FROM messages WHERE conv_id!=?1 AND msg_id IN (?2,?3)",
-    ).get(convId, taskCreateId, taskUpdateId).c;
+      "SELECT COUNT(*) c FROM messages WHERE conv_id!=?1 AND msg_id IN (?2,?3,?4,?5)",
+    ).get(convId, taskCreateId, taskUpdateId, taskArchId, taskReopenId).c;
     bDb.close();
     const aDb = openDb(INSTANCES[0].db, true);
     const queued = aDb.prepare(
-      "SELECT COUNT(*) c FROM group_outbox WHERE msg_id IN (?1,?2)",
-    ).get(taskCreateId, taskUpdateId).c;
+      "SELECT COUNT(*) c FROM group_outbox WHERE msg_id IN (?1,?2,?3,?4)",
+    ).get(taskCreateId, taskUpdateId, taskArchId, taskReopenId).c;
     const aKinds = aDb.prepare(
       "SELECT kind FROM messages WHERE msg_id IN (?1,?2) ORDER BY seq",
     ).all(taskCreateId, taskUpdateId).map((r) => r.kind);
@@ -1185,15 +1204,17 @@ if (TASK) {
     };
     const pc = parse(rowC);
     const pu = parse(rowU);
-    const uniq = new Set([taskCreateId, taskUpdateId]).size;
+    const pa = parse(rowA);
+    const pr = parse(rowR);
+    const uniq = new Set([taskCreateId, taskUpdateId, taskArchId, taskReopenId]).size;
 
     // 这条读的是**发送侧**（A 的库），lie 模式翻的是判据读的 id ⇒ 它在正向与反向两跑里都该绿：
     // 它是这一轮的"预置/投递没坏"控制项，不是被钉的那件事本身。
     check("A 侧两条载荷按 seq 排的 kind 依次是 todo / todo_update（发送侧预置控制项）",
       aKinds.join(",") === "todo,todo_update", "todo,todo_update", aKinds.join(","));
-    check("B 侧两条各恰好一行（多行=重复投递，0 行=没送达）",
-      rowC.length === 1 && rowU.length === 1, "1/1",
-      `${rowC.length}/${rowU.length}`);
+    check("B 侧四条各恰好一行（多行=重复投递，0 行=没送达）",
+      [rowC, rowU, rowA, rowR].every((r) => r.length === 1), "1/1/1/1",
+      [rowC, rowU, rowA, rowR].map((r) => r.length).join("/"));
     check("B 侧落库的必须是群会话行（不许串进 1:1）",
       rowC.length === 1 && rowC[0].conv_id === convId && leak1to1 === 0,
       `${convId} 且 1:1 里 0 条`, `${rowC[0]?.conv_id} / leak=${leak1to1}`);
@@ -1218,8 +1239,22 @@ if (TASK) {
       rowC[0]?.sender_id === idA.runtimeId, idA.runtimeId, rowC[0]?.sender_id);
     check("A 侧这两条的 group_outbox 必须被 GroupAck 清干净（队列残留=还会重发）",
       queued === 0, 0, queued);
-    check("两条载荷的 msg_id 互不相同且各唯一（INV-P01 幂等的前提）",
-      uniq === 2 && rowC.length <= 1 && rowU.length <= 1, 2, uniq);
+    check("四条载荷的 msg_id 互不相同且各唯一（INV-P01 幂等的前提）",
+      uniq === 4, 4, uniq);
+    // §7 要的完整迁移：创建 → 完成 →（完成态才允许）归档 → 重开。
+    // 徽标那条数在真实应用里就是靠这一串状态行的**先后**算出来的（done/archived 不算，
+    // 重开回 doing 又要算回来），所以这里判的是四行的状态字段与 seq 顺序，不是像素。
+    check("归档那条必须 archived=true 且 status=done（命令层 resolve_done_archive 只允许这个组合）",
+      pa?.archived === true && pa?.status === "done", "done + archived=true",
+      `${pa?.status} + archived=${pa?.archived}`);
+    check("重开那条回到 doing 且清掉 archived/done_at（「与我相关」的数要从 0 又变回 1）",
+      pr?.status === "doing" && pr?.archived === false && !pr?.done_at,
+      "doing + archived=false + done_at=null",
+      `${pr?.status} + archived=${pr?.archived} + done_at=${JSON.stringify(pr?.done_at)}`);
+    check("四条的 seq 必须严格 1/2/3/4（到货顺序不等于因果顺序，LWW 全靠 seq）",
+      [rowC[0]?.seq, rowU[0]?.seq, rowA[0]?.seq, rowR[0]?.seq].join(",") === "1,2,3,4",
+      "1,2,3,4",
+      [rowC[0]?.seq, rowU[0]?.seq, rowA[0]?.seq, rowR[0]?.seq].join(","));
   });
 }
 

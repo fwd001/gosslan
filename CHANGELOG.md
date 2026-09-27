@@ -9,6 +9,17 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 测试（§22 续 + §7：任务轮把「完成 → 归档 → 重开」这串迁移也判上了）
+- 同一轮里再加两条载荷（`seq=3` 归档：`status=done + archived=true`；`seq=4` 重开：`status=doing`、
+  `archived=false`、`done_at` 清空），并加 3 条断言 ⇒ 任务轮 30 → **33 条**（矩阵轮次账同步，
+  `check-doc-numbers` 一开始就抓到我还写着 30 并报红）。
+- 归档/重开的载荷形状**照抄命令层口径**（`resolve_done_archive` 只允许 done 带 archived），不自创一套：
+  徽标那枚数在真实应用里就是靠这一串状态行的先后算出来的（done/archived 都不算、重开回 doing 又要算回来），
+  所以判到状态行就是判到了它的输入。§7 要的 1→0→1 从此有跨进程证据。
+- 一正一反再各跑一次：正向 **33/33 绿**；反向 `--round=task-lie`（只翻判据读的四个 msg_id）⇒
+  **恰好 12 条红、其余 21 条照常绿**（红全出自任务判据那一步；与 id 无关的三条控制项保持绿）。
+- 发版前那一层用同一入口复跑过（`npm run verify:release`：链式轮 + 补递轮 + 任务轮三步全绿）。
+
 ### 测试（第二阶段 §22：任务专项 E2E 轮 `--round=task` 落地）
 - 一条任务「A 创建 → 被指派的 B 收到 → 改成完成」第一次有**跨两个真实进程**的判据：
   12 条断言挂在 `check(` 上（判据 C 现算：公共 18 + 本轮 12 = 任务轮 30）。
