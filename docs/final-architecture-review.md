@@ -23,7 +23,7 @@ npm run verify -- --full   # 193 条注入整跑（>1.5 小时）
 | 项 | 值 | 口径 |
 |---|---|---|
 | HEAD / 待推 | **这一格的权威值就是右边那两条命令的输出，不是这里写的 sha** —— 写的只是"落笔那一刻的快照"，天生会漂：本行今天一天之内已漂两次（`8f985d3` → `2c4e3eb` → `45fd2c6`），其中 `2c4e3eb` **已被推送** ⇒ 现算 `git log --oneline -1 origin/main` = `2c4e3eb`、待推 = 2 笔（写完这份文档回填后变 3） | `git rev-parse --short HEAD`；`git rev-list --count origin/main..HEAD`；`git log --oneline -1 origin/main`（推送由用户自己做，tag 他统一打） |
-| 版本 | `4.29.45` | `package.json`、`tauri.conf.json`、`Cargo.toml` 三处一致（第五处由 lock 跟） |
+| 版本 | **现算**：`node -e 'console.log(require("./package.json").version)'` ⇒ 写这行时是 `4.30.0`；**五处**同步（`package.json` / `package-lock.json` / `src-tauri/Cargo.toml` / `Cargo.lock` / `tauri.conf.json`）由 `npm run version:check` 判，不在这里手抄 |
 | Tauri | 2.x | `Cargo.toml` 的 `tauri = "` |
 | 源文件数 | 330 | `find src -name '*.ts' -o -name '*.vue'` + `find src-tauri/src -name '*.rs'`。⚠️ **口径必须点名**：换成"全仓所有 `.ts/.vue/.rs`"（`git ls-tree`）会得 427 个、`>1000` 那一档从 20 变 23 —— 那是另一个问题（含 `scripts/` 与 `src-tauri/tests/`），不是这份基线的口径 |
 | IPC 命令面 | **130** | 权威口径 = 门禁自己打印的那行：`node scripts/check-key-boundary.mjs` 报"注册表 130 条 / 扫到 134 个命令体"（差额是未注册的 `#[tauri::command]`）。⇒ 要这个数去看那条判据的输出，**别自己数 `generate_handler!` 块**（本轮实测：手工正则数出 0 —— 注册表跨行且每项带模块前缀）。第一阶段指令里写的 133、契约图上原来的 129 都对不上 ⇒ 契约图那一行已按本数改口 |
