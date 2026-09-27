@@ -3487,11 +3487,17 @@ try {
       else if (fs.existsSync(dbFile + s)) fs.rmSync(dbFile + s);
     }
   }
-  // §十六 产物保留（2026-09-26 拍板＝选项 C）：**只有这轮真判成绿**才删 `src/` + `recv/` 这两份
-  // 可再生、且字节数与哈希已写进 summary.json 的大文件副本；日志 / DB 快照 / 截图 / summary 一律留。
-  // 判据是纯函数 + 四格自证：每格只换一个它读的输入，少一格成立就说明这条是空的。
+  // §十六 产物保留（2026-09-26 拍板＝选项 C；**2026-09-27 二次拍板：失败轮也删这两份**）。
+  // 删的只有 `src/` + `recv/` —— 可随时重生成的收发用大文件副本，字节数与哈希已写进 summary.json；
+  // 日志 / DB 快照 / 截图 / summary 一律留，**红轮的整个目录仍然在跨轮上限之外（永不整轮删）**。
+  // 为什么原来那道"判绿才删"的门要拆：实测 `test-results/` 5.1 GB / 150 轮里，占体积的几乎全是
+  // **失败轮**（单轮 222 MB，其中 202 MB 就是这两份副本）⇒ 绿轮上限对红的那一大半根本不生效。
+  // 判据仍是纯函数 + 五格自证：每格只换一个它读的输入，少一格成立就说明这条是空的。
   function retentionPlan({ green, negative, reportGaps }) {
-    if (negative || !green || reportGaps) return [];
+    // 报告自己不合格 ⇒ 一件都不动（这不是体积问题，是"这台判据不可信"）
+    if (reportGaps) return [];
+    // 反向轮**居然判绿** = 按设计该红的东西没红 ⇒ 现场原样留着，别在追查判据失效时先烧掉一半
+    if (negative && green) return [];
     return ["src", "recv"];
   }
   function selfcheckRetention() {
@@ -3501,8 +3507,12 @@ try {
       if (a !== b) fails.push(`${name}：预期 ${b} / 实际 ${a}`);
     };
     eq("绿轮 ⇒ 删这两份", retentionPlan({ green: true, negative: false, reportGaps: false }), ["src", "recv"]);
-    eq("红轮 ⇒ 一份都不许删", retentionPlan({ green: false, negative: false, reportGaps: false }), []);
-    eq("反向模式（按设计退 0）⇒ 不删", retentionPlan({ green: true, negative: true, reportGaps: false }), []);
+    eq("红轮 ⇒ 只删那两份可再生副本（2026-09-27 拍板）",
+      retentionPlan({ green: false, negative: false, reportGaps: false }), ["src", "recv"]);
+    eq("反向轮按设计判红 ⇒ 同样只删可再生副本",
+      retentionPlan({ green: false, negative: true, reportGaps: false }), ["src", "recv"]);
+    eq("反向轮居然判绿（判据自己坏了）⇒ 一件都不删",
+      retentionPlan({ green: true, negative: true, reportGaps: false }), []);
     eq("报告自己不合格 ⇒ 不删", retentionPlan({ green: true, negative: false, reportGaps: true }), []);
     return fails;
   }
@@ -3530,8 +3540,9 @@ try {
       fs.rmSync(target, { recursive: true, force: true });
     }
     if (doomed.length) {
-      console.log(`产物保留（C）：本轮判绿 ⇒ 已删可再生大文件副本 ${doomed.join(" + ")}` +
-        `，释放 ${(freed / 1024 / 1024).toFixed(1)} MB；日志/DB/截图/summary 全留`);
+      console.log(`产物保留（C）：${green ? "本轮判绿" : "本轮判红（含按设计判红的反向轮）"} ⇒ `
+        + `已删可再生大文件副本 ${doomed.join(" + ")}`
+        + `，释放 ${(freed / 1024 / 1024).toFixed(1)} MB；日志/DB/截图/summary 全留`);
     }
     // 把这件事**回写进刚落盘的 summary.json**，让"这轮删没删、省了多少"可被机器读回；
     // 回写之后**再用同一份 §十六 契约判一遍** —— 回写要是把契约字段弄丢了，必须当场判红。
