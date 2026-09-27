@@ -673,7 +673,7 @@ const CMDS = [
   ["send_todo_image", "group_announcements", "group_id str; todo_id str; path str", "str|err"],
   ["delete_group_announcement", "group_files", "group_id str; ann_id str", "MessageRecord|err"],
   ["send_group_announcement", "group_files", "group_id str; text str", "MessageRecord|err"],
-  ["send_group_message", "group_files", "group_id str; content str; kind str", "MessageRecord|err"],
+  ["send_group_message", "group_files", "group_id str; content str; kind str; mentions str[]?", "MessageRecord|err"],
   ["send_group_todo", "group_files", "group_id str; title str; assignees str[]; description str?; images TodoImage[]?", "MessageRecord|err"],
   ["update_group_todo", "group_files", "group_id str; todo_id str; title str; assignees str[]; status str; deleted bool; description str?; images TodoImage[]?; archived bool?", "MessageRecord|err"],
   ["save_todo_image_bytes", "group_todo_media", "request Request<'_>", "str|err"],
@@ -814,7 +814,7 @@ const SEM = {
   send_todo_image: { d: "给任务上传一张图：落盘 → 作为 <code>scope=todo</code> 的群文件登记。" },
 
   /* ── commands/group_files.rs ── */
-  send_group_message: { d: "群消息（走统一的 <code>send_group_payload</code>：取群密钥 → 信封 → 每人一行 group_outbox → broadcast_gossip）。" },
+  send_group_message: { d: "群消息（走统一的 <code>send_group_payload</code>：取群密钥 → 信封 → 每人一行 group_outbox → broadcast_gossip）。<code>mentions</code>=这条<b>文本</b> @ 了谁（设备 id，三态：缺省=不发这个键=对端按昵称兜底；空数组=明确谁都没 @）；只进加密明文，<b>不落库</b>。" },
   send_group_todo: { d: "建任务。<code>kind=todo</code> 属 <b>Card 类</b>（计未读、通知被指派人）。", w: "messages(JSON)" },
   update_group_todo: { d: "改任务（标题 / 指派 / 状态 / 归档 / 删除 / 图片）。<code>kind=todo_update</code> 属 <b>Silent 类</b>：不通知。⚠️ <b>状态存在 JSON content 里，不是表列</b>，读的时候由 <code>foldTodos</code> 折叠。" },
   delete_group_announcement: { d: "删公告（<code>announcement_delete</code>）。" },
@@ -1437,7 +1437,7 @@ function buildDir() {
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
       '<div class="stat"><div class="num">29</div><div>后端事件名（表内合并成 ' + EVENTS.length + ' 行）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
-      '<div class="stat"><div class="num">193</div><div>护栏非空转用例（改坏即红·这个数由 verify-guards.py 的 CASES 现算，判据 E 对账）</div></div>' +
+      '<div class="stat"><div class="num">197</div><div>护栏非空转用例（改坏即红·这个数由 verify-guards.py 的 CASES 现算，判据 E 对账）</div></div>' +
       '<div class="stat"><div class="num">local</div><div>跨进程 E2E：正向轮接进 <code>verify</code> 的 <code>local</code> 组，要第三个真实实例那一轮单独挂在 <code>release</code> 组（发版前才跑，落点＝发版检查单点名）；每轮断言数由 <code>check-doc-numbers.mjs</code> 从 harness 现算对账，手写即红；入口 <code>npm run verify:e2e</code> / <code>npm run verify:release</code>；<b>两层 CI 都不跑</b></div></div>' +
       '<div class="stat"><div class="num">690 / 606</div><div>Rust / 前端测试条数</div></div>' +
     "</div>" +

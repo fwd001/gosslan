@@ -13,12 +13,17 @@
 // GroupFileChunk（seq 从 0 严格递增）。不可达成员保持 pending。
 
 /// 发群消息（文本 / 代码）。校验与长度限制留在这一层，内核只管发送。
+///
+/// `mentions` = 这条**文本** @ 了哪些人（设备 id），随载荷带给全部成员，接收端据此判
+/// 「有人@我」。它是三态的：缺省（旧前端 / 非选择器入口）= 不发这个键 = 接收端按昵称兜底；
+/// 空数组 = 明确回答"谁都没 @"。为什么不落库、为什么上限 64，见 `protocol::gossip_plaintext`。
 #[tauri::command(async)]
 pub async fn send_group_message(
     state: State<'_, Arc<AppState>>,
     group_id: String,
     content: String,
     kind: String,
+    mentions: Option<Vec<String>>,
 ) -> Result<MessageRecord, String> {
     let wire_kind = match kind.as_str() {
         "text" => "text",
@@ -31,7 +36,14 @@ pub async fn send_group_message(
         _ => return Err("群聊不支持该消息类型".to_string()),
     };
     let content = check_message_content(content)?;
-    send_group_payload(state.inner(), &group_id, wire_kind, content).await
+    // 只有文本带 @ 名单：code / merge 里的 `@名字` 不算点名，与前端 `messageMentionsMe`
+    // 的 kind 判据同口径 —— 这一层多带一份，接收端也只是丢掉。
+    let mentions = if wire_kind == "text" {
+        mentions.as_deref()
+    } else {
+        None
+    };
+    send_group_payload(state.inner(), &group_id, wire_kind, content, mentions).await
 }
 
 /// 群任务标题上限：它是卡片上的一行标题，不是长文。
@@ -80,7 +92,7 @@ pub async fn send_group_todo(
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let todo_id = payload.todo_id.clone();
-    let rec = send_group_payload(s, &group_id, "todo", content).await?;
+    let rec = send_group_payload(s, &group_id, "todo", content, None).await?;
     // §29 可观测性：任务这条链以前**一行日志都不打**（`commands` 目录 29 处 logger 无一与任务有关），
     // 于是"任务没同步过去"只能靠比对两侧的库来定位。这里补上起点：只记 id 与 kind，
     // **不记标题/描述**（那是用户内容，与"token 值不得入日志"同一族约束）。
@@ -438,7 +450,7 @@ pub async fn update_group_todo(
     // ⚠️ 发 `todo_update`（Silent）而不是 `todo`（Card）：改状态/改标题/删除是**状态微调**，
     // 不该给全群记未读、弹通知（创建才该）。两者载荷同构、折叠也是同一条 LWW 规则，
     // 区别只在通知口径 —— 详见 `protocol.rs` 的 `WIRE_KINDS` 注释。
-    let rec = send_group_payload(s, &group_id, "todo_update", content).await?;
+    let rec = send_group_payload(s, &group_id, "todo_update", content, None).await?;
     // §29：状态迁移是本端与对端最容易各说一套的一段（徽标数字就靠它减），
     // 所以这里记的是**状态本身**而不是标题。
     s.logger.info(
@@ -479,7 +491,7 @@ pub async fn send_group_announcement(
     }
     let content = serde_json::to_string(&crate::protocol::AnnouncementPayload { text })
         .map_err(|e| e.to_string())?;
-    send_group_payload(s, &group_id, "announcement", content).await
+    send_group_payload(s, &group_id, "announcement", content, None).await
 }
 
 /// 删除一条群公告（仅群主）：发 `announcement_delete` **墓碑**（Silent），全端据此把横幅折掉。
@@ -507,7 +519,7 @@ pub async fn delete_group_announcement(
     }
     let content = serde_json::to_string(&crate::protocol::AnnouncementDeletePayload { ann_id })
         .map_err(|e| e.to_string())?;
-    send_group_payload(s, &group_id, "announcement_delete", content).await
+    send_group_payload(s, &group_id, "announcement_delete", content, None).await
 }
 
 // ---------------- 群公告 ----------------

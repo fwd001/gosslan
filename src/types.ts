@@ -95,6 +95,14 @@ export interface MessageRecord {
   /** 每会话逻辑序号（Lamport），前端与后端都以它排序，而非墙上时钟。 */
   seq: number;
   status: string;
+  /**
+   * 这条文本消息 @ 了哪些**人**（设备 id 列表），由发送方在发出的那一刻算好随载荷带来。
+   *
+   * 三态（`messageMentionsMe` 按它判红点）：数组 = 发送方的权威回答（空数组即"没 @ 任何人"）；
+   * `undefined` / `null` = 不知道（发送方是不认识该字段的旧版本，或这条来自库里 ——
+   * **它不落库**，只随本次投递过来，因为「有人@我」本来就是摄入时的一次性判定，重启即清空）。
+   */
+  mention_ids?: string[] | null;
 }
 
 /**

@@ -531,6 +531,96 @@ fn announcement_preview(content: &str) -> String {
     }
 }
 
+/// 单条消息 @ 名单允许携带的最大条数（超出直接截断，不报错）。
+pub const MAX_GOSSIP_MENTIONS: usize = 64;
+
+/// 解密后的群 / 单聊消息明文（Gossip 载荷的 `kind` + `content` 那一层）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GossipPlaintext {
+    pub kind: String,
+    pub content: String,
+    /// 这条消息 @ 了谁（设备 id）。**三态**，见 `gossip_plaintext`。
+    pub mentions: Option<Vec<String>>,
+}
+
+/// 组装群 / 单聊消息的加密前明文。
+///
+/// `mentions` 的三态是这条协议字段的全部意义，不许压成两态：
+///  - `None` ⇒ **不写这个键**。等于"发送方是不认识这个字段的版本"，
+///    接收端要退回按昵称判定（INV-P24 降级：新字段只能让新版更准，不能让老对端变暗）；
+///  - `Some(vec![])` ⇒ 发送方明确回答"这条没 @ 任何人"，接收端**不再**按昵称兜底。
+///
+/// 为什么要带 id 而不是靠昵称：昵称**可变**（改名后历史上那些 @ 就不再指向这个人）
+/// 又**不唯一**（群里可以两个人同名 ⇒ 一个人被 @，两个人同时亮红点）。
+pub fn gossip_plaintext(kind: &str, content: &str, mentions: Option<&[String]>) -> String {
+    let mut v = serde_json::json!({ "kind": kind, "content": content });
+    if let Some(ids) = mentions {
+        // 出网前同样洗一遍：这条命令是 IPC 公开面，去重 + 丢空串 + 封顶，
+        // 免得某条路径把整份通讯录塞进每一条消息。
+        let mut clean: Vec<&str> = Vec::new();
+        for id in ids {
+            if id.is_empty() || clean.iter().any(|x| *x == id.as_str()) {
+                continue;
+            }
+            clean.push(id.as_str());
+            if clean.len() >= MAX_GOSSIP_MENTIONS {
+                break;
+            }
+        }
+        v["mentions"] = serde_json::json!(clean);
+    }
+    v.to_string()
+}
+
+/// `gossip_plaintext` 的反向。**永不失败**：非 JSON 载荷按老行为退化成纯文本。
+///
+/// 单独放在 protocol 而不是留在 transport 里，是因为这两个函数必须**同一处**：
+/// 键名与形状写两份 ⇒ 一端改了另一端只会静默判成"没有 @"，红点无声消失。
+pub fn parse_gossip_plaintext(pt: &[u8]) -> GossipPlaintext {
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(pt) {
+        let kind = v
+            .get("kind")
+            .and_then(|k| k.as_str())
+            .unwrap_or("text")
+            .to_string();
+        let content = v
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mentions = match v.get("mentions") {
+            Some(serde_json::Value::Array(items)) => {
+                let mut acc: Vec<String> = Vec::new();
+                for item in items {
+                    if let Some(s) = item.as_str() {
+                        // 空串不是设备 id：留着它，未就绪的本机（id 为空）会匹配上并假亮
+                        if !s.is_empty() && !acc.iter().any(|x| x == s) {
+                            acc.push(s.to_string());
+                            if acc.len() >= MAX_GOSSIP_MENTIONS {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Some(acc)
+            }
+            // 缺失 / null / 非数组：全都判成"不知道" ⇒ 接收端兜底按昵称判
+            _ => None,
+        };
+        GossipPlaintext {
+            kind,
+            content,
+            mentions,
+        }
+    } else {
+        GossipPlaintext {
+            kind: "text".to_string(),
+            content: String::from_utf8_lossy(pt).to_string(),
+            mentions: None,
+        }
+    }
+}
+
 /// 会话列表摘要 / 通知正文的预览文案。
 ///
 /// 静默类（reaction/recall/pin/poll_vote/announcement_delete/todo_update）照理到不了预览
@@ -1474,6 +1564,133 @@ mod tests {
         assert_eq!(display_kind("text"), "text");
         // code 有歧义（真代码块同为 kind=code），刻意不映射
         assert_eq!(display_kind("code"), "code");
+    }
+
+    // ---------------- 群消息明文里的 @ 名单（mention ids） ----------------
+    // 三态是本组用例唯一要钉的东西：None=「这个键不存在」= 旧对端，接收端按昵称兜底；
+    // Some(空)=「明确回答谁都没 @」= 不许兜底。合并成两态就会要么漏亮要么误亮。
+
+    #[test]
+    fn gossip_plaintext_without_mentions_keeps_the_two_key_shape() {
+        let pt = gossip_plaintext("text", "hi", None);
+        let v: serde_json::Value = serde_json::from_str(&pt).unwrap();
+        assert_eq!(
+            v.as_object().map(|m| m.len()),
+            Some(2),
+            "不该凭空多出 mentions 键"
+        );
+        let back = parse_gossip_plaintext(pt.as_bytes());
+        assert_eq!(back.mentions, None);
+        assert_eq!(back.kind, "text");
+        assert_eq!(back.content, "hi");
+    }
+
+    #[test]
+    fn gossip_plaintext_empty_mentions_is_an_explicit_answer_not_absence() {
+        let pt = gossip_plaintext("text", "hi", Some(&[]));
+        let v: serde_json::Value = serde_json::from_str(&pt).unwrap();
+        assert_eq!(v.get("mentions"), Some(&serde_json::json!([])));
+        let back = parse_gossip_plaintext(pt.as_bytes());
+        assert_eq!(back.mentions, Some(vec![]));
+    }
+
+    #[test]
+    fn gossip_plaintext_ids_survive_the_round_trip_in_order() {
+        let ids = vec!["dev-b".to_string(), "dev-c".to_string()];
+        let back = parse_gossip_plaintext(gossip_plaintext("text", "@周工", Some(&ids)).as_bytes());
+        assert_eq!(back.mentions, Some(ids));
+    }
+
+    /// **载荷外壳可以加字段，正文一个字节都不许动** —— 存储不变量（INV-P24/§8）在
+    /// 加密前那一环的落点：这里若做了 trim / 转义改写，对端解出来的 @ 就不是发出去的那个。
+    #[test]
+    fn gossip_plaintext_never_rewrites_content_bytes() {
+        let raw = "  @周工 请看\t中文换行\n以及 emoji 😀  尾部空白  ";
+        let back = parse_gossip_plaintext(gossip_plaintext("text", raw, None).as_bytes());
+        assert_eq!(back.content, raw);
+    }
+
+    #[test]
+    fn parse_gossip_plaintext_falls_back_to_lossy_text_for_non_json() {
+        // 这是搬过来之前就有的行为（老版本发过纯文本），必须原样保住
+        let back = parse_gossip_plaintext("随便一句话".as_bytes());
+        assert_eq!(back.kind, "text");
+        assert_eq!(back.content, "随便一句话");
+        assert_eq!(back.mentions, None);
+    }
+
+    #[test]
+    fn parse_gossip_plaintext_treats_a_wrong_shaped_mentions_as_absence() {
+        // 键在但形状不对（对端实现不同 / 被改坏）⇒ 判成"不知道"，走昵称兜底，
+        // 而不是判成"谁都没 @"把红点掐掉。
+        let cases = [
+            r#"{"kind":"text","content":"@周工","mentions":"dev-b"}"#,
+            r#"{"kind":"text","content":"@周工","mentions":3}"#,
+            r#"{"kind":"text","content":"@周工","mentions":null}"#,
+            r#"{"kind":"text","content":"@周工","mentions":{"a":1}}"#,
+        ];
+        for c in cases {
+            let back = parse_gossip_plaintext(c.as_bytes());
+            assert_eq!(back.mentions, None, "错误形状必须判成缺失：{c}");
+        }
+    }
+
+    #[test]
+    fn parse_gossip_plaintext_sanitizes_an_otherwise_valid_list() {
+        // 数组 ⇒ 权威。但元素仍要洗：非字符串丢掉、空串丢掉、重复压掉（顺序按首次出现）。
+        let c = r#"{"kind":"text","content":"@周工","mentions":["a","",1,"b","a",true,"c"]}"#;
+        let back = parse_gossip_plaintext(c.as_bytes());
+        assert_eq!(
+            back.mentions,
+            Some(vec!["a".to_string(), "b".to_string(), "c".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_gossip_plaintext_caps_the_mention_list() {
+        // 载荷是群密钥加密的，但"只有成员能发"不等于"成员可以为所欲为"：
+        // 一条消息塞十万个 id 会把每一条消息的解析与前端判定都拖垮。
+        let ids: Vec<String> = (0..(MAX_GOSSIP_MENTIONS + 50))
+            .map(|i| format!("d{i}"))
+            .collect();
+        let joined = ids
+            .iter()
+            .map(|s| format!("\"{s}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let c = format!(r#"{{"kind":"text","content":"@x","mentions":[{joined}]}}"#);
+        let back = parse_gossip_plaintext(c.as_bytes());
+        assert_eq!(
+            back.mentions.as_ref().map(|v| v.len()),
+            Some(MAX_GOSSIP_MENTIONS)
+        );
+    }
+
+    /// 出网前也要洗：`send_group_message` 是 IPC 公开面，任何调用方都能递进一份名单。
+    #[test]
+    fn gossip_plaintext_sanitizes_before_it_leaves_the_device() {
+        let messy = vec![
+            "a".to_string(),
+            String::new(),
+            "b".to_string(),
+            "a".to_string(),
+            "c".to_string(),
+        ];
+        let pt = gossip_plaintext("text", "@x", Some(&messy));
+        let v: serde_json::Value = serde_json::from_str(&pt).unwrap();
+        assert_eq!(v.get("mentions"), Some(&serde_json::json!(["a", "b", "c"])));
+    }
+
+    #[test]
+    fn encode_decode_are_inverse_for_the_default_group_text_case() {
+        // 环回一条：编码器写出的东西解码器必须原样读回来 —— 这条一旦红，
+        // 说明某一侧改了键名或形状，而对端还蒙在鼓里。
+        let ids = vec!["dev-x".to_string()];
+        let pt = gossip_plaintext("text", "@小王 开会", Some(&ids));
+        let back = parse_gossip_plaintext(pt.as_bytes());
+        assert_eq!(back.kind, "text");
+        assert_eq!(back.content, "@小王 开会");
+        assert_eq!(back.mentions, Some(ids));
     }
 
     /// **未知 kind 的预览必须是占位文案，绝不能是载荷**（INV-P24 第 2 条）。

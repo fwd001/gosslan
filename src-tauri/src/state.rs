@@ -377,6 +377,20 @@ pub struct MessageRecord {
     pub status: String,
 }
 
+/// `message-received` 实际投递出去的形状 = 消息记录 + **只随本次投递、不落库**的 @ 名单。
+///
+/// 为什么不把 `mention_ids` 直接做进 `MessageRecord`：那个结构是"库里的一行"，
+/// 全仓 30 多处字面量构造它，而这一份信息**故意不落库**（「有人@我」是摄入时的一次性
+/// 判定，重启即清空）。做成字段就等于造出一个"有时有意义、从库里读回来永远没意义"的
+/// 假字段 —— 那才是下一次误判的来源。摊平进投递形状，两边的边界写在类型上。
+#[derive(Serialize, Debug)]
+pub struct IncomingMessage<'a> {
+    #[serde(flatten)]
+    pub record: &'a MessageRecord,
+    /// 三态：`None` = 发送方没带这个键（旧版本）；`Some(含空)` = 发送方的权威回答。
+    pub mention_ids: Option<&'a [String]>,
+}
+
 /// 一条收藏（与前端一致）。
 ///
 /// `content` 是**收藏当时的快照**：图片/文件类收藏的 `content.path` 已被改写成收藏副本路径
@@ -1880,5 +1894,53 @@ mod tests {
         assert_ne!(UI_LANG_UNKNOWN, UI_LANG_ZH);
         assert_ne!(UI_LANG_UNKNOWN, UI_LANG_EN);
         assert_ne!(UI_LANG_ZH, UI_LANG_EN);
+    }
+
+    /// `message-received` 实际投递出去的那份 JSON：**记录逐项都还在**（前端整条时间线靠它渲染，
+    /// flatten 写错会静默丢字段），并且多出一个 `mention_ids`。
+    ///
+    /// 为什么值得单独钉：这条形状只被 `network/transport/gossip.rs` 一处用到，前端又是按
+    /// 属性名读的 —— 名字漂了（`mention_ids` vs `mentions`）两侧都不会报错，表现是
+    /// 「@ 了我不亮」，正是本格修的那类"判不到根"的缺陷。
+    #[test]
+    fn incoming_message_flattens_the_record_and_carries_three_state_mentions() {
+        use super::{IncomingMessage, MessageRecord};
+        let rec = MessageRecord {
+            id: 7,
+            msg_id: "m1".to_string(),
+            conv_id: "group:g1".to_string(),
+            sender_id: "dev-a".to_string(),
+            receiver_id: "g1".to_string(),
+            kind: "text".to_string(),
+            content: "@周工 看下".to_string(),
+            ts: 10,
+            seq: 11,
+            status: "delivered".to_string(),
+        };
+        let ids = vec!["dev-b".to_string()];
+        let with: serde_json::Value = serde_json::to_value(IncomingMessage {
+            record: &rec,
+            mention_ids: Some(&ids),
+        })
+        .unwrap();
+        assert_eq!(with.get("msg_id").and_then(|v| v.as_str()), Some("m1"));
+        assert_eq!(with.get("seq").and_then(|v| v.as_i64()), Some(11));
+        assert_eq!(
+            with.get("status").and_then(|v| v.as_str()),
+            Some("delivered")
+        );
+        assert_eq!(with.get("mention_ids"), Some(&serde_json::json!(["dev-b"])));
+        // None ⇒ `null` 而不是把键省掉：前端两种都当"不知道"，但这条要写在类型上，
+        // 键在不在不该靠序列化器的默认行为猜。
+        let none: serde_json::Value = serde_json::to_value(IncomingMessage {
+            record: &rec,
+            mention_ids: None,
+        })
+        .unwrap();
+        assert_eq!(none.get("mention_ids"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            none.get("content").and_then(|v| v.as_str()),
+            Some("@周工 看下")
+        );
     }
 }

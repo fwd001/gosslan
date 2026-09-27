@@ -298,7 +298,7 @@ pub async fn group_add_member(
     // （靠 GroupKey 重发携带新成员表），所以直接借用消息管道。
     let name = resolve_nickname(s, &device_id);
     let text = crate::network::transport::group_member_added_text(s, &name);
-    send_group_payload(s, &group_id, "system", text).await?;
+    send_group_payload(s, &group_id, "system", text, None).await?;
     let _ = s.app.emit("groups-updated", &group_id);
     Ok(())
 }

@@ -1533,3 +1533,100 @@ test("「与我相关」徽标只许 store 算一次，两处 UI 必须消费同
   recomputeRe.lastIndex = 0;
   assert.ok(!recomputeRe.test(`// 判定见 utils/todos::openTodosForMe\nconst n = chat.openTodoByConv[id] ?? 0;`), "注释里的名字被误抓");
 });
+
+// ---------------- ⑲ 「有人@我」只许走那一个三态入口（第二阶段 §10／#103） ----------------
+//
+// 修掉的缺陷：文本消息「有没有 @ 到我」原先只按**昵称**判。昵称可变（改过名字之后，历史上
+// 那些 @ 就不再指向这个人）又不唯一（群里两个人可以同名 ⇒ 一个人被 @，两个人一起亮红点），
+// 所以它天生带错。现在链路里带了「@ 了谁」的设备 id 名单，判定改走 `messageMentionsMe`。
+//
+// 这条判据防的是**回归的路径**：昵称那条没删（旧版本对端不认识这个字段，删了它们就永远
+// 判不出 @ ⇒ 比原缺陷更糟），但它只许作为兜底待在 `messages.ts` 内部。任何调用点直接
+// `messageMentionsName(rec, myName)` 都等于把这条 bug 原地复活，而界面上一切照常 ——
+// 只有改名和同名这两种场景会静默判错，正是最难发现的那类。
+test("「有人@我」只许走 messageMentionsMe：昵称判定不许在调用点直接出现", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const walk = (dir: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full, out);
+      else if (/\.(ts|vue)$/.test(e.name)) out.push(full);
+    }
+    return out;
+  };
+  const BYPASS = ["messageMentionsName(", "messageMentionsAll("];
+  const offenders: string[] = [];
+  let scanned = 0;
+  for (const f of walk(srcDir)) {
+    const rel = f.replace(srcDir + "/", "");
+    // messages.ts 是三态那条兜底的**唯一**合法落点；测试里按名字判是夹具的一部分
+    if (rel === "utils/messages.ts" || rel.endsWith(".test.ts")) continue;
+    scanned += 1;
+    const code = readFileSync(f, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "");
+    for (const lit of BYPASS) if (code.includes(lit)) offenders.push(`${rel}（含 ${lit}）`);
+  }
+  // 前置：真的扫到了东西，否则"零违规"只是因为路径写错
+  assert.ok(scanned > 50, `只扫到 ${scanned} 个文件 —— 目录口径不对，这条判据在空转`);
+  assert.deepEqual(
+    offenders,
+    [],
+    "绕过三态入口直接按昵称判 @ ⇒ 改名与同名两种场景会静默判错。改法：调 `messageMentionsMe(rec, {id, name})`",
+  );
+  const messagesSrc = readFileSync(join(srcDir, "utils", "messages.ts"), "utf8");
+  // ① 唯一入口必须真的还在被消费者用着 —— 否则上面的"零违规"只是因为没人判 @ 了
+  const storeSrc = readFileSync(join(srcDir, "stores", "useChatStore.ts"), "utf8");
+  assert.ok(
+    /\bmessageMentionsMe\s*\(/.test(storeSrc),
+    "useChatStore 不再判「有人@我」⇒ 红点整条消失，而上面那条零违规是假的",
+  );
+  // ② 三态的 id 那条分支必须还在（不许把 messageMentionsMe 压回"只看昵称"）
+  assert.ok(
+    /Array\.isArray\(\s*ids\s*\)/.test(messagesSrc) && messagesSrc.includes("ids.includes(me.id)"),
+    "messageMentionsMe 里的 id 分支不见了 ⇒ 三态被压回两态，本次修的缺陷原样复活",
+  );
+  // ③ 兜底那条也必须还在：旧版本对端不带这个字段，删掉它 = 那些消息永远不亮
+  assert.ok(
+    /textMentionsName\(\s*rec\.content/.test(messagesSrc),
+    "昵称兜底被删 ⇒ 不认识 mentions 字段的旧对端发的 @ 再也判不出来（INV-P24 降级）",
+  );
+  // 非空转：同一台解析器要抓得到那个坏形状，且不误抓"只是注释里提一句"
+  const bad = `const hit = myName ? messageMentionsName(rec, myName) : false;`;
+  assert.ok(BYPASS.some((lit) => bad.includes(lit)), "夹具没被抓到 ⇒ 这条判据是空转的");
+  const commentOnly = `// 兜底走 messageMentionsName(rec, myName)\nconst ok = chat.mentionedConvs.has(id);`;
+  const stripped = commentOnly.replace(/^[ \t]*\/\/.*$/gm, "");
+  assert.ok(!BYPASS.some((lit) => stripped.includes(lit)), "注释里的名字被误抓");
+});
+
+// ---------------- ⑳ 「@ 了谁」这条链的七段，断在哪一段就报哪一段 ----------------
+//
+// 为什么需要它：这条链**跨了两种语言、七个文件**，而且中间三段是"看不见就没事"的
+// （DOM 的 data-mention-id → IPC 参数 → 加密明文 → 解密 → emit 形状）。任何一段被改动
+// 都不会有编译错误，也不会有测试红 —— 表现是「@ 了我不亮红点」，而这正是本格原来
+// 判不到根的那条缺陷（#103）。护栏按形状扫这七处，缺哪一段就点名哪一段。
+//
+// ⚠️ 刻意只断"接缝在不在"，不断实现细节（不锁参数名顺序之外的东西）。真正的行为判据在
+//    protocol 层单测（三态编解码）、messages.test.ts（三态判定）、state.rs（emit 形状）。
+test("「有人@我」从输入框到对端的七段接缝必须齐全（跨语言链条断在中间是无声的）", () => {
+  const rootDir = join(import.meta.dirname, "..", "..");
+  const SEAMS: [string, string, string][] = [
+    ["src/components/chat/MessageComposer.vue", "emit(\"send\", { content: text, kind: k, mentionIds });", "① 输入框没把名单随 send 交出去"],
+    ["src/components/ChatWindow.vue", "await chat.send(convId, content, kind, mentionIds);", "② 会话窗口收下了名单却没往下传"],
+    ["src/stores/useChatStore.ts", "api.sendGroupMessage(convId.slice(6), content, kind, mentionIds)", "③ store 发送时丢了这一参"],
+    ["src/api/index.ts", "...(mentions ? { mentions } : {})", "④ 门面把『没带』和『空名单』压成了同一种（缺省必须不发这个键）"],
+    ["src-tauri/src/commands/group_files.rs", "mentions: Option<Vec<String>>,", "⑤ 命令入口不再收这个参数"],
+    ["src-tauri/src/commands/window.rs", "crate::protocol::gossip_plaintext(kind, &content, mentions)", "⑥ 内核没把名单写进加密明文"],
+    ["src-tauri/src/network/transport/gossip.rs", "mention_ids: mentions.as_deref(),", "⑦ 接收端解出来了却没回送给界面"],
+  ];
+  const missing: string[] = [];
+  for (const [rel, needle, why] of SEAMS) {
+    const code = readFileSync(join(rootDir, rel), "utf8");
+    if (!code.includes(needle)) missing.push(`${rel} —— ${why}`);
+  }
+  assert.deepEqual(missing, [], "「@ 了谁」这条链断了：\n" + missing.join("\n"));
+  // 非空转：第七段（emit 形状）最容易被顺手改成 `None`，这里当场演一遍"改坏必须报红"
+  const broken = SEAMS[6][1].replace("mentions.as_deref()", "None");
+  assert.ok(!SEAMS[6][1].includes(broken), "锚点写得太松 ⇒ 改坏了也抓不到");
+});

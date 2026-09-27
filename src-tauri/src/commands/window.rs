@@ -113,6 +113,10 @@ pub fn window_close(app: tauri::AppHandle) {
 /// 群消息发送的**唯一内核**：群密钥加密 → Gossip 信封 → 落库（消息 + 每个成员的 outbox）
 /// → 广播。文本、代码、表情回应等全部走这一条路。
 ///
+/// `mentions`（这条文本 @ 了谁）只在明文里多带一个键，**不落库**：
+/// 「有人@我」是摄入那一刻的一次性判定（重启即清空，见 useChatStore 的 mentionedConvs），
+/// 为它动迁移链换来的可观察行为是零，风险却是本仓最高的一类。
+///
 /// 为什么必须只有一条：它们都要 E2EE、都要 outbox 兜底、都要 GroupAck、都要被四层幂等
 /// 去重覆盖。若各写一份，任何一处修 bug（历史上最典型的是「填完 group_creator/members
 /// 后忘了重算重签 → 群消息被静默丢弃」）都只会修到其中一条路径。
@@ -121,6 +125,7 @@ async fn send_group_payload(
     group_id: &str,
     kind: &str,
     content: String,
+    mentions: Option<&[String]>,
 ) -> Result<MessageRecord, String> {
     let ts = db::now_ms();
     let conv_id = format!("group:{group_id}");
@@ -145,7 +150,9 @@ async fn send_group_payload(
     let preview = crate::protocol::preview_text(kind, &content);
 
     // 群密钥加密 + Gossip 信封（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
-    let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
+    // `mentions` 只在文本消息上有值，且**三态有意义**（None=不发这个键=旧语义），
+    // 所以这里不能写成 `mentions.unwrap_or_default()`。形状与理由见 protocol 层。
+    let plaintext = crate::protocol::gossip_plaintext(kind, &content, mentions);
     let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let env = {
@@ -246,7 +253,7 @@ async fn send_group_payload(
     //
     // 为什么群不像 1:1 那样硬门控（本轮对 git 历史的考古结论，不是怕吵）：
     //   · 群 kind 不在 `MsgKind` 枚举里，它在群密钥加密的 Gossip 载荷内，接收端
-    //     `parse_gossip_payload` 按**自由字符串**解析（同一份实现逐字存在于 v2.1.2 /
+    //     `parse_gossip_plaintext` 按**自由字符串**解析（同一份实现逐字存在于 v2.1.2 /
     //     v4.3.9 / v4.8.2 / v4.20.0），DB 列 `kind TEXT` 也没有 CHECK ⇒ 老成员不丢帧、
     //     不断链、不会假报"发送失败"，退化只发生在**渲染**（看成一段原始文本，
     //     因为 V3b 那层兜底只修了我们这一侧）；

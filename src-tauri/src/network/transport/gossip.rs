@@ -671,7 +671,25 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 return;
             }
             if let Some(pt) = plaintext {
-                let (kind, content) = parse_gossip_payload(&pt);
+                let crate::protocol::GossipPlaintext {
+                    kind,
+                    content,
+                    mentions,
+                } = crate::protocol::parse_gossip_plaintext(&pt);
+                // §29 可观测性：这一行是「有人@我 为什么亮 / 为什么不亮」唯一能事后归因的留痕。
+                // 修之前判不到根的机制就在这儿 —— 链路里只有昵称、没有「@ 了谁」，日志也就
+                // 永远分不开「对端没带名单（旧版本，按昵称兜底）」和「对端明确说谁都没 @」。
+                // 只记条数，不记 id、不记正文（日志会进报告产物）。
+                if env.kind == GossipKind::Group {
+                    state.logger.info(
+                        "group",
+                        format!(
+                            "群消息@输入 msg={} mentions={}",
+                            env.message_id,
+                            mentions.as_ref().map_or("none".to_string(), |v| v.len().to_string())
+                        ),
+                    );
+                }
                 // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）
                 if env.kind == GossipKind::Chat {
                     let is_friend = {
@@ -898,7 +916,13 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 };
                 // 重复投递与数据库失败都不产生本地副作用；Gossip 的转发已在上面完成。
                 if announced_on(&inserted) {
-                    let _ = state.app.emit("message-received", &out_rec);
+                    let _ = state.app.emit(
+                        "message-received",
+                        &crate::state::IncomingMessage {
+                            record: &out_rec,
+                            mention_ids: mentions.as_deref(),
+                        },
+                    );
                 }
                 // 更新会话「当前链路」：单聊消息的 hop 由 Gossip ttl 反推
                 // （初始 ttl - 收到 ttl），path 取入站连接的路径（直连准确，桥接为最后一段）。
@@ -961,20 +985,3 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     }
 }
 
-fn parse_gossip_payload(pt: &[u8]) -> (String, String) {
-    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(pt) {
-        let kind = v
-            .get("kind")
-            .and_then(|k| k.as_str())
-            .unwrap_or("text")
-            .to_string();
-        let content = v
-            .get("content")
-            .and_then(|c| c.as_str())
-            .unwrap_or("")
-            .to_string();
-        (kind, content)
-    } else {
-        ("text".to_string(), String::from_utf8_lossy(pt).to_string())
-    }
-}

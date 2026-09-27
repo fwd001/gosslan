@@ -9,6 +9,7 @@ import {
   furthestStatus,
   mergeMessages,
   messageMentionsAll,
+  messageMentionsMe,
   messageMentionsName,
   pickMediaContent,
   preserveDeliveryStatus,
@@ -16,6 +17,7 @@ import {
   selectCachedConversations,
   sortConversations,
   syncProfileFromPeers,
+  textMentionsName,
   unreadAnchorIndex,
 } from "./messages.ts";
 import type { Conversation, MessageRecord } from "../types";
@@ -706,6 +708,102 @@ test("@所有人：正则被复用，重复调用结果必须稳定", () => {
   for (let i = 0; i < 5; i++) {
     assert.equal(messageMentionsAll(hit), true, `第 ${i + 1} 次应命中`);
     assert.equal(messageMentionsAll(miss), false, `第 ${i + 1} 次不应命中`);
+  }
+});
+
+// ---------------- messageMentionsMe：这条文本到底点到「人」没有 ----------------
+// 被 @ 的判定输入从「昵称字符串」换成「人的身份（设备 id）」，昵称只剩兜底作用。
+// 三态必须分清，否则修一个 bug 会顺手造出另一个：
+//   数组 ⇒ 发送方明确回答了「我 @ 了这些人」（哪怕回答的是空集）→ 以 id 为准；
+//   缺失/非数组 ⇒ 发送方是**不认识这个字段的旧版本** → 退回昵称判定，不许变暗。
+
+test("@我（id 命中）：正文里没有我现在的昵称也算", () => {
+  // 这正是本次要修的缺陷：我改过昵称，而那条消息 @ 的是改名前的我。
+  // 按昵称判会漏；按 id 判才对。
+  const rec = msg({ content: "@老张 看下这个", mention_ids: ["dev-b"] });
+  assert.equal(messageMentionsMe(rec, { id: "dev-b", name: "周工" }), true);
+});
+
+test("@我（id 名单不含我）：正文里出现了我的昵称也不算 —— 同名成员的误亮就是这么来的", () => {
+  // 群里两个人都叫「周工」。发送方是从名单里**选中**了另一个人的 id，
+  // 继续按昵称判会把两个不相干的人都点亮。
+  const rec = msg({ content: "@周工 在吗", mention_ids: ["dev-c"] });
+  assert.equal(messageMentionsMe(rec, { id: "dev-b", name: "周工" }), false);
+});
+
+test("@我（字段缺失）= 旧版本发送方，退回昵称判定而不是判成『没 @ 人』", () => {
+  // INV-P24 的降级口径：新字段只能让新版本更准，不许让老对端的消息变暗。
+  assert.equal(messageMentionsMe(msg({ content: "@周工 在吗" }), { id: "dev-b", name: "周工" }), true);
+  assert.equal(messageMentionsMe(msg({ content: "随便聊聊" }), { id: "dev-b", name: "周工" }), false);
+  // 后端显式给 null（从库里读回来的历史行没有这一列）与缺失同义
+  assert.equal(
+    messageMentionsMe(msg({ content: "@周工 在吗", mention_ids: null }), { id: "dev-b", name: "周工" }),
+    true,
+  );
+});
+
+test("@我（空数组）是明确回答「没 @ 任何人」，不再退回昵称判定", () => {
+  // 与上一条的区别就是这一条要判的东西：数组 ⇒ 权威，即便为空。
+  assert.equal(messageMentionsMe(msg({ content: "@周工 在吗", mention_ids: [] }), {
+    id: "dev-b",
+    name: "周工",
+  }), false);
+});
+
+test("@我：@所有人 与 id 名单互不干扰，两条路各自都能点亮", () => {
+  // 「所有人」是正文里的固定中文字面量，发送方不会把它塞进 id 名单。
+  assert.equal(messageMentionsMe(msg({ content: "@所有人 开会", mention_ids: [] }), {
+    id: "dev-b",
+    name: "周工",
+  }), true);
+  assert.equal(messageMentionsMe(msg({ content: "@所有人 开会", mention_ids: ["dev-c"] }), {
+    id: "dev-b",
+    name: "周工",
+  }), true);
+});
+
+test("@我：只有文本消息参与判断（id 名单也一样）", () => {
+  assert.equal(messageMentionsMe(msg({ kind: "code", content: "@周工()", mention_ids: ["dev-b"] }), {
+    id: "dev-b",
+    name: "周工",
+  }), false);
+});
+
+test("@我：我自己没有设备 id 时不许靠空串匹配上任何名单", () => {
+  // 启动早期 / 身份未就绪：空 id 与名单里的空串相等会假亮一条红点。
+  assert.equal(messageMentionsMe(msg({ content: "@周工", mention_ids: [""] }), {
+    id: "",
+    name: "周工",
+  }), false);
+});
+
+test("textMentionsName 与 messageMentionsName 必须逐条同进同退（边界常量同源）", () => {
+  // 发送侧用 textMentionsName 把手打的「@名字」回解成 id，接收侧兜底用
+  // messageMentionsName。两者一旦只改一边，表现就是「发送方认为 @ 了、
+  // 接收方的名单里却没有」，或反过来 —— 同一套边界规则只许有一份。
+  const names = ["周工", "小王", "a.b(1)", "所有人"];
+  const texts = [
+    "@周工 你好",
+    "@周工",
+    "叫上 @周工 一起",
+    "@周工，来一下",
+    "邮件发我 a@周工.com",
+    "通知：@周工",
+    "@小王 吃饭 @小王丰",
+    "@a.b(1) 看看",
+    "@所有人 开会",
+    "[微笑]@周工 快来",
+    "你好 @周工 记得",
+    "你好@周工 记得",
+  ];
+  for (const n of names) {
+    for (const c of texts) {
+      assert.equal(
+        textMentionsName(c, n),
+        messageMentionsName(msg({ content: c }), n),
+        `边界规则分叉：content=${JSON.stringify(c)} name=${n}`,
+      );
+    }
   }
 });
 

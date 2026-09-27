@@ -3734,7 +3734,70 @@ CASES: list[Case] = [
         expect_fail_hint="三处触发点（拨号建链 / Hello / 心跳）都要先重新登记密钥",
         tags=["rust", "group", "stability", "new-guards", "rc2-group-sync"],
     ),
-
+    # ---------------- 「有人@我」从昵称改成绑人（第二阶段 §10／#103） ----------------
+    Case(
+        name="群明文里摘掉 mentions 键 —— 三态的『明确回答谁都没 @』必须还能发出去",
+        why="`gossip_plaintext` 的 None 与 Some(空) 是这条协议字段的全部意义：\n"
+        "     摘掉写键这一步，两种都变成 None ⇒ 接收端一律退回按昵称判，\n"
+        "     界面上一切照常，只有『两个人同名』与『改过名字』两种场景静默判错 ——\n"
+        "     正是 #103 记的那个判不到根的形状。注入 = 算好了名单却不写进明文。",
+        file=TAURI / "src" / "protocol.rs",
+        injections=[(
+            '        v["mentions"] = serde_json::json!(clean);',
+            '        let _ = &clean;',
+        )],
+        cmd=cargo("test", "--lib", "protocol::tests::gossip_plaintext"),
+        cwd=TAURI,
+        expect_fail_hint="gossip_plaintext_empty_mentions_is_an_explicit_answer_not_absence",
+        tags=["rust", "group", "stability", "new-guards", "mention-identity"],
+    ),
+    Case(
+        name="接收端解出 @ 名单却不回送界面（第⑦段接缝断掉）",
+        why="这条链跨两种语言七个文件，中段任何一段被改动都没有编译错误，\n"
+        "     表现只有一个：「@ 了我不亮红点」。这条用例演的是最容易顺手改坏的那一段 ——\n"
+        "     解密拿到了名单，emit 时写成 None。护栏按形状扫七处接缝，缺哪一段点哪一段。",
+        file=TAURI / "src" / "network" / "transport" / "gossip.rs",
+        injections=[("mention_ids: mentions.as_deref(),", "mention_ids: None,")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="⑦ 接收端解出来了却没回送给界面",
+        tags=["frontend", "rust", "group", "stability", "new-guards", "mention-identity"],
+    ),
+    Case(
+        name="输入框不再把 @ 名单随 send 交出去（第①段接缝断掉）",
+        why="选择器插进 DOM 的 `data-mention-id` 是「@ 的就是这个人」唯一的权威来源；\n"
+        "     emit 时漏掉它，后面五段全都白接。这一条与上一条同形（跨语言链的两端），\n"
+        "     两条都钉住才谈得上「断在哪一段就报哪一段」。",
+        file=ROOT / "src" / "components" / "chat" / "MessageComposer.vue",
+        injections=[(
+            'emit("send", { content: text, kind: k, mentionIds });',
+            'emit("send", { content: text, kind: k });',
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="① 输入框没把名单随 send 交出去",
+        tags=["frontend", "group", "stability", "new-guards", "mention-identity"],
+    ),
+    Case(
+        name="把三态压回两态（只按昵称判 @）—— 具名用例与护栏必须同时红",
+        why="这是 #103 那条缺陷的原样复活：`messageMentionsMe` 里删掉 id 那条分支，\n"
+        "     剩下的就是改名前的旧文案匹配。名字可变、可重名 ⇒ 两种静默判错都会回来。\n"
+        "     非空转要同时抓到两层：messages.test.ts 的具名用例，以及那条\n"
+        "     「昵称判定不许出现在调用点」的护栏。",
+        file=ROOT / "src" / "utils" / "messages.ts",
+        injections=[(
+            """  if (Array.isArray(ids)) {
+    // 我的 id 为空时直接判不中：不能让"身份尚未就绪"这一格靠空串匹配到名单里的空串
+    return !!me.id && ids.includes(me.id);
+  }
+""",
+            "",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="id 名单不含我",
+        tags=["frontend", "group", "stability", "new-guards", "mention-identity"],
+    ),
 ]
 
 

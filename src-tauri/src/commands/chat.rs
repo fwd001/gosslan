@@ -124,7 +124,9 @@ pub async fn send_message(
     let preview = crate::protocol::preview_text(&kind, &content);
 
     // E2EE 加密 + Gossip 信封（先于本地落库：msg_id 三处统一用 Gossip 信封 ID）
-    let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
+    // 1:1 没有 @，恒传 None —— 但走**同一个**编码器：明文形状两处各写一份，
+    // 迟早只改对一边（接收端是同一只函数解的）。
+    let plaintext = crate::protocol::gossip_plaintext(&kind, &content, None);
     let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;
     // Gossip 载荷与直发内容都走 ChaCha20-Poly1305（直发内容加 "enc1:" 前缀标识）
     let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;

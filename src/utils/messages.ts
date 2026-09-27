@@ -230,16 +230,30 @@ export function previewText(rec: MessageRecord): string {
 }
 
 /**
+ * 一段**纯文本**里是否出现了 `@名字`（边界规则与 linkify 的高亮同源）。
+ *
+ * 单独导出是为了让**发送侧**也能复用同一套判断：输入框里手打的 `@周工` 不会被
+ * 成员选择器变成 token，只能靠名字回解成 id；如果那里另写一份正则，就会出现
+ * 「发送方认为 @ 了、接收方名单里却没有」这类两边不同步的缺陷。
+ */
+export function textMentionsName(text: string, name: string): boolean {
+  const n = name.trim();
+  if (!n) return false;
+  return new RegExp(`${MENTION_BEFORE}@${escapeRe(n)}${MENTION_AFTER}`).test(text);
+}
+
+/**
  * 该消息是否 @ 了指定昵称（仅文本消息参与判断）。
  * 边界语义与 linkify 的 @提及高亮**共用** MENTION_BEFORE / MENTION_AFTER 两个常量，
  * 不允许在这里另写一份：两套边界一旦分叉，表现就是「气泡里高亮成蓝块、却没有红点和通知」。
  * 名字后的边界保证 @张三 不会误吞 @张三丰；前导边界见 MENTION_BEFORE（`]` 也算）。
+ *
+ * ⚠️ 这条是**兜底路径**，不是主路径：昵称可变、可重名，按名字判必然带错。
+ *    主路径见 `messageMentionsMe`（按设备 id）。
  */
 export function messageMentionsName(rec: MessageRecord, name: string): boolean {
   if (rec.kind !== "text") return false;
-  const n = name.trim();
-  if (!n) return false;
-  return new RegExp(`${MENTION_BEFORE}@${escapeRe(n)}${MENTION_AFTER}`).test(rec.content);
+  return textMentionsName(rec.content, name);
 }
 
 /**
@@ -266,6 +280,40 @@ const MENTION_ALL_RE = new RegExp(`${MENTION_BEFORE}@${MENTION_ALL_TOKEN}${MENTI
 export function messageMentionsAll(rec: MessageRecord): boolean {
   if (rec.kind !== "text") return false;
   return MENTION_ALL_RE.test(rec.content);
+}
+
+/**
+ * 这条文本消息点到「我」了没有 —— 「有人@我」红点的**唯一**判定入口。
+ *
+ * 为什么不能只按昵称判（这是修掉的缺陷本身）：昵称既**可变**（改名后，历史上那些
+ * `@旧名字` 就不再指向这个人）又**不唯一**（群里两个人可以同名）。绑定到名字上，
+ * 表现就是「明明 @ 了我却没红点」和「没 @ 我却亮了」两种，而根因都在链路里没有
+ * 「被 @ 的是谁」这个信息 —— 现在有了：`mention_ids`。
+ *
+ * ⚠️ 三态不许合并成两态：
+ *  - **数组**（含空数组）⇒ 发送方明确回答了「我 @ 了这些人」，以 id 为准，**不再看昵称**。
+ *    空数组是"谁都没 @"这个肯定回答，不是"不知道"。
+ *  - **缺失 / null** ⇒ 发送方是不认识这个字段的旧版本，或这条是从库里读回来的历史行。
+ *    退回昵称判定 —— 新字段只能让新版本更准，不许让老对端的消息变暗（INV-P24 降级口径）。
+ *
+ * 「@所有人」始终走字面量那条路：它是发给全群的中文字面量（不随界面语言变），
+ * 发送方不会、也不该把它塞进 id 名单（那样等于把整份成员表写进每一条消息）。
+ *
+ * ⚠️ 这里修的是**判定**（红点/通知）。气泡里高亮的是**字符**：`@旧名字` 那三个字确实是
+ *    当时发出去的内容，改不了也不该改，所以改名后高亮可能落在旧名字上。
+ */
+export function messageMentionsMe(
+  rec: MessageRecord,
+  me: { id: string; name: string },
+): boolean {
+  if (rec.kind !== "text") return false;
+  if (messageMentionsAll(rec)) return true;
+  const ids = rec.mention_ids;
+  if (Array.isArray(ids)) {
+    // 我的 id 为空时直接判不中：不能让"身份尚未就绪"这一格靠空串匹配到名单里的空串
+    return !!me.id && ids.includes(me.id);
+  }
+  return textMentionsName(rec.content, me.name);
 }
 
 /**

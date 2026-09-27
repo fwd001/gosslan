@@ -570,11 +570,19 @@ watch(
 );
 
 // ---------------- 发送 ----------------
-async function onSend({ content, kind }: { content: string; kind: MsgKind }) {
+async function onSend({
+  content,
+  kind,
+  mentionIds,
+}: {
+  content: string;
+  kind: MsgKind;
+  mentionIds?: string[];
+}) {
   const convId = chat.activeConv;
   if (!convId || (!isPeerFriend.value && !isSelfChat.value)) return;
   try {
-    await chat.send(convId, content, kind);
+    await chat.send(convId, content, kind, mentionIds);
   } catch (e) {
     app.toastError(e, t("msg.sendFailed"));
   }

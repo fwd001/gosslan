@@ -141,8 +141,21 @@ export const api = {
   leaveGroup: (groupId: string) => invoke<void>("leave_group", { groupId }),
   getGroups: () => invoke<Group[]>("get_groups"),
   getGroupReads: (groupId: string) => invoke<GroupReadInfo[]>("get_group_reads", { groupId }),
-  sendGroupMessage: (groupId: string, content: string, kind: string) =>
-    invoke<MessageRecord>("send_group_message", { groupId, content, kind }),
+  /**
+   * 发群消息（文本 / 代码 / 合并）。
+   *
+   * `mentions` = 这条文本 @ 了哪些人（设备 id）。**三态里"没带这个键"是有意义的**：
+   * 缺省 ⇒ 载荷里不写 mentions 字段 ⇒ 接收端退回按昵称判定（旧版本对端就是这个形态）。
+   * 所以这里不能写成 `mentions ?? []` —— 空数组是"明确回答谁都没 @"，语义完全不同。
+   * 展开而不是直接传 `mentions`：不依赖序列化器会不会丢掉 undefined。
+   */
+  sendGroupMessage: (groupId: string, content: string, kind: string, mentions?: string[]) =>
+    invoke<MessageRecord>("send_group_message", {
+      groupId,
+      content,
+      kind,
+      ...(mentions ? { mentions } : {}),
+    }),
   listGroupFiles: (groupId: string) =>
     invoke<GroupFileEntry[]>("list_group_files", { groupId }),
   /** 发布群公告（仅群主；上限 500 字）。 */

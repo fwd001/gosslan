@@ -8,8 +8,7 @@ import {
   appendLocalOnly,
   furthestStatus,
   mergeMessages,
-  messageMentionsAll,
-  messageMentionsName,
+  messageMentionsMe,
   pickMediaContent,
   preserveDeliveryStatus,
   previewText,
@@ -438,17 +437,17 @@ export const useChatStore = defineStore("chat", () => {
     }
     // 被 @ 检测（微信式 [有人@我]）：仅群聊、非自己发的、且当前没开着这个会话。
     // 与未读同源（本地真正新增的消息），重复投递不会反复触发。
-    // 「@所有人」对每个成员都等同于被点名，与点名走同一条判定入口。
+    // 「@所有人」与「点名」走的是同一个入口（`messageMentionsMe` 内部两条路），
+    // 在这里不再各判一次 —— 判两遍等于两个入口，迟早只修一个。
     const myName = app.device?.nickname ?? "";
     const myId = myDeviceId.value;
     for (const [cid, fresh] of newByConv) {
       if (cid === activeConv.value || !cid.startsWith("group:")) continue;
       for (const rec of fresh) {
         if (rec.sender_id === myId) continue;
-        const named = myName ? messageMentionsName(rec, myName) : false;
         // 任务被指派给我 ═ 被 @：显式 @ 指派的人（与 item 4 同口径），
         // 走微信式 [有人@我] 红点，且不会被重复投递反复触发（与上面同源 fresh）。
-        if (named || messageMentionsAll(rec) || todoMentionsMe(rec, myId)) {
+        if (messageMentionsMe(rec, { id: myId, name: myName }) || todoMentionsMe(rec, myId)) {
           mentionedConvs.value.add(cid);
           break;
         }
@@ -1126,8 +1125,19 @@ export const useChatStore = defineStore("chat", () => {
     };
   }
 
-  /** 统一发送（单聊/群聊）。乐观上屏：先显示 sending，invoke 成功后替换为真实记录。 */
-  async function send(convId: string, content: string, kind: string): Promise<MessageRecord> {
+  /**
+   * 统一发送（单聊/群聊）。乐观上屏：先显示 sending，invoke 成功后替换为真实记录。
+   *
+   * `mentionIds` 只有群文本消息有用：**这条消息 @ 的是哪些人（设备 id）**。
+   * 传 `undefined`（非选择器输入的发送路径都这样）= 随老格式发出去，
+   * 接收端按昵称兜底判 —— 新字段只让"带上了 id 的那些"更准，不会让别的入口变暗。
+   */
+  async function send(
+    convId: string,
+    content: string,
+    kind: string,
+    mentionIds?: string[],
+  ): Promise<MessageRecord> {
     const myId = app.device?.device_id ?? "";
     // 乐观消息先占一个很大的逻辑序号，保证它出现在会话底部；后端返回真实记录后会替换为权威 seq。
     const optimistic: MessageRecord = {
@@ -1146,7 +1156,7 @@ export const useChatStore = defineStore("chat", () => {
     try {
       let rec: MessageRecord;
       if (convId.startsWith("group:")) {
-        rec = await api.sendGroupMessage(convId.slice(6), content, kind);
+        rec = await api.sendGroupMessage(convId.slice(6), content, kind, mentionIds);
       } else {
         rec = await api.sendMessage(convId, content, kind);
       }

@@ -13,7 +13,7 @@ import { classifyPaste } from "@/utils/clipboard";
 import { isImeKey } from "@/utils/ime";
 import { Folder, Smile, SquareCode, Users, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
-import { MENTION_ALL_TOKEN } from "@/utils/messages";
+import { MENTION_ALL_TOKEN, textMentionsName } from "@/utils/messages";
 import { isMentionLead } from "@/utils/linkify";
 import { isSelfConversation } from "@/utils/selfChat";
 import { api } from "@/api";
@@ -27,7 +27,9 @@ const props = defineProps<{
   mentionMembers?: { id: string; name: string }[];
 }>();
 const emit = defineEmits<{
-  (e: "send", payload: { content: string; kind: MsgKind }): void;
+  // `mentionIds` = 这条文本 @ 了谁（设备 id）。缺省 = 这条不带名单 = 接收端按昵称兜底，
+  // 与"空数组 = 明确回答谁都没 @"是两回事，所以这里不能给默认值。
+  (e: "send", payload: { content: string; kind: MsgKind; mentionIds?: string[] }): void;
   // 交出去的是 **File 本身**，不是 data URL：读文件是异步的，若在组件里 await 完再 emit，
   // 接收方只能在"读完之后"才知道要发给谁 —— 期间用户切了会话，图片就发到别的会话去了。
   // 读取挪到发送方，让会话 id 在粘贴的那一刻被同步捕获（审计阶段 4 · 4.1-5）。
@@ -135,6 +137,30 @@ function serializeDraft(): string {
   return (editorRef.value?.innerText ?? "").replace(/\n+$/, "").slice(0, MAX_INPUT_LENGTH);
 }
 
+/**
+ * 这条文本 @ 了谁（设备 id 名单）。两种来源取并集：
+ *  ① **成员选择器**插入的 token —— `data-mention-id` 就是权威答案（选中了就是那个人，
+ *     同名成员因此不会互相顶掉）；
+ *  ② 用户**手打**的 `@名字` —— 只能按名字回解，用的是接收端兜底**同一份**边界规则
+ *     （`textMentionsName`）；两边不同源就会出现「发送方没带、接收方按名字误亮」的割裂。
+ * 「所有人」不进名单：它是正文里的固定中文字面量，接收端按字面判（见 MENTION_ALL_ID）。
+ *
+ * ⚠️ 必须在 `send()` 清空 innerHTML **之前**调用：DOM 一清，① 就没有来源了。
+ */
+function draftMentionIds(text: string): string[] {
+  const ids = new Set<string>();
+  editorRef.value
+    ?.querySelectorAll<HTMLElement>(".mention-token[data-mention-id]")
+    .forEach((el) => {
+      const id = el.dataset.mentionId;
+      if (id && id !== MENTION_ALL_ID) ids.add(id);
+    });
+  for (const m of props.mentionMembers ?? []) {
+    if (textMentionsName(text, m.name)) ids.add(m.id);
+  }
+  return [...ids];
+}
+
 /** 发送：立即清空输入框（optimistic UI，不等 IPC 返回）。引用消息在首行拼接引用头。 */
 function send(kind?: MsgKind, content?: string) {
   let text = content ?? serializeDraft();
@@ -144,6 +170,8 @@ function send(kind?: MsgKind, content?: string) {
     const idSuffix = props.quote.msgId != null ? `|${props.quote.msgId}` : "";
     text = `「引用 ${props.quote.sender}：${props.quote.snippet}${idSuffix}」\n${text}`;
   }
+  // 清空 DOM 前先把名单读走；非文本（代码 / 由 content 参数直接发的那些）不带名单
+  const mentionIds = content === undefined && k === "text" ? draftMentionIds(text) : undefined;
   if (editorRef.value) editorRef.value.innerHTML = "";
   hasDraft.value = false;
   mention.value = null;
@@ -157,7 +185,7 @@ function send(kind?: MsgKind, content?: string) {
   // 消息已经乐观入列（DOM 立刻更新）→ 给一下轻触觉，确认"发出去了"。
   // 按 Apple 的触觉规则：只在关键动作给，且是按下即给（不是等网络回来才给）。
   haptic("light");
-  emit("send", { content: text, kind: k });
+  emit("send", { content: text, kind: k, mentionIds });
 }
 
 /**
@@ -241,7 +269,8 @@ const mentionActive = ref(0);
 
 /**
  * 「所有人」是**虚拟成员**：本组件内用它做 key 与展示，发送出去的仍是纯文本 `@所有人`
- * （见 `serializeDraft` 走 innerText 读回 token 文本）。因此它不需要 id 参与任何后端调用。
+ * （见 `serializeDraft` 走 innerText 读回 token 文本）。因此它**不进** `draftMentionIds`
+ * 那份名单 —— 真实成员的 id 现在会随载荷发给对端，而「所有人」永远只按字面量判。
  * 发送到正文里的字面量必须是固定中文 `MENTION_ALL_TOKEN`：它是一条**发给所有人的文本**，
  * 接收端按字面匹配，不能随发送方的界面语言变化，否则英文界面发出去的 @所有人 没人能识别。
  */
