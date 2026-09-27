@@ -1361,3 +1361,48 @@ test("整屏图片覆盖层只许长在统一渲染点（私有 viewer 是第二
     "这些组件自己长了一层整屏图片查看器 ⇒ 必须改走 useImagePreviewStore.openGallery()（统一渲染点只有壳层覆盖层与预览窗口）",
   );
 });
+
+
+/**
+ * 「与我相关未完成任务数」这枚蓝色徽标只许一处算、两处消费同一份（第二阶段 §23）。
+ *
+ * 现状是好的（本轮现算核实）：规则在 `utils/todos::openTodosForMe`，生产码唯一调用点是
+ * `useChatStore.ts` 里产 `openTodoByConv` 的那一处，组件里 `openTodosForMe(` 命中 **0**；
+ * 会话列表项与聊天头任务图标都读 `chat.openTodoByConv[...]`。但"只有一处"今天靠人自觉 ——
+ * 而"同一个数在两处各算一次"正是本仓出过的事故形状（#23 那次是弹窗标题 (9) 进去看到 6 条；
+ * 未读数也漂过一轮）。所以这里钉两条：
+ *  ① 组件/布局里不得出现 `openTodosForMe(`（徽标的尺子只许 store 拿）；
+ *  ② 那两个消费点必须真的在消费那份 map（防止有人把徽标改回本地现算，①就形同虚设）。
+ *
+ * ⚠️ 刻意**不**禁 `foldTodos(`：那是"把卡片消息折成任务列表"的公共尺子，看板/成员面板/
+ * 状态索引都要拿它列全量任务，语义与徽标不同（"该群未归档任务总数" vs "与我相关"）。
+ * 那 4 处调用点已逐条读过，用公共折叠 + 公共 `isEffectivelyArchived`，属"观察"而非违规。
+ */
+test("「与我相关」徽标只许 store 算一次，两处 UI 必须消费同一份 map", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(join(srcDir, "components")).concat(collectVueFiles(join(srcDir, "layouts")));
+  const recomputeRe = /\bopenTodosForMe\s*\(/g;
+  const offenders: string[] = [];
+  for (const f of files) {
+    const code = readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    if (recomputeRe.test(code)) offenders.push(f.replace(srcDir + "/", ""));
+    recomputeRe.lastIndex = 0;
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "组件层自己算了一遍「与我相关任务数」⇒ 出现第二个真源。改法：读 store 的 `openTodoByConv`（判定见 utils/todos::openTodosForMe）",
+  );
+  // ② 两个消费点确实在消费那份 map（同源这件事本身也要有判据，不然下轮改回本地现算没人知道）
+  for (const [rel, needle] of [
+    ["components/ChatWindow.vue", "chat.openTodoByConv["],
+    ["components/conversation/ConversationListItem.vue", "chat.openTodoByConv["],
+  ] as [string, string][]) {
+    const code = readFileSync(join(srcDir, rel), "utf8");
+    assert.ok(code.includes(needle), `${rel} 的徽标数字不再来自 chat.openTodoByConv ⇒ 与"单一事实源"冲突`);
+  }
+  // 非空转：同一台解析器必须抓得到那个坏形状，且不误抓"只是注释里提一句"
+  assert.ok(recomputeRe.test(`const n = openTodosForMe(foldTodos(list), me).length;`), "夹具没被抓到 ⇒ 这条判据是空转的");
+  recomputeRe.lastIndex = 0;
+  assert.ok(!recomputeRe.test(`// 判定见 utils/todos::openTodosForMe\nconst n = chat.openTodoByConv[id] ?? 0;`), "注释里的名字被误抓");
+});
