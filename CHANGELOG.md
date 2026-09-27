@@ -9,6 +9,16 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 验证（197 条护栏非空转整跑跑完了：全绿、约 32 分钟）
+- `python3 scripts/verify-guards.py`（不带 `--only`）⇒ 进度走到 `[197/197]`，末行「✅ 其余 197 条护栏都通过了
+  非空转验证（改坏即 FAIL、恢复即 PASS）」，退出码 **0**（裸取不经管道），墙钟约 **32 分钟**；
+  跑完 `git status` 干净 ⇒ 逐条「注入→还原」这条路不会留脏文件。
+- ★ 纠正一条容易读错的事实：`npm run verify:full`（= `--full-gate`）**不跑这 197 条**，
+  那一层的护栏步只跑 `frontend` 子集（今天 63 条 / 418.4s）；要跑全部得
+  `npm run verify:full -- --full`（或直接跑上面那条命令）。⇒ 发版检查单里"全量层已过"不等于"护栏全跑过"。
+- 为什么值得单独记：§六「注入腿」那一行原本挂着"整跑停在 53/189、证据属于旧内容"，这是本次审计里
+  最后一个**能用机器关掉**的证据缺口；实测成本 32 分钟，远低于上次留下的"要几小时"印象。
+
 ### 验证（试做 §28「断一条链路」：判为单机做不到，而原因从"要 root"改准成"两条通道共用同一个监听口"）
 - 试的路子不用 root：**用产品自己那个局域网键**把 LAN 断掉，看手动配的 routed 端点会不会接管投递。
   前置两条都成立 —— 断之前 A 日志里有指向 B 的 `path=lan` 建链；关掉并重启后 A 进程活着、
