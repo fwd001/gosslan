@@ -918,6 +918,10 @@ let taskCreateId = "";
 let taskUpdateId = "";
 let taskArchId = "";
 let taskReopenId = "";
+/// 对端发起的那两条（创建 / 改成完成）。以前这一轮只有 A→B 一个方向 ⇒
+/// "任务只能由本端发起"这一半从头到尾没被判过，B 签名/对端 creator 这条授权输入也没人核。
+let taskBCreateId = "";
+let taskBDoneId = "";
 /// 任务轮预置：两端同一份群 + 群密钥（与群聊轮同形），A 排两条群载荷 ——
 /// `todo`（创建，seq=1，指派给 B）与 `todo_update`（B 视角下的完成，seq=2）。
 /// 载荷字段逐字对齐 `protocol.rs::TodoPayload`（todo_id/title/assignees/status/creator/
@@ -996,6 +1000,53 @@ if (TASK) {
         "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
         + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq",
       ).run(convId, 4);
+    });
+
+    // ★ 方向反过来再排一次：B 自己建一条任务、自己改成完成，A 只是收的一方。
+    // 为什么这是**合法**形状而不是伪造：命令层的改/删授权是
+    // `def.creator == actor || group_creator == actor`（commands/group_files.rs:181），
+    // B 是这条任务自己的 creator ⇒ 走第一支。拿"非创建者改任务"来排这一腿会判到一条
+    // 产品本来就不允许的输入上，红得没有意义。
+    // 时钟这边预置到 6 不会挡住 A 的 1..4：接收侧走 `observe_clock`=`max(local,observed)`
+    // （db/clocks.rs:41-48），只有发送侧的 `next_clock` 会分配新号 —— 已读源码确认，不是猜的。
+    const todoId2 = "todo-e2e-2";
+    const mk2 = (over) => JSON.stringify({
+      todo_id: todoId2, title: "e2e task by B", assignees: [idA.runtimeId], status: "todo",
+      creator: idB.runtimeId, deleted: false, description: "", images: [], archived: false,
+      done_at: null, ...over,
+    });
+    const baseB = {
+      groupKey: GROUP_KEY_B64, senderId: idB.runtimeId, priv: ed25519Priv(INSTANCES[1]),
+      x25519Pub: idB.x25519Pub, ed25519Pub: idB.ed25519Pub,
+      groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId, members,
+    };
+    const b1 = buildGroupEnvelope({ ...baseB, kind: "todo", content: mk2({}), ts: ts + 4, seq: 5 });
+    const b2 = buildGroupEnvelope({
+      ...baseB, kind: "todo_update",
+      content: mk2({ status: "done", done_at: ts + 9 }), ts: ts + 5, seq: 6,
+    });
+    taskBCreateId = b1.messageId;
+    taskBDoneId = b2.messageId;
+    seed(INSTANCES[1].db, (db) => {
+      db.prepare("DELETE FROM group_outbox WHERE group_id=?1").run(GROUP_ID);
+      for (const [env, seq, kind, content, at] of [
+        [b1, 5, "todo", mk2({}), ts + 4],
+        [b2, 6, "todo_update", mk2({ status: "done", done_at: ts + 9 }), ts + 5],
+      ]) {
+        db.prepare("DELETE FROM messages WHERE msg_id=?1").run(env.messageId);
+        db.prepare(
+          `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+           VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'sent')`,
+        ).run(env.messageId, convId, idB.runtimeId, GROUP_ID, kind, content, at, seq);
+        db.prepare(
+          `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
+           VALUES(?1,?2,?3,?4,?5)`,
+        ).run(env.messageId, GROUP_ID, idA.runtimeId, env.wire, at);
+      }
+      db.prepare(
+        "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
+        + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq",
+      ).run(convId, 6);
     });
   });
 }
@@ -1255,6 +1306,55 @@ if (TASK) {
       [rowC[0]?.seq, rowU[0]?.seq, rowA[0]?.seq, rowR[0]?.seq].join(",") === "1,2,3,4",
       "1,2,3,4",
       [rowC[0]?.seq, rowU[0]?.seq, rowA[0]?.seq, rowR[0]?.seq].join(","));
+
+    // ── 对端发起的那一半（B 建 → B 完成 → A 同步）──
+    // 预置时 A/B 都停着，靠建链后的 flush_group_outbox 送达；这条 waitFor 用**真 id**，
+    // 与上面同形：lie 只翻判据读的那份，不翻"等不等得到"，否则红会落在超时上、看不出是判据坏。
+    await waitFor(() => {
+      const db = openDb(INSTANCES[0].db, true);
+      try {
+        return [taskBCreateId, taskBDoneId]
+          .every((id) => db.prepare("SELECT COUNT(*) c FROM messages WHERE msg_id=?1").get(id).c > 0);
+      } finally { db.close(); }
+    }, 60_000, "A 侧收到 B 发起的创建与完成两条（发起方换向的这一半以前没有判据）");
+
+    const aDb2 = openDb(INSTANCES[0].db, true);
+    const q2 = (id) => aDb2.prepare(
+      "SELECT conv_id,sender_id,kind,content,seq FROM messages WHERE msg_id=?1",
+    ).all(id);
+    const bRowC = q2(want(taskBCreateId));
+    const bRowU = q2(want(taskBDoneId));
+    const bLeak = aDb2.prepare(
+      "SELECT COUNT(*) c FROM messages WHERE conv_id!=?1 AND msg_id IN (?2,?3)",
+    ).get(convId, taskBCreateId, taskBDoneId).c;
+    aDb2.close();
+    const bDb2 = openDb(INSTANCES[1].db, true);
+    const bQueued = bDb2.prepare(
+      "SELECT COUNT(*) c FROM group_outbox WHERE msg_id IN (?1,?2)",
+    ).get(taskBCreateId, taskBDoneId).c;
+    bDb2.close();
+    const pbc = parse(bRowC);
+    const pbu = parse(bRowU);
+
+    check("B 发起的两条在 A 侧各恰好一行、且落在群会话里（换向这一腿真投递了）",
+      bRowC.length === 1 && bRowU.length === 1 && bRowC[0]?.conv_id === convId && bLeak === 0,
+      "1/1 行且 1:1 里 0 条",
+      `${bRowC.length}/${bRowU.length} conv=${bRowC[0]?.conv_id} leak=${bLeak}`);
+    check("A 侧解出来的明文指向 B 建的那条任务，creator 就是发送者 B（授权读的是这个字段）",
+      !!pbc && !!pbu && pbc.todo_id === "todo-e2e-2" && pbu.todo_id === "todo-e2e-2"
+      && pbc.creator === idB.runtimeId && pbu.creator === idB.runtimeId,
+      `todo-e2e-2 + creator=${idB.runtimeId}`,
+      `${pbc?.todo_id}/${pbu?.todo_id} creator=${pbc?.creator}/${pbu?.creator}`);
+    check("创建那条指派的是 A、seq 5→6 且 todo→done 带 done_at（对端视角的「与我相关」输入）",
+      Array.isArray(pbc?.assignees) && pbc.assignees.includes(idA.runtimeId)
+      && pbc?.status === "todo" && pbu?.status === "done" && !!pbu?.done_at
+      && bRowC[0]?.seq === 5 && bRowU[0]?.seq === 6,
+      "assignees 含 A + 5/6 + todo→done(+done_at)",
+      `${JSON.stringify(pbc?.assignees)} seq=${bRowC[0]?.seq}/${bRowU[0]?.seq} ${pbc?.status}→${pbu?.status} done_at=${pbu?.done_at}`);
+    check("发送方在 A 侧记为 B 的 runtimeId（对端发起的不得被写成接收者自己）",
+      bRowC[0]?.sender_id === idB.runtimeId, idB.runtimeId, bRowC[0]?.sender_id);
+    check("B 侧这一单的 group_outbox 也被 Ack 清干净（发起方的队列残留=下次建链还会重发）",
+      bQueued === 0, 0, bQueued);
   });
 }
 
@@ -2359,6 +2459,48 @@ step("L-B 故障注入：两端重启后仍正确", async () => {
       ? `环境判不了（起跑前量到）：${envBlockReason.split("\n").join(" ")}\n     ${shotList}`
       : shotList);
 });
+
+/// §22「A 重启后 badge 仍然正确」里**这一层能判的那一半**：徽标数字是前端算的（runtime 层，
+/// 见 roadmap §13.3 的层次修正），但它是从这几行状态折叠出来的 —— 所以真正要钉的是
+/// 「重启之后这些行还在、没被改写成旧状态、也没被再投一遍」。判据读的是**真 id**：
+/// 这一格要证的是持久性，拿翻过的 id 去读只会得到"0 行"，那种红分不清"没送达"和"没留住"。
+/// 独立成一个 `if (TASK)` 块而不是塞进上面那一步：上面那一步的判据全按 `check-doc-numbers`
+/// 归到「默认轮」，往里塞 TASK 专属断言会让默认轮少算几条、任务轮多算几条（现算守卫会当场判红）。
+if (TASK) {
+  step("任务重启判据：六条状态行两端都活得过重启，且已 Ack 的队列不被点亮成二次投递", async () => {
+    // 上一步（L-B）已经 stopAll + bootAndStop 走完一轮真实重启，此刻两端都是停机库 ⇒ 直接读。
+    const bDb = openDb(INSTANCES[1].db, true);
+    const bRows = bDb.prepare(
+      "SELECT msg_id,kind,seq,status FROM messages WHERE msg_id IN (?1,?2,?3,?4)"
+      + " ORDER BY seq",
+    ).all(taskCreateId, taskUpdateId, taskArchId, taskReopenId)
+      .map((r) => `${r.kind}:${r.seq}`);
+    bDb.close();
+    const aDb = openDb(INSTANCES[0].db, true);
+    const aRows = aDb.prepare(
+      "SELECT msg_id,kind,seq FROM messages WHERE msg_id IN (?1,?2) ORDER BY seq",
+    ).all(taskBCreateId, taskBDoneId).map((r) => `${r.kind}:${r.seq}`);
+    const aLeft = aDb.prepare(
+      "SELECT COUNT(*) c FROM group_outbox WHERE msg_id IN (?1,?2,?3,?4)",
+    ).get(taskCreateId, taskUpdateId, taskArchId, taskReopenId).c;
+    aDb.close();
+    const bLeft = (() => {
+      const db = openDb(INSTANCES[1].db, true);
+      try {
+        return db.prepare("SELECT COUNT(*) c FROM group_outbox WHERE msg_id IN (?1,?2)")
+          .get(taskBCreateId, taskBDoneId).c;
+      } finally { db.close(); }
+    })();
+
+    check("重启后 B 侧四条状态行仍各一行、kind:seq 一字不变（折叠出的终态不许退）",
+      bRows.join(",") === "todo:1,todo_update:2,todo_update:3,todo_update:4",
+      "todo:1,todo_update:2,todo_update:3,todo_update:4", bRows.join(","));
+    check("重启后 A 侧对端发起的两条仍各一行（不二次投递 = 已 Ack 的队列没被点亮）",
+      aRows.join(",") === "todo:5,todo_update:6", "todo:5,todo_update:6", aRows.join(","));
+    check("重启后两侧的 group_outbox 对这六条都是 0 行（残留=下次建链会再发一遍）",
+      aLeft === 0 && bLeft === 0, "0 / 0", `${aLeft} / ${bLeft}`);
+  });
+}
 
 // §五「群聊 + gossip」这一族里最后一格：成员**不是 A 的直发对象**，只能靠中间人把 gossip 带给它。
 // 两实例的群轮（`--round=group`）里 A→B 是直发（`group_outbox` 一发就中），
