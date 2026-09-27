@@ -3791,6 +3791,36 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+
+    # ---------------- 起跑前：锚点全量静态核对（2026-09-27，roadmap #107）----------------
+    # 为什么要有这一段：锚点死了 runner 也会**抛 AssertionError**（不是假绿），但那是在跑到
+    # 那一条时才抛 —— 整跑要一个多小时，于是"改坏了锚点"这件事平均要白等半小时才发现
+    # （实测：189 条整跑只报 1 条异常，就是那条 `中继收文件的哈希`，而静态核对 1 秒就给同一结论）。
+    # 这一段只做**存在性/唯一性**核对，一条测试都不跑；非空转仍然要靠后面的逐条真注入。
+    dead_anchors: list[str] = []
+    for c in cases:
+        pairs: list[tuple[Path, str]] = [(c.file, old) for old, _new in c.injections]
+        pairs += [(p, old) for (p, old, _new) in c.extra_injections]
+        for path, old in pairs:
+            if not old:
+                continue  # 纯新增型注入：没有"锚点存在性"可核
+            try:
+                _resolve_anchor_file(path, old)
+            except AssertionError as e:
+                dead_anchors.append(f"{c.name}\n      文件 {Path(path).name}: {e}")
+    if dead_anchors:
+        print(
+            f"❌ 起跑前核对：{len(dead_anchors)} 处注入锚点已失效（一条测试都没跑，省下整轮时间）：",
+            file=sys.stderr,
+        )
+        for d in dead_anchors:
+            print(f"   - {d}", file=sys.stderr)
+        print(
+            "   ⇒ 守卫变强时不许凭猜写新锚点：先确认新形状**可编译**且真能改掉被钉的那个语义。",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"· 起跑前核对：{len(cases)} 条用例的注入锚点都在各自文件里恰好命中一次\n")
     if args.list:
         for c in cases:
             print(f"  [{','.join(c.tags)}] {c.name}\n      {c.why}")
