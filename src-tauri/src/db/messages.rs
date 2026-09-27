@@ -2,6 +2,18 @@
 // - 消息表 CRUD（insert/get/list/update_message_status）
 // ---------------- 消息 ----------------
 
+/// @ 的落点 ⇄ 库里那一列。**编解码规则本身不在这里**（在 `protocol::mention_targets_from_value`，
+/// 与线上那一份共用），因为这一列与网络字段必须给同一个三态答案：
+/// `NULL` / 坏 JSON / 半截 = 不知道 ⇒ 呈现层按昵称兜底；`'[]'` 才是"权威地说没有"。
+fn encode_mention_targets(v: &Option<Vec<crate::protocol::MentionTarget>>) -> Option<String> {
+    v.as_ref().and_then(|t| serde_json::to_string(t).ok())
+}
+
+fn decode_mention_targets(raw: Option<String>) -> Option<Vec<crate::protocol::MentionTarget>> {
+    raw.as_deref()
+        .and_then(crate::protocol::parse_mention_targets_column)
+}
+
 /// 插入一条消息，并返回「本次是否真的新建了记录」的三态裁决。
 ///
 /// - `Ok(true)` ：本次真的插入一条新行 —— 唯一应产生投递副作用（未读 +1、`message-received`）的情形。
@@ -15,9 +27,10 @@
 /// 「重复」并照常回 Ack，而 Ack 会让发送方删除 outbox 行，导致消息永久丢失。
 pub fn insert_message_if_new(conn: &Connection, m: &MessageRecord) -> Result<bool> {
     let changed = conn.execute(
-        "INSERT OR IGNORE INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![m.msg_id, m.conv_id, m.sender_id, m.receiver_id, m.kind, m.content, m.ts, m.seq, m.status],
+        "INSERT OR IGNORE INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![m.msg_id, m.conv_id, m.sender_id, m.receiver_id, m.kind, m.content, m.ts, m.seq, m.status,
+                encode_mention_targets(&m.mention_targets)],
     )?;
     Ok(changed > 0)
 }
@@ -36,8 +49,8 @@ pub fn insert_message_and_outbox(
 ) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
-        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             m.msg_id,
             m.conv_id,
@@ -47,7 +60,8 @@ pub fn insert_message_and_outbox(
             m.content,
             m.ts,
             m.seq,
-            m.status
+            m.status,
+            encode_mention_targets(&m.mention_targets)
         ],
     )?;
     tx.execute(
@@ -85,7 +99,7 @@ pub fn get_messages(
     offset: i64,
 ) -> Result<Vec<MessageRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
          FROM messages WHERE conv_id = ?1 ORDER BY seq ASC, id ASC LIMIT ?2 OFFSET ?3",
     )?;
     let rows = stmt.query_map(params![conv_id, limit, offset], |r| {
@@ -100,6 +114,7 @@ pub fn get_messages(
             ts: r.get(7)?,
             seq: r.get(8)?,
             status: r.get(9)?,
+            mention_targets: decode_mention_targets(r.get(10)?),
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -121,7 +136,7 @@ pub fn get_todo_messages_for_conns(
     let mut out = Vec::new();
     for conv_id in conv_ids {
         let mut stmt = conn.prepare(
-            "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
+            "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
              FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update')
              ORDER BY seq ASC, id ASC",
         )?;
@@ -137,6 +152,7 @@ pub fn get_todo_messages_for_conns(
                 ts: r.get(7)?,
                 seq: r.get(8)?,
                 status: r.get(9)?,
+            mention_targets: decode_mention_targets(r.get(10)?),
             })
         })?;
         out.extend(rows.filter_map(|r| r.ok()));
@@ -164,7 +180,7 @@ pub fn get_latest_messages(
     limit: i64,
 ) -> Result<Vec<MessageRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
          FROM messages WHERE conv_id = ?1 ORDER BY seq DESC, id DESC LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![conv_id, limit], |r| {
@@ -179,6 +195,7 @@ pub fn get_latest_messages(
             ts: r.get(7)?,
             seq: r.get(8)?,
             status: r.get(9)?,
+            mention_targets: decode_mention_targets(r.get(10)?),
         })
     })?;
     let mut out: Vec<MessageRecord> = rows.filter_map(|r| r.ok()).collect();
@@ -202,7 +219,7 @@ pub fn get_message_preview_source(conn: &Connection, msg_id: &str) -> Option<(St
 /// 按 msg_id 取完整消息记录（需要跨字段判断时用；今天只有 `network/file.rs` 认领续传用它）。
 pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageRecord> {
     conn.query_row(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
          FROM messages WHERE msg_id = ?1",
         params![msg_id],
         |r| {
@@ -217,6 +234,7 @@ pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageReco
                 ts: r.get(7)?,
                 seq: r.get(8)?,
                 status: r.get(9)?,
+            mention_targets: decode_mention_targets(r.get(10)?),
             })
         },
     )

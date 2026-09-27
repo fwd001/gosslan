@@ -1213,3 +1213,218 @@ fn v10_sweeps_orphan_pending_reads_in_dbs_that_already_passed_the_broken_v7() {
     );
     assert_eq!(read_user_version(&conn), DB_VERSION);
 }
+
+// ---------------------------------------------------------------------------
+// #122 第二段：@ 的**落点**必须活过一次重启。
+//
+// 第一段只做到"线上带落点"⇒ 落点跟 `mention_ids` 同待遇不落库，重启读历史又退回按昵称判
+// （群里同名两个人重新互相点亮）。这一格只能靠加一列来收，所以判据要钉死三件事：
+// ① 老库升级后确实有这一列、且**既有行的字节一个都不动**（§8 存储不变量）；
+// ② 老行读回来是 `NULL` = "不知道" ⇒ 呈现层继续按昵称兜底；
+//    写成 `'[]'` 就变成"权威地说谁都没 @"，那是把缺数据读成权威结论（INV-P24 的反面）；
+// ③ 损坏的 JSON 同样判成"不知道"，不许 panic、也不许当成空落点。
+// ---------------------------------------------------------------------------
+
+fn column_names(conn: &Connection) -> Vec<String> {
+    let mut stmt = conn.prepare("PRAGMA table_info(messages)").unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+}
+
+#[test]
+fn v10_to_v11_adds_mention_targets_column_without_touching_existing_rows() {
+    // 先确认"新装用户"这条路有这一列（SCHEMA 那份）
+    let fresh = Connection::open_in_memory().unwrap();
+    fresh.execute_batch(SCHEMA).unwrap();
+    assert!(
+        column_names(&fresh).iter().any(|c| c == "mention_targets"),
+        "新库（只走 SCHEMA）就该有这一列 —— 缺了它 ⇒ 全新安装的用户永远没有落点"
+    );
+
+    // 再造"升级前的库"。**不用 `ALTER … DROP COLUMN` 去拆**：
+    // 拿真实 SCHEMA 那份拆一次，SQLite 在重建表定义时报 "incomplete input"（实测），
+    // 而这里要的从来不是"能拆"，是"有一张长成 v10 那样的表"。
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    conn.execute_batch(
+        "DROP TABLE messages;
+         CREATE TABLE messages (
+             id          INTEGER PRIMARY KEY AUTOINCREMENT,
+             msg_id      TEXT UNIQUE NOT NULL,
+             conv_id     TEXT NOT NULL,
+             sender_id   TEXT NOT NULL,
+             receiver_id TEXT NOT NULL,
+             kind        TEXT NOT NULL,
+             content     TEXT NOT NULL,
+             ts          INTEGER NOT NULL,
+             seq         INTEGER NOT NULL DEFAULT 0,
+             status      TEXT NOT NULL DEFAULT 'sent'
+         );",
+    )
+    .unwrap();
+    // ★ 这份手抄的 v10 形状会不会漂？——由这条断言管：它必须**正好**等于新 SCHEMA 去掉那一列。
+    //   以后谁给 `messages` 加/删列而忘了回来改这里，这条当场红（不是等到迁移在真机上炸）。
+    let mut want = column_names(&fresh);
+    want.retain(|c| c != "mention_targets");
+    assert_eq!(
+        column_names(&conn),
+        want,
+        "本用例手抄的 v10 形状 ≠ 新 SCHEMA 去掉 mention_targets ⇒ SCHEMA 改过了，这里要一起改"
+    );
+
+    conn.execute_batch(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+         VALUES ('m-old','c1','peer-1','me','text','@张三 早',7,1,'sent');",
+    )
+    .unwrap();
+
+    conn.execute_batch("PRAGMA user_version = 10;").unwrap();
+    run_migrations(&conn, 10).expect("v10→v11 迁移本身不许报错");
+
+    assert!(
+        column_names(&conn)
+            .iter()
+            .any(|c| c == "mention_targets"),
+        "迁移没给 messages 加上 mention_targets ⇒ 重启后历史仍只能按昵称判（#122 第二段要收的就是这一格）"
+    );
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT mention_targets FROM messages WHERE msg_id='m-old'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        raw.is_none(),
+        "老行的落点必须是 NULL（=不知道），实际 {raw:?} \
+         ⇒ 空串或 '[]' 都会被读成「这条一个人都没 @」，那是把缺数据当权威结论"
+    );
+    let content: String = conn
+        .query_row(
+            "SELECT content FROM messages WHERE msg_id='m-old'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        content, "@张三 早",
+        "加一列不许动到既有行的任何一个字节（§8：@ 的那串文本是存储不变量）"
+    );
+    assert_eq!(read_user_version(&conn), DB_VERSION);
+}
+
+/// 写入 → 读回的三态保真。**刻意走两条读路径**（`get_message_record` 与 `get_latest_messages`）：
+/// 只改一条 = 前端某条路上落点无声消失。
+#[test]
+fn mention_targets_keep_all_three_states_through_write_then_read() {
+    use crate::protocol::MentionTarget;
+    use crate::state::MessageRecord;
+
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(SCHEMA).unwrap();
+    ensure_post_schema_shape(&conn).unwrap();
+
+    let mk = |msg_id: &str, mention_targets: Option<Vec<MentionTarget>>| MessageRecord {
+        id: 0,
+        msg_id: msg_id.to_string(),
+        conv_id: "c1".to_string(),
+        sender_id: "peer-1".to_string(),
+        receiver_id: "me".to_string(),
+        kind: "text".to_string(),
+        content: "@张三 @张三 @李四".to_string(),
+        ts: 1,
+        seq: 1,
+        status: "sent".to_string(),
+        mention_targets,
+    };
+    // ① 不知道（NULL）② 权威地说"没有落点"（Some(vec![])）③ 两个同名的人各有自己的 n
+    super::insert_message_if_new(&conn, &mk("m-none", None)).unwrap();
+    super::insert_message_if_new(&conn, &mk("m-empty", Some(vec![]))).unwrap();
+    super::insert_message_if_new(
+        &conn,
+        &mk(
+            "m-two",
+            Some(vec![
+                MentionTarget {
+                    id: "id-a".into(),
+                    name: "张三".into(),
+                    n: 1,
+                },
+                MentionTarget {
+                    id: "id-b".into(),
+                    name: "张三".into(),
+                    n: 2,
+                },
+            ]),
+        ),
+    )
+    .unwrap();
+
+    let none = super::get_message_record(&conn, "m-none")
+        .expect("m-none 读不回来")
+        .mention_targets;
+    assert!(
+        none.is_none(),
+        "NULL 必须读成 None（不知道）⇒ 呈现层继续按昵称兜底；实际 {none:?}"
+    );
+    let empty = super::get_message_record(&conn, "m-empty")
+        .expect("m-empty 读不回来")
+        .mention_targets;
+    assert!(
+        matches!(&empty, Some(v) if v.is_empty()),
+        "显式空数组要读成 Some([])（发送方权威地说「这些段落都不是你」），不许塌成 None；实际 {empty:?}"
+    );
+    let want = Some(vec![("id-a".to_string(), 1u32), ("id-b".to_string(), 2)]);
+    let pairs = |v: &Option<Vec<MentionTarget>>| {
+        v.as_ref()
+            .map(|t| t.iter().map(|x| (x.id.clone(), x.n)).collect::<Vec<_>>())
+    };
+    assert_eq!(
+        pairs(
+            &super::get_message_record(&conn, "m-two")
+                .expect("m-two 读不回来")
+                .mention_targets
+        ),
+        want,
+        "同名两个人的落点必须各自保住自己的 id 与「第几次出现」—— 这正是 #122 要分开的东西"
+    );
+    let listed = super::get_latest_messages(&conn, "c1", 10)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.msg_id == "m-two")
+        .expect("get_latest_messages 里找不到那条");
+    assert_eq!(
+        pairs(&listed.mention_targets),
+        want,
+        "两条读路径给的答案不一致 ⇒ 其中一条漏了这列"
+    );
+}
+
+/// 库里那一列被写成坏 JSON（手工改库 / 半成品写入）时，读路径必须整份判成"不知道"。
+#[test]
+fn corrupted_mention_targets_column_reads_as_unknown_not_empty() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("init fresh db");
+    conn.execute_batch(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets)
+         VALUES ('m-junk','c1','peer-1','me','text','@张三 早',1,1,'sent','{这不是 JSON'),
+                ('m-half','c1','peer-1','me','text','@张三 早',2,2,'sent','[{\"id\":\"a\",\"name\":\"张三\"}]');",
+    )
+    .expect("写入坏值（这两行是给读路径准备的，不许在写入侧就被挡掉）");
+
+    for id in ["m-junk", "m-half"] {
+        let rec = super::get_message_record(&conn, id).unwrap_or_else(|| panic!("{id} 读不回来"));
+        assert!(
+            rec.mention_targets.is_none(),
+            "{id} 的落点读成了 {:?} ⇒ 半截/损坏必须整份判成「不知道」；\
+             当成空落点会把「按昵称兜底」变成「权威地说谁都没 @」，比原缺陷更糟",
+            rec.mention_targets
+        );
+        assert_eq!(
+            rec.content, "@张三 早",
+            "{id}：坏落点不许连累正文（§8 字节不变量）"
+        );
+    }
+}

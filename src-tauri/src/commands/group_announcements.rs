@@ -333,6 +333,7 @@ pub async fn send_group_file(
             ts: db::now_ms(),
             seq,
             status: "sending".to_string(),
+            mention_targets: None,
         };
         {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());

@@ -375,14 +375,23 @@ pub struct MessageRecord {
     /// 每会话逻辑序号（Lamport 风格），排序与清空边界都以此为准。
     pub seq: i64,
     pub status: String,
+    /// @ 的落点（#122 第二段）。与 `mention_ids` **不同待遇**：那一份是"摄入那一刻有人 @ 我"
+    /// 的一次性判定，故意不落库；这一份是"正文里哪一段算谁"，是**这条消息自己的历史事实**，
+    /// 不落库就等于"重启之后同一句话换了意思"（同名两个人重新互相点亮）。
+    /// 三态照旧：`None` = 不知道（老行 / 老对端 / 库里那一列写坏了）⇒ 呈现层按昵称兜底。
+    #[serde(default)]
+    pub mention_targets: Option<Vec<crate::protocol::MentionTarget>>,
 }
 
 /// `message-received` 实际投递出去的形状 = 消息记录 + **只随本次投递、不落库**的 @ 名单。
 ///
 /// 为什么不把 `mention_ids` 直接做进 `MessageRecord`：那个结构是"库里的一行"，
 /// 全仓 30 多处字面量构造它，而这一份信息**故意不落库**（「有人@我」是摄入时的一次性
-/// 判定，重启即清空）。做成字段就等于造出一个"有时有意义、从库里读回来永远没意义"的
-/// 假字段 —— 那才是下一次误判的来源。摊平进投递形状，两边的边界写在类型上。
+/// 判定，重启即清空 —— 重启后不该再亮一次红点）。做成字段就等于造出一个
+/// "有时有意义、从库里读回来永远没意义"的假字段 —— 那才是下一次误判的来源。
+/// ⚠️ 同一条理由**不再适用于** `mention_targets`（就在上面 `MessageRecord` 那段）：
+/// 落点是那句话的历史事实，所以它进了库。两份信息的边界因此是"一次性判定 vs 历史事实"，
+/// 不是"这两个字段长得像不像"。
 #[derive(Serialize, Debug)]
 pub struct IncomingMessage<'a> {
     #[serde(flatten)]
@@ -1919,6 +1928,7 @@ mod tests {
             ts: 10,
             seq: 11,
             status: "delivered".to_string(),
+            mention_targets: None,
         };
         let ids = vec!["dev-b".to_string()];
         let with: serde_json::Value = serde_json::to_value(IncomingMessage {

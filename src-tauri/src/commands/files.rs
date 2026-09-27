@@ -268,6 +268,7 @@ fn build_file_message(
         ts: db::now_ms(),
         seq,
         status: "sent".to_string(),
+        mention_targets: None,
     }
 }
 

@@ -889,6 +889,10 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         ts,
                         seq,
                         status: "delivered".to_string(),
+                        // #122 第二段：解出来的落点跟着这一行进库。
+                        // 三态原样带过去：`None`（老对端/没带这个键）就写 NULL ⇒ 重启后仍按昵称兜底，
+                        // 不许在这里替对端补成空数组（那会把"不知道"写成"谁都没 @"）。
+                        mention_targets: mention_targets.clone(),
                     };
                     // **先撤后到**：撤回事件可能早于被撤回的消息到达（Gossip 泛洪与
                     // outbox 直发是两条无顺序保证的路径）。命中权威集合就直接以

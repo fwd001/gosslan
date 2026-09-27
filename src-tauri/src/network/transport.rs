@@ -3293,6 +3293,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     ts,
                     seq,
                     status: "delivered".to_string(),
+                    mention_targets: None,
                 };
                 let inserted = db::insert_message_if_new(&dbc, &rec);
                 if announced_on(&inserted) {
@@ -3942,6 +3943,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                             ts: db::now_ms(),
                             seq,
                             status: "delivered".to_string(),
+                            mention_targets: None,
                         };
                         db::insert_message(&dbc, &rec).ok();
                         let nm = resolve_nickname(state, &sender_id);
@@ -4813,6 +4815,7 @@ async fn handle_relay_chunk(
                     ts: db::now_ms(),
                     seq,
                     status: "delivered".to_string(),
+                    mention_targets: None,
                 };
                 db::insert_message(&dbc, &rec).ok();
                 let nm = resolve_nickname(state, &from);
@@ -5127,6 +5130,8 @@ async fn handle_group_file_offer(
             ts: db::now_ms(),
             seq,
             status: "sending".to_string(),
+            // 群文件这条没有 @ 落点这回事（发送侧从来不算 mention_targets）⇒ NULL = 不知道。
+            mention_targets: None,
         };
         {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -5514,6 +5519,8 @@ async fn handle_group_file_done(
             ts: db::now_ms(),
             seq,
             status: "delivered".to_string(),
+            // 同上：群文件收尾这条不带 @ 落点 ⇒ NULL。
+            mention_targets: None,
         };
         // 回填本地 path 到 messages 表：read_file_preview 按 msg_id 反查 content 定位文件。
         // 单聊 FileDone 走 insert_message 直接落库带 path 的内容；群聊 Offer 先落库无 path 的
@@ -9121,6 +9128,7 @@ mod tests {
             ts: 1,
             seq: 1,
             status: "delivered".into(),
+            mention_targets: None,
         };
         // Direct 先到并落库 → 它是唯一产生本地副作用的一方
         assert!(db::insert_message_if_new(&conn, &rec).unwrap());
@@ -9151,6 +9159,7 @@ mod tests {
             ts: 1,
             seq: 1,
             status: "sending".into(),
+            mention_targets: None,
         };
         assert!(db::insert_message_if_new(&conn, &rec).unwrap());
         conn.execute(
@@ -9401,6 +9410,7 @@ mod tests {
                 ts: 100,
                 seq: 1,
                 status: "delivered".into(),
+                mention_targets: None,
             },
         )
         .unwrap();
@@ -9441,6 +9451,7 @@ mod tests {
                 ts: 100,
                 seq: 1,
                 status: "read".into(),
+                mention_targets: None,
             },
         )
         .unwrap();
@@ -9567,6 +9578,7 @@ mod tests {
                 ts: 100,
                 seq: 1,
                 status: "read".into(),
+                mention_targets: None,
             },
         )
         .unwrap();
@@ -9602,6 +9614,7 @@ mod tests {
                 ts: 100,
                 seq: 1,
                 status: "sent".into(),
+                mention_targets: None,
             },
         )
         .unwrap();
@@ -9651,6 +9664,7 @@ mod tests {
                 ts: 200,
                 seq: 1,
                 status: "delivered".into(),
+                mention_targets: None,
             },
         )
         .unwrap();
@@ -9716,6 +9730,7 @@ mod tests {
                 ts: 100,
                 seq: 1,
                 status: "delivered".into(),
+                mention_targets: None,
             },
         )
         .unwrap();

@@ -17,7 +17,7 @@ use crate::state::{
 /// 建表 / 建索引不需要 step：`init()` 在版本分支**之前**跑 `execute_batch(SCHEMA)`，
 /// 而 SCHEMA 全是 `IF NOT EXISTS` ⇒ 新老库每次启动都会被补齐。
 /// 同一条索引同时写在 SCHEMA 与 MIGRATIONS 里 = 两个家（历史上有过，v8→v9 起收敛）。
-pub const DB_VERSION: u32 = 10;
+pub const DB_VERSION: u32 = 11;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -413,6 +413,30 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // #122 第二段：@ 的**落点**（`mention_targets`）以前只活在一次投递里 ⇒ 重启读历史又退回
+    // 按昵称判，群里同名两个人重新互相点亮。这一列是"SCHEMA 表达不了的事"里的那一类：
+    // 新库由 SCHEMA 直接带上，而**已经在用的库**那句 `CREATE TABLE IF NOT EXISTS` 根本不会执行，
+    // 所以只有迁移能给老库补上它（判据：`migration_tests::v10_to_v11_adds_mention_targets_column_without_touching_existing_rows`）。
+    // 可空、**不回填**：老行没有落点就是"不知道"，呈现层继续按昵称兜底 ——
+    // 回填成 `'[]'` 会把历史上每一条 @ 都判成"谁都没 @ 我"，那是把缺数据读成权威结论（INV-P24）。
+    Migration {
+        from: 10,
+        to: 11,
+        description: "messages 加 mention_targets 列（@ 的落点活过一次重启）",
+        run: |conn| {
+            // 先数一遍再决定加不加：`ALTER ... ADD COLUMN` 撞到已有列会直接 Err，
+            // 而迁移报错 = 启动被拒 = 用户打不开应用。代价不对称，这里宁可多四行。
+            let has: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'mention_targets'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? > 0;
+            if !has {
+                conn.execute("ALTER TABLE messages ADD COLUMN mention_targets TEXT", [])?;
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// 建表脚本 —— 表结构的**唯一真源**（另有一张 `content` 表由
@@ -457,7 +481,11 @@ CREATE TABLE IF NOT EXISTS messages (
     content     TEXT NOT NULL,
     ts          INTEGER NOT NULL,
     seq         INTEGER NOT NULL DEFAULT 0,
-    status      TEXT NOT NULL DEFAULT 'sent'
+    status      TEXT NOT NULL DEFAULT 'sent',
+    -- @ 的落点（JSON 数组 `[{id,name,n}]`，见 `protocol::MentionTarget`）。
+    -- **可空，NULL = 不知道**（老行 / 老对端 / 这一列写坏了）⇒ 呈现层按昵称兜底。
+    -- 不加索引：它只随行读回，从不按内容查（热查询仍走 `idx_messages_conv_seq`）。
+    mention_targets TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, ts);
 -- ⚠️ `idx_messages_conv_seq` **不在这里**，而且不能放进来：`seq` 是迁移 v2→v3 才加到

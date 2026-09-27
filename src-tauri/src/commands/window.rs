@@ -116,6 +116,9 @@ pub fn window_close(app: tauri::AppHandle) {
 /// `mentions`（这条文本 @ 了谁）只在明文里多带一个键，**不落库**：
 /// 「有人@我」是摄入那一刻的一次性判定（重启即清空，见 useChatStore 的 mentionedConvs），
 /// 为它动迁移链换来的可观察行为是零，风险却是本仓最高的一类。
+/// ⚠️ 同一句话**不再适用于 `mention_targets`**（#122 第二段，迁移 v10→v11）：
+/// 落点是"正文里哪一段算谁"，属于那句话的历史事实 —— 不落库的代价是"重启后同一句话换了意思"，
+/// 那是**有**可观察行为的一类，所以它进库了。两者的分界写在类型上（见 `state::MessageRecord`）。
 ///
 /// 为什么必须只有一条：它们都要 E2EE、都要 outbox 兜底、都要 GroupAck、都要被四层幂等
 /// 去重覆盖。若各写一份，任何一处修 bug（历史上最典型的是「填完 group_creator/members
@@ -211,6 +214,9 @@ async fn send_group_payload(
         ts,
         seq,
         status: "sent".to_string(),
+        // 自己这一行也带上落点：与刚发出去的那一份**是同一个事实**，不带就等于
+        // 让库里那一行比线上少一截（同一件事出现两个真源，正是本仓反复付学费的形状）。
+        mention_targets: targets.clone(),
     };
     // 群消息与单聊一样需要可靠投递：本地落库 + 每个成员的 outbox 在同一事务里完成，
     // 再由建链 / Hello / 心跳触发 flush_group_outbox 补发，收到 GroupAck 才删行。

@@ -73,6 +73,7 @@ mod clock_contention_tests {
             ts: 1,
             seq,
             status: "sent".into(),
+            mention_targets: None,
         }
     }
 

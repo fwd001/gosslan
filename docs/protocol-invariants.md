@@ -926,9 +926,20 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
                             parse_gossip_plaintext 两组，含"错误形状判成缺失"与"正文一字节不改"），
                             前端判定在 `messages.test.ts` 那组，投递形状在 state 层一条 flatten 用例；
                             另有 4 条注入用例（标签 `mention-identity`）证明它们都会红。
-                            发送侧只 `text` 带（`code`/`merge` 里的 @名字不算点名），且**不落库** ——
-                            「有人@我」是摄入那一刻的一次性判定（重启即清空），为它开迁移
-                            换来的可观察行为是 0，而迁移链是本仓出过 P0 的那一面。
+                            发送侧只 `text` 带（`code`/`merge` 里的 @名字不算点名）。
+                            **两份信息的落库待遇不一样，这条是 2026-09-28 拆开的**：
+                              · `mentions`（名单）仍然**不落库** —— 「有人@我」是摄入那一刻的一次性
+                                判定，重启即清空；为它开迁移换来的可观察行为是 0。
+                              · `mention_targets`（落点）**落库**（`messages.mention_targets`，
+                                迁移 v10→v11）—— "正文里哪一段算谁"是**那句话自己的历史事实**，
+                                不落库就等于重启后同一句话换了意思（同名两个人重新互相点亮）。
+                                可空、无回填：老行 = NULL = 不知道 ⇒ 仍按昵称兜底，
+                                所以这次迁移对既有行为是**纯增量**（判据：
+                                `migration_tests::v10_to_v11_adds_mention_targets_column_without_touching_existing_rows`
+                                钉"加列不许动到既有行一个字节"）。
+                                ⚠️ 库里那一列的解码与线上那一份**共用同一个函数**
+                                （`protocol::mention_targets_from_value`）—— 写成两处就是两个答案，
+                                而"重启前后同一条消息不同意思"正是这一格要消灭的东西。
 第 4 条 门控本身           ✅ v4.22.39  机制 = Hello 的 capability 位（**不是** protocol_version：
                             V1 期间新增的 kind 已经证明"V1 内部并不单调"，版本号当能力清单用会骗人）
                               · 唯一判据 `protocol::kind_allowed_by_features` + 唯一映射表

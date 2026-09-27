@@ -285,7 +285,7 @@ export default {
       invariants: ["INV-P05", "INV-P14", "INV-008"],
       activeHome: "src-tauri/src/db", // 16 个子模块（include! 物理拆分）
       enforce: false,
-      consumes: [], // 叶子域：db.rs / export.rs 在生产代码内只被装配层 use(state/commands),对其他领域无生产代码引用；tests 内 use protocol 已被 check-domain-deps.mjs 排除
+      consumes: ["messaging"], // 2026-09-28 #122 第二段起这是**真生产依赖**：db/messages.rs 的 mention_targets 列存的就是 protocol::MentionTarget，解码走 protocol::parse_mention_targets_column（三态规则只此一家，不在 db 里另写一份）。
       notes:
         "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。",
     },

@@ -171,6 +171,7 @@ pub async fn send_message(
         ts,
         seq,
         status: "sending".to_string(),
+        mention_targets: None,
     };
     // 一律写离线队列兜底（INSERT OR IGNORE 按 msg_id 幂等）：直连链路存在但已失效
     // （半开 TCP）时 broadcast 会静默丢包，此前只在「无链路」时入队导致消息永久丢失。
@@ -298,6 +299,7 @@ fn insert_self_message(s: &AppState, kind: &str, content: String) -> Result<Mess
         ts,
         seq,
         status: "read".to_string(),
+        mention_targets: None,
     };
     // ⚠️ `insert_message`（只落库）—— **不是** `insert_message_and_outbox`：
     // 自聊消息没有收件人，进 outbox 就永远排不掉（见上面的第 2 条）。

@@ -108,8 +108,10 @@ export interface MessageRecord {
    * 与 `mention_ids` 同样三态；结构与后端 `protocol::MentionTarget` 一字不差
    * （`n` = 该昵称在正文里第几次以 `@昵称` 出现，1 起 —— 不用字符偏移是因为 Rust 按字节、
    * JS 按 UTF-16，偏移跨语言传必错）。
-   * ⚠️ 同样**不落库**（跟 `mention_ids` 一个待遇）⇒ 重启后读历史时这个字段是空的，
-   * 呈现层退回按昵称判（那是今天的既有边界，不是新回退）。
+   * ★ 与 `mention_ids` **不同**的一点（4.31.2 起）：**这一份落库**（`messages.mention_targets`，
+   * 迁移 v10→v11）。因为"哪一段算谁"是那句话的历史事实，不落库就等于重启后同一句话换了意思；
+   * 而"`有人@我`"是一次性判定，重启不该再亮。老行 / 老对端 / 那一列写坏 ⇒ `null` = 不知道
+   * ⇒ 呈现层退回按昵称判（与旧版本同一兜底路径）。
    */
   mention_targets?: { id: string; name: string; n: number }[] | null;
 }

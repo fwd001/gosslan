@@ -1638,6 +1638,10 @@ test("「有人@我」从输入框到对端、再到气泡的接缝必须齐全�
     ["src-tauri/src/commands/window.rs", "build_mention_targets(&content, ids,", "⑧ 发送侧不再算 @ 的落点（同名两人又分不开）"],
     ["src-tauri/src/network/transport/gossip.rs", "mention_targets: mention_targets.as_deref(),", "⑨ 解出的落点没回送给界面"],
     ["src/components/message/MessageTextBubble.vue", "props.mentionTargets ?? null,", "⑩ 气泡没收下落点 ⇒ 只能退回按昵称猜"],
+    // ↓ #122 第二段（落库）加的两条：落点从"只随本次投递"变成"跟着这一行进库"，
+    //   断掉的形状是"重启之后同名两个人又一起亮"——编译期什么都不会说。
+    ["src-tauri/src/commands/window.rs", "mention_targets: targets.clone(),", "⑪ 发送侧算出的落点没写进自己那一行（自己发的历史重启后失忆）"],
+    ["src-tauri/src/network/transport/gossip.rs", "mention_targets: mention_targets.clone(),", "⑫ 收到的落点没跟着落库 ⇒ 第二段白做"],
   ];
   const missing: string[] = [];
   for (const [rel, needle, why] of SEAMS) {

@@ -26,6 +26,7 @@ mod tests {
             ts: 1,
             seq: 1,
             status: "sent".into(),
+            mention_targets: None,
         }
     }
 
@@ -1184,6 +1185,7 @@ mod tests {
                 ts: 1,
                 seq: 1,
                 status: "delivered".into(),
+                mention_targets: None,
             },
         )
         .unwrap();

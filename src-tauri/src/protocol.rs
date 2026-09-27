@@ -596,7 +596,10 @@ pub fn build_mention_targets(
         if !content.contains(&needle) {
             continue;
         }
-        let k = seen.entry(name.clone()).and_modify(|v| *v += 1).or_insert(1_u32);
+        let k = seen
+            .entry(name.clone())
+            .and_modify(|v| *v += 1)
+            .or_insert(1_u32);
         if *k > MAX_GOSSIP_MENTIONS as u32 {
             continue;
         }
@@ -644,6 +647,44 @@ pub fn gossip_plaintext_with_targets(
     v.to_string()
 }
 
+/// 一份落点数组（已从 JSON 解析出来的 `Value`）⇒ **三态**结果。规则只此一家：
+/// 线上那一份与 `messages.mention_targets` 那一列必须给同一个答案，
+/// 否则"重启前后同一条消息换了意思"（#122 第二段加那一列要防的就是这个）。
+///
+/// 任何一条认不出来 ⇒ **整份**判成不知道：收下半截落点，前端就会把"第二个人"
+/// 对到第一次出现上 —— 那比按昵称猜更错。
+pub fn mention_targets_from_value(item: Option<&serde_json::Value>) -> Option<Vec<MentionTarget>> {
+    let items = match item {
+        // 缺失 / null / 非数组 ⇒ 不知道（老对端、老行、或那一列写坏了）
+        Some(serde_json::Value::Array(items)) => items,
+        _ => return None,
+    };
+    let mut acc: Vec<MentionTarget> = Vec::new();
+    for item in items {
+        let parsed = item.as_object().and_then(|o| {
+            let id = o.get("id")?.as_str()?.to_string();
+            let name = o.get("name")?.as_str()?.to_string();
+            let n = o.get("n")?.as_u64()? as u32;
+            if id.is_empty() || name.is_empty() || n < 1 {
+                return None;
+            }
+            Some(MentionTarget { id, name, n })
+        });
+        match parsed {
+            Some(t) if acc.len() < MAX_GOSSIP_MENTIONS && !acc.iter().any(|x| x.id == t.id) => {
+                acc.push(t)
+            }
+            _ => return None,
+        }
+    }
+    Some(acc)
+}
+
+/// 库里那一列（JSON 文本）⇒ 三态。解析不动 ⇒ 不知道，**不 panic、也不当成"没人被 @"**。
+pub fn parse_mention_targets_column(raw: &str) -> Option<Vec<MentionTarget>> {
+    mention_targets_from_value(serde_json::from_str::<serde_json::Value>(raw).ok().as_ref())
+}
+
 /// `gossip_plaintext` 的反向。**永不失败**：非 JSON 载荷按老行为退化成纯文本。
 ///
 /// 单独放在 protocol 而不是留在 transport 里，是因为这两个函数必须**同一处**：
@@ -679,38 +720,7 @@ pub fn parse_gossip_plaintext(pt: &[u8]) -> GossipPlaintext {
             // 缺失 / null / 非数组：全都判成"不知道" ⇒ 接收端兜底按昵称判
             _ => None,
         };
-        let mention_targets = match v.get("mention_targets") {
-            // 缺失 / null ⇒ 不知道（老对端），呈现层按昵称兜底
-            None => None,
-            Some(serde_json::Value::Null) => None,
-            Some(serde_json::Value::Array(items)) => {
-                let mut acc: Vec<MentionTarget> = Vec::new();
-                let mut ok = true;
-                for item in items {
-                    match item.as_object().and_then(|o| {
-                        let id = o.get("id")?.as_str()?.to_string();
-                        let name = o.get("name")?.as_str()?.to_string();
-                        let n = o.get("n")?.as_u64()? as u32;
-                        if id.is_empty() || name.is_empty() || n < 1 {
-                            return None;
-                        }
-                        Some(MentionTarget { id, name, n })
-                    }) {
-                        Some(t) if acc.len() < MAX_GOSSIP_MENTIONS && !acc.iter().any(|x| x.id == t.id) => {
-                            acc.push(t)
-                        }
-                        // 任何一条认不出来 ⇒ **整份**判成不知道：收下半截落点，
-                        // 前端就会把"第二个人"对到第一次出现上 —— 那比按昵称猜更错。
-                        _ => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                ok.then_some(acc)
-            }
-            Some(_) => None,
-        };
+        let mention_targets = mention_targets_from_value(v.get("mention_targets"));
         GossipPlaintext {
             kind,
             content,
@@ -2818,7 +2828,11 @@ mod tests {
     #[test]
     fn build_mention_targets_numbers_repeated_names_in_text_order() {
         let content = "辛苦 @张三 和 @李四，@张三 记得归档";
-        let ids = vec!["id-zs".to_string(), "id-ls".to_string(), "id-zs2".to_string()];
+        let ids = vec![
+            "id-zs".to_string(),
+            "id-ls".to_string(),
+            "id-zs2".to_string(),
+        ];
         let name_of = |id: &str| match id {
             "id-zs" | "id-zs2" => Some("张三".to_string()),
             "id-ls" => Some("李四".to_string()),
@@ -2898,9 +2912,11 @@ mod tests {
                 b.mention_targets.is_none(),
                 "半截/畸形落点必须整份判成不知道，而不是收下一半：{raw}"
             );
-            assert_eq!(b.mentions.as_deref(), Some(&["a".to_string()][..]), "另一条腿不受牵连");
+            assert_eq!(
+                b.mentions.as_deref(),
+                Some(&["a".to_string()][..]),
+                "另一条腿不受牵连"
+            );
         }
     }
-
 }
-

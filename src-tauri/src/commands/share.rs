@@ -222,6 +222,7 @@ pub fn insert_system_message(state: &AppState, conv_id: &str, text: &str) {
         ts: db::now_ms(),
         seq: db::next_clock(&dbc, conv_id).unwrap_or(1),
         status: "sent".to_string(),
+        mention_targets: None,
     };
     db::insert_message(&dbc, &rec).ok();
     drop(dbc);
