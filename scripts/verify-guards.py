@@ -1597,9 +1597,12 @@ CASES: list[Case] = [
         why="用户 2026-09-12 实测：在聊天界面点进设置页（整页浮层），对方发来的消息自己没看到，"
         "却被判成已读并把回执发了回去",
         file=ROOT / "src" / "stores" / "useChatStore.ts",
+        # 2026-09-28：这三个条件搬进了 `chatViewerLooking()`（INV-P27：已读与「有人@我」共用一份口径），
+        # 所以注入点跟着搬过去 —— 从那份家里摘掉「聊天视图可见」这一半，两条规则会同时变松，
+        # 正是这条用例要拦的坏法（旧锚点 `activeConv.value !== convId || document.hidden || ...` 已不存在）。
         injections=[(
-            "if (activeConv.value !== convId || document.hidden || !app.chatVisible) return;",
-            "if (activeConv.value !== convId || document.hidden) return;",
+            "!document.hidden && app.chatVisible;",
+            "!document.hidden;",
         )],
         cmd=npm("test"),
         cwd=ROOT,
@@ -2910,6 +2913,23 @@ CASES: list[Case] = [
         tags=["domain-deps", "new-guards"],
     ),
     # ---------------- Change Budget(check-change-budget.mjs + fixture) ----------------
+    Case(
+        name="Change Budget:只动测试文件的提交不许凑满犯案窗口（#139）",
+        why="领域归属原先不认「测试文件不算应用码」这条既有口径（semver.mjs 里为它写过注释：每次补用例"
+        "都被迫提版本号 ⇒ 版本号会通胀）。真实后果 2026-09-28 实测到：一条只改 `src/utils/versioning.test.ts`"
+        "的提交被算成 presentation 的第 3 票,把「同一领域反复打补丁」这条红推起来了 —— 而写回归正是本仓鼓励的事。"
+        "fixture 默认状态是 2 条动应用代码的 transport fix + 1 条只动 `ble_tests.rs` 的 ⇒ 必须仍判 2 次并 PASS；"
+        "本用例摘掉那层过滤 ⇒ 三条一起数,守门必须报「出现了 3 次」。",
+        file=ROOT / "scripts" / "check-change-budget.mjs",
+        injections=[(
+            "        .filter((f) => !isExempt(f.path) && isAppCodePath(f.path))",
+            "        .filter((f) => !isExempt(f.path))",
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="出现了 3 次",
+        tags=["frontend", "change-budget", "new-guards"],
+    ),
     # 守门读真实 git 历史,没法"改坏源文件"来验证 —— 所以脚本留了 --from-json 测试接缝,
     # 用 fixture 喂数据。fixture 的默认状态是全 PASS(每条判定路径都走到),下面四条用例
     # 各自破坏一个条件来验证对应判据会红。fixture 本身提交进仓库,是可以 review 的测试数据。
@@ -2951,9 +2971,9 @@ CASES: list[Case] = [
         "先补不变量/收敛单一事实来源。",
         file=ROOT / "scripts" / "fixtures" / "change-budget.json",
         injections=[(
-            '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    }\n  ]',
+            '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    },',
             '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    },\n'
-            '    {\n      "sha": "b000003",\n      "message": "fix(ble): 第三次打补丁",\n      "files": [{ "path": "src-tauri/src/transport/tcp.rs", "add": 5, "del": 1 }]\n    }\n  ]',
+            '    {\n      "sha": "b000009",\n      "message": "fix(ble): 第三次打补丁",\n      "files": [{ "path": "src-tauri/src/transport/tcp.rs", "add": 5, "del": 1 }]\n    },',
         )],
         cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
         cwd=ROOT,
@@ -3017,10 +3037,10 @@ CASES: list[Case] = [
         "上面那条 `fix(ble)` 注入用例照样会红，只有这条会不红，所以它守的是这条新口径本身。",
         file=ROOT / "scripts" / "fixtures" / "change-budget.json",
         injections=[(
-            '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    }\n  ]',
+            '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    },',
             '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    },\n'
             '    {\n      "sha": "b000004",\n      "message": "feat(ble): 又调了一档预算\\nVersion-Bump: patch",\n'
-            '      "files": [{ "path": "src-tauri/src/transport/tcp.rs", "add": 5, "del": 1 }]\n    }\n  ]',
+            '      "files": [{ "path": "src-tauri/src/transport/tcp.rs", "add": 5, "del": 1 }]\n    },',
         )],
         cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
         cwd=ROOT,

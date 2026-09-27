@@ -110,6 +110,10 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import domainMap from "../docs/domains.data.mjs";
+// #139：领域归属必须认这条既有口径 —— 测试文件不算应用码（semver.mjs 里那条注释就是理由：
+// 「每次补用例都被迫提版本号 ⇒ 版本号会通胀」。Change Budget 的犯案窗口原先没读它，
+// 于是一条只动 `*.test.ts` 的提交也被算成「同一领域反复打补丁」的第 3 票（2026-09-28 实测）。
+import { isAppCodePath } from "./semver.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -256,7 +260,10 @@ function classify(commit) {
   );
   const countedFiles = counted.filter((f) => !SENSITIVE_FILES.has(f.path.replaceAll("\\", "/")));
   const loc = counted.reduce((s, f) => s + f.add + f.del, 0);
-  const domainSet = new Set(counted.map((f) => domainOf(f.path)).filter((x) => x !== "assembly" && x !== "unknown"));
+  // 领域只按**应用代码**归：测试文件跟着它测的那份码走，不单独算一票（规模/LOC 仍照算，见 files/loc）。
+  const domainSet = new Set(
+    counted.filter((f) => isAppCodePath(f.path)).map((f) => domainOf(f.path)).filter((x) => x !== "assembly" && x !== "unknown"),
+  );
   const domains = [...domainSet];
   const sensitive = counted.filter((f) => SENSITIVE_FILES.has(f.path.replaceAll("\\", "/"))).map((f) => f.path);
   const files = counted.length;
@@ -568,7 +575,11 @@ if (data.recentFixes) {
   const byDomain = new Map();
   for (const fix of data.recentFixes) {
     const domains = new Set(
-      fix.files.filter((f) => !isExempt(f.path)).map((f) => domainOf(f.path)).filter((x) => x !== "assembly" && x !== "unknown"),
+      // 与 classify 同一条口径（#139）：只数应用代码的领域，测试文件不凑票。
+      fix.files
+        .filter((f) => !isExempt(f.path) && isAppCodePath(f.path))
+        .map((f) => domainOf(f.path))
+        .filter((x) => x !== "assembly" && x !== "unknown"),
     );
     for (const d of domains) {
       if (!byDomain.has(d)) byDomain.set(d, []);
