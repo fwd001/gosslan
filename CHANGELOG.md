@@ -57,6 +57,20 @@
   `codesign -v` 原文 `code has no resources but signature indicates they must be present` ⇒ **仍未签名，
   不能当分发件**（这句话只允许用来证明"产物存在且版本对得上"）。判"跑完没跑完"照旧只认两件事：
   `pgrep -f "tauri build"` 为空 **且** `bundle/dmg/` 里有 4.31.3 那份 —— 后台那层退 0 不代表构建完成。
+- ★ **§六 Release 判定那两行今天被自己的改动证伪，就地划掉改口**（`docs/final-architecture-review.md`）：
+  原文写着"从 tag `v4.30.0` 到当前 tip 没有一条应用侧改动 ⇒ 现算 `git rev-list --count v4.30.0..HEAD -- src src-tauri/src` = **0**
+  ⇒ 按内容下一次发布只到 patch"，而**同一天**这句就不成立了：现算 = **8** 条，其中带非测试应用码 **5** 条
+  （#122 两段 = 协议字段 + 迁移 v10→v11、#35-N7 选中色、#125 配置口径 ⇒ minor 早已随 `a94b144` 落进版本号，
+  现在 **4.31.3**；tag 仍未打，按用户规矩最后统一打）。另一句"今天：没有用户可感知的行为变化"同样作废。
+  **两个小时内我自己写错又改回两次** ⇒ 这正是"完成式若没有产物当证据就更快变假"，所以两处都只留命令不留数。
+- ★ **两层 E2E 在今天这份代码上重跑过**（改了迁移与判据脚本之后，旧那次绿不属于新 tip）：
+  **本地层 18 步 713.3s 退 0**、**发版前层 3 步 99.4s 退 0**。全量层整体仍被 Change Budget 判据 3 挡住，
+  但它掩盖的那几步按单条命令各自跑过并全部退 0：`cargo fmt --check --all` / `cargo clippy --features bluetooth -- -D warnings`
+  （含蓝牙）/ `cargo test --features bluetooth` **735 passed 0 failed** / `check-test-manifest --only rust`（基线 735 条全在跑）/
+  `scripts/check-mobile.sh` **Android aarch64 PASS 0 warning** / `npm run build` / `npm test` 666 pass。
+  ⚠️ **今天真没跑的那一格照实写**：197 条护栏非空转**整跑**没跑（70–90 分钟、且它会注入并还原源文件 ⇒
+  会话收尾期起跑会把一个改工作树的门禁留在会话之后，比"没跑"更坏）。便宜替代只买到"锚点各恰好命中一次"，
+  **买不到**"每条用例改坏仍会红"。
 - ⚠️ 两条本轮自己踩到的操作错误，都写进纪律：**出包与门禁不能并发**（`dist:mac` 会重链
   `target/release/gosslan`，而双实例轮判的就是那份二进制）；**`cd` 在一条命令里会延续** ——
   我在 `src-tauri/` 下用相对路径跑 harness，得到的是 `MODULE_NOT_FOUND` 退 2，

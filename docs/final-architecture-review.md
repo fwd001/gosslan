@@ -107,11 +107,26 @@ npm run verify -- --full   # 193 条注入整跑（>1.5 小时）
 > ★ 出包与门禁不能并发这条也补进账：`dist:mac` 会重链 `target/release/gosslan`，
 > 而双实例轮判的就是那份二进制。
 
+> **2026-09-28 第二趟现算对账（tip `bbd69a3`，版本号 4.31.3）** —— 上面那段是**改动之前**那次跑，
+> 之后又落了迁移 v10→v11 与两条 #138，所以**两层 E2E 在这一刻的代码上重跑过**：
+> **本地层 18 步 713.3s 退 0**、**发版前层 3 步 99.4s 退 0**（复跑：`npm run verify:e2e` / `npm run verify:release`）。
+> 全量层整体**仍是红的**（同一条 Change Budget 判据 3，等处置），但它掩盖的那几步今天按单条命令各自跑过：
+> `cargo fmt --check --all` 退 0、`cargo clippy --features bluetooth -- -D warnings` 退 0、
+> `cargo test --features bluetooth` **735 passed / 0 failed**、`check-test-manifest --only rust` 退 0（基线 735 条全部在跑）、
+> `scripts/check-mobile.sh` **PASS**（Android aarch64，0 warning）、`npm run build` 退 0、`npm test` 666 pass / 0 fail。
+> ⚠️ **今天仍未跑的那一格要明说**：197 条护栏非空转**整跑**没跑（要 70–90 分钟，且它会注入并还原源文件 ——
+> 会话收尾期不起长跑，是把门禁留在工作树里比"没跑"更坏的那种错）。便宜替代 = 起跑前锚点全量静态核对
+> `verify-guards.py --list` ⇒ **197 条锚点各恰好命中一次**（这只证明锚点活着，**不**证明每条用例改坏仍会红）。
 
-**判定：4.30.0 已由用户发出，且 tag `v4.30.0` 现在真的存在（`git tag` 里查得到、`git merge-base --is-ancestor v4.30.0 HEAD` 成立）；
-从 tag 到当前 tip 这批没有一条应用侧改动** —— 现算
-`git rev-list --count v4.30.0..HEAD -- src src-tauri/src` = **0**
-⇒ 按**内容**下一次发布只到 **patch**。
+
+**判定（2026-09-28 第二趟改口，tip `bbd69a3`）：tag `v4.30.0` 仍存在且是最后一个 tag（`git tag --sort=-creatordate | head -1`），
+但~~"从 tag 到当前 tip 没有一条应用侧改动 / 现算 = 0 ⇒ 下一次发布只到 patch"~~ —— 那三行**已被今天自己的改动证伪**：
+现算 `git rev-list --count v4.30.0..HEAD -- src src-tauri/src` = **8**，其中**带非测试应用码**的是 **5 条**
+（复跑：对上面那 8 条逐个 `git show --numstat --format= <h>`，剔掉 `*.test.ts` 与 `src-tauri/src/**(_tests|tests).rs`）。
+⇒ 按**内容**这一批含三条用户可感知的新增（`a94b144` #122 第一段、`0b84f11` #122 第二段＝迁移 v10→v11、
+`591b8fc` #35-N7 选中色/控件色）+ 一条行为口径修复（`6c6efcb` #125 配置布尔值）⇒ **minor 已经落进版本号**
+（`a94b144` 那次自带 minor 提升 ⇒ 现算 `node -e "console.log(require('./package.json').version)"` = **4.31.3**）。
+**tag 仍未打**（用户规矩：最后统一打，不逐版问）。
 
 ★ **本节更早那一版写着"⚠️ classify 报 minor 是偏高的，因为 4.30.0 还没 tag"—— 那句已被"用户把 tag 打了"这件事自己推翻**，就地改口（不留两个事实源）：
 `v4.30.0` 现在存在 ⇒ `version:classify` 有了基线，它今天报「最高档: minor ⇒ 本次发布应提升到 4.31.0」，
@@ -121,7 +136,9 @@ npm run verify -- --full   # 193 条注入整跑（>1.5 小时）
 提交 `8575d27`）。⇒ **两个口径现在都对，只是量的不是同一件事**：按"应用侧有没有改动"是 patch，
 按仓里自己的 SemVer 规则（新增即 minor，CI/打包也算新增）是 **4.31.0**。
 **档位以 `npm run version:classify` 现算为准**（复跑：`node scripts/semver.mjs classify`，它自己会点名是哪条提交顶上去的）；
-上面那条 `rev-list` 只用来回答"这次发布里有没有用户能感知的行为变化"（今天：**没有**，全是测试门禁 / 文档 / CI 工具链）。
+上面那条 `rev-list` 只用来回答"这次发布里有没有用户能感知的行为变化"——
+~~今天：没有~~ ⇒ **今天第二趟现算：有**（@ 的重名点亮修好、配置布尔值口径统一、选中色跟随主题、
+以及一条数据库迁移 v10→v11）。这句在两个小时内被我自己写错又改回，正是本节反复警告的"完成式若没有产物当证据就更快变假"。
 发版动作由用户做（版本号/tag 他统一打，我这边 `chore(release)` 那类提交会被拦，本来也该他提）：
 `npm run version:release` 会把 `[Unreleased]` 落成一个带日期的版本小节并同步五处版本号 —— 五处版本号今天现算一致
 （复跑：`node -e "console.log(require('./package.json').version)"` + `grep -n '^version' src-tauri/Cargo.toml` +
