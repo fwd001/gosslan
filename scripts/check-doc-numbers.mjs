@@ -163,6 +163,7 @@ const MODE_LABEL = {
   // 重递），纯函数那半边有 9 条单测兜着、这一轮兜的是接上的那半边 —— 少了它，
   // "把补递改成按当前可达再过滤一遍"这种写坏在本地层一点声音都不会出。
   LATE: "补递轮",
+  TASK: "任务轮",
 };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");

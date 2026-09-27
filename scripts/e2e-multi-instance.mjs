@@ -272,6 +272,11 @@ const LATE = ROUND === "gossip-late" || ROUND === "gossip-late-lie";
 /// 反向模式：拓扑、预置、时序全都一样，只把判据要找的那条 msg_id 换成必定不存在的值。
 const LATE_LIE = ROUND === "gossip-late-lie";
 const LANOFF_LIE = ROUND === "lanoff-lie";
+
+/// 任务专项轮（第二阶段 §22）：一条任务「创建 → 被指派者收到 → 改成完成」跨两个真实进程。
+/// 判的是这一族在 SQLite 里**真的存在**的事实；徽标那个数字是前端 store 算的，不在本层判（见 roadmap §13.3 的层次修正）。
+const TASK = ROUND === "task" || ROUND === "task-lie";
+const TASK_LIE = ROUND === "task-lie";
 /// 转发轮的正文：判据里既要看 C 解出的明文等于它，也要把它写进 A 的 messages（明文列）。
 const CHAIN_TEXT = "two-hop group message via B";
 // 补递轮用另一段正文：判据里的文本比对就只可能命中这一轮的落库行
@@ -909,6 +914,75 @@ if (KILL) {
 /// `conversations`（e2e_peer 也写了；不写也能跑，但搜索谓词会漏掉无会话行的历史）。
 /// A 侧再排两条群消息（正文 seq=1、撤回 seq=2）：**入队时对端进程还没起** ⇒
 /// 这一轮只能靠建链后的 `flush_group_outbox` 送达，正是 §五「群聊 + 离线成员重新上线」那一格。
+let taskCreateId = "";
+let taskUpdateId = "";
+/// 任务轮预置：两端同一份群 + 群密钥（与群聊轮同形），A 排两条群载荷 ——
+/// `todo`（创建，seq=1，指派给 B）与 `todo_update`（B 视角下的完成，seq=2）。
+/// 载荷字段逐字对齐 `protocol.rs::TodoPayload`（todo_id/title/assignees/status/creator/
+/// deleted/description/images/archived/done_at），**snake_case 无 rename**。
+if (TASK) {
+  step("任务预置：两端各写一份群 + 同一份群密钥，A 排「创建」与「完成」两条任务载荷", () => {
+    const members = [idA.runtimeId, idB.runtimeId];
+    const convId = `group:${GROUP_ID}`;
+    const ts = nowMs();
+    for (const inst of INSTANCES) {
+      seed(inst.db, (db) => {
+        db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)")
+          .run(`gk:${GROUP_ID}`, GROUP_KEY_STR);
+        db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
+          .run(GROUP_ID, GROUP_NAME, idA.runtimeId, ts);
+        db.prepare("DELETE FROM group_members WHERE group_id=?1").run(GROUP_ID);
+        for (const m of members) {
+          db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)")
+            .run(GROUP_ID, m);
+        }
+        db.prepare(
+          "INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at)"
+          + " VALUES(?1,'group',?2,NULL,0,?3)",
+        ).run(convId, GROUP_NAME, ts);
+      });
+    }
+    const todoId = "todo-e2e-1";
+    const mk = (over) => JSON.stringify({
+      todo_id: todoId, title: "e2e task", assignees: [idB.runtimeId], status: "todo",
+      creator: idA.runtimeId, deleted: false, description: "", images: [], archived: false,
+      done_at: null, ...over,
+    });
+    const base = {
+      groupKey: GROUP_KEY_B64, senderId: idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
+      x25519Pub: idA.x25519Pub, ed25519Pub: idA.ed25519Pub,
+      groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId, members,
+    };
+    const c = buildGroupEnvelope({ ...base, kind: "todo", content: mk({}), ts, seq: 1 });
+    const u = buildGroupEnvelope({
+      ...base, kind: "todo_update", content: mk({ status: "done", done_at: ts + 5 }), ts: ts + 1, seq: 2,
+    });
+    taskCreateId = c.messageId;
+    taskUpdateId = u.messageId;
+    seed(INSTANCES[0].db, (db) => {
+      db.prepare("DELETE FROM group_outbox WHERE group_id=?1").run(GROUP_ID);
+      for (const [env, seq, kind, content, at] of [
+        [c, 1, "todo", mk({}), ts],
+        [u, 2, "todo_update", mk({ status: "done", done_at: ts + 5 }), ts + 1],
+      ]) {
+        db.prepare("DELETE FROM messages WHERE msg_id=?1").run(env.messageId);
+        db.prepare(
+          `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+           VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'sent')`,
+        ).run(env.messageId, convId, idA.runtimeId, GROUP_ID, kind, content, at, seq);
+        db.prepare(
+          `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
+           VALUES(?1,?2,?3,?4,?5)`,
+        ).run(env.messageId, GROUP_ID, idB.runtimeId, env.wire, at);
+      }
+      db.prepare(
+        "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
+        + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq",
+      ).run(convId, 2);
+    });
+  });
+}
+
 if (GROUP) {
   step("群聊预置：两端各写一份群 + 同一份群密钥，A 再排两条群消息（正文 + 撤回）", () => {
     const members = [idA.runtimeId, idB.runtimeId];
@@ -1072,6 +1146,82 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
 
 // §十四要的「错误行为测试」+ §七/§八的「文件 hash 不一致 / .part 已存在」：
 // 坏内容必须要么被拒收、要么被补齐成正确字节 —— 但绝不允许"报成功却没有正确文件"。
+
+if (TASK) {
+  step("任务判据：B 收到创建与完成两条、明文解得开、指派就是我、seq 决定 LWW 终态", async () => {
+    const flip = (h) => h.slice(0, -1) + (h.endsWith("0") ? "1" : "0");
+    const want = (id) => (TASK_LIE ? flip(id) : id);
+    const convId = `group:${GROUP_ID}`;
+    await waitFor(() => {
+      const db = openDb(INSTANCES[1].db, true);
+      try {
+        return [taskCreateId, taskUpdateId]
+          .every((id) => db.prepare("SELECT COUNT(*) c FROM messages WHERE msg_id=?1").get(id).c > 0);
+      } finally { db.close(); }
+    }, 60_000, "B 侧两条任务载荷到齐（建链后 flush_group_outbox 送达）");
+
+    const bDb = openDb(INSTANCES[1].db, true);
+    const q = (id) => bDb.prepare(
+      "SELECT m.conv_id,m.sender_id,m.kind,m.content,m.seq,m.status FROM messages m WHERE m.msg_id=?1",
+    ).all(id);
+    const rowC = q(want(taskCreateId));
+    const rowU = q(want(taskUpdateId));
+    const leak1to1 = bDb.prepare(
+      "SELECT COUNT(*) c FROM messages WHERE conv_id!=?1 AND msg_id IN (?2,?3)",
+    ).get(convId, taskCreateId, taskUpdateId).c;
+    bDb.close();
+    const aDb = openDb(INSTANCES[0].db, true);
+    const queued = aDb.prepare(
+      "SELECT COUNT(*) c FROM group_outbox WHERE msg_id IN (?1,?2)",
+    ).get(taskCreateId, taskUpdateId).c;
+    const aKinds = aDb.prepare(
+      "SELECT kind FROM messages WHERE msg_id IN (?1,?2) ORDER BY seq",
+    ).all(taskCreateId, taskUpdateId).map((r) => r.kind);
+    aDb.close();
+
+    const parse = (rows) => {
+      if (rows.length !== 1) return null;
+      try { return JSON.parse(rows[0].content); } catch { return null; }
+    };
+    const pc = parse(rowC);
+    const pu = parse(rowU);
+    const uniq = new Set([taskCreateId, taskUpdateId]).size;
+
+    // 这条读的是**发送侧**（A 的库），lie 模式翻的是判据读的 id ⇒ 它在正向与反向两跑里都该绿：
+    // 它是这一轮的"预置/投递没坏"控制项，不是被钉的那件事本身。
+    check("A 侧两条载荷按 seq 排的 kind 依次是 todo / todo_update（发送侧预置控制项）",
+      aKinds.join(",") === "todo,todo_update", "todo,todo_update", aKinds.join(","));
+    check("B 侧两条各恰好一行（多行=重复投递，0 行=没送达）",
+      rowC.length === 1 && rowU.length === 1, "1/1",
+      `${rowC.length}/${rowU.length}`);
+    check("B 侧落库的必须是群会话行（不许串进 1:1）",
+      rowC.length === 1 && rowC[0].conv_id === convId && leak1to1 === 0,
+      `${convId} 且 1:1 里 0 条`, `${rowC[0]?.conv_id} / leak=${leak1to1}`);
+    check("载荷必须是**解密后的明文 JSON**（拿到密文或空串都说明没真解密）",
+      !!pc && !!pu, "两条都能 JSON.parse", `c=${pc === null ? "解析失败" : "ok"} u=${pu === null ? "解析失败" : "ok"}`);
+    check("两条指的是**同一个任务**（todo_id 相同，不是两条无关消息）",
+      !!pc && !!pu && pc.todo_id === pu.todo_id && pc.todo_id === "todo-e2e-1",
+      "todo-e2e-1", `${pc?.todo_id} / ${pu?.todo_id}`);
+    check("创建那条的指派里必须有 B 的 device_id（「与我相关」的输入就是这个）",
+      Array.isArray(pc?.assignees) && pc.assignees.includes(idB.runtimeId),
+      `含 ${idB.runtimeId}`, JSON.stringify(pc?.assignees));
+    check("创建那条的 status 是 todo、完成那条是 done 且带 done_at",
+      pc?.status === "todo" && pu?.status === "done" && !!pu?.done_at,
+      "todo → done(+done_at)", `${pc?.status} → ${pu?.status} done_at=${pu?.done_at}`);
+    check("seq 必须是创建 1 / 完成 2（LWW 靠 seq 定序，乱了折叠出的终态就不对）",
+      rowC[0]?.seq === 1 && rowU[0]?.seq === 2, "1 / 2",
+      `${rowC[0]?.seq} / ${rowU[0]?.seq}`);
+    check("creator 由载荷带着，且必须是 A（改/删授权判据靠它）",
+      pc?.creator === idA.runtimeId && pu?.creator === idA.runtimeId,
+      idA.runtimeId, `${pc?.creator} / ${pu?.creator}`);
+    check("发送方在 B 侧记为 A 的 runtimeId（不许被改写成接收者自己）",
+      rowC[0]?.sender_id === idA.runtimeId, idA.runtimeId, rowC[0]?.sender_id);
+    check("A 侧这两条的 group_outbox 必须被 GroupAck 清干净（队列残留=还会重发）",
+      queued === 0, 0, queued);
+    check("两条载荷的 msg_id 互不相同且各唯一（INV-P01 幂等的前提）",
+      uniq === 2 && rowC.length <= 1 && rowU.length <= 1, 2, uniq);
+  });
+}
 
 if (GROUP) {
   step("群聊判据：三条各只落一行、明文要真解得开、撤回只物化不删行、Ack 必须把队列清干净", async () => {

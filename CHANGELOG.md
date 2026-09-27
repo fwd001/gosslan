@@ -9,6 +9,24 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 测试（第二阶段 §22：任务专项 E2E 轮 `--round=task` 落地）
+- 一条任务「A 创建 → 被指派的 B 收到 → 改成完成」第一次有**跨两个真实进程**的判据：
+  12 条断言挂在 `check(` 上（判据 C 现算：公共 18 + 本轮 12 = 任务轮 30）。
+  载荷字段逐字对齐 `TodoPayload`（`todo_id`/`assignees`/`status`/`creator`/`done_at`，snake_case 无 rename），
+  按 seq 定序（创建=1、完成=2），走的是建链后 `flush_group_outbox` 那条补发管道。
+- 判的点：B 侧两条各恰好一行（重复投递/丢件当场红）、必须是解密后的明文 JSON、两条指同一个 `todo_id`、
+  创建那条的 `assignees` 必须含 B 的 device_id（**「与我相关」的输入**）、`todo → done` 且带 `done_at`、
+  seq 必须 1/2、`creator` 不被改写、不许串进 1:1、A 侧 `group_outbox` 被 GroupAck 清成 0。
+- **一正一反都实测过**（不是"按设计会红"的声明）：正向 30/30 绿；
+  反向 `--round=task-lie` 只翻判据读的那两个 msg_id ⇒ **恰好 9 条红且全部出自这一步**，
+  其余 21 条（含发送侧预置控制项与公共 18 条）照常绿 ⇒ 红来自断言本身，不来自基础设施噪声。
+- 两格**刻意不由这一轮判**、并已写进矩阵与门禁的 why（防止下一轮把话说满）：
+  ① 徽标数字本身（前端 store 现算，库里没有这一格）；② "A 自己发完立刻在自己时间线看到"
+  （harness 没有"让应用自己执行一次动作"的入口，A 那行是预置写的 ⇒ 判它就是循环论证）。
+  ②的前置是内核自 emit 后留的那行痕迹（`017a433`），要等能驱动 UI 的轮次才判得了。
+- 登记齐四处：harness 轮次开关 / `MODE_LABEL` / `verify.mjs` 发版前那一层 / 矩阵"轮次账"
+  （`check-doc-numbers` 现算：旅程轮 4 → 5 条自动跟上）。
+
 ### 可观测性（第二阶段 §29 的第二处留痕：把"本端为什么看得见"变成可判的事）
 - 群发送内核 `send_group_payload`（在 `commands/window.rs`，不在 transport）自 emit 之后补一行
   `群消息已回送本机窗口 msg=<id> kind=<kind>`。为什么必须留这一行：harness 没有任何"让应用自己执行一次动作"

@@ -675,6 +675,30 @@ if (groupFlag === "release") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--round=gossip-late"],
     },
+    {
+      group: "release",
+      name: "任务专项 E2E：一条任务「A 创建 → 被指派的 B 收到 → 改成完成」跨两个真实进程",
+      why:
+        `第二阶段 §22 那一格。载荷形状逐字对齐 protocol.rs::TodoPayload（snake_case 无 rename），` +
+        `两条群消息按 seq 定序：todo(1) 与 todo_update(2, status=done)。判据钉在**两侧的数据事实**上：` +
+        `B 侧两条各恰好一行（重复投递/丢件都当场红）、必须是解密后的明文 JSON（拿到密文或空串即红）、` +
+        `两条指的是同一个 todo_id、创建那条的 assignees 必须含 B 的 device_id（「与我相关」的输入就是它）、` +
+        `status 由 todo 变 done 且带 done_at、seq 必须 1/2（LWW 靠它）、creator 不能被改写、` +
+        `不许串进 1:1 会话、A 侧 group_outbox 必须被 GroupAck 清成 0。` +
+        `⚠️ 两条边界（别把这一轮读成已证明的东西）：` +
+        `①**徽标那个数字不在判据里** —— 它是前端 store 现算的，SQLite 里没有这一格，` +
+        `本轮判的是它的输入（状态行 + 指派关系）；读数本身归 utils/todos 的纯函数用例与运行时层。` +
+        `②**"A 自己发完立刻在自己时间线看到"也不在判据里** —— harness 没有任何"让应用自己执行一次动作"` +
+        `的入口（全仓只认 GOSSLAN_INSTANCE / GOSSLAN_AUTOSTART），A 库里那行是预置写进去的，` +
+        `判它等于循环论证；那一半要靠内核自 emit 之后留的那行痕迹（017a433）在能驱动 UI 的轮次里补。` +
+        `非空转由 ` +
+        "`--round=task-lie`" +
+        ` 反向轮证：只翻判据读的那两个 msg_id ⇒ 读 B 库的那几条必须报红，而发送侧预置那条照常绿。` +
+        RELEASE_ONLY_WHY,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=task"],
+    },
   );
 } else if (!groupFlag) {
   console.log(`· 发版前专项层（三实例链式 E2E）本轮没跑：${RELEASE_ONLY_WHY}`);
