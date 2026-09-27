@@ -6,6 +6,8 @@ dist-ssr
 
 # Rust / Tauri
 src-tauri/target
+# 带 --features bluetooth 的对照构建目录（本机量蓝牙那一档用，绝不入库）
+/src-tauri/target-ble/
 # 安卓专用的 cargo target 目录（scripts/package.mjs 为了与 mac 并行而拆分；见该脚本头注释）
 src-tauri/target-android
 # 仓库根目录的 target/：在根目录误跑 cargo（例如只看元信息的 cargo info/search）
