@@ -43,9 +43,7 @@ use crate::state::AppState;
 ///
 /// 与前端 app.notifyEnabled 是同一份持久化键；这里是后端也判一次的第二道闸门。
 pub fn notifications_enabled(conn: &rusqlite::Connection) -> bool {
-    crate::db::get_setting(conn, "notify_enabled")
-        .map(|v| v != "0")
-        .unwrap_or(true)
+    crate::db::get_config_bool(conn, "notify_enabled", true)
 }
 
 /// 当前平台的通知排障说明（测试通知与失败日志里带上，避免“发不出去也不知道为什么”）。

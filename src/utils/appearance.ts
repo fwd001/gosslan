@@ -11,6 +11,8 @@
  */
 
 /** 外观模式：跟随系统 / 强制浅色 / 强制深色。 */
+import { parseConfigBool } from "./configBool.ts";
+
 export type AppearanceMode = "system" | "light" | "dark";
 
 /** 外观模式的存储键（localStorage 只作启动首帧的快路径，真值在后端 settings）。 */
@@ -45,8 +47,10 @@ export function resolveDark(mode: AppearanceMode, systemDark: boolean): boolean 
 export function readStoredAppearance(storage: ReadonlyStorage): AppearanceMode {
   const raw = storage.getItem(APPEARANCE_STORAGE_KEY);
   if (isAppearanceMode(raw)) return raw;
-  const legacy = storage.getItem(LEGACY_DARK_STORAGE_KEY);
-  if (legacy === "1") return "dark";
-  if (legacy === "0") return "light";
+  // 口径走 `parseConfigBool`（#125）：老数据只有 "1"/"0" 两种写法，行为与旧实现一致；
+  // 但 "true"/"yes"/"off" 这些**同族写法**以前会被静默当成"没设置过"⇒ 用户的深色偏好会被丢掉。
+  const legacy = parseConfigBool(storage.getItem(LEGACY_DARK_STORAGE_KEY));
+  if (legacy === true) return "dark";
+  if (legacy === false) return "light";
   return "system";
 }

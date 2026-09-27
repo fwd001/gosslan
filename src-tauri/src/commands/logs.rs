@@ -1099,9 +1099,7 @@ fn aux_window_background(state: &tauri::State<'_, Arc<AppState>>) -> tauri::wind
         let Ok(dbc) = state.db.try_lock() else {
             return tauri::window::Color(237, 241, 246, 255); // 默认浅色兜底
         };
-        db::get_setting(&dbc, "dark_mode")
-            .map(|v| v == "1")
-            .unwrap_or(false)
+        db::get_config_bool(&dbc, "dark_mode", false)
     };
     if dark {
         tauri::window::Color(11, 18, 32, 255) // #0b1220

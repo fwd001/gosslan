@@ -79,7 +79,7 @@ pub async fn build_runtime_snapshot(s: &Arc<AppState>) -> RuntimeSnapshot {
                     .unwrap_or_default(),
             )
             .len(),
-            db::get_setting(&dbc, RELAY_ENABLED_KEY).is_some_and(|v| v == "1"),
+            db::get_config_bool(&dbc, RELAY_ENABLED_KEY, false),
         )
     };
     // 中继是否真的连通：有任意一条 `path_kind==Relay` 的活跃链路即算（用枚举判，不按服务器地址）。

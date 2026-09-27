@@ -48,13 +48,12 @@ pub fn delete_setting(conn: &Connection, key: &str) -> Result<()> {
 /// 移动端仍由设置页手动开启，故在该目标下为死代码。
 #[cfg_attr(not(desktop), allow(dead_code))]
 pub fn get_lan_enabled(conn: &Connection) -> bool {
-    match get_setting(conn, "lan_enabled") {
-        Some(v) => v != "0",
-        None => {
-            set_lan_enabled(conn, true).ok();
-            true
-        }
+    if get_setting(conn, "lan_enabled").is_none() {
+        set_lan_enabled(conn, true).ok();
     }
+    // 口径统一走 `get_config_bool`（#125）：`false/0/off/no` 都是关，非法值留日志并按默认（开）走。
+    // 旧写法是 `v != "0"` ⇒ 手工或测试写进库的 "false" 会被静默读成**开**，这颗雷今天已踩到。
+    get_config_bool(conn, "lan_enabled", true)
 }
 
 /// 写入局域网通道开关偏好（沿用 settings 表，不引入新的配置存储）。
@@ -71,17 +70,18 @@ pub fn set_lan_enabled(conn: &Connection, enabled: bool) -> Result<()> {
 /// 键不存在时才套用默认值并**立刻持久化**（与 `get_lan_enabled` 同一套语义：
 /// 之后每次启动读到的是明确的 "0"/"1"，而不是依赖隐式默认）。
 pub fn get_bt_enabled(conn: &Connection) -> bool {
-    match get_setting(conn, "bt_enabled") {
-        Some(v) => v == "1",
-        None => {
-            // 用户 2026-09-12 规则：**有蓝牙就默认开**（三端一致）——
-            // 之前桌面默认关、手机默认开，结果"手机上默认有通道、Mac 上还要手动点一次"，
-            // 而且（更糟）会让"偏好=关"与"运行时=开"互相回灌，触发启停抖动（见 `set_channel_enabled`）。
-            let default_on = true;
-            set_bt_enabled(conn, default_on).ok();
-            default_on
-        }
+    if get_setting(conn, "bt_enabled").is_none() {
+        // 用户 2026-09-12 规则：**有蓝牙就默认开**（三端一致）——
+        // 之前桌面默认关、手机默认开，结果"手机上默认有通道、Mac 上还要手动点一次"，
+        // 而且（更糟）会让"偏好=关"与"运行时=开"互相回灌，触发启停抖动（见 `set_channel_enabled`）。
+        let default_on = true;
+        set_bt_enabled(conn, default_on).ok();
+        return default_on;
     }
+    // 键存在：与 `lan_enabled` 共用同一条口径（#125）——
+    // 旧写法 `v == "1"` 把"其它一切写法"都读成关，而 `lan_enabled` 那边把"其它一切写法"读成开，
+    // 同一个字面量在两个键上意思相反。
+    get_config_bool(conn, "bt_enabled", true)
 }
 
 /// 写入蓝牙通道开关偏好（沿用 settings 表，不引入新的配置存储）。

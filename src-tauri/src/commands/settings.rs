@@ -81,7 +81,7 @@ pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> ser
             "darkMode" => {
                 map.insert(
                     key.to_string(),
-                    json!(db::get_setting(db, "dark_mode").map(|v| v == "1")),
+                    json!(db::get_config_bool_opt(db, "dark_mode")),
                 );
             }
             "appearanceMode" => {
@@ -94,17 +94,13 @@ pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> ser
             "notifyEnabled" => {
                 map.insert(
                     key.to_string(),
-                    json!(db::get_setting(db, "notify_enabled")
-                        .map(|v| v != "0")
-                        .unwrap_or(true)),
+                    json!(db::get_config_bool(db, "notify_enabled", true)),
                 );
             }
             "notifyShowContent" => {
                 map.insert(
                     key.to_string(),
-                    json!(db::get_setting(db, "notify_show_content")
-                        .map(|v| v != "0")
-                        .unwrap_or(true)),
+                    json!(db::get_config_bool(db, "notify_show_content", true)),
                 );
             }
             "language" => {
@@ -233,15 +229,11 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
     Settings {
         theme_color: db::get_setting(&dbc, "theme_color"),
         font_family: db::get_setting(&dbc, "font_family"),
-        dark_mode: db::get_setting(&dbc, "dark_mode").map(|v| v == "1"),
+        dark_mode: db::get_config_bool_opt(&dbc, "dark_mode"),
         appearance_mode: db::get_setting(&dbc, "appearance_mode"),
         // 通知默认开启、默认显示正文：缺省时按 `Some(true)`，旧记录与未设置都能有合理行为。
-        notify_enabled: db::get_setting(&dbc, "notify_enabled")
-            .map(|v| v != "0")
-            .or(Some(true)),
-        notify_show_content: db::get_setting(&dbc, "notify_show_content")
-            .map(|v| v != "0")
-            .or(Some(true)),
+        notify_enabled: db::get_config_bool_opt(&dbc, "notify_enabled").or(Some(true)),
+        notify_show_content: db::get_config_bool_opt(&dbc, "notify_show_content").or(Some(true)),
         language: db::get_setting(&dbc, "language"),
         relay_policy: db::get_setting(&dbc, "relay_policy"),
         relay_allowlist: db::get_setting(&dbc, "relay_allowlist"),

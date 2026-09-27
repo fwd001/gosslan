@@ -9,6 +9,28 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+
+## [4.30.1] - 2026-09-27
+### 修复（#125 设置项布尔值口径统一：一个口径、两份实现、非法值明确且可见）
+- 旧形状是每个读取方各写各的：`v == "1"`（其它一切写法都算关）与 `v != "0"`（其它一切写法都算开）**并存**，
+  于是同一个字面量 `"false"` 在 `lan_enabled` 上是**开**、在 `bt_enabled` 上是**关**。
+  这颗雷今天真的踩到了（E2E 预置写 `lan_enabled='false'`，以为关了局域网，实际没关，白跑一轮）。
+- 现在收成一处：`db::parse_config_bool`（`1/true/on/yes` ⇒ 真，`0/false/off/no` ⇒ 假，其它 ⇒ `None`）
+  加两个读取口 `get_config_bool(key, default)` 与 `get_config_bool_opt(key)`
+  （后者保留**"键不存在 ⇒ 未设置"**这层语义，`get_settings` 那份 `Option` 面塌成 bool 会改变功能）。
+  **非法值不再静默**：留一条 `[config] 非法布尔值 key=… value=… ⇒ 回落默认/按未设置` 的日志。
+- 迁移面按形状数完并全改：**14 处读取点**（`db/group_delete_boundary.rs` 2、`commands/settings.rs` 6、
+  `commands/relay.rs` 2、`commands/channel.rs` 1、`commands/network.rs` 1、`commands/logs.rs` 1、
+  `notifications.rs` 1）+ 前端 localStorage 那一族（新增 `src/utils/configBool.ts`，`appearance.ts` 的老数据迁移改走它）。
+  写入侧不动（仍只写 `"1"/"0"`）⇒ **应用写出来的值行为完全不变**，变的是"手工/测试写进去的其他写法"怎么被读。
+- 先红后绿：Rust 侧新增 4 条用例（缺函数时编译失败 = 红），前端新增 4 条（缺模块时 `ERR_MODULE_NOT_FOUND` = 红）；
+  改完全绿 —— `cargo test --lib` **728 passed / 0 failed**、`cargo clippy -D warnings` 退 0、
+  `node --test`（含既有 `appearance.test.ts`）**14 pass / 0 fail**。
+- ★ **一次真实回归被现有用例拦下**：`load_relay_runtime_is_fail_closed` 当场报红，
+  因为它原先断言"`relay_enabled` 写 `"true"` 算脏值 ⇒ 中继不启用"。按用户拍板的字面量表，`"true"` 现在是**合法的开**，
+  那条期望不再成立。这**不是为了让测试通过而改期望**：规则本身由负责人改了口径，
+  同时把 fail-closed 的实质**换成真非法值**继续钉住（加了一条 `put(RELAY_ENABLED_KEY, "开启") ⇒ None`）。
+  改后该用例照常跑，中继那条"未知值绝不当成开"的边界仍在机器保护下。
 ### 门禁（#123：版本声明只看未推送提交，`[plan]` 只豁免不动应用代码的提交）
 - 用户拍板"历史 151 条不再作为当前噪音；新提交仍必须遵守声明要求" ⇒ 落地成两件事：
   ① **作用范围收到未推送**（`@{u}..HEAD`；审计加 `--all-commits` 扩回全范围）；

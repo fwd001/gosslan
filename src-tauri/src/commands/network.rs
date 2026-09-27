@@ -163,9 +163,7 @@ pub fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> R
     // 冷启动直接可用。
     let dark = {
         let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_setting(&dbc, "dark_mode")
-            .map(|v| v == "1")
-            .unwrap_or(false)
+        db::get_config_bool(&dbc, "dark_mode", false)
     };
     let color = if dark {
         tauri::window::Color(11, 18, 32, 255) // #0b1220

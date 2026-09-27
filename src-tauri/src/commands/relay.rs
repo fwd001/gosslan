@@ -84,7 +84,7 @@ pub fn validate_relay_token(input: &str) -> Result<String, String> {
 /// 返回 `None` = 不该建任何中继电路（未启用 / 未配置 / 历史脏数据解析失败）。
 /// **脏数据退化成"不启用"而不是报错**：这条路径在拨号循环里，没有用户界面能承接错误。
 pub fn load_relay_runtime(db: &rusqlite::Connection) -> Option<RelayRuntime> {
-    let enabled = db::get_setting(db, RELAY_ENABLED_KEY).is_some_and(|v| v == "1");
+    let enabled = db::get_config_bool(db, RELAY_ENABLED_KEY, false);
     if !enabled {
         return None;
     }
@@ -300,7 +300,7 @@ pub fn get_relay_config(state: State<'_, Arc<AppState>>) -> RelayConfigView {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     RelayConfigView {
         // 缺省 = 关：这个功能必须用户显式开启（不填服务器就没有这条链路，行为与今天一致）。
-        enabled: db::get_setting(&dbc, RELAY_ENABLED_KEY).is_some_and(|v| v == "1"),
+        enabled: db::get_config_bool(&dbc, RELAY_ENABLED_KEY, false),
         server: db::get_setting(&dbc, RELAY_SERVER_KEY).unwrap_or_default(),
         token: db::get_setting(&dbc, RELAY_TOKEN_KEY).unwrap_or_default(),
     }
@@ -429,9 +429,13 @@ mod relay_config_tests {
         // 关掉 ⇒ None（配置保留但不建链路）
         put(RELAY_ENABLED_KEY, "0");
         assert!(load_relay_runtime(&db).is_none());
-        // 脏值（不是 "1"）一律按未启用处理，不当成"开启且值为真"
+        // ★ 口径变更（#125，2026-09-27 用户拍板）：`true/1/on/yes` 都是**合法的"开"**，
+        // 所以这一条以前断言的"true 算脏值 ⇒ 未启用"不再成立 —— 改期望的同时，**fail-closed 的实质保留在下一行**：
+        // 真非法字面量仍然一律按未启用处理，绝不"看起来像开就当开"。
         put(RELAY_ENABLED_KEY, "true");
-        assert!(load_relay_runtime(&db).is_none());
+        assert!(load_relay_runtime(&db).is_some(), "合法写法 true 现在应当被认成开启");
+        put(RELAY_ENABLED_KEY, "开启");
+        assert!(load_relay_runtime(&db).is_none(), "非法字面量必须仍然 fail closed");
         // 地址被写成脏字符串 ⇒ None（解析失败不 panic、不兜底成某个默认值）
         put(RELAY_ENABLED_KEY, "1");
         put(RELAY_SERVER_KEY, "not-an-ip");

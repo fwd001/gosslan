@@ -1477,6 +1477,11 @@ A 台账 `active`、**A 队列行仍是 1**；A 重启后 **12.6 s** 从盘上�
      ⚠️ 顺带两条会反复咬人的口径：`get_lan_enabled` 判的是 **`v != "0"`** ⇒ 往 `settings` 里写字符串
      `false` 会被**静默当成开**（第一次跑那七条全绿就绿在这个假前提上）；`set_lan_enabled` 写的是
      `"1"/"0"`，而 harness 的 L-A 预置写 `true` 能用纯属"非 0 即开"的巧合 —— 已另立 #125 收口径。
+     ✅ **#125 已于 2026-09-27 落地（4.30.1）**：口径收成 `db::parse_config_bool`
+     （`1/true/on/yes` 真、`0/false/off/no` 假、其它 ⇒ `None` + 一条 `[config]` 日志），14 处读取点全部改走它，
+     前端 localStorage 那一族另有一份 `src/utils/configBool.ts`（同一张字面量表，由 `configBool.test.ts` 钉住）。
+     ⇒ 从今天起 `lan_enabled='false'` 与 `='0'` **真的都是关**，`='true'` 与 `='1'` 真的都是开；
+     写 `"开启"` 这类非法值不再被任何一侧静默吞掉。写入侧没动 ⇒ 应用自己写的值行为不变。
    · **正在建群时退出 —— 可做，但先推翻我自己上一轮在这格里写下的判据方向**：harness 里 `create_group` 现算 0 次
      ⇒ 群全是预置写库造的，"建群中途被杀"确实一格都没判。**但"不许留下半个群"这句划掉**：真实用户路径
      `commands/groups.rs:7` 把 `groups` / `group_members` / `settings(gk:)` / `conversations` 四张写放在
