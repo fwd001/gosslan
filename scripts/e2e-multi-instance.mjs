@@ -305,6 +305,10 @@ let gMentionText = "";
 /// `--round=group` 里 #103（@ 绑身份）那两条线级判据读的 id：一条明文带 `mentions`，一条不带这个键。
 let gMentionOnlyId = "";
 let gLegacyShapeId = "";
+/// #122 那一格的**夹具自查**基准：落点是 harness 侧按规则算出来的（见 `buildMentionTargets`），
+/// 留一份是为了后面那条跨进程判据能先判"夹具到底有没有数出来"——
+/// 否则镜像函数哪天数成 0 条，红会挂在产品名下（本项目挂过好几次的形状：红在判据、不在被测物）。
+let gMentionTargets = [];
 
 /// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
 /// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
@@ -382,7 +386,8 @@ if (!APPDATA || !fs.existsSync(APPDATA)) {
 }
 if (!fs.existsSync(BIN)) {
   console.error(
-    `✗ 没有二进制：${BIN}\n  先 npm run build && (cd src-tauri && cargo build --release --features bluetooth)`\n  /* ★ 必须带 --features bluetooth：打包五条命令全都带，门禁若测不带蓝牙的那份 ⇒ "测的那份 ≠ 发的那份"（#126） */,
+    `✗ 没有二进制：${BIN}\n  先 npm run build && (cd src-tauri && cargo build --release --features bluetooth)\n`
+    + "  ★ 必须带 --features bluetooth：打包五条命令全都带，门禁若测不带蓝牙的那份 ⇒ 「测的那份 ≠ 发的那份」（#126）",
   );
   process.exit(2);
 }
@@ -554,11 +559,15 @@ function pubFromSecret(kind, b64secret) {
 function buildGroupEnvelope(o) {
   const iv = randomBytes(12);
   const c = createCipheriv("chacha20-poly1305", o.groupKey, iv, { authTagLength: 16 });
-  // 明文形状必须与产品侧 `protocol::gossip_plaintext` 逐字同形，**包括 mentions 的三态**：
-  // 键不存在 = 旧版本发出来的样子；键存在（含空数组）= 发送方的权威回答。
-  // 这一格要能在 harness 里分别造出这两种，所以由调用方"传不传 o.mentions"决定。
+  // 明文形状必须与产品侧 `protocol::gossip_plaintext_with_targets` 逐字同形，
+  // **包括 mentions / mention_targets 各自的三态**：
+  // 键不存在 = 发这条的那个版本压根不认识这个字段；键存在（含空数组）= 发送方的权威回答。
+  // 这一格要能在 harness 里分别造出这几种，所以由调用方"传不传 o.mentions / o.targets"决定。
+  // ⚠️ 落点**不许在这里凭空补**：`Some([])` 与"缺键"是两件事，替调用方决定就等于把
+  //    旧对端的形状悄悄改成了新对端的形状，那条三态判据会假绿。
   const plain = { kind: o.kind, content: o.content };
   if (o.mentions !== undefined) plain.mentions = o.mentions;
+  if (o.targets !== undefined) plain.mention_targets = o.targets;
   const sealed = Buffer.concat([
     c.update(JSON.stringify(plain), "utf8"),
     c.final(),
@@ -596,6 +605,32 @@ function buildGroupEnvelope(o) {
     encrypted: true,
   };
   return { messageId, wire: JSON.stringify({ type: "gossip", envelope: env }) };
+}
+
+/// harness 侧的 `protocol::build_mention_targets` 镜像（protocol.rs 里那条同名函数）。
+///
+/// 为什么镜像而不直接写死一条数组：落点里的 `n` 是"@这个名字在正文里第几次出现"，
+/// 它由**正文 + 名单顺序**算出来。写死 `n:1` 就等于"我以为产品会这么发"，
+/// 而 #122 要修的正是"两个人同名"那种情况下第二个人该拿到 `n:2` ——
+/// 只有照规则数出来的那份，才谈得上"穿过真实管道"。规则必须与 Rust 逐条同：
+/// ① 查不到昵称的 id 不分配；② 昵称空的不分配；③ 正文里没有 `@<name>` 的不分配
+/// （蒙一段别的文字上比留空更坏）；④ 同名按名单顺序递增；⑤ 封顶 64 条。
+/// ⚠️ 刻意**不**用字符偏移：Rust 按字节、JS 按 UTF-16，一个 emoji 就能把两端错开。
+function buildMentionTargets(content, ids, nameOf) {
+  const MAX_GOSSIP_MENTIONS = 64;
+  const seen = new Map();
+  const out = [];
+  for (const id of ids) {
+    const name = nameOf(id);
+    if (!name) continue;
+    const needle = `@${name}`;
+    if (!content.includes(needle)) continue;
+    const k = (seen.get(name) ?? 0) + 1;
+    seen.set(name, k);
+    if (k > MAX_GOSSIP_MENTIONS) continue;
+    out.push({ id, name, n: k });
+  }
+  return out;
 }
 
 /// 从实例库里取回 ed25519 私钥对象（只有 harness 需要，产品侧从不导出私钥）。
@@ -1158,7 +1193,17 @@ if (GROUP) {
     // 为什么这条值得排：把「@你」做成"存的时候替换"是这条规则最自然的破坏方式，
     // 而它的表现是**另一个人的屏幕上被烧进了我的视角**（同一条消息只能有一个正确存储形态）。
     gMentionText = `@e2e-${INSTANCES[1].label} 帮忙看这条`;
-    const mt = buildGroupEnvelope({ ...base, kind: "text", content: gMentionText, ts: ts + 3, seq: 4 });
+    // #122 的第二段：这一格现在发的是**当前版本**会发出去的那份形状 —— 名单 + 落点一起带
+    // （落点按规则算，不手写：`n` 是"这个名字第几次出现"，写死就把要证的东西当已知用了）。
+    // ⚠️ 为什么落在 `mt` 而不是 `mo`：`mo` 的正文刻意不含任何 `@`，当前版本给它算不出落点，
+    //    那正好是"名单有、落点没有"的第三种形状（= 4.30.x 那个只带名单的对端），留着当对照。
+    const gMentionName = `e2e-${INSTANCES[1].label}`;
+    gMentionTargets = buildMentionTargets(gMentionText, [idB.runtimeId],
+      (id) => (id === idB.runtimeId ? gMentionName : undefined));
+    const mt = buildGroupEnvelope({
+      ...base, kind: "text", content: gMentionText, ts: ts + 3, seq: 4,
+      mentions: [idB.runtimeId], targets: gMentionTargets,
+    });
     // #103 的线级那一半（原来只有单元判据，跨进程没人证过）：**同一条管道**上排两封，
     // 一封明文带 `"mentions":["<B 的 id>"]`，一封**没有这个键**（旧版本的原样形状）。
     // 正文刻意不含任何 `@` ⇒ "B 被点名"这件事只能从名单里读到，按名字一律判不出 ——
@@ -1705,6 +1750,32 @@ if (GROUP) {
       mentionLineCount >= 1, "≥1 行 mentions=1", mentionLineCount);
     check("没带这个键那条（旧形状）：B 判成「不知道」而不是「谁都没 @」——第三态跨进程成立",
       legacyLineCount >= 1, "≥1 行 mentions=none", legacyLineCount);
+    // #122 的落点（`mention_targets`）走的是**同一条管道**，所以判据形状照上面那对抄：
+    // 名单说"@ 的是谁"，落点说"正文里哪一段算他"。
+    // 先钉夹具自己：镜像函数数出几条，决定下面那条正向判据有没有意义 ——
+    // 夹具哪天算成 0 条，跨进程那条会红，而产品一个字没错（红要能归因，这是本文件的老规矩）。
+    check("夹具自查：harness 侧按规则给这条正文算出了 1 个落点（否则下一条红在夹具、不在产品）",
+      gMentionTargets.length === 1 && gMentionTargets[0].n === 1
+      && gMentionTargets[0].id === idB.runtimeId && gMentionTargets[0].name
+      && gMentionText.includes(`@${gMentionTargets[0].name}`),
+      "1 条、n=1、id=B、name 真的出现在正文里", JSON.stringify(gMentionTargets));
+    const targetLineCount = countLog(
+      INSTANCES[1].log, `群消息@输入 msg=${gMentionId} mentions=1 targets=1`);
+    check("名单+落点都带那条：B 自己解密后读到 1 个落点（mention_targets 穿过 seal→网络→解析没丢）",
+      targetLineCount >= 1, "≥1 行 mentions=1 targets=1", targetLineCount);
+    // 这一条是 INV-P24「新字段只许让新版更准、不许让老对端变暗」在**落点**这一层的跨进程版本：
+    // 只带名单不带落点，是今天线上那些 4.30.x 对端的原样形状。
+    // 它必须停在「不知道」：实现若"贴心地"补一个空数组，旧对端的 @ 就从"按昵称兜底"
+    // 变成"权威地说谁都没 @ "—— 比原缺陷更糟，而且无声（单元层
+    // `gossip_plaintext_with_targets_roundtrips_and_old_shape_still_parses` 钉过同一条，
+    // 但那里没有真的第二进程；两边各钉是因为破坏点分别在这条管道的两截）。
+    const rosterOnlyTargetCount = countLog(
+      INSTANCES[1].log, `群消息@输入 msg=${gMentionOnlyId} mentions=1 targets=none`);
+    check("只带名单那条：落点判成「不知道」而不是「空落点」——兜底路径跨进程仍然活着",
+      rosterOnlyTargetCount >= 1, "≥1 行 mentions=1 targets=none", rosterOnlyTargetCount);
+    // 两个键都缺（`lg`）那一格**不再单独钉一次**：它读的是同一行日志、同一条 map_or 分支，
+    // 而"缺键⇒两份都是 None"已在 protocol.rs 的用例里钉住 —— 这里再钉一遍只是把同一个
+    // 判据跑两遍（不产生新的可红面），按 §十四 不进账。
     check("落库的会话必须是群会话（conv_id 带 group: 前缀，且 conversations.kind='group'）",
       t2.length === 1 && t2[0].conv_id === convId && t2[0].conv_kind === "group",
       `${convId} / group`, `${t2[0]?.conv_id} / ${t2[0]?.conv_kind}`);

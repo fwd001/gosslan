@@ -204,6 +204,14 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "判据脚本自身可解析",
+    why: "挡住「门禁的判据脚本自己语法坏了，而只有贵层才发现」——实测：#126 往 harness 一条提示语后接第二行，落在已闭合的模板字符串外，E2E 层从此跑不了；能发现它的只有 E2E 层自己（一次 500s+，改一句提示语不会有人去跑）",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-scripts-parse.mjs"],
+  },
+  {
+    group: "frontend",
     name: "BLE 常量单一事实来源",
     why: "挡住「同一个概念多处各算一遍」——CHANGELOG 4.18.7→4.18.10 连着四版修的就是它",
     cwd: ROOT,
