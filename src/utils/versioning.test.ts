@@ -17,6 +17,8 @@ import {
   requiredLevel,
   TYPE_LEVEL,
   BUMP_TRAILER,
+  declaresBump,
+  filterUnpushed,
 } from "../../scripts/semver.mjs";
 
 test("解析 conventional commit（类型/范围/破坏性标记）", () => {
@@ -91,4 +93,48 @@ test("类型到级别的默认映射完整（新增类型必须显式表态）",
   }
   assert.equal(TYPE_LEVEL.feat, "minor");
   assert.equal(TYPE_LEVEL.fix, "patch");
+});
+
+test("声明门禁只看未推送提交（#123：历史 151 条不该天天响）", () => {
+  const rows = [{ short: "aaaa111" }, { short: "bbb2222" }, { short: "ccc3333" }];
+  // 已推送的那条要被排除
+  assert.deepEqual(
+    filterUnpushed(rows, new Set(["bbb2222"])).map((r) => r.short),
+    ["aaaa111", "ccc3333"],
+  );
+  // 没有 upstream（pushedSet 为空）⇒ 回退成全范围，不许把门禁静默变成"什么都不判"
+  assert.equal(filterUnpushed(rows, new Set()).length, 3);
+  assert.deepEqual(filterUnpushed([], new Set(["bbb2222"])), []);
+});
+
+test("零影响声明用现有 [plan] 标记，其余提交必须写 Version-Bump（#123）", () => {
+  // 文档/判据类提交：标题带 [plan] ⇒ 视为已声明"不动版本"
+  assert.equal(declaresBump({ subject: "docs(x): 改口 [plan]", message: "docs(x): 改口 [plan]", level: "patch" }), true);
+  // 代码类提交：必须写 trailer，且档位要和自己被定级的一致
+  assert.equal(
+    declaresBump({ subject: "fix(y): 修崩溃", message: "fix(y): 修崩溃\n\nVersion-Bump: patch", level: "patch" }),
+    true,
+  );
+  assert.equal(declaresBump({ subject: "fix(y): 修崩溃", message: "fix(y): 修崩溃", level: "patch" }), false);
+  assert.equal(
+    declaresBump({ subject: "feat(y): 新增", message: "feat(y): 新增\n\nVersion-Bump: patch", level: "minor" }),
+    false, // 被定级为 minor，声明 patch ⇒ 仍算没声明对
+  );
+});
+
+test("[plan] 只能豁免**不动应用代码**的提交（否则声明门禁就是装饰）", () => {
+  // 不动 src/ 与 src-tauri/src/ ⇒ [plan] 视为零影响
+  assert.equal(
+    declaresBump({ subject: "docs(x): 改口 [plan]", message: "docs(x): 改口 [plan]", level: "patch", touchesCode: false }),
+    true,
+  );
+  // 动了应用代码 ⇒ 光写 [plan] 不算，必须有 Version-Bump 且档位自洽
+  assert.equal(
+    declaresBump({ subject: "fix(x): 修崩溃 [plan]", message: "fix(x): 修崩溃 [plan]", level: "patch", touchesCode: true }),
+    false,
+  );
+  assert.equal(
+    declaresBump({ subject: "fix(x): 修崩溃", message: "fix(x): 修崩溃\n\nVersion-Bump: patch", level: "patch", touchesCode: true }),
+    true,
+  );
 });

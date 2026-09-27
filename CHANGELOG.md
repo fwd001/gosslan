@@ -9,6 +9,20 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 门禁（#123：版本声明只看未推送提交，`[plan]` 只豁免不动应用代码的提交）
+- 用户拍板"历史 151 条不再作为当前噪音；新提交仍必须遵守声明要求" ⇒ 落地成两件事：
+  ① **作用范围收到未推送**（`@{u}..HEAD`；审计加 `--all-commits` 扩回全范围）；
+  ② **`[plan]` 的豁免加了条件**：只有改动没落在 `src/` / `src-tauri/src/` 的提交才算零影响，
+     动了应用代码必须有 `Version-Bump:` 且与自己的定级一致 ——
+     不加这一条，任何代码提交写个 `[plan]` 就能免检，门禁就成了装饰。
+- 先写红再改绿：`src/utils/versioning.test.ts` 新增 3 条用例（`filterUnpushed` / `declaresBump` /
+  `[plan]` 豁免边界），第一版都因缺导出而 `fail 1`；改完 **9 pass / 0 fail**（`node --test` 现跑）。
+- ★ 过程中我自己写坏过一次并当场抓到：第一版用 `git rev-list --not --remotes=origin HEAD` 求"未推送"，
+  那个写法把 `HEAD` 一起取反 ⇒ **输出空** ⇒ 声明检查静默变成"什么都不判"（正是本仓最禁的失败形状）。
+  改成两点范围 `@{u}..HEAD`，并加了一道**反空转闸**：说"有 N 个未推送"却在本次范围里一个都没看到 ⇒
+  拒绝放行、改判全范围并打印归因。现算：`git rev-list --count "$(git rev-parse --abbrev-ref --symbolic-full-name @{u})..HEAD"`。
+- `version:check` 现在的输出只剩真信号：「当前版本 4.30.0 落后于未发布提交要求的 4.31.0（最高档 minor）」，
+  不再带那一大串历史名单 ⇒ 后面的工作按"每个动应用代码的提交都提版本"这条走，最终落在 4.31.0。
 ### 文档（#35「原生感」伞形项收口为逐格清单，并当场推翻其中一格的前提）
 - §12.6.1 的 N1–N8 逐格表按今天状态更新：**N1/N2 从"已实现、运行时待复测"改成"已实现并有运行时判据（本地层）"**
   —— 判它的是仓内零依赖 CDP 探针（`--only=emoji` / `--only=search`，本日复跑两段都由裸退出码 0 收尾）。

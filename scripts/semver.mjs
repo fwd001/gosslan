@@ -97,6 +97,33 @@ export function accumulate(version, levels) {
 }
 
 /** 提交信息里的 `Version-Bump: <level>` 声明（没有则返回 null）。 */
+/**
+ * 声明门禁的作用范围：**只看未推送的提交**（#123，用户 2026-09-27 拍板）。
+ *
+ * 为什么不看全范围：绝大多数缺声明的历史提交**已经推送**，改写它们要 rebase 已公开的历史；
+ * 而门禁天天报上百条噪音的真实代价是「新漏的那一条被淹掉」。已推送的不再算当前噪音，
+ * **新提交仍必须声明**（这条纪律不因静音而放松）。
+ *
+ * `pushedShorts` 为空 ⇒ 回退成全范围：拿不到远端引用时宁可继续严判，
+ * 也不许把「什么都没判」当成静音通过（那是最像成功的一种失败）。
+ */
+/**
+ * 这条提交**是否算已声明**：
+ * - 标题带 `[plan]`（本仓既有标记，Change Budget 也读它）⇒ 视为"零影响声明"，不动版本；
+ * - 否则必须有 `Version-Bump: <级别>`，且与自己被定级的那一档一致。
+ */
+export function declaresBump(row) {
+  // ★ 豁免只给**不动应用代码**的提交（`src/` 与 `src-tauri/src/` 之外的改动，如文档、门禁脚本）：
+  // 否则一条 `[plan]` 就能把任何代码提交免掉，这个门禁就是装饰。
+  if (!row.touchesCode && /\[plan\]/.test(row.subject ?? "")) return true;
+  return parseBumpTrailer(row.message ?? "") === row.level;
+}
+
+export function filterUnpushed(rows, pushedShorts) {
+  if (!pushedShorts || pushedShorts.size === 0) return [...rows];
+  return rows.filter((r) => !pushedShorts.has(r.short));
+}
+
 export function parseBumpTrailer(message) {
   const m = new RegExp(`^${BUMP_TRAILER}:\\s*(patch|minor|major)\\s*$`, "m").exec(message);
   return m ? m[1] : null;
@@ -126,14 +153,17 @@ export function collectCommits(since) {
     .map((block) => {
       const [hash, short, date, subject, ...rest] = block.split("\x1f");
       const numstat = git(`show --numstat --format= ${hash}`);
-      let churn = 0, files = 0;
+      let churn = 0, files = 0, touchesCode = false;
       for (const line of numstat.split("\n")) {
         const parts = line.split("\t");
         if (parts.length < 3) continue;
         files += 1;
         churn += (Number(parts[0]) || 0) + (Number(parts[1]) || 0);
+        // 口径：只看**将要发出去的应用码**（前端 src/ 与 Rust src-tauri/src/）；
+        // 门禁脚本、文档、workflow 不算 ⇒ 它们仍可走 [plan] 零影响豁免。
+        if (/^(src\/|src-tauri\/src\/)/.test(parts[2] ?? "")) touchesCode = true;
       }
-      return { hash, short, date, subject, message: rest.join("\x1f"), churn, files };
+      return { hash, short, date, subject, message: rest.join("\x1f"), churn, files, touchesCode };
     });
 }
 
@@ -241,6 +271,33 @@ function main() {
   const commits = collectCommits(since);
   const rows = commits.map((c) => ({ ...c, ...classifyCommit(c) }));
 
+  // 作用范围（#123）：已推送 = 不在 `HEAD --not --remotes=origin` 那个集合里。
+  // 没有任何远端引用时那个集合就是全部 ⇒ pushedShorts 为空 ⇒ 回退成全范围（见 filterUnpushed 文档）。
+  // ★ 用 upstream 的两点范围，**不要**写成 `rev-list --not --remotes=origin HEAD`：
+  // 那个写法会把 HEAD 也一起取反 ⇒ 输出空 ⇒ "未推送 0 个" ⇒ 声明检查静默变成什么都不判
+  // （本仓最禁的一种失败：今天实测它真的返回空）。没有 upstream ⇒ pushedShorts 留空 ⇒ 回退全范围。
+  let pushedShorts = new Set();
+  let unpushedCount = 0;
+  try {
+    const upstream = git("rev-parse --abbrev-ref --symbolic-full-name @{u}").trim();
+    if (upstream) {
+      const unpushedHashes = new Set(
+        git(`rev-list ${upstream}..HEAD`)
+          .split("\n")
+          .filter(Boolean),
+      );
+      unpushedCount = unpushedHashes.size;
+      pushedShorts = new Set(rows.filter((r) => !unpushedHashes.has(r.hash)).map((r) => r.short));
+    }
+  } catch {
+    // 没有 upstream（或远端引用还没取到）⇒ 走全范围，绝不静默放行
+  }
+  // 反空转闸：说"有 N 个未推送"却在本次范围里一个都没看到 ⇒ 判据自己坏了，当场报错而不是放行
+  if (unpushedCount > 0 && rows.length > 0 && rows.length - pushedShorts.size === 0) {
+    console.error(`声明检查的作用范围算空了（未推送 ${unpushedCount} 个，但都没落进本次范围）⇒ 拒绝放行，改判为全范围`);
+    pushedShorts = new Set();
+  }
+
   if (cmd === "ledger") {
     console.log("| # | commit | 日期 | 类型 | 级别 | 累计版本 | 判据 | 标题 |");
     console.log("|---|---|---|---|---|---|---|---|");
@@ -281,10 +338,12 @@ function main() {
   if (top && compareVersion(cur, target) < 0) {
     problems.push(`当前版本 ${cur} 落后于未发布提交要求的 ${target}（最高档 ${top}）⇒ 跑 \`npm run version:release\``);
   }
-  const wrong = rows.filter((r) => parseBumpTrailer(r.message) !== r.level);
+  // ★ 声明检查只看**未推送**的提交；`--all-commits` 显式扩回全范围（审计/自查用）。
+  const scoped = flags.includes("--all-commits") ? rows : filterUnpushed(rows, pushedShorts);
+  const wrong = scoped.filter((r) => !declaresBump(r));
   if (wrong.length) {
     problems.push(
-      `${wrong.length} 个提交缺少/写错了 \`${BUMP_TRAILER}:\` 声明（应为该提交的级别）：\n` +
+      `${wrong.length} 个**未推送**提交缺少/写错了 \`${BUMP_TRAILER}:\` 声明（应为该提交的级别；已推送的历史不算噪音，审计请加「--all-commits」）：\n` +
         wrong.slice(0, 8).map((r) => `  ${r.short} 期望 ${r.level} 实际 ${parseBumpTrailer(r.message) ?? "(无)"}  ${r.subject}`).join("\n"),
     );
   }
@@ -294,7 +353,10 @@ function main() {
     console.error(`版本号规则检查未通过（自 ${since || "首个提交"}）：\n- ${problems.join("\n- ")}`);
     process.exit(1);
   }
-  console.log(`版本号规则检查通过：自 ${since || "首个提交"} 共 ${rows.length} 个提交，最高档 ${top ?? "无"}，当前版本 ${cur} ≥ ${target}`);
+  console.log(
+    `版本号规则检查通过：自 ${since || "首个提交"} 共 ${rows.length} 个提交（最高档 ${top ?? "无"}，当前版本 ${cur} ≥ ${target}）` +
+      `；声明检查只看未推送的 ${scoped.length} 个（已推送 ${rows.length - scoped.length} 个不再算噪音）`,
+  );
 }
 
 if (process.argv[1] && process.argv[1].endsWith("semver.mjs")) main();
