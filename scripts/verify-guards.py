@@ -2519,7 +2519,9 @@ CASES: list[Case] = [
         "⚠️ 2026-09-16 修正：本用例原先拿 `npm run version:check` 当命令，而那条命令的 ①②"
         "（版本必须 ≥ 未发布提交要求的、每个提交要有自洽的 Version-Bump 声明）在**攒提交期间"
         "本来就该是红的** ⇒ 本用例永远进不了『恢复即 PASS』、被判成护栏失效。"
-        "改成只跑结构检查的 `version:changelog`：结构是结构、记账是记账。",
+        "改成只跑结构检查的 `version:changelog`：结构是结构、记账是记账。"
+        "（2026-09-28 #138/#123 更新：①② 的作用域都已缩小 ⇒ 上面那句「当时该红」今天不再成立，"
+        "但这条拆分仍然要 —— 结构判据不许被记账口径牵动。）",
         file=ROOT / "CHANGELOG.md",
         injections=[("## [Unreleased]\n", "## [unreleased]\n")],
         cmd=npm("run", "version:changelog"),

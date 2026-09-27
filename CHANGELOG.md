@@ -29,6 +29,15 @@
   `scripts/verify.mjs` 里"它当前是红的（`29ee060`/`7c03341` 缺声明）"那句归因（#123 已作废），
   以及同一段里"`cargo fmt --check` 有 517 处差异、`clippy` 未安装"——今天现跑是 **0 处**与
   `clippy 0.1.98`，而那两条**本来就已是全量层的步骤**。
+- ★ **同一句"攒提交期间 check 该红"在仓里存着四份副本**（`docs/VERSIONING.md` 三处口径、
+  `scripts/semver.mjs` 的 `changelog` 段注释、`scripts/verify-guards.py` 那条 CHANGELOG 用例的 `why`、
+  `docs/final-architecture-review.md` 里 classify 的读数）⇒ 改一处不够，按"处置口径考古"逐份 grep 后
+  **就地划掉 + 写清今天改成什么**，历史读数保留为当时的真值。`docs/VERSIONING.md` 的"取最高档"三处
+  一并加限定为「真欠的那一档」，否则下一个读者会以为零影响提交也算数。
+- ⚠️ 这一轮我自己又被既有护栏拦下一次：给 `verify-guards.py` 的 `why` 追加文案时**漏了一个逗号**
+  ⇒ `python3 -c compile()` 当场报 `Perhaps you forgot a comma?`。那条正是今天刚进快速层的
+  「判据脚本自身可解析」（#136/#126 那一批）——**它第一次在真实改动里发挥作用**：
+  修完逗号后复跑 `--list` ⇒ **197 条注入锚点仍各自恰好命中一次**（改文案没碰锚点）。
 - 证据（全部现跑、退码裸取）：新用例先红（缺导出 `SyntaxError`）后绿；`versioning.test.ts` **11 pass / 0 fail**；
   非空转反证 = 把 `isZeroImpact` 改成恒 `false` ⇒ **恰好 3 条红**（新那条 + #123 那两条共用同一口径的用例），
   `/tmp` 备份还原后回到 11 pass；真实工作树上同一份输入两个结论：改前 `check` 退 1（要求 4.31.4）、
