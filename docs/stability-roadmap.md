@@ -918,6 +918,29 @@ N8 属新增手势 = 新功能，按「暂不新增功能」**判为不做**。
 N4/N5/N6/N7 已各自拆成独立任务（#127–#130，每格带自己的复跑命令与验收边界），N8 判为不做。
 ⇒ **#35 这个伞形项到此收口**：它的交付是"可挑可验的格子 + 每格的证明层级"，不是"原生感已达成"。
 
+#### 12.6.2 #122 第二段：让 @ 的落点活过一次重启（要动 schema，写清再动手）
+
+第一段（协议带落点 + 呈现层按身份标）已于 2026-09-28 落地（`a94b144`，4.31.0）。**剩下的边界只有一条**：
+落点与 `mention_ids` 同待遇 —— **不落库** ⇒ 应用重启后读历史，那一段又退回按昵称判（同名两人重新互相点亮）。
+这一格不能靠"再写一条判据"收，只能落一列。动手前先看清影响面（下面每一处都是 2026-09-28 现读代码确认的，不是推测）：
+
+| 面 | 现在长什么样（复跑命令在括注里） | 要改成什么 |
+|---|---|---|
+| 版本与迁移链 | `DB_VERSION: u32 = 10`（`grep -n "const DB_VERSION" src-tauri/src/db.rs`）；`MIGRATIONS` 最后一格是 `from: 9, to: 10`（`grep -n "from: 9," src-tauri/src/db.rs`） | 加一格 `from: 10, to: 11`：`ALTER TABLE messages ADD COLUMN mention_targets TEXT`（**可空、无回填**：老行没有落点就是"不知道"，与旧对端同一条兜底路径）；常量同步到 11 |
+| 新建表真源 | `SCHEMA` 里 `messages` 那一段 10 列（`grep -n "CREATE TABLE IF NOT EXISTS messages" -A 12 src-tauri/src/db.rs`） | 同一处加这一列。★ 这里有个已知陷阱：`idx_messages_conv_seq` **故意不在 SCHEMA 里**（它依赖 v2→v3 才出现的 `seq`）⇒ 新列可以进，**索引不能顺手进** |
+| 写入点 | **两条**（★ 复跑要用 `grep -n "INTO messages" src-tauri/src/db/messages.rs`，**别写 `"INSERT INTO messages"`** —— 第一条是 `INSERT OR IGNORE INTO messages`，用后者会只数到一条，然后按"只有一处"改完留一半）：`insert_message_if_new` 与 `insert_message_and_outbox`（两条都列了同样的 9 列）——后者是"消息 + 可靠队列"同一事务那条 | 两条的列名/参数表一起加这一列。**只改一条 = 半功能**：走 outbox 的那条路径（离线时发的）重启后就没有落点 |
+| 读取点 | `MessageRecord` 的行映射有 **4 处** `Ok(MessageRecord { … })`（`grep -n "Ok(MessageRecord {" src-tauri/src/db/messages.rs`） | 四处都要把这一列读回来并解析成同一形状 ⇒ 建议抽一个 `row_to_message_record` 再改，**但那是搬家、不混在本次里做**（本仓判过：纯搬家短期只降稳定）；本次四处各自加一行 |
+| 谁负责序列化 | 落点是 `Vec<protocol::MentionTarget>`（`{id, name, n}`）。库里存 JSON 串 | 存 `serde_json::to_string` 的结果；**读回来解析失败 ⇒ 判成 `None`（不知道），不许 panic、也不许当成"没人被 @"** —— 那是把损坏读成权威 |
+| 已有守卫会撞到的 | ① `fresh_schema_alone_has_exactly_the_migrated_shape`（新库与迁移后的库形状必须一字不差 —— 忘记改 `SCHEMA` 会被它当场判红，这正是它存在的意义）；② §8 那条"存储不变量：@ 的那串字节不许被任何一层改写"（#110）；③ 测试清单守卫：新增 Rust 用例要 `--sync-baselines`（mac + win 两份基线，无 linux） | 加两条用例：`v10→v11 后列存在且旧行为 NULL`、`写入→读出落点保真（含同名两人各自的 n）`；跑 `verify:full` 前先 `--update` 再 `--sync-baselines`（基线收尾顺序） |
+
+**为什么这一段单独登记、不顺手夹在别的提交里**：它动的是最热的数据面（`messages` 表 + 两条写入点 + 四处读取点），
+而收益是"重启后的历史高亮更准"——按优先级（稳定 > 流畅 > 正确 > 原生体验）它必须**独占一次改动 + 一次完整三层门禁**，
+不能和任何视觉/文案改动同车（同车 ⇒ 出问题时无法二分归因，本仓已为此立过规矩）。
+
+**还缺的跨进程判据（同一段一起做）**：双实例 harness 现在只钉 `mentions=1 / mentions=none` 两行读数，
+**没钉 `mention_targets` 穿过 seal→网络→解密→解析**。加一条同族读数即可（复用 #110 那条管道与"探针必须钉在事件窗口内"的教训），
+并在矩阵「轮次账」那一处按规矩登记。
+
 ### 12.7 自动化 —— ✅，但要写清"自动化"的边界
 
 双实例 E2E、故障注入、边界测试、回归测试四类**都在同一入口里**（`verify:e2e` 本地层）。
