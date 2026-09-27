@@ -428,6 +428,27 @@ if (groupFlag === "local") {
   steps.push(
     {
       group: "local",
+      name: "UI 运行时探针：表情面板与搜索弹窗的键盘出口（浏览器内真按键）",
+      why:
+        `§19/§20 那一格唯一能自动化的形状：焦点落点、方向键走格子、Esc 关完之后焦点去哪、` +
+        `回车打开的是不是高亮那一条 —— 这些只有走过**真浏览器输入管线**才看得见，` +
+        `而仓里没有 DOM 测试地基（没有 jsdom / vitest / @vue/test-utils / playwright 依赖）。` +
+        `这一条用「vite dev + 本机 playwright 缓存里的 Chrome for Testing + Node 内置 WebSocket 讲 CDP」，` +
+        `**不给 package.json 加任何依赖**（加一层测试框架属于"为稳定性任务改动项目外的东西"）。` +
+        `★ 两把非空转都是当场跑过的：① 把组件里的 COLS 从 8 改成 7（布局仍是 8 列）⇒ ` +
+        `恰好"↓ 走整行"与"↓ 之后 x 不变"两条红、其余 11 条照常绿；` +
+        `② 把 #92 修掉的那行改回旧行为（回车固定开第一条）⇒ 恰好"emit 的必须是高亮那条"红，` +
+        `报错里直接印出 msgId=m0 而高亮在 index 2。另外 Enter/空格不带 text 时零次激活，` +
+        `这一条被固定成正向跑里的一条**反向对照判据**（不是装饰：没有它，"回车能选中"可能是探针自造的假绿）。` +
+        `⚠️ 两条口径边界：① 这是**浏览器内**，WKWebView / WebView2 一律未证 ⇒ 那一半仍是人工（Smoke-11）；` +
+        `② 缺 Chrome for Testing 时这一条是**红**，不是跳过（§十 不许把没跑写成 PASS），` +
+        `CI 不跑这一层所以不会因此变红。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/check-ui-runtime.mjs"],
+    },
+    {
+      group: "local",
       name: "双实例 E2E：默认轮（文本 + 文件 + 重启）",
       why: `两个真实 release 进程对发，断言两侧 DB/日志/磁盘收敛一致；${LOCAL_ONLY_WHY}`,
       cwd: ROOT,

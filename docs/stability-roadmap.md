@@ -1368,9 +1368,12 @@ A 台账 `active`、**A 队列行仍是 1**；A 重启后 **12.6 s** 从盘上�
    再起两端 ⇒ 缺席期/崩溃后队列行都必须是 2 行、气泡不许消失、重启后必须送到对端并被 GroupAck 清干净）。
    **轮次名单与条数一律不在此抄** —— 唯一的账是 `docs/acceptance/stability-smoke-matrix.md` 顶部那处"轮次账"，
    由判据 C 从 harness 现算对账（这里曾手写"15 个轮次 + 逐个点名"，任务轮一落地就变成假话 ⇒ 总数型声明没有守卫，删掉）。
-4. **§19/§20 运行时层**：#92 搜索弹窗方向键仍未机器验证；#97 两扇窗之间的回送＝行为级零断言
-   （已如实落成 **Smoke-10 / Smoke-11**，见 `2828bf6`）。可复用的零依赖手法已沉淀：
-   `vite dev` + 缓存里的 Chrome for Testing + Node 内置 `WebSocket` 讲 CDP（不动 package.json）。
+4. **§19/§20 运行时层**：⚠️ 这一格 2026-09-27 收了一半 —— #92 那两条键盘出口已经从"我拿探针手工跑过一次"
+   换成仓内可重跑入口 `scripts/check-ui-runtime.mjs`（`npm run test:ui-runtime`，已接进本地层；
+   两把非空转是"把修好的地方改回旧坏样子"跑出来的：`COLS` 8→7 ⇒ 恰好两条红、`onEnter` 改回固定开第一条 ⇒ 恰好一条红），
+   **判据数不在此抄**，跑一次由它自己打印。仍**没有**判据的：#97 那半句"另一扇窗当场出现那张卡片"（跨窗事件，
+   浏览器探针够不到 ⇒ Smoke-10 保持未做）、以及真 WKWebView / WebView2 里的键盘与焦点（Smoke-11 保持人工，等级没往上改）。
+   可复用的零依赖手法已沉淀：`vite dev` + 缓存里的 Chrome for Testing + Node 内置 `WebSocket` 讲 CDP（不动 package.json）。
    ⚠️ **#97 这一格 2026-09-27 只收了上游**（不是收口）：`storeContract.test.ts` 那条
    「返回 MessageRecord 的命令在 store 里的调用点必须 enqueueMessage」+ `messageKinds.test.ts` 的
    时间线可见性判决表，把"记录进没进 store / 会不会被过滤掉 / 有没有人渲染它"三段锁住了；
