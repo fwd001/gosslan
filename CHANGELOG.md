@@ -10,6 +10,29 @@
 
 ## [Unreleased]
 
+### #133 落地：领域依赖守门现在**每次跑都把自己的分母打印出来**（A 只报告不判红，B 复用既有口径）
+- **为什么这是实测到的洞、不是理论**：`docs/domains.data.mjs` 里 db 的 `consumes` 注释写明
+  `messaging` 是"**真生产依赖**：`db/messages.rs` 的 `mention_targets` 列存的就是 `protocol::MentionTarget`"，
+  而 `db/messages.rs` 里 **`use crate::protocol` 是 0 行**、三条内联 `crate::protocol::…` 调用点才是真相
+  ⇒ 判据对一条**已声明并已注释成生产依赖**的耦合完全看不见（复跑：
+  `grep -cE "^[[:space:]]*(pub )?use crate::protocol" src-tauri/src/db/messages.rs` 得 0、
+  `grep -nE "protocol::[A-Za-z_]+" src-tauri/src/db/messages.rs` 有命中）。
+- **A（内联）本轮只报告不判红**：新增 `scanInlineCrate`，把"只有内联、`use` 判据看不见"的跨域对数出来并打印首例。
+  当场读数：**59 处（上界，含注释/字符串里的 `crate::`）、去重 13 对源域→目标域**，首例包括
+  `transport→persistence`（`network/ble.rs:483 crate::db::now_ms`）、`presence→identity`
+  （`network/discovery.rs:284 crate::crypto::random_key`）。
+  不判红的理由写在代码里：把内联纳入判据会把按 `use` 口径建起来的 `consumes` 名单整片判红，
+  而"补声明还是改代码"是要人拍板的面 ⇒ 先把洞变成能看见的数。
+- **B（独立测试文件）复用既有那一份口径**：`isAppCodePath`（`semver.mjs`，#139 已让 Change Budget 复用它）
+  判成"不是应用码"的 `.rs` 不再当生产扫；本守门原先只跳过 `#[cfg(test)] mod` **块内**，与自己函数注释里那句
+  "提取**生产代码**的 use crate::"对不上。作用点当场打印：**忽略 3 个文件、其中 `use crate::` 2 条**
+  ⇒ 今天实际影响只有 2 条引用，不是"一片"（这句是现读，不是估计）。
+  ⚠️ **一条我没拿到的证据**：想用一个"未声明跨域引用"的红/绿对照来证明 B 会咬，注入 `use crate::export::EXPORT_DIR`
+  到测试文件与到生产 `db.rs` **两次都退 0** ⇒ 那条注入根本不构成违规（对照空洞），**B 的"会咬"目前只有
+  打印出来的作用点（2 条）作证据，没有红/绿对照**，别读成已证明。
+- 判据本身没变弱：`node scripts/check-domain-deps.mjs` 仍退 0、`consumes` 合法性那条判据（H/I）照过；
+  新增的是两段自打印。`node --check` 退 0。
+
 ### #133 的两处盲区先量了大小（本轮**没动那个守门**，理由是量完之后才知道代价）
 - 现状读数（复跑：`grep -rhoE "^[[:space:]]*(pub )?use[^(]*crate::[a-z_:]+" src-tauri/src -r --include='*.rs' | wc -l`
   与非 use 行那条同形命令 —— 内联这条：`grep -rhE "crate::" src-tauri/src -r --include='*.rs' | grep -vE "^[[:space:]]*(pub )?use[ (]" | wc -l`）：**`use` 行 135 条 / 非 `use` 行的内联 `crate::` 614 行**

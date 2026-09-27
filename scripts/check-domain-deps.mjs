@@ -64,6 +64,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import domainMap from "../docs/domains.data.mjs";
+import { isAppCodePath } from "./semver.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -199,6 +200,43 @@ function scanUseCrate(content) {
 }
 
 /**
+ * ★ #133-A：**只报告、不判红**的那一半 —— 数本文件里"内联写法"的跨域引用。
+ *
+ * 为什么要数它：本守门原先只看 `use crate::xxx` 行，而 `db/messages.rs` 里那条
+ * **地图自己注释成"真生产依赖"**的耦合（`crate::protocol::MentionTarget` /
+ * `parse_mention_targets_column`，`docs/domains.data.mjs` 里 db 的 consumes 注释写着它）
+ * 一行 `use` 都没有 ⇒ 判据对着一条已声明的生产依赖完全看不见。
+ * 这条洞不是"理论上的绕法"，是实测到的。
+ *
+ * 为什么先不判红：把内联也纳入判据会把历史上按 `use` 口径建起来的 `consumes` 名单一次性判红，
+ * 而"补声明"还是"改代码"属于要人拍板的面 ⇒ 现在先把分母打印出来，让洞变成能看见的数。
+ *
+ * 计数是**上界**：注释与字符串里出现的 `crate::` 也会被数进去（不解析语法树）。
+ */
+const INLINE_RE = /crate::([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)/g;
+function scanInlineCrate(content) {
+  const lines = content.split("\n");
+  const testRanges = findTestModuleRanges(content);
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (isInTestRange(i, testRanges)) continue;
+    const line = lines[i];
+    if (/^\s*(pub\s+)?use\s/.test(line)) continue; // use 行由 scanUseCrate 负责
+    if (/^\s*(\/\/|\/\*)/.test(line)) continue; // 整行注释
+    let m;
+    INLINE_RE.lastIndex = 0;
+    while ((m = INLINE_RE.exec(line)) !== null) out.push({ line: i + 1, modulePath: m[1] });
+  }
+  return out;
+}
+
+/// #133 的两个计数器（由主循环填，最后一起打印）
+let skippedTestFiles = 0;
+let skippedTestRefs = 0;
+/** @type {Map<string, {count: number, sample: string}>} `源域→目标域` 的内联耦合（判据看不见的哪些） */
+const inlineOnlyPairs = new Map();
+
+/**
  * 建立 `rust module path → 领域 id` 的精确索引（基于所有领域的 `paths`）。
  *
  * 关键设计：每个 `.rs` 文件**独立一条**索引（rust 模块路径如
@@ -296,7 +334,30 @@ for (const d of domainMap.domains) {
     } catch {
       continue;
     }
+    // ★ #133-B：独立测试文件按仓里**已有那一份**口径处理 —— `semver.mjs` 的 `isAppCodePath`
+    //   已把 `src-tauri/src/**_tests.rs` 判成"不是应用码"（`check-change-budget.mjs` 也复用它），
+    //   而本脚本原先只跳过 `#[cfg(test)] mod` **块内** ⇒ 整份测试文件被当生产扫，
+    //   与本文件自己那句"提取**生产代码**的 use crate::"对不上。不复用就会长出第二个家。
+    if (!isAppCodePath(rel.replaceAll("\\", "/"))) {
+      skippedTestFiles += 1;
+      skippedTestRefs += scanUseCrate(content).length;
+      continue;
+    }
     const refs = scanUseCrate(content);
+    // ★ #133-A：把"只有内联写法、判据完全看不见"的跨域对数出来（只报告，不判红）
+    const seenTargets = new Set();
+    for (const ref of refs) {
+      const t = resolveDomain(ref.modulePath, index);
+      if (t !== d.id && t !== "assembly" && t !== "unmapped") seenTargets.add(t);
+    }
+    for (const im of scanInlineCrate(content)) {
+      const t = resolveDomain(im.modulePath, index);
+      if (t === d.id || t === "assembly" || t === "unmapped" || seenTargets.has(t)) continue;
+      const key = `${d.id}→${t}`;
+      const cur = inlineOnlyPairs.get(key);
+      if (cur) cur.count += 1;
+      else inlineOnlyPairs.set(key, { count: 1, sample: `${rel}:${im.line} crate::${im.modulePath}` });
+    }
     for (const ref of refs) {
       const target = resolveDomain(ref.modulePath, index);
       if (target === d.id) continue; // self —— 域内引用,不算跨域
@@ -331,7 +392,23 @@ if (violations.length === 0) {
 // ---------------- 汇总 ----------------
 if (ok) {
   console.log("\n✓ 领域依赖方向与 consumes 声明一致。");
-  console.log("  （已知边界：测试代码不扫 / 前端不扫 / activeHome 是否属实由 check-domain-map.mjs 守。）");
+  console.log("  （边界：独立测试文件不算生产耦合（下面打印忽略了多少）/ 前端不扫 / activeHome 由 check-domain-map.mjs 守。）");
+  // ★ #133 的两条分母，**每次跑都自己打印**，免得"已知边界"又变回一句没人核对的手抄话
+  console.log(
+    `  · 按 isAppCodePath 忽略独立测试文件 ${skippedTestFiles} 个（其中 use crate:: ${skippedTestRefs} 条）`,
+  );
+  const pairs = [...inlineOnlyPairs.entries()].sort((a, b) => b[1].count - a[1].count);
+  const inlineTotal = pairs.reduce((s, [, v]) => s + v.count, 0);
+  console.log(
+    `  · 判据看不见的内联跨域引用：**${inlineTotal} 处**（上界，含注释与字符串里的 crate::），`
+      + `去重后 ${pairs.length} 对 源域→目标域`,
+  );
+  for (const [k, v] of pairs.slice(0, 8)) {
+    console.log(`      ${k}  ${v.count} 处  首例 ${v.sample}`);
+  }
+  if (pairs.length > 8) console.log(`      …其余 ${pairs.length - 8} 对未列`);
+  console.log("      ⚠️ 这些**不判红**：把它们纳入判据会把按 use 口径建起来的 consumes 名单整片判红，"
+    + "\n         而「补声明还是改代码」是要人拍板的面（#133-A）。先让洞有数。");
   process.exit(0);
 }
 console.error("\n✗ 跨领域依赖与 consumes 声明不一致 —— 先决定是修 consumes 还是删 use,别打补丁。");
