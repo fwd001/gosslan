@@ -1613,6 +1613,24 @@ test("「有人@我」只许走 messageMentionsMe：昵称判定不许在调用�
     /textMentionsName\(\s*rec\.content/.test(messagesSrc),
     "昵称兜底被删 ⇒ 不认识 mentions 字段的旧对端发的 @ 再也判不出来（INV-P24 降级）",
   );
+  // ④ 「用户此刻在不在看」这条口径只许有一个家，而且红点那条必须真的把它传进去：
+  //   "会话开着"不等于"看着"（桌面端启动会自动打开最近那个会话），只按开着就抑制红点，
+  //   同一个瞬间会出现「已读说没在看、红点说在看」两种相反答案 —— 两处各写一遍迟早只改一处。
+  assert.ok(
+    /activeVisible:\s*chatViewerLooking\(\)/.test(storeSrc),
+    "红点那条没把「在不在看」传进 freshMentionedConvs ⇒ 退回「开着就等于看着」，后台窗口里收到的 @ 会被静默咽掉",
+  );
+  const hiddenHits = storeSrc.split("!document.hidden && app.chatVisible").length - 1;
+  assert.equal(
+    hiddenHits,
+    1,
+    `「!document.hidden && app.chatVisible」这个组合在 store 里出现 ${hiddenHits} 次（应为 1 次，只在 chatViewerLooking 那一处）⇒ 这条口径又分出第二个家，两条规则迟早只改一处`,
+  );
+  const lookerUses = storeSrc.split("chatViewerLooking()").length - 1;
+  assert.ok(
+    lookerUses >= 2,
+    `chatViewerLooking() 只被引用 ${lookerUses} 次 ⇒ 已读与红点两条没有真的共用这份口径（定义那一处不计）`,
+  );
   // 非空转：同一台解析器要抓得到那个坏形状，且不误抓"只是注释里提一句"
   const bad = `const hit = myName ? messageMentionsName(rec, myName) : false;`;
   assert.ok(BYPASS.some((lit) => bad.includes(lit)), "夹具没被抓到 ⇒ 这条判据是空转的");

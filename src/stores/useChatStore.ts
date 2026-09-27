@@ -442,7 +442,7 @@ export const useChatStore = defineStore("chat", () => {
     const myName = app.device?.nickname ?? "";
     const myId = myDeviceId.value;
     for (const cid of freshMentionedConvs(newByConv, activeConv.value, { id: myId, name: myName },
-      { alsoMentionsMe: (rec) => todoMentionsMe(rec, myId) })) {
+      { alsoMentionsMe: (rec) => todoMentionsMe(rec, myId), activeVisible: chatViewerLooking() })) {
       mentionedConvs.value.add(cid);
     }
     // 会话列表中不存在的会话（新好友 / 后端新创建）：本地合并不了，直接从后端拉取
@@ -572,6 +572,20 @@ export const useChatStore = defineStore("chat", () => {
     if (conv && conv.unread !== 0) conv.unread = 0;
     // 水位打在**发起前**的这一刻：晚于快照发起 ⇒ 那份快照里的数字是旧的，不许点亮红点
     unreadClearedAt.set(convId, Date.now());
+  }
+
+  /**
+   * 「用户此刻真的在看聊天」—— 判据只在这一个家里，两条规则共用：
+   *  - 已读（`debounceMarkRead`）：不在看就不许判已读（用户 2026-09-12 实测报告：
+   *    移动端整页浮层盖着时判已读＝替用户撒谎、还会把回执发回去）；
+   *  - 「有人@我」红点（`freshMentionedConvs` 的 `activeVisible`）：**"会话开着"不等于"在看"** ——
+   *    桌面端启动会自动打开最近那个会话（`ResponsiveLayout.vue` 那条 watch），窗口也常在后台。
+   *
+   * ⚠️ 两条不许各取一半：只按"开着"就抑制红点，同一个瞬间会出现"已读说没在看、红点说在看"，
+   * 后果是用户回来只看到「N 条未读」、看不出自己被 @ 过，要点开才知道。
+   */
+  function chatViewerLooking(): boolean {
+    return !document.hidden && app.chatVisible;
   }
 
   /** 每个群「与我相关且未完成未归档」的任务数 —— 蓝色徽标的唯一数据源（用户 2026-09-26）。
@@ -1832,7 +1846,8 @@ export const useChatStore = defineStore("chat", () => {
         // ⚠️ 三个条件缺一不可：得是这个会话、应用在前台、**而且聊天视图真的可见**
         // （移动端可能正盖着设置/新的朋友等整页浮层 —— 那时用户根本没看到这条消息，
         //  判已读等于替用户撒谎、还会把回执发回去。用户 2026-09-12 实测报告）。
-        if (activeConv.value !== convId || document.hidden || !app.chatVisible) return;
+        // 这份口径的家是 `chatViewerLooking()` —— 「有人@我」那条也读它，不许在这里再手写一遍。
+        if (activeConv.value !== convId || !chatViewerLooking()) return;
         void api.markRead(convId).then(() => clearUnreadLocally(convId));
       }, 300);
     };

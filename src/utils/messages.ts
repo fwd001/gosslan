@@ -328,8 +328,14 @@ export function messageMentionsMe(
  * 三条规则，一条都不能松：
  *  - **只算群聊**（单聊不需要这个提醒）；
  *  - **自己发的不算**；
- *  - **正开着的那个会话不算** —— 这条与未读同源，也是 2026-09-28 拿真无障碍树读不出结论的原因
- *    （读到 `E2E-Group，5 条未读` 而没有 @ 那句，分不清"该亮没亮"与"正开着所以不算"）。
+ *  - **正开着、且用户真的在看的那个会话不算** —— 这条与未读同源，也是 2026-09-28 拿真无障碍树
+ *    读不出结论的原因（读到 `E2E-Group，5 条未读` 而没有 @ 那句，分不清"该亮没亮"与"正开着所以不算"）。
+ *    ⚠️ **"开着"不等于"看着"**：桌面端启动时会自动打开最近的那个会话
+ *    （`ResponsiveLayout.vue` 那条 watch，行为对齐微信桌面版），窗口也常在后台或被整页浮层盖住。
+ *    那种时刻 @ 进来，若按"开着"就抑制红点，用户回来只看到「N 条未读」、看不出自己被 @ 过 ——
+ *    而已读那条用的正是更严的"真在看"口径 ⇒ 两条规则必须共用它，不许各取一半
+ *    （入参 `activeVisible` 就是那个口径由调用方传进来的那一份，见 `useChatStore` 的
+ *    `chatViewerLooking`）。
  * 入参只吃**本地真正新增**的那批（重复投递已在调用方剔掉），所以重递不会反复点亮。
  *
  * `alsoMentionsMe` 是注入点：任务卡"指派给我"那条判定住在 `todos.ts`，
@@ -339,11 +345,12 @@ export function freshMentionedConvs(
   freshByConv: Map<string, MessageRecord[]>,
   activeConvId: string | null,
   me: { id: string; name: string },
-  opts: { alsoMentionsMe?: (rec: MessageRecord) => boolean } = {},
+  opts: { alsoMentionsMe?: (rec: MessageRecord) => boolean; activeVisible?: boolean } = {},
 ): string[] {
   const out: string[] = [];
   for (const [cid, fresh] of freshByConv) {
-    if (cid === activeConvId || !cid.startsWith("group:")) continue;
+    if (cid === activeConvId && opts.activeVisible !== false) continue;
+    if (!cid.startsWith("group:")) continue;
     for (const rec of fresh) {
       if (rec.sender_id === me.id) continue;
       // 「@所有人」与「点名」走的是同一个入口（`messageMentionsMe` 内部两条路），这里不再各判一次。

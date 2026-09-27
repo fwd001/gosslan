@@ -960,6 +960,32 @@ test("正开着的那个会话不算被@（红点与未读同源：看着就不�
   assert.deepEqual(freshMentionedConvs(byConv, "group:g1", ME), []);
 });
 
+// ★ 上面那条的**成立前提是"真的在看"**，而它自己的注释也是这么写的（"看着就不该再提醒"）。
+// 但实现只看 `activeConv` —— 桌面端有个刻意的行为：启动时会自动打开最近的那个会话
+// （`ResponsiveLayout.vue` 那条 watch，"对齐微信桌面版"），于是"开着"经常并不等于"看着"：
+// 窗口在后台 / 被别的整页浮层盖住时，@ 进来既不亮红点、又（正确地）不判已读
+// ⇒ 用户回来只看到「N 条未读」，看不出自己被 @ 过，要点开才知道。
+// 同一条"用户到底在不在看"的口径，`markRead` 那条路已经用了三个条件（会话是它 + 应用在前台 +
+// 聊天视图真可见）⇒ 红点这条不许只取第一个条件，否则两条规则对同一个瞬间会给出相反的答案
+// （一条判"没在看所以不判已读"，另一条判"开着所以不提醒"）。
+test("会话只是开着、用户其实没在看（窗口在后台或被浮层盖住）⇒ 仍要点亮「有人@我」", () => {
+  const byConv = new Map<string, MessageRecord[]>([
+    ["group:g1", [msg({ msg_id: "v1", conv_id: "group:g1", sender_id: "other", mention_ids: ["dev-me"] })]],
+  ]);
+  assert.deepEqual(
+    freshMentionedConvs(byConv, "group:g1", ME, { activeVisible: false }),
+    ["group:g1"],
+    "开着但没在看 ⇒ 抑制红点等于替用户把这条 @ 咽下去",
+  );
+});
+
+test("反向对照：同样的会话、用户真在看 ⇒ 仍然不点亮（新口径不许把这条一起放开）", () => {
+  const byConv = new Map<string, MessageRecord[]>([
+    ["group:g1", [msg({ msg_id: "v2", conv_id: "group:g1", sender_id: "other", mention_ids: ["dev-me"] })]],
+  ]);
+  assert.deepEqual(freshMentionedConvs(byConv, "group:g1", ME, { activeVisible: true }), []);
+});
+
 test("单聊不计红点（这条规则按设计只管群聊），自己的消息也不计", () => {
   const byConv = new Map<string, MessageRecord[]>([
     ["f1", [msg({ msg_id: "c1", conv_id: "f1", sender_id: "other", mention_ids: ["dev-me"] })]],

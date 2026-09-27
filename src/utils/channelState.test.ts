@@ -219,10 +219,18 @@ test("安卓文件选择：选择器的返回值必须先落地成真实路径�
 test("已读回执只在「聊天视图真的可见」时才发（用户 2026-09-12 实测）", () => {
   const store = read("stores/useChatStore.ts");
   // 判据必须同时看：是这个会话 + 应用在前台 + **聊天视图可见**
+  // ★ 2026-09-28：这三个条件搬进了 `chatViewerLooking()`，因为「有人@我」红点那条也要读同一份口径
+  //  （"会话开着"不等于"看着"：桌面端启动会自动打开最近那个会话）。所以这里改成钉两件事：
+  //  ① 那份口径有一个家、家里同时判前台与视图可见；② 标记已读那条真的走它（不许再手写一遍）。
   assert.match(
     store,
-    /activeConv\.value !== convId \|\| document\.hidden \|\| !app\.chatVisible/,
-    "去抖标记已读必须同时判「聊天视图可见」——否则用户在设置页/新的朋友页时收到消息也会被标已读",
+    /function chatViewerLooking\(\)[\s\S]{0,200}!document\.hidden && app\.chatVisible/,
+    "「在不在看」这份口径必须有一个家，且家里同时判「前台 + 聊天视图可见」——否则用户在设置页/新的朋友页时收到消息也会被标已读",
+  );
+  assert.match(
+    store,
+    /activeConv\.value !== convId \|\| !chatViewerLooking\(\)/,
+    "去抖标记已读必须走那份共用口径 ⇒ 它和「有人@我」两条不许各写一遍条件（两处各写迟早只改一处）",
   );
   assert.match(
     store,
