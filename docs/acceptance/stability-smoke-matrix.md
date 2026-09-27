@@ -101,7 +101,7 @@
 | 编号 | 项目 | 可观测判据（用户本机） | 最近一次人工验收 |
 |---|---|---|---|
 | Smoke-1 | 多网卡/VPN/虚拟网卡下的发现 | 抓 `diag/discovery_started: … multicast_iface=`；期望出口是被评分选中的 LAN 网卡，不是 VPN/TAP | 未做（本轮） |
-| Smoke-2 | BLE 真实收发（三端） | 日志 `[ble]` 前缀：peripheral 广播出去 → 对端 `+conn … path=Ble`；大文件不得走 BLE（16 MiB 阈值） | 未做 |
+| Smoke-2 | BLE 真实收发（三端） | 日志 `[ble]` 前缀：peripheral 广播出去 → 对端 `+conn … path=Bluetooth`。⚠️ **这一格原先写的期望文本永远不可能出现**：它写的是 `path=Ble`，而那行日志用的是 `PathKind` 的 **Debug** 格式（`"+conn peer={peer_id} ep={endpoint} path={path:?}"`），变体名是 `Bluetooth` ⇒ 拿 `Ble` 去真机上找会误判成"BLE 链路没建起来"。复跑两条现算：`grep -n "enum PathKind" -A 12 src-tauri/src/mesh/path.rs`（看变体名）与 `grep -n '"+conn peer="' src-tauri/src/network/transport.rs`（看那行怎么拼）。★ **对照一条我差点误改的**：Smoke-1 那条判据写 `diag/discovery_started: …`，在源码里 grep 整串是 **0 命中**，但它是对的 —— 那一行是 `format!("diag/{kind}: {detail}")` **运行时拼出来的**（`state.rs`），字面量本来就不会整串出现在码里。⇒ **逐格 grep 之前先分清"整串字面量"还是"拼出来的"**，否则会把"存在"筛成"不存在"；大文件不得走 BLE（16 MiB 那道闸今天仍在：`file.rs` 里 `refuse_reason_for_best_link`，常量注释写明取值理由 —— 阈值这条复算仍成立） | 未做 |
 | Smoke-3 | 系统通知 + 点击跳转 | 后台收消息应出通知；点击后主窗口跳到该会话；关开关后**不得**出通知 | 未做 |
 | Smoke-4 | 移动端群已读可见性（#30） | 群消息气泡下方应出现已读人数，点开浮层不超出屏幕右缘 | 用户已确认「已读在」；根因未定位 |
 | Smoke-5 | 两台以上真设备联调（J1/J2/J4 全走一遍） | 用 `test-results/run-*/summary.html` 同样的断言清单手工走 | 未做 |
