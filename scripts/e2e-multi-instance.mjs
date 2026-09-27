@@ -111,6 +111,8 @@ let envBlockReason = null;
 ///   --round=group    → 群聊这一族跨实例真跑：两端预置群 → A 排三条群消息（正文/撤回/正文）→
 ///                      对端上线后靠 flush_group_outbox 补发 → 判落库/解密/清队列/G-Set/不串味
 ///   --round=group-lie→ 预置与投递完全不动，只把判据读的 msg_id 换成不存在的值 ⇒ 预期按设计报红
+///   --round=group-targets-lie→ 同上但**只摘掉线上明文里的 mention_targets 键** ⇒
+///                       预期恰好"落点穿过管道"那一条红（`group-lie` 够不到它，因为它读真 id）
 ///   断言条数不在这里写，由 check-doc-numbers 现算对账（同下面每一轮）。
 const FAULT = (process.argv.find((a) => a.startsWith("--fault=")) || "").slice("--fault=".length);
 //   --shot-selfcheck         → 只跑 §十六 截图判据的三格自证（假 PNG 判假 / 缺文件判假 / 真截图判真），
@@ -236,10 +238,18 @@ let multiSpec = [];
 /// 只能靠建链后的 flush 送达）与 `聊天 + 群聊 + 文件`（同一对实例同时背 1:1 与群两条管道，
 /// 判据里专门有一格查两者互不串味）。
 const ROUND = (process.argv.find((a) => a.startsWith("--round=")) || "").slice("--round=".length);
-const GROUP = ROUND === "group" || ROUND === "group-lie";
+const GROUP = ROUND === "group" || ROUND === "group-lie" || ROUND === "group-targets-lie";
 /// 反向模式：注入与预置完全不动，只把**判据要去找的那个 msg_id** 换成一个必定不存在的值。
 /// 报不出红 ⇒ 那几条断言读的不是真落库行。
 const GROUP_LIE = ROUND === "group-lie";
+/// #122 落点那三条的**专用反证**。为什么不能复用 `group-lie`：那一档翻的是 `msg_id`，
+/// 而落点那三条读的是**真 id**（刻意不走 `want()`，见矩阵「轮次账」那句"反向红数仍是 9"）
+/// ⇒ 翻 id 永远碰不到它们，`group-lie` 对这一格等于没判。
+/// 这一档什么都不动拓扑与时序，**只把线上明文里的 `mention_targets` 键摘掉**
+/// （= 对端退回"只带名单"的老形状）⇒ 期望恰好正向那一条红、对照与夹具自查两条照旧绿。
+/// ⚠️ 它**不进任何门禁层**（与所有 `-lie` 档同规矩）：那是"把能红变成常红"的静音通道。
+const TARGETS_LIE = ROUND === "group-targets-lie";
+
 /// 链式轮（`--round=gossip3`，用户 2026-09-26 拍板＝建，但只挂在**发版前**那一层，不进日常本地门禁）。
 /// 钉的是 §五 点名的 `群聊 + gossip` 交叉里唯一没被跨实例判着的那一半：**经中间人转发的收敛**。
 /// 拓扑是 A—B—C 一条链：A 与 C **互相不是好友、也不给任何端点、C 侧关 LAN** ⇒ 它们之间不可能有链路
@@ -1202,7 +1212,10 @@ if (GROUP) {
       (id) => (id === idB.runtimeId ? gMentionName : undefined));
     const mt = buildGroupEnvelope({
       ...base, kind: "text", content: gMentionText, ts: ts + 3, seq: 4,
-      mentions: [idB.runtimeId], targets: gMentionTargets,
+      mentions: [idB.runtimeId],
+      // ★ `--round=group-targets-lie` 就是从这里摘掉那一份：其余（拓扑、时序、名单、正文）
+      //   与正向档一字不差，所以红只可能来自"落点没穿过 seal→网络→解析"这一件事。
+      targets: TARGETS_LIE ? undefined : gMentionTargets,
     });
     // #103 的线级那一半（原来只有单元判据，跨进程没人证过）：**同一条管道**上排两封，
     // 一封明文带 `"mentions":["<B 的 id>"]`，一封**没有这个键**（旧版本的原样形状）。

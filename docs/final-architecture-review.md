@@ -94,6 +94,20 @@ npm run verify -- --full   # 193 条注入整跑（>1.5 小时）
 
 ## 六、Release 判定（§33）
 
+> **2026-09-28 凌晨的现算对账**（本节下面那几行的步数与时间戳是**上一次跑的快照**，已被今天的改动超越）：
+> 快速层 **14** 步 / 全量层 **20** 步（复跑：`node scripts/verify.mjs --list` —— 判据 A 就是这么算的，
+> 别抄本文件里的数）；今天实跑：**本地层 18 步 732.4s 退 0**、**发版前层 3 步 69.4s 退 0**。
+> ⚠️ **全量层今天一次都没跑绿**：两次都停在 Change Budget 那道"同一领域重复犯案"的红上（等用户处置，
+> 没绕过），而它是 fail-fast ⇒ 后面 9–10 步（含 197 条护栏整跑）根本没执行。
+> 护栏那一段改用便宜办法拿到同一结论：`python3 scripts/verify-guards.py --list`（起跑前锚点全量静态核对，
+> 一条测试都不跑）⇒ **197 条注入锚点全部恰好命中一次**，即今天搬动 `protocol.rs`
+> （把落点的解析抽成线上/库内共用一个函数）没把任何锚点弄死 —— 这一格本来会被那道红藏住。
+> 安装包已按当前版本重出：**`Gosslan_4.31.3_aarch64.dmg` 8,565,868 B**，`Info.plist` 的 `CFBundleShortVersionString` 现读 = `4.31.3`；`codesign -v` 原文是
+> "code has no resources but signature indicates they must be present" ⇒ **仍未签名，不许当可分发件**。
+> ★ 出包与门禁不能并发这条也补进账：`dist:mac` 会重链 `target/release/gosslan`，
+> 而双实例轮判的就是那份二进制。
+
+
 **判定：4.30.0 已由用户发出，且 tag `v4.30.0` 现在真的存在（`git tag` 里查得到、`git merge-base --is-ancestor v4.30.0 HEAD` 成立）；
 从 tag 到当前 tip 这批没有一条应用侧改动** —— 现算
 `git rev-list --count v4.30.0..HEAD -- src src-tauri/src` = **0**

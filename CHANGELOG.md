@@ -10,6 +10,28 @@
 
 ## [Unreleased]
 
+### 判据层补强 + 发布产物（#137 / #136）
+- **给 #122 那三条落点判据补一个"够得着"的反证**：`--round=group-targets-lie`。
+  为什么不能用现成的 `--round=group-lie`：那一档翻的是 `msg_id`，而落点那三条**刻意读真 id**
+  （正因如此反向那一趟的红数才仍是 9）⇒ `group-lie` 对这一格永远够不到 = 等于没判。
+  新档什么都不动，**只把线上明文里的 `mention_targets` 键摘掉**（拓扑/时序/名单/正文与正向档一字不差），
+  于是红只可能来自"落点没穿过 seal→网络→解析"这一件事。实测：正向档 `--round=group` 退 0（36/36），
+  反证档退 1 且**恰好 1/36 红**，红的正是那一条，夹具自查与"只带名单"两条照旧绿。
+  它**不进任何门禁层**（与所有 `-lie` 档同规矩：点名进 CI 等于把"能红"变成"常红"、把整层静音）。
+  ★ 复用同一个断言块 ⇒ 不新增轮次账、`判据 C` 现算值不变（仍是群聊轮 36）。
+- **发布产物按当前版本重出**（用户要的"顺手跑一遍本机 `npm run dist`"这一格）：
+  `Gosslan_4.31.3_aarch64.dmg` **8,565,868 B**，`Info.plist` 的 `CFBundleShortVersionString` 现读 `4.31.3`；
+  `codesign -v` 原文 `code has no resources but signature indicates they must be present` ⇒ **仍未签名，
+  不能当分发件**（这句话只允许用来证明"产物存在且版本对得上"）。判"跑完没跑完"照旧只认两件事：
+  `pgrep -f "tauri build"` 为空 **且** `bundle/dmg/` 里有 4.31.3 那份 —— 后台那层退 0 不代表构建完成。
+- ⚠️ 两条本轮自己踩到的操作错误，都写进纪律：**出包与门禁不能并发**（`dist:mac` 会重链
+  `target/release/gosslan`，而双实例轮判的就是那份二进制）；**`cd` 在一条命令里会延续** ——
+  我在 `src-tauri/` 下用相对路径跑 harness，得到的是 `MODULE_NOT_FOUND` 退 2，
+  一眼看成像"E2E 突然红了"，实际那一轮根本没跑。（同一形状的第三次：`cargo test <过滤词>` 打空也退 0。）
+- 当场证据：`--round=group` 退 0（36/36）、`--round=group-targets-lie` 退 1 且 1/36 红（红的就是那一条）、
+  `npm run build` 退 0、`cargo fmt --check` 退 0、`check-doc-numbers` / `check-domain-map` /
+  `check-scripts-parse` / `version:changelog` 各退 0、契约图内嵌 script 单独 `node --check` 退 0。
+
 ## [4.31.3] - 2026-09-28
 
 ### 文档一致性 + 两处判据层自己的账（#122 第二段落地之后必须回头改的那一半）
