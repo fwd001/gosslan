@@ -120,16 +120,37 @@ export function isAppCodePath(p) {
   return /^src\//.test(p) || /^src-tauri\/src\//.test(p);
 }
 
+/** 这条提交是否**声明零影响**：标题带 `[plan]` 且不动应用代码。两处用同一份口径。 */
+export function isZeroImpact(row) {
+  // ★ 豁免只给**不动应用代码**的提交（`src/` 与 `src-tauri/src/` 之外的改动，如文档、门禁脚本）：
+  // 否则一条 `[plan]` 就能把任何代码提交免掉，这个门禁就是装饰。
+  return !row.touchesCode && /\[plan\]/.test(row.subject ?? "");
+}
+
 /**
  * 这条提交**是否算已声明**：
  * - 标题带 `[plan]`（本仓既有标记，Change Budget 也读它）⇒ 视为"零影响声明"，不动版本；
  * - 否则必须有 `Version-Bump: <级别>`，且与自己被定级的那一档一致。
  */
 export function declaresBump(row) {
-  // ★ 豁免只给**不动应用代码**的提交（`src/` 与 `src-tauri/src/` 之外的改动，如文档、门禁脚本）：
-  // 否则一条 `[plan]` 就能把任何代码提交免掉，这个门禁就是装饰。
-  if (!row.touchesCode && /\[plan\]/.test(row.subject ?? "")) return true;
+  if (isZeroImpact(row)) return true;
   return parseBumpTrailer(row.message ?? "") === row.level;
+}
+
+/**
+ * 这批提交**真正欠**的版本档位 = 非零影响提交里的最高档（零影响那条既不加也不稀释）。
+ *
+ * 为什么不能直接用整个范围的最高档：`classifyCommit` 对**任何**提交都至少给 patch，
+ * 而 `since` 是"最后一次真改了版本号的提交" ⇒ 只要范围里还留着一条纯文档提交，
+ * 旧写法就会报「当前版本落后于未发布提交要求的 X」并让 `version:release` 去升一位号。
+ * 这既让"攒提交期间的 check 天天红"（红的门禁等于没有门禁），又与 `isAppCodePath` 那条
+ * 注释里写明的意图相反（"每次补用例都被迫提版本号 ⇒ 版本号会通胀"）。
+ *
+ * ⚠️ 这一条**不放松**任何纪律：动应用代码的提交只写 `[plan]` 仍被 `declaresBump` 判红，
+ * 于是它照样落进这里（见 `smuggled` 那格用例）。
+ */
+export function owedBumpLevel(rows) {
+  return requiredLevel(rows.filter((r) => !isZeroImpact(r)).map((r) => r.level));
 }
 
 export function filterUnpushed(rows, pushedShorts) {
@@ -358,32 +379,41 @@ function main() {
   }
 
   const top = requiredLevel(rows.map((r) => r.level));
-  const target = top ? bumpVersion(cur, top) : cur;
+  // ★ "欠不欠一次版本号"看 `owed`（零影响提交不算），`top` 只是整个范围的字面最高档。
+  // 两者在正常节奏下相等（代码提交的标题不会带 [plan]），差集恰好就是"纯文档/判据那一类"。
+  const owed = owedBumpLevel(rows);
+  const owedTarget = owed ? bumpVersion(cur, owed) : cur;
 
   if (cmd === "level") {
-    console.log(top ?? "patch");
+    console.log(owed ?? "patch");
     return;
   }
   if (cmd === "release") {
-    if (!top) {
-      console.log("没有需要发布的提交（版本不变）");
+    if (!owed) {
+      console.log(
+        rows.length
+          ? `范围内 ${rows.length} 条提交全是零影响（标题 [plan] 且不动 src/ 与 src-tauri/src/）⇒ 版本不变（仍 ${cur}）`
+          : "没有需要发布的提交（版本不变）",
+      );
       return;
     }
-    console.log(`按最高档 ${top} 提升：${cur} -> ${target}`);
-    execSync(`node scripts/version.mjs ${top}`, { stdio: "inherit" });
+    console.log(`按最高档 ${owed} 提升：${cur} -> ${owedTarget}`);
+    execSync(`node scripts/version.mjs ${owed}`, { stdio: "inherit" });
     return;
   }
 
   if (cmd === "classify") {
     for (const r of rows) console.log(`${r.short}  ${r.level.padEnd(5)}  ${r.type.padEnd(8)}  ${r.subject}`);
-    console.log(`\n最高档: ${top ?? "（无提交）"} ⇒ 本次发布应提升到 ${target}`);
+    const zero = rows.filter(isZeroImpact);
+    console.log(`\n字面最高档: ${top ?? "（无提交）"}　**真欠的档位**: ${owed ?? "（无 —— 全是零影响提交）"}`);
+    console.log(`⇒ 本次发布应提升到 ${owedTarget}（排除 ${zero.length} 条零影响提交：${zero.map((r) => r.short).join(" ") || "无"}）`);
     return;
   }
 
-  // check：门禁。① 版本必须 ≥ 未发布提交要求的版本；② 每个提交都要声明 Version-Bump 并自洽。
+  // check：门禁。① 版本必须 ≥ **真欠**的那一档；② 每个提交都要声明 Version-Bump 并自洽。
   const problems = [];
-  if (top && compareVersion(cur, target) < 0) {
-    problems.push(`当前版本 ${cur} 落后于未发布提交要求的 ${target}（最高档 ${top}）⇒ 跑 \`npm run version:release\``);
+  if (owed && compareVersion(cur, owedTarget) < 0) {
+    problems.push(`当前版本 ${cur} 落后于未发布提交要求的 ${owedTarget}（最高档 ${owed}）⇒ 跑 \`npm run version:release\``);
   }
   // ★ 声明检查只看**未推送**的提交；`--all-commits` 显式扩回全范围（审计/自查用）。
   const scoped = flags.includes("--all-commits") ? rows : filterUnpushed(rows, pushedShorts);
@@ -400,8 +430,11 @@ function main() {
     console.error(`版本号规则检查未通过（自 ${since || "首个提交"}）：\n- ${problems.join("\n- ")}`);
     process.exit(1);
   }
+  const zeroCount = rows.filter(isZeroImpact).length;
   console.log(
-    `版本号规则检查通过：自 ${since || "首个提交"} 共 ${rows.length} 个提交（最高档 ${top ?? "无"}，当前版本 ${cur} ≥ ${target}）` +
+    `版本号规则检查通过：自 ${since || "首个提交"} 共 ${rows.length} 个提交` +
+      `（真欠的档位 ${owed ?? "无 —— 范围内全是零影响提交"}，字面最高档 ${top ?? "无"}，其中 ${zeroCount} 条按 [plan] 零影响豁免` +
+      `；动应用代码的提交写 [plan] 不算豁免），当前版本 ${cur} ≥ ${owedTarget}` +
       `；声明检查只看未推送的 ${scoped.length} 个（已推送 ${rows.length - scoped.length} 个不再算噪音）`,
   );
 }

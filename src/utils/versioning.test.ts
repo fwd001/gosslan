@@ -20,6 +20,7 @@ import {
   declaresBump,
   filterUnpushed,
   isAppCodePath,
+  owedBumpLevel,
 } from "../../scripts/semver.mjs";
 
 test("解析 conventional commit（类型/范围/破坏性标记）", () => {
@@ -147,4 +148,21 @@ test("[plan] 只能豁免**不动应用代码**的提交（否则声明门禁就
     declaresBump({ subject: "fix(x): 修崩溃", message: "fix(x): 修崩溃\n\nVersion-Bump: patch", level: "patch", touchesCode: true }),
     true,
   );
+});
+
+test("真正欠的版本档位：零影响提交（[plan] 且不动应用码）不许逼出版本号（#123 的另外半条）", () => {
+  const docsOnly = { subject: "docs(x): 改口 [plan]", message: "docs(x): 改口 [plan]", level: "patch", touchesCode: false };
+  const harness = { subject: "test(e2e): 补反证 [plan]", message: "test(e2e): 补反证 [plan]", level: "patch", touchesCode: false };
+  const codeFix = { subject: "fix(y): 修崩溃", message: "fix(y): 修崩溃\n\nVersion-Bump: patch", level: "patch", touchesCode: true };
+  const codeFeat = { subject: "feat(z): 新能力", message: "feat(z): 新能力\n\nVersion-Bump: minor", level: "minor", touchesCode: true };
+  // 攒提交期间的常态：范围里只有零影响提交 ⇒ 不欠任何一档（旧形状在这里必报"版本落后"）
+  assert.equal(owedBumpLevel([docsOnly, harness]), null);
+  // 掺进一条真代码提交 ⇒ 取代码提交里的最高档，零影响那几条不稀释也不加重
+  assert.equal(owedBumpLevel([docsOnly, codeFix, harness]), "patch");
+  assert.equal(owedBumpLevel([docsOnly, codeFix, codeFeat]), "minor");
+  // ★ 反向对照：动了应用代码却只写 [plan] ⇒ 不算零影响（否则一条标记就能白吃豁免，与 declaresBump 同口径）
+  const smuggled = { subject: "fix(y): 修崩溃 [plan]", message: "fix(y): 修崩溃 [plan]", level: "patch", touchesCode: true };
+  assert.equal(owedBumpLevel([smuggled]), "patch");
+  // 空范围不欠档（非空转闸：上面四格任何一条解析失效都会撞红）
+  assert.equal(owedBumpLevel([]), null);
 });
