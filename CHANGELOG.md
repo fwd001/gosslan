@@ -51,6 +51,16 @@
   `cargo clippy --features bluetooth` ⇒ 补 `-D warnings`（门禁吃它，不带等于不判）。
   并按 §十五 的口径解释"为什么不在此写清单数字"（那份文件此前已有一次手写清单漂了的记录，保持只说"看脚本自己的输出"）。
 
+### 「被门禁调用的脚本」那层量具补上第二半：跟着 `import` 再走一层（洞是实测出来的）
+- `check-scripts-parse.mjs` 原来只查"verify.mjs 与 package.json 直接点名的那些脚本"。把 AX 解析抽成
+  共用件 `ax-tree.mjs` 之后暴露出一个**静默洞**：`node --check` 只解析**传进去的那一份文件**、
+  不解析它的 import ⇒ 共用件坏了，调用方那条 `node --check` 照样退 0（今天实测：把 `ax-tree.mjs` 改坏，
+  `node --check scripts/check-ui-runtime-ax.mjs` 退 **0**，只有真跑起来那一刻才炸）。
+- 现在做**闭包**：从直接名单出发，把 `from "./x.mjs"` / `import("./x.mjs")` 递归并进来再逐个解析。
+  覆盖面当场从 21 → **24**（多出来的 3 个就是被 import 的共用件），且成功文案把"直接调用几个 /
+  共用件几个"分开打印 ⇒ 覆盖面本身是可见的，不是我以为的（判据没红 ≠ 它守得住，这一族的第 N 次）。
+  非空转实测：注入坏语法进 `ax-tree.mjs` ⇒ 退 1 并点名该文件；`/tmp` 备份还原后复绿。
+
 ### 真 WebView 那一层的解析器收成一份，并给双实例轮加了"可选的真界面读数"（#140 的一半落地）
 - 新增 `scripts/ax-tree.mjs`：编译遍历器 + 解析输出 + **重试到挂上为止**那圈循环都在这一份里。
   两个消费者共用它 —— `check-ui-runtime-ax.mjs`（自己起实例、判四条）与 E2E harness

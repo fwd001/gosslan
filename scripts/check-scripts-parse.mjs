@@ -14,13 +14,38 @@ import { spawnSync } from "node:child_process";
 
 const ROOT = path.resolve(process.argv.find((a) => a.startsWith("--root="))?.slice(7) ?? ".");
 
-const refs = new Set();
+let refs = new Set();
 const re = /scripts\/[\w.-]+\.(?:mjs|py)/g;
 for (const f of ["scripts/verify.mjs", "package.json"]) {
   const p = path.join(ROOT, f);
   if (!fs.existsSync(p)) continue;
   for (const m of fs.readFileSync(p, "utf8").matchAll(re)) refs.add(m[0]);
 }
+
+/**
+ * ★ 闭包再走一层：**被这些脚本 import 的共用件**也要查。
+ * 不这么做就有一个静默洞 —— `node --check` 只解析传入的那一份文件，**不解析它的 import**，
+ * 所以共用件里的语法错在"被门禁调用的那个脚本"身上完全看不出来（实测：把共用件改坏，
+ * 调用方的 `node --check` 仍退 0，只有真跑起来那一刻才炸）。2026-09-28 把 AX 解析抽成
+ * `ax-tree.mjs` 之后，这个洞第一次有了真实的被守对象。
+ */
+const importRe = /(?:from|import\()\s*["'](\.\/[^"']+\.mjs)["']/g;
+let frontier = [...refs];
+const all = new Set(refs);
+while (frontier.length) {
+  const next = [];
+  for (const rel of frontier) {
+    const abs = path.join(ROOT, rel);
+    if (!fs.existsSync(abs) || !rel.endsWith(".mjs")) continue;
+    for (const m of fs.readFileSync(abs, "utf8").matchAll(importRe)) {
+      const child = path.relative(ROOT, path.resolve(path.dirname(abs), m[1])).split(path.sep).join("/");
+      if (!all.has(child)) { all.add(child); next.push(child); }
+    }
+  }
+  frontier = next;
+}
+const importedCount = all.size - refs.size;
+refs = all;
 
 if (refs.size === 0) {
   console.error(`✗ 在 ${ROOT} 里一条脚本引用都没找到 —— 名单为空 ⇒ 这一层什么都没判，按红处理`);
@@ -55,4 +80,6 @@ if (bad.length) {
   console.error(`  这些脚本是门禁的判据本身：解析不过 ⇒ 它们一条都没在判，不是"暂时没跑到"`);
   process.exit(1);
 }
-console.log(`✓ ${refs.size} 个被门禁调用的脚本全部解析通过`);
+console.log(
+  `✓ ${refs.size} 个脚本全部解析通过（门禁/脚本表直接调用 ${refs.size - importedCount} 个 + 它们 import 的共用件 ${importedCount} 个）`,
+);
