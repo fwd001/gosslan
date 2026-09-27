@@ -392,17 +392,67 @@ if (!guardSeen) {
   );
 }
 
+// ---------- 判据 F：每一条反证（-lie）档都必须有一个 npm 入口，入口也不许指着已消失的档 ----------
+/// 这一族死法是**静默**的：`--round=xxx-lie` 写在 harness 里、注释也写着"配了反向自证"，
+/// 但 package.json 没有入口 ⇒ 下一个人既跑不到它、也不知道它存在，过一轮就直接把它删了
+/// ——「有反证」退化成"有反证的代码"，而判得住的东西是"跑得起来的"。与判据 D 同一族（集合互点、两个方向都要）。
+function harnessLieModes() {
+  const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
+  const out = new Set();
+  for (const m of src.matchAll(/"([a-z0-9][a-z0-9-]*-lie)"/g)) out.add(m[1]);
+  if (!out.size) {
+    throw new Error(`harness 里解析不到任何 -lie 反证档（\`"--round=x-lie"\` 的写法变了？）`);
+  }
+  return out;
+}
+function npmLieTargets() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const m = new Map();
+  for (const [name, cmd] of Object.entries(pkg.scripts ?? {})) {
+    for (const g of String(cmd).matchAll(/--(?:round|fault)=([a-z0-9-]+)/g)) {
+      if (g[1].endsWith("-lie")) m.set(g[1], name);
+    }
+  }
+  return m;
+}
+let lieModes;
+let lieEntries;
+try {
+  lieModes = harnessLieModes();
+  lieEntries = npmLieTargets();
+} catch (e) {
+  console.error(`✗ 判据 F 读不到反证清单：${e.message}`);
+  process.exit(1);
+}
+for (const mode of lieModes) {
+  if (!lieEntries.has(mode)) {
+    fails.push(
+      `harness 里的反证档 --round/--fault=${mode} **没有 npm 入口** ⇒ 谁都跑不到它，` +
+        `「这一轮配了反向自证」就成了不可核对的声明。补一条 test:e2e:*-selfproof 或删掉那一档`,
+    );
+  }
+}
+for (const [mode, name] of lieEntries) {
+  if (!lieModes.has(mode)) {
+    fails.push(
+      `package.json 的 ${name} 指向反证档 ${mode}，但 harness 里已经没有这一档 ⇒ 死入口 ` +
+        `（留着它，下一次"跑反证"会跑成一趟正向轮并打印全绿）`,
+    );
+  }
+}
+
 if (fails.length) {
   console.error(`\n✗ 文档硬数字漂移 ${fails.length} 处：`);
   for (const f of fails) console.error(`  · ${f}`);
   console.error(
     `\n  改法分两种：判据 B 那类（真相自己会打印出来的）把数字从文档里删掉；` +
-      `判据 A/C/E 那类（文档就是要给人看一个现状数）把数字改成现算值，并记住真正该动的是源头` +
+      `判据 A/C/E/F 那类（文档就是要给人看一个现状数、或对账一张名单）把数字改成现算值、或去补那一档缺的登记，` +
+      `并记住真正该动的是源头` +
       `（harness 里的注释口径、CASES 里那条用例）—— 只改文档等于把下一次漂移排上队。`,
   );
   process.exit(1);
 }
 console.log(
   `✓ 文档硬数字对账通过（${LIVE_DOCS.length} 份活文档；取锁点条数无手写；E2E 断言数现算对账；` +
-    `harness 轮次与门禁 local+release 两层互点对齐）`,
+    `harness 轮次与门禁 local+release 两层互点对齐；反证档 ${lieModes.size} 条与 npm 入口 ${lieEntries.size} 条双向对齐）`,
 );
