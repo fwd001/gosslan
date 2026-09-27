@@ -1786,6 +1786,37 @@ if (GROUP) {
       INSTANCES[1].log, `群消息@输入 msg=${gMentionOnlyId} mentions=1 targets=none`);
     check("只带名单那条：落点判成「不知道」而不是「空落点」——兜底路径跨进程仍然活着",
       rosterOnlyTargetCount >= 1, "≥1 行 mentions=1 targets=none", rosterOnlyTargetCount);
+    // ★ **可选**的真界面采样（#140）：`GOSSLAN_AX=1` 时在"对端刚收下那条 @、窗口还活着"的这一刻，
+    //   读一次 B 自己的系统无障碍树，把「那枚 @ 红点在真界面上到底叫什么」打出来并落进 run 目录。
+    //   为什么必须在**这一处**：外部轮询采样实测会采到"还没建窗"的空读数（roadmap §12.6 记了那次）。
+    //   ★ **有意不调 `check()`** ⇒ 本轮断言条数、`-lie` 那一趟的红数账、门禁各层输出全都不变；
+    //   它是**读数**，判不判由人看（那枚红点是"摄入时判定 + 只在渲染进程内存里"，seed 库点不亮它 ⇒
+    //   必须有这次真投递，而这一行就是那个时刻）。采样失败只说明原因，不判红 —— 它不在任何一层的判据里。
+    //   ⚠️ 2026-09-28 第一次真跑到的读数**不能**当成"红点没亮"的证据：那一瞬 B 的窗口里那条会话是**开着**的
+    //   （树里能看到「以下是未读消息」分隔线与那条正文），而未读名字「E2E-Group，5 条未读」「聊天，5 条未读」
+    //   都在、唯独 @ 那句不在 ⇒ 分不清"该亮没亮"与"被看过所以已经清了"。要判得先让那一刻会话**没被打开**
+    //   （或换一条在别的会话活跃时到达的 @）—— 这是 #140 剩下的那一半，别拿这次读数去改产品。
+    if (process.env.GOSSLAN_AX === "1") {
+      try {
+        const { probeTree } = await import("./ax-tree.mjs");
+        const bpid = procs.get(INSTANCES[1].n)?.pid;
+        if (!bpid) console.log("  [ax] 拿不到 B 的 pid ⇒ 跳过（可选采样，不判红）");
+        else {
+          const r = probeTree(bpid, { tries: 6, gapMs: 2000 });
+          const at = r.parsed.names.filter((n) => n.label.includes("@") || n.label.includes("有人"));
+          console.log(`  [ax] B pid=${bpid}：第 ${r.tries} 次读挂上=${r.parsed.hung}`
+            + ` 节点=${r.parsed.total} 带名字=${r.parsed.names.length} 个`
+            + `；含「@／有人」的名字：${at.length ? at.map((h) => `${h.role}=${h.label}`).join(" | ") : "（一个都没有）"}`);
+          // 全量名字直接打出来：这格今天第一次采到"没有那句"，而"没有"有两种成因
+          // （红点真没渲染 / 那一屏根本没在会话列表上）——不打印全部名字就分不开这两种。
+          console.log(`  [ax] B 界面上读得到的全部名字：${r.parsed.names.map((n) => n.label).join(" ｜ ")}`);
+          fs.writeFileSync(path.join(RUN_DIR, "ax-B-tree.txt"), r.text);
+          console.log(`  [ax] 原始读数：${path.join(RUN_DIR, "ax-B-tree.txt")}`);
+        }
+      } catch (e) {
+        console.log(`  [ax] 采样不可用 ⇒ 跳过并说明原因：${e.message}`);
+      }
+    }
     // 两个键都缺（`lg`）那一格**不再单独钉一次**：它读的是同一行日志、同一条 map_or 分支，
     // 而"缺键⇒两份都是 None"已在 protocol.rs 的用例里钉住 —— 这里再钉一遍只是把同一个
     // 判据跑两遍（不产生新的可红面），按 §十四 不进账。
