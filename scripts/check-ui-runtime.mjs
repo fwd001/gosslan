@@ -282,6 +282,44 @@ window.__probe = (() => {
     const t = window.__probe.vue;
     await t.nextTick(); await t.nextTick();
   };
+  /**
+   * 会话行这一刻「读屏得到的名字」与两枚徽标（#88 / #117 剩下的那一半）。
+   *
+   * 两条要点：
+   *  · **先 setActivePinia 到页面里那一份**再去改 store —— 自己 import 一份 pinia 会得到
+   *    第二个实例，改的是一份没人看的空 store（报出来的错长得像「徽标不亮」）。
+   *  · 期望文案**由页面用应用同一份 i18n 现算**。这条判的不是「文案对不对」，
+   *    而是「这三句在不在这一行的 accessible name 里」—— role=button 一旦带 aria-label，
+   *    后代全被折叠掉，不在名字里就等于读屏用户得不到（2026-09-26 用系统控件树实测到的）。
+   */
+  H.convRow = async (arg) => {
+    const piniaUrl = performance.getEntriesByType('resource')
+      .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
+    if (!piniaUrl) throw new Error('页面里没有 pinia 资源 —— 挂载那一步没成功');
+    const P = await import(piniaUrl);
+    P.setActivePinia(window.__pinia);
+    const m = await import('/src/stores/useChatStore.ts');
+    const chat = m.useChatStore();
+    chat.mentionedConvs = new Set(arg.mention ? [arg.convId] : []);
+    chat.openTodoByConv = arg.todos ? { [arg.convId]: arg.todos } : {};
+    const written = { mention: chat.mentionedConvs.size, todo: JSON.stringify(chat.openTodoByConv) };
+    const t = window.__probe.vue;
+    await t.nextTick(); await t.nextTick();
+    const I = await import('/src/i18n/index.ts');
+    const row = document.querySelector('[role="button"][aria-label]');
+    return {
+      label: row ? (row.getAttribute('aria-label') || '') : null,
+      text: row ? (row.innerText || '') : '',
+      badges: Array.from(document.querySelectorAll('[class*="min-w-4"]'))
+        .map((e) => (e.textContent || '').trim()),
+      wantMention: I.t('msg.mentioned'),
+      wantUnread: I.t('conv.unread', { name: arg.name, n: arg.unread }),
+      wantTodo: I.t('todo.openForMe', { n: arg.todos }),
+      dbg: { written: written, seen: Array.from(chat.mentionedConvs).join('|'),
+        todos: JSON.stringify(chat.openTodoByConv), sid: chat.$id,
+        registered: (window.__pinia && window.__pinia._s && window.__pinia._s.size) || -1 },
+    };
+  };
   H.grid = () => Array.from(document.querySelectorAll('button:not(#trigger)'));
   H.gridInfo = () => {
     const btns = H.grid();
@@ -335,6 +373,78 @@ async function waitForVite(child, timeoutMs = 90_000) {
   });
   await Promise.race([p, sleep(timeoutMs).then(() => { throw new Error(`vite ${timeoutMs}ms 没起来：\n${buf.slice(-800)}`); })]);
   return `http://127.0.0.1:${VITE_PORT}/`;
+}
+
+/**
+ * 会话行那两枚徽标（#88 那四处读屏缺陷与 #117 剩下的那一半）。
+ *
+ * 这一格以前只有两种证据：源码守卫（禁手写徽标副本）+ 我拿系统控件树**手工**看过一次。
+ * 而 #88 的真实形状是「屏幕上看得见、树里读不到」—— 只有把事实**并进这一行自己的
+ * accessible name** 才算修好。所以这段判四件事各自的条件：未读数、有人@我、与我相关的
+ * 开放任务数三句都得在名字里，**且各自不亮的时候不许混进来**（只钉「都在」会被
+ * 「永远把三句都拼进去」那种写法混过去 = 半个守卫）。
+ * ⚠️ 层次边界：徽标「该不该亮」的判定在 Rust 与 store 侧，另有单元与跨进程判据；
+ *   这一段只判**亮起来之后界面与读屏得不到得到它**。真 WKWebView / WebView2 仍归 Smoke-11。
+ */
+async function runConvBadge(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const GROUP = {
+    id: "group:probe-badge", kind: "group", name: "验收群", avatar: null,
+    unread: 3, last_msg: "收到一条", last_ts: 1, pinned: false,
+  };
+  // 未读是**prop**（挂载时刻冻住），徽标态是 **store**（随时可变）⇒ 想要"没有未读"那一档，
+  // 只能换一个 conv 重新挂一次，不能靠改探针参数。
+  const GROUP0 = { ...GROUP, unread: 0 };
+  const PRIVATE = { ...GROUP0, id: "p:probe-badge", kind: "private", name: "验收人" };
+  const mount = async (conv) => {
+    await cdp.eval("window.__probe.install('/src/components/conversation/ConversationListItem.vue', '', "
+      + JSON.stringify(JSON.stringify({ conv, active: false, online: null })) + ")");
+    await sleep(900);
+  };
+  // ⚠️ 这里只做**一层** stringify：convRow 收的是对象，而 install 的第三参本身是字符串
+  //   （那一句才要双层）。写成双层会让页面拿到一个字符串、arg.mention 恒为 undefined
+  //   ⇒ 徽标永远不亮，而红得完全像"产品没渲染出来"（本轮就这么红过一次，6 条全红）。
+  const probe = async (conv, mention, todos) => cdp.eval(
+    "window.__probe.convRow(" + JSON.stringify({
+      convId: conv.id, name: conv.name, unread: conv.unread, mention, todos }) + ")");
+
+  // —— ① 三态齐：未读 + @我 + 与我相关的开放任务 ——
+  await mount(GROUP);
+  const a = await probe(GROUP, true, 2);
+  check("三态齐时这一行的 accessible name 同时含未读那句、有人@我、与我相关的任务数",
+    !!a.label && a.label.includes(a.wantUnread) && a.label.includes(a.wantMention)
+      && a.label.includes(a.wantTodo), "三句都在名字里", JSON.stringify(a.label));
+  check("三态齐时两枚数字徽标各自可见（未读 3 与任务 2）",
+    a.badges.includes("3") && a.badges.includes("2"), "徽标含 3 与 2", JSON.stringify(a.badges));
+  check("有人@我那句要在行内可见文本里（不能只挂在名字上，鼠标用户也得看得见）",
+    a.text.includes(a.wantMention), "可见文本含这句", JSON.stringify(a.text.slice(0, 60)));
+
+  // —— ② 有未读、有 @我，但没有待办：任务那句不许混进来 ——
+  const b = await probe(GROUP, true, 0);
+  check("没有与我相关的任务时，名字里不许出现那句任务数（三句各自有条件）",
+    b.label.includes(b.wantMention) && b.label.includes(b.wantUnread)
+      && !b.label.includes(b.wantTodo), "含@我与未读、不含任务句", JSON.stringify(b.label));
+
+  // —— ③ 对照：三态全清 ⇒ 名字恰好等于群名、一枚徽标都没有 ——
+  await mount(GROUP0);
+  const c = await probe(GROUP0, false, 0);
+  check("对照：三态全清时名字恰好等于群名、零枚徽标（证明①不是恒过）",
+    c.label === GROUP0.name && c.badges.length === 0 && !c.text.includes(c.wantMention),
+    "名字 = 验收群 且 0 枚徽标", `${JSON.stringify(c.label)} / 徽标=${JSON.stringify(c.badges)}`);
+
+  // —— ④ 只有 @我（未读 0）：另两句都不该出现 ——
+  const d = await probe(GROUP0, true, 0);
+  check("只有@我时名字里只有群名与那句@我（未读与任务两句没资格出现）",
+    d.label === `${GROUP0.name}，${d.wantMention}`, "验收群，<@我那句>", JSON.stringify(d.label));
+
+  // —— ⑤ 单聊没有群任务：store 里有数也不许念出来 ——
+  await mount(PRIVATE);
+  const e = await probe(PRIVATE, false, 2);
+  check("单聊行不许出现「与我相关的任务数」（那一族只属于群聊，口径由组件把住）",
+    !e.label.includes(e.wantTodo) && e.label === PRIVATE.name, "名字 = 验收人",
+    JSON.stringify(e.label));
 }
 
 async function main() {
@@ -395,9 +505,11 @@ async function main() {
     const emoji = !ONLY || ONLY === "emoji";
     const search = !ONLY || ONLY === "search";
     const task = !ONLY || ONLY === "task";
+    const convbadge = !ONLY || ONLY === "convbadge";
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (task) await runTaskCard(cdp, url);
+    if (convbadge) await runConvBadge(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
