@@ -1194,13 +1194,19 @@ if (GROUP) {
         //    但成因是采样前置没生效，不是产品。这种错不会报错，只会让一次真投递白做。
         // ★ 2026-09-28 第一次带这层前置跑到的读数（run-2026-09-27T22-25-52-307Z/ax-B-tree.txt）：
         //    B 的会话行是「E2E-Group，5 条未读」，全树 `有人` 命中 0（提示文案就是 `[有人@我]` ⇒
-        //    不是"名字里没有@"那种误读）⇒ 红点没亮。但**这条还不能算产品缺陷**，因为还剩一条
-        //    没排掉的解释：库里 decoy 的 updated_at 确实更晚，可是前端列表的排序键由后端查询决定 ——
-        //    若它按"最后一条消息"而不是 `conversations.updated_at` 排，被 @ 的那个群仍是 convs[0]
-        //    ⇒ 抑制就还是"按规则的正确行为"。同一份树里 `以下是未读` 有 1 处而 `hello from group`
-        //    是 0 处，两种解释都吃得下这一对读数，所以别再从它往下推。
-        //    下一轮的第一刀很便宜：让这一步顺手打印 B 收到的会话顺序（或读 header 那一条的 name），
-        //    先确定 convs[0] 到底是谁，再谈"亮没亮"。
+        //    不是"名字里没有@"那种误读）⇒ 红点没亮。
+        // ★★ 那天稍后把剩下的解释逐条用现读排掉了，结论收窄成一条结构性事实（工单 #143 还留着最后一测）：
+        //    ① 排序键查清了 —— `db/conversations.rs:90` = `ORDER BY pinned DESC,
+        //       COALESCE(last_ts, updated_at, 0) DESC`：decoy 没有消息 ⇒ 用 `updated_at = ts+10min`，
+        //       群有消息 ⇒ 用 `last_ts`（= 那条 @ 的信封 ts）⇒ **decoy 才是 convs[0]，
+        //       被 @ 的群当时确实没被自动打开**（所以"没亮"不是按规则的正确抑制）；
+        //    ② "emit 丢字段"排除：全仓只有 `network/transport/gossip.rs:930` 一处生产代码写
+        //       `mention_ids`，而这次投递走的正是那条 Gossip 路径、载荷是 flatten 的 `IncomingMessage`；
+        //    ③ "id 对不上"排除：判"不是自己发的"用的是同一个 `myDeviceId`，两者若不同本轮多条断言当场就红。
+        //    ⇒ 剩下的结构性事实：`mentionedConvs` 全仓只有一个 `.add()`（摄入那一刻）、没有任何重算路径
+        //       ⇒ 错过那一次 `message-received` 就永久没有这条提醒（未读仍涨，那是后端 `touch_conversation` 算的）。
+        //    最后一测（B 完全就绪之后再送一条 @）与"要不要在加载时用已落库的 mention_targets 重算"
+        //    这个语义决定都在 #143 里 —— 后者要推翻"重启不该再亮一次红点"的既定口径，已交给用户拍板。
         if (process.env.GOSSLAN_AX === "1" && inst === INSTANCES[1]) {
           db.prepare(
             "INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at)"
