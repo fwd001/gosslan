@@ -10,6 +10,20 @@
 
 ## [Unreleased]
 
+### 可观测性（第二阶段 §29：任务这条链以前一行日志都不打）
+- 现算证据：`src-tauri/src/commands` 里 29 处 `logger.` 调用**无一与任务有关**，全仓密度都在网络层
+  （ble 51 / transport 47 / file 13）⇒ "任务没同步过去"只能靠比对两侧的库来定位死在哪一段。
+- 本轮在**命令层**补两条：`群任务已建 task=<id> group=<id> msg=<id>`、
+  `群任务已改 task=… status=… deleted=… archived=…`。两行都落在 `send_group_payload(..).await?` **之后**
+  （与"emit 必须由写库成功门控"同族：不许记出一条其实没成功的任务）；**只记 id 与状态，不记标题/描述**。
+  ⚠️ 刻意没往 `transport.rs` 那一族里加日志：那里有一堆形状守卫（持锁 emit、中继哈希体内禁 `digest`），
+  加日志有踩坏它们的实质风险而验证代价是 86 分钟一轮 —— 出站/入站那两头的日志与断言并进任务专项 E2E 轮（#99）。
+- 配套判据 `todo_commands_log_identity_only_after_the_send_succeeded`（取"顺序 + 标记 + 不泄漏"三件）。
+  非空转实测**先红后改**：只查字面量 `{title}` 时，"把 `payload.title` 用 `{}` 铺进日志"这个坏法
+  完全抓不到（退码仍 0）⇒ 那条 clause 当时是装饰性的；改成查真实泄漏形状（`.title` / `{title}` / `description`）后
+  三种坏法各自撞红（丢标记 ⇒ 红、泄漏标题 ⇒ 红、复原 ⇒ 绿）。基线两平台已同步（macos 713 / windows 702+14 门控）。
+
+
 ### 文档（第二阶段 §2：复审结论按风险重排进 roadmap）
 - `docs/stability-roadmap.md` 新增 §13「第二阶段复审」：本轮已清零的格（每格都带非空转/反向证据）、
   **抓到但故意不动的**（§10 昵称判 @我＝要改协议才能修、`lib.rs` 拆 `mod tests`＝要等起跑前锚点核对先落地、

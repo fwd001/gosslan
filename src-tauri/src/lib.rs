@@ -3628,6 +3628,45 @@ mod tests {
         );
     }
 
+    /// 任务的两条写命令必须**只在发送成功之后**打一行带 `task=` 的日志（第二阶段 §29）。
+    ///
+    /// 为什么以前是零：现算过，`src-tauri/src/commands` 里 29 处 `logger.` 调用**无一与任务有关**，
+    /// 全仓日志密度都堆在网络层（ble 51 / transport 47 / file 13）⇒ "任务没同步过去"只能靠比对
+    /// 两侧的库来定位死在哪一段。判据取**顺序 + 内容 + 不泄漏**三件，不是"那串字面量在不在"：
+    /// - 日志早于 `send_group_payload(` ⇒ 会记出一条其实没建成的任务（与"emit 必须由写库成功门控"同族）；
+    /// - 少任一行的标记 ⇒ 任务链退回零可观测；
+    /// - 格式串里出现 `{title}` 或 `description` ⇒ 用户内容进日志（同"token 值不得入日志"那一族约束）。
+    #[test]
+    fn todo_commands_log_identity_only_after_the_send_succeeded() {
+        let commands = all_commands_src();
+        for (head, marker) in [
+            ("pub async fn send_group_todo(", "群任务已建 task="),
+            ("pub async fn update_group_todo(", "群任务已改 task="),
+        ] {
+            let body = rust_fn_body(&commands, head);
+            let send = body.find("send_group_payload(").unwrap_or_else(|| {
+                panic!("{head} 里找不到 send_group_payload ⇒ 形状变了，这条判据要跟着改")
+            });
+            let log = body.find(marker).unwrap_or_else(|| {
+                panic!("{head} 没有打「{marker}」⇒ 任务生命周期又回到零日志（§29）")
+            });
+            assert!(
+                send < log,
+                "{head} 的日志早于发送：会记出一条其实没成功的任务"
+            );
+            let logged = &body[log..(log + 400).min(body.len())];
+            // ⚠️ 这里查的是**真实泄漏形状**而不是字面量 `{title}`：非空转实测过，
+            // 只查 `{title}` 时"把 payload.title 用 {} 铺进日志"这种坏法完全抓不到（退码仍 0），
+            // 那条 clause 等于装饰。故三种写法都堵：字段访问 `.title`、行内捕获 `{title}`、描述字段。
+            assert!(
+                !logged.contains(".title")
+                    && !logged.contains("{title}")
+                    && !logged.contains("description"),
+                "{head} 的任务日志把用户内容（标题/描述）铺进了日志行"
+            );
+        }
+    }
+
     /// 中继收文件：① 完整性校验必须对**已按 seq 归位的字节一次性**算（审计 1.8）；
     /// ② 归位的字节必须在**磁盘上**，不在内存里（架构复审 P4）。
     ///

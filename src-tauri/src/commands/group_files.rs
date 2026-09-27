@@ -79,7 +79,16 @@ pub async fn send_group_todo(
         done_at: None,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    send_group_payload(s, &group_id, "todo", content).await
+    let todo_id = payload.todo_id.clone();
+    let rec = send_group_payload(s, &group_id, "todo", content).await?;
+    // §29 可观测性：任务这条链以前**一行日志都不打**（`commands` 目录 29 处 logger 无一与任务有关），
+    // 于是"任务没同步过去"只能靠比对两侧的库来定位。这里补上起点：只记 id 与 kind，
+    // **不记标题/描述**（那是用户内容，与"token 值不得入日志"同一族约束）。
+    s.logger.info(
+        "group",
+        format!("群任务已建 task={todo_id} group={group_id} msg={}", rec.msg_id),
+    );
+    Ok(rec)
 }
 
 /// 被指派人必须**至少一个且都是群成员**（用户 2026-09-16：「每个任务可以给一个或多个人」）。
@@ -424,10 +433,22 @@ pub async fn update_group_todo(
         done_at,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    let (todo_id, status) = (payload.todo_id.clone(), payload.status.clone());
+    let (deleted, archived) = (payload.deleted, payload.archived);
     // ⚠️ 发 `todo_update`（Silent）而不是 `todo`（Card）：改状态/改标题/删除是**状态微调**，
     // 不该给全群记未读、弹通知（创建才该）。两者载荷同构、折叠也是同一条 LWW 规则，
     // 区别只在通知口径 —— 详见 `protocol.rs` 的 `WIRE_KINDS` 注释。
-    send_group_payload(s, &group_id, "todo_update", content).await
+    let rec = send_group_payload(s, &group_id, "todo_update", content).await?;
+    // §29：状态迁移是本端与对端最容易各说一套的一段（徽标数字就靠它减），
+    // 所以这里记的是**状态本身**而不是标题。
+    s.logger.info(
+        "group",
+        format!(
+            "群任务已改 task={todo_id} group={group_id} msg={} status={status} deleted={deleted} archived={archived:?}",
+            rec.msg_id
+        ),
+    );
+    Ok(rec)
 }
 
 /// 发布群公告（**仅群主**）。
