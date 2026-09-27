@@ -9,6 +9,17 @@
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+### 验收矩阵（Smoke-11 那一格从"半验"改口成"两处都实测"）
+- 表情面板与搜索弹窗的键盘出口**都在浏览器内用真按键验到了**（`vite dev` + 缓存里的 Chrome for Testing +
+  Node 内置 `WebSocket` 直接讲 CDP，**没给仓库加任何测试依赖**）：方向键移动高亮、越界钳住、Esc 关闭并归还焦点、
+  Enter/空格各一次 emit；搜索弹窗那条最关键 —— 走到第 3 行按回车，收到的载荷就是高亮那条（`msgId=m2`），
+  **不是第一条**，这正是这格修复要点名的旧行为（以前鼠标与回车都固定开 `messages[0]`）。
+- 两条边界写进矩阵：① 浏览器内 ≠ WKWebView / WebView2，那一半仍是人工（Smoke-11 未销）；
+  ② 反向对照也做了 —— 探针第一次派发 Enter 不带 `text` 时**零次激活**，说明"验到了"不是恒过。
+- 顺带记下探针侧的三个坑（都是**假红/假绿来源**，与产品无关）：三条按键事件必须**同帧发**（逐条 await 会被读成
+  按住不放 ⇒ 一次 Enter 打出 5074 次 click）；Enter/空格必须带 `text`；**同页叠两个开着的浮层会把 renderer 主线程搞死**
+  （上一轮那一格"没测成"就是这个，不是产品问题）。
+
 ### 测试（§22 续 + §7：任务轮把「完成 → 归档 → 重开」这串迁移也判上了）
 - 同一轮里再加两条载荷（`seq=3` 归档：`status=done + archived=true`；`seq=4` 重开：`status=doing`、
   `archived=false`、`done_at` 清空），并加 3 条断言 ⇒ 任务轮 30 → **33 条**（矩阵轮次账同步，
