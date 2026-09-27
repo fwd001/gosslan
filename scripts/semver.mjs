@@ -12,7 +12,7 @@
 // 为什么不用 ① 定版本：184 个提交里有 23 个大功能，逐条累加会得到 25.1.2 这种数字，
 // 它既不表达"这次发布有多大"，也和后端/前端/安装包的版本语义脱节。
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 export const LEVEL_RANK = { patch: 1, minor: 2, major: 3 };
 export const BUMP_TRAILER = "Version-Bump";
@@ -312,14 +312,48 @@ function main() {
   }
 
   if (cmd === "ledger") {
-    console.log("| # | commit | 日期 | 类型 | 级别 | 累计版本 | 判据 | 标题 |");
-    console.log("|---|---|---|---|---|---|---|---|");
+    // ★ 两个洞一起堵（2026-09-28 我自己踩到：`npm run version:ledger` 把一份 271 行的账表
+    //   覆盖成只剩表头两行，而**退出码 0**，靠 `git restore` 才救回来）：
+    //   ① 旧 npm 脚本是 `… --since main > docs/version-ledger.md`，在 main 分支上 `main..HEAD`
+    //     恒为 0 条 ⇒ 每次都产出一张空表；
+    //   ② shell 的 `>` 在进程还没判之前就把文件截成 0 字节 ⇒ "拒绝写"必须由拿句柄的这一方做，
+    //     所以改成由本命令自己写（`--out`，默认就是原来那个路径）。
+    //   **不改范围语义**：默认仍是"上一次改版本号的提交之后"（`check`/`classify` 用的同一个窗口），
+    //   累计列也照旧是"从当前版本往后逐条累加"（台账用，别拿来发版 —— 见 accumulate 的注释）。
+    const outIdx = flags.findIndex((f) => f === "--out" || f.startsWith("--out="));
+    const out =
+      outIdx < 0
+        ? "docs/version-ledger.md"
+        : flags[outIdx] === "--out"
+          ? flags[outIdx + 1]
+          : flags[outIdx].slice("--out=".length);
+    if (!out) {
+      console.error("✗ `--out` 后面没有路径");
+      process.exit(1);
+    }
+    if (rows.length === 0) {
+      const msg = `范围（${since || "整个历史"}..HEAD）里没有新提交 ⇒ 没有要入账的东西，${out} 一字未动`;
+      if (sinceFlag >= 0) {
+        // 显式给了范围却一条都没有 ⇒ 十有八九是范围写错（`--since main` 在 main 上就是这种写法），
+        // 必须响亮地红；而不显式给范围时的"没有新提交"是正常状态，只如实打印。
+        console.error(`✗ ${msg} ⇒ 你给的 --since 框不住任何提交，别让它把账表覆盖成空表`);
+        process.exit(1);
+      }
+      console.log(`· ${msg}`);
+      return;
+    }
+    const lines = [
+      "| # | commit | 日期 | 类型 | 级别 | 累计版本 | 判据 | 标题 |",
+      "|---|---|---|---|---|---|---|---|",
+    ];
     let v = cur;
     rows.forEach((r, i) => {
       v = bumpVersion(v, r.level);
       const lvl = { patch: "小（patch）", minor: "中（minor）", major: "大（major）" }[r.level];
-      console.log(`| ${i + 1} | \`${r.short}\` | ${r.date} | ${r.type} | ${lvl} | ${v} | ${r.reason} | ${r.subject.replace(/\|/g, "\\|")} |`);
+      lines.push(`| ${i + 1} | \`${r.short}\` | ${r.date} | ${r.type} | ${lvl} | ${v} | ${r.reason} | ${r.subject.replace(/\|/g, "\\|")} |`);
     });
+    writeFileSync(out, lines.join("\n") + "\n");
+    console.log(`✓ 已写 ${out}：${rows.length} 条（末行累计版本 ${v}，范围 ${since}..HEAD）`);
     return;
   }
 

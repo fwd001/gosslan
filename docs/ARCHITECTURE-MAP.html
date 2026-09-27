@@ -814,7 +814,7 @@ const SEM = {
   send_todo_image: { d: "给任务上传一张图：落盘 → 作为 <code>scope=todo</code> 的群文件登记。" },
 
   /* ── commands/group_files.rs ── */
-  send_group_message: { d: "群消息（走统一的 <code>send_group_payload</code>：取群密钥 → 信封 → 每人一行 group_outbox → broadcast_gossip）。<code>mentions</code>=这条<b>文本</b> @ 了谁（设备 id，三态：缺省=不发这个键=对端按昵称兜底；空数组=明确谁都没 @）；只进加密明文，<b>不落库</b>。" },
+  send_group_message: { d: "群消息（走统一的 <code>send_group_payload</code>：取群密钥 → 信封 → 每人一行 group_outbox → broadcast_gossip）。<code>mentions</code>=这条<b>文本</b> @ 了谁（设备 id，三态：缺省=不发这个键=对端按昵称兜底；空数组=明确谁都没 @）；只进加密明文，<b>不落库</b>。★ 但同一句话里的另一份信息<b>落库待遇相反</b>：落点 <code>mention_targets</code>（#122 第二段，<code>messages</code> 表那一列，迁移 v10→v11）是那句话的历史事实，重启后仍按身份标；两份的分界写在 <code>state::MessageRecord</code> 的字段文档上。）" },
   send_group_todo: { d: "建任务。<code>kind=todo</code> 属 <b>Card 类</b>（计未读、通知被指派人）。", w: "messages(JSON)" },
   update_group_todo: { d: "改任务（标题 / 指派 / 状态 / 归档 / 删除 / 图片）。<code>kind=todo_update</code> 属 <b>Silent 类</b>：不通知。⚠️ <b>状态存在 JSON content 里，不是表列</b>，读的时候由 <code>foldTodos</code> 折叠。" },
   delete_group_announcement: { d: "删公告（<code>announcement_delete</code>）。" },
