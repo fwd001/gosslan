@@ -466,6 +466,24 @@ select,
 [contenteditable="true"],
 [contenteditable=""] {
   caret-color: var(--gosslan-primary);
+
+/* 选中态与原生控件的颜色跟随主题（#35-N7，2026-09-27）。
+   之前全仓没有 `::selection` 也没有 `accent-color` ⇒ 选中文字永远是浏览器默认蓝、
+   勾选类原生控件永远是系统强调色，在深色面板里既不跟手也刺眼。
+   ★ 刻意用半透明叠加 + color: inherit：不改文字颜色 ⇒ 不会把既有对比度判据（tokenContrast）拖下水，
+     也不出现"选中后白字压蓝底"那种低于 4.5 的组合。 */
+::selection {
+  background: color-mix(in srgb, var(--gosslan-primary) 30%, transparent);
+  color: inherit;
+}
+
+/* 原生控件的强调色（复选框 / radio / range / 进度条）统一吃主题色变量 */
+input,
+select,
+textarea,
+progress {
+  accent-color: var(--gosslan-primary);
+}
 }
 
 /* 统一过渡曲线：覆盖 Tailwind 的 .transition 系列（同优先级、本文件在 @tailwind 之后 → 后者胜） */

@@ -21,6 +21,20 @@ import {
   checkSelectionContract,
 } from "./designGuards.ts";
 
+// ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
+// 判的是形状而不是像素：写死十六进制在换主题色时不会跟着走，等于把"跟随主题"又做回硬编码。
+test("⓪ ::selection 与 accent-color 必须吃主题变量（#35-N7）", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  const sel =
+    /::selection\s*{[^}]*background:\s*color-mix\(\s*in srgb,\s*var\(--gosslan-primary\)/.exec(css);
+  assert.ok(sel, "style.css 里必须有 ::selection，且背景由 --gosslan-primary 现算（不许写死十六进制）");
+  assert.match(
+    css,
+    /accent-color:\s*var\(--gosslan-primary\)/,
+    "input/select/textarea/progress 的 accent-color 必须吃主题变量",
+  );
+});
+
 // ---------------- ① 悬停揭示必须有触屏兜底 ----------------
 //
 // 真实事故（2026-09-10 审计 P0-1）：会话行的删除键写成
