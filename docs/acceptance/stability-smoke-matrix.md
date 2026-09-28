@@ -127,6 +127,31 @@
 | 21 | 跨版本优雅降级（INV-P24） | SIMULATED | `unknown_wire_frame_is_tolerated_after_auth`、`messageKinds.test.ts` | 「新旧安装包互发」= MANUAL-HARDWARE → Smoke-6 |
 | 22 | 大文件进行时聊天/控制帧不被饿死 | SIMULATED | P3 字节封顶用例、优先级队列用例 | 真并发下的时序无跨进程证明 → A-3 |
 
+## 组合面对账（总任务 §七-4 点名的那 14 条：A+B，而不是"A 绿 + B 绿"）
+
+口径：每行只写**判据在哪个具名入口、哪一层、进不进远端 CI**，不写条数（条数由该入口自己打印）。
+列里的名字都能在仓里 grep 到；grep 不到就是没这条。
+
+| 组合 | 判据在哪（具名） | 层 | 进远端 CI？ | 状态 |
+|---|---|---|---|---|
+| 聊天 + 文件 / 大文件 + 普通消息 | 双实例默认轮：传完文件后**同一对进程**继续发文本并判落库；档位两步 `--size=0.001` 与 `--size=10` | 本地 E2E 层 | ❌（远端 verify 只跑 frontend / rust / android 三组） | AUTOMATED-LOCAL |
+| 聊天 + 群聊 | 群聊轮 `--round=group` 里那条"群消息一条都不许串进 1:1" | 本地 E2E 层 | ❌ | AUTOMATED-LOCAL |
+| 文件 + 群聊 | Rust：`group_file_keys_distinct_across_transfers`、`group_file_status_after_fail`；**跨实例的群文件端到端仍无自动化**（本文件 row 18 已写明） | 单元 | ✅ rust job | SIMULATED（差跨实例那一半） |
+| 文件 + 消息（同一条链路混排） | `bulk_messages_are_only_large_chunks`、`frame_roundtrip_large_payload`、`roundtrip_across_sizes_and_mtus` | 单元 | ✅ | AUTOMATED |
+| 文件 + reconnect（断链不误杀其它传输，P1） | 护栏「断链清理必须在确认这个 peer 真的一条链路都不剩之后」「接收器回收必须走判据与摘表同一次持锁的 take_*」；Rust：`stalled_receiver_is_reclaimed_only_after_the_idle_window`、`peer_offline_after_tail` | 护栏 + 单元 | 单元 ✅；护栏在本地/全量层 | AUTOMATED |
+| 文件 + sync（乱序/重复分片、断点续传） | `retry_incomplete_content`、`reseal_for_send`、`open_direct_content`；护栏「中继收文件的哈希必须对组装后的明文算」「幂等 accept 时必须重置段号」「重复 FileDone 的『本机没这份文件』出口不许退回静默」 | 护栏 + 单元 | 同上 | AUTOMATED |
+| task + group | 群任务轮 `--round=task`（反证 `--round=task-lie`）；Rust：`todo_commands_log_identity_only_after_the_send_succeeded`、`tasks_window_uses_one_fixed_label_cross_checked_with_frontend`；渲染侧＝运行时探针任务段 | 本地 E2E + 单元 + 浏览器内 | 单元 ✅ | AUTOMATED-LOCAL |
+| notification + unread | 徽标渲染＝运行时探针的会话行段（`npm run test:ui-runtime`）；**真系统通知与点击跳转＝Smoke-3，人工** | 浏览器内 / 人工 | 探针在本地层 | SIMULATED（最后一公里人工） |
+| identity + friend（换身份不污染旧关系） | `new_peer_conflicts_with_friend`、`acceptable_friend_keys`、`mark_peer_keys_verified`、`existing_conversation_survives_group_relation_sync` | 单元 | ✅ | AUTOMATED |
+| Bluetooth + LAN | `ble_only_link_must_not_start_a_hopeless_large_file`、`ble_start_does_not_block_on_the_peripheral_state_wait`；**真机 BLE 收发＝Smoke-2，人工**（同机 peripheral 的广播不会回喂本机 central，实测） | 单元 + 人工 | ✅（本地层那份二进制也带 `--features bluetooth`，见 `scripts/verify.mjs` 里 build 那一步） | SIMULATED |
+| LAN + 中继/routed | `unhealthy_lan_does_not_block_healthy_routed`、`route_order_plus_send_delivers_on_healthy_link_after_lan_degraded`；跨实例关局域网轮 `--round=lanoff`（反证 `lanoff-lie`） | 单元 + 本地 E2E | 单元 ✅ | AUTOMATED-LOCAL；"断一条链路看谁接管"已判为**单机不可自动**（routed 与 LAN 共用同一个 TCP 监听口） |
+| 多连接 + 大文件（队列内存封顶，P3） | 护栏「链路队列必须按字节封顶：折算槽数不许被换成常量深度」「链路队列的字节预算必须真的参与折算」；`inflight_cap_blocks_state_flood`、`never_awaits_while_holding_the_links_lock` | 护栏 + 单元 | 单元 ✅ | AUTOMATED |
+| 大文件 + 群同步（§三 点名的 600MB+ 那一格） | **门禁现跑的档位只有 `--size=0.001` 与 `--size=10`** ⇒ 600 MB 以上**没有任何自动化层覆盖**；形状最近的判据是 `group_rows_survive_the_link_flap_window_that_kills_single_chats` 与群密钥重递那一族 | 单元 | ✅ | **缺口如实登记**：大档位＝人工阶梯（`E2E_FILE_MB=N` 换档重跑同一轮断言，入口现成） |
+| A + B + C（文件在途 + 群同步 + 进程被杀） | `--round=groupcrash`（群只长在发送端盘上 → SIGKILL → 再起两端：对端自己学到这个群、密钥逐字节相同、不多出会话行）+ 反证 `groupcrash-lie` | 本地 E2E 层 | ❌ | AUTOMATED-LOCAL |
+
+★ 这张表**不许读成"CI 覆盖组合面"**：远端只有 unit / lint / clippy / rust 测试 / android 检查与三份出包流水线，**双实例轮一条都不在远端**（复跑：`grep -n "verify.mjs --group" .github/workflows/verify.yml`）。
+凡标 `AUTOMATED-LOCAL` 的行，这层保护只在有人本机跑 `npm run verify:e2e` 时存在——这正是 §七-4 要的那类组合目前唯一断在哪里的地方。
+
 ## 平台 / 硬件 Smoke 清单（这些永远不许出现在"绿"里）
 
 | 编号 | 项目 | 可观测判据（用户本机） | 最近一次人工验收 |
@@ -137,7 +162,7 @@
 | Smoke-4 | 移动端群已读可见性（#30） | 群消息气泡下方应出现已读人数，点开浮层不超出屏幕右缘 | 用户已确认「已读在」；根因未定位 |
 | Smoke-5 | 两台以上真设备联调（J1/J2/J4 全走一遍） | 用 `test-results/run-*/summary.html` 同样的断言清单手工走 | 未做 |
 | Smoke-6 | 新旧安装包互发（INV-P24） | 旧→新、新→旧各发：文本/文件/未知 kind；期望「不支持的消息类型，升级后可查看」而非裸 JSON | 未做 |
-| Smoke-7 | 移动端首屏与转屏（#27） | 冷启动权限弹框盖住 WebView 后，骨架结束**不得**出现桌面导航栏；转屏布局跟随 | 修复已提交 `48345bf`，**真机未证** |
+| Smoke-7 | 移动端首屏与转屏（#27） | 冷启动权限弹框盖住 WebView 后，骨架结束**不得**出现桌面导航栏；转屏布局跟随 | 修复已提交 `48345bf`，**真机未证**。★ 2026-09-29 现读补一句，避免下一个人把这格当成「完全没判据」：**形状那一半已有机器判据**（`src/utils/designGuards.test.ts` 两条——「布局级断点必须叠加 `desktop:` 变体（移动端视口会说谎）」按表逐文件查那批结构级断点，外加「`desktop:` 变体必须在 tailwind 里注册」钉住选择器必须是 `html:not(.is-mobile)`，与 `useAppStore.applyIsMobile()` 写的那个类同名才对得上）。⇒ 这两条判的是「源码形状不再可能让手机当桌面用」，**不判真机首屏** ⇒ 本行等级仍不动，人工那一半照旧。 |
 | Smoke-8 | macOS 沙盒书签 / Android 厂商后台限制 | 收到文件写进自选目录不报错；重启后仍可写（书签回读成功） | 未做 |
 | Smoke-9 | **两台真实设备经中继互发**（LAN/Routed 两条直连都不可达） | 两端设置页填同一台中继服务器 + 口令（保存时那次真拨应显示通过）；拔掉直连可达性后发一条文本 + 一个文件，期望：两侧日志出现 `[relay] 电路已建立 peer=… server=…`，消息落库且 `msg_id` 只有一条，文件收完 sha256 等于源，通道图标显示「中继」而不是「局域网」，且**日志与事件里不得出现口令值** | 未做（单机做不出来：`relay.rs:104` 会跳过"已有任何链路"的对端，同机 LAN 一定连得上 ⇒ 需要真被封的直连，见 roadmap §12.7） |
 | Smoke-10 | **同进程两扇窗之间的回送**（#97：自己发的群任务当场出现在主聊天窗） | 在群聊里点任务图标新建一条任务 ⇒ **不退出会话、不重进**，主聊天窗时间线底部应立刻出现那张任务卡片。失败长这样：卡片只在群任务看板那扇窗出现，主窗要切走再切回来才看到 | 未做。⚠️ 这一格**没有行为级判据**。现在锁住的是它上游的几段形状（都判不了"另一扇窗当场出现那张卡片"）：Rust 侧 `lib.rs::group_send_kernel_emits_to_own_windows_after_commit_outside_the_lock`（emit 必须晚于 commit 且在锁作用域之外）；`storeContract.test.ts` 的「返回 MessageRecord 的每条命令，调用点必须 enqueueMessage」（记录进没进 store，#82 就是漏了这一行）；`messageKinds.test.ts` 的「时间线可见性逐项判决表」与「过滤只有一份判据，且 todo 卡片真的在渲染链里」（进了 store 会不会被过滤掉、有没有人渲染它）。跨窗事件不在浏览器探针的能力范围内 ⇒ 最后一公里仍只能人眼看 |
