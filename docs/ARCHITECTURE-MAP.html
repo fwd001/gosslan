@@ -226,7 +226,7 @@
 <header class="top">
   <div class="brand">
     <h1>Gosslan 架构与接口契约图</h1>
-    <span class="meta">v4.29.45 · HEAD <code>2c4e3eb</code> · 取数 2026-09-27（⚠️ 这一戳<b>天生是滞后的</b>：改图要提交，提交又推进 HEAD —— 判"图新不新"要看日期与口径，别拿它当 HEAD 判据；当前 HEAD 一律 <code>git log --oneline -1</code>） · 6 扇窗口（<b>1</b> 扇由 <code>tauri.conf.json</code> 的 <code>app.windows</code> 声明＝主窗 <code>main</code> + <b>5</b> 个 <code>WebviewWindowBuilder::new</code> 构造点：logs / settings / todos / preview 走 <code>WebviewUrl::App(*.html)</code>，第 5 个走 <code>External</code>。⚠️ 只数 <code>WebviewUrl::App(</code> 出现次数会得 6、数 <code>WebviewWindowBuilder::new</code> 也会得 6 —— 各多算一次"字符串出现在守卫/测试里"；只看 <code>src/entries/</code> 又只得 5）/ 130 条 IPC 命令（权威口径 = <code>node scripts/check-key-boundary.mjs</code> 自己打印的那行"注册表 130 条 / 扫到 134 个命令体"；⚠️ 别自己数 <code>generate_handler!</code> 块 —— 它跨行且每项带模块前缀，手工正则实测数出 0）/ 27 个后端事件（<code>src-tauri</code> 里 <code>.emit</code> / <code>.emit_to</code> / <code>.emit_filtered</code> 首参的<b>字符串字面量</b>去重。⚠️ <b>必须允许跨行匹配</b>：第一个参数常常是窗口句柄、事件名在下一行 —— 单行 grep 只得 18，那是把多行调用算丢，不是事件变少。以常量名发出的另 5 个不计入 ⇒ 27 是下限口径）/ 19 张表（去**真跑起来那份库**的 <code>sqlite_master</code> 里数，并与源码 <code>CREATE TABLE IF NOT EXISTS</code> 的字面名逐一对上。⚠️ 这里曾写 20：grep 式数法给不出可复现的 20，真库只有 19 张）/ 11 个领域（<code>docs/domains.data.mjs</code>）</span>
+    <span class="meta">v4.31.5 · 取数 2026-09-28（<code>npm run map:stats</code> 一次算齐）· HEAD 当时是 <code>5e16fa4</code>（⚠️ 这一戳<b>天生是滞后的</b>：改图要提交，提交又推进 HEAD —— 判"图新不新"要看日期与口径，别拿它当 HEAD 判据；当前 HEAD 一律 <code>git log --oneline -1</code>） · 6 扇窗口（<b>1</b> 扇由 <code>tauri.conf.json</code> 的 <code>app.windows</code> 声明＝主窗 <code>main</code> + <b>5</b> 个 <code>WebviewWindowBuilder::new</code> 构造点：logs / settings / todos / preview 走 <code>WebviewUrl::App(*.html)</code>，第 5 个走 <code>External</code>。⚠️ 只数 <code>WebviewUrl::App(</code> 出现次数会得 6、数 <code>WebviewWindowBuilder::new</code> 也会得 6 —— 各多算一次"字符串出现在守卫/测试里"；只看 <code>src/entries/</code> 又只得 5）/ 130 条 IPC 命令（权威口径 = <code>node scripts/check-key-boundary.mjs</code> 自己打印的那行"注册表 130 条 / 扫到 134 个命令体"；⚠️ 别自己数 <code>generate_handler!</code> 块 —— 它跨行且每项带模块前缀，手工正则实测数出 0）/ 27 个后端事件（<code>src-tauri</code> 里 <code>.emit</code> / <code>.emit_to</code> / <code>.emit_filtered</code> 首参的<b>字符串字面量</b>去重。⚠️ <b>必须允许跨行匹配</b>：第一个参数常常是窗口句柄、事件名在下一行 —— 单行 grep 只得 18，那是把多行调用算丢，不是事件变少。以常量名发出的另 5 个不计入 ⇒ 27 是下限口径）/ 19 张表（去**真跑起来那份库**的 <code>sqlite_master</code> 里数，并与源码 <code>CREATE TABLE IF NOT EXISTS</code> 的字面名逐一对上。⚠️ 这里曾写 20：grep 式数法给不出可复现的 20，真库只有 19 张）/ 11 个领域（<code>docs/domains.data.mjs</code>）</span>
   </div>
   <nav class="tabs" role="tablist" id="tabs"></nav>
 </header>
@@ -272,7 +272,7 @@
 
   <!-- ④ 事件契约 -->
   <section class="tab" id="t-evt" role="tabpanel">
-    <p class="lede">后端 → 前端的<b>唯一反向通道</b>：29 个事件名，同类合并成 28 行。这张表是判"某个状态变化界面看不看得到"的清单：一条状态改动如果没有对应事件，常驻窗口就永远停在旧快照（这类退化本仓库真踩过：设置窗口改语言/主题后主窗不刷新）。</p>
+    <p class="lede">后端 → 前端的<b>唯一反向通道</b>：27 个后端字面量事件名（另有 2 个走 <code>format!</code> 动态拼，机器点不齐），同类合并成 28 行。这张表是判"某个状态变化界面看不看得到"的清单：一条状态改动如果没有对应事件，常驻窗口就永远停在旧快照（这类退化本仓库真踩过：设置窗口改语言/主题后主窗不刷新）。</p>
     <div class="tablewrap"><table id="evttable"><thead><tr><th>事件</th><th>载荷</th><th>谁发 / 何时</th><th>谁收（消费者）</th><th>范围</th></tr></thead><tbody></tbody></table></div>
   </section>
 
@@ -295,7 +295,7 @@
 </main>
 
 <footer>
-  生成口径：接口表来自 <code>src-tauri/src/lib.rs</code> 的 <code>generate_handler!</code>（129 条）与 <code>src/api/index.ts</code> 的 <code>invoke</code>/<code>listen</code> 实测交叉；表结构来自 <code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量（18 张）+ <code>content/store.rs</code> 的 <code>ensure_schema</code>（1 张）。<code>src-tauri/schema.sql</code> 已于 2026-09-26 退役删除 —— 它自称与真源一致、实测表名集合不等，而<b>没有任何代码读它</b>；留着的代价是"看起来是事实源、其实没人核对"。
+  生成口径：接口表来自 <code>src-tauri/src/lib.rs</code> 的 <code>generate_handler!</code>（130 条）与 <code>src/api/index.ts</code> 的 <code>invoke</code>/<code>listen</code> 实测交叉；表结构来自 <code>src-tauri/src/db.rs</code> 的 <code>SCHEMA</code> 常量（18 张）+ <code>content/store.rs</code> 的 <code>ensure_schema</code>（1 张）。<code>src-tauri/schema.sql</code> 已于 2026-09-26 退役删除 —— 它自称与真源一致、实测表名集合不等，而<b>没有任何代码读它</b>；留着的代价是"看起来是事实源、其实没人核对"。
 </footer>
 
 <script>
@@ -374,6 +374,17 @@ const MODS = [
     out: ["openGallery(items,i,from) → 预览 store", "重取 → request_content(msgId/cid)", "撤回/钉/反应/收藏 → IPC"],
     data: ["KindClass = Bubble|Silent|Card（是否计未读/是否进时间线的唯一分类）", "msg_id 前缀约定：file-{tid} / gfile-{tid}"] },
 
+  { id: "ui-mention", l: "ui", n: "@ 与链接的渲染层", s: "linkify · MentionText · useMentionContext",
+    role: "「@ 到谁」的<b>语义只有一份</b>：<code>utils/linkify</code> 切段并产出 <code>mention</code> / <code>mention-self</code> 两个 kind，"
+      + "<code>MentionText.vue</code> 只负责画，<code>useMentionContext.ts</code> 提供判定输入（成员名单 / 我是谁 / 落点）。"
+      + "聊天时间线、任务卡、任务详情<b>三处共用</b>它 —— 曾经各处各算一遍 @ 是本轮审计抓到的缺陷族。",
+    files: ["src/utils/linkify.ts", "src/components/message/MentionText.vue", "src/composables/useMentionContext.ts", "src/components/message/MessageLinkText.vue"],
+    in: ["正文 text", "群成员名列表 mentionNames", "selfMention = 我的 id + 昵称 + 本地化标签", "落点 mention_targets（<b>已落库</b>，v11）"],
+    out: ["链接段 → MessageLinkText（点击走 <code>openUrl</code>）", "@ 段 → .mention-token / .mention-token--self（@到我自己显示成「@你」）", "表情 token → emoji 图片"],
+    data: ["<b>判定优先绑身份</b>：有线上 <code>mentions</code>/落点就按设备 id 判，昵称只剩「旧对端不认识这个字段」时兜底（INV-P24 第 3 条）",
+           "⚠️ 气泡里的「@你」是<b>呈现层现算</b>的标签，不回写原文 ⇒ 改名后高亮仍落在当初发出去的那几个字上",
+           "@ 高亮的取色分两种家且是<b>刻意的</b>：气泡底色逐条消息变 ⇒ 现算保 ≥4.5:1；任务卡/详情底色固定 ⇒ 走 <code>currentColor</code> 派生（#144 曾被我误判成分叉，已撤回）"] },
+
   { id: "ui-todo", l: "ui", n: "任务看板与卡片", s: "GroupTasksBoard + TodoCard/Detail",
     role: "同一块看板被窗口与移动端弹窗共用（<code>standalone</code> 决定形态）。成员泳道、按状态着色、行内归档/还原、图片拖拽入卡。",
     files: ["src/components/GroupTasksBoard.vue", "src/components/GroupTasksPanel.vue", "src/components/TodoCardBubble.vue", "src/components/TodoDetailDialog.vue", "src/utils/todos.ts"],
@@ -381,14 +392,14 @@ const MODS = [
     out: ["send_group_todo/update_group_todo → IPC", "save_todo_image_bytes(裸 Uint8Array) → 落盘缓存目录"],
     data: ["归档/重开权限 lane = archive_only|reopen_only|is_member", "isEffectivelyArchived(折叠终态)"] },
 
-  { id: "st-app", l: "ui", n: "useAppStore", s: "设备·外观·通道·toast", cnt: "1026 行",
+  { id: "st-app", l: "ui", n: "useAppStore", s: "设备·外观·通道·toast", cnt: "1044 行",
     role: "设备身份、外观（主题/字体/聊天样式）、语言与通知偏好、通道运行时快照、toast 与移动端布局态。<b>所有辅助窗口都会跑它的 <code>init()</code></b>（只读）。",
     files: ["src/stores/useAppStore.ts"],
     in: ["DeviceInfo ← get_device_info()", "AppSettings ← get_settings()", "RuntimeSnapshot ← get_runtime_snapshot() / runtime-changed", "系统深色 + 键盘 inset"],
     out: ["save_settings/set_ui_language/broadcast_chat_style → IPC", "toast()/toastError() → ToastHud", "set_unread_badge → 平台外壳"],
     data: ["applySettingsSnapshot/applySettingsPatch（跨窗口零额外 IPC 的关键）", "channels[]: {channel,enabled,available,running,peers,preferred}"] },
 
-  { id: "st-chat", l: "ui", n: "useChatStore", s: "消息·关系·群·传输·收藏", cnt: "2128 行 · 86 导出",
+  { id: "st-chat", l: "ui", n: "useChatStore", s: "消息·关系·群·传输·收藏", cnt: "2241 行",
     role: "唯一的数据中枢：init 先绑事件再刷数据；<code>createInitScope()</code> 保证 HMR/重复 init 时回调不翻倍（危害不是泄漏，是回调翻倍）。<b>辅助窗口禁止跑它的 init</b>。",
     files: ["src/stores/useChatStore.ts"],
     in: ["27 个后端事件 → enqueueMessage/refreshXxx", "MessageRecord[] / Conversation[] / Group[] / Friend[] / Peer[]", "ContentTransfer[] ← get_content_transfers()"],
@@ -410,7 +421,7 @@ const MODS = [
     data: ["opening: Set<label> 单飞 + lastLaunchAt 防抖（模块作用域，全应用共享一份）"] },
 
   /* ───────────── ② IPC 契约层 ───────────── */
-  { id: "api-invoke", l: "ipc", n: "api.invoke 面", s: "src/api/index.ts 的一个平面对象", cnt: "129 条包装 = 注册表 1:1",
+  { id: "api-invoke", l: "ipc", n: "api.invoke 面", s: "src/api/index.ts 的一个平面对象", cnt: "130 条包装 = 注册表 1:1",
     role: "<b>前端唯一</b>碰 <code>@tauri-apps/api/core</code> 的地方 —— 0-A3 起这句话<b>有守卫兜</b>（src/ 下任何其它文件出现该 import 就必须红，静态与动态 import 都算）。约定：参数写 camelCase，Rust 侧 snake_case 自动转；返回用 <code>invoke&lt;T&gt;</code> 泛型；<b>错误不集中吞</b>，由调用方决定 toast。",
     files: ["src/api/index.ts"],
     in: ["组件/store 的方法调用（带 TS 类型）"],
@@ -506,7 +517,7 @@ const MODS = [
     role: "一条全局 <code>Mutex&lt;Connection&gt;</code>；SCHEMA 幂等建表 + <code>user_version</code> 版本化迁移 + 降级守卫；每域一份 SQL 分册共享一个扁平 <code>crate::db::</code> 命名空间。",
     files: ["src-tauri/src/db.rs", "src-tauri/src/db/*.rs", "src-tauri/src/export.rs"],
     in: ["&Connection 已由调用方上锁 → db::insert_message_and_outbox 等", "PRAGMA user_version（>DB_VERSION 直接拒绝启动，且必须早于任何写）"],
-    out: ["19 张表 + 索引", "Lamport next_clock/observe_clock", "级联删除（无外键 ⇒ 手写）"],
+    out: ["19 张表（db.rs 18 + 内容库 1）· 23 个索引", "Lamport next_clock/observe_clock", "级联删除（无外键 ⇒ 手写）"],
     data: ["⚠️ 窗口路径必须 try_lock + 安全降级（同步步命令跑在 wry 主线程，持锁等待=整个应用冻）", "命名：get_/list_/insert_/upsert_/mark_/delete_"] },
   { id: "dom-platform", l: "dom", n: "平台外壳", s: "menu · tray · macos_window · bookmark · notifications · user_dirs · open_path",
     role: "四端差异全收在这一层：macOS 圆角/菜单/security-scoped bookmark、Android JNI 与文件打开、通知与托盘、目录解析。",
@@ -524,7 +535,7 @@ const MODS = [
   /* ───────────── ⑤ 存储 ───────────── */
   { id: "st-sql", l: "store", n: "SQLite", s: "gosslan.db（WAL + NORMAL）", cnt: "19 表",
     role: "文本、密钥、关系、四张离线队列。<b>不存 BLOB</b>。",
-    in: ["db:: 的 114 个函数 ← 命令层 + 传输层（⚠️ 耦合热点）"],
+    in: ["db:: 的 118 个公开函数 ← 命令层 + 传输层（⚠️ 耦合热点）"],
     out: ["行 → 命令层返回类型（serde → 前端 types.ts）"],
     data: ["见 ⑤ 数据契约"],
     note: "零 CHECK、零外键：状态枚举与级联全靠应用层。" },
@@ -583,6 +594,9 @@ const MODS = [
 
 /* 大图箭头：from → to，lab = 真实载荷/调用名 */
 const EDGES = [
+  ["ui-chat", "ui-mention", "气泡正文 → linkify 切段（@ 与链接）"],
+  ["ui-todo", "ui-mention", "任务描述走<b>同一个</b>渲染件（曾经各处各算一遍 @）"],
+  ["api-evt", "ui-mention", "落点 mention_targets（v11 落库）→ 判定输入"]
   ["w-main", "api-invoke", "invoke(...)"], ["w-settings", "api-invoke", "invoke(...)"], ["w-logs", "api-invoke", "invoke(...)"],
   ["w-tasks", "api-invoke", "invoke(...)"], ["w-preview", "api-invoke", "invoke(...)"],
   ["ui-bubble", "st-prev", "openGallery(items,i,from)"], ["ui-todo", "st-prev", "openGallery"],
@@ -814,7 +828,12 @@ const SEM = {
   send_todo_image: { d: "给任务上传一张图：落盘 → 作为 <code>scope=todo</code> 的群文件登记。" },
 
   /* ── commands/group_files.rs ── */
+  get_group_todo_messages: { d: "按会话 id 批量取 <code>kind IN (todo, todo_update)</code> 的原始行，给前端算「与我相关」徽标用。"
+    + "<b>为什么必须有它</b>：会话消息缓存有上限（<code>enforceMessageCacheBound</code> 会挤掉冷会话），拿内存数据算徽标 = 缓存没到就是一片空，那是假状态；"
+    + "折叠与判定<b>仍只有前端 <code>utils/todos.ts::foldTodos</code> 那一份</b>（这里不重复实现）" },
   send_group_message: { d: "群消息（走统一的 <code>send_group_payload</code>：取群密钥 → 信封 → 每人一行 group_outbox → broadcast_gossip）。<code>mentions</code>=这条<b>文本</b> @ 了谁（设备 id，三态：缺省=不发这个键=对端按昵称兜底；空数组=明确谁都没 @）；只进加密明文，<b>不落库</b>。★ 但同一句话里的另一份信息<b>落库待遇相反</b>：落点 <code>mention_targets</code>（#122 第二段，<code>messages</code> 表那一列，迁移 v10→v11）是那句话的历史事实，重启后仍按身份标；两份的分界写在 <code>state::MessageRecord</code> 的字段文档上。）" },
+  send_group_announcement: { d: "发布群公告（<b>仅群主</b>）：权限口径与改名逐字同构（<code>group.creator == 我</code>）。"
+    + "公告是发给全群的权威信息，人人可发就失去意义；<b>群主离线就是发不了</b> —— 无中心即无中心授权，不降级成谁都能发" },
   send_group_todo: { d: "建任务。<code>kind=todo</code> 属 <b>Card 类</b>（计未读、通知被指派人）。", w: "messages(JSON)" },
   update_group_todo: { d: "改任务（标题 / 指派 / 状态 / 归档 / 删除 / 图片）。<code>kind=todo_update</code> 属 <b>Silent 类</b>：不通知。⚠️ <b>状态存在 JSON content 里，不是表列</b>，读的时候由 <code>foldTodos</code> 折叠。" },
   delete_group_announcement: { d: "删公告（<code>announcement_delete</code>）。" },
@@ -962,7 +981,7 @@ const TABLES = [
   ["settings", "键值配置：身份、<b>私钥</b>、目录、缓存策略、每群清空边界", "PK <code>key</code>", "<code>value TEXT NOT NULL</code>。键族：<code>device_id · nickname · avatar · tcp_port · bind_ip · lan_enabled · bt_enabled · language · dark_mode · appearance_mode · theme_color · font_family · chat_style · chat_peer_styles · notify_* · relay_policy · relay_allowlist · <b>x25519_secret</b> · <b>ed25519_secret</b> · share_dir(+_bookmark) · downloads_dir(+_bookmark) · cache_retention_days · cache_max_bytes · gk:{group_id} · gfk:{transfer_id} · clear_boundary:group:{id} · routed_endpoints</code>", "14 个模块走 <code>db::set_setting</code>；<code>gfk:</code> 存的是<b>群密钥封装后的密文</b>（明文 file_key 只在内存，不落库不进日志）"],
   ["friends", "好友关系（两侧各存一份，无中心权威）", "PK <code>device_id</code>", "<code>nickname · avatar(base64) · x25519_pubkey · ed25519_pubkey · added_at</code>", "<code>add_friend</code>（命令 / transport / gossip）；<code>update_friend_pubkeys</code> 从在线广播学；<code>remove_friend</code>"],
   ["conversations", "会话行：单聊 = 对端 id，群聊 = <code>group:&lt;id&gt;</code>", "PK <code>id</code>", "<code>kind · name · avatar · last_msg · last_ts · unread · updated_at · pinned</code>（pinned 是本地语义，不广播）", "<code>ensure_conversation</code> + 每条消息 <code>touch_conversation</code>；<code>delete_conversation</code> 手写级联"],
-  ["messages", "聊天正文，<b>同时是卡片存储</b>（任务 / 公告 / 钉 / 反应 / 合并）", "PK <code>id</code> · UNIQUE <code>msg_id</code> · idx <code>(conv_id,ts)</code>、<code>(conv_id,seq)</code>", "<code>conv_id · sender_id · receiver_id · kind · content(JSON) · ts · <b>seq</b> · status ∈ sent|delivered|queued|read|failed|recalled</code>", "<code>insert_message(_and_outbox|_if_new)</code>；<code>set_message_status</code>；⚠️ <b>failed 只由清扫器写</b>。<code>(conv_id,seq)</code> 只由迁移 v2→v3 建（它建在迁移才加的列上，进 SCHEMA 会让老库开不起来）⇒ 新库靠 <code>ensure_post_schema_shape</code> 补，已由具名判据钉住：<code>fresh_db_has_every_hot_query_index</code> + <code>fresh_schema_alone_has_exactly_the_migrated_shape</code>（后者第一次跑就红在唯一一项 <code>index idx_messages_conv_seq</code> 上）"],
+  ["messages", "聊天正文，<b>同时是卡片存储</b>（任务 / 公告 / 钉 / 反应 / 合并）", "PK <code>id</code> · UNIQUE <code>msg_id</code> · idx <code>(conv_id,ts)</code>、<code>(conv_id,seq)</code> · <b>v11 起多一列 <code>mention_targets</code></b>（JSON，可空、不回填）", "<code>conv_id · sender_id · receiver_id · kind · content(JSON) · ts · <b>seq</b> · status ∈ sent|delivered|queued|read|failed|recalled</code>", "<code>insert_message(_and_outbox|_if_new)</code>；<code>set_message_status</code>；⚠️ <b>failed 只由清扫器写</b>。<code>(conv_id,seq)</code> 只由迁移 v2→v3 建（它建在迁移才加的列上，进 SCHEMA 会让老库开不起来）⇒ 新库靠 <code>ensure_post_schema_shape</code> 补，已由具名判据钉住：<code>fresh_db_has_every_hot_query_index</code> + <code>fresh_schema_alone_has_exactly_the_migrated_shape</code>（后者第一次跑就红在唯一一项 <code>index idx_messages_conv_seq</code> 上）"],
   ["conversation_clocks", "每会话单调 Lamport 计数 = <b>排序与清空边界的权威</b>", "PK <code>conv_id</code>", "<code>seq</code>", "启动时从 messages 重建；<code>next_clock</code>（发）/ <code>observe_clock</code>（收）"],
   ["group_recalled_messages", "撤回的<b>唯一事实</b>（G-Set，只增不减）", "PK <code>(conv_id,msg_id)</code>", "<code>recaller_id · seq</code>", "<code>insert_recall</code> + <code>materialize_recall</code> 物化到 messages。原因：撤回可能比被撤回的消息先到，光 UPDATE 会命中 0 行"],
   ["groups", "群", "PK <code>id</code>", "<code>name · creator · created_at</code>", "<code>create_group / upsert_group / rename_group / set_group_creator / delete_group</code>"],
@@ -1134,6 +1153,10 @@ const DRIFT = [
   ["离线队列没有状态列，「有行 = 待发」", "<code>outbox</code> / <code>group_outbox</code> 无 status 列；<code>file_outbox</code> 与 <code>content_transfers</code> 有", "删除行的时机就是状态推进的时机 ⇒ <b>任何「先 emit 再删」的写法都会造成重复投递</b>（本仓真发生过 P0，已改为写库成功门控）"],
   ["<code>outbox.msg_id</code> 上有两份唯一约束", "<code>SCHEMA</code> 内联 <code>UNIQUE</code> + 迁移 v5→v6 又建了 <code>idx_outbox_msg_id</code> 唯一索引", "老库带两条（多一个索引的写放大）。不是 bug，但要知道：约束的<b>权威</b>是内联那个"],
   ["<code>content_transfers.transfer_id</code> 走 ensure_schema 里的防御式 ALTER", "不走 <code>MIGRATIONS</code>；探测出错按「列不存在」处理，<code>duplicate column</code> 被吞掉，其他错误才记日志", "迁移语义与别处不同 ⇒ 加列时<b>别照抄</b>这套错误处理到 MIGRATIONS（那边 v1→v6 是 <code>?</code> 上抛的）"]
+  ["<b>本页那些「现状数」以前是手抄的</b>（129 条 / 29 事件 / 114 函数 / 1026 行 / 690 条测试）",
+   "同一天现算就有三处不等：注册命令 <b>130</b>、<code>db::</code> 公开函数 <b>118</b>、两个 store 行数 <b>1044 / 2241</b>",
+   "已改成<b>一条命令刷齐</b>：<code>npm run map:stats</code> 打印每个数的口径（含剥注释后计数）；"
+     + "会漂的数（测试条数、HEAD）从图里拿掉，只留口径 —— 回填一个新数不算修好"],
   ];
 const INVARIANTS = [
   ["投递：先入队再投递", "消息与它的 outbox 行<b>同一个事务</b>落库，然后才允许发（INV-003）", "并发 flush 会漏掉这一行，Ack 要等下一个 5s 心跳 ⇒ 表现为「偶发延迟送达」", "<code>db::insert_message_and_outbox</code> + 护栏"],
@@ -1167,6 +1190,11 @@ const INVARIANTS = [
   ["在线 = 有活跃链路", "既不是有 IP，也不是 last_seen 新鲜；链路徽标唯一来源 <code>best_link_kind</code>", "Tailscale 网段被标成「蓝牙直连」、掉线节点仍算在线", "<code>should_keep_peer</code> + 一条非空转护栏"],
   ["「什么算未读」只有一处判据 + 本地清零只有一个家", "<code>countsTowardUnread</code>；角标只有一处实现（列表与底栏共用）；本地清零只准走 <code>clearUnreadLocally</code>（改内存与打水位同时发生）", "同一会话在两处显示不同未读数；以及<b>乐观清零后被一份清零前的旧快照点亮回来</b>（用户原话「我没点它怎么又红了」）—— <code>StaleGuard</code> 挡不住这种：请求确实是最新那次，数据本身是旧的", "批次 k 收敛 + <code>channelState.test.ts</code> 两条 + <code>applyConversationSnapshot</code> 行为测试（豁免方向两边都钉）"],
   ["浮层全局互斥只有一个注册表", "<code>popupRegistry</code> + <code>useExclusivePopup</code>", "同时开两个表情面板、点外面都不关（用户实测过的缺陷形状）", "注册表一处，组件不得各自 hold 状态"],
+  ["「用户在看这个会话」只有一个口径（INV-P27）", "凡因「正在看这个会话」而抑制提醒的地方（@我 红点 / 标记已读 / 系统通知）"
+    + "判的必须是<b>同一份</b>可见性口径 <code>chatViewerLooking()</code>，不许各取一个条件子集",
+   "取得最弱那一条就是缺陷：桌面端启动会<b>自动打开最近会话</b>，「窗口在后台 + 会话开着」是常态 —— "
+     + "于是「@我」红点不亮，用户回窗口只看到 N 条未读，<b>必须点开那个群才知道自己被 @ 过</b>",
+   "<code>chatViewerLooking()</code> 单点 + <code>messages.test.ts</code> 的「消费者必须调它、不许手写条件」两条 + <code>docs/protocol-invariants.md</code> INV-P27"],
 ];
 
 /* ============================================================
@@ -1435,11 +1463,12 @@ function buildDir() {
     '<div class="grid2" style="margin-bottom:14px">' +
       '<div class="stat"><div class="num">' + CMDS.length + '</div><div>后端注册命令</div></div>' +
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
-      '<div class="stat"><div class="num">29</div><div>后端事件名（表内合并成 ' + EVENTS.length + ' 行）</div></div>' +
+      '<div class="stat"><div class="num">27</div><div>后端字面量事件名（表内合并成 ' + EVENTS.length + ' 行；动态拼的不计）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
       '<div class="stat"><div class="num">198</div><div>护栏非空转用例（改坏即红·这个数由 verify-guards.py 的 CASES 现算，判据 E 对账）</div></div>' +
       '<div class="stat"><div class="num">local</div><div>跨进程 E2E：正向轮接进 <code>verify</code> 的 <code>local</code> 组，要第三个真实实例那一轮单独挂在 <code>release</code> 组（发版前才跑，落点＝发版检查单点名）；每轮断言数由 <code>check-doc-numbers.mjs</code> 从 harness 现算对账，手写即红；入口 <code>npm run verify:e2e</code> / <code>npm run verify:release</code>；<b>两层 CI 都不跑</b></div></div>' +
-      '<div class="stat"><div class="num">690 / 606</div><div>Rust / 前端测试条数</div></div>' +
+      '<div class="stat"><div class="num">现算</div><div>Rust / 前端测试条数：分别由 <code>cargo test</code> 与 <code>npm test</code> 自己打印，图上不抄</div></div>' +
+      '<div class="stat"><div class="num">20</div><div>反证 / 判据自查档的红数基线（<code>npm run selfproof:check</code>，量具不进门禁）</div></div>' +
     "</div>" +
     '<h2 class="sec">领域图（真源 <code>docs/domains.data.mjs</code> · 本页内嵌快照 · <code>check-domain-map.mjs</code> 守路径存在，<code>check-domain-deps.mjs</code> 守依赖方向）</h2>' +
     '<div class="tablewrap"><table><thead><tr><th>领域</th><th>tier</th><th>数据实际跑在哪个家（activeHome）</th><th>允许依赖（consumes）</th><th>不变量</th><th>备注里的坑</th></tr></thead><tbody>' +
