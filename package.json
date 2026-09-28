@@ -82,7 +82,8 @@
     "selfproof:check": "node scripts/check-selfproof-baseline.mjs",
     "selfproof:sync": "node scripts/check-selfproof-baseline.mjs --sync",
     "ci:status": "node scripts/ci-status.mjs",
-    "map:stats": "node scripts/arch-map-stats.mjs"
+    "map:stats": "node scripts/arch-map-stats.mjs",
+    "coverage:features": "node scripts/feature-coverage.mjs"
   },
   "dependencies": {
     "@headlessui/vue": "^1.7.23",

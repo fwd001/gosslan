@@ -212,6 +212,10 @@ db::tests::update_friend_pubkeys_never_overwrites_a_bound_key
 db::tests::update_message_content_backfills_path_for_preview
 db::tests::update_one_recipient_does_not_affect_others
 db::tests::upsert_group_file_receive_reestablishes_session
+db::todo_reads_tests::todo_read_is_not_a_paged_read
+db::todo_reads_tests::todo_read_keeps_conversations_apart
+db::todo_reads_tests::todo_read_returns_ascending_seq_and_carries_mention_targets
+db::todo_reads_tests::todo_read_returns_only_todo_kinds
 device::tests::empty_attributes_still_yield_valid_distinct_ids
 device::tests::generated_id_keeps_the_one_prefix_and_length
 device::tests::identical_attributes_still_produce_different_ids
