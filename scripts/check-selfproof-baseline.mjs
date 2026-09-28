@@ -26,9 +26,12 @@
  * 但**必须**被 `--sync` 真跑过一次才能进基线；`--sync` 若发现某个反证档本轮红 0 条
  * （或自查档反而红了），**拒绝写基线**并退 1 —— 把洞烘进基线比没有基线更坏。
  *
- * 为什么不接进门禁层（写清楚，别当偷懒）：跑一遍 = 把 20 档各起一次真进程 E2E，约 30–45 分钟；
- * 而 `verify:release` 现在只有 3 步 / 约 70 秒。塞进发版前层会让每次发版多等半小时，
+ * 为什么不接进门禁层（写清楚，别当偷懒）：跑满全档 = 每档各起一次真进程 E2E。
+ * 本机实测一次整跑 **820.2 秒**（2026-09-28，全档 20，二进制已就位、不含编译；复跑就是本命令自己计时），
+ * 而 `verify:release` 只有 3 步 / 约 70 秒。塞进发版前层会让每次发版多等十几分钟，
  * 那反而会让这一步被跳过 —— 所以它是**量具**：改了判据 / 夹具 / harness 之后手动跑一次。
+ * ⚠️ 我这个注释第一版写的是"约 30–45 分钟"——那是**没测过的估计**，实测短到一半以下。
+ *    时长随机器与编译缓存摆（本仓已多次撞到"手写的时长比真值离谱"），所以只当量级、别当基线抄。
  *
  * 用法：
  *   `node scripts/check-selfproof-baseline.mjs`            核对（默认）
@@ -195,9 +198,20 @@ if (SYNC) {
     process.exit(1);
   }
   const entries = { ...prevEntries };
-  for (const o of observed) entries[o.name] = { exit: o.exit, red: o.red, total: o.total, unit: o.unit };
+  for (const o of observed) entries[o.name] = { exit: o.exit, red: o.red, total: o.total };
+  /// 写入前**按白名单归一每一档**：`--only` 只重跑个别档，其余档的旧对象是原样留下的 ⇒
+  /// 早先版本存进去的派生字段（`expect_red`、`unit`）会永远躺在没重跑过的那些档里，
+  /// 而它们正是"第二个会各自漂的事实来源"。归一必须做在写文件这一步，不能靠有人记得手改 JSON。
+  const ALLOWED = ["exit", "red", "total"];
+  let stripped = 0;
   const ordered = {};
-  for (const k of ALL) if (entries[k]) ordered[k] = entries[k];
+  for (const k of ALL) {
+    const e = entries[k];
+    if (!e) continue;
+    for (const key of Object.keys(e)) if (!ALLOWED.includes(key)) { delete e[key]; stripped += 1; }
+    ordered[k] = { exit: e.exit, red: e.red, total: e.total };
+  }
+  if (stripped) console.log(`  · 顺手从基线剥掉 ${stripped} 个派生/过期字段（该红该绿与单位都由命令串现推）`);
   if (Object.keys(ordered).length !== ALL.length) {
     console.error(`\n✗ 合并后基线只覆盖 ${Object.keys(ordered).length}/${ALL.length} 档`
       + `（本趟跑的是 --only 选出的 ${ENTRIES.length} 档）—— 基线必须**全档齐**才写，`
@@ -205,10 +219,11 @@ if (SYNC) {
     process.exit(1);
   }
   const body = {
-    _comment: "check-selfproof-baseline.mjs 的基线：每个 *selfproof 档的「退出码 / 报红条数 / 结论总数 / 单位」。"
+    _comment: "check-selfproof-baseline.mjs 的基线：每个 *selfproof 档的「退出码 / 报红条数 / 结论总数」。"
       + "跑法：`node scripts/check-selfproof-baseline.mjs`（核对）；改了判据/夹具/harness 后重新生成用 `--sync`。"
-      + "★ 这里刻意**不存** expect_red：每档该红还是该绿由 package.json 的命令串现推"
-      + "（`-lie` = 必须红，`--*-selfcheck` = 必须绿），两个来源就会互相不一致。",
+      + "★ 这里刻意**不存** expect_red 也**不存** unit：前者（该红还是该绿）由 package.json 的命令串现推"
+      + "（`-lie` = 必须红，`--*-selfcheck` = 必须绿），后者（条断言 / 格）就是它的一个函数"
+      + " —— 存下来就是第二个会各自漂的事实来源（本文件第一版真存了 unit，于是 20 档里只有 4 档带这个字段）。",
     generated_from_tip: spawnSync("git", ["rev-parse", "--short", "HEAD"], { cwd: ROOT, encoding: "utf8" }).stdout.trim(),
     entries: ordered,
   };
@@ -229,11 +244,11 @@ for (const o of observed) {
   if (b.total !== o.total) diffs.push(`结论总数 ${b.total}→${o.total}`);
   if (b.red !== o.red) diffs.push(`红数 ${b.red}→${o.red}`);
   if (diffs.length) {
-    console.error(`  ✗ ${o.name}：${diffs.join("，")} —— 基线是 ${b.red}/${b.total} ${b.unit ?? ""}`
+    console.error(`  ✗ ${o.name}：${diffs.join("，")} —— 基线是 ${b.red}/${b.total ?? "未印"}，本趟读到 ${o.red}/${o.total ?? "未印"} ${o.unit}`
       + `；红数变 0 ⇒ 那个坏样子已不再生效，红数变多或总数变化 ⇒ 覆盖面动了（要连文档一起改）`);
     bad += 1;
   } else {
-    console.log(`  ✓ ${o.name}：退码 ${o.exit}、红 ${o.red}/${o.total ?? "未印"} 与基线一致`);
+    console.log(`  ✓ ${o.name}：退码 ${o.exit}、红 ${o.red}/${o.total ?? "未印"} ${o.unit} 与基线一致`);
   }
 }
 if (bad) {
