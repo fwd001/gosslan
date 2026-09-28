@@ -125,6 +125,10 @@ P19 seq 权威、P20 聊天不被大文件饿死、P21 建链前先验身份等�
 
 ⇒ 根因不是"没人记得改"，是**契约图只有 CMDS 第一列被机器核对，其余全靠人诚实**
 （`mapContract.test.ts` 头部自己承认）。修法见 §8 阶段 B：**能算出来的数字一律不许手写**。
+> **2026-09-29 ARCHITECTURE-EXPLAINED 那三处旧数已修**：上面 EXPLAINED 那行的 16 → **19**（图 E 补了 `favorites` / `content_transfers` / `group_recalled_messages` 三格，分组仍是四组）；同文件另外两处旧数也按现读改口 —— `transport.rs` 7377 → **7070** 行、命令层「~100 个」→ **27 个文件 / 152 处属性**。这五个数现在各挂一条复跑命令（写在该图末尾），不再是抄来的。
+> 同批还记一条**我自己写错的出处**：提交 `c0c4d51` 的信息里把生产函数名写成 `retry_infinite_content`，
+> 仓里真名是 `retry_incomplete_content`（现读 `grep -rl retry_incomplete_content src-tauri/src` 命中三处）。
+> 未推送的提交我不自行改写，所以把这条错名留在这里，按名字搜的人以本行为准。
 
 **R5 `schema.sql` 已经不是事实源 —— ✅ 已收口（2026-09-26 拍板 B：退役删除）**
 实测（删前最后一轮复跑，2026-09-26）：那份手写 DDL 与 `db.rs` 的 `SCHEMA` 是**两份手写 DDL，表名集合不等**，

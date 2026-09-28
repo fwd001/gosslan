@@ -169,15 +169,15 @@ flowchart TD
     end
 
     subgraph RUST["Rust 后端"]
-        S1["commands.rs 命令层 ✅<br/>~100 个 #[tauri::command]"]
+        S1["commands/ 命令层 ✅<br/>27 个文件按域拆 · 152 处 #[tauri::command]"]
         S2["state.rs AppState ✅<br/>全局状态与连接表"]
-        S3["db.rs SQLite ✅<br/>16 张表"]
+        S3["db.rs SQLite ✅<br/>全库 19 张表（db.rs 18 + 内容库 1）"]
         S4["crypto.rs ✅<br/>X25519 + Ed25519 + ChaCha20"]
     end
 
     subgraph NET["网络层"]
         N1["network/discovery.rs ✅<br/>UDP 广播+组播 :59991"]
-        N2["network/transport.rs ✅<br/>TCP :59992 主循环 7377 行"]
+        N2["network/transport.rs ✅<br/>TCP :59992 主循环 7070 行（四道 include! 分册的壳）"]
         N3["network/ble.rs ✅ feature=bluetooth<br/>蓝牙运行时"]
         N4["network/file.rs ✅<br/>文件收发/共享目录"]
     end
@@ -378,7 +378,7 @@ sequenceDiagram
 
 ---
 
-## 6. 图 E：数据放在哪（SQLite 16 张表）
+## 6. 图 E：数据放在哪（SQLite 19 张表）
 
 **没有云端，所有数据只在本机**。按用途分四组：
 
@@ -393,6 +393,7 @@ flowchart LR
         T4["messages<br/>msg_id 去重 + 每会话逻辑序号 seq"]
         T5["conversation_clocks<br/>逻辑时钟"]
         T6["groups / group_members / group_reads"]
+        T6b["group_recalled_messages<br/>撤回的唯一事实（G-Set 只增不减）"]
     end
     subgraph REL["可靠性（离线补发）"]
         T7["outbox<br/>单聊待发"]
@@ -403,7 +404,27 @@ flowchart LR
     subgraph FILE["文件"]
         T11["file_transfers"]
         T12["group_files / group_file_recipients"]
+        T13["favorites<br/>收藏＝内容的独立副本，不被级联删"]
+        T14["content_transfers<br/>内容生命周期层自己的表（ADR-0019）"]
     end
+```
+> **2026-09-29 现读改口**：这里原来写着「16 张表 / transport.rs 7377 行 / 命令层 ~100 个」，三处都过期了。
+> 图上这几个数不抄自本文，各挂一条现算命令 —— 改代码的人跑一遍就知道文档有没有跟上：
+
+```bash
+# 全库表数（真源五处；*_tests.rs 里临时造的表不计）
+grep -hoE 'CREATE TABLE (IF NOT EXISTS )?[a-z_]+' src-tauri/src/db.rs \
+     src-tauri/src/db/settings.rs src-tauri/src/db/offline_queue.rs \
+     src-tauri/src/content/store.rs src-tauri/src/notifications.rs \
+  | sed -E 's/CREATE TABLE (IF NOT EXISTS )?//' | sort -u | wc -l   # 19
+# db.rs 自己那部分（另 1 张在 content/store.rs，所以写「db.rs 18 + 内容库 1」）
+grep -hoE 'CREATE TABLE (IF NOT EXISTS )?[a-z_]+' src-tauri/src/db.rs \
+  | sed -E 's/CREATE TABLE (IF NOT EXISTS )?//' | sort -u | wc -l   # 18
+# 命令层：按域拆的文件数 / 命令属性处数
+ls src-tauri/src/commands/*.rs | wc -l                        # 27
+grep -r '#\[tauri::command' src-tauri/src/commands | wc -l   # 152
+# transport.rs 壳的行数（四道 include! 分册不在这一行里）
+wc -l < src-tauri/src/network/transport.rs                    # 7070
 ```
 
 > ✅ **这处文档漂移已消除（2026-09-26）**：那份手写的 `src-tauri/src/schema.sql` 已**退役删除**，
