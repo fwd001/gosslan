@@ -392,14 +392,14 @@ const MODS = [
     out: ["send_group_todo/update_group_todo → IPC", "save_todo_image_bytes(裸 Uint8Array) → 落盘缓存目录"],
     data: ["归档/重开权限 lane = archive_only|reopen_only|is_member", "isEffectivelyArchived(折叠终态)"] },
 
-  { id: "st-app", l: "ui", n: "useAppStore", s: "设备·外观·通道·toast", cnt: "1044 行",
+  { id: "st-app", l: "ui", n: "useAppStore", s: "设备·外观·通道·toast", cnt: "1043 行",
     role: "设备身份、外观（主题/字体/聊天样式）、语言与通知偏好、通道运行时快照、toast 与移动端布局态。<b>所有辅助窗口都会跑它的 <code>init()</code></b>（只读）。",
     files: ["src/stores/useAppStore.ts"],
     in: ["DeviceInfo ← get_device_info()", "AppSettings ← get_settings()", "RuntimeSnapshot ← get_runtime_snapshot() / runtime-changed", "系统深色 + 键盘 inset"],
     out: ["save_settings/set_ui_language/broadcast_chat_style → IPC", "toast()/toastError() → ToastHud", "set_unread_badge → 平台外壳"],
     data: ["applySettingsSnapshot/applySettingsPatch（跨窗口零额外 IPC 的关键）", "channels[]: {channel,enabled,available,running,peers,preferred}"] },
 
-  { id: "st-chat", l: "ui", n: "useChatStore", s: "消息·关系·群·传输·收藏", cnt: "2241 行",
+  { id: "st-chat", l: "ui", n: "useChatStore", s: "消息·关系·群·传输·收藏", cnt: "2271 行",
     role: "唯一的数据中枢：init 先绑事件再刷数据；<code>createInitScope()</code> 保证 HMR/重复 init 时回调不翻倍（危害不是泄漏，是回调翻倍）。<b>辅助窗口禁止跑它的 init</b>。",
     files: ["src/stores/useChatStore.ts"],
     in: ["27 个后端事件 → enqueueMessage/refreshXxx", "MessageRecord[] / Conversation[] / Group[] / Friend[] / Peer[]", "ContentTransfer[] ← get_content_transfers()"],
@@ -472,7 +472,7 @@ const MODS = [
     data: ["DeviceInfo{device_id,nickname,avatar,device_type,tcp_port,x25519_pubkey,ed25519_pubkey}"] },
 
   /* ───────────── ④ 领域层 ───────────── */
-  { id: "dom-state", l: "dom", n: "AppState", s: "全局唯一状态容器", cnt: "1841 行",
+  { id: "dom-state", l: "dom", n: "AppState", s: "全局唯一状态容器", cnt: "1961 行",
     role: "所有命令与后台任务共享的那一个 <code>Arc&lt;AppState&gt;</code>：身份、peers、链路、传输账本、窗口上下文、日志器。<b>锁一律抗中毒</b>（<code>unwrap_or_else(|e| e.into_inner())</code>）。",
     in: ["命令层的 &State/Arc 读", "传输域的写（链路注册/注销、进度账本）"],
     out: ["Mutex<HashMap> 快照 → emit_peers / get_runtime_snapshot", "db: Mutex&lt;Connection&gt; → 持久化域"],
@@ -1121,7 +1121,7 @@ const DOMAINS = [
   {"id": "identity", "name": "身份", "tier": "L3", "paths": ["src-tauri/src/device.rs", "src-tauri/src/crypto.rs", "src-tauri/src/nickname.rs"], "inv": ["INV-P11", "INV-P12", "INV-P18", "INV-007", "INV-P22"], "home": "src-tauri/src/crypto.rs", "cons": [], "notes": "「我是谁」不负责「我怎么找到别人」。E2EE 密钥派生与 Hello 验签都在这。私钥永不过 UI 边界（INV-P18）。"},
   {"id": "presence", "name": "在线状态与发现", "tier": "L3", "paths": ["src-tauri/src/network/discovery.rs", "src-tauri/src/discovery"], "inv": ["INV-P21"], "home": "src-tauri/src/network/discovery.rs", "cons": ["routing", "messaging", "transport"], "notes": "用户可见症状（2026-09-14）：「局域网直连上了，好友在线状态却不实时」——已有非空转护栏（「在线状态必须包含有活跃链路的节点」）。迁移详见 docs/migration-ledger.md 的「局域网发现」条。"},
   {"id": "friendship", "name": "好友关系", "tier": "L3", "paths": [], "inv": ["INV-P12"], "home": null, "cons": [], "notes": "⚠️ **Friend ≠ Peer**：`Peer` 是「发现到了」，`Friend` 是「关系已建立」。混同是 Presence 类 bug 的常见来源。"},
-  {"id": "messaging", "name": "消息", "tier": "L3", "paths": ["src-tauri/src/protocol.rs", "src-tauri/src/gossip_engine.rs"], "inv": ["INV-001", "INV-002", "INV-003", "INV-004", "INV-005", "INV-006", "INV-P01", "INV-P02", "INV-P03", "INV-P04", "INV-P07", "INV-P08", "INV-P19", "INV-P22"], "home": "src-tauri/src/protocol.rs", "cons": ["identity"], "notes": "直发 + Gossip + 离线补发统一 msg_id 幂等去重；消息先落 outbox，ACK 到达才删。**已知例外**（protocol-invariants §22）：「和自己聊天」不进 outbox、不 gossip、不加密（INV-P03/P04 例外）。消息语义的**实际执行点**仍在 network/transport.rs（约 9600 行，正按 include! 分册中）—— 那是 Phase 7 的拆分目标。"},
+  {"id": "messaging", "name": "消息", "tier": "L3", "paths": ["src-tauri/src/protocol.rs", "src-tauri/src/gossip_engine.rs"], "inv": ["INV-001", "INV-002", "INV-003", "INV-004", "INV-005", "INV-006", "INV-P01", "INV-P02", "INV-P03", "INV-P04", "INV-P07", "INV-P08", "INV-P19", "INV-P22"], "home": "src-tauri/src/protocol.rs", "cons": ["identity"], "notes": "直发 + Gossip + 离线补发统一 msg_id 幂等去重；消息先落 outbox，ACK 到达才删。**已知例外**（protocol-invariants §22）：「和自己聊天」不进 outbox、不 gossip、不加密（INV-P03/P04 例外）。消息语义的**实际执行点**仍在 network/transport.rs（现算 7056 行，正按 include! 分册中）—— 那是 Phase 7 的拆分目标。"},
   {"id": "routing", "name": "路由与中继", "tier": "L3", "paths": ["src-tauri/src/mesh", "src-tauri/src/file_relay.rs"], "inv": ["INV-P20"], "home": "src-tauri/src/mesh", "cons": ["messaging"], "notes": "`mesh/` 是**本仓库最成型的领域模块**（candidate / connection / endpoint / manager / path / peer / relay_policy / router / selection 各自独立文件，有 ADR-0013/0014 背书）。⚠️ relay_manager.rs 属于**文件切片中继**（BitTorrent 式分发），不是路由 —— 命名撞车，lib.rs:19 那句注释就是为它写的。"},
   {"id": "transport", "name": "传输", "tier": "L3", "paths": ["src-tauri/src/network/ble.rs", "src-tauri/src/network/transport.rs", "src-tauri/src/network/transport/outbound.rs", "src-tauri/src/network/transport/gossip.rs", "src-tauri/src/network/transport/relay.rs", "src-tauri/src/network/dispatch.rs", "src-tauri/src/transport"], "inv": ["INV-P20", "INV-P22", "INV-P23"], "home": "src-tauri/src/network/transport.rs", "cons": ["identity", "persistence", "files", "messaging", "routing", "presence", "platform"], "notes": "⚠️ **两个同名 transport.rs**：network/transport.rs（活；主文件 + include! 分册合计约 1 万行）与 transport/{mod,tcp}.rs（新栈）。「传输」这一个关注点今天有**三个家**：TCP 数据面走 network/、BLE 数据面走 transport/bluetooth.rs::driver + 三个外设模块、状态聚合走 transport/mod.rs（2026-09-24 0-A2 起它只剩状态汇总，**分流从来不在那里**：真分流是 dispatch.rs::message_priority + mesh/selection.rs::pick_link）。这是「改完这个 bug 又冒那个」的结构性来源，逐条证据见 docs/migration-ledger.md。BLE 载荷预算已收敛为单一事实来源（INV-P23，Phase 3/4）。"},
   {"id": "files", "name": "文件与内容", "tier": "L3", "paths": ["src-tauri/src/network/file.rs", "src-tauri/src/content", "src-tauri/src/storage"], "inv": ["INV-P17", "INV-P22"], "home": "src-tauri/src/network/file.rs", "cons": ["identity", "persistence", "transport", "messaging"], "notes": "原则（storage/mod.rs）：**SQLite 不存 BLOB**，二进制全部落盘、前端异步懒加载。content/ 是「内容生命周期」逻辑层，network/file.rs 是它的网络侧执行点。"},
