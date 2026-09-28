@@ -77,9 +77,21 @@
  *
  * ## 用法
  *
- *     node scripts/check-change-budget.mjs                     # 本地:检查 HEAD~1..HEAD
+ *     node scripts/check-change-budget.mjs                     # 本地:检查未推送范围
  *     node scripts/check-change-budget.mjs --range a1b2c3..HEAD
  *     node scripts/check-change-budget.mjs --from-json scripts/fixtures/change-budget.json
+ *     node scripts/check-change-budget.mjs --staged            # 量具:提交**之前**先量一次
+ *
+ * ### `--staged` 为什么存在（2026-09-28 加，量具、**不是门禁**）
+ *
+ * 本判据有一个结构性的时间差：它判的是**已经存在的 commit**（读 message 里的标记），
+ * 而标记必须在 commit **之前**就写进标题。等它报红时提交已经落地 —— 本地还能 amend，
+ * 但**推送之后就再也改不动了**（不改写历史是硬规矩），于是只能留一条红在 main 上。
+ * 真实代价：`c58c425` 就是这样在 CI 上红了三趟。
+ *
+ * `--staged` 把同一个 `classify()` 用在暂存区上，提交前就能读出"这次该带哪个标记"。
+ * ⚠️ 它**永远 exit 0**、也**不接进任何门禁**：它只回答"半径多大、该写什么标记"，
+ * 判定权仍在提交后的正式那一跑。不新增第二份口径 —— 分级只认 `classify()` 这一个家。
  *
  * CI(push event)自动用 `github.event.before..github.sha`;拿不到或 force push
  * 时退化为 HEAD~1..HEAD —— 并**打印实际用的范围**,不静默。
@@ -324,6 +336,23 @@ function classify(commit) {
  *     sha2\0subject2   ← 下一个头**直接**跟随,块之间没有空行
  * 所以**不能按空行切块** —— 要逐行扫:含 \0 的行是新 commit 头,其余是它的 numstat。
  */
+/**
+ * 解析 `git … --numstat` 的**一行** → `{path, add, del}`；不是 numstat 行则返回 null。
+ *
+ * 单拎出来的理由：`--staged` 量具（见文件头）读的是 `git diff --cached --numstat`，
+ * 与本函数服务的那趟 `git log --numstat` 是**同一种行格式**。两处各写一份解析 =
+ * 两份口径会漂（rename 与二进制那两条规则尤其容易被漏掉一半），所以收成一个家。
+ */
+function parseNumstatLine(line) {
+  const m = line.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
+  if (!m) return null;
+  const [, add, del, file] = m;
+  if (add === "-" || del === "-") return null; // 二进制:无法按行计,跳过(改动可见于 review)
+  // rename(-M 开启)形如 `old => new` / `prefix{old => new}suffix`:取新路径
+  const renamed = file.includes(" => ") ? file.split(" => ")[1].replace(/[}]/g, "") : file;
+  return { path: renamed.replace(/^\{/, "").replace(/\}.*/, ""), add: Number(add), del: Number(del) };
+}
+
 function parseCommits(raw) {
   const commits = [];
   let current = null;
@@ -335,14 +364,8 @@ function parseCommits(raw) {
       continue;
     }
     if (!current) continue;
-    const m = line.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
-    if (!m) continue;
-    const [, add, del, file] = m;
-    if (add === "-" || del === "-") continue; // 二进制:无法按行计,跳过(改动可见于 review)
-    // rename(-M 开启)形如 `old => new` / `prefix{old => new}suffix`:取新路径
-    const renamed = file.includes(" => ") ? file.split(" => ")[1].replace(/[}]/g, "") : file;
-    const clean = renamed.replace(/^\{/, "").replace(/\}.*/, "");
-    current.files.push({ path: clean, add: Number(add), del: Number(del) });
+    const f = parseNumstatLine(line);
+    if (f) current.files.push(f);
   }
   return commits;
 }
@@ -406,6 +429,43 @@ let zeroCoverage = false;
 let rangeFromEventBefore = false;
 /** 实际用的范围是从哪儿来的（写进输出，也写进"CI 空转"那条失败信息）。 */
 let rangeSource = null;
+
+// ---------------- `--staged`：提交**之前**先量一次（量具，不是门禁；理由见文件头） ----------------
+
+if (argv.includes("--staged")) {
+  const staged = [];
+  for (const line of git("diff", "--cached", "--numstat", "-M").split("\n")) {
+    const f = parseNumstatLine(line);
+    if (f) staged.push(f);
+  }
+  if (staged.length === 0) {
+    console.log("暂存区是空的 —— 没什么可量（先 `git add`，再跑一次）。");
+    process.exit(0);
+  }
+  // message 传空串：标题此刻还不存在 ⇒ 这里只回答"该带哪个标记"，不判"带没带"。
+  // 分级走的是**同一个** classify()，不另写第二份口径。
+  const r = classify({ sha: "(staged)", message: "", files: staged });
+  const need = r.level === "L3" ? "[impact]" : r.level === "L2" ? "[plan]" : null;
+  console.log(
+    `暂存区改动半径：${r.level} —— 计入 ${r.counted} 文件 / ${r.loc} 行 / 领域[${r.domains.join(", ") || "无归属"}]` +
+      (r.sensitive.length ? ` / ⚠️ 碰敏感文件 ${r.sensitive.join(", ")}` : ""),
+  );
+  console.log(
+    need
+      ? `⇒ 提交标题必须带 ${need}（本判据只读标题行 %s，写在正文里看不见）。`
+      : "⇒ 这一档不要求标记（EXEMPT / L1）。",
+  );
+  // 判据 4 那一半也提前说：它是"提交之后才判得动"的另一条，同样只能在提交前提醒。
+  const appCode = staged.filter((f) => !isExempt(f.path) && isAppCodePath(f.path));
+  if (appCode.length > 0) {
+    console.log(
+      `⇒ 这次动了应用码（${appCode.length} 个文件）⇒ 同一条提交里要写 \`Version-Bump:\` 并真改那四个版本清单文件（判据 4 双向判）。`,
+    );
+  }
+  console.log("  不计入的：docs/ .github/ scripts/ *.md *.txt，以及那五个版本清单文件。");
+  console.log("  ⚠️ 量具：永远退 0、不接进任何门禁；判定权仍在提交后那次正式跑。");
+  process.exit(0);
+}
 
 if (fromJson) {
   data = JSON.parse(readFileSync(path.resolve(ROOT, fromJson), "utf8"));
