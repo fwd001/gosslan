@@ -11,6 +11,7 @@ import {
   freshMentionedConvs,
   pickMediaContent,
   preserveDeliveryStatus,
+  replaceOptimistic,
   previewText,
   pruneUnreadClears,
   selectCachedConversations,
@@ -1210,16 +1211,20 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  /** 替换会话内指定 msg_id 的消息（乐观记录 → 真实记录 / 状态变更）。 */
+  /**
+   * 替换会话内指定 msg_id 的消息（乐观记录 → 真实记录 / 状态变更）。
+   *
+   * ⚠️ 必须走 `replaceOptimistic`（按 `msg_id` 认，不按位置换）：群发送的真实记录有**两条**
+   * 到达路径 —— 后端为跨窗口同步加的自 emit（`commands/window.rs::send_group_payload`）
+   * 与 `invoke` 的返回值。自 emit 先到时列表里已经有那一条，再 splice 一次就是
+   * "同一条消息显示两条"（而切一次会话从库里重读又变回一条 —— 用户 2026-09-28 报的正是这个）。
+   */
   function replaceMessage(convId: string, msgId: string, next: MessageRecord) {
     const list = messages.value[convId];
     if (list) {
-      const i = list.findIndex((m) => m.msg_id === msgId);
-      if (i >= 0) {
-        // 取两者中更靠后的状态：pendingAcks 消费或 pendingReplace 批量替换
-        // 不应把已达 read 的记录退回 delivered（Ack 晚到 / peer-read 竞态）。
-        const merged = { ...next, status: furthestStatus(list[i].status, next.status) };
-        messages.value[convId] = [...list.slice(0, i), merged, ...list.slice(i + 1)];
+      const replaced = replaceOptimistic(list, msgId, next);
+      if (replaced) {
+        messages.value[convId] = replaced;
         return;
       }
     }

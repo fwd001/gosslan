@@ -117,6 +117,41 @@ export function appendLocalOnly(
 }
 
 /**
+ * 乐观气泡（`tmp-*`）→ 真实记录的替换 —— `send()` 返回时唯一该走的一步。
+ *
+ * ## 为什么不能是裸 splice 就地替换
+ * 群发送有**两条路径会把同一条真实记录送进同一个列表**：后端为跨窗口同步加的自 emit
+ * （`commands/window.rs::send_group_payload`，2026-09-26 起），以及 `invoke` 的返回值。
+ * 自 emit 常常先到 ⇒ 真实记录已经落在列表里，随后那次"把乐观行换成真实记录"的 splice
+ * 就变成**再插一份同 `msg_id`** —— 用户看到的"刚发的消息显示两条"，而切一次会话
+ * （从库里重读，库里只有一行）又自己好了。⇒ 这里必须按 `msg_id` 认，不能按位置换。
+ *
+ * 返回新列表；`list` 里找不到那条乐观行时返回 `null`，由调用方走"挂在批量队列里等落地"
+ * 那条路（见 `applyReplacements`，那条路本身经过 upsert，不会产生重复）。
+ */
+export function replaceOptimistic(
+  list: MessageRecord[],
+  tmpMsgId: string,
+  next: MessageRecord,
+): MessageRecord[] | null {
+  const i = list.findIndex((m) => m.msg_id === tmpMsgId);
+  if (i < 0) return null;
+  const existing = list.find((m) => m.msg_id === next.msg_id);
+  if (!existing) {
+    return [...list.slice(0, i), { ...next, status: furthestStatus(list[i].status, next.status) }, ...list.slice(i + 1)];
+  }
+  // 真实记录已经在了：把那一条并进最终形态，并**摘掉**乐观行（顺序保持原样）。
+  const kept: MessageRecord = {
+    ...next,
+    content: pickMediaContent(existing, next),
+    status: furthestStatus(existing.status, next.status),
+  };
+  return list
+    .filter((_, k) => k !== i)
+    .map((m) => (m.msg_id === next.msg_id ? kept : m));
+}
+
+/**
  * 乐观记录（`tmp-*` msg_id）经 rAF 批量队列落地，而 invoke 可能先返回真实记录；
  * 此时按 msg_id 就地替换会落空，真实记录一旦被丢弃气泡就永久停在「发送中」。
  * 挂起的替换在批次落地这一唯一入口处完成。

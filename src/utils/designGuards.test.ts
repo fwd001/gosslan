@@ -1726,3 +1726,35 @@ test("「有人@我」从输入框到对端、再到气泡的接缝必须齐全�
   const broken = SEAMS[6][1].replace("mentions.as_deref()", "None");
   assert.ok(!SEAMS[6][1].includes(broken), "锚点写得太松 ⇒ 改坏了也抓不到");
 });
+
+// ---------------- ㉑ 乐观气泡的替换只许一个家（#160 群里发完显示两条） ----------------
+//
+// 形状：`send()` 先上 `tmp-*` 气泡 → 后端为跨窗口同步加的**自 emit** 把真实记录先落进同一个
+// 列表 → invoke 返回后那次"把乐观行换成真实记录"如果是**按位置裸 splice**，就会插进第二份
+// 同 `msg_id` 的记录。库里只有一行，所以切一次会话（`loadMessages` 整表重读）又变回一条
+// —— 用户看到的正是"发完两条、切一下就好"。
+// ⇒ 替换必须按 `msg_id` 认，并且这个判断只许住在 `utils/messages.ts::replaceOptimistic` 一处。
+test("乐观→真实的替换必须走那一个纯函数，store 里不许留第二份裸 splice", () => {
+  const root = join(import.meta.dirname, "..");
+  const store = readFileSync(join(root, "stores", "useChatStore.ts"), "utf8");
+  const utils = readFileSync(join(root, "utils", "messages.ts"), "utf8");
+
+  assert.ok(
+    store.includes("replaceOptimistic(list, msgId, next)"),
+    "store 的 replaceMessage 不再调用那个纯函数 ⇒ 时间线里同 msg_id 只许一条这件事没人守",
+  );
+  // 第二条腿：那份纯函数必须**按 msg_id** 认出"真实记录已经在列表里"并摘掉乐观行，
+  // 退化成按位置换就等于把 bug 放回去。
+  assert.ok(
+    utils.includes("m.msg_id === next.msg_id"),
+    "replaceOptimistic 里那条按 msg_id 的吸并分支不见了 ⇒ 自 emit 先到时会插出两条",
+  );
+  // 分母里必须包含"合规写法不许被抓"：这里用现在这份真源码当阳性对照的反面 ——
+  // 裸 splice 那个形状一旦回到 store 就必须被抓到。
+  const rawSplice = /= \[\.\.\.list\.slice\(0, i\), merged,/;
+  assert.ok(!rawSplice.test(store), "store 里又出现了按位置裸 splice 的替换（第二个家）");
+  assert.ok(
+    rawSplice.test("messages.value[convId] = [...list.slice(0, i), merged, ...list.slice(i + 1)];"),
+    "这台解析器连坏形状都抓不到 ⇒ 上面那句 !test 是空转",
+  );
+});

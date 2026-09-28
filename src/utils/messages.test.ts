@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  replaceOptimistic,
   applyIncomingToConversations,
   freshMentionedConvs,
   applyConversationSnapshot,
@@ -1046,4 +1047,56 @@ test("我的 id 还没就绪时不许靠空串匹配到名单（身份未就绪 
     msg_id: "f1", conv_id: "group:g1", sender_id: "other", mention_ids: [""],
   })]]]);
   assert.deepEqual(freshMentionedConvs(byConv as Map<string, MessageRecord[]>, null, { id: "", name: "我" }), []);
+});
+
+// ---- 乐观气泡 → 真实记录的替换（#160：群里发完出现两条自己发的消息）----
+// 形状：`send()` 先上一个 tmp-* 气泡，后端**自 emit**（2d4119f 为跨窗口同步加的）把真实
+// 记录先一步落进同一个列表，随后 invoke 返回再"就地替换" ⇒ 裸 splice 会插进第二份同 msg_id
+// 的记录。用户看到的正是两条一样的气泡，而切一次会话（从库里重读）就变回一条。
+const rec = (msg_id: string, over: Record<string, unknown> = {}): MessageRecord => ({
+  id: 1,
+  msg_id,
+  conv_id: "group:g1",
+  sender_id: "me",
+  receiver_id: "g1",
+  kind: "text",
+  content: "你好",
+  ts: 1000,
+  seq: 50,
+  status: "sent",
+  ...over,
+});
+
+test("replaceOptimistic：真实记录还没落地时，就地替换乐观行且只留一条", () => {
+  const tmp = rec("tmp-1", { status: "sending", seq: Number.MAX_SAFE_INTEGER });
+  const real = rec("R1", { status: "sent" });
+  const out = replaceOptimistic([rec("old"), tmp], "tmp-1", real);
+  assert.ok(out);
+  assert.deepEqual(out.map((m) => m.msg_id), ["old", "R1"]);
+});
+
+test("replaceOptimistic：自 emit 已把真实记录放进列表时，必须摘掉乐观行而不是再插一份", () => {
+  const tmp = rec("tmp-1", { status: "sending", seq: Number.MAX_SAFE_INTEGER });
+  const real = rec("R1", { status: "delivered" });
+  const out = replaceOptimistic([rec("old"), tmp, rec("x"), real], "tmp-1", { ...real, status: "sent" });
+  assert.ok(out);
+  assert.equal(out.filter((m) => m.msg_id === "R1").length, 1, "同 msg_id 在时间线里只许一条");
+  assert.ok(!out.some((m) => m.msg_id === "tmp-1"), "乐观行必须被摘掉");
+  assert.equal(out.find((m) => m.msg_id === "R1")?.status, "delivered", "送达状态只前进不回退");
+  assert.deepEqual(out.map((m) => m.msg_id), ["old", "x", "R1"], "其余行的相对顺序不许变");
+});
+
+test("replaceOptimistic：媒体行的本地 path 不能被无 path 的那份擦掉", () => {
+  const withPath = rec("R1", { kind: "file", content: JSON.stringify({ name: "a.png", path: "/tmp/a.png" }) });
+  const noPath = rec("R1", { kind: "file", content: JSON.stringify({ name: "a.png" }) });
+  const tmp = rec("tmp-1", { kind: "file", status: "sending", content: JSON.stringify({ name: "a.png" }) });
+  const out = replaceOptimistic([tmp, withPath], "tmp-1", noPath);
+  assert.ok(out);
+  assert.equal(out.length, 1);
+  assert.equal(JSON.parse(out[0].content).path, "/tmp/a.png");
+});
+
+test("replaceOptimistic：列表里没有那条乐观行 ⇒ 交回 null 让调用方挂起等落地", () => {
+  const out = replaceOptimistic([rec("old")], "tmp-missing", rec("R1"));
+  assert.equal(out, null);
 });
