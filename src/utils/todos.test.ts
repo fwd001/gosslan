@@ -419,3 +419,25 @@ test("两份源不再等价：消息缓存里已经没有这个会话时，全�
   assert.equal(foldTodos(pageCache["group:g1"] ?? []).length, 0, "旧取数口在这里折不出任务");
   assert.equal(foldTodos(todoRowsFor(rows, "group:g1")).length, 2, "看板该走的这一份折得出");
 });
+
+// 排序键的现状锁（#154 第 10 条另一半）：以前注释写"按创建版本从新到旧"，实现按的是
+// **最新定义的 seq**。这条断言钉住真实语义 —— 一条老任务被改一次就会排到新任务前面。
+// 这不是"新行为"，是把已有行为写成可执行的说法（改注释的同时留下判据，否则下一次又会漂）。
+test("foldTodos 的排序键是最新定义的 seq，不是创建时间", () => {
+  const oldCreated = def("t-old", 1); // 先创建：创建那条 seq=1
+  const oldUpdated = rec(
+    "todo_update",
+    "m-old-update",
+    "a",
+    { todo_id: "t-old", title: "写周报", assignees: ["a"], status: "doing", creator: "a", deleted: false },
+    9,
+  ); // 后被改动：最新定义 seq=9
+  const newCreated = def("t-new", 5); // 后创建、没被改过：seq=5
+
+  const ids = foldTodos([oldCreated, newCreated, oldUpdated]).map((t) => t.todoId);
+  assert.deepEqual(
+    ids,
+    ["t-old", "t-new"],
+    "改动过的老任务必须排在新创建的任务前 —— 排序键是 seq（最近改动），不是创建顺序",
+  );
+});
