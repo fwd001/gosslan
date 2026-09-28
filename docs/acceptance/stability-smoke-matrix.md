@@ -130,26 +130,27 @@
 ## 组合面对账（总任务 §七-4 点名的那 14 条：A+B，而不是"A 绿 + B 绿"）
 
 口径：每行只写**判据在哪个具名入口、哪一层、进不进远端 CI**，不写条数（条数由该入口自己打印）。
-列里的名字都能在仓里 grep 到；grep 不到就是没这条。
+列里的名字**只写仓里真存在的东西**，并且分两种标法：`单元真名：`= 带 `#[test]` 的用例、`护栏「」`= `scripts/verify-guards.py` 里的用例名。
+⚠️ 这一版是分两种写完之后**回查过**的：第一次落笔时我把一份"按关键词 grep 出来的函数名清单"当成了测试名单，于是 `retry_incomplete_content`、`reseal_for_send`、`mark_peer_keys_verified` 这类**生产函数**、甚至 `peer_offline_after_tail` 这种**grep 不到的名字**都混进了"判据"那一列 —— 回查（读每个名字上方的属性行）抓到 9 个，全部改掉。回查抓到 9 个，全部改掉。
 
 | 组合 | 判据在哪（具名） | 层 | 进远端 CI？ | 状态 |
 |---|---|---|---|---|
 | 聊天 + 文件 / 大文件 + 普通消息 | 双实例默认轮：传完文件后**同一对进程**继续发文本并判落库；档位两步 `--size=0.001` 与 `--size=10` | 本地 E2E 层 | ❌（远端 verify 只跑 frontend / rust / android 三组） | AUTOMATED-LOCAL |
 | 聊天 + 群聊 | 群聊轮 `--round=group` 里那条"群消息一条都不许串进 1:1" | 本地 E2E 层 | ❌ | AUTOMATED-LOCAL |
-| 文件 + 群聊 | Rust：`group_file_keys_distinct_across_transfers`、`group_file_status_after_fail`；**跨实例的群文件端到端仍无自动化**（本文件 row 18 已写明） | 单元 | ✅ rust job | SIMULATED（差跨实例那一半） |
+| 文件 + 群聊 | 单元真名：`group_file_keys_distinct_across_transfers`、`group_file_recipient_states_persist`、`list_group_files_scoped_and_newest_first`、`group_file_progress_averages_online_members`（离线成员不摊进进度）；**跨实例的群文件端到端仍无自动化**（row 18 已写明，下一格连前置条件一起登记在 roadmap §13.3） | 单元 | ✅ rust job | SIMULATED（差跨实例那一半） |
 | 文件 + 消息（同一条链路混排） | `bulk_messages_are_only_large_chunks`、`frame_roundtrip_large_payload`、`roundtrip_across_sizes_and_mtus` | 单元 | ✅ | AUTOMATED |
-| 文件 + reconnect（断链不误杀其它传输，P1） | 护栏「断链清理必须在确认这个 peer 真的一条链路都不剩之后」「接收器回收必须走判据与摘表同一次持锁的 take_*」；Rust：`stalled_receiver_is_reclaimed_only_after_the_idle_window`、`peer_offline_after_tail` | 护栏 + 单元 | 单元 ✅；护栏在本地/全量层 | AUTOMATED |
-| 文件 + sync（乱序/重复分片、断点续传） | `retry_incomplete_content`、`reseal_for_send`、`open_direct_content`；护栏「中继收文件的哈希必须对组装后的明文算」「幂等 accept 时必须重置段号」「重复 FileDone 的『本机没这份文件』出口不许退回静默」 | 护栏 + 单元 | 同上 | AUTOMATED |
+| 文件 + reconnect（断链不误杀其它传输，P1） | 护栏「断链清理必须在确认这个 peer 真的一条链路都不剩之后」「接收器回收必须走判据与摘表同一次持锁的 take_*」；单元真名：`stalled_receiver_is_reclaimed_only_after_the_idle_window` | 护栏 + 单元 | 单元 ✅；护栏在本地/全量层 | AUTOMATED |
+| 文件 + sync（乱序/重复分片、断点续传） | 单元真名：`large_gossip_payload_downgrades_to_low`、`worth_replaying_requires_ttl_to_survive_one_more_hop`；护栏「中继收文件的哈希必须对组装后的明文算」「幂等 accept 时必须重置段号」「重复 FileDone 的『本机没这份文件』出口不许退回静默」 | 护栏 + 单元 | 同上 | AUTOMATED |
 | task + group | 群任务轮 `--round=task`（反证 `--round=task-lie`）；Rust：`todo_commands_log_identity_only_after_the_send_succeeded`、`tasks_window_uses_one_fixed_label_cross_checked_with_frontend`；渲染侧＝运行时探针任务段 | 本地 E2E + 单元 + 浏览器内 | 单元 ✅ | AUTOMATED-LOCAL |
 | notification + unread | 徽标渲染＝运行时探针的会话行段（`npm run test:ui-runtime`）；**真系统通知与点击跳转＝Smoke-3，人工** | 浏览器内 / 人工 | 探针在本地层 | SIMULATED（最后一公里人工） |
-| identity + friend（换身份不污染旧关系） | `new_peer_conflicts_with_friend`、`acceptable_friend_keys`、`mark_peer_keys_verified`、`existing_conversation_survives_group_relation_sync` | 单元 | ✅ | AUTOMATED |
+| identity + friend（换身份不污染旧关系） | 单元真名：`existing_conversation_survives_group_relation_sync`；护栏「身份锚点的打标点必须留在 handle_message 的 Hello 分支」「打标必须排在 upsert_peer 之后」（这两条是这一格目前唯一会红的东西）；`acceptable_friend_keys` / `mark_peer_keys_verified` 是**生产函数**、没有以自己名字命名的行为用例 ⇒ 这一格的强度是护栏级的，别读成"每个分支都有单测" | 护栏 + 单元 | 单元 ✅ | SIMULATED |
 | Bluetooth + LAN | `ble_only_link_must_not_start_a_hopeless_large_file`、`ble_start_does_not_block_on_the_peripheral_state_wait`；**真机 BLE 收发＝Smoke-2，人工**（同机 peripheral 的广播不会回喂本机 central，实测） | 单元 + 人工 | ✅（本地层那份二进制也带 `--features bluetooth`，见 `scripts/verify.mjs` 里 build 那一步） | SIMULATED |
 | LAN + 中继/routed | `unhealthy_lan_does_not_block_healthy_routed`、`route_order_plus_send_delivers_on_healthy_link_after_lan_degraded`；跨实例关局域网轮 `--round=lanoff`（反证 `lanoff-lie`） | 单元 + 本地 E2E | 单元 ✅ | AUTOMATED-LOCAL；"断一条链路看谁接管"已判为**单机不可自动**（routed 与 LAN 共用同一个 TCP 监听口） |
 | 多连接 + 大文件（队列内存封顶，P3） | 护栏「链路队列必须按字节封顶：折算槽数不许被换成常量深度」「链路队列的字节预算必须真的参与折算」；`inflight_cap_blocks_state_flood`、`never_awaits_while_holding_the_links_lock` | 护栏 + 单元 | 单元 ✅ | AUTOMATED |
-| 大文件 + 群同步（§三 点名的 600MB+ 那一格） | **门禁现跑的档位只有 `--size=0.001` 与 `--size=10`** ⇒ 600 MB 以上**没有任何自动化层覆盖**；形状最近的判据是 `group_rows_survive_the_link_flap_window_that_kills_single_chats` 与群密钥重递那一族 | 单元 | ✅ | **缺口如实登记**：大档位＝人工阶梯（`E2E_FILE_MB=N` 换档重跑同一轮断言，入口现成） |
+| 大文件 + 群同步（§三 点名的 600MB+ 那一格） | **旅程轮现跑的档位只有 `--size=0.001` 与 `--size=10`**（复跑 `grep -n -- '--size=' scripts/verify.mjs`）；**100 MB 那一档在自动化里是有的，但只出现在三个故障窗口轮**（`E2E_KILL_MB` / `E2E_SENDKILL_MB` / `E2E_STALL_MB` 默认都是 100 ⇒ 接收中被杀 / 发送中被杀 / 字节在飞时冻住对端），而**这三条都不判"传完之后聊天与群同步照常"**；形状最近的判据是 `group_rows_survive_the_link_flap_window_that_kills_single_chats` 与群密钥重递那一族 | 本地 E2E（故障轮）+ 单元 | 单元 ✅ | **缺口如实登记**：600 MB 以上"传完之后续发文本 / 建群 / 群同步"这一格没有任何自动化层。入口现成（`E2E_FILE_MB=N` 换档重跑同一轮断言），没进来的理由是时长（roadmap §12.7 的 A-2 行已把这个取舍写过一次，不是今天新加的） |
 | A + B + C（文件在途 + 群同步 + 进程被杀） | `--round=groupcrash`（群只长在发送端盘上 → SIGKILL → 再起两端：对端自己学到这个群、密钥逐字节相同、不多出会话行）+ 反证 `groupcrash-lie` | 本地 E2E 层 | ❌ | AUTOMATED-LOCAL |
 
-★ 这张表**不许读成"CI 覆盖组合面"**：远端只有 unit / lint / clippy / rust 测试 / android 检查与三份出包流水线，**双实例轮一条都不在远端**（复跑：`grep -n "verify.mjs --group" .github/workflows/verify.yml`）。
+★ 这张表**不许读成「CI 覆盖组合面」**：远端只有 unit / lint / clippy / rust 测试 / android 检查与三份出包流水线，**双实例轮一条都不在远端**（复跑：`grep -n "verify.mjs --group" .github/workflows/verify.yml`）。
 凡标 `AUTOMATED-LOCAL` 的行，这层保护只在有人本机跑 `npm run verify:e2e` 时存在——这正是 §七-4 要的那类组合目前唯一断在哪里的地方。
 
 ## 平台 / 硬件 Smoke 清单（这些永远不许出现在"绿"里）
