@@ -8,7 +8,7 @@
  * 看板本体在 `GroupTasksBoard`（与独立窗口 `GroupTodosWindow` 共用同一份），
  * 这里只负责套 `BaseModal` 与算标题里的计数。
  */
-import { computed } from "vue";
+import { computed, watch } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
@@ -33,11 +33,20 @@ const fullscreen = computed(() => app.isMobile);
  * `isEffectivelyArchived` 滤掉已归档）。此前算的是"含归档的全部"，
  * 于是弹窗标题写 (9) 而进去看到 6 条（用户 #23 的同类漂移：三处消费者两种口径）。
  */
-const count = computed(() =>
-  props.groupId
-    ? foldTodos(chat.messages[`group:${props.groupId}`] ?? []).filter((x) => !isEffectivelyArchived(x))
-        .length
-    : 0,
+// 打开时按需补读那份全表任务行（看板 / 面板 / 成员页共用同一个取数口，见 store 的 groupTodoRows）
+watch(
+  () => [props.open, props.groupId] as const,
+  ([open, id]) => {
+    if (open && id) void chat.ensureGroupTodoRows(`group:${id}`);
+  },
+  { immediate: true },
+);
+
+const rowsForCount = computed(
+  () => (props.groupId ? chat.groupTodoRows[`group:${props.groupId}`] ?? [] : []),
+);
+const count = computed(
+  () => foldTodos(rowsForCount.value).filter((x) => !isEffectivelyArchived(x)).length,
 );
 </script>
 

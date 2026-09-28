@@ -27,7 +27,11 @@ import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/n
 import { isRenderedInTimeline, countsTowardUnread } from "@/utils/messageKinds";
 import {
   foldTodos,
+  isTodoRowsLoaded,
+  mergeIncomingTodoRows,
   openTodosForMe,
+  putTodoRows,
+  type TodoRowsByConv,
   todoCompletedForCreator,
   todoMentionsMe,
   type TodoImage,
@@ -435,6 +439,10 @@ export const useChatStore = defineStore("chat", () => {
       }
       if (fresh.length) newByConv.set(cid, fresh);
     }
+    // 任务行同时落进看板那一份源（同一个家）：只写已加载的会话，同 msg_id 是刷新 ——
+    // 见 utils/todos::mergeIncomingTodoRows。
+    const mergedRows = mergeIncomingTodoRows(groupTodoRows.value, batch);
+    if (mergedRows !== groupTodoRows.value) groupTodoRows.value = mergedRows;
     // 被 @ 检测（微信式 [有人@我]）的规则整体搬进 `messages.ts::freshMentionedConvs` ——
     // 三条规则（只群聊 / 非自己发的 / 当前没开着这个会话）与"与未读同源、重复投递不反复触发"都在那里，
     // 并且**有单测**（`messages.test.ts` 那 7 条）。搬走而不是再判一遍：这段原先长在 store 里，
@@ -591,6 +599,15 @@ export const useChatStore = defineStore("chat", () => {
   /** 每个群「与我相关且未完成未归档」的任务数 —— 蓝色徽标的唯一数据源（用户 2026-09-26）。
    *  两处 UI（会话列表条目、聊天头的任务图标）都从这里取，**不在界面里各数一遍**。 */
   const openTodoByConv = ref<Record<string, number>>({});
+  /** 每个群「任务相关的消息行」（后端全表读）—— 看板 / 任务面板 / 成员面板的**唯一取数口**。
+   *
+   *  为什么必须有它，而不能再折 `chat.messages`：徽标早就走全表读，而三处界面折的是那份
+   *  **有上界的消息缓存**（`PAGE_SIZE × MAX_PAGES = 1000 条/会话`、`MAX_CACHED_CONVS = 8` 个会话整块逐出）
+   *  ⇒ 「徽标还亮着、看板里却再也列不出这条任务」是可达状态，用户没法归档一个看不见的任务。
+   *  `refreshConversations` 的注释里那句「用内存里已有的消息算不行」当时只应用在徽标那一半，
+   *  于是同一句判据两个家（#154-9）。两者现在来自**同一次读**。
+   *  键存在 = 读到过（空数组 = 确实没有任务）；语义见 `utils/todos::putTodoRows`。 */
+  const groupTodoRows = ref<TodoRowsByConv>({});
   /** 单调序号：只有最后一次发起的结果能落地（任务连着变时会话刷新会挨个追上来）。 */
   let openTodoSeq = 0;
   async function refreshOpenTodos() {
@@ -606,6 +623,8 @@ export const useChatStore = defineStore("chat", () => {
     const mine = ++openTodoSeq;
     const rows = await api.getGroupTodoMessages(ids);
     if (mine !== openTodoSeq) return;
+    // 同一次读同时喂徽标与那三处界面（见 groupTodoRows 的注释）
+    groupTodoRows.value = putTodoRows(groupTodoRows.value, ids, rows);
     const byConv = new Map<string, MessageRecord[]>();
     for (const r of rows) {
       const list = byConv.get(r.conv_id) ?? [];
@@ -619,6 +638,16 @@ export const useChatStore = defineStore("chat", () => {
       if (n > 0) next[cid] = n;
     }
     openTodoByConv.value = next;
+  }
+
+  /** 按需补读某个群的任务行：冷启动只开任务窗、或身份未就绪时 bulk 读没跑成的情况。
+   *  已读到过就直接返回 ⇒ 不会每次打开面板都打一次 IPC（"读过没有"就看键在不在）。 */
+  async function ensureGroupTodoRows(convId: string) {
+    if (!convId || isTodoRowsLoaded(groupTodoRows.value, convId)) return;
+    const tok = refreshGuard.begin(`todoRows:${convId}`);
+    const rows = await api.getGroupTodoMessages([convId]);
+    if (!refreshGuard.isCurrent(`todoRows:${convId}`, tok)) return;
+    groupTodoRows.value = putTodoRows(groupTodoRows.value, [convId], rows);
   }
 
   async function refreshConversations() {
@@ -2180,6 +2209,8 @@ export const useChatStore = defineStore("chat", () => {
     refreshConversations,
     /** 群 → 「与我相关的未完成任务」数（蓝色徽标的数据源，判定见 `utils/todos::openTodosForMe`） */
     openTodoByConv,
+    groupTodoRows,
+    ensureGroupTodoRows,
     refreshGroups,
     resetAfterDataCleared,
     refreshTransfers,

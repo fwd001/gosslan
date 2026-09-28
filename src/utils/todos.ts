@@ -341,3 +341,70 @@ export function todoCompletedForCreator(rec: MessageRecord, myId: string): strin
   if (!d || d.deleted || d.status !== "done" || d.creator !== myId) return null;
   return d.title;
 }
+
+// ---------------- 看板 / 面板取的那一份源（#154-9） ----------------
+//
+// 为什么需要它：徽标一直走后端**全表读**（`api.getGroupTodoMessages`），而看板、任务面板、成员面板
+// 折的是 `chat.messages[convId]` —— 那份消息缓存有两道上界（`PAGE_SIZE × MAX_PAGES = 1000 条/会话`、
+// `MAX_CACHED_CONVS = 8` 个会话整块逐出）。于是「徽标还亮着，看板里却再也列不出这条任务」是可达状态，
+// 用户没法归档一个看不见的任务。`refreshConversations` 的注释早就写明"用内存里已有的消息算不行"，
+// 那句话当时只应用在徽标那一半 ⇒ 同一句判据两个家。下面这三个函数是那**一个家**的语义，
+// store 只做持有，消费者（看板/面板/成员页）只读 `chat.groupTodoRows`。
+
+/** 按会话存的任务相关行（后端全表读的结果）。
+ *  **键存在 = 这个群读到过**（空数组 = 读了、确实没有任务）；键不存在 = 还没读过。
+ *  这两件事必须分得开，否则"没有任务"与"还没数据"画成同一个样子，看板每次打开都要重读一遍。 */
+export type TodoRowsByConv = Record<string, MessageRecord[]>;
+
+/** 整表读的结果落进那份源：`convIds` 是这次读**点到**的全部会话（后端只回有任务的会话）。 */
+export function putTodoRows(
+  prev: TodoRowsByConv,
+  convIds: string[],
+  rows: MessageRecord[],
+): TodoRowsByConv {
+  const byConv: TodoRowsByConv = {};
+  for (const r of rows) {
+    const list = byConv[r.conv_id];
+    if (list) list.push(r);
+    else byConv[r.conv_id] = [r];
+  }
+  const next: TodoRowsByConv = { ...prev };
+  for (const cid of convIds) next[cid] = byConv[cid] ?? [];
+  return next;
+}
+
+/** 读到过没有（区分「没有任务」与「还没读过」）。 */
+export function isTodoRowsLoaded(rows: TodoRowsByConv, convId: string): boolean {
+  return Object.prototype.hasOwnProperty.call(rows, convId);
+}
+
+/** 取某个会话的任务行。 */
+export function todoRowsFor(rows: TodoRowsByConv, convId: string): MessageRecord[] {
+  return rows[convId] ?? [];
+}
+
+/**
+ * 乐观更新（自己刚发的、或事件里收到的任务行）落在**同一份**源上。
+ *
+ * 两条规矩都要：
+ *  - 只写**已加载**的会话：给没读过的会话建键 = 拿一份局部快照冒充全量，那正是这次要消灭的形状；
+ *  - 同 `msg_id` 是刷新而不是追加：后端对同一条消息存在回填式重发（见 store 里 `applyIncoming` 的注释），
+ *    追加会让一条任务被折两遍。
+ */
+export function mergeIncomingTodoRows(
+  rows: TodoRowsByConv,
+  incoming: MessageRecord[],
+): TodoRowsByConv {
+  const todo = incoming.filter((m) => parseTodo(m) !== null);
+  if (todo.length === 0) return rows;
+  const next: TodoRowsByConv = { ...rows };
+  let changed = false;
+  for (const m of todo) {
+    if (!isTodoRowsLoaded(next, m.conv_id)) continue;
+    const existing = next[m.conv_id];
+    const i = existing.findIndex((x) => x.msg_id === m.msg_id);
+    next[m.conv_id] = i >= 0 ? existing.map((x, j) => (j === i ? m : x)) : [...existing, m];
+    changed = true;
+  }
+  return changed ? next : rows;
+}

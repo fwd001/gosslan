@@ -16,6 +16,10 @@ import {
   todoCompletedForCreator,
   todoMentionsMe,
   openTodosForMe,
+  putTodoRows,
+  mergeIncomingTodoRows,
+  todoRowsFor,
+  isTodoRowsLoaded,
 } from "./todos.ts";
 import type { TodoItem } from "./todos.ts";
 import type { MessageRecord } from "../types";
@@ -367,4 +371,51 @@ test("归档优先于状态：未完成但已归档的任务也不进徽标（�
 test("本机 id 还没拿到时返回空 —— 身份未就绪不许点亮一个假数字", () => {
   const items = [todoFixture({ todoId: "a", assignees: [""], creator: "" })];
   assert.deepEqual(openTodosForMe(items, ""), []);
+});
+
+
+// ---------------- 看板取数的那一份源（#154-9） ----------------
+//
+// 修掉的缺陷：徽标走后端全表读（`getGroupTodoMessages`），而看板 / 任务面板 / 成员面板折的是
+// `chat.messages[convId]` —— 那份消息缓存有**两道**上界（`PAGE_SIZE × MAX_PAGES = 1000 条/会话`、
+// `MAX_CACHED_CONVS = 8` 个会话），所以"任务还在徽标里、看板却再也列不出它"是可达状态
+// （store 自己在 refreshConversations 的注释里就写了"用内存里已有的消息算不行"）。
+// 这一组钉的是那份**全表源**的语义：谁覆盖谁、"没任务"与"没读过"必须分得开、乐观更新落在哪。
+
+test("putTodoRows：点到的每个会话都建档；后端没回的会话是空数组，不是「没读过」", () => {
+  const out = putTodoRows({}, ["group:g1", "group:g2"], [def("t1", 1)]);
+  assert.equal(isTodoRowsLoaded(out, "group:g1"), true);
+  assert.equal(isTodoRowsLoaded(out, "group:g2"), true, "这次读点到过它 ⇒ 必须能区分「确实没有任务」");
+  assert.deepEqual(out["group:g2"], []);
+  assert.equal(todoRowsFor(out, "group:g1").length, 1);
+  assert.equal(isTodoRowsLoaded(out, "group:g3"), false, "没读过的会话不许被顺手建成「已加载」");
+});
+
+test("putTodoRows：整表读覆盖旧值，重复行不许累加", () => {
+  const first = putTodoRows({}, ["group:g1"], [def("t1", 1)]);
+  const again = putTodoRows(first, ["group:g1"], [def("t1", 1)]);
+  assert.equal(todoRowsFor(again, "group:g1").length, 1, "同一份读重复落两次只有一份行");
+  const cleared = putTodoRows(again, ["group:g1"], []);
+  assert.deepEqual(todoRowsFor(cleared, "group:g1"), [], "后端说不存在 ⇒ 必须清空，不能留住旧行");
+});
+
+test("乐观更新落在同一份源上：只刷已加载的会话，未加载的不建键", () => {
+  const loaded = putTodoRows({}, ["group:g1"], [def("t1", 1)]);
+  // 回填式重发：同一条 msg_id 换内容 ⇒ 刷新那一份，不许折出两条
+  const refreshed = mergeIncomingTodoRows(loaded, [{ ...def("t1", 1, { status: "doing" }) }]);
+  const rowsAfter = todoRowsFor(refreshed, "group:g1");
+  assert.equal(rowsAfter.length, 1, "同 msg_id 是刷新不是追加");
+  assert.equal(foldTodos(rowsAfter)[0].status, "doing", "刷新必须真的换掉内容");
+  // 新一条定义（新 msg_id）⇒ 追加，看板立刻看得见
+  const created = mergeIncomingTodoRows(loaded, [def("t9", 7)]);
+  assert.equal(todoRowsFor(created, "group:g1").length, 2, "新任务落在已加载的会话里要立刻看得见");
+  const cold = mergeIncomingTodoRows({}, [def("t8", 1)]);
+  assert.equal(isTodoRowsLoaded(cold, "group:g1"), false, "未加载的会话建了键就等于拿局部快照冒充全量");
+});
+
+test("两份源不再等价：消息缓存里已经没有这个会话时，全表那份仍折得出任务（这就是本轮修的形状）", () => {
+  const rows = putTodoRows({}, ["group:g1"], [def("t1", 1), def("t2", 2)]);
+  const pageCache: Record<string, MessageRecord[]> = {}; // 翻过 8 个会话之后整块被逐出
+  assert.equal(foldTodos(pageCache["group:g1"] ?? []).length, 0, "旧取数口在这里折不出任务");
+  assert.equal(foldTodos(todoRowsFor(rows, "group:g1")).length, 2, "看板该走的这一份折得出");
 });

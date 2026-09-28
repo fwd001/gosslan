@@ -1515,9 +1515,10 @@ test("查看者视角的 @ 文案只许存在于 i18n 名单里，生产码不�
  *  ① 组件/布局里不得出现 `openTodosForMe(`（徽标的尺子只许 store 拿）；
  *  ② 那两个消费点必须真的在消费那份 map（防止有人把徽标改回本地现算，①就形同虚设）。
  *
- * ⚠️ 刻意**不**禁 `foldTodos(`：那是"把卡片消息折成任务列表"的公共尺子，看板/成员面板/
- * 状态索引都要拿它列全量任务，语义与徽标不同（"该群未归档任务总数" vs "与我相关"）。
- * 那 4 处调用点已逐条读过，用公共折叠 + 公共 `isEffectivelyArchived`，属"观察"而非违规。
+ * ⚠️ 这里刻意**不**禁 `foldTodos(` 本身 —— 那是公共折叠尺子，谁都该用它。禁的是**喂给它的那份数据**：
+ * 看板 / 任务面板 / 成员面板原先折 `chat.messages[convId]`（有上界的消息缓存），而徽标走后端全表读
+ * ⇒ 同一句判据两个家。这条 judgement 在 2026-09-28 被现读推翻（`PAGE_SIZE × MAX_PAGES = 1000 条/会话`、
+ * `MAX_CACHED_CONVS = 8` 个会话整块逐出）⇒ 由那条新判据 ⑳ 钉住，本条只管"数不许自己算"。
  */
 test("「与我相关」徽标只许 store 算一次，两处 UI 必须消费同一份 map", () => {
   const srcDir = join(import.meta.dirname, "..");
@@ -1546,6 +1547,53 @@ test("「与我相关」徽标只许 store 算一次，两处 UI 必须消费同
   assert.ok(recomputeRe.test(`const n = openTodosForMe(foldTodos(list), me).length;`), "夹具没被抓到 ⇒ 这条判据是空转的");
   recomputeRe.lastIndex = 0;
   assert.ok(!recomputeRe.test(`// 判定见 utils/todos::openTodosForMe\nconst n = chat.openTodoByConv[id] ?? 0;`), "注释里的名字被误抓");
+});
+
+
+// ---------------- ⑳ 群任务的取数口只有一份（#154-9） ----------------
+//
+// 徽标走 `api.getGroupTodoMessages`（后端全表），而看板 / 任务面板 / 成员面板折的是
+// `chat.messages[convId]` —— 那份消息缓存有**两道**上界（现读 `useChatStore.ts`：
+// `PAGE_SIZE × MAX_PAGES = 1000 条/会话`、`MAX_CACHED_CONVS = 8` 个会话整块逐出）。
+// 于是「徽标还亮着，看板里再也列不出这条任务」是可达状态：用户没法归档一个看不见的任务，
+// 而创建记录被逐出、更新记录还留着时还会折出一个没有创建时间的任务。
+// store 自己在 `refreshConversations` 的注释里就写着「用内存里已有的消息算不行」——
+// 那句话当时只应用在徽标那一半。现在三处消费者都读 `chat.groupTodoRows`（与徽标同一次读）。
+//
+// ⚠️ `ChatWindow.vue` 里那处 `foldTodos(chat.messages[...])` 是**合法的**，不许一起禁掉：
+// 它折的是「这一屏时间线上已经渲染出来的卡片」的状态索引，语义本来就是"屏上的这些"，
+// 不是"这个群的全部任务"。⇒ 分母要含合规写法，否则这条判据改完那一刻就空转。
+test("群任务三处界面的取数口只许是那份全表读，不许再折有上界的消息缓存", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const readers = [
+    "components/GroupTasksBoard.vue",
+    "components/GroupTasksPanel.vue",
+    "components/GroupMemberPanel.vue",
+  ];
+  for (const rel of readers) {
+    const code = readFileSync(join(srcDir, rel), "utf8");
+    assert.ok(
+      code.includes("chat.groupTodoRows["),
+      `${rel} 不再读那份全表任务行 ⇒ 与「徽标同源」冲突（#154-9）`,
+    );
+    // 判的是**喂给公共折叠尺子的那份数据**，不是写法：把行先 hoisting 成局部变量也算合规，
+    // 但整份文件都不许再碰那两道有上界的消息缓存。
+    assert.ok(
+      !code.includes("chat.messages["),
+      `${rel} 又折回那份有上界的消息缓存 ⇒ 任务会从看板消失而徽标常亮（#154-9）`,
+    );
+    assert.ok(
+      code.includes("chat.ensureGroupTodoRows("),
+      `${rel} 必须按需补读（冷启动只开任务窗时那份源还没读过），否则界面会空`,
+    );
+  }
+  // 合规写法必须在分母里：时间线那处折消息缓存是**对的**，这条判据不许把它判红
+  const timeline = readFileSync(join(srcDir, "components/ChatWindow.vue"), "utf8");
+  assert.ok(timeline.includes("foldTodos(chat.messages["), "夹具前提：时间线确实在折消息缓存（这条豁免要有对象）");
+  assert.ok(!timeline.includes("chat.groupTodoRows["), "时间线不该改成读那份全表源");
+  // 非空转：坏形状必须被同一台解析器抓到
+  const bad = `const todos = computed(() => foldTodos(chat.messages[convId.value] ?? []));`;
+  assert.ok(bad.includes("foldTodos(chat.messages["), "解析器抓不到坏形状 ⇒ 这条判据是空转的");
 });
 
 // ---------------- ⑲ 「有人@我」只许走那一个三态入口（第二阶段 §10／#103） ----------------

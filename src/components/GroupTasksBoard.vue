@@ -80,7 +80,16 @@ const groupCreator = computed(() => group.value?.creator ?? "");
 const groupMembers = computed<string[]>(() => group.value?.members ?? []);
 
 /** 折叠出全部任务（按创建版本从新到旧），再拆成「活动」与「已归档」。 */
-const todos = computed(() => foldTodos(chat.messages[convId.value] ?? []));
+/** 取数口：那份**全表读**的任务行，不是有上界的消息缓存（`#154-9`；语义见 store 里 groupTodoRows 的注释）。 */
+const todos = computed(() => foldTodos(chat.groupTodoRows[convId.value] ?? []));
+// 面板/独立任务窗都可能先于启动时那次 bulk 读打开 ⇒ 按需补读，读过就不再打 IPC
+watch(
+  () => props.groupId,
+  (id) => {
+    if (id) void chat.ensureGroupTodoRows(`group:${id}`);
+  },
+  { immediate: true },
+);
 const activeTodos = computed(() => todos.value.filter((x) => !isEffectivelyArchived(x)));
 const archivedTodos = computed(() => todos.value.filter((x) => isEffectivelyArchived(x)));
 const doneCount = computed(() => todos.value.filter((x) => x.status === "done").length);

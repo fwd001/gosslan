@@ -37,10 +37,18 @@ const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? 
  * "进去那一屏能看到的条数"，不是"这个群历史上发过多少条任务"。
  * 所以 `total` 恒等于各状态之和（两边同一次过滤，不会一个含归档一个不含）。
  */
+// 打开时按需补读那份全表任务行（与看板、任务面板共用同一个取数口，见 store 的 groupTodoRows）
+watch(
+  () => [props.open, props.groupId] as const,
+  ([open, id]) => {
+    if (open && id) void chat.ensureGroupTodoRows(`group:${id}`);
+  },
+  { immediate: true },
+);
+
 const todoSummary = computed(() => {
-  const items = props.groupId
-    ? foldTodos(chat.messages[`group:${props.groupId}`] ?? []).filter((x) => !isEffectivelyArchived(x))
-    : [];
+  const rows = props.groupId ? chat.groupTodoRows[`group:${props.groupId}`] ?? [] : [];
+  const items = foldTodos(rows).filter((x) => !isEffectivelyArchived(x));
   const byStatus: Record<string, number> = {};
   for (const it of items) byStatus[it.status] = (byStatus[it.status] ?? 0) + 1;
   return { total: items.length, done: byStatus.done ?? 0, byStatus };
