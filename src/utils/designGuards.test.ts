@@ -1758,3 +1758,22 @@ test("乐观→真实的替换必须走那一个纯函数，store 里不许留�
     "这台解析器连坏形状都抓不到 ⇒ 上面那句 !test 是空转",
   );
 });
+
+// ---------------- ㉒ 对端已读推进的谓词只许一份口径（#161） ----------------
+//
+// 后端 `src-tauri/src/db/read_receipts.rs::mark_own_messages_read_upto` 是这句判据的家，
+// 它的注释就写着"三份副本里取到最弱的那一条就是缺陷"（failed 会被后面那条已读点亮成已读）。
+// 前端那份曾经正是只排除 `read` ⇒ 同一条规则两个家、其中一家缺条件。
+test("已读回执推进的排除清单在前端只许走那个纯函数，不许再内联一份弱谓词", () => {
+  const root = join(import.meta.dirname, "..");
+  const store = readFileSync(join(root, "stores", "useChatStore.ts"), "utf8");
+  const utils = readFileSync(join(root, "utils", "messages.ts"), "utf8");
+  assert.ok(store.includes("promoteOnPeerRead(list, myDeviceId.value"), "store 不再走那个家 ⇒ 谓词会分叉");
+  for (const k of ["read", "failed", "recalled"]) {
+    assert.ok(utils.includes(`"${k}"`), `排除清单里的 ${k} 不见了 ⇒ 后端家那条注释说的缺陷回来了`);
+  }
+  // 反空转：这条判据必须抓得住"退回内联弱谓词"那个坏形状
+  const weak = /m\.status !== "read" && m\.ts <= p\.last_read_ts/;
+  assert.ok(!weak.test(store), "store 里又出现内联的弱谓词（只排除 read）");
+  assert.ok(weak.test('if (m.sender_id === myDeviceId.value && m.status !== "read" && m.ts <= p.last_read_ts) {'), "这台解析器抓不到坏形状 ⇒ 上面那句 !test 是空转");
+});

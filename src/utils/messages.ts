@@ -29,6 +29,39 @@ export function mergeMessages(
   return merged;
 }
 
+/**
+ * 对端已读回执 ⇒ 把「我自己发的、`ts` 不晚于该回执」的消息推到 `read`。
+ *
+ * ⚠️ 这句判据有**三份副本**，必须同一口径：后端 `db/read_receipts.rs::mark_own_messages_read_upto`
+ * 是家（它的注释就写着"只排除 read 自己"就是缺陷），另外两处是 `gossip.rs` / `transport.rs` 的调用。
+ * 前端这份以前只排除了 `read` ⇒ 一条 **`failed`（本端根本没发出去）** 的话会被后面那条已读
+ * 一起点亮成「已读」，而它带着 `tmp-*` id、库里没有 ⇒ 每次重读都被 `appendLocalOnly` 追加回来，
+ * 错了再也纠不回来。**排除清单三件：`read`（已是）/ `failed`（没送达不可能被读过）/ `recalled`（撤回不许点亮）。**
+ * `sending` / `delivered` 保留在可推进的一侧（回执比 Ack 更新正是往前推，也是本端状态卡住时唯一的自愈路径）。
+ */
+const READ_PROMOTE_BLOCKED = ["read", "failed", "recalled"];
+
+export function promoteOnPeerRead(
+  list: MessageRecord[],
+  myDeviceId: string,
+  lastReadTs: number,
+): MessageRecord[] {
+  if (list.length === 0) return list;
+  let changed = false;
+  const out = list.map((m) => {
+    if (
+      m.sender_id !== myDeviceId ||
+      m.ts > lastReadTs ||
+      READ_PROMOTE_BLOCKED.includes(m.status)
+    ) {
+      return m;
+    }
+    changed = true;
+    return { ...m, status: "read" as const };
+  });
+  return changed ? out : list;
+}
+
 /** 送达状态推进序：只会前进，不会后退。 */
 const DELIVERY_ORDER = ["sent", "delivered", "read"];
 

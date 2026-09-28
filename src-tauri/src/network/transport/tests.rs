@@ -3185,4 +3185,39 @@ mod tests {
         let _ = tx2.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(2), task2).await;
     }
+
+    /// 「这个 peer 到底离线了没有」的真值表（#162）。
+    ///
+    /// 旧写法是 `removed && empty`，而**半开看门狗**会先把整条 key 摘掉
+    /// （`transport.rs` 的看门狗那段：`if v.is_empty() { links.remove(&peer); }`），
+    /// 于是读循环收尾时 `removed=false`、`empty=true` ⇒ 判成"没离线"：
+    /// 徽标继续显示在线、在途的接收要等 5 分钟空闲超时才失败、也不打掉线日志。
+    /// 正确的定义只有一件事可判：**这个 peer 一条链路都不剩了没有**。
+    #[test]
+    fn peer_offline_after_tail_truth_table() {
+        // 我摘掉了它最后一条链路 ⇒ 离线
+        assert!(super::peer_offline_after_tail(true, true));
+        // 别人（半开看门狗）先摘了 key，我这边只是没摘到东西 ⇒ 仍然是离线（本轮修的就是这一格）
+        assert!(
+            super::peer_offline_after_tail(false, true),
+            "链路已空却不点亮离线 ⇒ 徽标停在在线、在途接收卡在 5 分钟超时"
+        );
+        // 还剩别的链路（LAN + Tailscale + BLE 并存）⇒ 不许判离线，那是 failover
+        assert!(!super::peer_offline_after_tail(true, false));
+        assert!(!super::peer_offline_after_tail(false, false));
+    }
+
+    /// 那条判据只许有一个家：读循环收尾必须调用它，不许再内联一份 `removed && empty`。
+    #[test]
+    fn peer_offline_rule_has_one_home() {
+        let src = include_str!("../transport.rs");
+        assert!(
+            src.contains("peer_offline_after_tail(removed, empty)"),
+            "读循环收尾不再调用那个判据 ⇒ 真值表与现场分家"
+        );
+        assert!(
+            !src.contains("let offline = removed && empty;"),
+            "transport.rs 里又出现内联的第二份判据"
+        );
+    }
 }

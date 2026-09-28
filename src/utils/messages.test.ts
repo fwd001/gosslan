@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  promoteOnPeerRead,
   replaceOptimistic,
   applyIncomingToConversations,
   freshMentionedConvs,
@@ -1099,4 +1100,47 @@ test("replaceOptimistic：媒体行的本地 path 不能被无 path 的那份擦
 test("replaceOptimistic：列表里没有那条乐观行 ⇒ 交回 null 让调用方挂起等落地", () => {
   const out = replaceOptimistic([rec("old")], "tmp-missing", rec("R1"));
   assert.equal(out, null);
+});
+
+// ---- 对端已读回执推进送达状态（#161：同一句判据三份副本里最弱的那一条）----
+// 后端 `db/read_receipts.rs::mark_own_messages_read_upto` 是这一句的家，它的注释就写着
+// "只排除 read 自己"就是缺陷：一条**本端根本没发出去**（failed）的话不可能被对方读过。
+// 前端那份原先正是只排除 read ⇒ 已失败的永久停在「已读」，而它带着 tmp-* id、
+// 每次重读都被 appendLocalOnly 追加回来，错了再也纠不回来。
+const dr = (msg_id: string, status: string, over: Partial<MessageRecord> = {}): MessageRecord => ({
+  id: 1,
+  msg_id,
+  conv_id: "p1",
+  sender_id: "me",
+  receiver_id: "p1",
+  kind: "text",
+  content: "x",
+  ts: 100,
+  seq: 10,
+  status: status as MessageRecord["status"],
+  ...over,
+});
+
+test("promoteOnPeerRead：把我自己发的、ts 在回执之内的消息推到 read", () => {
+  const out = promoteOnPeerRead([dr("a", "sending"), dr("b", "delivered")], "me", 200);
+  assert.deepEqual(out.map((m) => m.status), ["read", "read"]);
+});
+
+test("promoteOnPeerRead：failed 与 recalled 是硬终态，回执点不动它们", () => {
+  const out = promoteOnPeerRead([dr("f", "failed"), dr("r", "recalled")], "me", 999);
+  assert.equal(out.find((m) => m.msg_id === "f")?.status, "failed", "没发出去的话不许被点亮成已读");
+  assert.equal(out.find((m) => m.msg_id === "r")?.status, "recalled", "撤回不许被点亮成已读");
+});
+
+test("promoteOnPeerRead：别人发的与超出回执时间的都不动", () => {
+  const mine = dr("mine", "delivered", { ts: 500 });
+  const theirs = dr("theirs", "sent", { sender_id: "peer" });
+  const out = promoteOnPeerRead([theirs, mine], "me", 200);
+  assert.equal(out.find((m) => m.msg_id === "theirs")?.status, "sent");
+  assert.equal(out.find((m) => m.msg_id === "mine")?.status, "delivered", "ts 在回执之后 ⇒ 不算已读");
+});
+
+test("promoteOnPeerRead：没有可推进的项时返回同一个数组（不许白刷一次响应式）", () => {
+  const list = [dr("a", "read"), dr("b", "failed")];
+  assert.equal(promoteOnPeerRead(list, "me", 999), list);
 });

@@ -1690,7 +1690,7 @@ async fn reader_loop(
             // 一次「连过又掉线」的节点就能让上述三条同时成立（复核抓到的 High 缺陷）。
             links.remove(&peer_id);
         }
-        let offline = removed && empty;
+        let offline = peer_offline_after_tail(removed, empty);
         drop(links);
         // 释放 links 锁后再动 mesh 层（避免持锁嵌套）
         if let Some(ep) = removed_endpoint {
@@ -2142,6 +2142,20 @@ pub(crate) fn verify_hello_for_ble(
         mark_peer_keys_verified(state, device_id, x25519_pubkey, ed25519_pubkey);
     }
     r
+}
+
+/// 读循环收尾时，「这个 peer 是否真的离线」的唯一判据（真值表由 `transport/tests.rs` 钉）。
+///
+/// 旧写法是 `removed && empty`：本端这一次**摘到了东西**才算离线。可半开看门狗
+/// （`transport.rs` 里 `if v.is_empty() { links.remove(&peer); }` 那段）会先把整条 key 摘掉，
+/// 于是读循环收尾时 `removed=false` 而 `empty=true` ⇒ 判成"还没离线"，
+/// 而它后面那一串（清链路快照、标记离线、失败回收在途接收）全都不会跑：
+/// 聊天头部的链路徽标继续显示在线、在途的那单文件要等 5 分钟空闲超时才失败、也没有掉线日志。
+/// ⇒ 离线与否只取决于**这个 peer 还剩不剩链路**，与"是谁摘掉最后一条"无关；
+/// 还剩别的链路（LAN + Tailscale + BLE 并存）时不许点亮，那正是 failover 的语义。
+pub(crate) fn peer_offline_after_tail(removed: bool, empty: bool) -> bool {
+    let _ = removed;
+    empty
 }
 
 /// 入站去重判据（BLE 侧复用；TCP 侧在 `handle_incoming` 内联调用同一个函数）。

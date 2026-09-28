@@ -10,6 +10,44 @@
 
 ## [Unreleased]
 
+## [4.31.12] - 2026-09-28
+
+### ★ 修：一条根本没发出去的消息，会被后面那条已读回执点亮成「已读」
+- **现象**（#161，第三轮分层复审抓到）：单聊里一条发送失败（红色「失败」）的消息，
+  在对方读到**后面某条**消息之后，我这边它会变成「已读」——看起来像"对方读过一句其实从没送达的话"。
+- **成因是同一句判据有三份副本，而取到的是最弱的那一条**：家在后端
+  `src-tauri/src/db/read_receipts.rs::mark_own_messages_read_upto`，它的注释就写着
+  "只排除 `read` 自己"是缺陷（所以要排除 `read`/`failed`/`recalled` 三件），
+  而**前端那份内联写法恰好只排除了 `read`**。更糟的是失败的那条带的是 `tmp-*` 这种只在内存里存在的 id，
+  库里没有 ⇒ 每次重读会话都被 `appendLocalOnly` 追加回来 ⇒ **错了再也纠不回来**。
+- **修法**：前端那份收成一个纯函数 `utils/messages.ts::promoteOnPeerRead`，排除清单与后端同源，
+  store 只调它；无可推进项时返回同一个数组（不白刷一次响应式）。
+- **判据**：`messages.test.ts` 4 条（正常推进 / `failed` 与 `recalled` 点不动 / 别人发的与超出回执时间的不动 /
+  无可推进项时同数组返回）+ `designGuards.test.ts` ㉒（store 必须走那个家、排除清单三件齐在、
+  并带"退回内联弱谓词必须被抓到"的反空转对照）。
+- ⚠️ **跨语言同值这件事的老规矩仍然成立**：这条判据在 Rust 与 JS 各一份，**任何一层改口径另一层不会编译失败**，
+  唯一防线就是㉒那种"钉同一个清单 + 反空转"的形状锁。
+
+### ★ 修：半开看门狗先摘掉链路后，"离线"那一串收尾永远不跑
+- **现象**（#162，链接层复审抓到）：对端合盖/断电时，聊天头部还能继续显示"局域网/桥接"这类链路徽标，
+  而正在收的那单文件停在"接收中 X%"要等满 5 分钟空闲超时才失败，日志里也没有"掉线"那一行。
+- **成因**：读循环收尾用的是 `offline = removed && empty` —— 要求**本端这一次真的从表里摘到了东西**才算离线。
+  而半开看门狗会先把空掉的整条 key 删掉（`if v.is_empty() { links.remove(&peer); }`），
+  于是收尾时 `removed=false`、`empty=true` ⇒ 判成"还没离线"，后面 `mark_peer_offline` +
+  `fail_receives_for_peer`（清链路快照、标记离线、回收在途接收）整串都不跑。
+- **修法**：判据收成 `peer_offline_after_tail(removed, empty) -> empty` ——
+  **离线只取决于"这个 peer 还剩不剩链路"，与"是谁摘掉最后一条"无关**；还剩别的链路时照旧不点亮（failover 语义不变）。
+- **判据**：`transport/tests.rs` 两条 —— 四格真值表（其中「看门狗先摘过 key」那一格就是本轮修的），
+  加一条形状锁（读循环收尾必须调用那个判据、`transport.rs` 里不许再内联一份 `removed && empty`）。
+- **反证**：判据先写后跑，红在 `cannot find function peer_offline_after_tail`（没有这个家时判据落不了地）；
+  实现后两条绿。复跑：`cargo test --features bluetooth --lib peer_offline`。
+- **本地证据（两条一起）**：`cargo fmt --check` / `cargo clippy --features bluetooth -- -D warnings` 退 0、
+  `cargo test --features bluetooth` **756 passed / 0 failed**（退码裸取 0）、测试清单基线 `--update` +
+  `--sync-baselines` 后 `--only rust` 退 0（macos 756+3 / windows 745+14，差额都有源码门控背书）、
+  `npm test` 前端 100/100 与 97/97 在各自文件里全绿、`vue-tsc --noEmit` 退 0。
+  ⚠️ 真机侧的"合盖后徽标多久变灰"这一格仍无自动化（要第二台设备），归 Smoke 人工。
+
+
 ## [4.31.11] - 2026-09-28
 
 ### ★ 修：群里发完消息显示两条自己发的，切一下会话又变回一条（用户 2026-09-28 实测报出）

@@ -12,6 +12,7 @@ import {
   pickMediaContent,
   preserveDeliveryStatus,
   replaceOptimistic,
+  promoteOnPeerRead,
   previewText,
   pruneUnreadClears,
   selectCachedConversations,
@@ -1966,18 +1967,13 @@ export const useChatStore = defineStore("chat", () => {
         }
       },
       onPeerRead: (p) => {
-        // 对方已读到 last_read_ts：我发出的、ts ≤ 该值的消息 → read（绿勾）
+        // 对方已读到 last_read_ts：我发出的、ts ≤ 该值的消息 → read（绿勾）。
+        // 谓词在 utils/messages.ts::promoteOnPeerRead —— 那一句的家在后端
+        // `db/read_receipts.rs::mark_own_messages_read_upto`，两份不许分叉（failed/recalled 点不动）。
         for (const [convId, list] of Object.entries(messages.value)) {
           if (convId !== p.peer_id) continue;
-          let changed = false;
-          const next = list.map((m) => {
-            if (m.sender_id === myDeviceId.value && m.status !== "read" && m.ts <= p.last_read_ts) {
-              changed = true;
-              return { ...m, status: "read" as const };
-            }
-            return m;
-          });
-          if (changed) messages.value[convId] = next;
+          const next = promoteOnPeerRead(list, myDeviceId.value, p.last_read_ts);
+          if (next !== list) messages.value[convId] = next;
         }
       },
       onGroupRead,
