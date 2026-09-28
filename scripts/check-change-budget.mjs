@@ -677,7 +677,12 @@ const ciPushMain =
 // 让它们因为"拿不到范围"而打断出包 = 将门禁的作用域扩到它管不着的地方。
 const strict = process.env.GOSSLAN_BUDGET_STRICT === "1";
 
-if (ok && strict && ciPushMain && !rangeFromEventBefore) {
+// ⚠️ `!fromJson`：fixture 接缝**本来就没有** git 范围（数据是喂进去的），拿"没拿到 before..sha"
+// 去判它空转是范畴错误。2026-09-28 实测代价：verify.yml 带着 GOSSLAN_BUDGET_STRICT=1，于是护栏
+// 非空转用例里每一条 `--from-json` 的"恢复后即 PASS"半边都被这里判成 exit 1 —— 本地没有这个
+// env 所以从来不红，而它藏了 7 天（从 d056422 起），因为 Change Budget 在护栏之前一步、
+// fail-fast 把护栏那步吞成了"未跑"。
+if (ok && strict && ciPushMain && !fromJson && !rangeFromEventBefore) {
   // CI 上 push 到 main，唯一**正确**的范围是 `github.event.before..github.sha`。走到这里
   // 说明它没拿到（env 没映射 / before 不可达 / 候选全空）⇒ 这一步看的不是本次推送的内容。
   // 必须红，而且要红得能被 `ci-run.sh` 转成注解（匿名可读渠道）—— 否则"CI 全绿"会被当成

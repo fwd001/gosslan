@@ -186,6 +186,15 @@ class Case:
     #: 正确做法是**显式跳过并说清楚**，而不是留一堆假失败把真失败淹掉
     #: （`--strict-platform` 可把跳过重新当成失败，用于"必须全平台都能守"的场景）。
     platforms: tuple[str, ...] | None = None
+    #: 这条用例跑命令时**额外覆盖**的环境变量（在 os.environ 之上合并）。
+    #:
+    #: 为什么需要（2026-09-28 实测）：有些判据只在 **CI 的环境**里才成立 ——
+    #: `check-change-budget.mjs` 那段"拿不到 before..sha 就判空转"的硬失败由
+    #: `GOSSLAN_BUDGET_STRICT` + `GITHUB_EVENT_NAME` 门控，本地永远没有这两个变量，
+    #: 于是它把护栏用例的"恢复后即 PASS"半边在 CI 上判成 exit 1，**藏了 7 天**
+    #: （Change Budget 在护栏之前一步，它一红就 fail-fast，护栏那步从没跑到过）。
+    #: 没有这个入口，"只在 CI 红"的那一类缺陷在本案里是**无法被非空转验证表达**的。
+    env: dict[str, str] | None = None
 
 
 def cargo(*args: str) -> list[str]:
@@ -2938,6 +2947,31 @@ CASES: list[Case] = [
         expect_fail_hint="出现了 3 次",
         tags=["frontend", "change-budget", "new-guards"],
     ),
+    Case(
+        name="Change Budget:CI 的「空转硬失败」不许打在 fixture 接缝上(打回去必须红)",
+        why="2026-09-28 CI 实测:护栏非空转那一步在 frontend 组红了,而**本地同一命令是绿的** —— "
+        "成因是那段「拿不到 before..sha 就判空转」的硬失败由 `GOSSLAN_BUDGET_STRICT` + `GITHUB_EVENT_NAME` "
+        "门控,只有 CI 有这两个 env;`--from-json` 本来就没有 git 范围(数据是喂进去的),于是每条 fixture "
+        "用例的「恢复后即 PASS」半边都被它判成 exit 1。这段判据最近一次改动是 d056422(09-21)、"
+        "不是本轮推送带进来的,而 Change Budget 排在护栏之前一步、一红就 fail-fast ⇒ 护栏那步整段标"
+        "「未跑」,没人看见过它;直到 keepGoingOnFail 那次改动让它真的跑到。"
+        "本用例把 `!fromJson` 摘掉=把缺陷装回去:注入态必须红且报「受检范围」,还原态必须 0。"
+        "它同时是那条空转判据自身的非空转证明 —— 没有 env 入口之前,「只在 CI 红」这一类根本无法表达。",
+        file=ROOT / "scripts" / "check-change-budget.mjs",
+        injections=[(
+            "if (ok && strict && ciPushMain && !fromJson && !rangeFromEventBefore) {",
+            "if (ok && strict && ciPushMain && !rangeFromEventBefore) {",
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="受检范围",
+        env={
+            "GOSSLAN_BUDGET_STRICT": "1",
+            "GITHUB_EVENT_NAME": "push",
+            "GITHUB_REF_NAME": "main",
+        },
+        tags=["frontend", "change-budget", "new-guards"],
+    ),
     # 守门读真实 git 历史,没法"改坏源文件"来验证 —— 所以脚本留了 --from-json 测试接缝,
     # 用 fixture 喂数据。fixture 的默认状态是全 PASS(每条判定路径都走到),下面四条用例
     # 各自破坏一个条件来验证对应判据会红。fixture 本身提交进仓库,是可以 review 的测试数据。
@@ -3862,8 +3896,10 @@ def _resolve_program(name: str) -> str:
     return name  # 交给 subprocess 报它自己的错（错误信息更明确）
 
 
-def run(cmd: list[str], cwd: Path, timeout: int = 900) -> tuple[int, str]:
+def run(cmd: list[str], cwd: Path, timeout: int = 900, extra_env: dict[str, str] | None = None) -> tuple[int, str]:
     env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
     # 沙箱/CI 里写不了 ~/.cargo：仓库内已有一份 CARGO_HOME 时优先用它
     local_cargo = ROOT / "target" / "cargo-home"
     if "CARGO_HOME" not in env and local_cargo.is_dir():
@@ -3930,7 +3966,7 @@ def verify(case: Case) -> tuple[bool, str]:
             write_source(path, text)
         _CURRENT = list(originals)  # 登记现场：被信号打断时可恢复
 
-        code, out = run(case.cmd, case.cwd)
+        code, out = run(case.cmd, case.cwd, extra_env=case.env)
         if code == 0:
             return False, "改坏之后测试**仍然通过** ⇒ 这条护栏是空转的（没在守东西）"
         if case.expect_fail_hint and case.expect_fail_hint not in out:
@@ -3939,7 +3975,7 @@ def verify(case: Case) -> tuple[bool, str]:
         for path, original in originals:  # 先恢复，再验证恢复后确实通过
             write_source(path, original)
         _CURRENT = []
-        code2, out2 = run(case.cmd, case.cwd)
+        code2, out2 = run(case.cmd, case.cwd, extra_env=case.env)
         if code2 != 0:
             return False, f"恢复源码之后测试**仍然失败** ⇒ 源码或环境已被破坏：\n{out2[-800:]}"
         return True, detail or "改坏即 FAIL、恢复即 PASS"
