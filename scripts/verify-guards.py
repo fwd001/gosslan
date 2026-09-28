@@ -2989,15 +2989,21 @@ CASES: list[Case] = [
         tags=["change-budget", "new-guards"],
     ),
     Case(
-        name="Change Budget:chore(release) 换成普通类型 → 版本白名单失效 → FAIL",
-        why="每次发版固定动 5 个版本文件(package.json/Cargo.toml/Cargo.lock/tauri.conf.json/package-lock.json),"
-        "白名单只在 message 以 chore(release) 开头时生效。fixture 里 a000004(package-lock +250 行等)默认豁免;"
-        "本用例把 message 改成 feat(release) —— 白名单立即失效,347 行计入 ⇒ 超 L1 且无 [plan] ⇒ FAIL。"
-        "证明『豁免是声明出来的,不是永远免检』。",
-        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        name="Change Budget:版本清单文件不吃改动半径预算(把豁免摘掉必须红)",
+        why="2026-09-28 负责人拍板的口径：判据 4 **强制**每条动应用码的提交都同时改那四个版本清单文件,"
+        "而判据 1 又把它们数进「改了几个文件」⇒ **同一道门禁的一条判据在制造另一条判据的红**。"
+        "实测代价：近 12 条含产品码的提交里 3 条被这样顶到 L3(要求 [impact]),其中 c58c425 真实只动"
+        " 3 个产品文件、计入却是 11 个(5 个版本清单 + 3 个测试) ⇒ CI 连着红了三趟。"
+        "现在这五个文件(那四个 + Cargo.lock)**永不计入规模**;判据 4 照旧读它们,一条没少判。\n"
+        "     注入：把规模判据里那条豁免摘掉 ⇒ fixture 里 a000004(发版提交,package-lock +250 行等)"
+        "立刻被算进去 ⇒ 347 行超 L1 且标题没有 [plan] ⇒ FAIL。证明这条豁免是**承重的**,不是装饰。\n"
+        "     ⚠️ 它顶替的是原来那条「chore(release) 换成普通类型 → 版本白名单失效 → FAIL」："
+        "那条守的是「豁免是声明出来的、不是永远免检」,而**这个前提刚被负责人推翻** ⇒ 留着就是假守卫。"
+        "它原本顺带守住的另一半(发版提交改名不许静默放行)由下一条判据 4 反向用例继续守。",
+        file=ROOT / "scripts" / "check-change-budget.mjs",
         injections=[(
-            '"message": "chore(release): v4.19.0",',
-            '"message": "feat(release): v4.19.0",',
+            '    (f) => !isExempt(f.path) && !VERSION_MANIFESTS.has(f.path.replaceAll("\\\\", "/")),',
+            '    (f) => !isExempt(f.path),',
         )],
         cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
         cwd=ROOT,

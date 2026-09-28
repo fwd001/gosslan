@@ -40,9 +40,14 @@
  * 产品代码;不豁免的话,每加一个守门脚本/每写一次 CHANGELOG 都在吃预算。
  * 风险(在 docs 里藏坏内容)由 PR review 兜底。
  *
- * **版本白名单**(仅 `chore(release)` 生效):package.json / package-lock.json /
- * Cargo.toml / Cargo.lock / tauri.conf.json。每次发版固定动这 6 个文件,不豁免
- * 会每个版本撞门。
+ * **版本清单文件永不计入预算**（2026-09-28 起；此前是「仅 `chore(release)` 豁免」）:
+ * package.json / package-lock.json / Cargo.toml / Cargo.lock / tauri.conf.json。
+ * 为什么从"发版才豁免"改成"永远不算"：判据 4 **强制**每条动应用码的提交都同时改这四个
+ * 清单文件（`Version-Bump:` 写了就必须落地），于是判据 1 又把它们数进"改了几个文件"里
+ * ⇒ **同一道门禁的一条判据在制造另一条判据的红**。实测代价：近 12 条含产品码的提交里有
+ * 3 条是这样被顶到 L3（要求 `[impact]`）的，其中 `c58c425` 真实只动了 3 个产品文件，
+ * 计入的 11 个里有 5 个是版本清单、3 个是测试。
+ * ⚠️ 这只影响**规模**判据（判据 1/2）。判据 4 照旧读这批文件，一个都没少判。
  *
  * **重复犯案**:取 `<merge-base>..HEAD` 内最近 5 个「**修补形状**」提交,各自映射领域
  * (豁免文件不计);任一领域出现 ≥3 次 ⇒ FAIL。窗口**只看本分支独有**的提交
@@ -135,15 +140,6 @@ const SENSITIVE_FILES = new Set([
 const EXEMPT_PREFIXES = [".github/", "scripts/", "docs/"];
 const EXEMPT_SUFFIXES = [".md", ".txt"];
 
-/** 版本白名单(仅 chore(release) 时豁免):一次发版固定动的五个文件。 */
-const RELEASE_WHITELIST = new Set([
-  "package.json",
-  "package-lock.json",
-  "src-tauri/Cargo.toml",
-  "src-tauri/Cargo.lock",
-  "src-tauri/tauri.conf.json",
-]);
-
 /** 重复犯案窗口:最近 N 个修补形状提交。 */
 const OFFENDER_WINDOW = 5;
 /** 同一领域在窗口内出现 ≥ N 次 ⇒ FAIL。依据:4.18.7→4.18.10 是 4 次;第 3 次就拦。 */
@@ -159,6 +155,14 @@ const VERSION_FILES = [
   "src-tauri/Cargo.toml",
   "src-tauri/tauri.conf.json",
 ];
+
+/**
+ * 规模判据（判据 1/2）**永远不数**的文件 = 上面那四个 + `Cargo.lock`。
+ * 与 `VERSION_FILES` 同源，不抄第二份清单；多出 `Cargo.lock` 是因为它由 cargo 同步、
+ * 判据 4 不要求它，但一次 bump 常把它一起带上（package-lock 那种几百行的机器改动）。
+ * 理由见文件头「版本清单文件永不计入预算」那一段。
+ */
+const VERSION_MANIFESTS = new Set([...VERSION_FILES, "src-tauri/Cargo.lock"]);
 
 /** `Version-Bump: patch|minor|major` trailer(整行,允许行首尾空白)。 */
 const BUMP_DECL = /^Version-Bump:[ \t]*(patch|minor|major)[ \t]*$/im;
@@ -252,11 +256,9 @@ function isExempt(relPath) {
  *            domains: string[], sensitive: string[], problem: string|null}}
  */
 function classify(commit) {
-  const release = /^chore\(release\)/.test(commit.message);
+  // 版本清单文件任何提交都不计入规模（理由见文件头）—— 不再区分是不是 chore(release)。
   const counted = commit.files.filter(
-    (f) =>
-      !isExempt(f.path) &&
-      !(release && RELEASE_WHITELIST.has(f.path.replaceAll("\\", "/"))),
+    (f) => !isExempt(f.path) && !VERSION_MANIFESTS.has(f.path.replaceAll("\\", "/")),
   );
   const countedFiles = counted.filter((f) => !SENSITIVE_FILES.has(f.path.replaceAll("\\", "/")));
   const loc = counted.reduce((s, f) => s + f.add + f.del, 0);
