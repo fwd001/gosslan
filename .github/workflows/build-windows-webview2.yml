@@ -5,7 +5,7 @@ name: Build Windows + 内置 WebView2（固定版本，普通版的另一档）
 # `downloadBootstrapper`（装的时候联网现下）⇒ 那种机器上"安装包跑起来了但窗口是空的"。
 # 这一档把 **固定版本的 runtime 打进安装包里**（Tauri 的 `fixedRuntime`，安装包大约 +180 MB）。
 #
-# 触发条件（2026-09-28 改）：**tag `v*` 自动打 + 仍可手动打**。
+# 触发条件（2026-09-28 改）：**tag `v*` 自动打 + 仍可手动打**；两个架构每次都打（与默认档同构）。
 # 原来刻意只挂 workflow_dispatch（怕影响其他打包），但发版那份产物必须"打 tag 就自动出"才成立 ——
 # 否则这一档永远靠人记得点一下，而忘了点没有任何人会报红（本仓对这类"靠人回头做"的判断已经吃过多次）。
 # 刻意**仍不挂在普通 push / PR 上**：这一档是双架构 × 固定 runtime 解包，跑一次比默认档贵得多，
@@ -26,13 +26,6 @@ on:
         description: "固定版本 runtime 的版本号（归档 release 的 tag）"
         required: true
         default: "133.0.3065.92"
-      arch:
-        description: "打哪个架构"
-        required: true
-        default: "both"
-        type: choice
-        options: [both, x64, arm64]
-
 permissions:
   contents: read
 
@@ -47,13 +40,10 @@ jobs:
           - target: aarch64-pc-windows-msvc
             label: arm64
     runs-on: windows-latest
-    # 架构选择：手动触发时按输入选，**非手动事件（tag push）没有 inputs** ⇒ 取空串 ⇒ 两个架构都跑。
-    # （以前这里还硬要求 `event_name == workflow_dispatch`，那是"绝不占 runner"的保险；
-    #  现在 tag 才触发本文件 ⇒ 保险改成正向放行，注释说明为什么不再需要拦。）
-    if: >
-      github.event.inputs.arch == '' ||
-      github.event.inputs.arch == 'both' ||
-      github.event.inputs.arch == matrix.label
+    # 这里**不能**写 job 级 `if:` 去引用 `matrix.label`：Actions 的 job 级条件在矩阵展开之前求值，
+    # 看不到 matrix 上下文 ⇒ 整个文件被判 Invalid workflow file（表现为"一条都没有的失败运行"，
+    # 而不是某一步红）。这个文件从建立起就一直带着这条 ⇒ 18 次运行全红、且从未产生过任何产物。
+    # 结果就是与默认档 `build.yml` 同构：两个架构都打，谁触发都一样。
     env:
       WV2_VER: ${{ github.event.inputs.webview2_version || '133.0.3065.92' }}
     steps:
