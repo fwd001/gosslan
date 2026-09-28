@@ -45,17 +45,20 @@ fn tray_tooltip(zh: bool, unread: u32) -> String {
 /// 收成一个模块，出口就只有一处。
 #[cfg(not(target_os = "macos"))]
 mod dot {
-    /// 未读红点颜色 = `#FF3B30`。
+    /// 未读红点颜色 = `#D43D43`（与样式表里的 `--gosslan-danger` 同一个值）。
     ///
     /// 这个值是**故意**与两处对齐的：
-    /// - 本应用自己的未读徽标色 `--gosslan-danger`（`src/style.css:99`）—— 托盘的点和应用内的红点
-    ///   必须是同一个红，否则同屏对比就是两种红（用户 2026-09-17：「红点直接和微信靠拢」）；
-    /// - 微信的红点用的也正是 `#FF3B30`（iOS 系统红的经典值）。
+    /// - 本应用自己的未读徽标色 `--gosslan-danger` —— 托盘的点和应用内的红点必须是同一个红，
+    ///   否则同屏对比就是两种红（用户 2026-09-17：「红点直接和微信靠拢」）。
+    /// - 2026-09-26 那档 a11y（#86）把填充档压深到 `#d43d43` 以让白字达到 4.5:1，
+    ///   **而这一侧当时没跟着改** ⇒ Windows 托盘的红点与应用内的徽标从此是两种红，
+    ///   而这条测试只在**非 macOS** 编译（本地看不见），只有 CI 的 Windows 腿会红。
+    ///   现在跟着样式表走：应用的徽标优先于「微信那个经典值」——同屏一致性才是这条的判据。
     ///
     /// ⚠️ 这里写死十六进制而不是读 CSS 变量：托盘图标是 **Rust 侧**画的，拿不到样式表。
     /// 改 `--gosslan-danger` 时这里要一起改（`unread_dot_is_the_app_badge_red` 测试会在色值
     /// 与样式表不一致时报错）。
-    pub(super) const UNREAD_RED: (u8, u8, u8) = (0xFF, 0x3B, 0x30);
+    pub(super) const UNREAD_RED: (u8, u8, u8) = (0xD4, 0x3D, 0x43);
 
     /// 红点几何：半径 = 最小边的 8.5%，圆心在 (82%, 18%)。
     ///
@@ -143,13 +146,13 @@ mod dot {
         fn unread_dot_is_the_app_badge_red() {
             let css = include_str!("../../src/style.css");
             assert!(
-                css.contains("--gosslan-danger: #ff3b30"),
+                css.contains("--gosslan-danger: #d43d43"),
                 "样式表里的未读红改了？本测试与 UNREAD_RED 要一起更新"
             );
             assert_eq!(
                 UNREAD_RED,
-                (0xFF, 0x3B, 0x30),
-                "托盘红点必须等于 --gosslan-danger（#ff3b30）"
+                (0xD4, 0x3D, 0x43),
+                "托盘红点必须等于 --gosslan-danger（#d43d43）"
             );
         }
 
