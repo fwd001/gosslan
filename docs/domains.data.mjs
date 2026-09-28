@@ -356,7 +356,7 @@ export default {
       enforce: false,
       consumes: [], // 前端域:本守门不扫 src/*(避跨 parser,且 utils/Api/组件相互 import 模式与后端 crate 不同),见 check-domain-deps.mjs 头部注释
       notes:
-        "⚠️ **没有领域边界**：stores/ 只有 2 个文件却是 2346 行（useChatStore.ts 1421 行 / 86 个导出成员），utils/ 92 个文件平铺。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。",
+        "⚠️ **没有领域边界**：`src/stores` 只有 3 个文件、`src/utils` 是平铺的一堆 —— **行数与个数一律现算，不许抄在图上**：`wc -l src/stores/*.ts`、`ls src/utils | wc -l`（截至 2026-09-28 现算：stores 共 3427 行、useChatStore.ts 2276 行、utils 119 个文件）。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。",
     },
   ],
 };
