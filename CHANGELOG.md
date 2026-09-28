@@ -50,6 +50,17 @@
   ⇒ db 与协议之间这条耦合**主要走的就是内联写法**（与 `db/messages.rs` 那条同一族），
   而它在 `consumes` 里是**已声明**的 ⇒ 判据对已声明依赖的绝大部分实际用量完全失明。
   复跑：`node scripts/check-domain-deps.mjs | grep -A1 判据看不见`。
+- ★ **四层证据的归属账（写明白，免得下一个人以为"四层都在最新 tip 上绿"）**：
+  快速层 14 步 14.9s 退 0 与全量层 20 步 572.9s 退 0 = 跑在 `7ead8c5`（那把棘轮所属的那两层，`group: "frontend"` 被这两层执行）；
+  E2E 本地层 18 步 745.3s 退 0 与发版前层 3 步 69.2s 退 0 = 跑在 `610d42c`。
+  **E2E 那两层之后没重跑，理由是算过的、不是偷懒**，而且按文件现核过（复跑：
+  `git diff --name-only 610d42c..HEAD` ⇒ 恰好 4 个：`CHANGELOG.md`、`docs/final-architecture-review.md`、
+  `docs/stability-roadmap.md`、`scripts/check-domain-deps.mjs`）：
+  前三者不被任何一层执行、只被 `check-doc-numbers` 读（每次改完都现跑过、退 0）；
+  第四个属于 `group: "frontend"` ⇒ 被快速层与全量层执行，而这两层都在 `7ead8c5` 上重跑过。
+  **harness（`scripts/e2e-multi-instance.mjs`）与 `scripts/verify.mjs` 一个字没动** ⇒ E2E 两层的证据仍属于 `610d42c`。
+  ⇒ 判层口径同一条：**要重跑哪层，看改动落在哪一层会执行的代码**，不看提交叫什么名字。
+  复跑核对归属：`git log --format='%h %s' -1` + 那三条命令各自的结论行原文。
 - ★ **全量层在新 tip 上重跑（这守门是那层的一步）**：`✅ 全部门禁通过（20 步，共 581.8s）`、`FULL2_EXIT=0`（裸取）。
   ⚠️ **但同一份日志里 `grep -c '❌'` 得到 1 —— 那一条不是失败**：Change Budget 那一步会把范围内每条提交的标题回显出来，
   而 `c5f57a7` 的标题里就有我写的「❌ 计数 0」这四个字 ⇒ **红点字符被自己的文案喂回了输出**。
