@@ -2111,11 +2111,25 @@ mod tests {
     fn every_friend_accept_path_forgets_the_pending_request() {
         let transport = crate::network::transport_src_for_guards();
         let transport_f = code_flat(&transport);
+        // 2026-09-28 复审改的形状：原先两条链路各写一遍"清哪几张表 + 要不要通知"，
+        // 而**直连那一条既漏了出站登记、也漏了去重门控** ⇒ 收成一个 `apply_friend_accept`。
+        // 判据因此从"两处各数一遍调用"改成"两条链路都走这个家 + 这个家自己做那两件事"
+        // —— 更严：少一条消费者当场红，家里少一件事也当场红。
         assert_eq!(
-            transport_f.matches("forget_pending_request(state,&from)").count(),
+            transport_f.matches("apply_friend_accept(state,&from,").count(),
             2,
             "两条 FriendAccept 路径（直连 `Message::FriendAccept` + 跨跳 `GossipKind::FriendAccept`）\
-             都必须清掉 pending —— 少一条就会让「已经是好友了，申请还挂着」复现"
+             都必须走同一个家 —— 各写一遍正是这次抓到的缺陷形状"
+        );
+        let home = rust_fn_body(&transport, "pub(crate) fn apply_friend_accept(");
+        let home_f = code_flat(&home);
+        assert!(
+            home_f.contains("forget_pending_request(state,from)"),
+            "这个家必须清那条申请（入站与出站两张表都在 `forget_pending_request` 里）"
+        );
+        assert!(
+            home_f.contains("ifwas_friend{") && home_f.contains("show_if_enabled(state"),
+            "通知要由 `was_friend` 门控 —— 重复投递不许刷屏（直连那条原先没有这一格）"
         );
         let commands = all_commands_src();
         let commands_f = code_flat(commands);
@@ -2294,8 +2308,10 @@ mod tests {
         );
         assert_eq!(
             transport.matches("crate::notifications::show").count(),
-            4,
-            "四处 Rust 侧通知（好友申请×2 + 好友通过×2）都必须走 notifications（含开关与错误）"
+            3,
+            "三处 Rust 侧通知（好友申请×2 + 好友通过×1）都必须走 notifications（含开关与错误）。\
+             原先是 4（通过那件事在直连与跨跳各写一遍），2026-09-28 收成一个\
+             `apply_friend_accept` 之后只剩一家 —— 这个数字**只许因为又漏了一条路而变大**"
         );
         let notif = include_str!("notifications.rs");
         assert!(
@@ -3763,8 +3779,10 @@ mod tests {
         let src = crate::network::transport_src_for_guards();
         assert_eq!(
             src.matches("bind_friend_keys_on_accept(").count(),
-            4,
-            "helper 定义 1 + 三条成为好友的路径各 1 = 4；少一处就是有人又写了一遍绑定逻辑"
+            3,
+            "helper 定义 1 + 三条成为好友的路径各 1 = 3（少一处就是有人又写了一遍绑定逻辑）。\
+             2026-09-28：直连与跨跳那两条已收进 `apply_friend_accept` 一个家 ⇒ 视图里\
+             从 4 降到 3（定义 1 + 这个家 1 + 第三条路 1）。这一格**只许因为又有人绕开家而变大**"
         );
         assert_eq!(
             src.matches("peer_keys_trusted(").count(),

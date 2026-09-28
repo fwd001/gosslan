@@ -458,6 +458,25 @@ test("送达状态只前进：sent→delivered→read，逆序不变", () => {
   assert.equal(furthestStatus("delivered", "sent"), "delivered");
 });
 
+// ==================== 失败态必须盖过 sending（2026-09-28 审计抓到）====================
+//
+// 症状：发送失败后气泡**永远转圈** —— 没有红色感叹号，也没有重发入口
+// （`MessageReceipt.vue` 的重发按钮判据是 `state === "failed"`）。
+// 机制：推进序表只收"送达进度"三态，`sending` 与 `failed` 都查不到 ⇒ 两个 indexOf
+// 都是 -1 ⇒ 判据认为"谁也不比谁更靠后" ⇒ `replaceMessage` 里那句
+// `{ ...next, status: furthestStatus(list[i].status, next.status) }` 把 failed 吃掉了。
+// 为什么以前没暴露：只有当乐观气泡**已经落地**（过了 rAF 那一批）时才走这条合并分支；
+// 错误若在一帧内返回就走 `pendingReplace` 那条不做提升的路径 ⇒ 同一个 bug 表现成抛硬币。
+test("furthestStatus: failed 盖过 sending，但翻不动对端已送达的证据", () => {
+  // 该红的这一条：发送中 + 本端失败 ⇒ 必须变成 failed
+  assert.equal(furthestStatus("sending", "failed"), "failed");
+  // 反向也要成立（不许把失败当终态压住真送达）：
+  assert.equal(furthestStatus("failed", "delivered"), "delivered");
+  assert.equal(furthestStatus("read", "failed"), "read");
+  // 既有推进序不许被这次改动带偏：
+  assert.equal(furthestStatus("sending", "sent"), "sent");
+});
+
 // ==================== P0-1 Ack 竞态测试（状态机模型） ====================
 //
 // 无法直接测 useChatStore（它 import @/api），这里用等价状态机模拟全部路径。

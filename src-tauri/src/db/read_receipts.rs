@@ -69,3 +69,33 @@ pub fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
+
+/// 收到对方的已读回执后，把「**我发给** `conv_id`、且 `ts <= upto_ts`」的消息一次推到 `read`。
+/// 返回被推进的行数（0 是正常结果：早就都是 read 了）。
+///
+/// ## 为什么这条要有一个家
+/// 直连回执（`network/transport.rs` 的 `Message::ReadReceipt`）与跨跳回执
+/// （`network/transport/gossip.rs`）原先各写一份一模一样的 UPDATE，而两份谓词都比
+/// `db::set_message_status` 那条"硬终态不可逆"弱一格 —— 只排除了 `read` 自己。
+/// **取到最弱的那一条就是缺陷**：`failed`（本端根本没发出去）会被后面那条已被读的
+/// 消息一起点亮成「已读」，用户看到的是一句对方读过、其实从没送达的话。
+///
+/// ## 排除清单为什么和 `set_message_status` 不完全一样
+/// 那里排除 `read`/`delivered`/`recalled`（单条推进不许回退硬终态）。这里额外排除
+/// `failed` —— 已读回执是**对端**的证据，而 `failed` 是**本端**关于这次发送的事实，
+/// 一条没发出去的消息不可能被对方读过。`delivered` 保留在可推进的一侧（回执比 Ack 更新
+/// 时正是往前推），`sending` 也保留（回执是本端状态卡住时唯一的自愈路径）。
+pub fn mark_own_messages_read_upto(
+    conn: &Connection,
+    conv_id: &str,
+    my_device_id: &str,
+    upto_ts: i64,
+) -> Result<usize> {
+    conn.execute(
+        "UPDATE messages SET status = 'read'
+         WHERE conv_id = ?1 AND sender_id = ?2
+           AND status NOT IN ('read', 'failed', 'recalled')
+           AND ts <= ?3",
+        params![conv_id, my_device_id, upto_ts],
+    )
+}

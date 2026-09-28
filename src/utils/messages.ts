@@ -34,6 +34,11 @@ const DELIVERY_ORDER = ["sent", "delivered", "read"];
 
 /** 两个送达状态中更靠后的一个；不在推进序上的状态（sending / failed）保持原样。 */
 export function furthestStatus(status: string, ahead: string): string {
+  // `sending` 与 `failed` 都不在上面那张表里 ⇒ 两者的 indexOf 都是 -1 ⇒ 查表判不出谁更靠后。
+  // 不加这一条，`replaceMessage` 里"取更靠后的状态"会把本端发送失败**吃掉**：
+  // 气泡永久停在「发送中」，而重发入口的判据正是 `status === "failed"`。
+  // 只对 `sending` 开口 —— 失败是本端事实，但它翻不动对端已经收到的证据（delivered/read）。
+  if (ahead === "failed" && status === "sending") return "failed";
   return DELIVERY_ORDER.indexOf(ahead) > DELIVERY_ORDER.indexOf(status) ? ahead : status;
 }
 

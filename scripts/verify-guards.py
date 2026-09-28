@@ -2110,20 +2110,28 @@ CASES: list[Case] = [
         tags=["frontend", "friend"],
     ),
     Case(
-        name="好友同意（两条 FriendAccept 路径都必须清 pending）",
-        why="用户实测根因：直连 `Message::FriendAccept` 只加好友、忘了清 pending，"
-        "跨跳 `GossipKind::FriendAccept` 清了 ⇒ 「有时候会清、有时候不清」",
+        name="好友同意（两条 FriendAccept 路径走同一个家，且家里要清 pending）",
+        why="用户实测根因：直连 `Message::FriendAccept` 只加好友、忘了清 pending，\n"
+        "     跨跳 `GossipKind::FriendAccept` 清了 ⇒ 表现成「有时候会清、有时候不清」。\n"
+        "     2026-09-28 复审抓到同一条链上的第二半：**去重门控只有跨跳有、直连没有** ⇒\n"
+        "     同一个「被『好友申请已通过』刷屏」的症状在直连链路上照旧存在。\n"
+        "     两条链路现已收成一个 `apply_friend_accept`，注入点跟着搬家：\n"
+        "     ① 拆掉直连那半边的调用（少一条消费者 ⇒ 红）；② 拆掉家里那句 `forget_pending_request`\n"
+        "     （家不做自己该做的事 ⇒ 红）。判据形状与理由见 `lib.rs` 里那条同名单测。",
         file=TAURI / "src" / "network" / "transport.rs",
         injections=[
             (
-                "            // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）\n"
-                "            forget_pending_request(state, &from);",
-                "            // （非空转验证：这一行被临时移除）",
-            )
+                '            apply_friend_accept(state, &from, "收到好友同意");',
+                "            // （非空转验证：直连这一条不再走那个家）",
+            ),
+            (
+                "    forget_pending_request(state, from);",
+                "    // （非空转验证：这个家不再清 pending）",
+            ),
         ],
         cmd=cargo("test", "--lib", "every_friend_accept_path_forgets_the_pending_request"),
         cwd=TAURI,
-        expect_fail_hint="两条 FriendAccept 路径",
+        expect_fail_hint="都必须走同一个家",
         tags=["rust", "friend"],
     ),
     Case(

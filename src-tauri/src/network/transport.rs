@@ -797,6 +797,49 @@ async fn auto_accept_if_already_friend(state: &Arc<AppState>, peer_id: &str) -> 
     true
 }
 
+/// 收到「好友申请已通过」后的**全部**本地动作 —— 直连与跨跳共用这一个家。
+///
+/// ## 为什么要收成一家（2026-09-28 架构复审抓到）
+/// "重复投递不许刷屏"这条判据原先**只写在跨跳那一份里**（`gossip.rs`，注释里还记着
+/// 真机日志同一秒三次那个症状），直连这一份没有 ⇒ 同一条链路上同一个缺陷照旧存在。
+/// "同一句话在两处各写一遍、其中一处缺条件"就是这类缺陷的形状，所以连留痕文字
+/// 都收进来（只有 `trace` 按来源不同）。
+///
+/// ## 幂等判据
+/// `FriendAccept` 没有 ACK 机制，发送方会持续补发（见 `flush_pending_friend_accept`）⇒
+/// 只按"这一次是否真的从不是好友变成好友"决定要不要通知；`add_friend` 本身是幂等的。
+pub(crate) fn apply_friend_accept(state: &Arc<AppState>, from: &str, trace: &str) {
+    let name = resolve_nickname(state, from);
+    let was_friend = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = db::get_friend(&dbc, from).is_some();
+        db::add_friend(&dbc, from, &name, None).ok();
+        // 同步公钥：x25519 照旧早绑，ed25519 只认 verified 来源
+        // （跨跳到达的那一份尤其要紧 —— 它允许 TOFU，`peers` 里那对钥匙
+        //  可能来自未签名广播，判据在 `bind_friend_keys_on_accept` 里）。
+        bind_friend_keys_on_accept(state, &dbc, from);
+        seen
+    };
+    // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）。
+    forget_pending_request(state, from);
+    // emit 每次都发：前端 store 只是据此重拉好友列表（幂等），
+    // 而漏发会让「首次那个 emit 恰好没被界面收到」时界面永远不刷新。
+    let _ = state.app.emit("friend-accepted", from);
+    if was_friend {
+        // 重复投递：只留一行便于排查的痕迹，**不通知**。
+        state
+            .logger
+            .info("friend", format!("重复的好友同意（已忽略）peer={from}"));
+    } else {
+        state.logger.info("friend", format!("{trace} peer={from}"));
+        let _ = crate::notifications::show_if_enabled(
+            state,
+            "好友申请已通过",
+            &format!("{name} 已成为你的好友"),
+        );
+    }
+}
+
 pub fn forget_pending_request(state: &AppState, peer_id: &str) {
     state
         .pending_requests
@@ -3136,20 +3179,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if to != state.device_id {
                 return;
             }
-            let name = resolve_nickname(state, &from);
-            {
-                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::add_friend(&dbc, &from, &name, None).ok();
-                bind_friend_keys_on_accept(state, &dbc, &from);
-            }
-            // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）
-            forget_pending_request(state, &from);
-            let _ = state.app.emit("friend-accepted", &from);
-            let _ = crate::notifications::show_if_enabled(
-                state,
-                "好友申请已通过",
-                &format!("{name} 已成为你的好友"),
-            );
+            // 直连这一份原先**没有**去重 ⇒ "被『好友申请已通过』反复刷屏"在直连链路上
+            // 照旧存在（跨跳那一份早就有这条判据，两份各写一遍正是缺陷的形状）。
+            // 现在两条链路都走 `apply_friend_accept` 这一个家。
+            apply_friend_accept(state, &from, "收到好友同意");
         }
         Message::FriendReject { from, to } => {
             if from != peer_id {
@@ -3158,11 +3191,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if to != state.device_id {
                 return;
             }
-            state
-                .pending_requests
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&from);
+            // 回执（同意或拒绝）走同一个清队列入口。这里原先只清**入站**那一张，
+            // 而 `forget_pending_request` 的注释写的就是"同意/拒绝都要清两张" ——
+            // 漏掉出站登记 ⇒ `flush_pending_friend_request` 每次建链都把已被拒绝的
+            // 申请再发一遍，对方那边的「新朋友」里那条申请永远删不掉。
+            forget_pending_request(state, &from);
             let _ = state.app.emit("friend-rejected", &from);
         }
         Message::FriendRemove { from, to } => {
@@ -3396,14 +3429,13 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     })
                     .unwrap_or(last_read_ts)
             };
-            // 对方已读：把「我发给对方、ts ≤ effective_ts」的消息标记为 read（幂等）
+            // 对方已读：把「我发给对方、ts ≤ effective_ts」的消息标记为 read（幂等）。
+            // 判据只有 `db::mark_own_messages_read_upto` 一个家 —— 这里原先内联的那份
+            // 只排除 `read`，会把本端**发送失败**的消息一起点亮成「已读」。
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = dbc.execute(
-                    "UPDATE messages SET status = 'read'
-                     WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
-                    params![from, state.device_id, effective_ts],
-                );
+                let _ =
+                    db::mark_own_messages_read_upto(&dbc, &from, &state.device_id, effective_ts);
             }
             // 无论 updated 是 0 还是 >0 都 emit：DB 可能已经是 read，
             // 但前端内存状态可能落后（事件竞态 / 会话重查覆盖），
@@ -4465,12 +4497,15 @@ async fn handle_relay_file_offer(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    if let Err(reason) = state
-        .relay
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .begin_reassemble(&transfer_id, &name, total_chunks, size, chunk_size, &dl)
-    {
+    // `begin_reassemble` 要在**出锁之后**再判错误：Edition 2021 的 `if let` 会把 scrutinee
+    // 的临时量（这里是 MutexGuard）留到整个块结束 ⇒ 直接写成 `if let Err(..) = 锁().方法()`
+    // 就等于"在 relay 锁里 emit"，而这个文件上面的自订规则是"锁只圈住写库，emit 一律出锁再做"
+    // （前端收到 file-failed 后的下一次 IPC 要抢同一把锁）。
+    let began = {
+        let mut relay = state.relay.lock().unwrap_or_else(|e| e.into_inner());
+        relay.begin_reassemble(&transfer_id, &name, total_chunks, size, chunk_size, &dl)
+    };
+    if let Err(reason) = began {
         let _ = state.app.emit(
             "file-failed",
             &FileFailedInfo {

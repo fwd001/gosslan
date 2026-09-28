@@ -768,3 +768,5 @@ include!("db/recalls.rs");
 mod cascade_tests;
 #[cfg(test)]
 mod migration_tests;
+#[cfg(test)]
+mod read_receipts_tests;

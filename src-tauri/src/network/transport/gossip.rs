@@ -545,45 +545,10 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             // 定向好友同意：只有 target == 本机才处理（即「我发的申请被对方同意」）。
             if env.target.as_deref() == Some(state.device_id.as_str()) {
                 let from = env.sender_id.clone();
-                let name = resolve_nickname(state, &from);
-                // 幂等判据：**这一次是否真的"从不是好友变成好友"**。
-                //
-                // FriendAccept 没有 ACK 机制，发送方会持续补发（见 `补发好友同意回执`）——
-                // 而本分支原先没有任何去重：`add_friend` 是幂等的，但**通知与留痕每次都会执行**
-                // ⇒ 用户被"好友申请已通过"反复刷屏（真机日志里同一秒内三次）。
-                // 同时它也是"单方面成功"的观感来源：一方在无限重发，另一方被反复打扰。
-                let was_friend = {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::get_friend(&dbc, &from).is_some()
-                };
-                {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::add_friend(&dbc, &from, &name, None).ok();
-                    // 同步公钥 —— 与 `Message::FriendAccept` 路径同一条规则（同一个 helper）：
-                    // x25519 照旧早绑，ed25519 只认 verified 来源。这条路径尤其要紧：跨跳
-                    // 到达的 FriendAccept 允许 TOFU（`gossip_trust_for_unpeer_sender`），
-                    // 此时 `peers` 里那对钥匙可能就是未签名广播带来的。
-                    bind_friend_keys_on_accept(state, &dbc, &from);
-                }
-                forget_pending_request(state, &from);
-                // emit 每次都发：前端 store 只是据此重拉好友列表（幂等），
-                // 而漏发会让「首次那个 emit 恰好没被界面收到」时界面永远不刷新。
-                let _ = state.app.emit("friend-accepted", &from);
-                if was_friend {
-                    // 重复投递：只留一行便于排查的痕迹，**不通知**。
-                    state
-                        .logger
-                        .info("friend", format!("重复的好友同意（已忽略）peer={from}"));
-                } else {
-                    state
-                        .logger
-                        .info("friend", format!("收到跨跳好友同意 peer={from}"));
-                    let _ = crate::notifications::show_if_enabled(
-                        state,
-                        "好友申请已通过",
-                        &format!("{name} 已成为你的好友"),
-                    );
-                }
+                // 与直连同一家（`apply_friend_accept`，就在本模块里 —— 这个文件是被
+                // `include!` 进 transport.rs 的）。"重复投递不许刷屏"这条判据原先**只有这一份有**
+                // ⇒ 直连链路上"被『好友申请已通过』反复刷屏"照旧存在（2026-09-28 复审抓到）。
+                apply_friend_accept(state, &from, "收到跨跳好友同意");
             }
         }
         GossipKind::ChatAck => {
@@ -644,10 +609,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         };
                         {
                             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                            let _ = dbc.execute(
-                                "UPDATE messages SET status = 'read'
-                                 WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
-                                params![from, state.device_id, effective_ts],
+                            // 与直连回执同一个家（`db::mark_own_messages_read_upto`）：
+                            // 这两处原先各写一份只排除 `read` 的 UPDATE，
+                            // 会把本端发送失败的消息一起点亮成「已读」。
+                            let _ = db::mark_own_messages_read_upto(
+                                &dbc,
+                                &from,
+                                &state.device_id,
+                                effective_ts,
                             );
                         }
                         let _ = state.app.emit(
