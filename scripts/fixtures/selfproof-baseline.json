@@ -1,0 +1,126 @@
+{
+  "_comment": "check-selfproof-baseline.mjs 的基线：每个 *selfproof 档的「退出码 / 报红条数 / 结论总数 / 单位」。跑法：`node scripts/check-selfproof-baseline.mjs`（核对）；改了判据/夹具/harness 后重新生成用 `--sync`。★ 这里刻意**不存** expect_red：每档该红还是该绿由 package.json 的命令串现推（`-lie` = 必须红，`--*-selfcheck` = 必须绿），两个来源就会互相不一致。",
+  "generated_from_tip": "e5a620f",
+  "entries": {
+    "test:e2e:gossip-late-selfproof": {
+      "exit": 1,
+      "red": 2,
+      "total": 23,
+      "expect_red": true
+    },
+    "test:e2e:gossip3-selfproof": {
+      "exit": 1,
+      "red": 4,
+      "total": 25,
+      "expect_red": true
+    },
+    "test:e2e:group-selfproof": {
+      "exit": 1,
+      "red": 9,
+      "total": 36,
+      "expect_red": true
+    },
+    "test:e2e:group-targets-selfproof": {
+      "exit": 1,
+      "red": 1,
+      "total": 36,
+      "expect_red": true
+    },
+    "test:e2e:groupcrash-selfproof": {
+      "exit": 1,
+      "red": 3,
+      "total": 26,
+      "expect_red": true
+    },
+    "test:e2e:lanoff-selfproof": {
+      "exit": 1,
+      "red": 1,
+      "total": 26,
+      "expect_red": true
+    },
+    "test:e2e:logtail-selfproof": {
+      "exit": 0,
+      "red": 0,
+      "total": 5,
+      "unit": "格"
+    },
+    "test:e2e:report-contract-selfproof": {
+      "exit": 0,
+      "red": 0,
+      "total": 14,
+      "unit": "格"
+    },
+    "test:e2e:shot-selfproof": {
+      "exit": 0,
+      "red": 0,
+      "total": null,
+      "unit": "格"
+    },
+    "test:e2e:task-selfproof": {
+      "exit": 1,
+      "red": 19,
+      "total": 49,
+      "expect_red": true
+    },
+    "test:fault-injection:disk-selfproof": {
+      "exit": 1,
+      "red": 1,
+      "total": 24,
+      "expect_red": true
+    },
+    "test:fault-injection:freeze-selfproof": {
+      "exit": 1,
+      "red": 1,
+      "total": 24,
+      "expect_red": true
+    },
+    "test:fault-injection:kill-selfproof": {
+      "exit": 1,
+      "red": 2,
+      "total": 25,
+      "expect_red": true
+    },
+    "test:fault-injection:multi-selfproof": {
+      "exit": 1,
+      "red": 1,
+      "total": 24,
+      "expect_red": true
+    },
+    "test:fault-injection:rename-selfproof": {
+      "exit": 1,
+      "red": 1,
+      "total": 24,
+      "expect_red": true
+    },
+    "test:fault-injection:resume-selfproof": {
+      "exit": 1,
+      "red": 2,
+      "total": 23,
+      "expect_red": true
+    },
+    "test:fault-injection:selfproof": {
+      "exit": 1,
+      "red": 2,
+      "total": 22,
+      "unit": "条断言"
+    },
+    "test:fault-injection:sendside-selfproof": {
+      "exit": 1,
+      "red": 1,
+      "total": 26,
+      "expect_red": true
+    },
+    "test:fault-injection:shrink-selfproof": {
+      "exit": 1,
+      "red": 1,
+      "total": 24,
+      "expect_red": true
+    },
+    "test:fault-injection:stall-selfproof": {
+      "exit": 1,
+      "red": 1,
+      "total": 25,
+      "expect_red": true
+    }
+  }
+}

@@ -115,6 +115,7 @@ python3 scripts/verify-guards.py   # 护栏非空转整跑（条数现算：grep
 | #97 | 任务卡片的**渲染层**零运行时断言（上游三道锁判的是"进没进 store / 会不会被过滤 / 有没有人渲染它"，都不判"那张卡真出现在界面上"）| **已改**（同日）：`check-ui-runtime.mjs` 加第三段挂 `TodoCardBubble` 本体，9 条判据（标题在 DOM 里 / 内部字段名不外露 / 实时表换档 / 同一句 @ 两种视角换标签 / 缩略图键盘可达且 Enter 真开那份统一预览 / 底部 emit 带这条的 id）；两把"改回旧坏样子"的非空转各红 2 条与 1 条。⚠️ 原话里「**另一扇窗**当场出现那张卡片」是跨窗事件，浏览器探针够不到 ⇒ 那一半仍未收 | 必须改→部分已改 |
 | §13（图） | 契约图里**没有**「@ 渲染」这一层的节点 —— 现算 `grep -c "src/utils/linkify.ts" docs/ARCHITECTURE-MAP.html` = 0（`MessageTextBubble` / `mention-token` 同样 0 命中）| **不动图**：新增的 `MentionText.vue` / `useMentionContext.ts`不属于"图上有节点要同步"；判据落点在 `designGuards` 那两条 + 群聊轮那条跨进程锁。给这层加节点等于新造一个需要人回头维护的事实源 | 观察（不改） |
 | §30 | #82「自己发的任务看不见」当场修了却没有永久锁；且一句假注释（`CARD_KINDS` 写"Card 进时间线"）正是它被当成设计如此的原因 | **已改**（同日 `9a7bdc2`）：判据输入由 api 层自己声明（`invoke<MessageRecord>`）⇒ 新命令自动进名单；store 每个调用点必须 `enqueueMessage`；时间线可见性逐项判决表 + 覆盖面自证；注释改口 | 必须改→已改 |
+| #145 | 反证档"**该红几条**"只活在文档句子里：判据 F 只做集合互点（不跑、不看红数）⇒ 一个反证档悄悄不再红（坏样子失效 / 判据被搬家弄断）时，所有门禁层照样全绿，而那正是反证档存在的唯一理由。⚠️ 我**做工具的第一版自己就踩了这条的元层**：档位的过滤条件写成 `endsWith("-selfproof")`，漏掉 `test:fault-injection:selfproof`（冒号不是连字符）⇒ 20 档只基线了 19 档，而"缺的那档"不会有人看见 | **已改**：`scripts/check-selfproof-baseline.mjs` + 基线 `scripts/fixtures/selfproof-baseline.json` + 入口 `npm run selfproof:check` / `selfproof:sync`。三件一起比（退出码 / 报红条数 / 结论总数），**每档该红还是该绿由 `package.json` 的命令串现推**（`-lie`=必须红、`--*-selfcheck`=必须绿，两种都不像就直接报错）⇒ 基线里没有任何"人工保证"字段可漂。`--sync` 只在全档跑齐、且每档符合自己口径时才写（反证档跑成绿 ⇒ 拒写）。档位分母由命令自己打印，文档里不抄数（验收矩阵顶部已按此改口）| 建议改→已改 |
 
 ## 五、"已有锁，别再重做"清单
 

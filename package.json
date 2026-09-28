@@ -78,7 +78,9 @@
     "test:e2e:gossip3-selfproof": "node scripts/e2e-multi-instance.mjs --round=gossip3-lie",
     "test:e2e:gossip-late-selfproof": "node scripts/e2e-multi-instance.mjs --round=gossip-late-lie",
     "test:e2e:lanoff-selfproof": "node scripts/e2e-multi-instance.mjs --round=lanoff-lie",
-    "test:e2e:task-selfproof": "node scripts/e2e-multi-instance.mjs --round=task-lie"
+    "test:e2e:task-selfproof": "node scripts/e2e-multi-instance.mjs --round=task-lie",
+    "selfproof:check": "node scripts/check-selfproof-baseline.mjs",
+    "selfproof:sync": "node scripts/check-selfproof-baseline.mjs --sync"
   },
   "dependencies": {
     "@headlessui/vue": "^1.7.23",
