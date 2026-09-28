@@ -80,7 +80,9 @@
     "test:e2e:lanoff-selfproof": "node scripts/e2e-multi-instance.mjs --round=lanoff-lie",
     "test:e2e:task-selfproof": "node scripts/e2e-multi-instance.mjs --round=task-lie",
     "selfproof:check": "node scripts/check-selfproof-baseline.mjs",
-    "selfproof:sync": "node scripts/check-selfproof-baseline.mjs --sync"
+    "selfproof:sync": "node scripts/check-selfproof-baseline.mjs --sync",
+    "ci:status": "node scripts/ci-status.mjs",
+    "map:stats": "node scripts/arch-map-stats.mjs"
   },
   "dependencies": {
     "@headlessui/vue": "^1.7.23",

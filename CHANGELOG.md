@@ -10,6 +10,39 @@
 
 ## [Unreleased]
 
+### 修一条护栏级的真 bug：`storeContract` 的扫描器分不清"正则里的引号"，既假红又假绿
+- **怎么暴露的**：我把 `stripRustComments` 从 `events.test.ts` 搬进共用件 `scripts/rustSrc.ts`（因为架构图量具
+  也要它，而"再写一份解析"就是再造一个会各自漂的事实源）。搬完那条护栏立刻红，
+  报 `api/events.test.ts:68  app.emit`。**先怀疑自己写坏了**，逐字比对后确认：不是我搬错，
+  是它**以前一直靠错位侥幸绿着**。
+- **根因**：`storeContract.test.ts` 的判据形状是"先把字符串抠掉，再找 `app.xxx` / `chat.xxx`"，
+  而"抠字符串"用的是三段按引号配对的 regex。它分不清三件事：
+  ① **正则字面量里的引号** —— `/^r#*"/.test(x)` 那个 `"` 被当成字符串开始 ⇒ 整份文件的"里/外"状态翻转；
+  ② **模板串的 `${…}` 是代码** —— 整段抹掉 ⇒ 真用法 `` `进度 ${app.percent}%` `` 隐身（**假绿**，比假红贵）；
+  ③ **注释根本不抠** ⇒ 任何解释 `app.foo` 的注释都能造出假红。
+- **修法**：新建 `scripts/jsScan.ts` —— 一次左到右的词法扫描（行/块注释、三种字符串、模板插值递归、
+  正则 vs 除法的标准启发式），输出**等长文本**（非代码抹成空格、换行原样留 ⇒ 报出来的行号是准的）。
+  与 `stripRustComments` 是**两个语言各一份**，不是重复实现。
+- ★ 顺带修掉一条**同族的范围错**：这条护栏以前把 `*.test.ts` 也算进"界面用法"，于是
+  `windowEntries.test.ts` 里一个**局部变量**叫 `chat` 就被判成"界面用了 store 不存在的成员"
+  （文档本来就承认"局部变量重名时可能误报"）。正确处置不是往白名单里塞 `slice` / `indexOf`
+  （那会把真缺口一起放行），而是**把测试文件请出分母** —— 与 `scripts/semver.mjs` 的
+  `isAppCodePath` 同一条口径：测试文件不算应用码，所以也不算"界面用法"。
+- **非空转（四格自证 + 一正一反，全部真跑）**：先给扫描器写四格用例 ⇒ 旧实现下三格红
+  （正则带偏 / 模板占位 / 注释），换实现后 26 条全绿；再拿一个**生产形状**的临时探针文件
+  （`chat.thisMemberAbsolutelyDoesNotExist`）验证它照样点名到 `utils/__scProbe.ts:5`，删掉探针立刻全绿。
+- **架构图量具同批修**：新建 `scripts/arch-map-stats.mjs`（`npm run map:stats`）把图上那些现状戳一次算齐。
+  它自己第一版也犯了我一直在防的错：**计数不剥注释**（`db.rs` 注释里两处 `CREATE TABLE` ⇒ 18 张被数成 20）、
+  **拿容器当数据**（`domains.data.mjs` 顶层键是 `{version,coverageRoots,unmapped,domains}` ⇒ 领域数印成
+  `0/1/2…`；`matchAll` 解构 `[x]` 拿到的是整条匹配不是捕获组 ⇒ 6 扇窗全被报成"不在清单里"）。
+  三处都按实测改口后：**注册命令 130 / 建表 18（+内容库 1）/ 索引 23 / 门面 invoke 130 / 后端事件名 27 /
+  窗口常量 6 而 capability 清单 5（外链窗由 lib.rs 的断言钉着不许进）/ 领域 11 / 不变量 27**。
+  ★ 差点把"20 张表"这个假数刷进图里 —— 是"先跟图对一遍再下结论"拦住的。
+- 另建 `scripts/ci-status.mjs`（`npm run ci:status`）：巡检五条 workflow 只看匿名能读的
+  `/actions/runs` 与 check-run 注解（日志端点匿名 403，实测），**看不见就退 2 明说看不见**，
+  绝不把空结果打印成"CI 正常"；限流那条出口已用本机 403 实测到（额度 60 次/小时/IP）。
+
+
 ### §三十三 的 Release 判定表补了缺的第九行，并拿掉一格一天漂两次的版本快照
 - **缺口是审计抓出来的，不是猜的**：§三十三 点名要九行（Current Version / Actual Git HEAD / Build /
   Test / E2E / Cross-platform / Known Issues / Remaining Risks / **Release Candidate 还是 Not Yet Release**）。

@@ -20,6 +20,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { stripJsLiterals } from "../../scripts/jsScan.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const STORES = [
@@ -37,12 +38,15 @@ const STORES = [
   },
 ];
 
-/** 去掉字符串字面量：i18n key 形如 `"chat.toast.xxx"`，不剥掉会被当成 store 引用（误报）。 */
+/**
+ * 去掉注释与字符串字面量：i18n key 形如 `"chat.toast.xxx"`，不剥掉会被当成 store 引用（误报）。
+ *
+ * ⚠️ 这里**以前**是三段按引号配对的正则，被实测到两种错法（正则字面量里的引号把全文件的
+ * "字符串内/外"状态整体错位 ⇒ 假红；模板串 `${app.percent}` 被整段抹掉 ⇒ 假绿）。
+ * 现在走 `scripts/jsScan.ts` 那份词法扫描（下面四格自证就是它的判据）。
+ */
 function stripStrings(src: string): string {
-  return src
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
-    .replace(/`(?:[^`\\]|\\.)*`/gs, "``");
+  return stripJsLiterals(src);
 }
 
 /** Vue 应用实例（`createApp()` 的返回值）不是 store，这几个成员要放行。 */
@@ -58,11 +62,63 @@ const NOT_STORE_MEMBERS = new Set([
   "version",
 ]);
 
+/**
+ * ★ 扫描器自己的非空转用例（2026-09-28 加，起因是实测到的假红）。
+ *
+ * 这条护栏的判据形状是「把字符串抠掉，再找 `app.xxx` / `chat.xxx`」，
+ * 而第一版抠法是按引号配对的正则三段替换 —— 它**分不清正则字面量里的引号**：
+ * 一句 `/^r#*"/.test(x)` 里那个引号会被当成"字符串开始"，把后面**真正的代码**与
+ * 后面**真正的字符串**配对错，于是整份文件的"里/外"状态翻转 —— 表现就是
+ * `src/api/events.test.ts` 里那些**故意写来喂扫描器的 Rust 夹具**（`'app.emit("x", &p)'`）
+ * 被读成了真实 store 用法 ⇒ 护栏红，而红得没有道理。
+ * 同一种错法反过来也会**假绿**：真正该被抓的 `app.xxx` 若正好落在被误配的那一段里，就被抠掉了。
+ *
+ * 所以这里钉四件事：① 正则字面量不许把后面的状态带偏；② 转义引号不许提前结束字符串；
+ * ③ 模板串里的 `${…}` **是代码**，占位里的真实引用必须还能被看见（原来的整段抹掉会瞎）；
+ * ④ 注释里的 `app.xxx` 不算用法（第一版连注释都不抠，任何解释性注释都能造出假红）。
+ */
+test("扫描器不被引号型正则带偏（同一份文件里前后两段都得判对）", () => {
+  const src = [
+    "const re = /^r#*\"/.test(x);", // 正则字面量里带引号：以前的配对此刻就翻车
+    "const fixture = 'app.emit(\"real-line\", &p);';", // 字符串里的用法：必须被抠掉
+    "app.toastError(e, t('msg.fail'));", // 真实用法：必须留下来
+  ].join("\n");
+  const kept = [...stripStrings(src).matchAll(/\bapp\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]);
+  assert.deepEqual(kept, ["toastError"], `该留下的真实用法必须唯一，实测留下：${JSON.stringify(kept)}`);
+});
+
+test("扫描器不被转义引号骗，也不吃穿下一行", () => {
+  const src = 'const s = "a\\"b";\nconst t = app.channels;\n';
+  const kept = [...stripStrings(src).matchAll(/\bapp\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]);
+  assert.deepEqual(kept, ["channels"], `转义引号不该把下一行的真实用法一起吞掉：${JSON.stringify(kept)}`);
+});
+
+test("模板串的 ${…} 是代码：占位里的真实 store 引用不许被抹掉", () => {
+  const src = "notify(`进度 ${app.percent}%`);\n";
+  const kept = [...stripStrings(src).matchAll(/\bapp\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]);
+  assert.deepEqual(kept, ["percent"], `模板占位里的用法是真用法（旧抠法整段抹 ⇒ 假绿）：${JSON.stringify(kept)}`);
+});
+
+test("注释里的 app.xxx 不算界面用法", () => {
+  const src = "// 这里解释 app.refreshChannels 为什么不存在\n/* app.alsoFake */\nconst ok = 1;\n";
+  const kept = [...stripStrings(src).matchAll(/\bapp\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]);
+  assert.deepEqual(kept, [], `注释里的名字不该造出假红：${JSON.stringify(kept)}`);
+});
+
+/// 扫描范围 = **会进产物的代码**：`.vue` 与 `.ts`，但**不含 `*.test.ts`**。
+///
+/// 为什么不扫测试文件（2026-09-28 现算撞出来的）：这条判据的成立前提是"界面里用了没导出的成员
+/// ⇒ 那一页运行时炸"，而测试文件根本不进包。更要紧的是它天然造出误报 ——
+/// `utils/windowEntries.test.ts` 里有个**局部变量**就叫 `chat`，`chat.slice(...)` 被读成了
+/// "界面用了 store 里不存在的成员"。这种局部重名的误报，文件的 doc 注释里本来就承认
+/// （逃生阀是整文件 `store-contract-ok` 注释），但对测试文件来说正确的处理不是加白名单，
+/// 而是把它请出分母 —— 与 `scripts/semver.mjs` 的 `isAppCodePath` 同一条口径：
+/// **测试文件不算应用码**，所以也不该算"界面用法"。
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) walk(full, out);
-    else if (entry.name.endsWith(".vue") || entry.name.endsWith(".ts")) out.push(full);
+    else if ((entry.name.endsWith(".vue") || entry.name.endsWith(".ts")) && !entry.name.endsWith(".test.ts")) out.push(full);
   }
   return out;
 }

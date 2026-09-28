@@ -18,7 +18,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { readCommandsSrc } from "../../scripts/rustSrc.ts";
+import { readCommandsSrc, stripRustComments } from "../../scripts/rustSrc.ts";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const RUST_SRC = join(ROOT, "src-tauri", "src");
@@ -38,90 +38,6 @@ const ALLOWED_EMIT_WITHOUT_LISTENER: Record<string, string> = {
 /** 只发给特定窗口、由该窗口自己监听的事件不算漏接（这里是菜单事件，前端已监听）。 */
 const IGNORED_PREFIXES = ["menu://"];
 
-/**
- * 只保留 Rust 源码里的**代码**，把注释换成等长空白（保留换行，行号不偏移）。
- *
- * 为什么必须有：这条护栏扫的是 `emit(` 这个形态，而形态出现在注释里并不等于"后端在发事件"。
- * v4.24.0 现场被咬两次 —— 先在断言文本里写全那三个字符加左括号，再在注释里解释
- * "为什么不能写全"，第二次照样被扫成一个没人听的孤儿事件；当时的处理是**改写文案绕开**，
- * 那是在躲症状。真正要补的是"扫描前先分清水份"，所以这里按语法边界剥注释。
- *
- * ⚠️ 已知残留，刻意不在本次顺手做：**字符串字面量里**出现完整的 `emit("x"` 形态仍会被扫到。
- * 不能把字符串一起抹掉 —— 我们要找的恰恰就是 `emit("x")` 里那个字符串本身。要做对得先把
- * 事件名收进常量表、再按名比对（那属 #33③ 的另一片），而不是在这里加一条"看到引号就砍"。
- */
-function stripRustComments(src: string): string {
-  let out = "";
-  let i = 0;
-  while (i < src.length) {
-    const c = src[i];
-    const d = src[i + 1] ?? "";
-    // 字符串 / raw 字符串 / byte 字符串：整段原样跳过，否则串里的 `//` 会被当成注释吃掉后半文件
-    if (c === '"' || (c === "b" && d === '"') || /^r#*"/.test(src.slice(i, i + 6))) {
-      const end = skipString(src, i);
-      out += src.slice(i, end);
-      i = end;
-      continue;
-    }
-    // 字符字面量（`'a'` / `'\n'`）整段跳过；生命周期 `'a` 后面没有闭合引号 ⇒ 不会被误吃
-    const charLit = /^'(?:\\.|[^'\\])'/.exec(src.slice(i));
-    if (charLit) {
-      out += charLit[0];
-      i += charLit[0].length;
-      continue;
-    }
-    if (c === "/" && d === "/") {
-      let j = src.indexOf("\n", i);
-      if (j === -1) j = src.length;
-      out += " ".repeat(j - i);
-      i = j;
-      continue;
-    }
-    if (c === "/" && d === "*") {
-      // 块注释可嵌套（Rust 允许），深度归零前一路都当注释；换行保留以稳住行号
-      let depth = 0;
-      let j = i;
-      while (j < src.length) {
-        if (src[j] === "/" && src[j + 1] === "*") {
-          depth += 1;
-          j += 2;
-          continue;
-        }
-        if (src[j] === "*" && src[j + 1] === "/") {
-          depth -= 1;
-          j += 2;
-          if (depth === 0) break;
-          continue;
-        }
-        j += 1;
-      }
-      out += src.slice(i, j).replace(/[^\n]/g, " ");
-      i = j;
-      continue;
-    }
-    out += c;
-    i += 1;
-  }
-  return out;
-  function skipString(s: string, from: number): number {
-    const raw = /^r#*"/.exec(s.slice(from));
-    if (raw) {
-      const closer = `"${"#".repeat(raw[0].length - 2)}`;
-      const hit = s.indexOf(closer, from + raw[0].length);
-      return hit === -1 ? s.length : hit + closer.length;
-    }
-    let j = from + 1;
-    while (j < s.length) {
-      if (s[j] === "\\") {
-        j += 2;
-        continue;
-      }
-      if (s[j] === '"') return j + 1;
-      j += 1;
-    }
-    return s.length;
-  }
-}
 
 /** 从一份 Rust 源码里取出「后端真的在发」的事件名（纯函数 ⇒ 能被 fixtures 直接喂）。 */
 function emittedNamesFrom(src: string, consts: Map<string, string>): Set<string> {
