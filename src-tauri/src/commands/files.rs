@@ -307,21 +307,12 @@ fn fail_file_job(state: &AppState, transfer_id: &str, reason: &str) {
 /// 尝试投递某 peer 的全部 pending 文件（同一 peer 串行，不同 peer 并行）。
 /// 触发点与 `flush_outbox` / `flush_group_outbox` 一致：建链 / Hello / 心跳。
 pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
-    if !state
-        .file_sending
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(peer_id.to_string())
-    {
+    if !mark_peer_sending(&state.file_sending, peer_id) {
         return;
     }
     // 没有链路时不做无谓尝试，保持 pending，等下一次连接事件再触发。
     if !state.has_link(peer_id).await {
-        state
-            .file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(peer_id);
+        release_peer_send(&state.file_sending, peer_id);
         return;
     }
     let pending = {
@@ -329,16 +320,16 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
         db::list_pending_file_outbox(&dbc, peer_id).unwrap_or_default()
     };
     if pending.is_empty() {
-        state
-            .file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(peer_id);
+        release_peer_send(&state.file_sending, peer_id);
         return;
     }
     let st = state.clone();
     let peer = peer_id.to_string();
     tauri::async_runtime::spawn(async move {
+        // 槽位交给守卫：任务体里一次 panic（或 future 被 drop）也必须归还。
+        // 旧写法把 remove 手写在下面那个循环之后，panic 会跳过它 ⇒ 这个 peer
+        // 之后的所有文件永远抢不到槽位，界面只停在「发送中 0%」且不报任何错。
+        let _gate = PeerSendGuard::new(&st.file_sending, &peer);
         for (transfer_id, local_path) in pending {
             if !st.has_link(&peer).await {
                 break;
@@ -418,10 +409,6 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                 }
             }
         }
-        st.file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&peer);
     });
 }
 

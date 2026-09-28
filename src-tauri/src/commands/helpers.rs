@@ -193,3 +193,55 @@ pub fn read_file_preview(
     let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
     Ok(tauri::ipc::Response::new(bytes))
 }
+
+// ---------------- peer 投递槽位闸门 ----------------
+
+/// 「该 peer 正在跑投递任务」的登记表
+/// （`AppState::file_sending` 与 `AppState::group_file_sending` 都是它）。
+pub(crate) type PeerSendSet = std::sync::Mutex<std::collections::HashSet<String>>;
+
+/// 抢占一个 peer 的投递槽位。
+/// `true` = 抢到，调用方要么把 [`PeerSendGuard`] 送进任务、要么自己走
+/// [`release_peer_send`] 归还；`false` = 已有任务在跑，直接返回并保持 pending。
+pub(crate) fn mark_peer_sending(set: &PeerSendSet, peer: &str) -> bool {
+    set.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(peer.to_string())
+}
+
+/// 归还槽位（早退路径用；任务体的归还交给 [`PeerSendGuard`] 的 Drop）。
+pub(crate) fn release_peer_send(set: &PeerSendSet, peer: &str) {
+    set.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(peer);
+}
+
+/// 槽位的 RAII 持有者。
+///
+/// 为什么必须有它：1:1 与群文件两条投递循环原先都把 `remove` 手写在 spawn 体的**末尾**，
+/// 而体里任何一次 panic（含被 drop）都会跳过它 ⇒ 这个 peer 之后所有文件永远抢不到槽位，
+/// 界面只停在「发送中 0%」且不报任何错。守卫在正常结束 / panic 展开 / future 被 drop
+/// 三种出口都会归还（同层里 `DialGuard`、`WireLedger` 是同一族先例）。
+pub(crate) struct PeerSendGuard<'a> {
+    set: &'a PeerSendSet,
+    peer: String,
+}
+
+impl<'a> PeerSendGuard<'a> {
+    /// 接管一个**已抢占**的槽位（不与 `mark_peer_sending` 重复 insert）。
+    pub(crate) fn new(set: &'a PeerSendSet, peer: &str) -> Self {
+        Self {
+            set,
+            peer: peer.to_string(),
+        }
+    }
+}
+
+impl Drop for PeerSendGuard<'_> {
+    fn drop(&mut self) {
+        release_peer_send(self.set, &self.peer);
+    }
+}
+
+// ---------------- 测试 ----------------
+include!("helpers_tests.rs");

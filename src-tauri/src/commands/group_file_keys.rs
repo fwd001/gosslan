@@ -42,12 +42,7 @@ pub fn ensure_group_file_key(
 /// 源文件已不存在 → recipient 置 failed（不留永远无法投递的 pending）；
 /// 无 link 时保持 pending，本次直接返回（下次连接事件再触发）。
 pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
-    if !state
-        .group_file_sending
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(peer_id.to_string())
-    {
+    if !mark_peer_sending(&state.group_file_sending, peer_id) {
         return; // 该 peer 已有投递任务在执行
     }
     let pending = {
@@ -55,11 +50,7 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
         db::list_pending_group_files_for_recipient(&dbc, peer_id).unwrap_or_default()
     };
     if pending.is_empty() {
-        state
-            .group_file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(peer_id);
+        release_peer_send(&state.group_file_sending, peer_id);
         return;
     }
     let mut tasks: Vec<(String, String, String)> = Vec::new();
@@ -81,27 +72,22 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
         }
     }
     if tasks.is_empty() {
-        state
-            .group_file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(peer_id);
+        release_peer_send(&state.group_file_sending, peer_id);
         return;
     }
-    let s2 = state.clone();
+    let st = state.clone();
     let peer = peer_id.to_string();
     tauri::async_runtime::spawn(async move {
+        // 槽位交给守卫：任务体里一次 panic（或 future 被 drop）也必须归还 ——
+        // 旧写法把 remove 手写在下面那个循环之后，panic 会跳过它。
+        let _gate = PeerSendGuard::new(&st.group_file_sending, &peer);
         for (tid, gid, src) in tasks {
-            if let Err(e) = dispatch_group_file_to_peer(&s2, &tid, &gid, &peer, &src).await {
+            if let Err(e) = dispatch_group_file_to_peer(&st, &tid, &gid, &peer, &src).await {
                 app_handle_log(
-                    &s2,
+                    &st,
                     &format!("group-file dispatch {tid} -> {peer} failed: {e}"),
                 );
             }
         }
-        s2.group_file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&peer);
     });
 }

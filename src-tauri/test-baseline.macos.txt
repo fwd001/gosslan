@@ -1,3 +1,9 @@
+commands::helpers_gate_tests::both_dispatch_loops_use_the_guard
+commands::helpers_gate_tests::guard_releases_after_the_lock_is_poisoned
+commands::helpers_gate_tests::guard_releases_when_the_body_panics
+commands::helpers_gate_tests::guard_releases_when_the_scope_ends
+commands::helpers_gate_tests::release_helper_uses_the_same_set
+commands::helpers_gate_tests::second_claim_for_the_same_peer_is_refused
 commands::relay_config_tests::explicit_port_is_not_second_guessed
 commands::relay_config_tests::load_relay_runtime_is_fail_closed
 commands::relay_config_tests::longest_allowed_token_still_fits_the_server_line_limit
