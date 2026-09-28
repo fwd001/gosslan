@@ -78,7 +78,8 @@ export default {
    */
   unmapped: [
     ["src-tauri/src/main.rs", "6 行，只有 tauri::Builder 的入口调用"],
-    ["src-tauri/src/lib.rs", "2168 行：模块注册 + 窗口管理 + 命令注册表（跨领域组装点，Phase 7）"],
+    ["src-tauri/src/lib.rs", "560 行：模块注册 + 窗口管理 + 命令注册表（跨领域组装点，Phase 7）。2026-09-28 起测试整段搬进同目录的 lib_tests.rs ⇒ 本文件只剩生产码"],
+    ["src-tauri/src/lib_tests.rs", "分册（include! 回 lib.rs 同一模块）：源码守卫与启动期测试，3952 行"],
     [
       "src-tauri/src/commands.rs",
       "142 行 + 25 个子模块 / 26 个 tauri command：**前后端边界**，按领域拆是 Phase 7 的事",
@@ -167,7 +168,7 @@ export default {
       id: "messaging",
       name: "消息",
       tier: "L3",
-      paths: ["src-tauri/src/protocol.rs", "src-tauri/src/gossip_engine.rs"],
+      paths: ["src-tauri/src/protocol.rs", "src-tauri/src/protocol_tests.rs", "src-tauri/src/gossip_engine.rs"],
       invariants: [
         "INV-001",
         "INV-002",
@@ -220,6 +221,7 @@ export default {
       paths: [
         "src-tauri/src/network/ble.rs", // BLE 中央角色（活）
         "src-tauri/src/network/transport.rs", // TCP 数据面（活，主文件；正按 include! 分册中）
+        "src-tauri/src/network/transport/tests.rs", // 分册：尾部行为测试（include! 回同一模块，2026-09-28 搬出）
         "src-tauri/src/network/transport/outbound.rs", // 分册：出站投递 + 链路选路（同模块，非新领域）
         "src-tauri/src/network/transport/gossip.rs", // 分册：Gossip 消费判据与 handle_gossip（同模块）
         "src-tauri/src/network/transport/relay.rs", // 分册：公网盲管道中继的会合循环与协商接线（ADR-0020，同模块）
@@ -254,6 +256,7 @@ export default {
       tier: "L3",
       paths: [
         "src-tauri/src/network/file.rs",
+        "src-tauri/src/network/file_tests.rs", // 分册：尾部行为测试（include! 回同一模块，2026-09-28 搬出）
         "src-tauri/src/content", // 内容传输逻辑层
         "src-tauri/src/storage", // 二进制落盘 + 缓存清理
       ],
