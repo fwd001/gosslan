@@ -5,9 +5,12 @@ name: Build Windows + 内置 WebView2（固定版本，普通版的另一档）
 # `downloadBootstrapper`（装的时候联网现下）⇒ 那种机器上"安装包跑起来了但窗口是空的"。
 # 这一档把 **固定版本的 runtime 打进安装包里**（Tauri 的 `fixedRuntime`，安装包大约 +180 MB）。
 #
-# ⚠️ 刻意**只挂 workflow_dispatch**：不挂在 push / PR / tag 上。
-# 现有那三条打包（build.yml / build-macos.yml / build-android.yml）与 verify.yml 一行没改，
-# 默认档的产物也不受这条流水线成败影响 —— 这是"不要影响到其他打包"这条要求的具体落法。
+# 触发条件（2026-09-28 改）：**tag `v*` 自动打 + 仍可手动打**。
+# 原来刻意只挂 workflow_dispatch（怕影响其他打包），但发版那份产物必须"打 tag 就自动出"才成立 ——
+# 否则这一档永远靠人记得点一下，而忘了点没有任何人会报红（本仓对这类"靠人回头做"的判断已经吃过多次）。
+# 刻意**仍不挂在普通 push / PR 上**：这一档是双架构 × 固定 runtime 解包，跑一次比默认档贵得多，
+# 而它在开发推送上没有新信息（默认档 build.yml 已经在每个 push 上出 x64 + arm64）。
+# 现有那三条打包与 verify.yml 一行没改 ⇒ 普通推送的 CI 结论不受这条流水线影响。
 #
 # ⚠️ 两条今天没被任何机器证明过的东西，别读成"已验证可用"：
 #   ① 解出来的文件夹名必须正好是 `Microsoft.WebView2.FixedVersionRuntime.<版本>.<架构>`——
@@ -15,6 +18,8 @@ name: Build Windows + 内置 WebView2（固定版本，普通版的另一档）
 #   ② **"装到一台没有 WebView2 的 Windows 上真的能打开"这件事，CI 判不了**（CI 的 runner 自带 runtime），
 #      那一格仍是人工/真机项。这个文件跑绿只说明"包打出来了、里面塞进去东西了"。
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       webview2_version:
@@ -42,16 +47,15 @@ jobs:
           - target: aarch64-pc-windows-msvc
             label: arm64
     runs-on: windows-latest
-    # 双保险：`on:` 只声明了 workflow_dispatch，但远端出现过一次看起来由 push 触发的运行
-    # （本机没有 gh，无法读到那次的触发详情 ⇒ 不去赌解析结果）。
-    # 这一条 job 级条件是硬闸：事件不是手动触发就整_job 跳过 ⇒ 这个文件在任何 push 上
-    # 都不会占 runner、不会产 artifact，也就不会碰到普通档那条打包。
+    # 架构选择：手动触发时按输入选，**非手动事件（tag push）没有 inputs** ⇒ 取空串 ⇒ 两个架构都跑。
+    # （以前这里还硬要求 `event_name == workflow_dispatch`，那是"绝不占 runner"的保险；
+    #  现在 tag 才触发本文件 ⇒ 保险改成正向放行，注释说明为什么不再需要拦。）
     if: >
-      github.event_name == 'workflow_dispatch' && (
+      github.event.inputs.arch == '' ||
       github.event.inputs.arch == 'both' ||
-      github.event.inputs.arch == matrix.label)
+      github.event.inputs.arch == matrix.label
     env:
-      WV2_VER: ${{ github.event.inputs.webview2_version }}
+      WV2_VER: ${{ github.event.inputs.webview2_version || '133.0.3065.92' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

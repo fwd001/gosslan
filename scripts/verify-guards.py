@@ -3096,7 +3096,8 @@ CASES: list[Case] = [
         "     但当时只用手改注入证明过一次，没登记进本脚本 ⇒ 违反「每条护栏都要被证明会失败」。\n"
         "     注入方式就是**回到修好之前的形状**：删掉行注释那一段（块注释仍然剥，所以不是全盘失效）。\n"
         "     夹具 `事件扫描器不被注释骗` 必须红：样例里 `// emit(\"phantom-line\")` 会被扫出来。",
-        file=ROOT / "src" / "api" / "events.test.ts",
+        file=ROOT / "scripts" / "rustSrc.ts",
+
         injections=[(
             "    if (c === \"/\" && d === \"/\") {\n"
             "      let j = src.indexOf(\"\\n\", i);\n"
@@ -3122,7 +3123,8 @@ CASES: list[Case] = [
         "     ⚠️ 外层 `/^r#*\"/.test(src.slice(i, i + 6))` 改坏**不会**红：那是与 skipString 冗余的\n"
         "     第二处识别，实测被 skipString 的回落救回来（整组仍 11/11 绿）—— 这条用例本身就是\n"
         "     这个发现的产物：第一版注入选了外层，跑出来是\"护栏空转\"，换成内层才真正咬住。",
-        file=ROOT / "src" / "api" / "events.test.ts",
+        file=ROOT / "scripts" / "rustSrc.ts",
+
         injections=[(
             "    const raw = /^r#*\"/.exec(s.slice(from));",
             "    const raw = /^r\"/.exec(s.slice(from));",
