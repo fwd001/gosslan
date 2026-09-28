@@ -4,13 +4,50 @@
 
 /// 向单个 recipient 执行完整群文件投递：Offer → 流式 Chunk → Done。
 /// 元数据/源路径/密钥均从 DB 与运行态恢复，支持离线 pending 的延迟投递。
+/// 群文件投递失败的种类 —— 它决定这个 recipient 行接下来落到哪个状态。
+///
+/// 为什么要有这个类型（#154-4）：`dispatch_group_file_to_peer` 一进来就把该成员置成 `sending`，
+/// 而离线补发只捞 `status = 'pending'`（`db/group_files.rs::list_pending_group_files_for_recipient`）
+/// ⇒ **失败之后不写状态，就是"永远在发、重启也不重试"**。原先两条调用路径各写一套：
+/// 群发那条按错误**文案**猜（`e == "用户取消发送"`）、补发那条**什么都不写** ⇒
+/// 同一条判据两个家，而弱的那个正好是最常走的补发路径。
+/// 带原因字符串只为日志可读，裁决只看种类 ⇒ 文案改了也不会把状态判错。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GroupFileSendErr {
+    /// 永远给不了货（群文件行本身不在 / 源文件不在）⇒ `failed`
+    Unrecoverable(String),
+    /// 现在给不了、以后可能给得了（没链路 / 密钥未到 / 写失败 / 超时 / 读文件失败）⇒ 回 `pending`
+    Retryable(String),
+    /// 用户主动取消 ⇒ `cancelled`（INV-P26：取消不许记成 failed）
+    Cancelled,
+}
+
+/// 失败之后该把这个 recipient 行写成什么。
+///
+/// 三条都不许是 `sending` —— 那是"进来时"的状态，不是一个可以停下来的地方。
+pub(crate) fn group_file_status_after_fail(e: &GroupFileSendErr) -> Option<&'static str> {
+    match e {
+        GroupFileSendErr::Unrecoverable(_) => Some("failed"),
+        GroupFileSendErr::Retryable(_) => Some("pending"),
+        GroupFileSendErr::Cancelled => Some("cancelled"),
+    }
+}
+
+/// 失败日志要的那句原因（裁决不看它，只给人看）。
+pub(crate) fn group_file_send_err_reason(e: &GroupFileSendErr) -> &str {
+    match e {
+        GroupFileSendErr::Unrecoverable(s) | GroupFileSendErr::Retryable(s) => s.as_str(),
+        GroupFileSendErr::Cancelled => "用户取消发送",
+    }
+}
+
 async fn dispatch_group_file_to_peer(
     state: &Arc<AppState>,
     transfer_id: &str,
     group_id: &str,
     recipient: &str,
     source_path: &str,
-) -> Result<(), String> {
+) -> Result<(), GroupFileSendErr> {
     // 写出记账的回收守卫：与单聊 `stream_file` 同一条理由（`Drop` 覆盖取消 / 超时 /
     // 十余处提前 return），键**必须带收件人** —— 这里 N 个成员各一个任务、共用同一个
     // `transfer_id`，按 id 记会让甲的写出把乙的"最近有写出"一直刷新（真卡死的成员
@@ -20,12 +57,17 @@ async fn dispatch_group_file_to_peer(
         &state.db.lock().unwrap_or_else(|e| e.into_inner()),
         transfer_id,
     )
-    .ok_or("群文件记录不存在")?;
-    let group_key = get_group_key(state, group_id).await.ok_or("群密钥缺失")?;
+    .ok_or_else(|| GroupFileSendErr::Unrecoverable("群文件记录不存在".into()))?;
+    let group_key = get_group_key(state, group_id)
+        .await
+        .ok_or_else(|| GroupFileSendErr::Retryable("群密钥缺失".into()))?;
     let file_key = ensure_group_file_key(state, transfer_id, group_id, &group_key)
-        .ok_or("文件会话密钥缺失")?;
+        .ok_or_else(|| GroupFileSendErr::Retryable("文件会话密钥缺失".into()))?;
     let sealed_file_key =
-        STANDARD.encode(crypto::seal_symmetric(&group_key, &file_key).ok_or("封装文件密钥失败")?);
+        STANDARD.encode(
+            crypto::seal_symmetric(&group_key, &file_key)
+                .ok_or_else(|| GroupFileSendErr::Retryable("封装文件密钥失败".into()))?,
+        );
 
     // 源文件必须仍存在：不存在则该 recipient 置 failed（明确状态变化，
     // 不允许数据库停留在 pending 却永远无法投递）
@@ -35,7 +77,7 @@ async fn dispatch_group_file_to_peer(
         _ => {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             let _ = db::update_group_file_recipient(&dbc, transfer_id, recipient, "failed", 0.0);
-            return Err("源文件已不存在".to_string());
+            return Err(GroupFileSendErr::Unrecoverable("源文件已不存在".into()));
         }
     };
 
@@ -52,7 +94,7 @@ async fn dispatch_group_file_to_peer(
     // 对不上 ⇒ 整条传输判死。真机形状：群里连发 9-10 张总有 1-2 张收不全、单发同一张必成功。
     let link = crate::network::transport::resolve_stream_link(state, recipient)
         .await
-        .ok_or_else(|| "未建立连接".to_string())?;
+        .ok_or_else(|| GroupFileSendErr::Retryable("未建立连接".into()))?;
     let offer = Message::GroupFileOffer {
         transfer_id: transfer_id.to_string(),
         group_id: group_id.to_string(),
@@ -66,7 +108,7 @@ async fn dispatch_group_file_to_peer(
     };
     crate::network::transport::send_on_link(&link, &offer)
         .await
-        .map_err(|e| format!("Offer 发送失败：{e}"))?;
+        .map_err(|e| GroupFileSendErr::Retryable(format!("Offer 发送失败：{e}")))?;
 
     // ---- cancel + timeout 注册（H3 fix: 群文件也支持用户取消 + 整体 deadline）----
     // 键必须带 recipient：本函数是**每个成员各 spawn 一个任务、共用同一个 transfer_id**
@@ -104,7 +146,7 @@ async fn dispatch_group_file_to_peer(
         let chunk_size = file::chunk_size_for_path(link.path_kind.as_str());
         let mut f = tokio::fs::File::open(&src)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| GroupFileSendErr::Retryable(format!("打开源文件失败：{e}")))?;
         use tokio::io::AsyncReadExt;
         let mut buf = vec![0u8; chunk_size];
         let mut seq: u32 = 0;
@@ -117,8 +159,11 @@ async fn dispatch_group_file_to_peer(
             // 每片开始前先查 cancel —— 用户点了"取消发送"就立刻停
             let n = tokio::select! {
                 biased;
-                _ = &mut cancel_rx => return Err("用户取消发送".to_string()),
-                n = f.read(&mut buf) => n.map_err(|e| e.to_string())?,
+                _ = &mut cancel_rx => {
+                    return Err(GroupFileSendErr::Cancelled);
+                }
+                n = f.read(&mut buf) => n
+                    .map_err(|e| GroupFileSendErr::Retryable(format!("读源文件失败：{e}")))?,
             };
             if n == 0 {
                 break;
@@ -130,9 +175,10 @@ async fn dispatch_group_file_to_peer(
                 .get(transfer_id)
                 .copied()
             else {
-                return Err("文件会话密钥丢失".to_string());
+                return Err(GroupFileSendErr::Retryable("文件会话密钥丢失".into()));
             };
-            let sealed = crypto::seal_symmetric(&key, &buf[..n]).ok_or("分片加密失败")?;
+            let sealed = crypto::seal_symmetric(&key, &buf[..n])
+                .ok_or_else(|| GroupFileSendErr::Retryable("分片加密失败".into()))?;
             let data = STANDARD.encode(&sealed);
             let chunk = Message::GroupFileChunk {
                 transfer_id: transfer_id.to_string(),
@@ -145,7 +191,9 @@ async fn dispatch_group_file_to_peer(
             // 等待期间做停滞检查（与单聊同一套 `file::stall_tick`）。
             tokio::select! {
                 biased;
-                _ = &mut cancel_rx => return Err("用户取消发送".to_string()),
+                _ = &mut cancel_rx => {
+                    return Err(GroupFileSendErr::Cancelled);
+                }
                 r = crate::network::transport::send_on_link_with_tick(
                     &link,
                     &chunk,
@@ -158,7 +206,7 @@ async fn dispatch_group_file_to_peer(
                         &mut stalled_shown,
                     ),
                 ) => {
-                    r.map_err(|e| format!("分片发送失败：{e}"))?;
+                    r.map_err(|e| GroupFileSendErr::Retryable(format!("分片发送失败：{e}")))?;
                 }
             }
             sent += n as u64;
@@ -219,7 +267,7 @@ async fn dispatch_group_file_to_peer(
         // 空闲连接，完成帧超过仍在路上的分片先到 ⇒ 接收端判"未完成"打死整条传输。
         crate::network::transport::send_on_link(&link, &done)
             .await
-            .map_err(|e| format!("Done 发送失败：{e}"))?;
+            .map_err(|e| GroupFileSendErr::Retryable(format!("Done 发送失败：{e}")))?;
         // 收尾：与单聊 send_file_from_path 同理 — 确保前端收到 100% progress + done 事件。
         let _ = state.app.emit(
             "file-progress",
@@ -244,8 +292,17 @@ async fn dispatch_group_file_to_peer(
 
     cancel_cleanup();
 
+    // 外层只区分"内层自己报了错"与"到期限"两种：内层的类型化错误原样透传；
+    // 到期限必然是"没在期限内发完" ⇒ 按可重试处理（下一次建链 / 心跳会重新投递，
+    // 与单聊 `file::RetryVerdict::Retry` 同一口径）。
     match result {
         Ok(inner) => inner,
-        Err(_) => Err(format!("群文件发送超时（超过 {}s）", deadline.as_secs())),
+        Err(_) => Err(GroupFileSendErr::Retryable(format!(
+            "群文件发送超时（超过 {}s）",
+            deadline.as_secs()
+        ))),
     }
 }
+
+// ---------------- 测试 ----------------
+include!("group_file_dispatch_tests.rs");

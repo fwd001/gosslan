@@ -83,9 +83,20 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
         let _gate = PeerSendGuard::new(&st.group_file_sending, &peer);
         for (tid, gid, src) in tasks {
             if let Err(e) = dispatch_group_file_to_peer(&st, &tid, &gid, &peer, &src).await {
+                // ★ 补发路径也要落终态（#154-4 真正的洞就在这条路径上）：
+                // 它原先只 log 不写状态，而 dispatch 一进来已把该成员置成 `sending`，
+                // 重试查询只捞 `pending` ⇒ 补发失败一次就"永远在发"，重启也不重试。
+                if let Some(next) = group_file_status_after_fail(&e) {
+                    let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = db::update_group_file_recipient(&dbc, &tid, &peer, next, 0.0);
+                }
                 app_handle_log(
                     &st,
-                    &format!("group-file dispatch {tid} -> {peer} failed: {e}"),
+                    &format!(
+                        "group-file dispatch {tid} -> {peer} failed: {} 终态={:?}",
+                        group_file_send_err_reason(&e),
+                        group_file_status_after_fail(&e)
+                    ),
                 );
             }
         }

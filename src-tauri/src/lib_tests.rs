@@ -1123,10 +1123,27 @@ mod tests {
             !dispatch.contains(".insert(transfer_id.to_string(),cancel_tx)"),
             "不得回退成 transfer_id 单键"
         );
+        // ★ 出错必须落终态，而且**两条投递路径共用同一个裁决**（#154-4）。
+        // 原先只有群发那条写状态、且按错误**文案**猜 cancelled/failed；离线补发那条
+        // 什么都不写 ⇒ 补发失败一次就把该成员永久卡在 sending（重试查询只捞 pending）。
+        let requeue = code_flat(include_str!("commands/group_file_keys.rs"));
+        for (name, src) in [
+            ("group_announcements.rs（群发 fan-out）", fanout.clone()),
+            ("group_file_keys.rs（离线补发）", requeue.clone()),
+        ] {
+            assert!(
+                src.contains("group_file_status_after_fail(&e)"),
+                "{name} 必须走那一个终态裁决，不许自己判状态"
+            );
+            assert!(
+                src.contains("update_group_file_recipient("),
+                "{name} 必须真的把终态写回库：离线补发只捞 status='pending'，\
+                 留在 sending 就是「永远在发、重启也不重试」"
+            );
+        }
         assert!(
-            fanout.contains("update_group_file_recipient(&dbc,&tid3,&m3,status,0.0)"),
-            "群投递出错必须给成员落终态：离线补发只捞 status='pending'，留在 sending \
-             就是「永远在发、重启也不重试」"
+            !fanout.contains("\"用户取消发送\""),
+            "不许再按错误**文案**猜状态（文案一改就判错；状态由 GroupFileSendErr 的种类决定）"
         );
     }
 

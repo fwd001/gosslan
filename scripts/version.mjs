@@ -116,6 +116,19 @@ if (existsSync(changelogPath)) {
   // 只替换那一行标题（`$&` 是匹配到的标题本身），正文里同名的引用不会被碰。
   ch = ch.replace(HEADING, `$&\n\n## [${next}] - ${localDate}`);
   writeFileSync(changelogPath, ch);
+  // ⚠️ 这条警告针对一个**静默**的事故形状（2026-09-28 实测到 4.31.7/4.31.8/4.31.9 三节各挂着
+  // 下一版的说明）：新节标题插在 `## [Unreleased]` 那一行的**下面**，所以"先跑本脚本、
+  // 再把条目写在锚点与新标题之间"会让新节看着有内容、实则装着上一次发版那条。
+  // 归属判据（`npm run version:changelog`）会在提交后报红，但这里当场说一声更省一轮返工。
+  const after = ch.split("\n");
+  const at = after.findIndex((l) => l.startsWith(`## [${next}]`));
+  const empty = at >= 0 && (at + 1 >= after.length || !/^### /.test(after.slice(at + 1, at + 4).find((l) => l.trim() !== "") ?? ""));
+  if (empty) {
+    console.log(
+      `⚠️  新节 \`## [${next}]\` 目前是空的：条目标题（\`### …\`）请写在**这一行之下**，` +
+        `不要写在 \`## [Unreleased]\` 与它之间（那样会把它塞进上一版的说明里）。`,
+    );
+  }
 }
 
 console.log(`版本已更新：${cur} -> ${next}`);

@@ -428,20 +428,20 @@ pub async fn send_group_file(
                 dispatch_group_file_to_peer(&s3, &tid3, &gid3, &m3, src3.to_string_lossy().as_ref())
                     .await
             {
-                // 错误出口必须落一个**终态**：`dispatch_group_file_to_peer` 一进来就把该成员
-                // 置成 sending，而离线补发只捞 `status = 'pending'`（db/group_files.rs:107）——
-                // 留在 sending 等于"永远在发、重启也不会重试"，群文件面板上那条永远转圈。
-                // 用户主动停止记 cancelled（与单聊同语义），其余记 failed。
-                let status = if e == "用户取消发送" {
-                    "cancelled"
-                } else {
-                    "failed"
-                };
+                // 错误出口必须落一个**终态**（理由见 `GroupFileSendErr` 的注释）。
+                // 原先这里按错误**文案**猜 cancelled / failed，且把"没链路"这类可重试的也判成 failed；
+                // 现在与补发路径共用同一个裁决（`group_file_status_after_fail`）⇒ 一条判据一个家。
+                let status = group_file_status_after_fail(&e);
                 let dbc = s3.db.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = db::update_group_file_recipient(&dbc, &tid3, &m3, status, 0.0);
+                if let Some(next) = status {
+                    let _ = db::update_group_file_recipient(&dbc, &tid3, &m3, next, 0.0);
+                }
                 app_handle_log(
                     &s3,
-                    &format!("group-file dispatch {tid3} -> {m3} failed: {e}"),
+                    &format!(
+                        "group-file dispatch {tid3} -> {m3} failed: {} 终态={:?}",
+                        group_file_send_err_reason(&e), status
+                    ),
                 );
             }
         });

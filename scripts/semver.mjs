@@ -12,7 +12,7 @@
 //      （SemVer 标准做法）—— 用于真正发版，也是 `check` 那半条「版本落后」的取档口径。
 // 为什么不用 ① 定版本：184 个提交里有 23 个大功能，逐条累加会得到 25.1.2 这种数字，
 // 它既不表达"这次发布有多大"，也和后端/前端/安装包的版本语义脱节。
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 
 export const LEVEL_RANK = { patch: 1, minor: 2, major: 3 };
@@ -275,6 +275,153 @@ export function changelogProblems(path = "CHANGELOG.md") {
   return problems;
 }
 
+/**
+ * **本次发版那一节**的归属问题（空数组 = 这一节里没有挂着别版说明的条目）。
+ *
+ * ## 结构检查为什么看不见这件事
+ * `version.mjs` 把新节标题插在 `## [Unreleased]` 那一行的**下面**。于是"先跑提版脚本、
+ * 再把条目写在锚点与新标题之间"这个顺序会让新节**看着有内容**，而那条内容其实是
+ * **上一次**发版的说明 —— 2026-09-28 实测到：4.31.7/4.31.8/4.31.9 三节各挂着下一版的条目，
+ * 而托盘那一条浮在 `[Unreleased]` 里。形状全合规（锚点唯一、标题格式、降序），
+ * 只有归属判据拦得住，而读更新日志的人要的正是"哪一版改了什么"。
+ *
+ * ## 判据（只判能证的，判不了的显式打印）
+ * 本节里每条 `### ` 标题：找到把它写进来的那次提交 A。
+ * - A **自己就是提版提交**（A 的 `package.json` 版本 ≠ A 父提交的版本）⇒ 它只能待在**自己那一版**
+ *   的小节里；挂在别处即红（就是上面那个事故的形状）。
+ * - A 不提版（`[plan]` / 攒改动期间的提交）⇒ 不判：这类条目本来就归"下一次发版"。
+ * - A 找不到（标题太通用、字面行在历史里重复）⇒ 计入 `判不了`，只打印不判。
+ */
+export function changelogAttributionProblems(changelogPath = "CHANGELOG.md", pkgPath = "package.json") {
+  const problems = [];
+  let cur;
+  let lines;
+  try {
+    cur = JSON.parse(readFileSync(pkgPath, "utf8")).version;
+    lines = readFileSync(changelogPath, "utf8").split("\n");
+  } catch {
+    return [`读不到 ${changelogPath} 或 ${pkgPath}`];
+  }
+  const from = lines.findIndex((l) => l.startsWith(`## [${cur}]`));
+  if (from === -1) return [`${changelogPath} 里没有 \`## [${cur}]\` 这一节，而 ${pkgPath} 已是 ${cur}`];
+  const items = [];
+  for (let i = from + 1; i < lines.length && !/^## \[/.test(lines[i]); i += 1) {
+    if (/^### /.test(lines[i])) items.push(lines[i].trim());
+  }
+  if (items.length === 0) return [`${changelogPath}:${from + 1} \`## [${cur}]\` 是空的（本次发版没有更新说明）`];
+  // 谁把 package.json 提到 cur：该字面行最后一次"计数变化"的那次提交
+  let bump = "";
+  try {
+    bump = execFileSync("git", ["log", "-1", "--format=%H", "-S", `"version": "${cur}"`, "--", pkgPath], {
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    return [];
+  }
+  if (!bump) return []; // 提版还没落成提交（还在攒改动），这一节归谁还无从判起
+  let undecided = 0;
+  for (const it of items) {
+    const ev = entryOwner(it, changelogPath, pkgPath);
+    if (!ev) {
+      undecided += 1;
+      continue;
+    }
+    if (ev.isBumpCommit && ev.version !== cur) {
+      problems.push(
+        `${changelogPath}:${from + 1} 小节 \`## [${cur}]\` 里挂着「${it.slice(4, 40)}」，` +
+          `而写它的那次提交 ${ev.writer.slice(0, 7)} 自己就是把版本提到 ${ev.version} 的那次 ⇒ 这条属于 ${ev.version}，不属于 ${cur}`,
+      );
+    }
+  }
+  if (undecided) {
+    console.log(
+      `（归属判据的量不到之处：本节 ${items.length} 条里有 ${undecided} 条的标题太通用、在历史里重复，字面行找不出唯一写入者 ⇒ 未判）`,
+    );
+  }
+  return problems;
+}
+
+/**
+ * 一条 `### ` 标题的**归属证据**：谁把它写进文件的，以及那次提交落笔时 `package.json` 是哪一版。
+ * 返回 `null` = 判不了（标题在历史里重复，pickaxe 找不出唯一写入者）。
+ * `isBumpCommit` = 那次提交自己把版本提了上去（自己的版本 ≠ 父提交的版本）⇒ 它说得出这条属于哪一版。
+ * 不提版的提交（`[plan]` 那类）写下的条目本来就归下一次发版 ⇒ 不判。
+ */
+export function entryOwner(titleLine, changelogPath = "CHANGELOG.md", pkgPath = "package.json") {
+  const cache = entryOwner._cache || (entryOwner._cache = new Map());
+  const key = `${changelogPath}\u0000${pkgPath}\u0000${titleLine}`;
+  if (cache.has(key)) return cache.get(key);
+  // ⚠️ 必须 argv 传参，**不能**把标题拼进 shell 命令串：条目标题里有反引号（"搬成 `include!` 分册"），
+  // 拼串会被 shell 当成命令替换真的执行一遍（本轮实测到 `/bin/sh: include!: command not found`）。
+  const run = (args) => {
+    try {
+      return execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 << 20 }).trim();
+    } catch {
+      return "";
+    }
+  };
+  const writer = run(["log", "-1", "--format=%H", "-S", titleLine, "--", changelogPath]);
+  if (!writer) {
+    cache.set(key, null);
+    return null;
+  }
+  const verOf = (ref) => {
+    try {
+      return JSON.parse(run(["show", `${ref}:${pkgPath}`])).version;
+    } catch {
+      return null;
+    }
+  };
+  const parent = run(["log", "-1", "--format=%P", writer]).split(" ")[0];
+  const version = verOf(writer);
+  const ev = { writer, version, isBumpCommit: parent ? verOf(parent) !== version : true };
+  cache.set(key, ev);
+  return ev;
+}
+
+/**
+ * 全历史归属审计（**量具**，一次要跑几百次 git ⇒ 不入门禁层，口径同 `selfproof:check`）。
+ * 只统计"证据到得了"的那部分：写入者自己就是提版提交的条目。
+ */
+export function changelogAttributionAudit(changelogPath = "CHANGELOG.md", pkgPath = "package.json") {
+  const lines = readFileSync(changelogPath, "utf8").split("\n");
+  const secs = [];
+  lines.forEach((l, i) => {
+    const m = /^## \[(\d+\.\d+\.\d+)\]/.exec(l);
+    if (m) secs.push({ v: m[1], i });
+  });
+  const rows = [];
+  let judged = 0;
+  let undecided = 0;
+  let notBump = 0; // 写入者不提版的条目：本来就归"下一次发版"，判不了它挂在哪一节才对
+  let entries = 0;
+  for (const s of secs) {
+    let j = s.i + 1;
+    const items = [];
+    while (j < lines.length && !/^## \[/.test(lines[j])) {
+      if (/^### /.test(lines[j])) items.push(lines[j].trim());
+      j += 1;
+    }
+    for (const it of items) {
+      entries += 1;
+      const ev = entryOwner(it, changelogPath, pkgPath);
+      if (!ev) {
+        undecided += 1;
+        continue;
+      }
+      if (!ev.isBumpCommit) {
+        notBump += 1; // 攒改动期间写的 ⇒ 归下一次发版，不判
+        continue;
+      }
+      judged += 1;
+      if (ev.version !== s.v) {
+        rows.push(`  「${it.slice(4, 44)}」现挂 ${s.v} → 应归 ${ev.version}（写入者 ${ev.writer.slice(0, 7)} 就是那次提版）`);
+      }
+    }
+  }
+  return { sections: secs.length, entries, judged, notBump, misplaced: rows.length, undecided, rows };
+}
+
 function main() {
   const [cmd = "check", ...flags] = process.argv.slice(2);
 
@@ -294,12 +441,27 @@ function main() {
   // 于是它永远无法进入"恢复即 PASS"，被判成护栏失效（2026-09-16 发现）。
   // **结构是结构、记账是记账** —— 拆成两个命令，各自说各自的话，不互相拖累。
   if (cmd === "changelog") {
-    const problems = changelogProblems();
+    const problems = [...changelogProblems(), ...changelogAttributionProblems()];
     if (problems.length) {
-      console.error(`CHANGELOG 结构检查未通过：\n- ${problems.join("\n- ")}`);
+      console.error(`CHANGELOG 检查未通过：\n- ${problems.join("\n- ")}`);
       process.exit(1);
     }
-    console.log("CHANGELOG 结构检查通过（唯一行首 `## [Unreleased]` 锚点 + 标题格式 + 新在前降序）");
+    console.log(
+      "CHANGELOG 检查通过（唯一行首 `## [Unreleased]` 锚点 + 标题格式 + 新在前降序 + 本次发版那一节的条目归属可证）",
+    );
+    return;
+  }
+
+  // `audit-attribution`：全历史归属审计（**量具** —— 一次要跑几百次 git，所以不入门禁层，
+  // 口径与 `selfproof:check` 那批一样：能复查，但不拦提交）。
+  if (cmd === "audit-attribution") {
+    const r = changelogAttributionAudit();
+    console.log(
+      `版本小节 ${r.sections} 个 · 条目总数 ${r.entries} 条 = 证据到得了 ${r.judged}` +
+        ` ＋ 写入者不提版所以不判 ${r.notBump} ＋ 找不到唯一写入者 ${r.undecided}` +
+        ` · 其中归属错位 ${r.misplaced} 条`,
+    );
+    for (const row of r.rows) console.log(row);
     return;
   }
 
@@ -429,7 +591,7 @@ function main() {
     );
   }
   // ③ CHANGELOG 结构（锚点存在 + 标题格式 + 新在前的降序）。
-  problems.push(...changelogProblems());
+  problems.push(...changelogProblems(), ...changelogAttributionProblems());
   if (problems.length) {
     console.error(`版本号规则检查未通过（自 ${since || "首个提交"}）：\n- ${problems.join("\n- ")}`);
     process.exit(1);
