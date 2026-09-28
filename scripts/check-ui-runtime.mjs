@@ -52,6 +52,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const argv = process.argv.slice(2);
 const ONLY = argv.find((a) => a.startsWith("--only="))?.slice("--only=".length) ?? "";
 const SELF_CHECK = argv.includes("--self-check");
+/** `--shot=/tmp/x.png` 时顺手存一张会话行的真图（§10 的后半句要肉眼判）。不给就一字不动。 */
+const SHOT_PATH = argv.find((a) => a.startsWith("--shot="))?.slice("--shot=".length) ?? "";
 const VITE_PORT = Number(process.env.GOSSLAN_PROBE_PORT || 5199);
 const CDP_PORT = Number(process.env.GOSSLAN_PROBE_CDP || 9444);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -312,6 +314,52 @@ window.__probe = (() => {
       text: row ? (row.innerText || '') : '',
       badges: Array.from(document.querySelectorAll('[class*="min-w-4"]'))
         .map((e) => (e.textContent || '').trim()),
+      /**
+       * §10「群任务数量与群未读数量必须具有明显不同的视觉语义」—— 这条**量得出**：
+       * 比两枚的计算形状与有没有图标，而不是比颜色
+       * （改之前两枚是同一个 UnreadBadge、只差底色 ⇒ 这条必须红）。
+       * ⚠️ 这段注释在一个**模板字符串**里 ⇒ 不能再出现反引号（会把外层模板提前关掉，
+       *    本轮就这么把整个脚本改挂过一次）。
+       * 未读那枚仍由 [class*="min-w-4"] 认（它是徽标家族的唯一实现，有 designGuards 钉着）；
+       * 任务那枚由 data-todo-chip 认 —— 一个为「这一族只长这样」留的稳定钩子。
+       */
+      unreadShape: (() => {
+        const e = document.querySelector('[class*="min-w-4"]');
+        if (!e) return null;
+        const r = e.getBoundingClientRect();
+        return { text: (e.textContent || '').trim(), radius: getComputedStyle(e).borderRadius,
+          h: Math.round(r.height), icon: !!e.querySelector('svg') };
+      })(),
+      todoShape: (() => {
+        const e = document.querySelector('[data-todo-chip]');
+        if (!e) return null;
+        const r = e.getBoundingClientRect();
+        return { text: (e.textContent || '').trim(), radius: getComputedStyle(e).borderRadius,
+          h: Math.round(r.height), icon: !!e.querySelector('svg') };
+      })(),
+      /**
+       * §10「不影响消息标题」—— 这半条也量得出，条件是量**布局结果**而不是量 class：
+       * 名字那格必须仍然是「单行 + 省略号」，时间那格必须仍然完整落在行的右边界内。
+       * 加了图标数字（比裸徽标宽约 15px）之后最容易坏的就是这两处：
+       * 要么名字不再截断而把时间挤出行外，要么整行被撑成两行。
+       * ⚠️ 名字**必须**用 data-conv-name 而不是 [class*="truncate"] 抓：组件里有两个带
+       *    truncate 的 span（名字与摘要），把名字那个的 truncate 删掉时"按 class 找第一个"
+       *    会静默改量摘要那格 ⇒ 假绿（lie 跑之前先想到这一层，跑出来就看不出来了）。
+       */
+      layout: (() => {
+        const name = document.querySelector('[data-conv-name]');
+        const time = document.querySelector('[class*="whitespace-nowrap"]');
+        if (!name || !time || !row) return null;
+        const cs = getComputedStyle(name);
+        const nr = name.getBoundingClientRect();
+        const tr = time.getBoundingClientRect();
+        const rr = row.getBoundingClientRect();
+        return {
+          ellipsis: cs.textOverflow, overflowX: cs.overflow,
+          nameH: Math.round(nr.height * 10) / 10, rowH: Math.round(rr.height * 10) / 10,
+          timeInside: tr.right <= rr.right + 0.5 && tr.left >= rr.left - 0.5,
+        };
+      })(),
       wantMention: I.t('msg.mentioned'),
       wantUnread: I.t('conv.unread', { name: arg.name, n: arg.unread }),
       wantTodo: I.t('todo.openForMe', { n: arg.todos }),
@@ -437,8 +485,27 @@ async function runConvBadge(cdp, url) {
   check("三态齐时这一行的 accessible name 同时含未读那句、有人@我、与我相关的任务数",
     !!a.label && a.label.includes(a.wantUnread) && a.label.includes(a.wantMention)
       && a.label.includes(a.wantTodo), "三句都在名字里", JSON.stringify(a.label));
-  check("三态齐时两枚数字徽标各自可见（未读 3 与任务 2）",
-    a.badges.includes("3") && a.badges.includes("2"), "徽标含 3 与 2", JSON.stringify(a.badges));
+  check("三态齐时两枚数字各自可见（未读 3 与任务 2）",
+    a.badges.includes("3") && !!a.todoShape && a.todoShape.text === "2",
+    "未读=3、任务=2", `badges=${JSON.stringify(a.badges)} todo=${JSON.stringify(a.todoShape)}`);
+  check("两枚的视觉语义必须不同：未读＝圆形无图标，任务＝图标＋数字（§10「不要两个数字都长得一样」）",
+    !!a.unreadShape && !!a.todoShape
+      && a.unreadShape.icon === false && a.todoShape.icon === true
+      && a.unreadShape.radius !== a.todoShape.radius,
+    "未读无图标且计算半径不同 / 任务带图标",
+    `未读=${JSON.stringify(a.unreadShape)} 任务=${JSON.stringify(a.todoShape)}`);
+  check("带任务那枚时名字仍是单行省略号、时间那格完整落在行内（§10「不影响消息标题」）",
+    !!a.layout && a.layout.ellipsis === "ellipsis" && a.layout.overflowX === "hidden"
+      && a.layout.nameH <= 22 && a.layout.timeInside === true,
+    "text-overflow=ellipsis · overflow=hidden · 名字≤22px · 时间在行内",
+    JSON.stringify(a.layout));
+  if (SHOT_PATH) {
+    // §10 的后半句是「位置由实际视觉效果决定」—— 光有数字判不出"两枚会不会互相遮"，
+    // 所以这里可选地存一张真图（只在给了 --shot 时跑；不给就一字不动，条数不变）。
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH, Buffer.from(shot.data, "base64"));
+    console.log(`  📷 已存会话行截图 → ${SHOT_PATH}`);
+  }
   check("有人@我那句要在行内可见文本里（不能只挂在名字上，鼠标用户也得看得见）",
     a.text.includes(a.wantMention), "可见文本含这句", JSON.stringify(a.text.slice(0, 60)));
 
@@ -452,7 +519,8 @@ async function runConvBadge(cdp, url) {
   await mount(GROUP0);
   const c = await probe(GROUP0, false, 0);
   check("对照：三态全清时名字恰好等于群名、零枚徽标（证明①不是恒过）",
-    c.label === GROUP0.name && c.badges.length === 0 && !c.text.includes(c.wantMention),
+    c.label === GROUP0.name && c.badges.length === 0 && !c.text.includes(c.wantMention)
+      && !c.todoShape,
     "名字 = 验收群 且 0 枚徽标", `${JSON.stringify(c.label)} / 徽标=${JSON.stringify(c.badges)}`);
 
   // —— ④ 只有 @我（未读 0）：另两句都不该出现 ——

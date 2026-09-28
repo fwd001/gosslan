@@ -7,7 +7,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { haptic } from "@/utils/haptics";
 import UnreadBadge from "@/components/UnreadBadge.vue";
-import { Megaphone, Pin } from "lucide-vue-next";
+import { ListChecks, Megaphone, Pin } from "lucide-vue-next";
 import type { Conversation } from "@/types";
 
 const props = defineProps<{
@@ -56,7 +56,8 @@ function openConv(conv: Conversation) {
 
 /** 群里有人 @ 我且未读（打开会话即清除）：微信式红色标签，显示在摘要前。 */
 const mentioned = computed(() => chat.mentionedConvs.has(props.conv.id));
-/** 「与我相关的未完成任务」数（蓝色徽标）。判定与聊天头那颗任务图标共用 `store.openTodoByConv`
+/** 「与我相关的未完成任务」数（`ListChecks` 图标 + 蓝色数字，见模板那段注释）。
+ *  判定与聊天头那颗任务图标共用 `store.openTodoByConv`
  *  这一份，两个地方各数一次就是两份真源。单聊没有群任务 ⇒ 恒为 0。 */
 const openTasks = computed(() =>
   props.conv.kind === "group" ? (chat.openTodoByConv[props.conv.id] ?? 0) : 0,
@@ -225,6 +226,7 @@ const gridTiles = computed(() => {
         <!-- 名字会被截断（`truncate`），必须给 title：否则悬停看不到完整名字。
              整行的 aria-label 只服务读屏，不产生 tooltip。 -->
         <span
+          data-conv-name
           class="truncate text-[13px] leading-5"
           :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'"
           :title="conv.name"
@@ -242,21 +244,35 @@ const gridTiles = computed(() => {
             :aria-label="t('conv.announceBadge')"
           />{{ conv.name }}
         </span>
-        <!-- 与我相关的未完成任务（蓝色）。位置放在名字与时间之间：头像右上角那枚是**未读红点**，
-             两枚叠在同一个挂点上会互相遮，而且颜色不同承担的意思不同（红=有消息没看，蓝=有活没干完）。
-             徽标一律走全应用唯一的 `UnreadBadge`（designGuards 禁手写副本）。 -->
-        <UnreadBadge
-          v-if="openTasks > 0"
-          :count="openTasks"
-          tone="info"
-          :title="t('todo.openForMe', { n: openTasks })"
-          class="shrink-0"
-        />
-        <span
-          class="shrink-0 whitespace-nowrap text-[11px]"
-          :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"
-        >
-          {{ fmtConversationTime(conv.last_ts) }}
+        <!-- 右半边这一簇 = 任务数 + 时间（原来两件事各自是 `justify-between` 的一个孩子，
+             名字短时任务数会**漂到行中间**，看着像没归属 —— 2026-09-29 拿真图量出来的）。
+             头像右上角那枚是**未读红点**，两枚叠在同一个挂点上会互相遮，而且颜色不同承担的
+             意思不同（红=有消息没看，蓝=有活没干完）。
+             §10「不要两个数字都长得一样」⇒ 数字前面带一枚 `ListChecks` 图标：未读是"圆里一个数"，
+             任务是"图标 + 数"。数字本身仍走全应用唯一的 `UnreadBadge`（designGuards 禁手写副本，
+             那 1.5px 光学补偿必须跟尺寸同生死），这里只加图标、不复制胶囊。
+             `data-todo-chip` 是给运行时探针认这一族的稳定钩子（改形状会静默少判一枚 ⇒ 见
+             `scripts/check-ui-runtime.mjs` 的 `todoShape`）。 -->
+        <span class="flex shrink-0 items-center gap-2">
+          <span
+            v-if="openTasks > 0"
+            data-todo-chip
+            class="flex items-center gap-[3px]"
+            :title="t('todo.openForMe', { n: openTasks })"
+          >
+            <ListChecks
+              class="h-3.5 w-3.5 text-[var(--gosslan-primary-active)]"
+              :stroke-width="2.2"
+              aria-hidden="true"
+            />
+            <UnreadBadge :count="openTasks" tone="info" />
+          </span>
+          <span
+            class="shrink-0 whitespace-nowrap text-[11px]"
+            :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"
+          >
+            {{ fmtConversationTime(conv.last_ts) }}
+          </span>
         </span>
       </div>
       <div class="mt-0.5 flex items-center justify-between gap-2">
