@@ -258,7 +258,7 @@
   <!-- ③ 接口规则表 -->
   <section class="tab" id="t-api" role="tabpanel">
     <p class="lede">
-      129 条 <b>输入 → 输出</b> 规则，按后端定义处（<code>src-tauri/src/commands/&lt;模块&gt;.rs</code>）分组。<b>输入/输出两列是从 Rust 函数签名直接抽的</b>（<code>str</code>=String、<code>int</code>=i64/u32、<code>X?</code>=Option、<code>X[]</code>=Vec、<code>|err</code>=Result 的错误分支），<b>语义列是判"是否符合需求"的地方</b>。
+      <b>输入 → 输出</b> 规则表：行数**由本页自己数**（<code>CMDS.length</code>，页头计数器就是它），别在这里抄数 —— 这一格以前写着 129，而同页生成口径那行写 130，两条都是手抄的。按后端定义处（<code>src-tauri/src/commands/&lt;模块&gt;.rs</code>）分组。<b>输入/输出两列是从 Rust 函数签名直接抽的</b>（<code>str</code>=String、<code>int</code>=i64/u32、<code>X?</code>=Option、<code>X[]</code>=Vec、<code>|err</code>=Result 的错误分支），<b>语义列是判"是否符合需求"的地方</b>。
       前端另有 33 个事件把状态推回去，见"事件契约"。
     </p>
     <div class="filters" id="apifilters"></div>
@@ -728,7 +728,7 @@ const CMDS = [
   ["get_peers", "network", "", "Peer[]|err"],
   ["get_topology", "network", "", "TopologyInfo"],
   ["notify_desktop", "network", "title str; body str; conv_id str", "bool|err"],
-  ["request_attention", "network", "", "()|err"],
+  ["request_attention", "network", "urgent bool", "()|err"],
   ["search_nearby_peers", "network", "", "Peer[]|err"],
   ["send_test_notification", "network", "", "str|err"],
   ["set_app_active", "network", "active bool", "()"],
@@ -946,6 +946,11 @@ const SEM = {
 
 /* 事件契约 */
 const EVENTS = [
+  // ↓ 两条是「后端 emit 了但前端没有监听者」：机器判据在 <code>src/api/events.test.ts</code> 的
+  // <code>ALLOWED_EMIT_WITHOUT_LISTENER</code>（每条都必须写理由），所以它们不是漏接，
+  // 但属于 §二 要的「已废弃但代码仍存在 / dead code」那一类 —— 图上不写就等于没登记。
+  ["group-key-received", "group_id str", "与 <code>groups-updated</code> 同一条路径一起发（收到群密钥时）", "<b>无人监听</b>：前端只处理 groups-updated ⇒ 冗余事件，删除候选", "全体窗口"],
+  ["group-file-log", "msg str", "群任务图片落盘/投递那条链的诊断输出（commands/group_todo_media.rs）", "<b>无人监听</b>：DevDiag 面板改走 <code>get_discovery_diag</code> 轮询 ⇒ 保留待接", "全体窗口"],
   ["peers-updated", "Peer[]", "发现/建链/清扫改动后，由 300ms 合并窗口的 emitter 统一发（<code>try_lock</code>，抢不到就跳过，绝不卡网络）", "chat.refreshPeers / TopologyBar", "全体窗口"],
   ["message-received", "MessageRecord", "对端帧解开并落库成功时；也用于自己发出的那一行的首帧", "chat.enqueueMessage（进时间线/计未读/通知）", "全体窗口"],
   ["message-acked", "msg_id str", "发送方收到对端 Ack，<b>且核过 outbox 里确有该行</b>", "onMessageAcked → 气泡转 delivered", "全体窗口"],
@@ -1202,7 +1207,7 @@ const INVARIANTS = [
     + "判的必须是<b>同一份</b>可见性口径 <code>chatViewerLooking()</code>，不许各取一个条件子集",
    "取得最弱那一条就是缺陷：桌面端启动会<b>自动打开最近会话</b>，「窗口在后台 + 会话开着」是常态 —— "
      + "于是「@我」红点不亮，用户回窗口只看到 N 条未读，<b>必须点开那个群才知道自己被 @ 过</b>",
-   "<code>chatViewerLooking()</code> 单点 + <code>messages.test.ts</code> 的「消费者必须调它、不许手写条件」两条 + <code>docs/protocol-invariants.md</code> INV-P27"],
+   "<code>chatViewerLooking()</code> 单点 + <code>designGuards.test.ts:1668-1680</code>（引用次数与「只许一个家」）与 <code>channelState.test.ts:222-232</code>（红点与已读两条都走这份口径）+ <code>docs/protocol-invariants.md</code> INV-P27"],
 ];
 
 /* ============================================================
@@ -1498,7 +1503,7 @@ function buildDir() {
 
 /* ---------- tabs ---------- */
 const TABS = [
-  ["t-map", "① 大图"], ["t-mod", "② 模块契约"], ["t-api", "③ 接口规则表 129"],
+  ["t-map", "① 大图"], ["t-mod", "② 模块契约"], ["t-api", "③ 接口规则表"],
   ["t-evt", "④ 事件契约"], ["t-db", "⑤ 数据契约"], ["t-flow", "⑥ 流程穿透"], ["t-dir", "⑦ 方向核对"],
 ];
 function showTab(id) {
