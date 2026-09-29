@@ -10,6 +10,13 @@
 
 ## [Unreleased]
 
+## [4.31.16] - 2026-09-29
+
+### 功能
+- **接上优先级那颗开关**（补 4.31.15 自己写下的那处欠账「界面上还没有可点的档位开关」——那一条当时是真的，不是笔误）：任务详情弹窗顶部一行**原生 select**（三档、键盘可走、读屏读得出），走看板那条既有的保存链 `emit("priority")` → `setPriority` → `chat.updateTodo(gid, item, { priority })` → `api.updateGroupTodo` → 命令层 ⇒ 发起人 / 关联人 / 群主现在真的能改档，别的人看到的是置灰控件而不是"点一下再报错"。
+  两处刻意这么写：① **只传这一格**，其余字段由 store 从这条任务当前那份带回 ⇒ 改档不会顺手重写描述 / 指派人 / 状态（后端同理：没带值就沿用库里那份，不会被重置回"常规"）；② 判权**不新建一套** —— 可用的人就是"改状态"那三个人，所以复用同一个 `canChangeStatus` 入参；两处口径要分叉时，是分叉的那一方要写理由，不是这里加第三个布尔。
+  另补 `todo.priorityLabel` / `todo.priorityHint` 两个 i18n 键（中英各一份）。类型面 `src/api/index.ts` 与 `useChatStore.ts` 的 patch 各加一个可选 `priority`；`npx vue-tsc --noEmit` 现跑退 0（第一版撞过一次真红：看板的 `groupId` 是可空 prop，`props.groupId` 直接传进保存链会被类型判住 ⇒ 改成先取本地再早退，与 `setStatus` 同口径）。
+
 ## [4.31.15] - 2026-09-29
 
 ### 功能

@@ -45,6 +45,7 @@ import {
   parseTodo,
   type TodoImage,
   type TodoItem,
+  type TodoPriority,
   type TodoStatus,
 } from "@/utils/todos";
 import { api } from "@/api";
@@ -660,6 +661,18 @@ async function setStatus(x: TodoItem, status: string) {
   }
 }
 /** 标记完成：只改状态（后端在**首次**完成时记权威 `doneAt`）。完成**不再**自动归档。 */
+/** 只动优先级这一格：其余字段由 store 从这条任务当前那份带回，所以改档不会顺手重写描述/指派人/状态。 */
+async function setPriority(item: TodoItem, p: TodoPriority) {
+  const gid = props.groupId;
+  if (!gid) return; // 群 id 还没到位时这条压根不该发（与 setStatus 同一口径）
+  try {
+    await chat.updateTodo(gid, item, { priority: p });
+    app.toast(t("todo.updateDone"), "success");
+  } catch (e) {
+    app.toast(String(e), "error");
+  }
+}
+
 async function completeTodo(x: TodoItem) {
   await setStatus(x, "done");
 }
@@ -954,6 +967,7 @@ watch(
     :self-mention="selfMention"
     @close="closeDetail"
     @status="(s: TodoStatus) => detailItem && setStatus(detailItem, s)"
+    @priority="(p: TodoPriority) => detailItem && setPriority(detailItem, p)"
     @complete="detailItem && completeTodo(detailItem)"
     @archive="detailItem && archiveTodo(detailItem)"
     @restore="detailItem && restoreTodo(detailItem)"

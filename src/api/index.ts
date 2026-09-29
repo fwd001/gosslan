@@ -197,6 +197,8 @@ export const api = {
       images?: TodoImage[];
       /** 显式归档意图：`true` = 手动归档；`undefined` = 不改（保留库中原值）。 */
       archived?: boolean;
+      /** 三档之一；不传 = 这次不动优先级。 */
+      priority?: string;
     },
   ) =>
     invoke<MessageRecord>("update_group_todo", {
@@ -209,6 +211,7 @@ export const api = {
       description: patch.description ?? null,
       images: patch.images ?? null,
       archived: patch.archived ?? null,
+      priority: patch.priority ?? null,
     }),
   /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
   pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>

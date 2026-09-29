@@ -11,7 +11,16 @@ import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
-import { TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, type TodoItem, type TodoStatus } from "@/utils/todos";
+import {
+  TODO_PRIORITIES,
+  TODO_PRIORITY_LABEL_KEY,
+  TODO_STATUSES,
+  TODO_STATUS_LABEL_KEY,
+  TODO_STATUS_PILL,
+  type TodoItem,
+  type TodoPriority,
+  type TodoStatus,
+} from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
 import { Archive, Check, ChevronDown, Pencil, RotateCcw, Trash2 } from "lucide-vue-next";
 import { t } from "@/i18n";
@@ -48,6 +57,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "status", status: TodoStatus): void;
+  (e: "priority", priority: TodoPriority): void;
   (e: "complete"): void;
   (e: "archive"): void;
   (e: "restore"): void;
@@ -129,6 +139,22 @@ watch(
 <template>
   <BaseModal :open="open" :title="(item?.number ? `#${item.number} ` : '') + (item?.title ?? t('todo.title'))" width="max-w-lg" @close="onDialogClose">
     <div v-if="item" class="space-y-4">
+      <!-- 优先级三档（默认「常规」）。可用的人 = 发起人 / 关联人 / 群主：
+           与「改状态」同一档，所以复用同一个 `canChangeStatus` 入参，不另起一套判权。
+           用原生 select：键盘走得通、屏幕阅读器读得出，比自造下拉更接近系统习惯。 -->
+      <div class="flex items-center justify-between gap-2">
+        <label class="text-xs text-[var(--gosslan-text-2)]" for="todo-priority-pick">{{ t("todo.priorityLabel") }}</label>
+        <select
+          id="todo-priority-pick"
+          class="tap-safe h-7 rounded-md border border-[var(--gosslan-border)] bg-transparent px-2 text-[12px] text-[var(--gosslan-card-ink)] disabled:opacity-50"
+          :value="item.priority ?? 'normal'"
+          :disabled="!canChangeStatus"
+          :title="t('todo.priorityHint')"
+          @change="emit('priority', ($event.target as HTMLSelectElement).value as TodoPriority)"
+        >
+          <option v-for="p in TODO_PRIORITIES" :key="p" :value="p">{{ t(TODO_PRIORITY_LABEL_KEY[p]) }}</option>
+        </select>
+      </div>
       <!-- 状态：**显式两步**（用户 2026-09-17：「一不小心就把状态改了」）。
            此前是一排 4 个分段按钮、一点即写库，而且与看板顶部的**筛选**分段控件长得一样，
            用户当成"切视图"就顺手点了。现在当前状态是一个胶囊（看清现状），改动要点开菜单再选，

@@ -1402,6 +1402,8 @@ export const useChatStore = defineStore("chat", () => {
       images: TodoImage[];
       /** 显式归档：`true` = 手动归档（完成之后）。不传 = 保留库中原值。 */
       archived: boolean;
+      /** 优先级（三档）。不传 = 保留库中原值 ⇒ 改状态/改描述都不会顺手把档位重置。 */
+      priority: string;
     }> = {},
   ) {
     const rec = await api.updateGroupTodo(groupId, item.todoId, {
@@ -1412,6 +1414,7 @@ export const useChatStore = defineStore("chat", () => {
       description: patch.description ?? item.description,
       images: patch.images ?? item.images,
       archived: patch.archived,
+      priority: patch.priority,
     });
     enqueueMessage(rec);
   }
