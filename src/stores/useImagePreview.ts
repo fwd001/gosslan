@@ -22,6 +22,7 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { api } from "@/api";
+import { t } from "@/i18n";
 import type { PreviewImage } from "@/types";
 
 /** 线格式与渲染入参是同一个类型（放在 `@/types`：api 与 store 都要用，别互相 import）。 */
@@ -47,6 +48,19 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
   const source = ref<string | null>(null);
   /** 当前内容是否由**独立预览窗口**显示（桌面端）。壳层那份覆盖层据此让位。 */
   const inWindow = ref(false);
+  /**
+   * 本文档里到底有没有那份覆盖层（由 `ResponsiveLayout` 挂载时置真、卸载时清）。
+   *
+   * 为什么要一个显式标记而不是"看是不是主窗口"：**独立群任务窗口没有覆盖层**
+   * （全应用只允许一个 `ImageLightbox` 实例，那条按形状数的判据会把第二个实例判红）。
+   * 于是"投递被预览窗口拒绝"（超出条数/字节上限、窗口建不出来）在两个文档里结局完全不同：
+   * 主窗口退回覆盖层 ⇒ 用户照样看到图；任务窗口 ⇒ 屏幕上什么都没有。
+   * 不认这一半的话，后果不只是"点了没反应"：状态里会留着 `open = true`，
+   * 任务详情据此认为"预览正开着"，于是下一次点遮罩只吃掉"关预览"、**弹窗关不掉**
+   * —— 一个从没显示出来的预览把界面锁住（这正是 `onDialogClose` 那段注释里
+   * 用来保护用户的机制，反过来变成了陷阱）。
+   */
+  const overlayMounted = ref(false);
 
   /**
    * 打开相册。`items` 为空**什么都不做** —— 调用方不必各自判空
@@ -75,6 +89,13 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
       .openImagePreview(items, at)
       .catch(() => {
         inWindow.value = false;
+        // 本文档没有那份覆盖层可退（独立群任务窗口）⇒ 收起状态 + 说一声，
+        // 而不是留着 open=true：那会让任务详情以为"预览开着"，下一次点遮罩只吃掉
+        // "关预览"，一个从没显示出来的预览就把弹窗锁住了。
+        if (!overlayMounted.value) {
+          close();
+          app.toast(t("preview.unavailable"), "error");
+        }
       });
   }
 
@@ -100,6 +121,7 @@ export const useImagePreviewStore = defineStore("imagePreview", () => {
     open,
     source,
     inWindow,
+    overlayMounted,
     openGallery,
     setIndex,
     close,

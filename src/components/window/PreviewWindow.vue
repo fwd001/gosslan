@@ -115,6 +115,7 @@ function closeSelf() {
       v-model:index="index"
       :open="open"
       top-inset="var(--gosslan-title-h)"
+      hide-close
       @close="closeSelf()"
     />
   </AuxWindowShell>

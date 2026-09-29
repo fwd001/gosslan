@@ -42,6 +42,18 @@ const props = defineProps<{
    * 就把那一条让出来；主窗口与移动端不传，行为与以前逐字相同。
    */
   topInset?: string;
+  /**
+   * 隐藏组件内部那颗 ✕（用户 2026-09-29：「独立窗口调用图片预览时，隐藏预览组件内部的关闭按钮，
+   * 避免和窗口外部关闭按钮重复；同一窗口内调用时可以显示」）。
+   *
+   * 为什么用入参而不是"检测自己是不是在预览窗口里"：本组件同时服务两个宿主 ——
+   * 主窗口那份覆盖层（**唯一的关闭出口就是它**）和独立预览窗口（`AuxWindowShell` 的标题栏
+   * 已经有 ✕，两颗叉同屏就是用户说的那处重复）。宿主是谁只有调用点知道，所以由调用点说。
+   *
+   * ⚠️ 关掉这颗叉**不减少任何出口**：窗口那条路仍有标题栏 ✕、Esc、⌘W 三条
+   * （见 `PreviewWindow.vue` 把 `close-requested` 三条路都接上 `releaseAlbum` 的注释）。
+   */
+  hideClose?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -346,6 +358,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
             <RotateCcw class="h-4 w-4" />
           </button>
           <button
+            v-if="!hideClose"
             class="tap-safe flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15"
             style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
             :title="t('common.closeEsc')" :aria-label="t('common.closeEsc')"

@@ -98,18 +98,24 @@ watch(
 onBeforeUnmount(cancelRetry);
 
 function open() {
-  if (props.clickable && url.value) emit("open");
+  // ⚠️ **不看 `url`**（用户 2026-09-29：「从任务列表进入某个任务后，查看图片时可能打不开图片预览」）：
+  // 缩略图和大图是在**两个不同文档**里各读一次的（主窗口这份 vs 独立预览窗口那份，各自的
+  // objectURL 缓存互不相干）。所以「本机其实有这份字节、预览窗口读得到，只有这里的读取还没成功」
+  // 是一个真实且常见的状态 —— 旧写法把可点性与 `url` 绑在一起，那个状态下点击就**完全没反应**。
+  // 现在可点性只由 `clickable` 决定；字节真取不到时，预览自己有「无法预览/已被清理」那一格，
+  // 用户看到的是那句说明，而不是"点了没反应"。
+  if (props.clickable) emit("open");
 }
 </script>
 
 <template>
   <div
     class="relative h-20 w-20 shrink-0 overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)] transition"
-    :class="clickable && url ? 'cursor-pointer hover:opacity-90' : ''"
-    :title="clickable && url ? t('todo.viewImage') : image.name"
-    :role="clickable && url ? 'button' : undefined"
-    :tabindex="clickable && url ? 0 : undefined"
-    :aria-label="clickable && url ? t('todo.viewImage') : undefined"
+    :class="clickable ? 'cursor-pointer hover:opacity-90' : ''"
+    :title="clickable ? t('todo.viewImage') : image.name"
+    :role="clickable ? 'button' : undefined"
+    :tabindex="clickable ? 0 : undefined"
+    :aria-label="clickable ? t('todo.viewImage') : undefined"
     @click="open"
     @keydown.enter.prevent="open"
     @keydown.space.prevent="open"
