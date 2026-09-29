@@ -350,30 +350,57 @@ fn media_dirs(s: &AppState) -> Vec<PathBuf> {
 
 /// 自动缓存清理调度（README 承诺的「3/7/30 天 + 配额自动清理」此前只有手动按钮）。
 ///
-/// 启动 60s 后跑第一轮，之后每 6h；清理走 `clean_files`（不无脑 VACUUM），
-/// 只有真删了东西才补一次 VACUUM —— 整段在 spawn_blocking 里做：
-/// 文件遍历/删除与偶发 VACUUM 都不该占用 tokio worker，更不跨 await 持 db 锁。
+/// 间隔口径的**唯一来源**（下面那条结构判据读的就是这三个常量名）。
+///
+/// 首轮刻意排在 `loop` 外面：以前第一句就是 `sleep(6h)`，于是这段注释承诺的
+/// 「启动 60s 后跑第一轮」从来没成立过 —— 开着不到 6 小时的会话一次都不会清，
+/// 而那正是"文件夹怎么又涨了"最常问的一种场景。
+const CACHE_CLEAN_FIRST_DELAY_SECS: u64 = 60;
+/// 之后每 6h 一轮。
+const CACHE_CLEAN_INTERVAL_SECS: u64 = 6 * 3600;
+/// 自动路径上做 VACUUM 的**释放量下限**。
+///
+/// 为什么要阈值而不是"删了东西就 VACUUM"：VACUUM 要重写整份 db 文件，期间持住那**唯一**
+/// 一条 SQLite 连接 ⇒ 所有 IPC 排队（用户看到的是界面卡几秒）。而本仓只有这一条连接，
+/// `check-db-lock-scope` 盯的是"持锁 emit"，这种"持锁做重活"是它的盲区。
+/// 删几个几 KB 的过期图就重写整库，代价和收益完全不成比例。
+const CACHE_CLEAN_VACUUM_MIN_FREED_BYTES: u64 = 64 * 1024 * 1024;
+
+/// 这一轮自动清理是否值得做 VACUUM（纯函数，便于把边界测出来）。
+fn cache_clean_should_vacuum(freed_bytes: u64) -> bool {
+    freed_bytes >= CACHE_CLEAN_VACUUM_MIN_FREED_BYTES
+}
+
+/// 启动 [`CACHE_CLEAN_FIRST_DELAY_SECS`] 后跑第一轮，之后每 [`CACHE_CLEAN_INTERVAL_SECS`]；
+/// 清理走 `clean_files`，VACUUM 只在释放量过 [`CACHE_CLEAN_VACUUM_MIN_FREED_BYTES`] 时才做 ——
+/// 整段在 spawn_blocking 里做：文件遍历/删除与偶发 VACUUM 都不该占用 tokio worker，
+/// 更不跨 await 持 db 锁。手动那条（`clear_cache`）不受这个阈值约束：是用户按的，等得起。
 pub fn spawn_cache_auto_clean(s: &std::sync::Arc<crate::state::AppState>) {
     let st = s.clone();
     tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(CACHE_CLEAN_FIRST_DELAY_SECS)).await;
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
             let st2 = st.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 let policy = load_policy(&st2);
                 let dirs = media_dirs(&st2);
                 let report = cache_cleaner::clean_files(&dirs, policy);
-                if report.removed > 0 {
+                let vacuumed = report.removed > 0 && cache_clean_should_vacuum(report.freed_bytes);
+                if vacuumed {
                     let dbc = st2.db.lock().unwrap_or_else(|e| e.into_inner());
                     let _ = dbc.execute_batch("VACUUM");
                     drop(dbc);
                 }
                 if report.removed > 0 {
+                    // 日志必须带上"这次没 VACUUM"这一半：否则盘上 db 没缩，
+                    // 读日志的人只能猜是阈值还是失败。
                     st2.logger.info(
                         "storage",
                         format!(
-                            "自动缓存清理：删 {} 个文件、释放 {} 字节",
-                            report.removed, report.freed_bytes
+                            "自动缓存清理：删 {} 个文件、释放 {} 字节，VACUUM {}",
+                            report.removed,
+                            report.freed_bytes,
+                            if vacuumed { "已做" } else { "跳过（释放量未达阈值）" }
                         ),
                     );
                 }
@@ -461,4 +488,44 @@ pub async fn clean_cache_now(state: State<'_, Arc<AppState>>) -> Result<CleanupR
         let _ = dbc.execute_batch("VACUUM");
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod cache_clean_schedule_tests {
+    use super::*;
+
+    /// 阈值两侧：差一字节都不许 VACUUM（这条锁的代价是界面卡几秒，放宽的门槛必须钉住）。
+    #[test]
+    fn vacuum_only_when_the_freed_bytes_are_worth_rewriting_the_db() {
+        assert!(!cache_clean_should_vacuum(0), "什么都没删 ⇒ 绝不重写整库");
+        assert!(
+            !cache_clean_should_vacuum(CACHE_CLEAN_VACUUM_MIN_FREED_BYTES - 1),
+            "差一字节不算过阈值"
+        );
+        assert!(cache_clean_should_vacuum(CACHE_CLEAN_VACUUM_MIN_FREED_BYTES));
+        assert!(cache_clean_should_vacuum(CACHE_CLEAN_VACUUM_MIN_FREED_BYTES * 4));
+    }
+
+    /// 首轮必须排在 `loop` **外面**：那条 bug 的形状就是"sleep(6h) 是循环第一句"，
+    /// 于是注释里的 60s 永远不会发生。这里按源码文本判形状，改名/改形状都会当场红。
+    #[test]
+    fn first_round_is_scheduled_before_the_loop_not_inside_it() {
+        let src = include_str!("channel.rs");
+        let at = src
+            .find("pub fn spawn_cache_auto_clean")
+            .expect("找不到 spawn_cache_auto_clean ⇒ 这条判据失去落点");
+        let body = &src[at..src[at..].find("\n}\n").map(|e| e + at).unwrap_or(src.len())];
+        let loop_at = body.find("loop {").expect("函数里没有 loop ⇒ 调度形状变了，判据要跟着改");
+        let first_sleep = body
+            .find("sleep(")
+            .expect("函数里没有 sleep ⇒ 调度形状变了，判据要跟着改");
+        assert!(
+            first_sleep < loop_at,
+            "首轮 sleep 又跑回循环里了 ⇒ 第一轮永远要等一个完整周期（就是这条 bug 的原形）"
+        );
+        assert!(
+            body.contains("CACHE_CLEAN_FIRST_DELAY_SECS"),
+            "首轮间隔没走那个常量 ⇒ 注释与代码会再次各说一套"
+        );
+    }
 }
