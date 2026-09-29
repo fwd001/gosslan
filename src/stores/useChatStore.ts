@@ -27,6 +27,7 @@ import { StaleGuard } from "@/utils/staleGuard";
 import { actionableRequests } from "@/utils/friendRequests";
 import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/notifications";
 import { batchIsUrgent } from "@/utils/notifyUrgency";
+import { buildReactionPayload } from "@/utils/reactions";
 import { isRenderedInTimeline, countsTowardUnread } from "@/utils/messageKinds";
 import {
   foldTodos,
@@ -1533,6 +1534,24 @@ export const useChatStore = defineStore("chat", () => {
     enqueueMessage(rec);
   }
 
+  /**
+   * 1:1 里的表情回应：走普通 `send_message`，kind = "reaction"。
+   *
+   * 为什么不新开一条后端命令：回应是**状态事件**，而 `send_message` 已经是"把一条带 kind 的
+   * 消息可靠投递给一个好友"的唯一通路（outbox / E2EE / ack 全在那条上）。再加一条命令就是第二个家，
+   * 而它管的那一半（可靠投递）会先腐烂。
+   * 后端挡三件事：载荷畸形、对端版本吃不下这个 kind（INV-P24：老端会整帧丢 + 断链），
+   * 以及"静默 kind 不许刷会话预览"。前两者是 Err ⇒ 这里必须让调用点报错，不能吞。
+   */
+  async function sendDmReaction(friendId: string, target: string, emoji: string, add: boolean) {
+    const rec = await api.sendMessage(
+      friendId,
+      buildReactionPayload(target, emoji, add),
+      "reaction",
+    );
+    enqueueMessage(rec);
+  }
+
   async function createGroup(name: string, members: string[]) {
     const g = await api.createGroup(name, members);
     await api.distributeGroupKey(g.id);
@@ -2246,6 +2265,7 @@ export const useChatStore = defineStore("chat", () => {
     deleteConversation,
     setConversationPinned,
     sendReaction,
+    sendDmReaction,
     recallMessage,
     pinMessage,
     publishAnnouncement,

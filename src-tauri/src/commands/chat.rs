@@ -32,6 +32,12 @@ pub async fn send_message(
             crate::protocol::parse_merge_payload(&content)?;
             MsgKind::Merge
         }
+        // 表情回应：和 merge 同构的"载荷先在这里过一遍"，畸形载荷不该变成
+        // 对端一条折不出来的事件（见 protocol::parse_reaction_payload）。
+        "reaction" => {
+            crate::protocol::parse_reaction_payload(&content)?;
+            MsgKind::Reaction
+        }
         _ => return Err("不支持的消息类型".to_string()),
     };
 
@@ -49,20 +55,21 @@ pub async fn send_message(
     // INV-P24 第 4 条：**不门控不许发**。老对端（v4.20.0 及更早）的 `ChatMessage.kind`
     // 还是嵌套枚举，收到不认识的 kind 会**整帧丢掉** —— v4.22.34 只修了我们这一侧的容忍，
     // 那边没有，所以只能由发送侧挡下来，并给用户一句能照着做的话。
-    // 判据只有 `protocol::kind_allowed_by_features` 一处；对端从没交换过 Hello 或已离线
+    // 判据只有 `protocol::dm_required_features` / `dm_allowed_by_features` 一处（1:1 侧它还额外
+    // 要求对端具备"能吃任意 wire kind"的声明位，见那两个函数的说明）；对端从没交换过 Hello 或已离线
     // ⇒ 位图按 0 处理 = "不知道就当不支持"（宁可少发一条，也不要静默丢帧）。
     // 但"不知道"与"它自己声明过不支持"要分开说：这张表是内存态、离线就被 sweep 回收，
     // 所以缺条目绝大多数时候只意味着对方此刻不在线，把两种情况混成一句"版本较旧"是假指控
     // （文案本身仍只住在 `protocol.rs`，这里只做选择）。
     // 放在公钥探测**之前**：这条本来就不会发出去，不该再触发一次 who_has 探测白等 1.2s。
-    if crate::protocol::kind_required_feature(&kind).is_some() {
+    if crate::protocol::dm_required_features(&kind) != 0 {
         let peer_features = s
             .peer_content_features
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&friend_id)
             .copied();
-        if !crate::protocol::kind_allowed_by_features(&kind, peer_features.unwrap_or(0)) {
+        if !crate::protocol::dm_allowed_by_features(&kind, peer_features.unwrap_or(0)) {
             return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));
         }
     }
@@ -192,8 +199,17 @@ pub async fn send_message(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::insert_message_and_outbox(&dbc, &rec, &friend_id, &payload)
             .map_err(|e| format!("消息写入失败：{e}"))?;
-        db::touch_conversation(&dbc, &friend_id, "single", &name, None, &preview, 0)
-            .map_err(|e| format!("会话写入失败：{e}"))?;
+        if crate::protocol::is_non_notifying_kind(&kind) {
+            // 静默事件（表情回应…）不改预览、不顶会话 —— 与群内核同一条例
+            // （commands/window.rs 里那条）。漏掉它的症状不是报错，是"回个表情把这条会话
+            // 顶到列表最前、摘要变成一段 JSON"，所以必须在这里分叉而不是在前端过滤。
+            // 会话行仍要确保存在：本机可能从没在这条会话里发过内容（例如先回应对端最后一条）。
+            db::ensure_conversation(&dbc, &friend_id, "single", &name, None)
+                .map_err(|e| format!("会话写入失败：{e}"))?;
+        } else {
+            db::touch_conversation(&dbc, &friend_id, "single", &name, None, &preview, 0)
+                .map_err(|e| format!("会话写入失败：{e}"))?;
+        }
     }
 
     // 先入队再投递（INV-003）：此前 broadcast 在插队之前，若心跳的 flush_outbox 正好

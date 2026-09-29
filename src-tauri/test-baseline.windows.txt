@@ -594,9 +594,13 @@ protocol::tests::build_mention_targets_numbers_repeated_names_in_text_order
 protocol::tests::build_mention_targets_skips_unknown_ids_and_absent_names
 protocol::tests::chat_ack_and_read_receipt_plaintext_directed_envelope_integrity
 protocol::tests::display_kind_maps_legacy_media_to_file
+protocol::tests::dm_gate_does_not_reach_the_group_audience
+protocol::tests::dm_gate_requires_flex_kind_for_new_kinds
+protocol::tests::dm_legacy_kind_list_is_frozen
 protocol::tests::emoji_token_shape_is_validated_but_not_the_catalogue
 protocol::tests::encode_decode_are_inverse_for_the_default_group_text_case
 protocol::tests::envelope_encrypted_flag_roundtrip
+protocol::tests::every_dm_gated_kind_is_advertised_by_us
 protocol::tests::every_gated_kind_is_advertised_by_us
 protocol::tests::file_epoch_feature_is_advertised
 protocol::tests::file_frame_attempt_field_is_wire_compatible_both_ways
@@ -628,6 +632,7 @@ protocol::tests::parse_gossip_plaintext_sanitizes_an_otherwise_valid_list
 protocol::tests::parse_gossip_plaintext_treats_a_wrong_shaped_mentions_as_absence
 protocol::tests::peer_protocol_newer_only_when_declared_higher
 protocol::tests::preview_text_hides_payload_for_unknown_kind
+protocol::tests::reaction_payload_is_validated_before_sending
 protocol::tests::reaction_payload_roundtrips
 protocol::tests::unknown_message_kind_still_decodes_as_a_chat_message
 protocol::tests::unknown_message_type_is_a_hard_parse_error

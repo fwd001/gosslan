@@ -120,6 +120,16 @@ export function foldReactions(
 }
 
 /** 名单一次最多列出几个人，剩下的折成「+N」（用户：人多要显示 +N，不许把气泡撑爆）。 */
+/**
+ * 1:1 回应的线上形状（群侧由 Rust 的 `send_group_reaction` 自己拼，因为那条命令收的是
+ * 分开的参数）。字段名必须与 Rust `protocol::ReactionPayload` 逐字一致 ——
+ * 后端会解析并校验它（`parse_reaction_payload`），对不上就是当场报错。
+ * `dmReaction.test.ts` 直接读那份 struct 比对键名，防两侧漂成两个词。
+ */
+export function buildReactionPayload(target: string, emoji: string, add: boolean): string {
+  return JSON.stringify({ target, emoji, add });
+}
+
 export const ROSTER_VISIBLE = 3;
 
 /** 把 actor 列表折成"前 N 个名字 + 还有几人"。名字由调用方给（设备 id 对用户没有意义）。 */

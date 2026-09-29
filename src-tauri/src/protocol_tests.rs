@@ -969,6 +969,131 @@ mod tests {
         );
     }
 
+    /// 1:1 侧还有一张自己的门控表：那条判据也必须"加了位就声明过"，否则功能被自己锁死。
+    /// 上面那条只遍历 `kind_required_feature`，看不见 `dm_required_features` 新加的那一位。
+    #[test]
+    fn every_dm_gated_kind_is_advertised_by_us() {
+        use crate::protocol::{content_features, dm_required_features, WIRE_KINDS};
+        let ours = content_features();
+        let mut bits = 0u32;
+        for (kind, _) in WIRE_KINDS {
+            let need = dm_required_features(kind);
+            assert_eq!(
+                need & !ours,
+                0,
+                "1:1 要求 kind `{kind}` 具备 {need:#b}，但本机 Hello 没全声明 ⇒ 这条消息谁都发不出去"
+            );
+            bits |= need;
+        }
+        assert!(
+            bits & crate::protocol::CONTENT_FEATURE_FLEX_DM_KIND != 0,
+            "分母里必须真的出现新那一位，否则这条判据是空转（说明 legacy 清单把一切都兜住了）"
+        );
+    }
+
+    /// 1:1 门控的具体形状：老 kind 放行、新 kind 要声明、按位不按非零。
+    ///
+    /// 为什么值得单独立一条：这一位挡的不是"显示不好看"，而是**老对端整帧解析失败 +
+    /// 读循环 `Err(_) => break` 断链**（见 commands/window.rs 的考古注释）。
+    /// 判错方向的代价是用户以为网络坏了，而消息一条都没到。
+    #[test]
+    fn dm_gate_requires_flex_kind_for_new_kinds() {
+        use crate::protocol::{
+            dm_allowed_by_features, dm_required_features, CONTENT_FEATURE_FLEX_DM_KIND,
+            CONTENT_FEATURE_MERGE, CONTENT_FEATURE_PULL,
+        };
+        assert_eq!(dm_required_features("text"), 0, "V1 词表内的 kind 不该被 1:1 门控挡住");
+        assert!(dm_allowed_by_features("text", 0), "对端什么都没声明时，普通文本仍然要发得出去");
+
+        assert_eq!(
+            dm_required_features("reaction"),
+            CONTENT_FEATURE_FLEX_DM_KIND,
+            "1:1 发回应必须等对端声明过「能吃任意 kind」"
+        );
+        assert!(!dm_allowed_by_features("reaction", 0), "没握过手 / 已离线 ⇒ 不许发");
+        assert!(
+            !dm_allowed_by_features("reaction", CONTENT_FEATURE_PULL),
+            "按位判定：只带 pull 位推不出解析方式，不许放行"
+        );
+        assert!(dm_allowed_by_features(
+            "reaction",
+            CONTENT_FEATURE_FLEX_DM_KIND
+        ));
+
+        // merge：自己的位 + 蕴含的那一位都要成立（两位不能互相顶）
+        assert_eq!(
+            dm_required_features("merge"),
+            CONTENT_FEATURE_MERGE | CONTENT_FEATURE_FLEX_DM_KIND,
+            "merge 不在冻结的 legacy 清单里 ⇒ 两位都要求"
+        );
+        assert!(
+            !dm_allowed_by_features("merge", CONTENT_FEATURE_PULL | CONTENT_FEATURE_FLEX_DM_KIND),
+            "没有 MERGE 位就不能发 merge，别的位置再满也不行"
+        );
+        assert!(
+            dm_allowed_by_features("reaction", CONTENT_FEATURE_MERGE),
+            "声明过 MERGE ⇒ 它的 kind 已按字符串解析，这一位蕴含 FLEX（否则今天的合并转发会挡死）"
+        );
+    }
+
+    /// 「1:1 要门控」不许顺手变成「群也跟着报版本旧」—— 两处问的不是同一件事。
+    ///
+    /// 群 kind 住在群密钥载荷里、所有已发布版本按自由字符串解析 ⇒ 老成员只是渲染退化，
+    /// 不丢帧。把 reaction 塞进群侧那张表，每次在群里回个表情都会对每个还没升级的成员
+    /// 弹一句「版本较旧」，而那群人今天回应得好好的 —— 这句是假指控。
+    #[test]
+    fn dm_gate_does_not_reach_the_group_audience() {
+        use crate::protocol::{kind_audience, kind_required_feature};
+        assert!(
+            kind_required_feature("reaction").is_none(),
+            "reaction 不许进全局/群侧那张门控表：1:1 的要求由 dm_required_features 单独回答"
+        );
+        let members: Vec<String> = ["old", "me"].iter().map(|s| s.to_string()).collect();
+        let (unsupported, unknown, gated) = kind_audience("reaction", |_| Some(0), &members, "me");
+        assert!(
+            !gated && unsupported.is_empty() && unknown == 0,
+            "群受众对 reaction 必须报「不需要门控」，实际：{unsupported:?} / 未知 {unknown} / gated={gated}"
+        );
+    }
+
+    /// 冻结清单：它每一项都必须真是老版枚举里的变体，且永远只许变小、不许新增。
+    ///
+    /// 为什么钉死内容而不是只钉"存在"：往这里加一项 = 宣称"老对端认得这个 kind"，
+    /// 而这个宣称错了的后果是丢帧 + 断链，且只在对方版本恰好旧时才发生（最难复现的那种）。
+    #[test]
+    fn dm_legacy_kind_list_is_frozen() {
+        use crate::protocol::{is_known_kind, DM_LEGACY_KINDS};
+        assert_eq!(
+            DM_LEGACY_KINDS,
+            &["text", "code", "image", "file", "system"][..],
+            "legacy 清单是 v4.22.34 之前那份枚举的词表，改动它 = 断言老端认得某个 kind"
+        );
+        for k in DM_LEGACY_KINDS {
+            assert!(is_known_kind(k), "legacy 清单里的 {k} 不在 wire 词表里：两份清单已经漂了");
+        }
+    }
+
+    /// 回应载荷在发送侧就要挡住畸形 —— 发出去了折不出来，用户只看到"点了没反应"。
+    #[test]
+    fn reaction_payload_is_validated_before_sending() {
+        use crate::protocol::parse_reaction_payload;
+        let ok = parse_reaction_payload(r#"{ "target": "m1", "emoji": "[赞]", "add": true }"#);
+        assert!(ok.is_ok(), "合法载荷不该被拒：{:?}", ok.err());
+        let p = ok.unwrap();
+        assert_eq!(p.target, "m1");
+        assert!(p.add);
+
+        for (label, body) in [
+            ("不是 JSON", "not-json"),
+            ("缺 target", r#"{ "emoji": "[赞]", "add": true }"#),
+            ("target 是空白", r#"{ "target": "  ", "emoji": "[赞]", "add": true }"#),
+            ("表情不是 [名字] 形态", r#"{ "target": "m1", "emoji": "赞", "add": true }"#),
+        ] {
+            let e = parse_reaction_payload(body);
+            assert!(e.is_err(), "{label} 必须被当场拒掉，实际通过：{body}");
+        }
+    }
+
     /// 群受众统计必须**三态分开**：确知不支持 / 版本未知 / 支持。
     ///
     /// 为什么单独立一条：把"未知"并进"不支持"在 1:1 发送口是对的方向（宁可少发），

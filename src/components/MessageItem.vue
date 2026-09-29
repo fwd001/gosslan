@@ -57,6 +57,9 @@ const props = withDefaults(
     prev?: MessageRecord | null;
     /** 群聊：显示发送者昵称 */
     isGroup?: boolean;
+    /** 本会话是否允许添加/取消回应（群与好友单聊 = true；自聊 = false）。
+     *  刻意与 isGroup 分开：入口开在哪一类会话是**产品口径**，不是「这是不是群」。 */
+    canReact?: boolean;
     /** 在本条消息上方显示未读分割线 */
     showUnreadDivider?: boolean;
     /** 群聊发送者昵称（由父组件解析） */
@@ -89,6 +92,7 @@ const props = withDefaults(
   {
     prev: null,
     isGroup: false,
+    canReact: false,
     showUnreadDivider: false,
     senderName: "",
     groupReaderIds: () => [],
@@ -1111,7 +1115,7 @@ async function copyFileToClipboard() {
              `hidden group-hover/msg:flex`：悬停本条才出现（组名在 `.group/msg` 上，本列在其内 ✓）。 -->
         <button
           ref="reactionBtnRef"
-          v-if="isGroup && !selectMode"
+          v-if="canReact && !selectMode"
           class="tap-safe hover-reveal pointer-events-auto absolute -right-11 top-1/2 z-20 h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition"
           :class="[
             mine ? '-left-11' : '-right-11',
@@ -1328,7 +1332,7 @@ async function copyFileToClipboard() {
     v-if="!isTip"
     :chips="reactions ?? []"
     :mine="mine"
-    :interactive="!!isGroup"
+    :interactive="canReact"
     :class="mine ? 'self-end pr-1' : 'self-start pl-1'"
     @toggle="emit('react', $event)"
   />

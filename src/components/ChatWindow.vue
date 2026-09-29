@@ -498,20 +498,32 @@ function togglePin(msgId: string) {
   });
 }
 
-/** 点 chip：已点过则取消，否则添加。 */
+/**
+ * 点 chip：已点过则取消，否则添加。群与 1:1 都开放（用户 2026-09-29 需求汇总第三条）。
+ *
+ * 「和自己聊天」那一格刻意**不给入口**（canReact 里排掉）：后端那条自聊通路只认 text/code，
+ * 让按钮亮着再报一句"暂不支持图片或文件"是把用户往错的方向支使。要放开得先改那条命令。
+ */
 function toggleReaction(msgId: string, emoji: string) {
   const convId = chat.activeConv;
-  if (!convId?.startsWith("group:")) return;
+  if (!convId) return;
   const mine = hasMyReaction(
     chat.messages[convId] ?? [],
     msgId,
     emoji,
     app.device?.device_id ?? "",
   );
-  void chat.sendReaction(convId.slice(6), msgId, emoji, !mine).catch((e) => {
+  const add = !mine;
+  const send = convId.startsWith("group:")
+    ? chat.sendReaction(convId.slice(6), msgId, emoji, add)
+    : chat.sendDmReaction(convId, msgId, emoji, add);
+  void send.catch((e) => {
     app.toastError(e, t("msg.reactionFail"));
   });
 }
+
+/** 本会话能不能加回应：群、好友单聊都行，自聊不行（见 toggleReaction 上那句）。 */
+const canReact = computed(() => isGroup.value || (isPeerFriend.value && !isSelfChat.value));
 
 // ---------------- 群聊 @ ----------------
 /** @ 选择选项（不含自己）：名字与消息流昵称同源（nicknameOf），插入的 @名字 必须能和渲染端对上。 */
@@ -1251,6 +1263,7 @@ function onLoadMore() {
             :self-mention="selfMention"
             :reactions="reactionMap.get(item.msg_id) ?? []"
             :pinned="pinnedIds.includes(item.msg_id)"
+            :can-react="canReact"
             :select-mode="multiSelect"
             :selected="selectedIds.has(item.msg_id)"
             @quote="quote = $event"

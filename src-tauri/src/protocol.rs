@@ -110,10 +110,28 @@ pub const CONTENT_FEATURE_MERGE: u32 = 1 << 1;
 /// 的又一次应用：V1 内部并不单调。
 pub const CONTENT_FEATURE_FILE_EPOCH: u32 = 1 << 2;
 
+/**
+ * 能力位：**本机的 1:1 接收路径能吃下任意 wire kind**（`ChatMessage.kind` 是字符串，
+ * 不认识的 kind 原样入库 + 显示占位，而不是整帧丢掉）。
+ *
+ * 为什么 1:1 需要这一位而群不需要（见 commands/window.rs 里那段考古结论）：
+ *   · 群 kind 住在群密钥加密的 Gossip 载荷里，接收端按**自由字符串**解析
+ *     （同一份实现逐字存在于 v2.1.2 / v4.3.9 / v4.8.2 / v4.20.0）⇒ 老成员只是渲染退化，不丢帧；
+ *   · 1:1 在 v4.22.34 之前，`ChatMessage.kind` 是**枚举**，不认识的 kind 让整帧解析失败，
+ *     而老端的读循环 `Err(_) => break` ⇒ 丢帧之外还断链。
+ * 所以「能不能往这条 1:1 会话里塞一个新 kind」问的是**对端的解析方式**，与群那一侧不是同一个问题
+ * —— 这也是它不复用 `kind_required_feature` 的原因：把两件事并成一个字段，
+ * 群侧就会对每个还没升级的成员报一句「版本较旧」，而那些人在群里回应得好好的（假指控）。
+ */
+pub const CONTENT_FEATURE_FLEX_DM_KIND: u32 = 1 << 3;
+
 /// 本机支持的内容能力位图。**不参与 Hello 签名**（见 hello_signing_bytes）：
 /// 老端忽略该字段、新端据此决定能不能对它发拉取帧。
 pub fn content_features() -> u32 {
-    CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE | CONTENT_FEATURE_FILE_EPOCH
+    CONTENT_FEATURE_PULL
+        | CONTENT_FEATURE_MERGE
+        | CONTENT_FEATURE_FILE_EPOCH
+        | CONTENT_FEATURE_FLEX_DM_KIND
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -139,6 +157,45 @@ pub fn kind_allowed_by_features(kind: &str, peer_features: u32) -> bool {
         None => true,
         Some(bit) => peer_features & bit != 0,
     }
+}
+
+/** 老版 1:1 解析器认得的 kind（v4.22.34 之前那份枚举的词表）。 */
+pub const DM_LEGACY_KINDS: &[&str] = &["text", "code", "image", "file", "system"];
+
+/**
+ * 往 1:1 会话发这个 kind，需要对端具备哪些能力位（0 = 所有已发布版本都安全）。
+ *
+ * 这是 1:1 侧的**唯一**答案：合并转发的位（`kind_required_feature`）与"能不能塞新 kind"
+ * 在这里合成一个掩码，调用点不再各自拼条件（两处各写一遍子集 = 迟早只改对一边）。
+ * `DM_LEGACY_KINDS` 是**冻结**清单，永远不许往里加东西 —— 加一项就等于宣称
+ * "老端的枚举里有这个变体"，而它要是没有，代价是丢帧 + 断链。
+ */
+pub fn dm_required_features(kind: &str) -> u32 {
+    let mut bits = kind_required_feature(kind).unwrap_or(0);
+    if !DM_LEGACY_KINDS.contains(&kind) {
+        bits |= CONTENT_FEATURE_FLEX_DM_KIND;
+    }
+    bits
+}
+
+/**
+ * 1:1 门控方向与全局那条一致：**不知道就当不支持**（调用方缺条目时传 0）。
+ *
+ * 但 `CONTENT_FEATURE_MERGE` 这一位**蕴含** `CONTENT_FEATURE_FLEX_DM_KIND`：那个位的定义就是
+ * "能收发 kind=merge 的 1:1 帧"，而 merge 从来不是老版那份枚举里的变体 —— 声明得过它，
+ * 就说明它的 `ChatMessage.kind` 已经按字符串解析（v4.22.34 起的那次改动）。
+ * 不写这条推论的代价是**当场挡死今天能用的功能**：所有还没升级到本机这一版、但已经支持
+ * 合并转发的对端，会突然"不支持回应"，而它们的解析方式其实完全吃得下。
+ * 只承认这一条能证的事实：`CONTENT_FEATURE_PULL` / `FILE_EPOCH` 都推不出解析方式，
+ * 所以只带那两位的对端仍然挡下（宁可少发，也不要老端丢帧 + 断链）。
+ */
+pub fn dm_allowed_by_features(kind: &str, peer_features: u32) -> bool {
+    let implied = if peer_features & CONTENT_FEATURE_MERGE != 0 {
+        CONTENT_FEATURE_FLEX_DM_KIND
+    } else {
+        0
+    };
+    dm_required_features(kind) & !(peer_features | implied) == 0
 }
 
 /// 被门控挡下时给用户的那句话（与判据放在一起，免得文案与规则分两处腐烂）。
@@ -254,6 +311,9 @@ pub enum MsgKind {
     /// 由前端按 `is_known_kind` 显示占位（INV-P24 第 2 条），所以"漏一个变体"的代价从
     /// "对方看到一坨裸 JSON"降级成"我们发不出这种消息"。
     Merge,
+    /// 表情回应（静默状态事件）。1:1 也要能回应，所以它必须同时出现在这张发送侧词表里。
+    /// 发往 1:1 时受 `dm_required_features` 门控（见那个函数上那段"群/1:1 解析方式不同"的说明）。
+    Reaction,
 }
 
 impl MsgKind {
@@ -265,6 +325,7 @@ impl MsgKind {
             MsgKind::File => "file",
             MsgKind::System => "system",
             MsgKind::Merge => "merge",
+            MsgKind::Reaction => "reaction",
         }
     }
 
@@ -275,6 +336,7 @@ impl MsgKind {
             "file" => MsgKind::File,
             "system" => MsgKind::System,
             "merge" => MsgKind::Merge,
+            "reaction" => MsgKind::Reaction,
             _ => MsgKind::Text,
         }
     }
@@ -785,6 +847,26 @@ pub struct ReactionPayload {
     pub emoji: String,
     /// true = 添加，false = 取消
     pub add: bool,
+}
+
+/**
+ * 校验一条回应载荷（1:1 发送入口用；群侧的 `send_group_reaction` 收的是分开的参数，
+ * 走的是同一套形态判据 `is_valid_emoji_token`）。
+ *
+ * 为什么要在发送侧挡：`target` 空 = 折叠时这条回应挂在谁身上都不知，接收端只会得到一条
+ * 永远折不出来的事件；载荷干脆不是 JSON 的话，前端 `parseReaction` 会静默返回 null ⇒
+ * 发送方看到一条"发出去了但什么都没有"的消息。发不出去要当场说清楚。
+ */
+pub fn parse_reaction_payload(content: &str) -> Result<ReactionPayload, String> {
+    let p: ReactionPayload =
+        serde_json::from_str(content).map_err(|e| format!("回应载荷解析失败：{e}"))?;
+    if p.target.trim().is_empty() {
+        return Err("回应缺少目标消息".to_string());
+    }
+    if !is_valid_emoji_token(&p.emoji) {
+        return Err("回应表情形态非法".to_string());
+    }
+    Ok(p)
 }
 
 /// 校验一个表情 token 的**形态**（`[名字]`），拒掉空串、超长与控制字符。
