@@ -295,3 +295,73 @@ pub fn upsert_group_file_receive(
     )?;
     Ok(())
 }
+
+// 模块名刻意不叫 tests：本文件被 db.rs 用 include! 贴进 db 命名空间，名字要全局唯一。
+#[cfg(test)]
+mod group_file_delivery_tests {
+    use super::get_group_file_delivery_summary;
+    use crate::db::SCHEMA;
+    use rusqlite::{params, Connection};
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn
+    }
+
+    /// 投递台账的读侧聚合：界面那句"几个人收到 / 几个失败"就来自这一份摘要。
+    /// 这里的四行状态用的是生产自己写进去的那四个取值（schema 注释里列的同一批），
+    /// 不是为测试发明的中间态 —— 本用例只判读侧算数，不判谁去写。
+    fn seed(conn: &Connection, tid: &str, rid: &str, status: &str) {
+        conn.execute(
+            "INSERT OR IGNORE INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at)
+             VALUES(?1, 'g1', 'me', 'f.bin', 10, 'x', 'sending', 1)",
+            params![tid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO group_file_recipients(transfer_id, recipient_id, status, progress, updated_at)
+             VALUES(?1, ?2, ?3, 0.0, 1)",
+            params![tid, rid, status],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn delivery_summary_counts_each_recipient_into_exactly_one_bucket() {
+        let conn = mem();
+        seed(&conn, "t1", "b", "completed");
+        seed(&conn, "t1", "c", "failed");
+        seed(&conn, "t1", "d", "sending");
+        seed(&conn, "t1", "e", "pending");
+        let s = get_group_file_delivery_summary(&conn, "t1").expect("这一单存在，摘要不该是 None");
+        assert_eq!(s.total, 4, "四个人四行台账");
+        assert_eq!(s.completed, 1, "只有 b 完成");
+        assert_eq!(s.failed, 1, "只有 c 失败");
+        assert_eq!(s.waiting, 2, "sending 与 pending 都算「还没到」（漏掉 sending 会把在途中报成零）");
+        assert_eq!(
+            s.completed + s.failed + s.waiting,
+            s.total,
+            "三格互斥且求和等于 total —— 界面拿这三个数画进度条"
+        );
+    }
+
+    #[test]
+    fn delivery_summary_of_unknown_transfer_is_none_not_a_zero_success() {
+        let conn = mem();
+        seed(&conn, "other", "b", "completed");
+        assert!(
+            get_group_file_delivery_summary(&conn, "missing").is_none(),
+            "没有这一单时必须返回 None —— 一份 0/0 的空摘要会被界面当成「没有人要收，已完成」"
+        );
+    }
+
+    #[test]
+    fn delivery_summary_is_scoped_to_one_transfer() {
+        let conn = mem();
+        seed(&conn, "t1", "b", "completed");
+        seed(&conn, "t2", "c", "failed");
+        let s = get_group_file_delivery_summary(&conn, "t1").expect("t1 存在");
+        assert_eq!((s.total, s.completed, s.failed, s.waiting), (1, 1, 0, 0), "别人的行不许串进来");
+    }
+}
