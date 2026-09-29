@@ -1170,3 +1170,37 @@ mod todo_priority_tests {
         assert_eq!(p.priority, "normal");
     }
 }
+
+/// 单张群任务图片的体积闸（用户 2026-09-29：「单张图片的大小可以做一个限制，比如 10MB 以内」）。
+///
+/// 判据放在**纯函数内核**上：两道命令（`todo_image_meta` / `save_todo_image_bytes`）都吃
+/// `AppState`，测试里没有构造路径（同一个理由见 `MAX_OUTGOING_IMAGE_BYTES` 那批用例）。
+#[cfg(test)]
+mod todo_image_size_tests {
+    use super::{MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB, todo_image_size_guard};
+
+    /// 边界：恰好等于上限**放行**（"10MB 以内"含 10MB），超一字节拒。
+    ///
+    /// 这一对是这条闸的全部意义 —— 只测"很大的一张要拒"挡不住把不等号写严一档
+    /// （`>` 改成 `>=` 时只有这一格会红）。
+    #[test]
+    fn limit_is_inclusive_and_one_byte_over_is_rejected() {
+        let exact = MAX_TODO_IMAGE_BYTES as u64;
+        assert!(
+            todo_image_size_guard(exact).is_ok(),
+            "{exact} 正好是上限，判成超限等于把文案里的「以内」读成「不满」"
+        );
+        assert!(todo_image_size_guard(exact + 1).is_err());
+        assert!(todo_image_size_guard(0).is_ok(), "空长度不该在这里判（另有「图片数据为空」）");
+    }
+
+    /// 拒收的文案必须说得出**那个数**：只说"图片过大"用户不知道该压到多少。
+    #[test]
+    fn rejection_names_the_limit() {
+        let err = todo_image_size_guard(MAX_TODO_IMAGE_BYTES as u64 + 1).unwrap_err();
+        assert!(
+            err.contains(&TODO_IMAGE_LIMIT_MB.to_string()),
+            "错误文案没带 MB 上限：{err}"
+        );
+    }
+}

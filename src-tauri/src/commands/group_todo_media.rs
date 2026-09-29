@@ -2,6 +2,34 @@
 // - Todo 图片元数据（todo_image_meta，不落字节）
 // - 群文件在线进度聚合（group_file_online_progress_from）
 
+/// 单张**群任务图片**的字节上限（用户 2026-09-29：「单张图片的大小可以做一个限制，比如 10MB 以内」）。
+///
+/// 为什么定在 10MB 而不是更大：预览读取那一层（`read_content_preview`）的上限是 15MB，
+/// 超过它就直接返回 `TOO_LARGE` 而**不会降级显示** —— 上限压在 15MB 之内，才能保证
+/// "凡是放行的图都能按原始字节原分辨率显示"（这条由 `imageBytes.test.ts` 钉住，
+/// 不靠人记住两个数的大小关系）。
+///
+/// ⚠️ 前端 `MAX_TODO_IMAGE_BYTES`（`src/utils/imageBytes.ts`）**必须等于这里的值**，
+/// 由那份测试读本文件比对；选图 / 粘贴 / 拖入三条入口都汇到前端的同一个家去判。
+pub(crate) const MAX_TODO_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+/// 上面那个上限的 MB 标签（文案里不再各写一份字面量）。
+pub(crate) const TODO_IMAGE_LIMIT_MB: usize = MAX_TODO_IMAGE_BYTES / (1024 * 1024);
+
+/// 待办图片体积闸的**纯函数内核**（命令层要吃 `AppState`，没法在测试里构造，所以判据放这里）。
+///
+/// 口径：**等于**上限放行、**超过**才拒 —— 上限本身是"10MB 以内"（用户 2026-09-29 原话），
+/// 把 10MB 整张图判成超限是把自己的文案读成了严格不等号。
+pub(crate) fn todo_image_size_guard(len: u64) -> Result<(), String> {
+    if len > MAX_TODO_IMAGE_BYTES as u64 {
+        return Err(format!(
+            "单张图片不能超过 {}MB",
+            TODO_IMAGE_LIMIT_MB
+        ));
+    }
+    Ok(())
+}
+
 /// 读一张待办图片的**元数据**（不投递字节）：选图后先拿 `TodoImage` 写进任务定义，
 /// 字节随后经 `send_todo_image` 投递。`id = sha256` 与投递时 content store 的 cid 同源
 /// （同一份文件字节算出的 sha256 必然一致），缩略图才能按 cid 找回。
@@ -24,6 +52,9 @@ pub fn todo_image_meta(
     if !meta.is_file() {
         return Err("不是文件".to_string());
     }
+    // 体积闸放在**这里**而不是只放前端：Android 选图 / 桌面粘贴 / 桌面拖入三条入口最终都要经过
+    // 这道元数据命令，所以它是唯一能一次覆盖三条路的落点（前端的同名判断只是"别把超限的图读进 JS 堆"的前置省功）。
+    todo_image_size_guard(meta.len())?;
     let sha256 = file::sha256_file_hex(p)?;
     let name = p
         .file_name()
@@ -65,12 +96,15 @@ pub fn todo_image_meta(
 /// 之后与选图同一条路：`todo_image_meta`（元数据进任务定义）+ `send_todo_image`（字节走群文件管线）。
 ///
 /// 为什么按 sha256 命名：同一张图反复粘贴天然幂等（同名覆盖），不会在缓存目录里膨胀。
+///
+/// ⚠️ **字节原样落盘，一律不重编码、不缩放**（用户 2026-09-29 要求"图片要是原始那份"）：
+/// 这条链上没有任何有损环节，接收端拿到的是同一份内容（群文件管线按 sha256 校验），
+/// 所以"同步过去变糊"不可能发生在这一步 —— 这里只加体积闸，不加任何图像处理。
 #[tauri::command(async)]
 pub async fn save_todo_image_bytes(
     state: State<'_, Arc<AppState>>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<String, String> {
-    const MAX_PASTE_BYTES: usize = 25 * 1024 * 1024;
     let bytes: Vec<u8> = match request.body() {
         tauri::ipc::InvokeBody::Raw(b) => b.clone(),
         _ => return Err("图片数据格式不正确".to_string()),
@@ -78,9 +112,7 @@ pub async fn save_todo_image_bytes(
     if bytes.is_empty() {
         return Err("图片数据为空".to_string());
     }
-    if bytes.len() > MAX_PASTE_BYTES {
-        return Err("图片过大".to_string());
-    }
+    todo_image_size_guard(bytes.len() as u64)?;
     let ext = sniff_media_ext(&bytes[..bytes.len().min(16)]);
     if !matches!(ext, "jpg" | "png" | "gif" | "webp" | "bmp") {
         return Err("只支持粘贴图片".to_string());

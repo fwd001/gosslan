@@ -324,6 +324,7 @@ fn todo_number_key(group_id: &str) -> String {
 /// - `settings` 的高水位 ⇒ 即便有人删了聊天记录，号也不会降回去（**永不复用**）；
 /// - 扫 `messages` 里 todo / todo_update 载荷的最大 `number` ⇒ **对端自己分配的号**
 ///   本机没写过水位也能看见（Lamport 式：见过就要躲开，否则两边同时建就是同一条 #N）。
+///
 /// 取两者较大；扫到坏 JSON 直接跳过（不能让一条脏行把整个建任务卡死）。
 pub fn todo_number_high_water(conn: &Connection, group_id: &str) -> i64 {
     let stored: i64 = crate::db::get_setting(conn, &todo_number_key(group_id))

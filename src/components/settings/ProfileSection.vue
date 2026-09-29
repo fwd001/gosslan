@@ -4,6 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import { avatarSeedFor } from "@/utils/avatarSeed";
+import { AVATAR_INPUT_LIMIT_MB, AVATAR_INPUT_MAX_BYTES, AVATAR_SIZE, pickAvatarJpeg } from "@/utils/avatarImage";
 import { Camera } from "lucide-vue-next";
 import { t } from "@/i18n";
 
@@ -63,11 +64,10 @@ function onNicknameKeydown(e: KeyboardEvent) {
   }
 }
 
-/** 头像文件大小上限（2MB，原始文件、预处理前校验）。 */
-const MAX_AVATAR_FILE_SIZE = 2 * 1024 * 1024;
-/** 头像输出边长：中心裁剪成正方形后缩放到该尺寸（不放大），PNG 体积小且清晰。 */
-const AVATAR_SIZE = 512;
-
+/**
+ * 头像的体积/压缩口径都住在 `@/utils/avatarImage`（那里有判据）：
+ * 输入按原始文件判（用户 2026-09-29：「限制大小在 10MB 以内」），产出**一律** JPEG 并压到 1MB 以内。
+ */
 async function onAvatarChange(e: Event) {
   const input = e.target as HTMLInputElement;
   const f = input.files?.[0];
@@ -77,8 +77,8 @@ async function onAvatarChange(e: Event) {
     app.toast(t("settings.profile.toast.notImage"), "error");
     return;
   }
-  if (f.size > MAX_AVATAR_FILE_SIZE) {
-    app.toast(t("settings.profile.toast.avatarTooLarge"), "error");
+  if (f.size > AVATAR_INPUT_MAX_BYTES) {
+    app.toast(t("settings.profile.toast.avatarTooLarge", { mb: AVATAR_INPUT_LIMIT_MB }), "error");
     return;
   }
   try {
@@ -110,8 +110,12 @@ async function onAvatarChange(e: Event) {
 }
 
 /**
- * 中心裁剪为正方形 → 缩放到 AVATAR_SIZE（不放大）→ 导出 PNG data URL（无损）。
+ * 中心裁剪为正方形 → 缩放到 AVATAR_SIZE（不放大）→ **JPEG** data URL。
  * 裁剪规则：上下长取宽度、左右长取高度，即以较短边为基准、居中裁成正方形。
+ *
+ * 为什么从 PNG 换成 JPEG（用户 2026-09-29）：PNG 对照片几乎不压缩，一张 512px 的照片 PNG
+ * 能到 300KB+，而头像要跨端广播；JPEG 在同样观感下小一个量级，还顺带把 HEIC 这类
+ * 对端画不出来的格式转成了公共分母。质量按阶梯**从高往低**取第一个够小的档位（见该模块）。
  */
 function processAvatar(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -128,9 +132,16 @@ function processAvatar(file: File): Promise<string> {
         canvas.height = out;
         const ctx = canvas.getContext("2d");
         if (!ctx) throw new Error("no 2d context");
+        // JPEG 没有透明通道：先铺白底，否则带 alpha 的图（logo 那类）整块变黑
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, out, out);
+        // 缩到 512 是这条链上唯一会真正"糊"的一步：默认的重采样在大比例缩小下会丢细节，
+        // `high` 让浏览器走它最好的过滤（用户 2026-09-29 抱怨的"不清晰"里，头像那一半在这儿）
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         ctx.drawImage(img, sx, sy, side, side, 0, 0, out, out);
         URL.revokeObjectURL(url);
-        resolve(canvas.toDataURL("image/png"));
+        resolve(pickAvatarJpeg((q) => canvas.toDataURL("image/jpeg", q)));
       } catch (err) {
         URL.revokeObjectURL(url);
         reject(err);

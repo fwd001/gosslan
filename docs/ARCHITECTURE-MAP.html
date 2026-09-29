@@ -839,8 +839,8 @@ const SEM = {
   delete_group_announcement: { d: "删公告（<code>announcement_delete</code>）。" },
 
   /* ── commands/group_todo_media.rs ── */
-  save_todo_image_bytes: { d: "保存粘贴 / 拖入的图片字节。<b>全仓唯一「不包对象、直接传 <code>Uint8Array</code> 当请求体」的命令</b>（省掉 base64 一次膨胀）。" },
-  todo_image_meta: { d: "由路径算 <code>TodoImage{cid,name,size}</code>（cid=sha256，跨设备寻址）。" },
+  save_todo_image_bytes: { d: "保存<b>粘贴 / 拖入</b>进任务表单的图片字节（原样落盘、不重编码）。<b>全仓唯一「不包对象、直接传 <code>Uint8Array</code> 当请求体」的命令</b>（省掉 base64 一次膨胀）。" },
+  todo_image_meta: { d: "由路径算 <code>TodoImage{cid,name,size}</code>（cid=sha256，跨设备寻址）+ <b>单张 10MB 体积闸</b>（与前端 <code>MAX_TODO_IMAGE_BYTES</code> 同值，由 imageBytes.test.ts 比对）。" },
 
   /* ── commands/groups.rs ── */
   create_group: { d: "建群 + 生成群密钥 + 向每个成员分发（一次调用做完，不留半状态）。", w: "groups · group_members · settings(gk:)" },

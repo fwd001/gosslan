@@ -39,6 +39,20 @@ export const MAX_PASTED_IMAGE_BYTES = 8 * 1024 * 1024;
 export const PASTED_IMAGE_LIMIT_MB = MAX_PASTED_IMAGE_BYTES / (1024 * 1024);
 
 /**
+ * 单张**群任务图片**的字节上限（用户 2026-09-29：「单张图片的大小可以做一个限制，比如 10MB 以内」）。
+ *
+ * ⚠️ 必须等于 Rust 的 `MAX_TODO_IMAGE_BYTES`（`src-tauri/src/commands/group_todo_media.rs`），
+ * 由 `imageBytes.test.ts` 读那份源码比对 —— 与上面那道聊天图片闸同一个做法。
+ *
+ * 为什么前端也要判一遍：后端是在**已经把字节写进缓存目录 / 已经把整份文件算过 sha256**之后
+ * 才拒的；前端这一道只是省掉那次无用功，**不是**权威闸（权威在后端，三条入口都汇过去）。
+ */
+export const MAX_TODO_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/** `MAX_TODO_IMAGE_BYTES` 的文案用标签（MB）。 */
+export const TODO_IMAGE_LIMIT_MB = MAX_TODO_IMAGE_BYTES / (1024 * 1024);
+
+/**
  * `File`/`Blob` → data URL。
  *
  * 放在这里而不是留在 `MessageComposer` 里：粘贴路径要求"事件处理函数内不许有 await 挡在

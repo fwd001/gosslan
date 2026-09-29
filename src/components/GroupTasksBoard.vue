@@ -51,6 +51,7 @@ import {
 import { api } from "@/api";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { popupLeft, popupPlacement, popupWidth } from "@/utils/popupPosition";
+import { MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import { t } from "@/i18n";
 import { Archive, Check, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, ImagePlus, Loader2, Plus, RotateCcw, X } from "lucide-vue-next";
 
@@ -420,7 +421,13 @@ function toggleAssignee(id: string) {
   d.assignees = d.assignees.includes(id) ? d.assignees.filter((a) => a !== id) : [...d.assignees, id];
 }
 
-/** 选图并写入「元数据 + 待投递路径」：元数据随定义跨端同步，字节另走群文件管线。 */
+/**
+ * 选图并写入「元数据 + 待投递路径」：元数据随定义跨端同步，字节另走群文件管线。
+ *
+ * ⚠️ **只有 Android 走这条路**（用户 2026-09-29：「点击添加图片那一块儿…不要展开可以选择图片
+ * 的那个列表…只是起到一个聚焦（的作用），可以 Ctrl+V 粘贴」）。Android 没有剪贴板粘贴入口
+ * （WebView 的 paste 事件拿不到图片），所以那里点击仍然是唯一的添加方式 —— 见 `armImageZone`。
+ */
 async function addImage() {
   const d = draft.value;
   if (!d) return;
@@ -432,7 +439,21 @@ async function addImage() {
   await addImageFromPaths(paths);
 }
 
-/** 公共入口：把若干本地图片路径加进草稿（文件选择器 / 粘贴 / 拖放共用）。 */
+/**
+ * 桌面端「点击 → 进入可粘贴/可拖入状态」的唯一动作（用户 2026-09-29 明确要的交互）。
+ * 粘贴挂在 `document` 上、拖入挂在 webview 事件上，所以这里**不需要**真的抢到焦点才生效 ——
+ * 点亮的是"该按哪一下键 / 该往哪儿放"这个提示，同时把焦点挪进图片区（`tabindex="-1"`）。
+ */
+function armImageZone() {
+  if (isAndroid) {
+    void addImage();
+    return;
+  }
+  pasteArmed.value = true;
+  dropZoneRef.value?.focus({ preventScroll: true });
+}
+
+/** 公共入口：把若干本地图片路径加进草稿（**Android 选图 / 桌面粘贴 / 桌面拖入**三条路汇这里）。 */
 async function addImageFromPaths(paths: string[]) {
   const d = draft.value;
   if (!d) return;
@@ -441,6 +462,12 @@ async function addImageFromPaths(paths: string[]) {
       // Android 给 content://，先落成本地路径；桌面原样返回。
       const local = await api.importPickedFile(p);
       const meta = await api.todoImageMeta(local);
+      // 单张上限的**唯一前端判点**：三条入口都汇到这里，所以不必在各入口各写一遍
+      // （权威闸在后端 `todo_image_size_guard`，同一个常量由 `imageBytes.test.ts` 比对）。
+      if (meta.size > MAX_TODO_IMAGE_BYTES) {
+        app.toast(t("todo.imageTooLarge", { mb: TODO_IMAGE_LIMIT_MB }), "error");
+        continue;
+      }
       d.images.push(meta);
       d.imagePaths[meta.sha256] = local;
     } catch (e) {
@@ -449,25 +476,28 @@ async function addImageFromPaths(paths: string[]) {
   }
 }
 
-// ---------------- 图片的粘贴与拖放（用户 2026-09-17） ----------------
+// ---------------- 图片的粘贴与拖入（用户 2026-09-17；2026-09-29 把"点击"改成只聚焦） ----------------
 // 只在草稿弹窗打开期间挂监听；关闭即全部退订并复位标志。
 
 const dropZoneRef = ref<HTMLElement | null>(null);
+/** 图片区是否已被点击「点亮」（等待粘贴）。纯视觉状态，不参与粘贴能否发生的判断。 */
+const pasteArmed = ref(false);
+/** 拖拽正悬停在图片区上（决定高亮与那句提示）。 */
 const imageDragOver = ref(false);
 let unlistenImageDrop: (() => void) | null = null;
 
-/** 图片区提示：桌面平台支持点击 / 粘贴 / 拖入；**Android 只有点击**（粘贴与拖放都不订阅，见下方 watch）。
+/** 图片区提示：桌面端**粘贴 + 拖入**（点击不再弹选择器，只把这一块点亮）；**Android 只有点击**
+ *  （粘贴与拖放都不订阅，见下方 watch）。
  *  ⚠️ 按**平台**（`isAndroid`）判，不是按 `app.isMobile` —— 后者是 `max-width:767px` 的视口宽度，
- *  窄桌面窗口也会命中，会误把桌面当移动端、把粘贴/拖放一起关掉（用户 2026-09-20「桌面端也不能粘贴文件」）。 */
-const imageHintText = computed(() =>
-  imageDragOver.value
-    ? t("todo.imageDropHere")
-    : isAndroid
-      ? t("todo.imageHintMobile")
-      : t("todo.imageHint"),
-);
+ *  窄桌面窗口也会命中，会误把桌面当移动端、把粘贴/拖入一起关掉（用户 2026-09-20「桌面端也不能粘贴文件」）。 */
+const imageHintText = computed(() => {
+  if (isAndroid) return t("todo.imageHintMobile");
+  if (imageDragOver.value) return t("todo.imageDropHere");
+  const mb = TODO_IMAGE_LIMIT_MB;
+  return pasteArmed.value ? t("todo.imageArmed", { mb }) : t("todo.imageHint", { mb });
+});
 
-/** 拖拽位置是否落在投放区上（Tauri 给的是物理像素，除以 DPR 才能跟 DOM 坐标比）。 */
+/** 拖拽位置是否落在图片区上（Tauri 给的是物理像素，除以 DPR 才能跟 DOM 坐标比）。 */
 function hitDropZone(pos: { x: number; y: number }): boolean {
   const el = dropZoneRef.value;
   if (!el) return false;
@@ -513,6 +543,8 @@ function onDocPaste(e: ClipboardEvent) {
     const bitmap = image;
     void (async () => {
       try {
+        // 剪贴板字节**原样交给后端落盘**（不画到 canvas、不重编码）—— 用户 2026-09-29 要求
+        // 「图片应该是原始的」，这条链上唯一的有损风险就是"顺手在这里压一下"。
         const buf = await bitmap.arrayBuffer();
         const path = await api.saveTodoImageBytes(new Uint8Array(buf));
         await addImageFromPaths([path]);
@@ -538,6 +570,13 @@ function onDocPaste(e: ClipboardEvent) {
   }
 }
 
+/**
+ * 拖入：**加图 + 抑制聊天那侧的接收**（用户 2026-09-29 汇总里明确"支持拖拽图片进入"）。
+ *
+ * ⚠️ 那个 `app.boardDropActive` 不是可有可无的装饰：草稿弹窗叠在聊天窗口上，`ChatWindow` 监的是
+ * **同一路** webview 拖放事件。不置起它，落在图片区的那一下会**顺路把文件当聊天附件发出去**
+ * （不可撤回），而不是"只加进任务"。
+ */
 async function subscribeImageDrop() {
   if (unlistenImageDrop) return;
   try {
@@ -547,7 +586,6 @@ async function subscribeImageDrop() {
       if (p.type === "enter" || p.type === "over") {
         const hit = hitDropZone(p.position);
         imageDragOver.value = hit;
-        // 让 ChatWindow 的聊天拖放让位（否则同一份文件会被当成聊天附件发出去）
         app.boardDropActive = hit;
         return;
       }
@@ -572,10 +610,13 @@ function unsubscribeImageDrop() {
   imageDragOver.value = false;
 }
 
-// 草稿弹窗开/关：接上 / 退订 粘贴与拖放（**Android 两者都不订阅**；按平台判，不按视口宽度）。
+// 草稿弹窗开/关：接上 / 退订粘贴与拖入（**Android 两者都不订阅**；按平台判，不按视口宽度）。
 watch(
   () => !!draft.value,
   (open) => {
+    // 每次开关表单都回到"没点亮"的那一句提示（上一次草稿的状态不该留下）
+    pasteArmed.value = false;
+    imageDragOver.value = false;
     if (isAndroid) return;
     if (open) {
       document.addEventListener("paste", onDocPaste);
@@ -1033,16 +1074,16 @@ watch(
         ></textarea>
       </div>
 
-      <!-- 图片：桌面端点击 / 粘贴 / 拖入（用户 2026-09-17），虚线框是投放区；
-           移动端**只支持点击**，所以不画虚线（虚线在移动端没有可拖的东西，反而误导）。
-           有图时缩略图排在区内；拖入命中时框体高亮。 -->
+      <!-- 图片（用户 2026-09-29 定的交互）：桌面端**点击只负责"点亮/聚焦"，然后 ⌘V/Ctrl+V 粘贴，
+           或把图片拖进来**——点击不再弹文件选择器；Android 没有剪贴板图片 ⇒ 点击仍是选图。
+           虚线框 = 可拖入的目标（拖拽悬停时高亮）；点亮态只换描边色，不加尺寸（避免聚焦那一下文字跳位）。 -->
       <div>
         <div class="mb-1.5 flex items-center justify-between">
           <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.imagesLabel") }}</span>
           <button
             type="button"
             class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="addImage"
+            @click="armImageZone"
           >
             <ImagePlus class="h-3.5 w-3.5" />
             {{ t("todo.addImage") }}
@@ -1053,18 +1094,19 @@ watch(
              会被拦掉，所以这里不写 @drop 之类的 HTML5 拖放属性。 -->
         <div
           ref="dropZoneRef"
-          class="rounded-[var(--gosslan-radius-md)] border transition"
+          tabindex="-1"
+          class="rounded-[var(--gosslan-radius-md)] border transition focus:outline-none"
           :class="isAndroid
             ? 'border-[var(--gosslan-border)]'
-            : imageDragOver
+            : imageDragOver || pasteArmed
               ? 'border-dashed border-[var(--gosslan-primary)] bg-[var(--gosslan-hover)]'
               : 'border-dashed border-[var(--gosslan-border)]'"
         >
           <button
             v-if="draft.images.length === 0"
             type="button"
-            class="w-full cursor-pointer px-3 py-6 text-center text-[11px] leading-relaxed text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
-            @click="addImage"
+            class="w-full cursor-pointer rounded-[var(--gosslan-radius-md)] px-3 py-6 text-center text-[11px] leading-relaxed text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
+            @click="armImageZone"
           >
             {{ imageHintText }}
           </button>

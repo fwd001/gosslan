@@ -6,7 +6,9 @@ import {
   bytesToBase64,
   dataUrlBase64,
   MAX_PASTED_IMAGE_BYTES,
+  MAX_TODO_IMAGE_BYTES,
   PASTED_IMAGE_LIMIT_MB,
+  TODO_IMAGE_LIMIT_MB,
   urlToBase64,
 } from "./imageBytes.ts";
 
@@ -88,6 +90,25 @@ test("urlToBase64：URL 里没有逗号或不是 data: 前缀 ⇒ 不短路（�
 });
 
 /**
+ * 从 Rust 源码里读一个「`数字 * 数字 * 数字`」形式的字节常量。
+ *
+ * 找不到就**指名道姓地报红**（而不是返回 undefined 让后面的比较出一个看不出原因的差值）：
+ * 这类跨语言判据最常见的失效方式不是数值漂了，是那一边改了名 / 换了写法。
+ * 类型同时认 `u64` 和 `usize`（两处声明用的不是同一个类型）。
+ */
+function rustByteConst(rs: string, name: string, file: string): number {
+  const m = new RegExp(`const ${name}: (?:u64|usize) = ([^;]+);`).exec(rs);
+  assert.ok(m, `${file} 里找不到 ${name} —— 改名或改写法了，这道跨语言闸要跟着改`);
+  // 不引 eval：只允许纯数字相乘的字面量
+  const value = m[1]
+    .split("*")
+    .map((t) => Number(t.trim()))
+    .reduce((a, b) => a * b, 1);
+  assert.ok(Number.isFinite(value) && value > 0, `无法解析 ${name} 的上限字面量：${m[1]}`);
+  return value;
+}
+
+/**
  * 跨语言契约：TS 侧的前置体积闸必须等于 Rust 侧的 `MAX_OUTGOING_IMAGE_BYTES`
  * （`src-tauri/src/commands.rs`）。写死两份而不比对，就是"改了那边忘了这边"的
  * 标准剧本 —— 而这道闸存在的意义正是"别把超限的图读进 JS 堆"。
@@ -97,14 +118,56 @@ test("图片上限与 Rust 的 MAX_OUTGOING_IMAGE_BYTES 必须一致", () => {
     join(import.meta.dirname, "..", "..", "src-tauri", "src", "commands.rs"),
     "utf8",
   );
-  const m = /const MAX_OUTGOING_IMAGE_BYTES: u64 = ([^;]+);/.exec(rs);
-  assert.ok(m, "Rust 侧找不到 MAX_OUTGOING_IMAGE_BYTES —— 改名了就要同步这道闸");
-  // 只允许 `数字 * 数字 * 数字` 这种字面量乘积（不引 eval：手写求值）
-  const value = m[1]
+  const value = rustByteConst(rs, "MAX_OUTGOING_IMAGE_BYTES", "commands.rs");
+  assert.equal(MAX_PASTED_IMAGE_BYTES, value, "前后端上限漂移：前端会放行后端要拒的图");
+  assert.equal(PASTED_IMAGE_LIMIT_MB, value / (1024 * 1024));
+});
+
+/**
+ * 同一条跨语言契约的第二格：群任务图片的 10MB 闸（用户 2026-09-29）。
+ *
+ * 后端是权威（`todo_image_meta` / `save_todo_image_bytes` 两条入口都判），前端这一道只是
+ * 少读一次文件 —— 所以两份必须同值：前端放行、后端拒收的表现是"图加进列表了但保存时整条任务报错"，
+ * 而用户看到的只有那句报错。
+ */
+test("群任务图片上限与 Rust 的 MAX_TODO_IMAGE_BYTES 必须一致", () => {
+  const rs = readFileSync(
+    join(import.meta.dirname, "..", "..", "src-tauri", "src", "commands", "group_todo_media.rs"),
+    "utf8",
+  );
+  const value = rustByteConst(rs, "MAX_TODO_IMAGE_BYTES", "group_todo_media.rs");
+  assert.equal(MAX_TODO_IMAGE_BYTES, value, "前后端任务图上限漂移");
+  assert.equal(TODO_IMAGE_LIMIT_MB, value / (1024 * 1024));
+});
+
+/**
+ * 「同步过去会变糊」这一族里唯一能在代码层钉住的那一格：**放行的图必须能按原始字节显示**。
+ *
+ * `read_content_preview` 在文件字节数超过它自己那道 `max_bytes.min(...)` 时返回 `TOO_LARGE`，
+ * 而前端拿到那句**不会降级显示、也不会有第二份图** —— 表现就是"图明明发过去了，界面上一片空白/
+ * 只剩文件名"。所以任务图的体积闸必须**严格小于**显示层那道上限，否则就存在一张
+ * "发得出去、看不了"的图。
+ *
+ * 反向模式：把任一侧的数字改成 10MB ≥ 上限，这一条必须红（它不是同义反复）。
+ */
+test("放行的任务图必须能原分辨率显示（体积闸 < 预览读取上限）", () => {
+  const rs = readFileSync(
+    join(import.meta.dirname, "..", "..", "src-tauri", "src", "commands", "favorites.rs"),
+    "utf8",
+  );
+  const at = rs.indexOf("pub fn read_content_preview");
+  assert.ok(at > 0, "favorites.rs 里找不到 read_content_preview —— 这条判据的锚点断了");
+  // 只看函数开头那一段：那道夹取是 `let max_bytes = max_bytes.min(...)`，在两个点查之前
+  const head = rs.slice(at, at + 1500);
+  const m = /max_bytes\.min\(([^)]+)\)/.exec(head);
+  assert.ok(m, "read_content_preview 不再夹 max_bytes —— 显示层那道上限换了形状，判据要跟着改");
+  const cap = m[1]
     .split("*")
     .map((t) => Number(t.trim()))
     .reduce((a, b) => a * b, 1);
-  assert.ok(Number.isFinite(value) && value > 0, `无法解析 Rust 侧的上限字面量：${m[1]}`);
-  assert.equal(MAX_PASTED_IMAGE_BYTES, value, "前后端上限漂移：前端会放行后端要拒的图");
-  assert.equal(PASTED_IMAGE_LIMIT_MB, value / (1024 * 1024));
+  assert.ok(Number.isFinite(cap) && cap > 0, `无法解析预览上限：${m[1]}`);
+  assert.ok(
+    MAX_TODO_IMAGE_BYTES < cap,
+    `任务图上限 ${MAX_TODO_IMAGE_BYTES} 不低于预览读取上限 ${cap} ⇒ 会出现"发得出去但看不了"的图`,
+  );
 });
