@@ -5838,8 +5838,18 @@ async fn handle_group_file_chunk(
         let Some(r) = recv.get_mut(&transfer_id) else {
             return;
         };
-        if seq != r.next_seq {
-            // 顺序错误：终止当前接收（TCP 有序，跳号/重复即异常）
+        // ⚠️ 群侧以前这里是 `if seq != r.next_seq { 整单失败 }`，注释写的理由是"TCP 有序"。
+        // 那个前提在群里不成立：群文件经**中继扇出**，同一片可以被两条链路各送一次，
+        // 而单聊那一族早就为同一件事付过学费（`file.rs` 里 `chunk_seq_decision` 的注释：
+        // 把重复/迟到当致命 ⇒ 整单永远拼不齐）。规则只许有一份 ⇒ 这里直接调那个纯函数。
+        let seq_call = file::chunk_seq_decision(seq, r.next_seq);
+        if seq_call == file::ChunkSeq::Duplicate {
+            // 重复/迟到片：与单聊同一处置（不写盘、不打死、不回错误），下一片照常进来。
+            drop(recv);
+            return;
+        }
+        if seq_call == file::ChunkSeq::Gap {
+            // 真跳号：中间确实缺片，只能靠重传 ⇒ 终止这一单。
             drop(recv);
             fail_group_file_chunk(state, &transfer_id);
             return;

@@ -6,7 +6,7 @@
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_seq_decision, classify_file_subtype, clear_file_wire_progress_in, derive_file_name,
+        chunk_exceeds_declared, chunk_seq_decision, classify_file_subtype, clear_file_wire_progress_in, derive_file_name,
         file_peer_key, receive_is_stale, safe_file_name, safe_transfer_id, unique_path,
         wire_progress_bytes, ChunkSeq, WireLedger, FILE_RECEIVE_IDLE_ABORT_MS,
         MAX_FILE_OUTBOX_RETRIES,
@@ -1071,28 +1071,68 @@ mod tests {
         }
     }
 
-    /// 模拟 handle_group_file_chunk 的单分片处理：seq 校验 → 解密 → 大小校验 → 哈希/写盘。
-    /// 返回 Err 表示该分片被拒绝（调用方应终止接收）。
+    /// 群分片处理的夹具：**两道判定都调生产侧的纯函数**，不再在这里抄一份规则。
+    ///
+    /// 为什么必须这样写（这条测试自己就是反面教材）：原来这个夹具里写的是
+    /// `if seq != r.next_seq { return Err(..) }` —— 那是对生产码那段内联判断的**抄本**，
+    /// 于是它钉的是抄本：把生产侧改成"重复忽略"，这条用例照样全绿，
+    /// 而矩阵与 protocol-invariants 却拿它的名字当"群侧已覆盖"的证据（假覆盖）。
+    /// 现在 seq 走 [`chunk_seq_decision`]、越界走 [`chunk_exceeds_declared`]，
+    /// 生产侧改规则 ⇒ 这里当场跟着红。
+    ///
+    /// 第三种结局用 `Ignored` 表达（重复片：不写盘、不报错、不终止），
+    /// 与生产侧 `ChunkSeq::Duplicate` 那一支一一对应。
+    #[derive(Debug, PartialEq)]
+    enum ChunkOutcome {
+        Written(f64),
+        Ignored,
+        Fatal(String),
+    }
+
+    /// 断言口：这一片**必须被写入**，并把进度交回去；其它结局直接 panic。
+    fn must_write(o: ChunkOutcome) -> f64 {
+        match o {
+            ChunkOutcome::Written(p) => p,
+            other => panic!("期望写入，实得 {other:?}"),
+        }
+    }
+
+    /// 断言口：这一片**必须致命**（真跳号 / 越界 / 解不开）。
+    fn must_fatal(o: ChunkOutcome) {
+        assert!(
+            matches!(o, ChunkOutcome::Fatal(_)),
+            "期望致命结局，实得 {o:?}"
+        );
+    }
+
     fn receive_group_chunk(
         r: &mut crate::state::FileReceiver,
         seq: u32,
         sealed: &[u8],
-    ) -> Result<f64, String> {
+    ) -> ChunkOutcome {
         use std::io::Write;
-        if seq != r.next_seq {
-            return Err("分片顺序错误".to_string());
+        match chunk_seq_decision(seq, r.next_seq) {
+            ChunkSeq::Duplicate => return ChunkOutcome::Ignored,
+            ChunkSeq::Gap => {
+                return ChunkOutcome::Fatal("文件分片顺序错误".to_string());
+            }
+            ChunkSeq::Accept => {}
         }
-        let plaintext = crypto::open_symmetric(&r.file_key, sealed)
-            .ok_or_else(|| "分片解密失败".to_string())?;
-        if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
-            return Err("超出声明大小".to_string());
+        let plaintext = match crypto::open_symmetric(&r.file_key, sealed) {
+            Some(p) => p,
+            None => return ChunkOutcome::Fatal("分片解密失败".to_string()),
+        };
+        if chunk_exceeds_declared(r.size, r.received, plaintext.len() as u64) {
+            return ChunkOutcome::Fatal("超出声明大小".to_string());
         }
         use sha2::Digest;
         r.hasher.update(&plaintext);
-        r.file.write_all(&plaintext).map_err(|e| e.to_string())?;
+        if let Err(e) = r.file.write_all(&plaintext) {
+            return ChunkOutcome::Fatal(format!("写盘失败: {e}"));
+        }
         r.received += plaintext.len() as u64;
         r.next_seq += 1;
-        Ok(if r.size == 0 {
+        ChunkOutcome::Written(if r.size == 0 {
             1.0
         } else {
             (r.received as f64 / r.size as f64).min(1.0)
@@ -1109,7 +1149,7 @@ mod tests {
         let mut last_progress = 0.0;
         for (seq, chunk) in original.chunks(400).enumerate() {
             let sealed = crypto::seal_symmetric(&file_key, chunk).unwrap();
-            let progress = receive_group_chunk(&mut r, seq as u32, &sealed).unwrap();
+            let progress = must_write(receive_group_chunk(&mut r, seq as u32, &sealed));
             assert!(progress > last_progress && progress <= 1.0);
             last_progress = progress;
         }
@@ -1119,20 +1159,75 @@ mod tests {
         let _ = std::fs::remove_file(&r.tmp_path);
     }
 
-    /// 9+10. 跳号（0→2）与重复 seq（0→0）都被拒绝。
+    /// 9+10. **跳号致命、重复忽略**（群侧与单聊同一份规则），而且重复之后下一片照常能进来。
+    ///
+    /// 这条改的是规格而不只是实现：群里同一片经中继会被送两次，把它当致命就等于
+    /// "群里收到的文件注定失败"。最后一行是这条判据的重点 —— 忽略必须是**可恢复的忽略**。
     #[test]
-    fn group_receive_rejects_gap_and_duplicate_seq() {
+    fn group_receive_rejects_gap_but_ignores_duplicate_seq() {
         let file_key = crypto::random_key();
-        let mut r = group_receiver("seq-bad", 4096, hex_of(b"whatever"), file_key);
-        let sealed = crypto::seal_symmetric(&file_key, b"chunk0").unwrap();
+        let mut r = group_receiver("seq-mixed", 4096, hex_of(b"whatever"), file_key);
+        let c0 = crypto::seal_symmetric(&file_key, b"chunk0").unwrap();
+        let c1 = crypto::seal_symmetric(&file_key, b"chunk1").unwrap();
 
-        // seq 0 成功
-        receive_group_chunk(&mut r, 0, &sealed).unwrap();
-        // 跳号 2 → 拒绝
-        assert!(receive_group_chunk(&mut r, 2, &sealed).is_err());
-        // 重复 0 → 拒绝
-        assert!(receive_group_chunk(&mut r, 0, &sealed).is_err());
+        assert!(matches!(
+            receive_group_chunk(&mut r, 0, &c0),
+            ChunkOutcome::Written(_)
+        ));
+        // 重复 0 ⇒ 忽略：不写盘、不报错、next_seq 不动
+        assert_eq!(receive_group_chunk(&mut r, 0, &c0), ChunkOutcome::Ignored);
+        assert_eq!(r.next_seq, 1, "重复片不许推进序号（否则下一片会被判成跳号）");
+        // 紧接着的 1 必须照常收下 —— 只忽略不可恢复的话，这一行会红
+        assert!(matches!(
+            receive_group_chunk(&mut r, 1, &c1),
+            ChunkOutcome::Written(_)
+        ));
+        // 真跳号（要 3 却给 5）⇒ 仍然致命
+        assert!(matches!(
+            receive_group_chunk(&mut r, 5, &c1),
+            ChunkOutcome::Fatal(_)
+        ));
         let _ = std::fs::remove_file(&r.tmp_path);
+    }
+
+    /// 群侧**必须**调那份共享规则，不许在自己文件里另写一遍 `seq != next_seq`。
+    /// （形状判据：本仓撞过太多次"点名式判据 = 半个守卫"，这条钉的是"只有一个家"。）
+    #[test]
+    fn group_chunk_seq_rule_has_exactly_one_home() {
+        let transport = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/network/transport.rs"
+        ))
+        .expect("读不到 transport.rs ⇒ 这条判据失去落点");
+        let at = transport
+            .find("fn handle_group_file_chunk")
+            .expect("群分片入口改名了 ⇒ 同步改这条判据");
+        // 窗口取"到下一个函数头为止"，而不是拍一个固定字符数：
+        // 固定窗口会盖不住真正的分片判断（那条函数有 400+ 行），也会越界读到邻居函数。
+        let rest = &transport[at..];
+        let next_fn = rest[10..]
+            .find("\nasync fn ")
+            .map(|i| i + 10)
+            .unwrap_or_else(|| rest.len());
+        let body = &rest[..next_fn];
+        assert!(
+            body.contains("chunk_seq_decision"),
+            "群分片入口没有走那份共享规则 ⇒ 规则又分成两个家"
+        );
+        // 比"抄本回来了"之前先剥掉注释：这一族判据第一次跑就红在我自己写的那句
+        // "以前这里是 if seq != r.next_seq"上 —— 拿原文子串比代码，等于把解释当代码。
+        let code_only: String = body
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code_only.contains("seq != r.next_seq"),
+            "群分片入口里还留着自写的 seq 比较 ⇒ 抄本回来了"
+        );
     }
 
     /// 12. 分片总明文超过声明大小 → 拒绝（防恶意 sender 溢出写）。
@@ -1142,10 +1237,10 @@ mod tests {
         let mut r = group_receiver("oversize", 10, hex_of(b"0123456789"), file_key);
         // 第一片 6 字节 OK
         let s0 = crypto::seal_symmetric(&file_key, b"012345").unwrap();
-        receive_group_chunk(&mut r, 0, &s0).unwrap();
+        must_write(receive_group_chunk(&mut r, 0, &s0));
         // 第二片 6 字节：6+6 > 10 → 拒绝
         let s1 = crypto::seal_symmetric(&file_key, b"abcdef").unwrap();
-        assert!(receive_group_chunk(&mut r, 1, &s1).is_err());
+        must_fatal(receive_group_chunk(&mut r, 1, &s1));
         let _ = std::fs::remove_file(&r.tmp_path);
     }
 
@@ -1158,7 +1253,7 @@ mod tests {
         let mut r = group_receiver("wrong-key", 1024, hex_of(b"x"), wrong_key);
         let sealed = crypto::seal_symmetric(&right_key, b"secret chunk").unwrap();
         // 接收端持有 wrong_key：解密失败 → handle_group_file_chunk 走 fail 收尾
-        assert!(receive_group_chunk(&mut r, 0, &sealed).is_err());
+        must_fatal(receive_group_chunk(&mut r, 0, &sealed));
         let _ = std::fs::remove_file(&r.tmp_path);
     }
 
@@ -1244,7 +1339,7 @@ mod tests {
         );
         for (seq, chunk) in original.chunks(700).enumerate() {
             let sealed = crypto::seal_symmetric(&file_key, chunk).unwrap();
-            receive_group_chunk(&mut r, seq as u32, &sealed).unwrap();
+            must_write(receive_group_chunk(&mut r, seq as u32, &sealed));
         }
         assert_eq!(
             r.received as f64 / r.size as f64,
@@ -1265,7 +1360,7 @@ mod tests {
         let file_key = crypto::random_key();
         let mut r = group_receiver("done-short", 1024, hex_of(b"0123456789"), file_key);
         let sealed = crypto::seal_symmetric(&file_key, b"012345").unwrap();
-        receive_group_chunk(&mut r, 0, &sealed).unwrap(); // 只收 6 字节 < 1024
+        must_write(receive_group_chunk(&mut r, 0, &sealed)); // 只收 6 字节 < 1024
 
         let part = r.tmp_path.clone();
         let err = finalize_group_receive(r).unwrap_err();
@@ -1279,7 +1374,7 @@ mod tests {
         let file_key = crypto::random_key();
         let mut r = group_receiver("done-mismatch", 8, hex_of(b"deadbeef"), file_key);
         let sealed = crypto::seal_symmetric(&file_key, b"content8").unwrap();
-        receive_group_chunk(&mut r, 0, &sealed).unwrap(); // size 对但内容不同
+        must_write(receive_group_chunk(&mut r, 0, &sealed)); // size 对但内容不同
 
         let part = r.tmp_path.clone();
         let err = finalize_group_receive(r).unwrap_err();
@@ -1293,7 +1388,7 @@ mod tests {
         let file_key = crypto::random_key();
         let mut r = group_receiver("done-rename", 4, hex_of(b"data"), file_key);
         let sealed = crypto::seal_symmetric(&file_key, b"data").unwrap();
-        receive_group_chunk(&mut r, 0, &sealed).unwrap();
+        must_write(receive_group_chunk(&mut r, 0, &sealed));
 
         // final_path 指向一个已存在的目录 → rename 必然失败
         let dir = std::env::temp_dir().join(format!("gosslan-test-dir-{}", std::process::id()));

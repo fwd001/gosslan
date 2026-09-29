@@ -431,6 +431,7 @@ network::file::tests::file_cancel_keys_are_scoped_per_recipient
 network::file::tests::file_chunk_encrypt_roundtrip
 network::file::tests::file_offer_sealed_key_roundtrip
 network::file::tests::full_transfer_lifecycle_still_completes
+network::file::tests::group_chunk_seq_rule_has_exactly_one_home
 network::file::tests::group_chunks_use_distinct_nonces
 network::file::tests::group_done_empty_file_creates_zero_byte_file
 network::file::tests::group_done_rename_failure_fails
@@ -443,7 +444,7 @@ network::file::tests::group_file_done_roundtrip_preserves_fields
 network::file::tests::group_file_key_rejects_wrong_key_or_tampered_ciphertext
 network::file::tests::group_file_key_roundtrip_with_group_key
 network::file::tests::group_file_keys_distinct_across_transfers
-network::file::tests::group_receive_rejects_gap_and_duplicate_seq
+network::file::tests::group_receive_rejects_gap_but_ignores_duplicate_seq
 network::file::tests::group_receive_rejects_oversize
 network::file::tests::group_receive_rejects_wrong_file_key
 network::file::tests::group_receive_seq_progress_and_part_writes

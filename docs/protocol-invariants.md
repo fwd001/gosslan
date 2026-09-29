@@ -617,7 +617,7 @@ sender_wall_clock 直接决定消息顺序
 receiver 纠正/猜测 sender 时钟
 ```
 
-- 钩子：`db::tests::conversation_clock_is_monotonic` `db::tests::clear_boundary_blocks_old_group_messages` `db::tests::latest_page_breaks_seq_ties_by_id_exactly_like_the_ascending_query` `network::file::tests::group_receive_rejects_gap_and_duplicate_seq`
+- 钩子：`db::tests::conversation_clock_is_monotonic` `db::tests::clear_boundary_blocks_old_group_messages` `db::tests::latest_page_breaks_seq_ties_by_id_exactly_like_the_ascending_query` `network::file::tests::group_receive_rejects_gap_but_ignores_duplicate_seq` `network::file::tests::group_chunk_seq_rule_has_exactly_one_home`
 
 ---
 
