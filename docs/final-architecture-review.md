@@ -509,6 +509,13 @@ store 说亮了 ⇒ 界面上真看得见、整行的 accessible name 里真有�
    去掉按 `transfer_id` 过滤 ⇒ 红两条（第一条的计数也一起散）⇒ 三条都不是空转。
    ⚠️ 这组**只判读侧算数**：台账行由谁写、什么时候推进，仍由既有那组 per-recipient 用例与 `--round=gfile` 那一轮管，
    别把这三条读成"投递链判完了"。复跑 `cd src-tauri && cargo test --lib delivery_summary`（现跑 3 passed）。
+   ★ 同一把尺子又兑现一格：`db/file_offline.rs::delete_file_outbox_for_peer`（删好友时顺带清那一位的待发文件队列，
+   唯一调用点在 `commands/friends.rs:116` 且是 `.ok()` 吞错）此前也无判据 ⇒ 补两条（`file_outbox_peer_tests`）。
+   **作用面**是这一格真正贵的事：那句 SQL 删错的代价是"另一个人的在途文件被静默取消"，界面看不见。
+   变异实测：去掉 `WHERE peer_id = ?1` ⇒ 两条用例**都**红（不是单点，如实记）。
+   ⚠️ 第二条里"零行命中也要 Ok"那一半**今天仍无变异证明**：我第二次改的是"没删到就 return Err"，
+   而那次改完**编译不过** ⇒ 编译红不算语义红（正是本文件反复写的那条纪律，这次轮到我自己撞）。
+   那一半现在只是"钉住今天的行为"，不许读成"已证明会失败"。
 
 ---
 

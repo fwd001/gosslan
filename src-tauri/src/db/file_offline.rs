@@ -174,3 +174,62 @@ pub fn delete_file_outbox_for_peer(conn: &Connection, peer_id: &str) -> Result<(
     )?;
     Ok(())
 }
+
+// 模块名刻意不叫 tests：本文件被 db.rs 用 include! 贴进 db 命名空间，名字要全局唯一。
+#[cfg(test)]
+mod file_outbox_peer_tests {
+    use super::delete_file_outbox_for_peer;
+    use crate::db::SCHEMA;
+    use rusqlite::{params, Connection};
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn
+    }
+
+    fn seed(conn: &Connection, tid: &str, peer: &str) {
+        conn.execute(
+            "INSERT INTO file_outbox(transfer_id, peer_id, group_id, local_path, name, size, status, attempts, next_attempt_at, created_at)
+             VALUES(?1, ?2, NULL, '/tmp/x', 'x.bin', 10, 'pending', 0, 1, 1)",
+            params![tid, peer],
+        )
+        .unwrap();
+    }
+
+    fn count(conn: &Connection, peer: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM file_outbox WHERE peer_id = ?1",
+            params![peer],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    }
+
+    /// 删好友时会顺带清这一位的待发文件队列（`commands/friends.rs` 那一步）。
+    /// 这里钉的是**作用面**：只许动被点名的那一位，别的人一行都不许少 ——
+    /// 这一句删错的代价是"另一个人的在途文件被静默取消"，而那件事用户界面上看不见。
+    #[test]
+    fn delete_for_peer_clears_only_that_peer() {
+        let conn = mem();
+        seed(&conn, "t-a1", "alice");
+        seed(&conn, "t-a2", "alice");
+        seed(&conn, "t-b1", "bob");
+        delete_file_outbox_for_peer(&conn, "alice").unwrap();
+        assert_eq!(count(&conn, "alice"), 0, "被点名那两位的队列要清空");
+        assert_eq!(count(&conn, "bob"), 1, "别人的在途文件一行都不许少");
+    }
+
+    /// 反例输入：没有匹配行时必须是 Ok。调用方那一步写的是 `.ok()`（吞错），
+    /// 一旦这里改成"没删到就报错"，那一次清理会被记成失败而没人重试 —— 好友行已经删掉了。
+    #[test]
+    fn delete_for_unknown_peer_is_ok_not_an_error() {
+        let conn = mem();
+        seed(&conn, "t-b1", "bob");
+        assert!(
+            delete_file_outbox_for_peer(&conn, "ghost").is_ok(),
+            "零行命中也要 Ok（幂等），否则调用方那步吞掉的错误会变成永久残留"
+        );
+        assert_eq!(count(&conn, "bob"), 1, "顺带确认它没把别人的行带走");
+    }
+}
