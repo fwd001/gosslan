@@ -1426,6 +1426,10 @@ export const useChatStore = defineStore("chat", () => {
       images: patch.images ?? item.images,
       archived: patch.archived,
       priority: patch.priority,
+      // category 曾被**漏在这一行之外**：patch 类型里声明了它、api 也收它、后端也存它，
+      // 但这里没转发 ⇒ 选完类型弹「已更新」而库里一字未动，类型检查与全量层都拦不住。
+      // 键集合的对账由 src/utils/storeContract.test.ts 那条判据负责，别再靠人眼数。
+      category: patch.category,
     });
     enqueueMessage(rec);
   }

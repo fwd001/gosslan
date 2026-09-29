@@ -683,3 +683,45 @@ test("返回 MessageRecord 的每条命令，调用点必须把结果 enqueueMes
   );
   assert.deepEqual(missing, [], "这些调用点必须把返回的消息记录塞进 store：\n" + missing.join("\n"));
 });
+/**
+ * 结构判据：store 的 `updateTodo` 转给命令的键集合，必须覆盖它自己 `patch` 声明的每一个键。
+ *
+ * 为什么必须机器钉（真实事故形状）：`category` 在 patch 类型里声明了、`api.updateGroupTodo`
+ * 的入参里也有、后端命令与载荷都已支持，唯独 store 转发的那个对象字面量**少写一行** ⇒
+ * 界面弹「已更新」的成功提示，而库里一字未动，重开弹窗就弹回原值。
+ * 这条链上每一层单独看都"对"：TS 不会红（Partial 的键本来就可传可不传）、
+ * 命令层收不到值就沿用库里那份（这是**设计**）、后端测试全绿 ⇒ 只有"键集合对账"看得见它。
+ *
+ * ⚠️ 判据故意**只核这一对**（`updateTodo` 的声明块 vs 它的转发块）：
+ * 想把这套规则推广到所有 api 调用点，得先解决"怎么在不用 AST 的前提下不写出自造解析器的假阳性"
+ * —— 这一版不做那件事，别把这条读成"所有 patch 都对过账"。
+ */
+test('store 的 updateTodo 不许漏转 patch 里声明过的键（category 那次事故的锁）', () => {
+  // 用这份文件自己的 stripComments：注释里提到过那个键名，不剥就会自己命中自己
+  const storeSrc = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const fnStart = storeSrc.indexOf("async function updateTodo(");
+  assert.ok(fnStart >= 0, "找不到 updateTodo ⇒ 这条判据失去落点（改名要同步改这里）");
+  const body = storeSrc.slice(fnStart, storeSrc.indexOf("enqueueMessage(rec)", fnStart) + 20);
+
+  // 声明块：patch: Partial<{ ... }> = {}
+  const declBlock = body.slice(body.indexOf("Partial<{"), body.indexOf("}> = {}"));
+  assert.ok(declBlock.length > 20, "Partial 声明块没抠出来 ⇒ 形状变了，判据会空转");
+  const declared = [...declBlock.matchAll(/^\s{6}(\w+):/gm)].map((m) => m[1]);
+
+  // 转发块：api.updateGroupTodo(gid..., { key: ..., ... })
+  const callAt = body.indexOf("api.updateGroupTodo(");
+  assert.ok(callAt >= 0, "转发调用点没找到 ⇒ 同上");
+  const argBlock = body.slice(body.indexOf("{", callAt), body.indexOf("});", callAt) + 2);
+  const forwarded = [...argBlock.matchAll(/^\s{6}(\w+):/gm)].map((m) => m[1]);
+
+  assert.ok(declared.length >= 7, `声明的键太少（${declared.length}）⇒ 抠到的不是那一块`);
+  for (const k of declared) {
+    assert.ok(forwarded.includes(k), `patch 声明了 ${k} 但没转发给命令 ⇒ 这一格改了等于没改`);
+  }
+  // 阳性对照：把 category 那一行从源码文本里摘掉，判据必须报缺
+  const mutated = body.replace(/^\s*category: patch\.category,\n/gm, "");
+  assert.notEqual(mutated, body, "对照那条替换没生效 ⇒ 这条对照什么都没测");
+  const fwdMutated = [...mutated.slice(body.indexOf("{", mutated.indexOf("api.updateGroupTodo("))).matchAll(/^\s{6}(\w+):/gm)].map((m) => m[1]);
+  assert.ok(!fwdMutated.includes("category"), "摘掉之后必须看不见 category ⇒ 否则判据是恒过的");
+  assert.ok(!declared.every((k) => fwdMutated.includes(k)), "摘掉之后 declared ⊆ forwarded 必须被打破");
+});
