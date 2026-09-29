@@ -206,6 +206,8 @@ export const api = {
       archived?: boolean;
       /** 三档之一；不传 = 这次不动优先级。 */
       priority?: string;
+      /** 类型三档之一；不传 = 这次不动类型（与 priority 同口径：改状态不会顺手把类型刷掉）。 */
+      category?: string;
     },
   ) =>
     invoke<MessageRecord>("update_group_todo", {
@@ -219,6 +221,7 @@ export const api = {
       images: patch.images ?? null,
       archived: patch.archived ?? null,
       priority: patch.priority ?? null,
+      category: patch.category ?? null,
     }),
   /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
   pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>

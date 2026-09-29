@@ -955,6 +955,18 @@ pub struct TodoPayload {
     /// 谁能改：创建者 / 群主 / 当前被指派人（命令层的宽档，见 `may_change_todo`）。
     #[serde(default = "default_todo_priority")]
     pub priority: String,
+    /// 任务**类型**（三档：`task` 普通任务 / `requirement` 需求 / `bug` 缺陷，
+    /// 取值见 [`TODO_CATEGORIES`]）。列表里三者同列，靠 tag 区分（用户 2026-09-29）。
+    ///
+    /// 字段名刻意**不叫 `kind`**：本仓的 `kind` 固定指线上消息类型（`WIRE_KINDS`），
+    /// 载荷里再来一个同名会在同一段代码里撞车。
+    ///
+    /// 缺省 = 普通任务 ⇒ 这一版之前的历史任务、以及旧版本对端发来的载荷，读出来是「普通任务」，
+    /// 不是「没类型」（与 `priority` 同一口径：把缺数据读成第三种状态会让界面空白或瞎猜）。
+    /// ⚠️ 与消息层的 `kind` 无关：这条任务的类型改动仍然走 `todo_update` 那条静默通道，
+    /// **不新增消息类型**（见 [`crate::protocol::WIRE_KINDS`] 的「不许扩散」约束）。
+    #[serde(default = "default_todo_category")]
+    pub category: String,
     /// 群内**固定**任务编号（1 起递增、组内唯一、永不复用）。
     ///
     /// 分配只有一处（`db::next_todo_number`），**创建那一刻**定下来；之后每一次改状态 /
@@ -1005,6 +1017,24 @@ pub fn default_todo_priority() -> String {
 /// 优先级取值是否合法（命令层校验用；未知值一律拒收，与状态同口径）。
 pub fn todo_priority_is_valid(s: &str) -> bool {
     TODO_PRIORITIES.contains(&s)
+}
+
+/// 任务**类型**的唯一取值表（三档，用户 2026-09-29：任务 / 需求 / 缺陷，同一张列表用 tag 区分）。
+///
+/// 与前端 `src/utils/todos.ts` 的 `TODO_CATEGORIES` 必须同序同值，由
+/// `src/utils/messageKinds.test.ts` 读本文件逐项比对（与 `TODO_PRIORITIES` 同一套跨语言契约，
+/// 含**缺省值**：旧载荷没有这一格时两侧必须回落成同一个类型）。
+/// 加第四种 = 两张表各加一个值 + 前端 label/class 两张表补齐；只改一侧当场红。
+pub const TODO_CATEGORIES: [&str; 3] = ["task", "requirement", "bug"];
+
+/// 缺省类型 = 普通任务。也是载荷里 `category` 缺失时的解析回落值。
+pub fn default_todo_category() -> String {
+    "task".to_string()
+}
+
+/// 类型取值是否合法（命令层校验用；未知值一律拒收，与状态/优先级同口径）。
+pub fn todo_category_is_valid(s: &str) -> bool {
+    TODO_CATEGORIES.contains(&s)
 }
 
 /// 投票的**定义**层（`kind = "poll"`）。结构与任务同构。

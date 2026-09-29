@@ -65,8 +65,21 @@ pub async fn send_group_todo(
     assignees: Vec<String>,
     description: Option<String>,
     images: Option<Vec<crate::protocol::TodoImage>>,
+    category: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
+    // 类型只在**给了值**时校验；没给就是缺省那一档（旧前端不传这一格也要能建任务）。
+    // 非法值明确拒绝、不静默回落：静默回落会让"界面给出一个后端不认的值"变成一条悄悄存成
+    // 普通任务的需求，而用户看不出自己选错了。
+    let category = match category {
+        Some(c) => {
+            if !crate::protocol::todo_category_is_valid(&c) {
+                return Err("任务类型不合法".to_string());
+            }
+            c
+        }
+        None => crate::protocol::default_todo_category(),
+    };
     let title = title.trim().to_string();
     if title.is_empty() {
         return Err("任务标题不能为空".to_string());
@@ -93,6 +106,7 @@ pub async fn send_group_todo(
         status: crate::protocol::default_todo_status(),
         creator: s.device_id.clone(),
         priority: crate::protocol::default_todo_priority(),
+        category,
         deleted: false,
         description,
         images,
@@ -227,7 +241,7 @@ fn same_images(
 /// 一次改动请求里需要**与库里最新定义逐字段比对**的那些字段。
 ///
 /// 为什么打包成一个入参：这两条窄档的判据都是"除了一位别的都不许动"，
-/// 比对的字段一共七个；按位置参数摊开就是十个入参（读调用点时看不出谁是谁），
+/// 比对的字段一共八个；按位置参数摊开就是十个入参（读调用点时看不出谁是谁），
 /// 抽成结构体之后"窄"这件事本身就是类型说的。
 struct TodoEdit<'a> {
     deleted: bool,
@@ -238,6 +252,7 @@ struct TodoEdit<'a> {
     images: &'a [crate::protocol::TodoImage],
     archived: Option<bool>,
     priority: &'a str,
+    category: &'a str,
 }
 
 /// 本次请求是否**只动归档位**：其余字段与库里最新定义逐字相同，且归档值确实翻转了。
@@ -255,6 +270,8 @@ fn archive_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> 
         && same_images(e.images, &def.images)
         // 只改优先级不算"只动归档位"：那条窄档对整个群都放行，优先级不该顺着它进去
         && e.priority == def.priority
+        // 类型同理：需求改成缺陷、缺陷改成普通任务，都是**内容改动**不是归档
+        && e.category == def.category
 }
 
 /// 本次请求是否**只是"还原"**：库里状态是「完成」，请求把它退回「待办」，其余字段逐字相同。
@@ -272,6 +289,11 @@ fn reopen_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> b
         && e.assignees == def.assignees
         && e.description == def.description
         && same_images(e.images, &def.images)
+        // ⚠️ 这两格以前**没比**：那条写归档窄档的理由（"对整个群放行的口子不该让人顺着改内容"）
+        // 对还原这一档同样成立 —— 漏比的后果是任何成员都能拿一次 `done → todo` 顺带把优先级
+        // 或类型改掉，而界面上只看得到"有人把它还原了"。补成与归档那一档同一口径。
+        && e.priority == def.priority
+        && e.category == def.category
 }
 
 /// 「成员窄档」：只服务**本群成员**的两条窄动作（归档 / 还原）。
@@ -359,6 +381,7 @@ pub async fn update_group_todo(
     images: Option<Vec<crate::protocol::TodoImage>>,
     archived: Option<bool>,
     priority: Option<String>,
+    category: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     let title = title.trim().to_string();
@@ -379,6 +402,12 @@ pub async fn update_group_todo(
     if let Some(p) = priority.as_deref() {
         if !crate::protocol::todo_priority_is_valid(p) {
             return Err("任务优先级不合法".to_string());
+        }
+    }
+    // 类型与优先级同口径：只在给值时校验并覆盖，没给就沿用库里那份（改状态不该顺手改类型）。
+    if let Some(c) = category.as_deref() {
+        if !crate::protocol::todo_category_is_valid(c) {
+            return Err("任务类型不合法".to_string());
         }
     }
     let (def, group_creator, members) = {
@@ -409,6 +438,10 @@ pub async fn update_group_todo(
         Some(p) => p,
         None => def.priority.clone(),
     };
+    let category = match category {
+        Some(c) => c,
+        None => def.category.clone(),
+    };
     let edits_assignees = assignees != def.assignees;
     let edits_structure = deleted || title != def.title;
     let edit = TodoEdit {
@@ -420,6 +453,7 @@ pub async fn update_group_todo(
         images: &images,
         archived,
         priority: &priority,
+        category: &category,
     };
     let lane = MemberLane {
         archive_only: archive_only_change(&def, &edit),
@@ -472,6 +506,7 @@ pub async fn update_group_todo(
         // 不接受客户端自报（与 `creator` 同一口径），否则"改一次换个号"就回来了。
         number: def.number,
         priority,
+        category,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let (todo_id, status) = (payload.todo_id.clone(), payload.status.clone());

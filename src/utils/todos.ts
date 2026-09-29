@@ -26,8 +26,9 @@ export type TodoStatus = (typeof TODO_STATUSES)[number];
 
 /**
  * 任务优先级三档的**唯一取值表**（与 Rust `TODO_PRIORITIES` 同序同值）。
- * ⚠️ 与那张表今天**没有**跨语言守卫（`messageKinds.test.ts` 只比状态与 wire kind）⇒
- * 改这里要同时改 Rust 那一处，别只改一边（一边改完界面显示空白、另一边照样存旧值）。
+ * ⚠️ 改这里必须同时改 Rust 那一处：`src/utils/messageKinds.test.ts` 会直接读 `protocol.rs`
+ * 比对**表体与缺省值**（缺省值不一致更阴 —— 旧载荷没这一格时两侧各回落一份，
+ * 同一条任务在两个成员界面上显示成不同档位）。
  */
 export const TODO_PRIORITIES = ["high", "normal", "low"] as const;
 export type TodoPriority = (typeof TODO_PRIORITIES)[number];
@@ -48,6 +49,42 @@ export const TODO_PRIORITY_CLASS: Record<TodoPriority, string> = {
 
 function isTodoPriority(v: unknown): v is TodoPriority {
   return typeof v === "string" && (TODO_PRIORITIES as readonly string[]).includes(v);
+}
+
+/**
+ * 任务**类型**三档的取值表（与 Rust `TODO_CATEGORIES` 同序同值，同一套跨语言守卫）。
+ *
+ * 三者**同列一张表**，靠 tag 区分（用户 2026-09-29：不要为类型另开列表、也不要筛选成互斥视图）。
+ * 加第四种 = 这里与 Rust 各加一个值 + 下面 label/class 两张表补齐。
+ * 名字用 `category` 而不是 `kind`：本仓的 `kind` 固定指线上消息类型，
+ * 而 `parseTodo` 上一行就在判 `rec.kind`，同名会在同一段代码里撞车。
+ */
+export const TODO_CATEGORIES = ["task", "requirement", "bug"] as const;
+export type TodoCategory = (typeof TODO_CATEGORIES)[number];
+/** 缺省档（历史任务与旧版载荷读出来都是它，不是"没类型"）。 */
+export const TODO_CATEGORY_DEFAULT: TodoCategory = "task";
+export const TODO_CATEGORY_LABEL_KEY: Record<TodoCategory, string> = {
+  task: "todo.category.task",
+  requirement: "todo.category.requirement",
+  bug: "todo.category.bug",
+};
+/**
+ * 类型 → **胶囊徽标**配色（soft 底 + `*-ink` 字，与 `TODO_STATUS_PILL` 同一套家风）。
+ *
+ * 与优先级刻意分开：优先级是**文字**、只有「紧急」抢主色；类型三档都是角标。
+ * 「缺陷」用 danger 是语义正当的（它确实是出错），与「延期」那次视觉走查的纠正不冲突 ——
+ * 那条是"需要关注"、当时被错标成红，这里不重复那个误用。
+ * ⚠️ 彩色文字一律走 `*-ink` 档（设计规范 §3.1）；这里只用 style.css 里**已存在**的 token。
+ */
+export const TODO_CATEGORY_PILL: Record<TodoCategory, string> = {
+  task: "bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]",
+  requirement:
+    "bg-[color-mix(in_srgb,var(--gosslan-primary)_14%,transparent)] text-[var(--gosslan-accent-ink)]",
+  bug: "bg-[var(--gosslan-danger-soft)] text-[var(--gosslan-danger-ink)]",
+};
+
+function isTodoCategory(v: unknown): v is TodoCategory {
+  return typeof v === "string" && (TODO_CATEGORIES as readonly string[]).includes(v);
 }
 
 /** 新建任务的缺省状态（与 Rust `default_todo_status()` 同值）。 */
@@ -129,6 +166,8 @@ export interface TodoItem {
   creator: string;
   /** 优先级（三档，缺省常规）。 */
   priority: TodoPriority;
+  /** 类型（三档，缺省普通任务）。三者同列，界面上用胶囊 tag 区分。 */
+  category: TodoCategory;
   /** 长文本描述（2026-09-17 优化）。 */
   description: string;
   /** 描述里附带的图片（仅元数据，真实字节走群文件管线）。 */
@@ -181,6 +220,8 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
       creator: typeof p.creator === "string" ? p.creator : "",
       // 未知/缺失一律回落「常规」：宁可给一档可读的默认，也不让这条任务的优先级变成空白
       priority: isTodoPriority(p.priority) ? p.priority : TODO_PRIORITY_DEFAULT,
+      // 类型同口径：旧载荷没有这一格 ⇒ 读成「普通任务」，不是"没类型"
+      category: isTodoCategory(p.category) ? p.category : TODO_CATEGORY_DEFAULT,
       deleted: p.deleted === true,
       description: typeof p.description === "string" ? p.description : "",
       images: Array.isArray(p.images)
@@ -257,7 +298,7 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       if (a.seq !== b.seq) return b.seq - a.seq; // 新的在前
       return a.msgId < b.msgId ? 1 : -1; // 同 seq 按 msg_id 比（与 newer 同规则）
     })
-    .map(({ todoId, title, assignees, status, creator, priority, description, images, archived, doneAt }) => ({
+    .map(({ todoId, title, assignees, status, creator, priority, category, description, images, archived, doneAt }) => ({
       todoId,
       number: numbers.get(todoId) ?? 0,
       title,
@@ -265,6 +306,9 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       status,
       creator,
       priority,
+      // ⚠️ 这一串是**白名单式**解构：新字段不写在这里就会在 parse 之后被静默丢掉
+      // （能编译、门禁全绿、界面上没有那一格 —— 最难查的一种"接了一半"）。
+      category,
       description,
       images,
       archived,

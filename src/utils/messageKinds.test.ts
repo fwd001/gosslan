@@ -16,6 +16,8 @@ import {
   kindClass,
 } from "./messageKinds.ts";
 import {
+  TODO_CATEGORIES,
+  TODO_CATEGORY_DEFAULT,
   TODO_PRIORITIES,
   TODO_PRIORITY_DEFAULT,
   TODO_STATUSES,
@@ -165,6 +167,26 @@ test("跨语言契约：优先级表与缺省值两侧一致", () => {
 });
 
 /**
+ * 跨语言契约第三格：任务**类型**（三档，2026-09-29 落地）。
+ *
+ * 同优先级那条的理由，但这一格的漂移面更大：类型既进命令层校验（`todo_category_is_valid`），
+ * 又决定前端那张 label/pill 两张表的键 —— 少一个值就是"存得进去、显示不出来"。
+ * ⚠️ 缺省值必须一起钉：旧载荷没有 `category` 时两侧各回落一份 ⇒ 同一条任务在两个成员界面上
+ * 一个显示「任务」角标、另一个显示空白。
+ */
+test("跨语言契约：任务类型表与缺省值两侧一致", () => {
+  const rust = rustTableOf(protocolRs, "TODO_CATEGORIES");
+  assert.ok(rust.length >= 3, `解析出的类型太少（${rust.length}），表格式可能变了`);
+  assert.deepEqual([...TODO_CATEGORIES], rust, "TS 与 Rust 的类型表必须同序同值");
+  assert.equal(
+    TODO_CATEGORY_DEFAULT,
+    rustDefaultOf(protocolRs, "default_todo_category"),
+    "缺省类型必须同一个",
+  );
+  assert.ok(rust.includes(TODO_CATEGORY_DEFAULT), "缺省类型不在表内 ⇒ 界面拿不到它的 label/pill");
+});
+
+/**
  * 阳性对照（这几条判据不是恒过的证明）：把 Rust 那张表改一个值，比对必须变红。
  *
  * 为什么单独钉一条：跨语言比对最容易写成"两侧都从同一处读"从而永远相等；
@@ -184,6 +206,20 @@ test("对照：解析器看得见人为造的漂移（判据不空转）", () =>
   );
   assert.notEqual(defMutated, protocolRs, "缺省值那条替换没生效 ⇒ 对照空转");
   assert.equal(rustDefaultOf(defMutated, "default_todo_priority"), "low");
+  // 类型那一格同理：只改 Rust 侧的值 / 只改 Rust 侧的缺省，比对都必须看得见
+  const catMutated = protocolRs.replace('["task", "requirement", "bug"]', '["task", "requirement", "defect"]');
+  assert.notEqual(catMutated, protocolRs, "类型表那条替换没生效 ⇒ 对照空转");
+  assert.notDeepEqual(
+    rustTableOf(catMutated, "TODO_CATEGORIES"),
+    [...TODO_CATEGORIES],
+    "改了 Rust 那侧的类型值，判据必须报不一致",
+  );
+  const catDefMutated = protocolRs.replace(
+    'pub fn default_todo_category() -> String {\n    "task"',
+    'pub fn default_todo_category() -> String {\n    "bug"',
+  );
+  assert.notEqual(catDefMutated, protocolRs, "缺省类型那条替换没生效 ⇒ 对照空转");
+  assert.equal(rustDefaultOf(catDefMutated, "default_todo_category"), "bug");
 });
 
 /**

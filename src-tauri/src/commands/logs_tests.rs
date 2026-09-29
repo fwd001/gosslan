@@ -738,6 +738,7 @@ mod tests {
             done_at: None,
             number: 0,
             priority: "normal".to_string(),
+            category: "task".to_string(),
         };
         let insert = |msg_id: &str, seq: i64, p: &TodoPayload| {
             conn.execute(
@@ -770,6 +771,29 @@ mod tests {
     /// · 结构（改标题 / 删除）：创建者 **或** 群主
     /// · 其余（描述 / 图片 / 指派人 / 状态）：创建者 **或** 群主 **或** 当前被指派人
     /// · 归档：任何**群成员**都可以（用户 2026-09-24「群里所有人都可以归档」）
+    /// 旧载荷（**没有** `category` 这一格）必须解析成「普通任务」，且重新序列化时要带上它。
+    ///
+    /// 反面钉的是缺省形状：若这一格是 `Option`，前端读出来是 undefined ⇒ 界面上那一格空白，
+    /// 而对端已经存了一条"有类型"的任务 —— 同一个状态在两端两种形状。
+    #[test]
+    fn legacy_todo_payload_without_category_still_parses() {
+        use crate::protocol::{default_todo_category, todo_category_is_valid, TodoPayload};
+        let old = r#"{"todo_id":"t1","title":"旧任务","assignees":["alice"],"status":"todo",
+            "creator":"alice","deleted":false,"description":"","images":[],"archived":false,
+            "number":3,"priority":"normal","done_at":null}"#;
+        let p: TodoPayload = serde_json::from_str(old).expect("旧载荷必须仍能解析");
+        assert_eq!(p.category, default_todo_category());
+        assert_eq!(p.category, "task", "历史任务读出来是「普通任务」，不是「没类型」");
+        assert_eq!(p.number, 3, "顺带钉这行 JSON 真的解析到了那条任务（防夹具本身空转）");
+        assert!(todo_category_is_valid("requirement"));
+        assert!(!todo_category_is_valid("story"), "未知类型必须判非法（命令层据此拒收）");
+        let back = serde_json::to_string(&p).unwrap();
+        assert!(
+            back.contains("\"category\":\"task\""),
+            "重新发出时要带上这一格，不能靠对端猜"
+        );
+    }
+
     /// 外加一条自洽检查：无关成员两档都不行（放宽群主权限不该顺带放进第三人）。
     #[test]
     fn todo_update_permission_matrix() {
@@ -787,6 +811,7 @@ mod tests {
             done_at: None,
             number: 0,
             priority: "normal".to_string(),
+            category: "task".to_string(),
         };
         // 参数顺序：(def, actor, group_creator, edits_structure)
         // 档位只有两档（结构 = 改标题/删除；其余 = 描述/图片/指派人/状态/归档），
@@ -839,6 +864,8 @@ mod tests {
             description: String,
             images: Vec<TodoImage>,
             archived: Option<bool>,
+            priority: String,
+            category: String,
         }
         fn req_of(def: &TodoPayload) -> Req {
             Req {
@@ -849,6 +876,8 @@ mod tests {
                 description: def.description.clone(),
                 images: def.images.clone(),
                 archived: None,
+                priority: def.priority.clone(),
+                category: def.category.clone(),
             }
         }
         fn edit(r: &Req) -> super::TodoEdit<'_> {
@@ -860,7 +889,8 @@ mod tests {
                 description: &r.description,
                 images: &r.images,
                 archived: r.archived,
-                priority: "normal",
+                priority: &r.priority,
+                category: &r.category,
             }
         }
         let def = TodoPayload {
@@ -876,6 +906,7 @@ mod tests {
             done_at: Some(1),
             number: 0,
             priority: "normal".to_string(),
+            category: "task".to_string(),
         };
         // 成员窄档只对"什么别的都没动"的请求成立，所以每个否定用例都从**已满足**的那一位
         // 出发再加一处改动 —— 否则测的是另一个判据，不是"夹带"这一条。
@@ -925,6 +956,18 @@ mod tests {
             !super::archive_only_change(&def, &edit(&r)),
             "夹带加图片不许走这条口子"
         );
+        let mut r = archive_req(&def);
+        r.category = "bug".into();
+        assert!(
+            !super::archive_only_change(&def, &edit(&r)),
+            "夹带改类型不许走归档这条口子（窄档对整个群放行，类型是内容改动）"
+        );
+        let mut r = archive_req(&def);
+        r.priority = "high".into();
+        assert!(
+            !super::archive_only_change(&def, &edit(&r)),
+            "夹带改优先级不许走归档这条口子"
+        );
         let mut r = req_of(&def);
         r.archived = Some(false);
         assert!(
@@ -938,6 +981,20 @@ mod tests {
         assert!(
             super::reopen_only_change(&def, &edit(&r)),
             "纯还原要放行（归档位与 done_at 由 resolve_done_archive 自动清）"
+        );
+        let mut r = req_of(&def);
+        r.status = "todo".into();
+        r.priority = "high".into();
+        assert!(
+            !super::reopen_only_change(&def, &edit(&r)),
+            "夹带改优先级不许走还原这条口子（本轮补钉：以前只比了标题/描述/图/指派人）"
+        );
+        let mut r = req_of(&def);
+        r.status = "todo".into();
+        r.category = "requirement".into();
+        assert!(
+            !super::reopen_only_change(&def, &edit(&r)),
+            "夹带改类型不许走还原这条口子"
         );
         assert!(
             !super::reopen_only_change(&def, &edit(&req_of(&def))),

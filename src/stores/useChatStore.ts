@@ -1413,6 +1413,8 @@ export const useChatStore = defineStore("chat", () => {
       archived: boolean;
       /** 优先级（三档）。不传 = 保留库中原值 ⇒ 改状态/改描述都不会顺手把档位重置。 */
       priority: string;
+      /** 类型（三档）。同 priority 那一格：不传就保留库里的，别让它被"改个状态"顺手刷成普通任务。 */
+      category: string;
     }> = {},
   ) {
     const rec = await api.updateGroupTodo(groupId, item.todoId, {

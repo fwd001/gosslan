@@ -42,6 +42,7 @@ commands::tests::group_file_progress_is_zero_when_nobody_online_at_send
 commands::tests::image_extension_maps_common_mimes
 commands::tests::late_online_member_does_not_regress_progress
 commands::tests::latest_todo_def_follows_the_same_lww_rule_as_the_frontend
+commands::tests::legacy_todo_payload_without_category_still_parses
 commands::tests::message_content_over_limit_is_rejected_not_truncated
 commands::tests::message_content_within_limit_is_returned_unchanged
 commands::tests::message_length_is_counted_in_chars_not_bytes
