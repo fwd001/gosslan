@@ -1808,6 +1808,120 @@ if (POSTTEXT) {
     check("连发这五条不许把前面那份文件的终态带回去（P7：已完成的终态不是后来消息能改的）",
       fileNow === "done", "done", fileNow ?? "无行");
   });
+  // ── J6：§三 点名的「大文件之后新建群」────────────────────────────────
+  // 这一格以前在跨实例层是**零判据**：J1..J5 用的那个群在开机前就同时播种进了两端的盘，
+  // 于是"新建的群能不能送达对方"从来没被这条链路判过；`--round=groupcrash` 判的是
+  // "A 自己被 SIGKILL 之后还能不能重递"，那是崩溃恢复，不是"传完大文件之后建了个新群"。
+  // ⚠️ 前置状态必须是生产到得了的那一份：**建群那一刻对方不在**。
+  //   两端都在线时 create_group 提交完就即时逐成员推 GroupKey，而 harness 从进程外只写得出
+  //   SQLite —— "对方在线却一次都没送到"这种状态生产里不存在，硬造出来判的是自造路径。
+  //   所以这里先把 B 正常停掉（不是杀 A），在 B 缺席期间把群只长在 A 的盘上，再让 B 上线。
+  // 于是这一格钉的是：链路被大文件用满之后，**群名册那份事实源仍然能在对端重新出现时把群补上**
+  //   （`requeue_group_keys_for_peer`），而不是只在建链那一次起作用。
+  step("J6 传完之后新建一个 B 从未见过的群（建群时对方离线）：B 重新上线后必须自己学到这个群", async () => {
+    const NEW_GID = "g-e2e-afterfile";
+    const NEW_NAME = "E2E-AfterBigFile";
+    const newConv = `group:${NEW_GID}`;
+    const members = [idA.runtimeId, idB.runtimeId];
+    // 反向轮照 groupcrash / gfile 的先例：预置、时序、拓扑一字不动，只翻**判据读的那份 id**
+    // ⇒ 红只能来自"读的不是真落库那行"，不来自基础设施（等待用的仍是真 id）。
+    const flip = (h) => h.slice(0, -1) + (h.endsWith("0") ? "1" : "0");
+    const wantGid = POSTTEXT_LIE ? flip(NEW_GID) : NEW_GID;
+    const onDisk = (file, gid) => {
+      const db = openDb(file, true);
+      try {
+        return {
+          rows: db.prepare("SELECT COUNT(*) c FROM groups WHERE id=?1").get(gid).c,
+          group: db.prepare("SELECT id,name,creator FROM groups WHERE id=?1").get(gid) ?? null,
+          memberCount: db.prepare("SELECT COUNT(*) c FROM group_members WHERE group_id=?1").get(gid).c,
+          key: db.prepare("SELECT value FROM settings WHERE key=?1").get(`gk:${gid}`)?.value ?? null,
+          conv: db.prepare("SELECT COUNT(*) c FROM conversations WHERE id=?1").get(`group:${gid}`).c,
+        };
+      } finally { db.close(); }
+    };
+
+    // B 正常下线（SIGTERM，给它收尾的机会 —— 这一格判的不是崩溃）。
+    const pB = procs.get(INSTANCES[1].n);
+    if (pB && pB.exitCode === null) {
+      pB.kill("SIGTERM");
+      await Promise.race([
+        new Promise((r) => pB.once("exit", r)),
+        sleep(8000).then(() => { if (pB.exitCode === null) pB.kill("SIGKILL"); }),
+      ]);
+    }
+    if (pB) procs.delete(INSTANCES[1].n);
+    const bDead = async () => !procs.has(INSTANCES[1].n) && !(await tcpOpen(INSTANCES[1].port));
+    await waitFor(bDead, 20_000, "J6：B 确实下线（TCP 口不再有人听）");
+
+    // B 缺席期间，群只长在 A 的盘上（四张写 = 建群命令跑到那一刻的形状）。
+    const ts = nowMs();
+    seed(INSTANCES[0].db, (db) => {
+      db.prepare("DELETE FROM group_members WHERE group_id=?1").run(NEW_GID);
+      db.prepare("DELETE FROM groups WHERE id=?1").run(NEW_GID);
+      db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
+        .run(NEW_GID, NEW_NAME, idA.runtimeId, ts);
+      for (const m of members) {
+        db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)").run(NEW_GID, m);
+      }
+      db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)").run(`gk:${NEW_GID}`, GROUP_KEY_STR);
+      db.prepare(
+        "INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at)"
+        + " VALUES(?1,'group',?2,NULL,0,?3)",
+      ).run(newConv, NEW_NAME, ts);
+    });
+    // 清掉 B 盘上任何残留（上一轮跑过的话），否则"一无所知"那条前置就只是运气。
+    seed(INSTANCES[1].db, (db) => {
+      db.prepare("DELETE FROM group_members WHERE group_id=?1").run(NEW_GID);
+      db.prepare("DELETE FROM groups WHERE id=?1").run(NEW_GID);
+      db.prepare("DELETE FROM conversations WHERE id=?1").run(newConv);
+      db.prepare("DELETE FROM settings WHERE key=?1").run(`gk:${NEW_GID}`);
+    });
+
+    const b0 = onDisk(INSTANCES[1].db, NEW_GID);
+    check("前置成立：B 上线前对这个群零行可知（于是下面那条「学到了」有对照物，不是恒真）",
+      b0.rows === 0 && b0.memberCount === 0 && b0.key === null && b0.conv === 0,
+      "群行 0 / 成员 0 / 无密钥 / 无会话行",
+      `群行 ${b0.rows} / 成员 ${b0.memberCount} / 密钥 ${b0.key === null ? "无" : "有"} / 会话 ${b0.conv}`);
+
+    await sleep(10_000); // 一段"B 根本不在"的时间：这期间任何即时推送都发不出去
+    launch(INSTANCES[1]);
+    await waitFor(() => tcpOpen(INSTANCES[1].port), 60_000, "J6：B 重新上线（TCP 可连）");
+    await waitFor(() => bootReady(INSTANCES[1].log, bootBaseOf.get(INSTANCES[1].n), BOOT_LINE),
+      30_000, "J6：B 重新上线并打出 boot 完成行");
+
+    // 有界地等它自己收敛：到点就把最后一次读数交给判据判红 —— 不 throw
+    //（那会把一次真缺陷渲染成"基础设施超时"），也不写兜底断言（到不了就是死代码）。
+    const t0 = nowMs();
+    let b = onDisk(INSTANCES[1].db, NEW_GID);
+    for (;;) {
+      b = onDisk(INSTANCES[1].db, NEW_GID);
+      if (b.rows > 0) break;
+      if (nowMs() - t0 >= 150_000) break;
+      await sleep(1_000);
+    }
+    const convergedMs = nowMs() - t0;
+    const learned = onDisk(INSTANCES[1].db, wantGid);
+    check("B 重新上线后必须自己学到这个新群（150s 内）—— 大文件把链路用满之后，名册仍是事实源",
+      learned.group !== null && learned.group.creator === idA.runtimeId && learned.group.name === NEW_NAME,
+      `1 行、creator=A、name=${NEW_NAME}`,
+      learned.group === null
+        ? `无行（等了 ${(convergedMs / 1000).toFixed(1)}s）`
+        : `creator=${learned.group.creator} name=${learned.group.name} · ${(convergedMs / 1000).toFixed(1)}s`);
+    check("学到的那份名册是 2 位（对方给的成员名单要一起落，不能只落一个光群名）",
+      learned.memberCount === 2, 2, learned.memberCount);
+    check("学到的那份群密钥逐字节等于 A 盘上那份（解不开群消息的话，落个群名是没用的）",
+      learned.key === GROUP_KEY_STR, "与 A 那份逐字节相同",
+      learned.key === null ? "null（行没了）" : `${learned.key.slice(0, 8)}…(${learned.key.length}B)`);
+    // ⚠️ 这里原本还有一条「B 侧要同时出现这个群的会话行」—— 正向跑当场把它判成红，而红在判据不在产品：
+    //   会话行由消息那条路点亮（`db/conversations.rs:30` 的 upsert、:66 的 ensure），群密钥落库这一路
+    //   只写 groups / group_members / settings(gk:)；而界面对"有没有这个群"读的是另一条腿
+    //   （`src/api/index.ts:149` 的 getGroups → `useChatStore.ts:682` 那一段），且 `list_conversations`
+    //   只 SELECT FROM conversations、不与 groups 求并 ⇒ 把"会话行必须同时出现"写成判据，
+    //   判的是产品从没承诺过的形状。"送达"由上面四条钉住（群行、creator、名册 2 位、密钥逐字节相同），
+    //   "会话行随后由第一条群消息点亮"那一半已由 J4 在同一条被大文件用满的链上判过。
+    check("这个群在 B 盘上恰好一行（重递不许把同一个群落成两份）",
+      learned.rows === 1, 1, learned.rows);
+  });
 }
 
 // §十四要的「错误行为测试」+ §七/§八的「文件 hash 不一致 / .part 已存在」：
