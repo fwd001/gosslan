@@ -10,6 +10,40 @@
 
 ## [Unreleased]
 
+## [4.31.34] - 2026-09-29
+
+### 修复（对端下线时，群接收的"摘表"与"收尾"分在两次持锁里 —— 会把正在收的那一单判死）
+
+`handle_peer_unlinked` 里群侧那段是"锁内 `collect()` 出 id → 锁外逐个 `fail_group_file_chunk`"。
+同一个文件为**单聊的超时回收**早就把这种两步形状判死过（注释原话：那两步之间完全可以挤进一个新
+FileOffer ⇒ 按 id 收尾会把**正在收**的那一单判死），而断链这条路径漏了同一课。
+
+- 新增 `file::take_group_receives_for_peer`（判据与摘表在同一次持锁里完成，返回 `(id, FileReceiver)`，
+  与 `take_stalled_group_receive` 同形状），并把 `fail_group_file_chunk` 拆成
+  "摘" + `finalize_failed_group_receive`（气泡/丢 key/台账三件事），断链那条走"原子摘 → 逐个收尾"。
+- ★ 这次改动被**既有判据抓住**（这正是它该有的样子）：
+  `peer_wide_receiver_cleanup_is_gated_on_total_link_loss` 原本拿"`group_file_receivers` 这个字面量
+  出现在 reader_loop 里"当"群侧清理还在"的代理；我把那次持锁搬进 helper 之后代理匹配不到，
+  它当场报"清理被删了？"。处置是**收紧锚点**而不是放宽：锚点从表名改成必须调用
+  `take_group_receives_for_peer(` —— 表名再出现在那里反而说明有人把两步写法改回来了。
+  该判据配套护栏 Case 注入的是单聊侧调用位置，不受影响（已核）。
+- 新增两条具名判据（`group_receive_atomicity_tests`）：一条钉"原子摘取 + 不许退回快照 id 的旧写法"，
+  一条钉 **completed 的终态保护必须在生产 handler 里真的读收件人状态**。
+  后一条是被一条**假测试**逼出来的：`favorites_tests.rs::complete_ack_failure_cannot_downgrade_completed`
+  在测试体里自己重写了一遍 `already_completed` 判断，所以删掉生产码那段它照样绿
+  （与 #35 那条群分片镜像测试同一个形状，同一天抓到第二次）。
+- 配套护栏 Case 一条（把那句 `.any(...)` 注入成常量 `false` 必须让上面那条红），
+  `verify-guards.py` 的 CASES 现算 199 → **200**，契约图那一格同批改（判据 E 会拿脚本自己数的值对账）。
+
+自证：两次单点变异各红对应那一条 —— 退回"快照 id"形状 ⇒ `file_tests.rs:2062` 红；
+`.any(|_| false)` ⇒ `file_tests.rs:2094` 红；还原后 2 条全过。
+`cargo test --features bluetooth` 787 passed / 0 failed；clippy `-D warnings` 退 0；
+`verify-guards.py --list` 退 0；测试清单基线 785 → 787（两平台同步）。
+
+⚠️ 边界：这两条新判据都是**读源码文本的形状判据**，不是行为测试 —— 这段吃 `AppState`
+（接收表 + db + emit），本仓没有能驱动它的夹具，硬凑 mock 只会得到假绿。
+所以它防的是"形状退回"，不证明运行时行为的正确性；跨实例那一层仍未判。
+
 ## [4.31.33] - 2026-09-29
 
 ### 修复（群里收到的文件会被"重复分片"打死整单 —— 群侧与单聊用的是两份规则）

@@ -1719,6 +1719,25 @@ pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
     }
 }
 
+/// 对端确认一条链路都不剩时，**原子摘取**它名下全部群接收（判据与摘表在同一次持锁里完成）。
+///
+/// 为什么必须有这一份：`handle_peer_unlinked` 以前是"锁内 `collect()` 出 id、锁外逐个收尾"，
+/// 而同一个文件里 `take_stalled_receive` / `take_stalled_group_receive` 的注释早就把那个形状判死过
+/// —— 那两步之间完全可以挤进一个新 FileOffer（同一个 transfer_id 重建接收器），
+/// 按 id 收尾就会把**正在正常收**的那一单判死。返回 (id, FileReceiver) 与那条家族同形状。
+pub fn take_group_receives_for_peer(state: &AppState, peer_id: &str) -> Vec<(String, FileReceiver)> {
+    let mut recv = state
+        .group_file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let ids: Vec<String> = recv
+        .iter()
+        .filter(|(_, r)| r.peer_id == peer_id)
+        .map(|(k, _)| k.clone())
+        .collect();
+    ids.into_iter().filter_map(|k| recv.remove(&k).map(|r| (k, r))).collect()
+}
+
 /// 静默群接收器的**原子**回收单位（理由同 `take_stalled_receive`：判据与摘表必须同一次持锁）。
 pub fn take_stalled_group_receive(state: &AppState, now: i64) -> Option<(String, FileReceiver)> {
     let mut recv = state

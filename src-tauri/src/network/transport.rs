@@ -1704,19 +1704,12 @@ async fn reader_loop(
         // 只有到这一步才有资格清接收器：这个 peer 确实一条链路都不剩了。
         // 单聊与群文件两张表同规矩（旧代码把它们放在上面，与 `:1563` 的"只删这一条"矛盾）。
         file::fail_receives_for_peer(&state, &peer_id);
-        let group_ids: Vec<String> = {
-            let recv = state
-                .group_file_receivers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            recv.iter()
-                .filter(|(_, r)| r.peer_id == peer_id)
-                .map(|(id, _)| id.clone())
-                .collect()
-        };
-        // 锁外收尾：fail_group_file_chunk 自己会再锁这张表并 emit
-        for tid in group_ids {
-            fail_group_file_chunk(&state, &tid);
+        // 摘表与判据同一次持锁（旧写法是锁内 collect id、锁外逐个收尾 ——
+        // 那两步之间挤进来的新 FileOffer 会被误判死，见 file::take_group_receives_for_peer）。
+        let taken = file::take_group_receives_for_peer(&state, &peer_id);
+        // 收尾在锁外：里面要写库、要 emit，都不该持着接收表。
+        for (tid, _r) in taken {
+            finalize_failed_group_receive(&state, &tid);
         }
     }
 }
@@ -5210,6 +5203,15 @@ async fn handle_group_file_offer(
 /// 只影响本 transfer，不 panic、不影响其他群文件。
 fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str) {
     file::fail_group_receive(state, transfer_id);
+    finalize_failed_group_receive(state, transfer_id);
+}
+
+/// 摘表之后的群接收**收尾**三件事：气泡转 failed、丢掉内存里的 file_key、台账写 failed。
+///
+/// 从 `fail_group_file_chunk` 里单列出来，是因为对端下线那条路必须先"原子摘"再"逐个收尾"
+/// （见 `file::take_group_receives_for_peer`）：摘与收尾合成一个函数的话，
+/// 调用点就只能走"快照 id → 逐个收尾"，而那正是本文件 `:5232` 注释判死过的形状。
+fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str) {
     set_gfile_bubble_status(state, transfer_id, "failed");
     state
         .group_file_keys

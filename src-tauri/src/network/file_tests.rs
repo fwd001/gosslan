@@ -2040,3 +2040,60 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod group_receive_atomicity_tests {
+    /// 对端下线的群接收收尾**必须先原子摘取再逐个收尾**。
+    ///
+    /// 为什么用读源码文本的形状判据而不是行为测试：这段吃 `AppState`（接收表 + db + emit），
+    /// 本仓没有能驱动它的夹具（`file_tests.rs` 顶上那句注释就写着"造不出也不需要造 AppState"），
+    /// 硬凑一个 mock 只会得到假绿。而它要防的回归非常具体 —— 退回"锁内 collect id、锁外逐个收尾"，
+    /// 那个形状被同文件 `take_stalled_receive` 的注释明确判死过（中间挤进来的新 FileOffer 会被误判死）。
+    #[test]
+    fn peer_offline_group_cleanup_takes_before_finalizing() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/network/transport.rs"
+        ))
+        .expect("读不到 transport.rs ⇒ 这条判据失去落点");
+        let at = src
+            .find("if peer_now_offline {")
+            .expect("对端下线那一段改名/搬走了 ⇒ 同步改这条判据");
+        let body = &src[at..at + 1600];
+        assert!(
+            body.contains("take_group_receives_for_peer"),
+            "对端下线没有走原子摘取 ⇒ 摘表与判据又分成了两次持锁"
+        );
+        assert!(
+            !body.contains("let group_ids: Vec<String>"),
+            "快照 id 那份旧写法又回来了 ⇒ 两步之间可以挤进一个新 FileOffer"
+        );
+        assert!(
+            !body.contains("fail_group_file_chunk(&state, &tid)"),
+            "收尾又改成按 id 逐个走完整函数 ⇒ 会把正在收的那一单判死"
+        );
+    }
+
+    /// `completed` 的终态保护必须**在生产 handler 里真的读收件人状态**。
+    ///
+    /// 这条是被一条假测试逼出来的：`favorites_tests.rs::complete_ack_failure_cannot_downgrade_completed`
+    /// 在测试体里自己重写了一遍 `already_completed` 判断，所以把生产码那段删掉它照样绿。
+    /// 配套护栏用例（`verify-guards.py` 里同名 Case）会把那句 `.any(...)` 注入成常量 false，
+    /// 届时这条必须红 —— 两条一起才是完整的非空转证明。
+    #[test]
+    fn completed_guard_reads_recipient_status_in_the_handler() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/network/transport.rs"
+        ))
+        .expect("读不到 transport.rs ⇒ 这条判据失去落点");
+        let at = src
+            .find("async fn handle_group_file_complete_ack")
+            .expect("群文件 complete ACK 处理改名了 ⇒ 同步改这条判据");
+        let body = &src[at..at + 2600];
+        assert!(
+            body.contains(r#".any(|r| r.recipient_id == peer_id && r.status == "completed")"#),
+            "failure ACK 不再读该收件人的 completed 状态 ⇒ 终态保护只剩测试里那份抄本"
+        );
+    }
+}

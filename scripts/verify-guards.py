@@ -548,6 +548,23 @@ CASES: list[Case] = [
         tags=["rust", "new-guards"],
     ),
     Case(
+        name="群文件 completed 的终态保护必须真读库（不是只在测试里模拟）",
+        why="favorites_tests.rs 那条 complete_ack_failure_cannot_downgrade_completed 是在**测试体里**"
+            "重写了一遍 already_completed 判断再断言结果 —— 它钉的是抄本：把生产 handler 里那段"
+            "读库保护删掉，这条测试照样绿（2026-09-29 审计抓到，形状与群分片那条镜像测试相同）。"
+            "现在的具名判据读的是 transport.rs 里那句真的去 list_group_file_recipients 查 completed 的表达式，"
+            "把它改成常量 false 就必须红",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            '.any(|r| r.recipient_id == peer_id && r.status == "completed")',
+            '.any(|_| false)',
+        )],
+        cmd=cargo("test", "--lib", "completed_guard_reads_recipient_status_in_the_handler"),
+        cwd=TAURI,
+        expect_fail_hint="completed_guard_reads_recipient_status_in_the_handler",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
         name="中继文件接收幂等（重复 offer 不清空已收切片）",
         why="多邻居泛洪会送来重复的 RelayFileOffer；覆盖式 insert 会清空已收到的切片 ⇒ "
             "文件永远缺片（完整性校验也必然失败）",

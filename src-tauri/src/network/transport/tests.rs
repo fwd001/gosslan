@@ -1554,7 +1554,10 @@ mod tests {
         // 两处按 peer 清的收尾都必须落在门里面。
         // 位置判据**排在数量判据之前**：注入"挪回前面"会变成两处调用，先报数量就看不出
         // 位置判据到底有没有咬住（非空转验证要求红在该报的那一条上，不是"反正都红"）。
-        for anchor in ["fail_receives_for_peer(", "group_file_receivers"] {
+        // 群侧那一半从 2026-09-29 起走具名的原子摘取 helper（判据与摘表同一次持锁，
+        // 与本函数下面 sweep 那段的 doctrine 一致）⇒ 锚点从"表名出现"收紧成"必须调那个 helper"：
+        // 表名再出现在这里反而说明有人把摘表写回了 reader_loop 里两步做。
+        for anchor in ["fail_receives_for_peer(", "take_group_receives_for_peer("] {
             let at = body
                 .find(anchor)
                 .unwrap_or_else(|| panic!("reader_loop 里找不到 `{anchor}` —— 清理被删了？"));
