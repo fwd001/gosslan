@@ -975,6 +975,103 @@ mod tests {
             "库里本来就没归档 ⇒ 传相同值 = 什么都没改，空请求不进窄档"
         );
 
+        // ---- 窄档三：认领一条「需求」= 只把自己加进名单 ----
+        let req_def = TodoPayload {
+            category: "requirement".into(),
+            status: "todo".into(),
+            ..def.clone()
+        };
+        let claim = |def: &TodoPayload, who: &str, extra: &str| {
+            let mut r = req_of(def);
+            match extra {
+                "title" => r.title = "顺手改的标题".into(),
+                "other" => r.assignees = vec!["alice".into(), "dave".into()],
+                "none" => {}
+                _ => r.assignees = vec!["alice".into(), who.into()],
+            }
+            r
+        };
+        assert!(
+            super::claim_only_change(&req_def, "carol", &edit(&claim(&req_def, "carol", "self"))),
+            "成员把自己加进一条未归档需求 = 认领，放行"
+        );
+        // 这条必须**接进总判权**，否则判据只活在自己的单测里（本仓撞过好几次"点名式判据=半个守卫"）
+        assert!(
+            super::may_change_todo(
+                &req_def,
+                "carol",
+                "someone_else",
+                false,
+                super::MemberLane {
+                    archive_only: false,
+                    reopen_only: false,
+                    claim_only: true,
+                    is_member: true,
+                },
+            ),
+            "认领档亮起来时，非创建者/非群主的成员必须真的过得去"
+        );
+        assert!(
+            !super::may_change_todo(
+                &req_def,
+                "carol",
+                "someone_else",
+                false,
+                super::MemberLane {
+                    archive_only: false,
+                    reopen_only: false,
+                    claim_only: true,
+                    is_member: false,
+                },
+            ),
+            "不是本群成员 ⇒ 认领档亮着也不许过（认领是群内协作动作）"
+        );
+        assert!(
+            !super::claim_only_change(&def, "carol", &edit(&claim(&def, "carol", "self"))),
+            "普通任务不许认领：否则任何人都能把自己塞进别人的任务再宣布它完成"
+        );
+        let bug_def = TodoPayload { category: "bug".into(), status: "todo".into(), ..def.clone() };
+        assert!(
+            !super::claim_only_change(&bug_def, "carol", &edit(&claim(&bug_def, "carol", "self"))),
+            "缺陷也不许认领（只开需求这一档）"
+        );
+        assert!(
+            !super::claim_only_change(
+                &req_def,
+                "carol",
+                &edit(&claim(&req_def, "carol", "title")),
+            ),
+            "夹带改标题不许走认领这条口子"
+        );
+        assert!(
+            !super::claim_only_change(&req_def, "carol", &edit(&claim(&req_def, "dave", "other"))),
+            "往名单里加**别人**不是认领（那要创建者/群主的权限）"
+        );
+        assert!(
+            !super::claim_only_change(&req_def, "alice", &edit(&claim(&req_def, "alice", "none"))),
+            "本来就在名单里 ⇒ 名单没变，不是认领（也不该由这条窄档放行）"
+        );
+        let mut r = claim(&req_def, "carol", "self");
+        r.archived = Some(true);
+        assert!(
+            !super::claim_only_change(&req_def, "carol", &edit(&r)),
+            "夹带归档不许走认领这条口子（那是归档那一档的事）"
+        );
+        let archived_req = TodoPayload {
+            category: "requirement".into(),
+            status: "todo".into(),
+            archived: true,
+            ..def.clone()
+        };
+        assert!(
+            !super::claim_only_change(
+                &archived_req,
+                "carol",
+                &edit(&claim(&archived_req, "carol", "self")),
+            ),
+            "已归档的需求不许认领（界面上那条按钮也不该出现）"
+        );
+
         // ---- 窄档二：只把「完成」退回「待办」= 还原 ----
         let mut r = req_of(&def);
         r.status = "todo".into();
@@ -1019,14 +1116,15 @@ mod tests {
             "夹带改描述不许走还原这条口子"
         );
 
-        // ---- 判权：两条窄档都只对本群成员生效，且不外溢 ----
+        // ---- 判权：窄档只对本群成员生效，且不外溢（归档/还原这两档；认领那一档的
+        //      成员判定在上一段自己单测里钉，这里 claim_only 一律给 false 以免混进同一张表）----
         let may = |archive_only: bool, reopen_only: bool, is_member: bool| {
             super::may_change_todo(
                 &def,
                 "carol",
                 "owner",
                 false,
-                super::MemberLane { archive_only, reopen_only, is_member },
+                super::MemberLane { archive_only, reopen_only, claim_only: false, is_member },
             )
         };
         assert!(may(true, false, true), "群成员只动归档位 ⇒ 可以");
@@ -1043,7 +1141,7 @@ mod tests {
                 "carol",
                 "owner",
                 true,
-                super::MemberLane { archive_only: false, reopen_only: false, is_member: true }
+                super::MemberLane { archive_only: false, reopen_only: false, claim_only: false, is_member: true }
             ),
             "结构改动（改标题 / 删除）不开给普通成员"
         );

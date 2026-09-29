@@ -87,6 +87,19 @@ function isTodoCategory(v: unknown): v is TodoCategory {
   return typeof v === "string" && (TODO_CATEGORIES as readonly string[]).includes(v);
 }
 
+/**
+ * 类型 → **文字**颜色：聊天气泡里那一行用。
+ *
+ * 与胶囊那份分开是刻意的：气泡表头那一行的字数与 `utils/messageHeight.ts` 的 `TODO_CARD_DESC`
+ * 是成对判据（渲染与估算必须同高），在那里多画一枚胶囊会挤掉标题的截断宽度、
+ * 却不会改变行高 —— 文字档既能区分又不扰动高度。彩色文字一律走 `*-ink`（设计规范 §3.1）。
+ */
+export const TODO_CATEGORY_TEXT_CLASS: Record<TodoCategory, string> = {
+  task: "text-[var(--gosslan-text-2)]",
+  requirement: "text-[var(--gosslan-accent-ink)]",
+  bug: "text-[var(--gosslan-danger-ink)]",
+};
+
 /** 新建任务的缺省状态（与 Rust `default_todo_status()` 同值）。 */
 export const TODO_STATUS_DEFAULT: TodoStatus = "todo";
 

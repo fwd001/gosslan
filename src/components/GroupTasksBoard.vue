@@ -31,6 +31,8 @@ import { useImagePreviewStore } from "@/stores/useImagePreview";
 import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
+  TODO_CATEGORY_LABEL_KEY,
+  TODO_CATEGORY_PILL,
   TODO_STATUSES,
   TODO_STATUS_BAR,
   TODO_STATUS_CLASS,
@@ -45,6 +47,7 @@ import {
   parseTodo,
   type TodoImage,
   type TodoItem,
+  type TodoCategory,
   type TodoPriority,
   type TodoStatus,
 } from "@/utils/todos";
@@ -289,6 +292,20 @@ function canArchive(x: TodoItem): boolean {
  */
 function canReopen(x: TodoItem): boolean {
   return x.status === "done" && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
+}
+/**
+ * 「认领」只开给**需求**（用户 2026-09-29），四条前提与后端 `claim_only_change` 一一对应：
+ * 类型是需求、自己还不在名单里、这条没归档、自己是本群成员。
+ * 这里只是**给不给按钮** —— 拦截在命令层，界面判错也不会变成权限漏洞。
+ */
+function canClaim(x: TodoItem): boolean {
+  return (
+    x.category === "requirement" &&
+    !x.archived &&
+    !!myId.value &&
+    !x.assignees.includes(myId.value) &&
+    groupMembers.value.includes(myId.value)
+  );
 }
 
 // ---------------- 任务详情（点行打开） ----------------
@@ -727,6 +744,32 @@ async function setPriority(item: TodoItem, p: TodoPriority) {
     app.toast(String(e), "error");
   }
 }
+/** 只动类型这一格（与 setPriority 同款：其余字段由 store 从这条任务当前那份带回）。 */
+async function setCategory(item: TodoItem, c: TodoCategory) {
+  const gid = props.groupId;
+  if (!gid) return;
+  try {
+    await chat.updateTodo(gid, item, { category: c });
+    app.toast(t("todo.updateDone"), "success");
+  } catch (e) {
+    app.toast(String(e), "error");
+  }
+}
+/**
+ * 认领 = 把「原名单 + 我自己」发回去这一步，**没有**新命令、新字段、新同步帧：
+ * 后端 `assignees` 就是改状态的判权依据，加进去之后那些权限自动跟着来。
+ * 顺序也照后端那条窄档的要求写死（追加在末尾），否则会被判成"改指派人"而落回创建者那一档。
+ */
+async function claim(item: TodoItem) {
+  const gid = props.groupId;
+  if (!gid || !myId.value) return;
+  try {
+    await chat.updateTodo(gid, item, { assignees: [...item.assignees, myId.value] });
+    app.toast(t("todo.claimed", { name: memberProfile(myId.value).name }), "success");
+  } catch (e) {
+    app.toast(String(e), "error");
+  }
+}
 
 async function completeTodo(x: TodoItem) {
   await setStatus(x, "done");
@@ -883,6 +926,17 @@ watch(
               </span>
             </div>
           </button>
+          <!-- 类型角标：只有「需求 / 缺陷」画，「任务」这一档刻意不画。
+               每一行都挂一个灰标签的话，"区分"就被噪声淹掉了（用户那句「不要为了区分而增加复杂 UI」）。
+               旧数据没有这一格时读出来就是「任务」⇒ 与不画完全同形，不会出现"老任务少个标签"的错觉。 -->
+          <span
+            v-if="x.category !== 'task'"
+            class="shrink-0 inline-flex h-5 items-center justify-center rounded-full px-2 text-[11px] leading-none"
+            :class="TODO_CATEGORY_PILL[x.category]"
+            :title="t(TODO_CATEGORY_LABEL_KEY[x.category])"
+          >
+            {{ t(TODO_CATEGORY_LABEL_KEY[x.category]) }}
+          </span>
           <span class="shrink-0 inline-flex h-5 items-center justify-center rounded-full px-2 text-[11px] font-medium leading-none" :class="TODO_STATUS_PILL[x.status]">
             {{ statusText(x.status) }}
           </span>
@@ -1031,12 +1085,15 @@ watch(
     :can-restore="detailItem ? canReopen(detailItem) : false"
     :can-edit-structure="detailItem ? canEditStructure(detailItem) : false"
     :can-edit-assignees="detailItem ? canEditAssigneesOf(detailItem) : false"
+    :can-claim="detailItem ? canClaim(detailItem) : false"
     :name-of="(id: string) => memberProfile(id).name"
     :mention-names="mentionNames"
     :self-mention="selfMention"
     @close="closeDetail"
     @status="(s: TodoStatus) => detailItem && setStatus(detailItem, s)"
     @priority="(p: TodoPriority) => detailItem && setPriority(detailItem, p)"
+    @category="(c: TodoCategory) => detailItem && setCategory(detailItem, c)"
+    @claim="detailItem && claim(detailItem)"
     @complete="detailItem && completeTodo(detailItem)"
     @archive="detailItem && archiveTodo(detailItem)"
     @restore="detailItem && restoreTodo(detailItem)"

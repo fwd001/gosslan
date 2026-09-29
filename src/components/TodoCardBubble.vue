@@ -17,6 +17,8 @@ import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
+  TODO_CATEGORY_LABEL_KEY,
+  TODO_CATEGORY_TEXT_CLASS,
   TODO_PRIORITY_CLASS,
   TODO_PRIORITY_LABEL_KEY,
   TODO_STATUS_LABEL_KEY,
@@ -114,6 +116,16 @@ function statusText(s: TodoStatus): string {
         :class="TODO_PRIORITY_CLASS[todo?.priority ?? 'normal']"
       >
         {{ t(TODO_PRIORITY_LABEL_KEY[todo?.priority ?? "normal"]) }}
+      </span>
+      <!-- 类型：只有「需求 / 缺陷」在这一行占一格（文字档，不画胶囊 —— 见
+           `TODO_CATEGORY_TEXT_CLASS` 上那段与 messageHeight 成对的说明）。
+           「任务」这一档不占位，旧数据读出来也是它 ⇒ 与不画完全同形。 -->
+      <span
+        v-if="todo && todo.category !== 'task'"
+        class="shrink-0 text-[11px]"
+        :class="TODO_CATEGORY_TEXT_CLASS[todo.category]"
+      >
+        {{ t(TODO_CATEGORY_LABEL_KEY[todo.category]) }}
       </span>
       <span
         class="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--gosslan-card-ink)]"

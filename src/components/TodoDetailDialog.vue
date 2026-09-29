@@ -12,17 +12,20 @@ import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
+  TODO_CATEGORIES,
+  TODO_CATEGORY_LABEL_KEY,
   TODO_PRIORITIES,
   TODO_PRIORITY_LABEL_KEY,
   TODO_STATUSES,
   TODO_STATUS_LABEL_KEY,
   TODO_STATUS_PILL,
+  type TodoCategory,
   type TodoItem,
   type TodoPriority,
   type TodoStatus,
 } from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
-import { Archive, Check, ChevronDown, Pencil, RotateCcw, Trash2 } from "lucide-vue-next";
+import { Archive, Check, ChevronDown, Pencil, RotateCcw, Trash2, UserPlus } from "lucide-vue-next";
 import { t } from "@/i18n";
 
 const props = defineProps<{
@@ -44,6 +47,11 @@ const props = defineProps<{
   canEditStructure: boolean;
   /** 能否改指派人（创建者/群主/当前被指派人）—— 被指派人也能通过编辑改指派人。 */
   canEditAssignees: boolean;
+  /**
+   * 能否**认领**这条需求（群成员皆可，但只限「需求」且自己还不在名单里）。
+   * 后端那条窄档是 `commands::claim_only_change`；这里只是"给不给按钮"，拦截在命令层。
+   */
+  canClaim: boolean;
   /** 名字解析（id → 昵称）；由看板注入 `memberProfile`，避免这里再依赖成员数据源。 */
   nameOf: (id: string) => string;
   /**
@@ -58,6 +66,9 @@ const emit = defineEmits<{
   (e: "close"): void;
   (e: "status", status: TodoStatus): void;
   (e: "priority", priority: TodoPriority): void;
+  (e: "category", category: TodoCategory): void;
+  /** 认领 = "把自己追加进 assignees"这一步（不新增字段，权限跟着 assignees 走）。 */
+  (e: "claim"): void;
   (e: "complete"): void;
   (e: "archive"): void;
   (e: "restore"): void;
@@ -154,6 +165,35 @@ watch(
         >
           <option v-for="p in TODO_PRIORITIES" :key="p" :value="p">{{ t(TODO_PRIORITY_LABEL_KEY[p]) }}</option>
         </select>
+      </div>
+      <!-- 类型三档（默认「任务」）。判权与优先级同一档 ⇒ 复用同一个 canChangeStatus；
+           同样用原生 select（键盘走得通、读屏读得出，且少一处自己维护的焦点逻辑）。 -->
+      <div class="flex items-center justify-between gap-2">
+        <label class="text-xs text-[var(--gosslan-text-2)]" for="todo-category-pick">{{ t("todo.categoryLabel") }}</label>
+        <select
+          id="todo-category-pick"
+          class="tap-safe h-7 rounded-md border border-[var(--gosslan-border)] bg-transparent px-2 text-[12px] text-[var(--gosslan-card-ink)] disabled:opacity-50"
+          :value="item.category ?? 'task'"
+          :disabled="!canChangeStatus"
+          :title="t('todo.categoryHint')"
+          @change="emit('category', ($event.target as HTMLSelectElement).value as TodoCategory)"
+        >
+          <option v-for="c in TODO_CATEGORIES" :key="c" :value="c">{{ t(TODO_CATEGORY_LABEL_KEY[c]) }}</option>
+        </select>
+      </div>
+      <!-- 认领：只在这一格出现 —— 需求 + 自己还不在名单里（+ 本群成员，由 canClaim 判）。
+           按下之后走的是"改指派人"那条既有命令，不新增接口，也不新增一次同步。 -->
+      <div v-if="canClaim" class="flex items-center justify-between gap-2">
+        <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.claimHint") }}</span>
+        <button
+          type="button"
+          class="tap-safe inline-flex h-7 items-center gap-1 rounded-md border border-[var(--gosslan-primary)] px-2.5 text-[12px] text-[var(--gosslan-accent-ink)] transition hover:opacity-80"
+          :aria-label="t('todo.claim')"
+          @click="emit('claim')"
+        >
+          <UserPlus class="h-3.5 w-3.5" aria-hidden="true" />
+          {{ t("todo.claim") }}
+        </button>
       </div>
       <!-- 状态：**显式两步**（用户 2026-09-17：「一不小心就把状态改了」）。
            此前是一排 4 个分段按钮、一点即写库，而且与看板顶部的**筛选**分段控件长得一样，

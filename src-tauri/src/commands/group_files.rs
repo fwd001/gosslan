@@ -296,17 +296,52 @@ fn reopen_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> b
         && e.category == def.category
 }
 
-/// 「成员窄档」：只服务**本群成员**的两条窄动作（归档 / 还原）。
+/// 请求的指派人名单是否正好等于「原名单 + 末尾追加 actor」这一个改动。
+///
+/// 写成形状判定而不是"包含 actor 就行"：这条窄档对整个群放行，任何多出来的位
+/// （踢掉别人、加进别人、换顺序）都必须落回创建者/群主那一档。
+fn assignees_are_def_plus_actor(def: &[String], req: &[String], actor: &str) -> bool {
+    req.len() == def.len() + 1
+        && req.last().map(|x| x == actor).unwrap_or(false)
+        && !def.iter().any(|a| a == actor)
+        && req[..req.len() - 1] == *def
+}
+
+/// 本次请求是否**只是"认领一条需求"**：库里类型是 `requirement`、actor 原本不在名单里，
+/// 请求恰好把他自己追加到末尾，其余字段逐字相同。
+///
+/// 为什么不新增 `claimed` 字段、也不新增权限位（用户那句「认领后他要有关联人的全部权限」）：
+/// `assignees` **本来就是**改状态的判权依据 —— 把自己加进去，那些权限自动跟着来。
+/// 多一个字段只会多一个可以和 `assignees` 吵架的状态。
+/// ⚠️ 只开给「需求」：普通任务与缺陷仍要"被指派才有权限"，否则任何人都能把自己塞进
+/// 别人的缺陷里再宣布它完成。
+fn claim_only_change(def: &crate::protocol::TodoPayload, actor: &str, e: &TodoEdit<'_>) -> bool {
+    !e.deleted
+        && !def.archived
+        && def.category == "requirement"
+        && e.category == def.category
+        && e.title == def.title
+        && e.status == def.status
+        && e.description == def.description
+        && e.priority == def.priority
+        // 认领不许顺带归档（那是归档那一档的事）
+        && e.archived.is_none()
+        && same_images(e.images, &def.images)
+        && assignees_are_def_plus_actor(&def.assignees, e.assignees, actor)
+}
+
+/// 「成员窄档」：只服务**本群成员**的三条窄动作（归档 / 还原 / 认领一条需求）。
 #[derive(Clone, Copy, Default)]
 struct MemberLane {
     archive_only: bool,
     reopen_only: bool,
+    claim_only: bool,
     is_member: bool,
 }
 
 impl MemberLane {
     fn allows(self) -> bool {
-        self.is_member && (self.archive_only || self.reopen_only)
+        self.is_member && (self.archive_only || self.reopen_only || self.claim_only)
     }
 }
 
@@ -458,6 +493,7 @@ pub async fn update_group_todo(
     let lane = MemberLane {
         archive_only: archive_only_change(&def, &edit),
         reopen_only: reopen_only_change(&def, &edit),
+        claim_only: claim_only_change(&def, &s.device_id, &edit),
         is_member: members.iter().any(|m| m == &s.device_id),
     };
     if !may_change_todo(
@@ -471,8 +507,8 @@ pub async fn update_group_todo(
             "只有任务创建者、群主或被指派人可以修改指派人".to_string()
         } else if edits_structure {
             "只有任务创建者或群主可以修改任务".to_string()
-        } else if lane.archive_only || lane.reopen_only {
-            "只有群成员可以归档或还原任务".to_string()
+        } else if lane.archive_only || lane.reopen_only || lane.claim_only {
+            "只有群成员可以归档、还原或认领这条任务".to_string()
         } else {
             "只有创建者或被指派人可以修改任务状态".to_string()
         });
