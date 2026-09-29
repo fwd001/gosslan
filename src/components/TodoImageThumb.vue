@@ -19,6 +19,9 @@
  * URL 的生命周期归缓存所有；要回收内存请走缓存自己的出口，不要由消费者就地 revoke。
  */
 import { onBeforeUnmount, ref, watch } from "vue";
+import { api } from "@/api";
+import { useAppStore } from "@/stores/useAppStore";
+import { useChatStore } from "@/stores/useChatStore";
 import { loadContentPreview, type PreviewResult } from "@/utils/filePreview";
 import type { TodoImage } from "@/utils/todos";
 import { t } from "@/i18n";
@@ -38,6 +41,9 @@ const props = withDefaults(
   { clickable: false },
 );
 const emit = defineEmits<{ (e: "open"): void }>();
+
+const app = useAppStore();
+const chat = useChatStore();
 
 const url = ref<string | null>(null);
 const loading = ref(true);
@@ -65,6 +71,28 @@ function scheduleRetry(cid: string, name: string) {
   delay = Math.min(delay * 2, RETRY_MAX_MS);
 }
 
+/**
+ * 本机没有这份字节时，**主动**按 cid 向对端要一份 —— 而不是只等退避重试把别人推来的字节撞上。
+ *
+ * 为什么必须主动：群文件/任务图片的收件人登记是**发送那一刻的成员快照**
+ * （`commands/group_announcements.rs` 逐成员写 `group_file_recipients`），后加入群的人没有那一行，
+ * 于是发送端的 `flush_pending_group_files` 永远不会向他派货；他这边再怎么重试也读不到字节。
+ * 拉取这条路的权限在**对端**判：`ContentRequest` 走"拥有即授权" + 当前群名册校验
+ * （`network/transport.rs`），所以问谁都可以、不在群里的对端会自己拒 —— 本机不做授权假设。
+ */
+async function pullFromPeers(cid: string, name: string) {
+  const me = app.device?.device_id;
+  const online = chat.peers.map((x) => x.device_id).filter((x) => x && x !== me);
+  const known = chat.friends.map((x) => x.device_id).filter((x) => x && x !== me);
+  const peer = online[0] ?? known[0];
+  if (!peer) return; // 一个对端都不认识 ⇒ 只能继续等，不报错
+  try {
+    await api.requestContentByCid(peer, cid, name, props.image.size ?? 0);
+  } catch {
+    /* 拉不到就等下一轮退避；这里不弹提示，避免每个缩略图各刷一条 */
+  }
+}
+
 async function load(cid: string, name: string) {
   loading.value = true;
   failed.value = false;
@@ -80,6 +108,7 @@ async function load(cid: string, name: string) {
     failed.value = true;
   }
   loading.value = false;
+  void pullFromPeers(cid, name);
   scheduleRetry(cid, name);
 }
 
@@ -112,7 +141,7 @@ function open() {
   <div
     class="relative h-20 w-20 shrink-0 overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)] transition"
     :class="clickable ? 'cursor-pointer hover:opacity-90' : ''"
-    :title="clickable ? t('todo.viewImage') : image.name"
+    :title="clickable ? t('todo.viewImage') : url ? image.name : t('todo.imageSyncing')"
     :role="clickable ? 'button' : undefined"
     :tabindex="clickable ? 0 : undefined"
     :aria-label="clickable ? t('todo.viewImage') : undefined"
@@ -131,7 +160,7 @@ function open() {
       v-else
       class="flex h-full w-full items-center justify-center px-1 text-center text-[11px] text-[var(--gosslan-text-2)]"
     >
-      {{ loading ? "…" : image.name }}
+      {{ loading ? "…" : t("todo.imageSyncing") }}
     </div>
   </div>
 </template>

@@ -138,6 +138,9 @@ export const useChatStore = defineStore("chat", () => {
   const NOTIF_MAP_MAX = 128;
 
   function nicknameOf(id: string): string {
+    // 自己这一支必须在最前面：`friends` / `peers` 都不含本机，缺这一支时"谁加了这条回应"
+    // 会退化成裸设备 id（表情回应条上印出 `gosslan-xxxx` 就是这个形状）。
+    if (id && id === app.device?.device_id) return app.device?.nickname || id;
     const f = friends.value.find((x) => x.device_id === id);
     if (f) return f.nickname;
     const p = peers.value.find((x) => x.device_id === id);
