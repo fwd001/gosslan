@@ -730,6 +730,23 @@ if (groupFlag === "local") {
       args: ["scripts/e2e-multi-instance.mjs", "--round=gfile"],
     },
   );
+  steps.push(
+    {
+      group: "local",
+      name: "双实例 E2E：传完一份文件之后，同一对进程续发的那条普通文本必须照常送达",
+      why:
+        "§三 点名的就是这一格：「大文件之后继续发送普通消息」。默认轮的顺序是**先文本再文件**"
+        + "（J1 → J2）⇒ 它只判过「文件之前聊天能用」，从来没判过一份文件走完之后再投一条会不会被拖死。"
+        + "这一轮不加新预置、不换链路：同两个实例、同一条已建立的链路，只是把那条文本放到 J2 之后塞进 outbox。"
+        + "判的是四件事：B 侧恰好落一条（既不卡死也不重复）、明文解得回来、A 侧 outbox 由**对端 Ack** 删除、"
+        + "A 侧状态前进过 sending；再加一条 §五 的隔离形状 —— 续发这条不许把刚完成那份的终态从 done 改回去（P7）。"
+        + `反向 --round=posttext-lie 只翻判据读的那两份值（期望明文 + 读台账用的 transfer_id），预置与时序一字不动。`
+        + `每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」一处。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=posttext"],
+    },
+  );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。
   // 不写轮数：这一层的条目由上面的步骤表自己点名，写死数字就是下一个漂移点（同 CHANGELOG 的口径）。

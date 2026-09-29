@@ -301,6 +301,11 @@ const GCRASH_LIE = ROUND === "groupcrash-lie";
 /// 而接收端要用**它自己的群密钥**解开才肯建会话 —— 密封这一步只能过生产 crypto。
 const GFILE = ROUND === "gfile" || ROUND === "gfile-lie";
 const GFILE_LIE = ROUND === "gfile-lie";
+// §三 点名的「大文件之后继续发送普通消息」与 §五 那张"文件层失败/走完都不许波及消息层"。
+// 默认轮的顺序是**先文本（J1）再文件（J2）** ⇒ 它判的是"文件之前聊天能用"，
+// 从来没有一条判据把那条文本放到**一份文件走完之后**再投。这一轮补的就是那一半。
+const POSTTEXT = ROUND === "posttext" || ROUND === "posttext-lie";
+const POSTTEXT_LIE = ROUND === "posttext-lie";
 /// 转发轮的正文：判据里既要看 C 解出的明文等于它，也要把它写进 A 的 messages（明文列）。
 const CHAIN_TEXT = "two-hop group message via B";
 // 补递轮用另一段正文：判据里的文本比对就只可能命中这一轮的落库行
@@ -1445,6 +1450,91 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
     : [];
   check("接收目录没有 .part / 改名副本残留", strays.length === 0, 0, strays.join(", ") || 0);
 });
+
+// §三 点名那一半 + §五 那张"文件层不许拖垮消息层"。默认轮的顺序是**先文本（上面那条 J1）
+// 再文件（J2）** ⇒ 它只判过"文件之前聊天能用"，从来没有一条判据把那条文本放到一份文件
+// **走完之后再投**。这一轮补的就是那一半：同一条已建立的链路、同一对进程。
+// 反向只翻判据自己读的那两份值（期望的明文 + 台账行的 id），产品码一字不动 ⇒ 红必须来自断言本身。
+if (POSTTEXT) {
+step("J3 传完之后续发一条普通文本：必须照常落库、被对端 Ack 回收，且不许把刚完成那份的终态带回去", async () => {
+  const postMsgId = eid();
+  const ts = nowMs();
+  // 反证档翻的是**判据读的两份值**：期望的明文（内容那条）与读台账行用的 transfer_id（终态那条）。
+  const expectContent = POSTTEXT_LIE ? "after the large file (tampered)" : "after the large file";
+  const wantXfer = POSTTEXT_LIE ? `${xferId}-ghost` : xferId;
+  const payload = JSON.stringify({
+    type: "chat_message",
+    msg_id: postMsgId,
+    from: idA.runtimeId,
+    to: idB.runtimeId,
+    kind: "text",
+    content: "enc1:harness-placeholder", // 占位；应用会 re-seal 成真密文
+    ts,
+    seq: 2,
+  });
+  seed(INSTANCES[0].db, (db) => {
+    db.prepare("DELETE FROM messages WHERE msg_id=?1").run(postMsgId);
+    db.prepare("DELETE FROM outbox WHERE msg_id=?1").run(postMsgId);
+    // 与 J1 同一个配方：两行必须成对，只插 outbox 则 re-seal 没有明文，只插 messages 则 Ack 找不到人。
+    db.prepare(
+      `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+       VALUES(?1,?2,?3,?4,'text',?5,?6,2,'sending')`,
+    ).run(postMsgId, idB.runtimeId, idA.runtimeId, idB.runtimeId, "after the large file", ts);
+    db.prepare("INSERT INTO outbox(msg_id,peer_id,payload,created_at) VALUES(?1,?2,?3,?4)")
+      .run(postMsgId, idB.runtimeId, payload, ts);
+  });
+  // 这一行是在**应用已经跑着、链路已经建好**之后才塞进队列的 ⇒ 没有"下一次建链"来冲它，
+  // 只能等它自己那趟心跳/重试。所以这里的等待窗口按那一趟的节奏放宽，不拿 J1 的 60s 硬套。
+  const readB = () => {
+    const d = openDb(INSTANCES[1].db, true);
+    try {
+      return d.prepare("SELECT content,sender_id FROM messages WHERE msg_id=?1").all(postMsgId);
+    } finally {
+      d.close();
+    }
+  };
+  const outboxLeft = () => {
+    const d = openDb(INSTANCES[0].db, true);
+    try {
+      return d.prepare("SELECT COUNT(*) c FROM outbox WHERE msg_id=?1").get(postMsgId).c;
+    } finally {
+      d.close();
+    }
+  };
+  await waitFor(() => readB().length > 0, 150_000, "B 侧出现这条「传完之后」的文本");
+  await waitFor(() => outboxLeft() === 0, 90_000, "A 侧这条的 outbox 被 Ack 删除");
+  await sleep(1500); // 多留一点窗口，让「重复投递」这种退化有机会显现
+
+  const rowsB = readB();
+  check("传完一份文件之后，续发的文本在 B 侧恰好落一条（文件层没把消息层占死，也没重复投）",
+    rowsB.length === 1, 1, rowsB.length);
+  check("B 侧内容与明文一致（走完大文件那条链之后 re-seal/解密这条路径照常）",
+    rowsB[0]?.content === expectContent, expectContent, rowsB[0]?.content);
+  check("B 侧方向正确（sender 还是 A）", rowsB[0]?.sender_id === idA.runtimeId, idA.runtimeId, rowsB[0]?.sender_id);
+  check("A 侧这条的 outbox 行被对端 Ack 删除（不是本端写完就回收）", outboxLeft() === 0, 0, outboxLeft());
+  const st = (() => {
+    const d = openDb(INSTANCES[0].db, true);
+    try {
+      return d.prepare("SELECT status FROM messages WHERE msg_id=?1").get(postMsgId)?.status;
+    } finally {
+      d.close();
+    }
+  })();
+  check("A 侧这条的状态前进过 sending（由对端确认点亮）",
+    !["sending", "failed"].includes(st), "sent/delivered/read", st);
+  // §五 的隔离形状 + P7：续发这条文本不许把**刚完成那份文件**的终态改回去。
+  const tt = (() => {
+    const d = openDb(INSTANCES[0].db, true);
+    try {
+      return d.prepare("SELECT status FROM file_transfers WHERE id=?1").get(wantXfer)?.status;
+    } finally {
+      d.close();
+    }
+  })();
+  check("续发文本之后，刚完成那份的发送侧终态仍是 done（终态不许被后来的消息覆盖）",
+    tt === "done", "done", tt ?? "无行");
+});
+}
 
 // §十四要的「错误行为测试」+ §七/§八的「文件 hash 不一致 / .part 已存在」：
 // 坏内容必须要么被拒收、要么被补齐成正确字节 —— 但绝不允许"报成功却没有正确文件"。

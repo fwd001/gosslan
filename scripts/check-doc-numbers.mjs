@@ -177,6 +177,9 @@ const MODE_LABEL = {
   // 否则这八条断言永远不会被对账。
   GCRASH: "建群崩溃轮",
 GFILE: "群文件轮",
+  // `--round=posttext`（§三 点名那一半）：默认轮的顺序是先文本再文件，所以"传完之后还能不能发文本"
+  // 从来没被判过 —— 这一轮补的就是这条，登记不能省，否则它的断言数永远不会被对账。
+  POSTTEXT: "续发轮",
 };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");

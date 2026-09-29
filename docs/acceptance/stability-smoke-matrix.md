@@ -74,6 +74,7 @@
 
 - 建群崩溃轮 26 条断言 —— 反向：`--round=groupcrash-lie`（#121：§28「链路失效」那一族里今天做得成的那一格。⚠️ 它**刻意不是**「重启后不许留下半个群」那种形状 —— 真实建群路径四张写在同一个事务里，那句永远绿（半个守卫）。钉的是投递那一半：群只长在 A 的盘上 → 只起 A、对端缺席 15s → 真 SIGKILL → 死透后再等 10s → 再起两端 ⇒ B 必须**自己**学到这个群，而那份「没送到」的重试登记是**进程内**的表、已被这次崩溃抹掉 ⇒ 证明的是「群名册才是事实源、链路活着就重递」，不是「内存缓存活下来了」。反向照 group-lie 的先例：**等待用真 id、判据读翻过的 id**）
 
+- 续发轮 24 条断言 —— 反向：`--round=posttext-lie`（§三 点名的「大文件之后继续发送普通消息」与 §五 那张"文件层不许拖垮消息层"。默认轮的顺序是**先文本再文件**，所以"一份文件走完之后再投一条"这句话今天才有判据：同两个实例、同一条已建立的链路，在 J2 收尾之后往 A 的 outbox 塞一条普通文本，判到 B 侧恰好落一条（既不卡死也不重复）、明文解得回来、A 侧 outbox 由**对端 Ack** 删除、状态前进过 sending，再加一条 P7 形状 —— 续发这条不许把刚完成那份的终态从 `done` 改回去。反向只翻判据读的两份值（期望的明文 + 读台账用的 transfer_id），预置与时序一字不动 ⇒ 恰好 2 条红。复跑 `npm run test:e2e:posttext` / `npm run test:e2e:posttext-selfproof`）
 - 群文件轮 28 条断言 —— 反向：`--round=gfile-lie`（§七-4「文件 + 群聊」的跨实例那一半。此前这里只有 Rust 单元用例，而单元用例判的是纯函数 ——「密封文件密钥」「解封」「落盘」各自正常，从没证明过**一次真的跨设备投递能落到对端磁盘上**。形状：A 只把货备在自己盘上（群文件行 + 该成员 pending + 源文件 + 群密钥封装过的文件密钥），B 完全不知情地上线 ⇒ 生产 `flush_pending_group_files` 走 Offer→Chunk→Done 把整条流投完，判到 **B 落盘那份文件的 sha256 逐字节等于源** + 对端自己那条 `completed` 回执 + 气泡只出现在群会话里（不串到 1:1）+ 没有残留 `.part`。★ 密封那一步**必须走生产 crypto**：入口是 `cargo run --example e2e_peer -- --gfk <群密钥 b64>`，它用 `crypto::seal_symmetric` 现封一个随机 file_key 并自检解封；JS 侧**不复刻线格式**（复刻了就只能证明"两份实现自洽"，证明不了和真实现一致）。反向只翻判据读的那份摘要（不改任何生产写盘），所以红恰好落在"读到的是不是真落盘那份"两条上，其余 26 条照绿 —— 这既是反证也是"这轮不是靠基础设施噪声变红"的对照。复跑：`npm run test:e2e:gfile` / `npm run test:e2e:gfile-selfproof`）
 
 §十六 要的 `screenshots/` 现在真的有了：每轮两张全屏 PNG（链路建立后 / 两端重启后），
@@ -137,7 +138,7 @@
 
 | 组合 | 判据在哪（具名） | 层 | 进远端 CI？ | 状态 |
 |---|---|---|---|---|
-| 聊天 + 文件 / 大文件 + 普通消息 | ⚠️ **2026-09-29 就地改直**：这一格原来写"传完文件后同一对进程继续发文本并判落库"，**而那句话在代码里不存在**。默认轮真判的是这份传输本身：B 侧字节数与发送端一致、B 侧 sha256 与源文件一致（INV-P17 分片可验证）、A 侧 `file_outbox` 行被收尾删除、A 侧 send 记录终态是 done（不是「写完 socket」的 sent）、B 侧同一条传输只记一次、接收目录无 `.part` 与改名副本残留，再加 L-B 那一步的重启幂等。复跑：`grep -oE 'check\("[^"]*"' scripts/e2e-multi-instance.mjs` 逐条读名字，含「文本 / 普通消息 / 续发」的默认轮判据一条也没有。档位两步 `--size=0.001` 与 `--size=10` 是真的 | 本地 E2E 层（只判传输与重启） | ❌（远端 verify 只跑 frontend / rust / android 三组） | **缺口如实登记**：「大文件之后普通消息照常」在任何尺寸都还没有判据 —— 原先把这一格归因成"600MB 档没跑"，实测之后缺的是**判据本身**，不是档位 |
+| 聊天 + 文件 / 大文件 + 普通消息 | ⚠️ **2026-09-29 就地改直**：这一格原来写"传完文件后同一对进程继续发文本并判落库"，**而那句话在代码里不存在**。默认轮真判的是这份传输本身：B 侧字节数与发送端一致、B 侧 sha256 与源文件一致（INV-P17 分片可验证）、A 侧 `file_outbox` 行被收尾删除、A 侧 send 记录终态是 done（不是「写完 socket」的 sent）、B 侧同一条传输只记一次、接收目录无 `.part` 与改名副本残留，再加 L-B 那一步的重启幂等。复跑：`grep -oE 'check\("[^"]*"' scripts/e2e-multi-instance.mjs` 逐条读名字，含「文本 / 普通消息 / 续发」的默认轮判据一条也没有。档位两步 `--size=0.001` 与 `--size=10` 是真的 | 本地 E2E 层（只判传输与重启） | ❌（远端 verify 只跑 frontend / rust / android 三组） | **2026-09-29 补齐**：续发轮 `--round=posttext` 判的就是这句话（J2 收尾之后往 A 的 outbox 塞一条普通文本 ⇒ B 侧恰好落一条、明文解得回来、A 侧 outbox 由对端 Ack 删除、状态前进过 sending、刚完成那份终态仍是 `done`）；反向 `posttext-lie` 恰好 2 条红。默认轮本身仍只判传输与重启幂等（那句话以前是许愿，已删） | 本地 E2E 层（默认轮判传输；续发轮判"传完之后"） | ❌（远端 verify 只跑 frontend / rust / android 三组） | AUTOMATED-LOCAL（含 600MB 档实测一次，见下方那一格） |
 | 聊天 + 群聊 | 群聊轮 `--round=group` 里那条"群消息一条都不许串进 1:1" | 本地 E2E 层 | ❌ | AUTOMATED-LOCAL |
 | 文件 + 群聊 | 单元真名：`group_file_keys_distinct_across_transfers`、`group_file_recipient_states_persist`、`list_group_files_scoped_and_newest_first`、`group_file_progress_averages_online_members`（离线成员不摊进进度）＋ **跨实例那一半 2026-09-29 起有判据**：`--round=gfile`（A 只把货备在自己盘上，B 上线后由生产 `flush_pending_group_files` 投完，判到 B 落盘那份的 sha256 等于源；条数见下方轮次账） | 单元 + 双实例轮次 | ✅ rust job（单元）/ 本地专项层（轮次，远端不跑） | AUTOMATED |
 | 文件 + 消息（同一条链路混排） | `bulk_messages_are_only_large_chunks`、`frame_roundtrip_large_payload`、`roundtrip_across_sizes_and_mtus` | 单元 | ✅ | AUTOMATED |
@@ -161,6 +162,11 @@ A 侧 `file_outbox` 行被收尾删除、同一条传输只记一次、接收目
 缺的是"传完之后同一对进程续发一条普通消息并判落库"这条判据本身**（任何尺寸都没有）。
 旧的"600MB 以上因为时长所以不做"那句理由就此撤回：600MB 那一趟整轮跑完的时长远低于门禁里任何一层
 （要引用就现读那一趟自己打印的行，别抄进本文档）。
+⇒ **当天稍后这一格就按这个结论补上了**：`--round=posttext` 落地，并当场在 600MB 档跑过一遍
+（复跑 `E2E_FILE_MB=600 node scripts/e2e-multi-instance.mjs --round=posttext` ⇒ 退码 0）
+⇒ 「600MB 传完之后普通消息与文件消息照常」这一半不再靠推断。⚠️ **仍缺的那一半说清**：
+群聊创建 / 群同步在 600MB 档没有判据（群相关的轮次跑自己的档位，不与这条旅程合流）
+⇒ 别把这一格读成"§三 全闭合"。
 
 ★ 这张表**不许读成「CI 覆盖组合面」**：远端只有 unit / lint / clippy / rust 测试 / android 检查与三份出包流水线，**双实例轮一条都不在远端**（复跑：`grep -n "verify.mjs --group" .github/workflows/verify.yml`）。
 凡标 `AUTOMATED-LOCAL` 的行，这层保护只在有人本机跑 `npm run verify:e2e` 时存在——这正是 §七-4 要的那类组合目前唯一断在哪里的地方。

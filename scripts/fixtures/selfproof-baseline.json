@@ -1,6 +1,6 @@
 {
   "_comment": "check-selfproof-baseline.mjs 的基线：每个 *selfproof 档的「退出码 / 报红条数 / 结论总数」。跑法：`node scripts/check-selfproof-baseline.mjs`（核对）；改了判据/夹具/harness 后重新生成用 `--sync`。★ 这里刻意**不存** expect_red 也**不存** unit：前者（该红还是该绿）由 package.json 的命令串现推（`-lie` = 必须红，`--*-selfcheck` = 必须绿），后者（条断言 / 格）就是它的一个函数 —— 存下来就是第二个会各自漂的事实来源（本文件第一版真存了 unit，于是 20 档里只有 4 档带这个字段）。",
-  "generated_from_tip": "aed466b",
+  "generated_from_tip": "a841271",
   "entries": {
     "test:e2e:gfile-selfproof": {
       "exit": 1,
@@ -41,6 +41,11 @@
       "exit": 0,
       "red": 0,
       "total": 5
+    },
+    "test:e2e:posttext-selfproof": {
+      "exit": 1,
+      "red": 2,
+      "total": 24
     },
     "test:e2e:report-contract-selfproof": {
       "exit": 0,
