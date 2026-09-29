@@ -1360,6 +1360,34 @@ if (GROUP) {
   });
 }
 
+// 续发轮的群预置：**只写群本身，一条消息都不排**（消息由下面 J4 在文件传完之后才排）。
+// 为什么必须放在实例启动之前：接收端解密用的是开机时从 `settings(gk:…)` 读进内存的那份群密钥，
+// 启动之后再往盘上写那一行，进程读不到 ⇒ 判据会红在「预置时序」上，而不是红在产品。
+// 这一条是 §三 点名的「大文件之后群同步是否仍然正常」那一半的起点。
+if (POSTTEXT) {
+  step("群预置（续发轮）：两端各写同一份群 + 同一份群密钥，不排任何群消息", () => {
+    const members = [idA.runtimeId, idB.runtimeId];
+    const ts = nowMs();
+    for (const inst of INSTANCES) {
+      seed(inst.db, (db) => {
+        db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)")
+          .run(`gk:${GROUP_ID}`, GROUP_KEY_STR);
+        db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
+          .run(GROUP_ID, GROUP_NAME, idA.runtimeId, ts);
+        db.prepare("DELETE FROM group_members WHERE group_id=?1").run(GROUP_ID);
+        for (const m of members) {
+          db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)")
+            .run(GROUP_ID, m);
+        }
+        db.prepare(
+          "INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at)"
+          + " VALUES(?1,'group',?2,NULL,0,?3)",
+        ).run(`group:${GROUP_ID}`, GROUP_NAME, ts);
+      });
+    }
+  });
+}
+
 step("起 A/B 并等链路真的建立（routed 拨号一轮 10s）", async () => {
   for (const i of INSTANCES) launch(i);
   for (const i of INSTANCES) {
@@ -1456,7 +1484,7 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
 // **走完之后再投**。这一轮补的就是那一半：同一条已建立的链路、同一对进程。
 // 反向只翻判据自己读的那两份值（期望的明文 + 台账行的 id），产品码一字不动 ⇒ 红必须来自断言本身。
 if (POSTTEXT) {
-step("J3 传完之后续发一条普通文本：必须照常落库、被对端 Ack 回收，且不许把刚完成那份的终态带回去", async () => {
+  step("J3 传完之后续发一条普通文本：必须照常落库、被对端 Ack 回收，且不许把刚完成那份的终态带回去", async () => {
   const postMsgId = eid();
   const ts = nowMs();
   // 反证档翻的是**判据读的两份值**：期望的明文（内容那条）与读台账行用的 transfer_id（终态那条）。
@@ -1533,7 +1561,71 @@ step("J3 传完之后续发一条普通文本：必须照常落库、被对端 A
   })();
   check("续发文本之后，刚完成那份的发送侧终态仍是 done（终态不许被后来的消息覆盖）",
     tt === "done", "done", tt ?? "无行");
-});
+  });
+
+// §三 点名的另一半 ——「大文件之后**群同步**是否仍然正常」。J3 只管住 1:1 那条消息层；
+// 群消息走的是**另一条队列**（`group_outbox`，靠心跳/建链时的 flush_group_outbox 送出，
+// `network/transport.rs` 那三个调用点）⇒ 不单独排一条，"文件层把群同步层拖死"这种形状
+// 在这一轮里是**绿**的（这正是 §五 那张隔离表要求证的东西）。
+// 反向只翻判据读的那两份值（期望明文 + 查那行用的会话 id），预置与投递一字不动 ⇒
+// 三条群判据一起红，而「队列被回收」那条读的是真 msg_id ⇒ 它照绿，
+// 于是这次红能证"红来自断言本身、不是链路没跑"。
+  step("J4 传完之后排一条群消息：群队列在大文件之后仍要送达、解密、落群会话，队列行还要被回收", async () => {
+  const convId = `group:${GROUP_ID}`;
+  const ts = nowMs();
+  const env = buildGroupEnvelope({
+    groupKey: GROUP_KEY_B64, senderId: idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
+    x25519Pub: idA.x25519Pub, ed25519Pub: idA.ed25519Pub,
+    groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId,
+    members: [idA.runtimeId, idB.runtimeId],
+    kind: "text", content: "group msg after the large file", ts, seq: 1,
+  });
+  const wantConv = POSTTEXT_LIE ? `${convId}-ghost` : convId;
+  const gPlain = "group msg after the large file";
+  const expectG = POSTTEXT_LIE ? `${gPlain} (tampered)` : gPlain;
+  seed(INSTANCES[0].db, (db) => {
+    db.prepare("DELETE FROM messages WHERE msg_id=?1").run(env.messageId);
+    db.prepare("DELETE FROM group_outbox WHERE msg_id=?1").run(env.messageId);
+    // 与群聊轮同一个配方：发送方自己那条 + 群队列那一行；队列行是**唯一**被产品码读走的东西。
+    db.prepare(
+      `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+       VALUES(?1,?2,?3,?4,'text',?5,?6,1,'sent')`,
+    ).run(env.messageId, convId, idA.runtimeId, GROUP_ID, gPlain, ts);
+    db.prepare(
+      `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
+       VALUES(?1,?2,?3,?4,?5)`,
+    ).run(env.messageId, GROUP_ID, idB.runtimeId, env.wire, ts);
+  });
+  const readG = () => {
+    const d = openDb(INSTANCES[1].db, true);
+    try {
+      return d.prepare("SELECT conv_id,content FROM messages WHERE msg_id=?1").all(env.messageId);
+    } finally { d.close(); }
+  };
+  const queued = () => {
+    const d = openDb(INSTANCES[0].db, true);
+    try {
+      return d.prepare("SELECT COUNT(*) c FROM group_outbox WHERE msg_id=?1").get(env.messageId).c;
+    } finally { d.close(); }
+  };
+  // 等待用的是**真 id**（反向翻的是判据读的值，不是读键）⇒ 反证档里这一步照样能等到，
+  // 红只会落在下面四条比较上。
+  await waitFor(() => readG().length > 0, 150_000, "B 侧出现这条「传完之后」的群消息");
+  await waitFor(() => queued() === 0, 90_000, "A 侧群队列那行被送达回收");
+  await sleep(1500); // 多留一点窗口，让"重复投递"这种退化有机会显现
+
+  const rowsG = readG();
+  const hit = rowsG.find((r) => r.conv_id === wantConv);
+  check("大文件传完之后排进群队列的那条，那个群会话里恰好落一条（群同步层没被文件层占死，也没重复投）",
+    rowsG.filter((r) => r.conv_id === wantConv).length === 1, 1,
+    rowsG.filter((r) => r.conv_id === wantConv).length);
+  check("B 侧那条群消息的明文解得回来（群密钥解封 + 解密这条路径在大文件之后照常）",
+    hit?.content === expectG, expectG, hit?.content);
+  // 「没串进 1:1」不需要第二条查询：同一行只能有一个 conv_id，钉住它等于群会话就够了。
+  check("它落在群会话里（同一行不可能既属群又属 1:1，所以这条同时排除了串会话）",
+    hit?.conv_id === convId, convId, hit?.conv_id);
+  check("A 侧 group_outbox 那行被回收（送达才算收尾，不是入队即删）", queued() === 0, 0, queued());
+  });
 }
 
 // §十四要的「错误行为测试」+ §七/§八的「文件 hash 不一致 / .part 已存在」：
