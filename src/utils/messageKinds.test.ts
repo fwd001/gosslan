@@ -15,7 +15,12 @@ import {
   isRenderedInTimeline,
   kindClass,
 } from "./messageKinds.ts";
-import { TODO_STATUSES } from "./todos.ts";
+import {
+  TODO_PRIORITIES,
+  TODO_PRIORITY_DEFAULT,
+  TODO_STATUSES,
+  TODO_STATUS_DEFAULT,
+} from "./todos.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const protocolRs = readFileSync(join(here, "../../src-tauri/src/protocol.rs"), "utf8");
@@ -113,6 +118,72 @@ test("跨语言契约：任务状态表与 protocol.rs 的 TODO_STATUSES 一致"
   const rust = [...table.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
   assert.ok(rust.length >= 4, `解析出的状态太少（${rust.length}），表格式可能变了`);
   assert.deepEqual([...TODO_STATUSES], rust, "TS 与 Rust 的任务状态表必须一致");
+});
+
+/** 从 Rust 源码里取一张 `pub const NAME: [&str; N] = ["a", "b"];` 的表。 */
+function rustTableOf(src: string, name: string): string[] {
+  const at = src.indexOf(`pub const ${name}`);
+  assert.ok(at > 0, `protocol.rs 里找不到 ${name} ⇒ 这张表搬家或改名，判据要跟着改`);
+  const end = src.indexOf("];", at);
+  assert.ok(end > at, `${name} 的表体没闭合 ⇒ 解析落点会一路读到文件末尾`);
+  return [...src.slice(at, end).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+}
+
+/** 取 `pub fn NAME() -> String { "x".to_string() }` 里那个字面量。 */
+function rustDefaultOf(src: string, fn: string): string {
+  const m = src.match(new RegExp(`pub fn ${fn}\\(\\) -> String \\{\\s*"([a-z_]+)"\\.to_string\\(\\)`));
+  assert.ok(m, `找不到 ${fn}() 的缺省字面量 ⇒ 回落值这条判据失去落点`);
+  return m[1];
+}
+
+/**
+ * 跨语言契约第二格：任务**优先级**（三档，2026-09-29 落地）。
+ *
+ * 与状态那条同一条理由：优先级是**字符串在线上传**的，后端命令层还会拿它做校验
+ * （`todo_priority_is_valid`）。两侧漂移的表现是静默的 —— 前端给出一个后端不认的值，
+ * 用户只看到"保存失败"，而两边代码各自看起来都对。
+ *
+ * 顺带钉**缺省值**：旧载荷没有 `priority` 时，后端解析成一份、前端 `foldTodos` 回落成另一份 ⇒
+ * 同一条任务在两侧显示成不同档位（那是比"表不一致"更难发现的一种飘）。
+ */
+test("跨语言契约：优先级表与缺省值两侧一致", () => {
+  const rust = rustTableOf(protocolRs, "TODO_PRIORITIES");
+  assert.ok(rust.length >= 3, `解析出的档位太少（${rust.length}），表格式可能变了`);
+  assert.deepEqual([...TODO_PRIORITIES], rust, "TS 与 Rust 的优先级表必须同序同值");
+  assert.equal(
+    TODO_PRIORITY_DEFAULT,
+    rustDefaultOf(protocolRs, "default_todo_priority"),
+    "缺省档位必须同一个",
+  );
+  assert.equal(
+    TODO_STATUS_DEFAULT,
+    rustDefaultOf(protocolRs, "default_todo_status"),
+    "缺省状态必须同一个",
+  );
+  // 缺省值必须真的落在自己那张表里（写成一个表外的字符串会"合法地"显示不出来）
+  assert.ok(rust.includes(TODO_PRIORITY_DEFAULT), "缺省档位不在表内 ⇒ 界面拿不到它的 label/class");
+});
+
+/**
+ * 阳性对照（这几条判据不是恒过的证明）：把 Rust 那张表改一个值，比对必须变红。
+ *
+ * 为什么单独钉一条：跨语言比对最容易写成"两侧都从同一处读"从而永远相等；
+ * 这里喂给同一个解析器一份**手动漂移过**的源码，要求它看得见差异。
+ */
+test("对照：解析器看得见人为造的漂移（判据不空转）", () => {
+  const mutated = protocolRs.replace('["high", "normal", "low"]', '["high", "normal", "urgent"]');
+  assert.notEqual(mutated, protocolRs, "替换没生效 ⇒ 这条对照什么都没测");
+  assert.notDeepEqual(
+    rustTableOf(mutated, "TODO_PRIORITIES"),
+    [...TODO_PRIORITIES],
+    "改了 Rust 那侧的值，判据必须报不一致",
+  );
+  const defMutated = protocolRs.replace(
+    'pub fn default_todo_priority() -> String {\n    "normal"',
+    'pub fn default_todo_priority() -> String {\n    "low"',
+  );
+  assert.notEqual(defMutated, protocolRs, "缺省值那条替换没生效 ⇒ 对照空转");
+  assert.equal(rustDefaultOf(defMutated, "default_todo_priority"), "low");
 });
 
 /**

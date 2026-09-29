@@ -992,9 +992,9 @@ pub fn todo_status_is_valid(s: &str) -> bool {
 
 /// 任务优先级的**唯一取值表**（三档，用户 2026-09-29：只分三级、默认中等）。
 ///
-/// 与前端 `src/utils/todos.ts` 的 `TODO_PRIORITIES` 必须一致。⚠️ 今天这条**没有**跨语言守卫
-/// （`messageKinds.test.ts` 那份只比 `TODO_STATUSES` / `WIRE_KINDS`）⇒ 已登记为"缺判据"，
-/// 不是"已判住"；补守卫时别把两张表各写一遍家（同一条规则两处各半是缺陷形状）。
+/// 与前端 `src/utils/todos.ts` 的 `TODO_PRIORITIES` 必须一致，**已有跨语言守卫**
+/// （`src/utils/messageKinds.test.ts` 直接读本文件比对表体与缺省值，同 `TODO_STATUSES` 那一格）。
+/// 加一档 = 两张表各加一个值 + 前端那张 label/class 表补齐；只改一侧会在单测里当场红。
 pub const TODO_PRIORITIES: [&str; 3] = ["high", "normal", "low"];
 
 /// 缺省优先级 = 常规。也是载荷里 `priority` 缺失时的解析回落值。
