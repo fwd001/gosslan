@@ -74,6 +74,8 @@
 
 - 建群崩溃轮 26 条断言 —— 反向：`--round=groupcrash-lie`（#121：§28「链路失效」那一族里今天做得成的那一格。⚠️ 它**刻意不是**「重启后不许留下半个群」那种形状 —— 真实建群路径四张写在同一个事务里，那句永远绿（半个守卫）。钉的是投递那一半：群只长在 A 的盘上 → 只起 A、对端缺席 15s → 真 SIGKILL → 死透后再等 10s → 再起两端 ⇒ B 必须**自己**学到这个群，而那份「没送到」的重试登记是**进程内**的表、已被这次崩溃抹掉 ⇒ 证明的是「群名册才是事实源、链路活着就重递」，不是「内存缓存活下来了」。反向照 group-lie 的先例：**等待用真 id、判据读翻过的 id**）
 
+- 群文件轮 28 条断言 —— 反向：`--round=gfile-lie`（§七-4「文件 + 群聊」的跨实例那一半。此前这里只有 Rust 单元用例，而单元用例判的是纯函数 ——「密封文件密钥」「解封」「落盘」各自正常，从没证明过**一次真的跨设备投递能落到对端磁盘上**。形状：A 只把货备在自己盘上（群文件行 + 该成员 pending + 源文件 + 群密钥封装过的文件密钥），B 完全不知情地上线 ⇒ 生产 `flush_pending_group_files` 走 Offer→Chunk→Done 把整条流投完，判到 **B 落盘那份文件的 sha256 逐字节等于源** + 对端自己那条 `completed` 回执 + 气泡只出现在群会话里（不串到 1:1）+ 没有残留 `.part`。★ 密封那一步**必须走生产 crypto**：入口是 `cargo run --example e2e_peer -- --gfk <群密钥 b64>`，它用 `crypto::seal_symmetric` 现封一个随机 file_key 并自检解封；JS 侧**不复刻线格式**（复刻了就只能证明"两份实现自洽"，证明不了和真实现一致）。反向只翻判据读的那份摘要（不改任何生产写盘），所以红恰好落在"读到的是不是真落盘那份"两条上，其余 26 条照绿 —— 这既是反证也是"这轮不是靠基础设施噪声变红"的对照。复跑：`npm run test:e2e:gfile` / `npm run test:e2e:gfile-selfproof`）
+
 §十六 要的 `screenshots/` 现在真的有了：每轮两张全屏 PNG（链路建立后 / 两端重启后），
 `summary.json.shots` 记相对路径、`summary.html` 内嵌图集；判据**只钉「落盘且不是空图」**，
 而"不是空图"的口径是 **PNG 结构成立**（签名 + IHDR 宽高 > 0），体积只留一条挡桩文件的下限。
@@ -137,7 +139,7 @@
 |---|---|---|---|---|
 | 聊天 + 文件 / 大文件 + 普通消息 | 双实例默认轮：传完文件后**同一对进程**继续发文本并判落库；档位两步 `--size=0.001` 与 `--size=10` | 本地 E2E 层 | ❌（远端 verify 只跑 frontend / rust / android 三组） | AUTOMATED-LOCAL |
 | 聊天 + 群聊 | 群聊轮 `--round=group` 里那条"群消息一条都不许串进 1:1" | 本地 E2E 层 | ❌ | AUTOMATED-LOCAL |
-| 文件 + 群聊 | 单元真名：`group_file_keys_distinct_across_transfers`、`group_file_recipient_states_persist`、`list_group_files_scoped_and_newest_first`、`group_file_progress_averages_online_members`（离线成员不摊进进度）；**跨实例的群文件端到端仍无自动化**（row 18 已写明，下一格连前置条件一起登记在 roadmap §13.3） | 单元 | ✅ rust job | SIMULATED（差跨实例那一半） |
+| 文件 + 群聊 | 单元真名：`group_file_keys_distinct_across_transfers`、`group_file_recipient_states_persist`、`list_group_files_scoped_and_newest_first`、`group_file_progress_averages_online_members`（离线成员不摊进进度）＋ **跨实例那一半 2026-09-29 起有判据**：`--round=gfile`（A 只把货备在自己盘上，B 上线后由生产 `flush_pending_group_files` 投完，判到 B 落盘那份的 sha256 等于源；条数见下方轮次账） | 单元 + 双实例轮次 | ✅ rust job（单元）/ 本地专项层（轮次，远端不跑） | AUTOMATED |
 | 文件 + 消息（同一条链路混排） | `bulk_messages_are_only_large_chunks`、`frame_roundtrip_large_payload`、`roundtrip_across_sizes_and_mtus` | 单元 | ✅ | AUTOMATED |
 | 文件 + reconnect（断链不误杀其它传输，P1） | 护栏「断链清理必须在确认这个 peer 真的一条链路都不剩之后」「接收器回收必须走判据与摘表同一次持锁的 take_*」；单元真名：`stalled_receiver_is_reclaimed_only_after_the_idle_window` | 护栏 + 单元 | 单元 ✅；护栏在本地/全量层 | AUTOMATED |
 | 文件 + sync（乱序/重复分片、断点续传） | 单元真名：`large_gossip_payload_downgrades_to_low`、`worth_replaying_requires_ttl_to_survive_one_more_hop`；护栏「中继收文件的哈希必须对组装后的明文算」「幂等 accept 时必须重置段号」「重复 FileDone 的『本机没这份文件』出口不许退回静默」 | 护栏 + 单元 | 同上 | AUTOMATED |

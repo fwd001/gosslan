@@ -176,6 +176,7 @@ const MODE_LABEL = {
   // 与"重启后不许留下半个群"那种永绿断言的区别写在这轮的注释里 —— 登记不能省，
   // 否则这八条断言永远不会被对账。
   GCRASH: "建群崩溃轮",
+GFILE: "群文件轮",
 };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");

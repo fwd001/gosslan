@@ -53,6 +53,8 @@
     "test:e2e:group-selfproof": "node scripts/e2e-multi-instance.mjs --round=group-lie",
     "test:e2e:groupcrash": "node scripts/e2e-multi-instance.mjs --round=groupcrash",
     "test:e2e:groupcrash-selfproof": "node scripts/e2e-multi-instance.mjs --round=groupcrash-lie",
+    "test:e2e:gfile": "node scripts/e2e-multi-instance.mjs --round=gfile",
+    "test:e2e:gfile-selfproof": "node scripts/e2e-multi-instance.mjs --round=gfile-lie",
     "test:e2e:logtail-selfproof": "node scripts/e2e-multi-instance.mjs --logtail-selfcheck",
     "test:fault-injection:resume": "node scripts/e2e-multi-instance.mjs --fault=resume-prefix",
     "test:fault-injection:kill": "node scripts/e2e-multi-instance.mjs --fault=kill-mid",

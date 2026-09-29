@@ -1615,19 +1615,37 @@ A 台账 `active`、**A 队列行仍是 1**；A 重启后 **12.6 s** 从盘上�
 - **`transport.rs` / `file.rs` / `useChatStore.ts` 不拆**：见 §32 报告第 8 问。行数不是问题，改动半径才是。
 
 ### 13.3 下一格清单（按风险从高到低，全部可单独验收）
-- **群文件跨实例端到端**（§七-4 的「文件 + 群聊」＋§六 群聊清单里的「群文件」）——今天只有单元级判据
-  （`group_file_keys_distinct_across_transfers`、`group_file_recipient_states_persist`、
-  `list_group_files_scoped_and_newest_first`、`group_file_progress_averages_online_members`），
-  **两个真实进程之间发一份群文件、对端收完 sha256 等于源、每个成员各落一条台账**这一格仍无自动化。
-  ⚠️ 前置条件写在这里，别让下一位拿错做法：**不许照抄 1:1 文件那三条手写入库的 DB 行**
-  （`messages` / `file_transfers` / `file_outbox`）。1:1 那样写成立，是因为 `send_file` 在点击那一刻写的就是这三行；
-  群文件在此之外还多一份**按成员拆的密钥与封包**，那些只由生产命令 `commands::send_group_file`
-  （`src-tauri/src/commands/group_announcements.rs`）算 —— 在 JS 侧复刻它，就是拿测试自己写的实现去验实现自己，
-  正是 §十五 禁的「用 mock 结果冒充真实测试」。
-  正解：扩已有的测试专用入口 `src-tauri/examples/e2e_peer.rs`（照 `ensure_test_group` 的先例），让它**调用生产命令**，
-  再开 `--round=gfile`：A 发 → B 收 → 判「sha256 等于源 / 每人一条台账 / 群消息只落群会话 / 群任务不受影响」，
-  反证 `gfile-lie` 只翻判据读的那份摘要（其余拓扑、时序、正文一字不动）。
-  加轮次要同步四处登记（MODE_LABEL / 门禁 local 层 / 判据 C 的轮次声明 / 正反两跑）—— 这条纪律写在 harness 头部注释里。
+- ~~**群文件跨实例端到端**~~ **已落地（2026-09-29，`--round=gfile` + 反证 `--round=gfile-lie`）**
+  （§七-4 的「文件 + 群聊」＋§六 群聊清单里的「群文件」）。
+  ★ **旧规格点名的是三格，这轮只挣到两格，别把"落地"读成"三格都齐了"**：
+  挣到的是**对端落盘那份的 sha256 逐字节等于源**（含元数据逐字段）与**群消息只落群会话**；
+  **没挣到的是"每个成员各落一条台账"** —— 本轮名册里只有两位成员、货只发给 B 一位，
+  N 成员 fan-out 的**结果**（每条台账各自到终态、甲失败不吞掉乙）今天仍只有 Rust 单元用例
+  （`file_cancel_keys_are_scoped_per_recipient`、`wire_progress_is_counted_per_recipient_within_one_group_transfer`、
+  `group_file_cancel_registry_is_scoped_per_recipient` 钉的是**键的分法**，
+  `update_one_recipient_does_not_affect_others` / `complete_ack_updates_only_target_recipient` 钉的是**写行的隔离**
+  ⇒ 键与行都对，但没有一条判据看过"三个真进程里另两个收全、一个收不全"的形状）。
+  这条欠账留在下面，不并进"已落地"。
+  ★ **这一条上一版给的做法是错的，而且错在一个看不见的地方**：它写「正解：扩 `src-tauri/examples/e2e_peer.rs`，
+  照 `ensure_test_group` 的先例让它**调用生产命令**」。现读那个入口就做不到 —— 它是一个**协议级假对端**，
+  整个进程里没有 `AppState`（`AppState::init` 的入参是 `AppHandle`，只有真应用起得来），
+  而 `send_group_file` 的第一参数正是 `&Arc<AppState>` ⇒ 「让 peer 调生产命令」不是麻烦，是不可能。
+  照那句做的人只会做出一半，然后把那一半当成全部（写进 `group_files` 就当"发过了"）。
+  **真正做得成的 seam 是磁盘而不是命令**：群文件的可恢复状态本来就全在盘上 ——
+  群密钥 `settings gk:{gid}`、每个 transfer 的文件密钥**以群密钥密封后**存 `settings gfk:{tid}`
+  （明文 file_key 不落库），接收侧靠 `ensure_group_file_key` 解封回填内存，投递靠 peer 上线时
+  `flush_pending_group_files` 捞 `status='pending'` 的 recipient 走 Offer→Chunk→Done。
+  所以预置只写这些**生产代码自己会写的那些行**，之后**一条线格式都不由测试拼**：整条流由 A 进程的生产投递链发出。
+  唯一必须"算"的是那份密封文件密钥，而它**走生产 crypto**：
+  `cargo build --example e2e_peer` 后跑 `target/debug/examples/e2e_peer --gfk <群密钥 b64>`，
+  它用 `crypto::seal_symmetric` 现封一个随机 key、并自检"解封不回原密钥就退 2"（入参不是合法 base64、
+  或长度不是 32 字节，同样退 2 并打 `GFK_ERROR`）。
+  （保留上一版那条仍然成立的前置禁令：**不许在 JS 侧复刻线格式** —— 复刻了只能证明"两份实现自洽"，
+  正是 §十五 禁的「用 mock 结果冒充真实测试」。`--gfk` 这个入口就是为了堵掉这条捷径。）
+  加轮次要同步登记四处（MODE_LABEL / 门禁 local 层 / 活文档里的轮次声明 / 正反两跑的 npm 入口）——
+  前三处都有机器对账（`node scripts/check-doc-numbers.mjs`：harness 里出现没登记进 MODE_LABEL 的轮次块 = 硬错、
+  判据 D 要求正向轮次出现在门禁 local 或 release 某步的 args 里、判据 F 把 `*-selfproof` 入口与 `-lie` 轮次双向对齐），
+  **只有 harness 头部那条枚举注释谁也不管**（漏了不会红，本轮补上了）。
 
 
 1. ~~**§22 任务专项 E2E 轮 `--round=task`**~~ **已落地，并在其后继续扩腿**（正向判据数由判据 C 现算、反向 `--round=task-lie`，挂在发版前那一层）：

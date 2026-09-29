@@ -4,6 +4,10 @@
 //! 用法：
 //!   cargo run --example e2e_peer -- [--i1] [--full] ["<gosslan.db 路径>"]
 //!   --i1   锁定多开实例 1（device_id 带 -i1 后缀；否则锁定主实例）
+//!   --gfk <群密钥 base64>  只做一个动作：用生产 crypto 把一份随机 file_key
+//!          封成群密钥密文，打印 `GFK\t<file_key b64>\t<sealed b64>` 后退出（不建链）。
+//!          群文件跨实例轮需要往 `settings gfk:{tid}` 写一份**生产能解开**的密封密钥；
+//!          在 JS 侧复刻 seal 的线格式就是拿测试自己的实现去验实现自己（§十五）。
 //!   --full 全功能模式：除基础连通性外，覆盖多类型消息、群聊、心跳、
 //!          资料同步、好友申请、共享目录、下载方向文件传输
 //! 传入 DB 路径时额外做落库 / 去重 / 文件落盘校验。
@@ -368,6 +372,48 @@ async fn main() {
         .iter()
         .find(|a| !a.starts_with("--") && a.ends_with(".db"))
         .cloned();
+
+    // ---- --gfk：只替群文件轮封装一份 file_key，随后退出（不建链、不读库）----
+    // 密封必须走生产 `crypto::seal_symmetric`：harness 写进 `settings gfk:{tid}` 的那一列
+    // 之后由生产 `ensure_group_file_key` 解封 ⇒ 线格式在这里由生产码自己定义，
+    // 测试不另写一份（§十五「用 mock 结果冒充真实测试」）。
+    if let Some(pos) = args.iter().position(|a| a == "--gfk") {
+        let b64 = args.get(pos + 1).map(|s| s.as_str()).unwrap_or("");
+        let decoded = match STANDARD.decode(b64) {
+            Ok(v) => v,
+            Err(e) => {
+                println!("GFK_ERROR 群密钥不是合法 base64：{e}");
+                std::process::exit(2);
+            }
+        };
+        let key: [u8; 32] = match decoded.try_into() {
+            Ok(k) => k,
+            Err(v) => {
+                println!("GFK_ERROR 群密钥长度 {}（要 32 字节）", v.len());
+                std::process::exit(2);
+            }
+        };
+        let file_key = crypto::random_key();
+        let sealed = match crypto::seal_symmetric(&key, &file_key) {
+            Some(v) => v,
+            None => {
+                println!("GFK_ERROR 封装失败");
+                std::process::exit(2);
+            }
+        };
+        // 生产自己也要能解开自己刚写的这一行 —— 解不开就不要把这行交出去
+        if crypto::open_symmetric(&key, &sealed).as_deref() != Some(&file_key[..]) {
+            println!("GFK_ERROR 解封不回原密钥");
+            std::process::exit(2);
+        }
+        println!(
+            "GFK\t{}\t{}",
+            STANDARD.encode(file_key),
+            STANDARD.encode(sealed)
+        );
+        return;
+    }
+
     let mut report = Report::new();
 
     // ---- 1. UDP 发现（who_has 单播探测 → 实例应答 announce）----

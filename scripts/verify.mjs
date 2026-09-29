@@ -712,6 +712,23 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--round=groupcrash"],
     },
+    {
+      group: "local",
+      name: "双实例 E2E：A 只把群文件备在自己盘上 ⇒ B 上线后必须收到逐字节相同的那份",
+      why: `§七-4 点名的「文件 + 群聊」＋§六 群聊清单里的「群文件」，今天只有单元级判据、`
+        + `**两个真实进程之间发一份群文件**这一格没有任何自动化。`
+        + `预置：群在两端都存在（接收端的权限判据要求 sender ∈ 本地群成员），货只长在 A 的盘上 —— `
+        + `群文件行 / 每个成员一行 / file_transfers 的源路径 / settings 里那份用群密钥封好的 file_key。`
+        + `投递、分片、AEAD、改名收尾、台账终态全部由生产码自己跑（flush_pending_group_files 在建链/Hello/心跳三处触发）。`
+        + `★ 为什么不照抄 1:1 那三条手写 DB 行：群文件多一份「群密钥封装的 file_key」，`
+        + `接收端要用它自己的群密钥解开才肯建会话 ⇒ 密封这一步走生产 crypto（e2e_peer 的 --gfk 模式），`
+        + `在 JS 里复刻它的线格式就是本仓反复判死的「用 mock 结果冒充真实测试」。`
+        + `反向 --round=gfile-lie 只翻判据读的那份摘要，预置与时序一字不动。`
+        + `每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」一处。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=gfile"],
+    },
   );
 } else if (!groupFlag) {
   // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。
