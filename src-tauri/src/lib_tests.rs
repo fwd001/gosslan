@@ -2073,12 +2073,19 @@ mod tests {
     /// 背景（本轮 RCA 查出来的真实现场，不是假想需求）：`MsgKind::Merge` 是 V1 期间
     /// （`9b26006`）才加的，v4.8.2 / v4.18.10 / v4.20.0 三个已发布版本里没有这个变体 ——
     /// 它们的 `ChatMessage.kind` 仍是枚举，收到 `kind:"merge"` 会整帧丢掉。
+    ///
+    /// 4.31.23 起 1:1 问的是 `dm_allowed_by_features`（那张表额外要求对端声明
+    /// "能吃任意 wire kind"），所以这里的锚点跟着换成那一个 —— **但只换锚点不算数**：
+    /// 下面同时钉住"1:1 不许绕过它去问全局那一位"，否则这条守卫会被"改回旧函数"
+    /// 这一种改法静默通过，而那条路会让 1:1 少掉一半判据。
     #[test]
     fn new_message_kinds_are_gated_at_the_send_path() {
         let proto = include_str!("protocol.rs");
         for f in [
             "pub fn kind_required_feature(",
             "pub fn kind_allowed_by_features(",
+            "pub fn dm_required_features(",
+            "pub fn dm_allowed_by_features(",
             "pub fn kind_blocked_hint(",
         ] {
             assert_eq!(
@@ -2096,8 +2103,17 @@ mod tests {
         let chat = include_str!("commands/chat.rs");
         let body = rust_fn_body(chat, "pub async fn send_message(");
         let gate = body
-            .find("kind_allowed_by_features(")
+            .find("dm_allowed_by_features(")
             .expect("1:1 发送路径必须问门控判据，否则老对端会静默丢帧");
+        assert!(
+            body.contains("dm_required_features(&kind)"),
+            "1:1 的『这个 kind 要不要门控』也必须问那一个家（只问放行、不问要求 = 判据半接）"
+        );
+        assert!(
+            !body.contains("kind_allowed_by_features("),
+            "1:1 不许绕过 dm_allowed_by_features 去问全局那一位：它不含『对端能不能吃任意 wire kind』，\
+             绕过去的后果正是这条守卫要挡的那次事故（老端丢帧 + 断链）"
+        );
         // 挡下时走的是**三态**文案入口。绕过它直接引用旧那句的后果不是排版，是假指控：
         // `peer_content_features` 是内存表，对方一离线就被 sweep 掉 ⇒ 缺条目通常只代表
         // "此刻不知道"，而旧那句说的是"它版本较旧"。
