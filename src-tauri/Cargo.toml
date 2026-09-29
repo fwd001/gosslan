@@ -126,6 +126,16 @@ custom-protocol = ["tauri/custom-protocol"]
 # 引入前必须先读 docs/adr/0015-ble-transport.md（项目规矩：新依赖必须 ADR）。
 bluetooth = ["dep:btleplug", "dep:futures", "dep:objc2-core-bluetooth", "dep:windows", "dep:windows-future"]
 
+# dev（`cargo test` / 本地检查用的就是这个 profile）刻意只留行号表、并关掉增量缓存。
+# 实测过不这么写的代价：`src-tauri/target/debug` 长到 78G（`deps` 49G 全量调试信息 +
+# `incremental` 23G / 316 个目录 —— cargo 换 hash 就另起一份、旧的从不删，而 `cargo clean gc` 不清项目 target）。
+# 边界要说清：`debug = 1` 保留行号表 ⇒ panic 仍报 file:line，丢的是变量值与本帧局部符号；
+# ⚠️ 绝不动 `debug-assertions` —— 那会让 `cargo test` 的断言变瞎，是拿测试换磁盘。
+# 代价只付一次：改完这版第一次 `cargo test` 是冷编。
+[profile.dev]
+debug = 1
+incremental = false
+
 [profile.release]
 # 安卓上必须是 `panic = "abort"`：Tauri 的 `mobile_entry_point` 宏用 `stop_unwind` 包住入口，
 # 换成 unwind 会直接编译失败（实测 E0593: required by this bound in `stop_unwind`）。
