@@ -209,7 +209,7 @@ async function confirmAction() {
 <template>
   <!-- 群管理面板比一般弹窗内容多（群名/公告/成员/添加/转让），用更宽的一档：
        默认 max-w-md 会挤成"瘦高"一条（用户 2026-09-17）。 -->
-  <BaseModal :open="open" width="max-w-lg" :title="group ? t('group.membersCount', { n: group.members.length }) : t('group.members')" @close="emit('close')">
+  <BaseModal :open="open" width="max-w-lg" :title="group ? t('group.manageTitle', { n: group.members.length }) : t('group.members')" @close="emit('close')">
     <div v-if="group" class="space-y-3">
       <!-- 群名称：群主可改（用户 2026-09-17：改名并入本弹窗）。
            非群主**只读文本** —— 没权限就不给一个灰掉的输入框（改不了还长得像能改）。 -->
@@ -235,27 +235,37 @@ async function confirmAction() {
         <p v-else class="px-3 py-2 text-sm text-[var(--gosslan-text)]">{{ group.name }}</p>
       </div>
 
-      <!-- 群公告：发布/修改入口（仅群主）。聊天区的横幅只在**有公告**时出现 ——
-           没有公告时不常驻空横幅，发布入口收进这里（用户 2026-09-17）。 -->
-      <div v-if="isOwner">
+      <!-- 群公告：**群主看到编辑区，其他成员看到正文**（用户 2026-09-29 需求汇总八：
+           "群详情中可查看公告"）。以前整段挂在 `isOwner` 下 ⇒ 普通成员进这个面板
+           什么都看不到，只能顺着聊天记录往回翻那条公告消息。 -->
+      <div>
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("group.announce") }}</div>
-        <textarea
-          v-model="announceDraft"
-          maxlength="500"
-          rows="3"
-          class="w-full resize-none rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
-          :placeholder="t('group.announcePlaceholder')"
-        ></textarea>
-        <div class="mt-2 flex justify-end">
-          <button
-            type="button"
-            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
-            :disabled="publishing || !announceDraft.trim()"
-            @click="publishAnnouncement"
-          >
-            {{ currentAnnouncement ? t("group.announceEdit") : t("group.announcePublish") }}
-          </button>
-        </div>
+        <template v-if="isOwner">
+          <textarea
+            v-model="announceDraft"
+            maxlength="500"
+            rows="3"
+            class="w-full resize-none rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
+            :placeholder="t('group.announcePlaceholder')"
+          ></textarea>
+          <div class="mt-2 flex justify-end">
+            <button
+              type="button"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
+              :disabled="publishing || !announceDraft.trim()"
+              @click="publishAnnouncement"
+            >
+              {{ currentAnnouncement ? t("group.announceEdit") : t("group.announcePublish") }}
+            </button>
+          </div>
+        </template>
+        <p
+          v-else-if="currentAnnouncement?.text"
+          class="whitespace-pre-wrap px-3 py-2 text-sm text-[var(--gosslan-text)]"
+        >
+          {{ currentAnnouncement.text }}
+        </p>
+        <p v-else class="px-3 py-2 text-sm text-[var(--gosslan-text-2)]">{{ t("group.announceEmpty") }}</p>
       </div>
 
       <!-- 当前成员 -->

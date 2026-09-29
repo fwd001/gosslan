@@ -29,6 +29,13 @@ import { isRenderedInTimeline } from "@/utils/messageKinds";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
 import { ArrowDown, Bluetooth, Layers, X, Pin, Megaphone, Trash2, Share2, Star } from "lucide-vue-next";
+import {
+  isAnnounceDismissed,
+  readAnnounceSeen,
+  withAnnounceDismissed,
+  writeAnnounceSeen,
+  type AnnounceSeenMap,
+} from "@/utils/announcementDismiss";
 import type { LinkState, MessageRecord, MsgKind } from "@/types";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
@@ -314,11 +321,6 @@ const memberCount = computed(() => {
   if (!gid) return 0;
   return chat.groups.find((g) => g.id === gid)?.members.length ?? 0;
 });
-const canRename = computed(() => {
-  const gid = activeGroupId.value;
-  if (!gid) return false;
-  return chat.groups.find((g) => g.id === gid)?.creator === app.device?.device_id;
-});
 
 /**
  * 表情回应的折叠结果：**在会话层算一次**再按 msg_id 分发。
@@ -391,6 +393,40 @@ const announcement = computed(() => {
 const canPublishAnnouncement = computed(
   () => !!activeGroupId.value && chat.groups.find((g) => g.id === activeGroupId.value)?.creator === app.device?.device_id,
 );
+
+// ---------------- 公告横幅的「本机已看过」（用户 2026-09-29 需求汇总八） ----------------
+
+/**
+ * `groupId -> 这条群在本机收起的那条公告 msgId`。
+ *
+ * 整份表读进**一个** ref（不是"每次切会话重读一次 localStorage"）：这样收起后横幅立刻消失
+ * 靠的是响应式，而切会话时不需要同步任何东西 —— 少一处"读时机"就少一处会漏的地方。
+ */
+const announceSeen = ref<AnnounceSeenMap>(readAnnounceSeen(localStorage));
+
+/** 横幅可见性 = 有公告 **且** 这条没在本机收起过。 */
+const announcementVisible = computed(() => {
+  const ann = announcement.value;
+  const gid = activeGroupId.value;
+  if (!ann || !gid) return false;
+  return !isAnnounceDismissed(announceSeen.value, gid, ann.msgId);
+});
+
+/**
+ * 收起**这一条**（用户那句「看完可临时关闭，公告更新/更换后再弹」）。
+ *
+ * 记的是 `msgId` 而不是时间戳：群主改公告 = 发一条新消息 = 新 `msgId` ⇒ 下一次折叠出来的
+ * 那条与记下的不相等，横幅自然回来，不需要任何"过期"逻辑。
+ */
+function dismissAnnouncement() {
+  const ann = announcement.value;
+  const gid = activeGroupId.value;
+  if (!ann || !gid) return;
+  const next = withAnnounceDismissed(announceSeen.value, gid, ann.msgId);
+  announceSeen.value = next;
+  writeAnnounceSeen(localStorage, next);
+  app.toast(t("group.announceDismissed"), "info");
+}
 
 // ---------------- 公告全文查看 + 删除（用户 2026-09-17） ----------------
 
@@ -1041,7 +1077,6 @@ function onLoadMore() {
       :peer-version-newer="peerVersionNewer"
       :link-state="linkState"
       :member-count="memberCount"
-      :can-rename="canRename"
       :show-back="app.isMobile"
       :unread-total="chat.totalUnread"
       @back="app.mobileView = 'list'"
@@ -1050,23 +1085,32 @@ function onLoadMore() {
       :tasks-opening="tasksOpening"
             :open-tasks="openTasksForActive"
       @open-tasks="openTasks()"
-      @rename="membersOpen = true"
       @open-share="emit('open-share')"
     />
 
-    <!-- 群公告条：**有公告才出现**（用户 2026-09-17：没有公告不该常驻一条空横幅；
-         发布/修改入口在「成员管理」弹窗里）。浅警告底 + 描边 + 圆角，点正文开全文弹窗。 -->
+    <!-- 群公告条：**有公告且这条没在本机收起过**才出现（用户 2026-09-17 要"没有公告不该
+         常驻一条空横幅"；2026-09-29 再要"看完能临时关掉，等公告更新了再回来"）。
+         浅警告底 + 描边 + 圆角，点正文开全文弹窗，右侧 ✕ 只收起、不删公告。 -->
     <div
-      v-if="isGroup && announcement"
+      v-if="isGroup && announcementVisible"
       class="mx-2 mt-1 flex shrink-0 items-start gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-warning-soft)] bg-[color-mix(in_srgb,var(--gosslan-warning)_8%,transparent)] px-3 py-2"
     >
       <Megaphone class="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" aria-hidden="true" />
       <button
         class="tap-safe min-w-0 flex-1 truncate rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-left text-[12px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-        :title="announcement.text"
+        :title="announcement?.text"
         @click="announceViewOpen = true"
       >
-        {{ announcement.text }}
+        {{ announcement?.text }}
+      </button>
+      <button
+        type="button"
+        class="tap-safe -mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        :title="t('group.announceDismiss')"
+        :aria-label="t('group.announceDismiss')"
+        @click="dismissAnnouncement"
+      >
+        <X class="h-3.5 w-3.5" />
       </button>
     </div>
 

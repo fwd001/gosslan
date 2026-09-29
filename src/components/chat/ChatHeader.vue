@@ -5,7 +5,6 @@ import {
   ListChecks,
   Loader2,
   Monitor,
-  Pencil,
   Smartphone,
   Users,
 } from "lucide-vue-next";
@@ -33,8 +32,6 @@ const props = defineProps<{
   peerVersionNewer?: boolean;
   /** 会话当前链路（最近一条消息的链路 + 跳数）。单聊显示。 */
   linkState?: LinkState | null;
-  /** 仅群主可改名。 */
-  canRename: boolean;
   /** 移动端：显示返回列表的箭头。 */
   showBack?: boolean;
   /**
@@ -55,7 +52,6 @@ const emit = defineEmits<{
   (e: "open-members"): void;
   (e: "open-files"): void;
   (e: "open-tasks"): void;
-  (e: "rename"): void;
   (e: "open-share"): void;
 }>();
 
@@ -175,14 +171,11 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
              对读屏用户等于没有提醒。 -->
         <UnreadBadge v-if="openTasks > 0" :count="openTasks" tone="info" class="absolute -right-1.5 -top-1" />
       </button>
-      <button
-        v-if="isGroup && canRename"
-        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        :title="t('chat.header.rename')" :aria-label="t('chat.header.rename')"
-        @click="emit('rename')"
-      >
-        <Pencil class="h-[17px] w-[17px]" />
-      </button>
+      <!-- 群管理只有一个入口（用户 2026-09-29 需求汇总四："右上角入口、编辑按钮的弹窗内容
+           重复，只保留一个清晰入口"）：以前这里有「成员」和「✏️ 改名」两枚按钮，而后者
+           做的事就是**打开同一个弹窗**（`@rename` 在调用方写的是 `membersOpen = true`），
+           而那个弹窗里本来就有改名输入框 + 保存按钮 ⇒ 同一件事两个入口、还多一枚图标。
+           改名能力没有消失，只是不再在这里重复一次。 -->
       <button
         v-if="!isGroup"
         class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
