@@ -1157,6 +1157,14 @@ const DRIFT = [
    "同一天现算就有三处不等：注册命令 <b>130</b>、<code>db::</code> 公开函数 <b>118</b>、两个 store 行数 <b>1044 / 2241</b>",
    "已改成<b>一条命令刷齐</b>：<code>npm run map:stats</code> 打印每个数的口径（含剥注释后计数）；"
      + "会漂的数（测试条数、HEAD）从图里拿掉，只留口径 —— 回填一个新数不算修好"],
+  ["§二 要求本页区分<b>七类实现状态</b>（已实现 / 部分实现 / 已废弃但代码仍存在 / dead code / 当前真正生产路径 / 测试专用路径 / 计划中的扩展点）—— 这一维以前<b>在本页不存在</b>（2026-09-29 补）",
+   "补法刻意<b>不是</b>给每个节点贴一个状态标签：本页的命令表有 <code>CMDS</code> 一整张表，手贴的标签从贴完那一刻开始漂，而没有任何门读得到它。改成<b>每一类给一个当场算得出的口径与出处</b>："
+   + "<br>· <b>当前真正生产路径</b>（命令层）已由 <code>src/utils/mapContract.test.ts</code> 双向核对 —— 它把本页 <code>CMDS</code> 第一列与 <code>src/api</code> 里 <code>invoke(…)</code> 的名单比差集，所以「注册了但界面没人调」是被守着的。⚠️ 顺带纠一处极易读错的形状：<code>CMDS</code> 一行是 <code>[名字, 领域, 入参, 返回]</code>，<b>第三列空 = 该命令无入参</b>，不是「前端没调用」。"
+   + "<br>· <b>测试专用路径</b>：协议级假 peer 与各轮 harness 都在生产二进制之外，复跑 <code>ls src-tauri/examples/*.rs</code> 与 <code>grep -oE 'ROUND === &quot;[a-z0-9-]+&quot;' scripts/e2e-multi-instance.mjs | sort -u</code>。"
+   + "<br>· <b>计划中的扩展点</b>：复跑 <code>grep -l '^- Status: Proposed' docs/adr/*.md</code>（⚠️ 别去掉那个行首锚定 —— ADR 正文里也会出现 Proposed 这个词，宽着搜会把已 Accepted 的那几份也算进来）。本页现读到的第一条实例是 §四-A 点名的「用户自定义 3 位后缀」：全仓只命中 <code>device.rs</code> 里那句长度注释、<b>没有实现入口</b>（复跑 <code>grep -rn 自定义.*后缀 --include='*.rs' --include='*.ts' --include='*.vue' .</code>，只有一行）。"
+   + "<br>· <b>已废弃但代码仍存在 / dead code</b>：本页上面那两条收口记录（门面 5 条、注册了但零引用的 5 条命令）就是这一类的样例；但「某个还在的旧实现是不是死的」今天<b>没有机器判据</b>，靠人回头改 —— 这句话本身就是这一格的登记处。"
+   + "<br>· <b>已实现 / 部分实现</b>：不在本页逐节点标，交给 <code>docs/acceptance/stability-smoke-matrix.md</code> 那两张表 —— 那里每一格点名「判据在哪个具名入口、哪一层、进不进远端 CI」，且条数由 <code>scripts/check-doc-numbers.mjs</code> 现算对账。"
+   + "<br>⚠️ 诚实边界：于是七类状态在本页以<b>口径 + 出处</b>存在，而不是以七个标签存在。要把它升级成逐节点标签，前置问题是「哪一道门管得住一整张表的状态列不漂」—— 答不出来就先别贴。"],
   ];
 const INVARIANTS = [
   ["投递：先入队再投递", "消息与它的 outbox 行<b>同一个事务</b>落库，然后才允许发（INV-003）", "并发 flush 会漏掉这一行，Ack 要等下一个 5s 心跳 ⇒ 表现为「偶发延迟送达」", "<code>db::insert_message_and_outbox</code> + 护栏"],
