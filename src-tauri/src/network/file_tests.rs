@@ -2060,8 +2060,11 @@ mod group_receive_atomicity_tests {
             .find("if peer_now_offline {")
             .expect("对端下线那一段改名/搬走了 ⇒ 同步改这条判据");
         let body = &src[at..at + 1600];
+        // 断言必须带上**调用形状**。只写函数名会被上面那句注释里的
+        // `file::take_group_receives_for_peer` 满足 —— 2026-09-29 的单点变异实测就是这么让
+        // 第一条放行、只靠"旧形状不许回来"那条抓住的（等于半个守卫）。
         assert!(
-            body.contains("take_group_receives_for_peer"),
+            body.contains("take_group_receives_for_peer("),
             "对端下线没有走原子摘取 ⇒ 摘表与判据又分成了两次持锁"
         );
         assert!(
