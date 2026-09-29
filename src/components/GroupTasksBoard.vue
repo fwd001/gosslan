@@ -107,7 +107,10 @@ const FILTERS: { key: TodoFilter; labelKey: string }[] = [
   { key: "archived", labelKey: "todo.filter.archived" },
 ];
 
-const filter = ref<TodoFilter>("all");
+// 默认落在「给我的」而不是「全部」（用户 2026-09-29 需求汇总七：「默认选中关于我的 Tab，
+// 不要一进来就选中全部」）。刻意**不持久化**：这是一次进入的默认视野，不是用户设置的偏好；
+// 上一次手动切到哪一档不该决定这一次进来看见什么（同一条理由也适用于下面关面板时的复位）。
+const filter = ref<TodoFilter>("mine");
 
 /**
  * 行内状态菜单：同一时间只开一个（行是 v-for，不能每行一个 bool）。
@@ -763,7 +766,7 @@ watch(
       detailId.value = null;
       closeRowMenu();
       for (const k of keys) if (k) preview.closeIfFrom(k);
-      filter.value = "all";
+      filter.value = "mine";
     }
   },
 );
@@ -856,10 +859,16 @@ watch(
             <div class="truncate text-[13px] font-medium text-[var(--gosslan-text-2)]" :title="x.title">
               {{ x.title }}
             </div>
-            <div class="mt-0.5 flex flex-wrap items-center gap-x-1 text-[11px] text-[var(--gosslan-text-2)]">
-              <span v-if="x.creator">{{ t("todo.creator", { name: memberProfile(x.creator).name }) }}</span>
+            <!-- 已归档那一档用**同一套**层级（名字加字重、标签退次级），只是标题整行本来就压暗：
+                 一条规则两处写，不留"活动行改了、归档行没改"这种第二份真相。 -->
+            <div class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-[var(--gosslan-text-2)]">
+              <span v-if="x.creator">
+                {{ t("todo.rowCreator") }}
+                <span class="font-medium text-[var(--gosslan-text)]">{{ memberProfile(x.creator).name }}</span>
+              </span>
               <span v-if="assigneeNames(x)" :title="assigneeNames(x)">
-                <span class="mx-1">·</span>{{ t("todo.assigneesInline", { names: assigneeNames(x) }) }}
+                {{ t("todo.rowAssignee") }}
+                <span class="font-medium text-[var(--gosslan-text)]">{{ assigneeNames(x) }}</span>
               </span>
             </div>
           </button>
@@ -928,10 +937,18 @@ watch(
               >
                 {{ x.title }}
               </div>
-              <div class="mt-0.5 flex flex-wrap items-center gap-x-1 text-[11px] text-[var(--gosslan-text-2)]">
-                <span v-if="x.creator">{{ t("todo.creator", { name: memberProfile(x.creator).name }) }}</span>
+              <!-- 一行里的层级（用户 2026-09-29 需求汇总七：「重点信息不清晰，要突出发起人和指派人，
+                   其他文字弱化」）：**名字**用主文本色 + 中等字重，**标签**留在次级色。
+                   行内不写整句（「由 X 发起」那种）—— 11px 下整句读不出主次，标签+名字两段才分得开。
+                   详情弹窗里仍用完整句子（那里字号够，读得出）⇒ 同一件事两处写法不同是刻意的。 -->
+              <div class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-[var(--gosslan-text-2)]">
+                <span v-if="x.creator">
+                  {{ t("todo.rowCreator") }}
+                  <span class="font-medium text-[var(--gosslan-text)]">{{ memberProfile(x.creator).name }}</span>
+                </span>
                 <span v-if="assigneeNames(x)" :title="assigneeNames(x)">
-                  <span class="mx-1">·</span>{{ t("todo.assigneesInline", { names: assigneeNames(x) }) }}
+                  {{ t("todo.rowAssignee") }}
+                  <span class="font-medium text-[var(--gosslan-text)]">{{ assigneeNames(x) }}</span>
                 </span>
               </div>
             </button>
