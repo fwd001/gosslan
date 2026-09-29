@@ -17,6 +17,7 @@ import {
   todoMentionsMe,
   openTodosForMe,
   putTodoRows,
+  resolveTodoNumbers,
   mergeIncomingTodoRows,
   todoRowsFor,
   isTodoRowsLoaded,
@@ -440,4 +441,49 @@ test("foldTodos 的排序键是最新定义的 seq，不是创建时间", () => 
     ["t-old", "t-new"],
     "改动过的老任务必须排在新创建的任务前 —— 排序键是 seq（最近改动），不是创建顺序",
   );
+});
+
+// ── 群任务固定编号（#N）───────────────────────────────────────────────
+// 夹具只填被读到的字段：`parseTodo` 只看 kind / content / seq / msg_id。
+function numRec(msgId: string, seq: number, content: string, kind = "todo") {
+  return { kind, msg_id: msgId, seq, content, conv_id: "group:g1", ts: 1, sender_id: "a" } as never as MessageRecord;
+}
+
+test("编号从载荷带进折叠结果：创建那条带几号就是几号", () => {
+  const rows = foldTodos([numRec("m1", 5, '{"todo_id":"t1","title":"甲","number":3}')]);
+  assert.equal(rows[0]?.number, 3);
+});
+
+test("旧版对端建的载荷没有 number ⇒ 折叠成 0（不显示编号，也不按顺序补一个）", () => {
+  const rows = foldTodos([numRec("m1", 5, '{"todo_id":"t1","title":"甲"}')]);
+  assert.equal(rows[0]?.number, 0);
+});
+
+/// 「编辑/归档不改号」的全部实现就是这一条：后续定义（todo_update）带的是同一个号，
+/// 折叠按 LWW 取最新那份 ⇒ 显示号仍是 3。要是谁把号改写成"按顺序数"，这条会红。
+test("改状态之后编号不变：最新定义带的是原号", () => {
+  const rows = foldTodos([
+    numRec("m1", 5, '{"todo_id":"t1","title":"甲","number":3}'),
+    numRec("m2", 9, '{"todo_id":"t1","title":"甲","number":3,"status":"done","archived":true}', "todo_update"),
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.number, 3);
+  assert.equal(rows[0]?.status, "done");
+});
+
+test("撞号时两端算出同一套号：todo_id 小的保住原号，其余顺延", () => {
+  const a = resolveTodoNumbers([{ todoId: "t-b", number: 1 }, { todoId: "t-a", number: 1 }, { todoId: "t-c", number: 2 }]);
+  // t-a < t-b ⇒ t-a=1、t-b=2；t-c 原号 2 已被占 ⇒ 顺延到 3（规则只动"撞上的那一条往后"）
+  assert.deepEqual([...a.entries()], [["t-a", 1], ["t-b", 2], ["t-c", 3]]);
+  // 纯函数 ⇒ 换一个成员拿到同一批定义（顺序不同）结果一致
+  const b = resolveTodoNumbers([{ todoId: "t-c", number: 2 }, { todoId: "t-a", number: 1 }, { todoId: "t-b", number: 1 }]);
+  assert.deepEqual([...b.entries()], [["t-a", 1], ["t-b", 2], ["t-c", 3]]);
+});
+
+test("没有撞号时恒等：已显示的号不会因为来了新任务而漂移", () => {
+  const m = resolveTodoNumbers([{ todoId: "t1", number: 1 }, { todoId: "t2", number: 2 }, { todoId: "t3", number: 7 }, { todoId: "old", number: 0 }]);
+  assert.equal(m.get("t1"), 1);
+  assert.equal(m.get("t2"), 2);
+  assert.equal(m.get("t3"), 7);
+  assert.equal(m.has("old"), false);
 });

@@ -91,6 +91,15 @@ function statusText(s: TodoStatus): string {
     <div class="overflow-hidden rounded-[var(--gosslan-bubble-radius)]">
     <div class="flex items-center gap-2 px-3 pt-2.5">
       <ListTodo class="h-4 w-4 shrink-0 text-[var(--gosslan-primary)]" />
+      <!-- 群内固定编号（#N）：成员各自库里同一条任务是同一个号，所以口头引用对得上。
+           旧版本对端建的任务没有号 ⇒ 不显示，也不按顺序补一个（补出来的号会随集合变）。 -->
+      <span
+        v-if="todo?.number"
+        class="shrink-0 font-mono text-[11px] text-[var(--gosslan-text-2)]"
+        :aria-label="`任务 ${todo?.number} 号`"
+      >
+        #{{ todo?.number }}
+      </span>
       <span
         class="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--gosslan-card-ink)]"
         :title="todo?.title || t('todo.title')"

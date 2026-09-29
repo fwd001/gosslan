@@ -80,8 +80,14 @@ pub async fn send_group_todo(
     }
     let images = images.unwrap_or_default();
     check_todo_assignees(s, &group_id, &assignees)?;
+    // 编号在**建这一条**时分配一次（锁只在取号期间持有：发出去的那条路径还要再锁一次 db）。
+    let number = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::next_todo_number(&dbc, &group_id).map_err(|e| e.to_string())?
+    };
     let payload = crate::protocol::TodoPayload {
         todo_id: format!("todo-{}", Uuid::new_v4()),
+        number,
         title,
         assignees,
         status: crate::protocol::default_todo_status(),
@@ -445,6 +451,9 @@ pub async fn update_group_todo(
         images,
         archived,
         done_at,
+        // 编号是创建那一刻定死的**绝对坐标**：编辑 / 归档 / 还原 / 删除都从原定义带过来，
+        // 不接受客户端自报（与 `creator` 同一口径），否则"改一次换个号"就回来了。
+        number: def.number,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let (todo_id, status) = (payload.todo_id.clone(), payload.status.clone());

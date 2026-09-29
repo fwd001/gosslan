@@ -314,3 +314,148 @@ mod group_rename_tests {
         );
     }
 }
+
+/// 群任务编号的**高水位**键（不另建表：`settings` 就是现成的 kv）。
+fn todo_number_key(group_id: &str) -> String {
+    format!("todo_num:{group_id}")
+}
+
+/// 群里"已经用过的最大任务编号"。两个来源缺一不可：
+/// - `settings` 的高水位 ⇒ 即便有人删了聊天记录，号也不会降回去（**永不复用**）；
+/// - 扫 `messages` 里 todo / todo_update 载荷的最大 `number` ⇒ **对端自己分配的号**
+///   本机没写过水位也能看见（Lamport 式：见过就要躲开，否则两边同时建就是同一条 #N）。
+/// 取两者较大；扫到坏 JSON 直接跳过（不能让一条脏行把整个建任务卡死）。
+pub fn todo_number_high_water(conn: &Connection, group_id: &str) -> i64 {
+    let stored: i64 = crate::db::get_setting(conn, &todo_number_key(group_id))
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+    let mut seen = 0i64;
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT content FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update')",
+    ) {
+        let conv_id = format!("group:{group_id}");
+        if let Ok(rows) = stmt.query_map(params![conv_id], |r| r.get::<_, String>(0)) {
+            for row in rows.flatten() {
+                if let Ok(p) = serde_json::from_str::<crate::protocol::TodoPayload>(&row) {
+                    if p.number > seen {
+                        seen = p.number;
+                    }
+                }
+            }
+        }
+    }
+    stored.max(seen)
+}
+
+/// 分配群里下一个任务编号 = 已用最大 + 1，同时把高水位推上去。
+///
+/// ⚠️ 只在**创建**一条任务时调用。改状态 / 改标题 / 归档都不走这里（编号不重分配），
+/// 这是"发起生成后后续编辑修改归档都不会改变"的全部实现。
+pub fn next_todo_number(conn: &Connection, group_id: &str) -> Result<i64> {
+    let next = todo_number_high_water(conn, group_id) + 1;
+    crate::db::set_setting(conn, &todo_number_key(group_id), &next.to_string())?;
+    Ok(next)
+}
+
+// 模块名不叫 `tests`：本文件被 `db.rs` 用 `include!` 贴进 `db` 命名空间，模块名要在 db 作用域里全局唯一。
+#[cfg(test)]
+mod todo_number_tests {
+    use super::{next_todo_number, todo_number_high_water};
+    use crate::db::{ensure_conversation, insert_message, MessageRecord, SCHEMA};
+    use rusqlite::Connection;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        ensure_conversation(&conn, "group:g1", "group", "g1", None).unwrap();
+        conn
+    }
+
+    /// 往群里写一条"某成员建的任务"（只关心载荷里的 `number`，其余字段走缺省）。
+    fn seed_todo(conn: &Connection, msg_id: &str, todo_id: &str, number: i64) {
+        let rec = MessageRecord {
+            id: 0,
+            msg_id: msg_id.into(),
+            conv_id: "group:g1".into(),
+            sender_id: "peer".into(),
+            receiver_id: String::new(),
+            kind: "todo".into(),
+            content: format!(r#"{{"todo_id":"{todo_id}","title":"t","number":{number}}}"#),
+            ts: 1,
+            seq: 1,
+            status: "sent".into(),
+            mention_targets: None,
+        };
+        insert_message(conn, &rec).unwrap();
+    }
+
+    #[test]
+    fn numbers_start_at_one_and_increment_within_the_group() {
+        let conn = mem();
+        assert_eq!(todo_number_high_water(&conn, "g1"), 0);
+        assert_eq!(next_todo_number(&conn, "g1").unwrap(), 1);
+        assert_eq!(next_todo_number(&conn, "g1").unwrap(), 2);
+        assert_eq!(next_todo_number(&conn, "g1").unwrap(), 3);
+    }
+
+    /// 编号永不复用：把聊天记录删光也不许把号降回去（否则"这条是 #1"会指到两条上）。
+    #[test]
+    fn numbers_are_not_reused_after_messages_are_deleted() {
+        let conn = mem();
+        let first = next_todo_number(&conn, "g1").unwrap();
+        seed_todo(&conn, "m1", "t1", first);
+        // ⚠️ 这里用裸 DELETE 而不是 `delete_messages`：实测后者**删不动 todo 行**
+        // （`db/message_delete.rs` 的谓词只圈 Bubble 类 kind，`todo` 是 Card 类）。
+        // 于是"消息行没了"的真实路径是**删会话 / 清空聊天记录**那一条，夹具必须走那条，
+        // 否则断言建在一次根本没发生的删除上（本轮第一版就是这么假绿的，被上面那行计数断言抓住）。
+        assert_eq!(
+            conn.execute("DELETE FROM messages WHERE conv_id = 'group:g1'", []).unwrap(),
+            1
+        );
+        // 只钉"行真的没了"这一件事。`todo_number_high_water` 在这里**不该**归零 ——
+        // 高水位正是靠 settings 那份不受消息删除影响的记录活下来的（上一行已经删掉了消息行）。
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM messages WHERE conv_id = 'group:g1'", [], |r| r.get(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(next_todo_number(&conn, "g1").unwrap(), first + 1);
+    }
+
+    /// 对端自己分配的号也算"用过"：本机的水位只记自己发过的号，
+    /// 少了这一半，两台离线各建一条就会给出同一个 #N。
+    #[test]
+    fn peer_allocated_numbers_are_avoided() {
+        let conn = mem();
+        seed_todo(&conn, "m1", "peer-task", 7);
+        assert_eq!(todo_number_high_water(&conn, "g1"), 7);
+        assert_eq!(next_todo_number(&conn, "g1").unwrap(), 8);
+    }
+
+    /// 旧版本发来的载荷没有 `number` ⇒ 解析成 0（无号），而不是解析失败。
+    /// 这条是"不迁移、不破坏旧数据"的前提：它红了就说明新字段让老载荷读不出来。
+    #[test]
+    fn legacy_payload_without_number_still_parses_as_zero() {
+        let p: crate::protocol::TodoPayload =
+            serde_json::from_str(r#"{"todo_id":"t","title":"x"}"#).unwrap();
+        assert_eq!(p.number, 0);
+        // 0 不参与高水位：不能因为见过一条无号任务就把号推到 1 之后
+        let conn = mem();
+        let rec = MessageRecord {
+            id: 0,
+            msg_id: "m0".into(),
+            conv_id: "group:g1".into(),
+            sender_id: "peer".into(),
+            receiver_id: String::new(),
+            kind: "todo".into(),
+            content: r#"{"todo_id":"legacy","title":"x"}"#.into(),
+            ts: 1,
+            seq: 1,
+            status: "sent".into(),
+            mention_targets: None,
+        };
+        insert_message(&conn, &rec).unwrap();
+        assert_eq!(todo_number_high_water(&conn, "g1"), 0);
+        assert_eq!(next_todo_number(&conn, "g1").unwrap(), 1);
+    }
+}

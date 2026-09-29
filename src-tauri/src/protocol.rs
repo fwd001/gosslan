@@ -867,6 +867,15 @@ pub struct TodoPayload {
     /// 是否已归档（用户 2026-09-17：完成/过期/不用的任务可归档）。缺省 false。
     #[serde(default)]
     pub archived: bool,
+    /// 群内**固定**任务编号（1 起递增、组内唯一、永不复用）。
+    ///
+    /// 分配只有一处（`db::next_todo_number`），**创建那一刻**定下来；之后每一次改状态 /
+    /// 改标题 / 归档 / 还原都从原定义里带过来（`send_group_todo_update` 读 `def.number`），
+    /// 所以它是这条任务的"绝对坐标"——「#7 完成了」在成员各自库里指的是同一条。
+    /// `#[serde(default)]` ⇒ 0 = 旧版本对端（或本改动之前的历史数据）建的无号任务，
+    /// 前端遇到 0 不显示编号（不猜、不补号，见 `src/utils/todos.ts` 的 `resolveTodoNumbers`）。
+    #[serde(default)]
+    pub number: i64,
     /// 状态变为「完成」的**权威**时间戳（ms）。由 `send_group_payload` 在 `status=="done"`
     /// 时填 `db::now_ms()`，不接受客户端自报 ⇒ 7 天自动归档的计时起点可信。
     /// `None` = 从未完成过（或旧载荷）。

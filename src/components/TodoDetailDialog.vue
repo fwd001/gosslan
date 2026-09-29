@@ -127,7 +127,7 @@ watch(
 </script>
 
 <template>
-  <BaseModal :open="open" :title="item?.title ?? t('todo.title')" width="max-w-lg" @close="onDialogClose">
+  <BaseModal :open="open" :title="(item?.number ? `#${item.number} ` : '') + (item?.title ?? t('todo.title'))" width="max-w-lg" @close="onDialogClose">
     <div v-if="item" class="space-y-4">
       <!-- 状态：**显式两步**（用户 2026-09-17：「一不小心就把状态改了」）。
            此前是一排 4 个分段按钮、一点即写库，而且与看板顶部的**筛选**分段控件长得一样，

@@ -107,6 +107,12 @@ export interface TodoItem {
   images: TodoImage[];
   /** 是否**显式**归档（完成之后手动归档；用户 2026-09-17 起完成不再自动归档）。 */
   archived: boolean;
+  /**
+   * 群内固定编号（1 起、组内唯一、创建时定、编辑/归档不改）；0 = 无号
+   * （旧版本对端建的任务，载荷里根本没有这个字段 ⇒ 不猜号、不补号）。
+   * 显示为「#N」的唯一来源就是这里（`resolveTodoNumbers`），别再在别处按顺序数一遍。
+   */
+  number: number;
   /** 状态变为「完成」的权威时间戳（ms）；未完成/旧载荷为 null。 */
   doneAt: number | null;
   /** 创建时间（创建那条 `todo` 消息的 ts）；由 `foldTodos` 从创建记录回填，旧数据可能为 null。 */
@@ -154,6 +160,7 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
           )
         : [],
       archived: p.archived === true,
+      number: typeof p.number === "number" && p.number > 0 ? Math.trunc(p.number) : 0,
       doneAt: typeof p.done_at === "number" ? p.done_at : null,
       createdAt: null,
       seq: rec.seq,
@@ -174,6 +181,32 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
  *
  * 创建时间单独收集：它来自**创建那条记录**（`kind === "todo"`），而 LWW 折叠保留的是
  * 最新定义（往往是 `todo_update`）—— 两条是不同的记录，不能混在一张表里。 */
+/**
+ * 把"载荷里的号"折成"这一群当前显示的号"。
+ *
+ * 正常路径是恒等：创建时分配的号已经是组内唯一，这里原样给出。
+ * 只有一种情况会动它——**两个成员在彼此离线的窗口里各自建任务，撞了同一个号**
+ * （`number` 由各自本地分配，中间没有任何仲裁者，这是 P2P 下无法避免的一次窗口）。
+ * 收敛办法是把规则写成"当前这批定义"的**纯函数**：按 (号, todo_id) 定序，
+ * 号相同则 `todo_id` 小的保住原号、其余顺延 ⇒ 每个成员拿到同一批定义时必然算出同一套号，
+ * 不需要额外同步帧，也不需要谁去改写谁的定义。
+ *
+ * 无号（0，旧版本对端建的）不参与编号，也不占号。
+ *
+ * ⚠️ 顺延只发生在撞号那一条上：一条已显示 #5 的任务不会因为"来了新任务"变成 #6。
+ */
+export function resolveTodoNumbers(defs: { todoId: string; number: number }[]): Map<string, number> {
+  const numbered = defs.filter((d) => d.number > 0).sort((a, b) => a.number - b.number || (a.todoId < b.todoId ? -1 : 1));
+  const out = new Map<string, number>();
+  let prev = 0;
+  for (const d of numbered) {
+    const n = Math.max(d.number, prev + 1);
+    out.set(d.todoId, n);
+    prev = n;
+  }
+  return out;
+}
+
 export function foldTodos(records: MessageRecord[]): TodoItem[] {
   const defs = new Map<string, TodoDef>();
   const created = new Map<string, number>();
@@ -187,14 +220,16 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
     }
     if (newer(d.seq, d.msgId, defs.get(d.todoId))) defs.set(d.todoId, d);
   }
-  return [...defs.values()]
-    .filter((d) => !d.deleted)
+  const live = [...defs.values()].filter((d) => !d.deleted);
+  const numbers = resolveTodoNumbers(live);
+  return live
     .sort((a, b) => {
       if (a.seq !== b.seq) return b.seq - a.seq; // 新的在前
       return a.msgId < b.msgId ? 1 : -1; // 同 seq 按 msg_id 比（与 newer 同规则）
     })
     .map(({ todoId, title, assignees, status, creator, description, images, archived, doneAt }) => ({
       todoId,
+      number: numbers.get(todoId) ?? 0,
       title,
       assignees,
       status,
