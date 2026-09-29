@@ -1,3 +1,6 @@
+commands::attention_tests::macos_bounces_only_when_urgent
+commands::attention_tests::other_desktops_keep_the_previous_behavior
+commands::attention_tests::windows_flashes_regardless_of_urgency
 commands::group_file_dispatch_tests::cancel_is_recorded_as_cancelled_not_failed
 commands::group_file_dispatch_tests::no_failure_leaves_the_row_in_sending
 commands::group_file_dispatch_tests::retryable_goes_back_to_pending

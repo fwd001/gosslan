@@ -1,3 +1,6 @@
+commands::attention_tests::macos_bounces_only_when_urgent
+commands::attention_tests::other_desktops_keep_the_previous_behavior
+commands::attention_tests::windows_flashes_regardless_of_urgency
 commands::group_file_dispatch_tests::cancel_is_recorded_as_cancelled_not_failed
 commands::group_file_dispatch_tests::no_failure_leaves_the_row_in_sending
 commands::group_file_dispatch_tests::retryable_goes_back_to_pending
@@ -761,6 +764,7 @@ transport::tcp::tests::split_halves_work_with_legacy_frame_helpers
 transport::tcp::tests::tcp_transport_roundtrip_over_loopback
 transport::tcp::tests::wire_format_is_length_prefixed_big_endian
 transport::tcp::tests::write_then_read_roundtrip
+tray::tests::menu_bar_number_clears_at_zero_and_caps_at_99
 tray::tests::tooltip_carries_unread_count_only_when_positive
 user_dirs::tests::bookmark_wins_over_the_stored_path
 user_dirs::tests::broken_bookmark_falls_back_to_the_stored_path

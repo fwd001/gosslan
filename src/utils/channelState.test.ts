@@ -350,11 +350,11 @@ test("提请注意必须与实际发出的通知同进同出（放 flushNotifica
   const store = read("stores/useChatStore.ts");
   const flushAt = store.indexOf("function flushNotifications");
   const notifyAt = store.indexOf("function maybeNotify");
-  const callAt = store.indexOf("api.requestAttention()");
+  const callAt = store.indexOf("api.requestAttention(urgent)");
   assert.ok(flushAt > 0 && notifyAt > 0 && callAt > 0, "store 里这三处都应能找到（函数被改名了？）");
   assert.ok(
     flushAt < callAt && callAt < notifyAt,
-    "api.requestAttention() 必须写在 flushNotifications 里（且在 maybeNotify 之前），否则会脱离通知单独闪烁",
+    "api.requestAttention(urgent) 必须写在 flushNotifications 里（且在 maybeNotify 之前），否则会脱离通知单独闪烁",
   );
   assert.match(
     store,

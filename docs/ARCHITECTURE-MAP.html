@@ -890,8 +890,8 @@ const SEM = {
   get_topology: { d: "拓扑概览 <code>{node_count, relay_count, avg_rtt_ms, online}</code>（顶栏那一条）。⚠️ 0-A2 之前 <code>relay_count</code> 取的是 <code>RelayManager::active_sends()</code>，而它的 <code>senders</code> 只有 <code>register_send</code> 会写、<code>register_send</code> 零调用 ⇒ <b>那个数永远是 0</b>；现在数 <code>path_kind==Relay</code> 的活跃链路（<code>state::relay_circuit_count</code>，与 <code>relay.connected</code> 同判据）。" },
   set_app_active: { d: "前 / 后台标志 —— <b>驱动 BLE 扫描占空比</b>（前台 5s / 后台 30s 间隔），省电且不失响应。" },
   focus_window: { d: "把主窗口拉到前台（也用于启动时兜底显示隐藏的主窗）。", n: "boot.ts 里裸调" },
-  request_attention: { d: "任务栏闪烁 / Dock 弹跳（无通知权限时的可见手段）。" },
-  set_unread_badge: { d: "设置<b>绝对</b>总未读数（0 = 清除）。绝对值而非增量：增量必然漂移。" },
+  request_attention: { d: "任务栏闪烁 / Dock 弹跳（无通知权限时的可见手段）。<b>分端分级</b>（urgent 由前端按这批通知的内容算）：macOS 只在紧急时弹跳，Windows / 其它桌面继续闪；规则只在 attention_request 一处，三条腿在 macOS 一次 cargo test 全判。" },
+  set_unread_badge: { d: "设置<b>绝对</b>总未读数（0 = 清除）。绝对值而非增量：增量必然漂移。macOS 同时把数字写到<b>菜单栏状态项标题</b>（0 = 清空，&gt;99 显示 99+）+ Dock 角标；Windows 走托盘红点 + tooltip 条数。" },
   notify_desktop: { d: "发系统通知，带 <code>conv_id</code> 以便点击回跳。<b>只在真发出通知时才调</b>（否则会出现点了没反应的通知）。" },
   send_test_notification: { d: "发一条测试通知（诊断权限与链路用），返回文本。" },
 

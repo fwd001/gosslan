@@ -26,6 +26,7 @@ import { createInitScope, type InitScope } from "@/utils/initScope";
 import { StaleGuard } from "@/utils/staleGuard";
 import { actionableRequests } from "@/utils/friendRequests";
 import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/notifications";
+import { batchIsUrgent } from "@/utils/notifyUrgency";
 import { isRenderedInTimeline, countsTowardUnread } from "@/utils/messageKinds";
 import {
   foldTodos,
@@ -219,7 +220,11 @@ export const useChatStore = defineStore("chat", () => {
         }
       }
       if (anyReminded && !app.isMobile) {
-        void api.requestAttention().catch(() => {
+        // 紧急程度按**这批真正发出去的通知**判（`entries` 就是去抖合并后的那批，
+        // 每个会话取其最后一条），不是按整个未读列表 —— 否则一条三天前的紧急任务
+        // 会让每次新消息都弹跳 Dock。
+        const urgent = batchIsUrgent(entries.map((e) => e.last));
+        void api.requestAttention(urgent).catch(() => {
           /* 个别 Linux 桌面环境不支持闪烁，忽略即可（通知本身已经发出） */
         });
       }

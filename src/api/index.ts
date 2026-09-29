@@ -61,7 +61,14 @@ export const api = {
    * 是"同一件事的两种表达"，通知被合并/被跳过时也不该闪。撤销由系统负责，无需配对停止调用。
    * 移动端是空实现（无任务栏可闪），前端不必再判平台，但仍不必对移动端调用。
    */
-  requestAttention: () => invoke<void>("request_attention"),
+  /**
+   * 请求系统级注意（Windows 闪任务栏 / macOS 弹 Dock）。
+   *
+   * `urgent` 由调用方按**这批通知的内容**算（见 `utils/notifyUrgency.ts`）：macOS 只在
+   * 紧急时才弹跳（用户 2026-09-29：「Mac 端收到普通消息不要跳动 Dock 图标」），Windows
+   * 两档都继续闪。分端的规则在后端，前端只说"紧不紧急"。
+   */
+  requestAttention: (urgent: boolean) => invoke<void>("request_attention", { urgent }),
   /**
    * 未读提醒外显：托盘图标红点 + tooltip 条数、Windows 任务栏按钮角标、macOS Dock 数字。
    *
