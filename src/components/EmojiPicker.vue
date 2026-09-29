@@ -1,6 +1,13 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
-import { EMOJIS } from "@/utils/emoji";
+import { computed, nextTick, ref, watch } from "vue";
+import { EMOJIS, type EmojiDef } from "@/utils/emoji";
+import {
+  readEmojiUsage,
+  topEmojiTokens,
+  withEmojiUse,
+  writeEmojiUsage,
+  type EmojiUsage,
+} from "@/utils/emojiUsage";
 import { t } from "@/i18n";
 
 const props = withDefaults(
@@ -31,6 +38,45 @@ const emit = defineEmits<{
 const COLS = 8; // ⚠️ 必须与模板里的 `grid-cols-8` 同步：改了列数不改这里，上下键会跳错行
 const panelRef = ref<HTMLDivElement | null>(null);
 let restoreFocusTo: HTMLElement | null = null;
+
+/**
+ * 「最常使用」那一格（用户 2026-09-29：「表情选择加一个最常使用，算法你来定」）。
+ *
+ * 做法是**把最常用的几个挪到同一个网格的最前面**（微信/飞书式），而不是再开第二块网格：
+ * 上面那个 `COLS` 是写死的键盘行宽，它只对"一个 grid 容器"成立 —— 常用行单独成网格的话，
+ * ↑↓ 的落点就会算错，而这在界面上只表现为"有点不对"，很难被发现。
+ * 格子总数因此不变（`emojiUsage.test.ts` 那条按形状数的判据钉的就是这一点）。
+ *
+ * 计数记在**面板自己**的选中出口上：两处入口（输入框插入、消息表情回应）用的是同一个组件，
+ * 在这一层记一次就够，不用调用点各写一遍（那样必然会漏掉其中一个）。
+ */
+const storage = typeof localStorage === "undefined" ? null : localStorage;
+const usage = ref<EmojiUsage>(readEmojiUsage(storage));
+const defByToken = new Map(EMOJIS.map((e) => [e.displayName, e]));
+
+/** 账里的 token 可能指向已被删掉的表情（换过表情资源）：取不到定义就当没这回事。 */
+const headDefs = computed(() =>
+  topEmojiTokens(usage.value)
+    .map((token) => defByToken.get(token))
+    .filter((d): d is EmojiDef => !!d),
+);
+const headFiles = computed(() => new Set(headDefs.value.map((d) => d.file)));
+const cells = computed(() => [
+  ...headDefs.value,
+  ...EMOJIS.filter((e) => !headFiles.value.has(e.file)),
+]);
+function isFrequent(e: EmojiDef): boolean {
+  return headFiles.value.has(e.file);
+}
+function labelOf(e: EmojiDef): string {
+  return isFrequent(e) ? `${t("emoji.frequent")} · ${e.displayName}` : e.displayName;
+}
+
+function pick(e: EmojiDef) {
+  usage.value = withEmojiUse(usage.value, e.displayName, Date.now());
+  writeEmojiUsage(storage, usage.value);
+  emit("select", e.displayName);
+}
 
 function buttons(): HTMLButtonElement[] {
   return Array.from(panelRef.value?.querySelectorAll<HTMLButtonElement>("button") ?? []);
@@ -96,11 +142,14 @@ watch(
       style="height: 300px"
     >
       <button
-        v-for="e in EMOJIS"
+        v-for="e in cells"
         :key="e.file"
         class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
-        :title="e.displayName"
-        @click="emit('select', e.displayName)"
+        :class="isFrequent(e) ? 'bg-[var(--gosslan-primary-light)]' : ''"
+        :data-emoji-freq="isFrequent(e) ? '1' : undefined"
+        :title="labelOf(e)"
+        :aria-label="labelOf(e)"
+        @click="pick(e)"
       >
         <img
           :src="e.url"

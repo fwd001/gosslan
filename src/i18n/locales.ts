@@ -424,6 +424,7 @@ export const zhCN: MessageDict = {
   // ---- 聊天输入区 ----
   "chat.composer.inputAria": "消息输入框",
   "chat.composer.emoji": "表情",
+  "emoji.frequent": "常用",
   "chat.composer.code": "代码消息",
   "chat.composer.sendFile": "发送文件（自动选择最优路线）",
   "chat.composer.remind": "选择提醒的人",
@@ -1402,6 +1403,7 @@ export const enUS: MessageDict = {
   // ---- Composer ----
   "chat.composer.inputAria": "Message input",
   "chat.composer.emoji": "Emoji",
+  "emoji.frequent": "Frequent",
   "chat.composer.code": "Code message",
   "chat.composer.sendFile": "Send file (auto route)",
   "chat.composer.remind": "Choose people to notify",

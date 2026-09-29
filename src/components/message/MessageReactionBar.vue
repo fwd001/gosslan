@@ -16,8 +16,16 @@
  * - **PC**：悬停 / 键盘聚焦（`hover: hover` 才启用，触屏上 mouseenter 是"点完才来"的假事件，
  *   用它当唯一出口就会在移动端变成"点一下既切了回应又弹名单"）；
  * - **移动端**：能点的时候点就是切回应（这是最高频动作，不能让位），所以名单走**长按**；
- *   不可点的那一侧（现在只有 1:1）点 = 直接看名单。
+ *   不可点的那一侧点 = 直接看名单。
+ *   ⚠️ 这一支今天真实存在，但**不再是"1:1"**：入口开关由调用方 `ChatWindow.vue` 的
+ *   `canReact = 群聊 || (是对端好友 && 不是自聊)` 决定 —— 不可点的只剩「自聊」和「不是好友的对端」。
+ *   （旧注释写的是"现在只有 1:1"，那是 2026-09-24 之前的口径，已经不对了。）
  * 名单不抢戏：不显示头像、不常驻、只有一行文字，因为这条的第一信息是"有几个、我点没点"。
+ *
+ * ## 胶囊的长相（用户 2026-09-29：「表情回应样式参考图片样式做」）
+ * 贴飞书那一种：**没有阴影**、别人点的用一层墨迹淡底（`--gosslan-hover`）而不是一圈边框，
+ * 只有"我自己也点了"那一枚描主色边 + 主色淡底。两态**都带 border**（别人那枚是透明边），
+ * 否则我点一下会让胶囊宽窄跳 2px。表情比数字大一档，让表情本身是主角。
  */
 import { onUnmounted, ref } from "vue";
 import { t } from "@/i18n";
@@ -29,7 +37,7 @@ const props = defineProps<{
   chips: ReactionChip[];
   /** 自己的消息：回应条靠右对齐（与气泡的朝向一致） */
   mine: boolean;
-  /** 是否允许我添加/取消（单聊暂不开放，且自己的消息也允许自嘲式回应） */
+  /** 是否允许我添加/取消（不可点的那一支见上面「谁点的」名单那节；自己的消息也允许自嘲式回应） */
   interactive: boolean;
 }>();
 const emit = defineEmits<{
@@ -118,15 +126,15 @@ onUnmounted(clearPress);
        这是纯排版补偿，不改变任何行为。 -->
   <div
     v-if="chips.length > 0 || interactive"
-    class="mt-1 flex flex-wrap items-center gap-1.5"
+    class="mt-1 flex flex-wrap items-center gap-1"
     :class="mine ? 'justify-end pr-12' : 'pl-12'"
   >
     <span v-for="c in chips" :key="c.emoji" class="relative inline-flex">
       <button
-        class="tap-safe flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[12px] leading-none shadow-sm transition"
+        class="tap-safe flex h-7 items-center gap-1 rounded-full border px-1.5 text-[12px] leading-none transition"
         :class="c.mine
           ? 'border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] text-[var(--gosslan-primary)]'
-          : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]'"
+          : 'border-transparent bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-border)] hover:text-[var(--gosslan-text)]'"
         :title="chipTitle(c)"
         :aria-label="t('msg.reactionToggle', { emoji: c.emoji })"
         :aria-expanded="openEmoji === c.emoji"
@@ -142,8 +150,13 @@ onUnmounted(clearPress);
         @blur="canHover && hide(c.emoji)"
         @keydown.esc="hide(c.emoji)"
       >
-        <img v-if="emojiUrl(c.emoji)" :src="emojiUrl(c.emoji) ?? undefined" alt="" class="h-4 w-4 shrink-0" />
-        <span v-else class="text-[13px] leading-none">{{ c.emoji }}</span>
+        <img
+          v-if="emojiUrl(c.emoji)"
+          :src="emojiUrl(c.emoji) ?? undefined"
+          alt=""
+          class="h-[18px] w-[18px] shrink-0"
+        />
+        <span v-else class="text-[14px] leading-none">{{ c.emoji }}</span>
         <span class="tabular-nums font-medium">{{ c.count }}</span>
       </button>
 
