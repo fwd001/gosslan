@@ -406,6 +406,10 @@ pub fn spawn_cache_auto_clean(s: &std::sync::Arc<crate::state::AppState>) {
                 }
             })
             .await;
+            // 周期 sleep 必须排在**动作之后**、且必须在循环**里面**：
+            // 少了这一句就等于无间隔死循环（本仓刚踩过：把首轮 sleep 挪出循环时顺手删了周期那一句，
+            // 结构判据只查"首轮在外面"，抓不到"循环里没有间隔"这一半 ⇒ 两条一起钉）。
+            tokio::time::sleep(std::time::Duration::from_secs(CACHE_CLEAN_INTERVAL_SECS)).await;
         }
     });
 }
@@ -526,6 +530,13 @@ mod cache_clean_schedule_tests {
         assert!(
             body.contains("CACHE_CLEAN_FIRST_DELAY_SECS"),
             "首轮间隔没走那个常量 ⇒ 注释与代码会再次各说一套"
+        );
+        // 另一半：循环**里**必须有周期 sleep。把首轮挪出来时顺手删掉周期那一句，
+        // 上面那条照样绿，而这棵树会无间隔转圈跑磁盘遍历 —— 那是比原 bug 更坏的结局。
+        let inside = &body[loop_at..];
+        assert!(
+            inside.contains("CACHE_CLEAN_INTERVAL_SECS"),
+            "循环体里没有周期 sleep ⇒ 自动清理变成无间隔死循环"
         );
     }
 }
