@@ -55,6 +55,8 @@
     "test:e2e:groupcrash-selfproof": "node scripts/e2e-multi-instance.mjs --round=groupcrash-lie",
     "test:e2e:gfile": "node scripts/e2e-multi-instance.mjs --round=gfile",
     "test:e2e:gfile-selfproof": "node scripts/e2e-multi-instance.mjs --round=gfile-lie",
+    "test:e2e:dmreaction": "node scripts/e2e-multi-instance.mjs --round=dmreaction",
+    "test:e2e:dmreaction-selfproof": "node scripts/e2e-multi-instance.mjs --round=dmreaction-lie",
     "test:e2e:posttext": "node scripts/e2e-multi-instance.mjs --round=posttext",
     "test:e2e:posttext-selfproof": "node scripts/e2e-multi-instance.mjs --round=posttext-lie",
     "test:e2e:logtail-selfproof": "node scripts/e2e-multi-instance.mjs --logtail-selfcheck",

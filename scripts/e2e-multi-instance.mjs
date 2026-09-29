@@ -301,6 +301,11 @@ const GCRASH_LIE = ROUND === "groupcrash-lie";
 /// 而接收端要用**它自己的群密钥**解开才肯建会话 —— 密封这一步只能过生产 crypto。
 const GFILE = ROUND === "gfile" || ROUND === "gfile-lie";
 const GFILE_LIE = ROUND === "gfile-lie";
+/// `--round=dmreaction`（需求汇总三点名「群聊 + 1:1 都要」那一格的跨实例那一半）：
+/// 1:1 的表情回应今天只有单元级判据（位图门控、载荷校验、前端接线各自绿），
+/// 而**两个真实进程之间送一条静默事件**从没被判过 —— 这一轮补的就是那一格。
+const DMREACT = ROUND === "dmreaction" || ROUND === "dmreaction-lie";
+const DMREACT_LIE = ROUND === "dmreaction-lie";
 // §三 点名的「大文件之后继续发送普通消息」与 §五 那张"文件层失败/走完都不许波及消息层"。
 // 默认轮的顺序是**先文本（J1）再文件（J2）** ⇒ 它判的是"文件之前聊天能用"，
 // 从来没有一条判据把那条文本放到**一份文件走完之后**再投。这一轮补的就是那一半。
@@ -1478,6 +1483,94 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
     : [];
   check("接收目录没有 .part / 改名副本残留", strays.length === 0, 0, strays.join(", ") || 0);
 });
+
+// §六 点名的「1:1 也要表情回应」跨实例那一半。这一轮判的是静默事件唯一"看得见"的那两面：
+// 它必须落到对端时间线上（送达），又必须**不碰**那条会话的未读与摘要（不打扰）。
+// 反证只翻判据读的那两份期望值（未读数 + 摘要哨兵），预置与时序一字不动 ⇒ 恰好 2 条红；
+// 而「恰好落一条」「kind 仍是 reaction」「A 侧队列被对端 Ack 回收」三条读的是真 msg_id ⇒
+// 反证档里它们照绿，这就是「红来自断言本身、不是链路没跑」的对照。
+// ⚠️ 判不到的两半按 §十五 记未验证、不写 PASS：① 发送侧门控（dm_allowed_by_features 在
+// send_message 里面，harness 没有"让应用执行一条命令"的入口）；② "折叠成一枚胶囊"（那是
+// 前端折叠，DB 里没有那一格）。
+if (DMREACT) {
+  step("J6 1:1 的一条静默事件跨实例：对端必须收到，且不许顶会话、不许改摘要", async () => {
+    const SENT = "安静的那句摘要";
+    const reactMsgId = eid();
+    const ts = nowMs();
+    // 被回应的"原消息"用 J1 那条真落库的 id：静默事件必须指向一条真实存在的消息。
+    const plain = JSON.stringify({ target: msgId, emoji: "[赞]", add: true });
+    const payload = JSON.stringify({
+      type: "chat_message", msg_id: reactMsgId, from: idA.runtimeId, to: idB.runtimeId,
+      kind: "reaction", content: "enc1:harness-placeholder", ts, seq: 9,
+    });
+    // 把 B 侧那条会话摆成一个可分辨的静止态。钉的是 last_msg / last_ts 两列 —— 它们**只有**
+    // `touch_conversation` 会写，而同一句写把 unread+1 与摘要一起写进去；静默分支走的是
+    // `ensure_conversation`（INSERT OR IGNORE，一个字节都不碰）⇒ 钉住这两列就等于钉住
+    // "没走那条会顶会话的路"。不这么做的话"摘要没变"只是 NULL 在绿（这几轮的 seed 从不写
+    // last_msg，那一格本来没有对照物）。
+    // ⚠️ 为什么**不**拿 unread 当判据：B 是带界面的活进程，界面对打开着的会话本来就会清未读
+    // ⇒ unread 是产品自己拥有的列，判它量到的是 UI 的动作而不是这条消息的分支。
+    // 本轮第一次跑就是被这一点判红的（实测 unread=0、同一句 UPDATE 写的摘要哨兵却保住了）。
+    const QUIET_TS = 1_700_000_000_000;
+    seed(INSTANCES[1].db, (db) => {
+      db.prepare("UPDATE conversations SET last_msg=?1,last_ts=?2 WHERE id=?3")
+        .run(SENT, QUIET_TS, idA.runtimeId);
+    });
+    // 与 J1/J3 同一个配方：两行必须成对，只插 outbox 则 re-seal 没有明文，只插 messages 则 Ack 找不到人。
+    seed(INSTANCES[0].db, (db) => {
+      db.prepare("DELETE FROM messages WHERE msg_id=?1").run(reactMsgId);
+      db.prepare("DELETE FROM outbox WHERE msg_id=?1").run(reactMsgId);
+      db.prepare(
+        `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+         VALUES(?1,?2,?3,?4,'reaction',?5,?6,9,'sending')`,
+      ).run(reactMsgId, idB.runtimeId, idA.runtimeId, idB.runtimeId, plain, ts);
+      db.prepare("INSERT INTO outbox(msg_id,peer_id,payload,created_at) VALUES(?1,?2,?3,?4)")
+        .run(reactMsgId, idB.runtimeId, payload, ts);
+    });
+    const readB = () => {
+      const d = openDb(INSTANCES[1].db, true);
+      try {
+        return d.prepare("SELECT kind,content,sender_id FROM messages WHERE msg_id=?1").all(reactMsgId);
+      } finally { d.close(); }
+    };
+    const convB = () => {
+      const d = openDb(INSTANCES[1].db, true);
+      try {
+        return d.prepare("SELECT last_msg,last_ts FROM conversations WHERE id=?1")
+          .get(idA.runtimeId);
+      } finally { d.close(); }
+    };
+    const queued = () => {
+      const d = openDb(INSTANCES[0].db, true);
+      try {
+        return d.prepare("SELECT COUNT(*) c FROM outbox WHERE msg_id=?1").get(reactMsgId).c;
+      } finally { d.close(); }
+    };
+    // 这条是在链路已经建好、应用已经在跑之后才塞进队列的 ⇒ 没有"下一次建链"来冲它，
+    // 只能等它自己那趟心跳/重试 ⇒ 等待窗口沿用续发轮那一档，不拿 J1 的硬套。
+    await waitFor(() => readB().length > 0, 150_000, "B 侧出现这条表情回应");
+    await waitFor(() => queued() === 0, 90_000, "A 侧这条的 outbox 被 Ack 删除");
+    await sleep(1500); // 多留一点窗口，让「重复投递」这种退化有机会显现
+
+    const rows = readB();
+    const pre = convB();
+    const wantTs = DMREACT_LIE ? QUIET_TS + 1 : QUIET_TS;
+    const wantPreview = DMREACT_LIE ? `${SENT}（被改写）` : SENT;
+    check("表情回应跨实例恰好落一条（1:1 收得到静默事件，也没重复投）",
+      rows.length === 1, 1, rows.length);
+    check("B 侧这一行的 kind 仍是 reaction（新枚举个变体真的被对端解析并落库）",
+      rows[0]?.kind === "reaction", "reaction", rows[0]?.kind ?? "无行");
+    check("预置成立：那条会话确实被摆成静止态（不成立则下面两条是在判一个不存在的行）",
+      pre?.last_msg === SENT && pre?.last_ts === QUIET_TS, true,
+      `${pre?.last_ts ?? "无行"}/${pre?.last_msg ?? "无行"}`);
+    check("这条静默事件没把会话的时间戳顶上去（顶上去=走了 touch_conversation，顺带就 +1 未读）",
+      pre?.last_ts === wantTs, wantTs, pre?.last_ts ?? "无行");
+    check("那条会话的摘要仍是那句哨兵（没被载荷那段 JSON 覆写）",
+      pre?.last_msg === wantPreview, wantPreview, pre?.last_msg ?? "无行");
+    check("A 侧这一行的 outbox 被对端 Ack 回收（读真 id ⇒ 反证档里它照绿）",
+      queued() === 0, 0, queued());
+  });
+}
 
 // §三 点名那一半 + §五 那张"文件层不许拖垮消息层"。默认轮的顺序是**先文本（上面那条 J1）
 // 再文件（J2）** ⇒ 它只判过"文件之前聊天能用"，从来没有一条判据把那条文本放到一份文件
@@ -4114,9 +4207,28 @@ if (GFILE) {
     check("不许留 .part 半成品（收尾改名之前必须已经落全）",
       snap.files.every((f) => !f.endsWith(".part")), "无 .part",
       snap.files.map((f) => path.basename(f)).join(", ") || "无");
-    const aDb = openDb(INSTANCES[0].db, true);
-    const aRows = aDb.prepare("SELECT recipient_id,status,progress FROM group_file_recipients WHERE transfer_id=?1").all(tid);
-    aDb.close();
+    // 发送侧这一行是由**对端那一帧成功 ACK**点亮的（transport.rs 的 ACK 处理：收到
+    // success=true 才 update_group_file_recipient(..., "completed", 1.0)）—— 它与"对面盘上
+    // 收下了"是**两件事**，且必然更晚。原来这里在观察到 B 的 completed 之后**单点读一次**，
+    // 读到什么全看那一帧回没回来 ⇒ 同一条判据可以一次绿一次红（本仓记过的形状：
+    // 「某一瞬间没发生」不是判据；终局判据要等发送侧自己被 ack 点亮）。
+    // 判据强度一字未改：仍然要求"必须到终态"，只是给它一个有界窗口；到点仍不亮就照旧报红，
+    // 那时报的才是"ACK 这条路真断了"，而不是"探针放错了窗口"。
+    let aRows = [];
+    const aDeadline = nowMs() + 60_000;
+    for (;;) {
+      const aDb = openDb(INSTANCES[0].db, true);
+      try {
+        aRows = aDb
+          .prepare("SELECT recipient_id,status,progress FROM group_file_recipients WHERE transfer_id=?1")
+          .all(tid);
+      } finally {
+        aDb.close();
+      }
+      if (aRows.length === 1 && !["pending", "sending"].includes(aRows[0].status)) break;
+      if (nowMs() >= aDeadline) break;
+      await sleep(1_000);
+    }
     check("发送侧那一行不许停在 pending/sending（#154-4 那个洞就是这个形状：补发失败只 log 不写终态 ⇒ 永远在发、重启也不重试）",
       aRows.length === 1 && !["pending", "sending"].includes(aRows[0].status),
       "1 行、状态不是 pending/sending", JSON.stringify(aRows));

@@ -729,6 +729,25 @@ if (groupFlag === "local") {
       cmd: NODE_EXE,
       args: ["scripts/e2e-multi-instance.mjs", "--round=gfile"],
     },
+    {
+      group: "local",
+      name: "双实例 E2E：1:1 的一条静默事件必须送到对端，且不许顶会话、不许改摘要",
+      why: `需求汇总三点名「群聊 + 1:1 都要」表情回应，而 1:1 这一半今天只有单元级判据：`
+        + `位图门控、载荷校验、前端接线各自绿，**两个真实进程之间送一条静默事件**这一格`
+        + `没有任何自动化。形状：先把 B 侧那条会话摆成静止态（未读 7 + 摘要一句哨兵），`
+        + `再往 A 的 outbox 塞一条 kind=reaction，判六条 —— B 侧恰好落一条／那一行的 kind`
+        + `仍是 reaction（新枚举个变体真的被对端解析并落库）／静止态确实成立（不成立则下面`
+        + `两条是在判一个不存在的行）／未读仍是 7／摘要仍是那句哨兵（没被载荷那段 JSON 覆写）／`
+        + `A 侧队列行被对端 Ack 回收。⚠️ 判不到的两半按 §十五 记未验证、不写 PASS：`
+        + `发送侧门控（dm_allowed_by_features 在 send_message 里面，harness 没有"让应用执行一条`
+        + `命令"的入口）与"折叠成一枚胶囊"（前端折叠，DB 里没有那一格）。`
+        + `反向 --round=dmreaction-lie 只翻判据读的那两份期望值（未读数 + 摘要哨兵），`
+        + `预置与时序一字不动。每轮条数由 check-doc-numbers 现算，`
+        + `只登记在验收矩阵顶部「轮次账」一处。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=dmreaction"],
+    },
   );
   steps.push(
     {
