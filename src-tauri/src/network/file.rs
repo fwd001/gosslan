@@ -1725,7 +1725,10 @@ pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
 /// 而同一个文件里 `take_stalled_receive` / `take_stalled_group_receive` 的注释早就把那个形状判死过
 /// —— 那两步之间完全可以挤进一个新 FileOffer（同一个 transfer_id 重建接收器），
 /// 按 id 收尾就会把**正在正常收**的那一单判死。返回 (id, FileReceiver) 与那条家族同形状。
-pub fn take_group_receives_for_peer(state: &AppState, peer_id: &str) -> Vec<(String, FileReceiver)> {
+pub fn take_group_receives_for_peer(
+    state: &AppState,
+    peer_id: &str,
+) -> Vec<(String, FileReceiver)> {
     let mut recv = state
         .group_file_receivers
         .lock()
@@ -1735,7 +1738,9 @@ pub fn take_group_receives_for_peer(state: &AppState, peer_id: &str) -> Vec<(Str
         .filter(|(_, r)| r.peer_id == peer_id)
         .map(|(k, _)| k.clone())
         .collect();
-    ids.into_iter().filter_map(|k| recv.remove(&k).map(|r| (k, r))).collect()
+    ids.into_iter()
+        .filter_map(|k| recv.remove(&k).map(|r| (k, r)))
+        .collect()
 }
 
 /// 静默群接收器的**原子**回收单位（理由同 `take_stalled_receive`：判据与摘表必须同一次持锁）。

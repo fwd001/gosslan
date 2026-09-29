@@ -10,6 +10,16 @@
 
 ## [Unreleased]
 
+## [4.31.35] - 2026-09-30
+
+### chore：`cargo fmt` 补跑（上一笔 transport 改动漏了格式化）
+
+全量层第 16 步 `cargo fmt --check --all` 报 `file.rs:1725 / :1735` 两处未格式化 —— 是
+`take_group_receives_for_peer` 那个新函数的签名与链式调用超了一行的排版上限。
+纯排版，语义零改动（diff 只有换行）；`cargo fmt --check` 复跑退 0。
+教训同上一条一起记：`cargo fmt --check`（1.6s）和 `check-change-budget.mjs --staged` 都是
+**提交前就能跑的自查**，快速层 15 步不含它们 ⇒ 快速层绿不代表推上去不红。
+
 ## [4.31.34] - 2026-09-29
 
 ### 修复（对端下线时，群接收的"摘表"与"收尾"分在两次持锁里 —— 会把正在收的那一单判死）
