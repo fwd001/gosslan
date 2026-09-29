@@ -18,13 +18,21 @@ const SRC = readFileSync(
   "utf8",
 );
 
-test("点击「添加图片」不再直接弹文件选择器（桌面端只做聚焦）", () => {
-  // 反面：模板里任何一处把选图入口接回按钮，就是用户这次明确要改掉的行为
-  const direct = [...SRC.matchAll(/@click="addImage"/g)];
-  assert.equal(direct.length, 0, `仍有 ${direct.length} 处 @click="addImage"：点击会展开文件列表`);
-  // 正面：证明"点击有去处"在这份源码里能为真（否则上面那条会因为整块被删而空转）
+test("「添加图片」弹选图器，而下面的聚焦框不弹（用户 2026-09-29 的两句话分别钉住）", () => {
+  // 正面①：按钮接的是会弹选图器的那个函数，且它确实调 addImage()
+  const btn = [...SRC.matchAll(/@click="onAddImageButton"/g)];
+  assert.equal(btn.length, 1, `@click="onAddImageButton" 有 ${btn.length} 处（应为 1：只有「添加图片」按钮）`);
+  const at = SRC.indexOf("function onAddImageButton()");
+  assert.ok(at > 0, "找不到 onAddImageButton() ⇒ 上面那条会因为整块被删而空转");
+  const body = SRC.slice(at, SRC.indexOf("\n}", at));
+  assert.match(body, /void addImage\(\)/, "「添加图片」不再弹选图器 ⇒ 回到用户要改掉的行为之前");
+  assert.match(body, /pasteArmed\.value = true/, "点按钮时没点亮图片区 ⇒ 粘贴提示的入口丢了");
+  // 正面②：聚焦框那个按钮仍然只走 armImageZone（它**不该**弹选择器）
   const armed = [...SRC.matchAll(/@click="armImageZone"/g)];
-  assert.ok(armed.length >= 1, `一处 @click="armImageZone" 都没有 ⇒ 点击什么都不做，粘贴区没入口`);
+  assert.ok(armed.length >= 1, "聚焦框的 @click 接线没了 ⇒ 点它什么都不做");
+  // 反面：不许有人绕过 onAddImageButton 把裸 addImage 直接接到模板上（那会丢掉点亮这一步）
+  const direct = [...SRC.matchAll(/@click="addImage"/g)];
+  assert.equal(direct.length, 0, `仍有 ${direct.length} 处 @click="addImage"：绕过了"同时点亮图片区"那一步`);
 });
 
 /**

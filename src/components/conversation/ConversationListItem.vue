@@ -4,6 +4,8 @@ import { fmtConversationTime } from "@/utils/time";
 import { avatarSeedFor, type AvatarSeed } from "@/utils/avatarSeed";
 import { computed, onUnmounted } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
+import { useAppStore } from "@/stores/useAppStore";
+import { isSelfConversation } from "@/utils/selfChat";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { haptic } from "@/utils/haptics";
 import UnreadBadge from "@/components/UnreadBadge.vue";
@@ -30,6 +32,19 @@ const emit = defineEmits<{
 }>();
 
 const chat = useChatStore();
+const app = useAppStore();
+
+/**
+ * 「这一行是不是我自己」——与通讯录那一行**同一个键、同一个判据**（用户 2026-09-29：
+ * 「聊天列表我自己后面也加一个『我』，和好友列表同步」）。判据必须复用
+ * `utils/selfChat.isSelfConversation`：仓库里那条测试明令各处不许再写一遍 `=== device_id`。
+ */
+const selfSuffix = computed(() =>
+  isSelfConversation({ id: props.conv.id }, app.device?.device_id) ? t("friend.selfSuffix") : "",
+);
+/** 看得见的那份名字与读屏那一份**共用同一个 computed**（`FriendListItem` 的同一条纪律）：
+ *  分两处各拼一次的话，迟早出现"屏幕上带（我）、读屏听不到"或反过来。 */
+const displayName = computed(() => props.conv.name + selfSuffix.value);
 const { memberProfile } = useMemberProfile();
 
 /** 该群当前是否有生效的公告（数据源：`list_active_group_announcements` 的全量折叠，
@@ -73,8 +88,8 @@ const openTasks = computed(() =>
 const rowAriaLabel = computed(() => {
   const parts = [
     props.conv.unread > 0
-      ? t("conv.unread", { name: props.conv.name, n: props.conv.unread })
-      : props.conv.name,
+      ? t("conv.unread", { name: displayName.value, n: props.conv.unread })
+      : displayName.value,
   ];
   if (mentioned.value) parts.push(t("msg.mentioned"));
   if (openTasks.value > 0) parts.push(t("todo.openForMe", { n: openTasks.value }));
@@ -229,7 +244,7 @@ const gridTiles = computed(() => {
           data-conv-name
           class="truncate text-[13px] leading-5"
           :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'"
-          :title="conv.name"
+          :title="displayName"
         >
           <!-- 置顶标识（微信同款位置：名字左侧）。纯本地偏好，对方不可见。 -->
           <Pin
@@ -242,7 +257,7 @@ const gridTiles = computed(() => {
             v-if="hasAnnouncement"
             class="mr-1 inline-block h-3 w-3 shrink-0 align-[-1px] text-[var(--gosslan-warning-ink)]"
             :aria-label="t('conv.announceBadge')"
-          />{{ conv.name }}
+          />{{ displayName }}
         </span>
         <!-- 右半边这一簇 = 任务数 + 时间（原来两件事各自是 `justify-between` 的一个孩子，
              名字短时任务数会**漂到行中间**，看着像没归属 —— 2026-09-29 拿真图量出来的）。

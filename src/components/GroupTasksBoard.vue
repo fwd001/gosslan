@@ -427,9 +427,9 @@ function toggleAssignee(id: string) {
 /**
  * 选图并写入「元数据 + 待投递路径」：元数据随定义跨端同步，字节另走群文件管线。
  *
- * ⚠️ **只有 Android 走这条路**（用户 2026-09-29：「点击添加图片那一块儿…不要展开可以选择图片
- * 的那个列表…只是起到一个聚焦（的作用），可以 Ctrl+V 粘贴」）。Android 没有剪贴板粘贴入口
- * （WebView 的 paste 事件拿不到图片），所以那里点击仍然是唯一的添加方式 —— 见 `armImageZone`。
+ * 桌面与 Android **都**走这条路：点「添加图片」直接弹选图器（用户 2026-09-29 改口：
+ * 「点击添加图片还是以前的上传图片逻辑，下面的聚焦框按现有逻辑」）。Android 尤其必须如此 ——
+ * WebView 的 paste 事件拿不到位图，选图是它唯一的加图入口。见 `onAddImageButton`。
  */
 async function addImage() {
   const d = draft.value;
@@ -454,6 +454,17 @@ function armImageZone() {
   }
   pasteArmed.value = true;
   dropZoneRef.value?.focus({ preventScroll: true });
+}
+
+/**
+ * 「添加图片」那一下：**弹选图器**（用户 2026-09-29：「点击添加图片还是以前的上传图片逻辑」），
+ * 同时把下面的图片区点亮 —— 点亮才谈得上"也可以 ⌘V 粘贴 / 拖进来"。
+ * 下面那个框自己单独点**仍然只聚焦、不弹选择器**（`armImageZone`，同一句需求里他确认过）。
+ */
+function onAddImageButton() {
+  pasteArmed.value = true;
+  dropZoneRef.value?.focus({ preventScroll: true });
+  void addImage();
 }
 
 /** 公共入口：把若干本地图片路径加进草稿（**Android 选图 / 桌面粘贴 / 桌面拖入**三条路汇这里）。 */
@@ -1100,7 +1111,7 @@ watch(
           <button
             type="button"
             class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="armImageZone"
+            @click="onAddImageButton"
           >
             <ImagePlus class="h-3.5 w-3.5" />
             {{ t("todo.addImage") }}
