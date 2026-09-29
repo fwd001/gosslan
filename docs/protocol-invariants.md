@@ -942,7 +942,7 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
                                 而"重启前后同一条消息不同意思"正是这一格要消灭的东西。
 第 4 条 门控本身           ✅ v4.22.39  机制 = Hello 的 capability 位（**不是** protocol_version：
                             V1 期间新增的 kind 已经证明"V1 内部并不单调"，版本号当能力清单用会骗人）
-                              · 唯一判据 `protocol::kind_allowed_by_features` + 唯一映射表
+                              · 唯一判据 `protocol::dm_allowed_by_features`（1:1 发送口）+ 唯一映射表 `kind_required_feature`；群侧受众另走 `kind_audience`
                                 `kind_required_feature`（源守卫各判"只许一处"）
                               · 发送侧接线在 `commands/chat.rs::send_message`，且刻意排在
                                 公钥探测之前（不该为一个根本不会发的东西白探测 1.2s）

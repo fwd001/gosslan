@@ -129,7 +129,7 @@ protocol version bump
                                    被丢掉，单聊与群聊两条路径都会显示占位
 ③      新帧 / HKDF v2 派生       ⬜（且必须等 ① 在网里铺开后才允许）
                                     但"不门控不许发"这个前置件已就位（v4.22.39）：
-                                    capability 位 + `kind_allowed_by_features` 唯一判据 +
+                                    capability 位 + 1:1 侧 `dm_allowed_by_features` 唯一判据（群侧另表 `kind_audience`，只报不拦） +
                                     1:1 发送侧接线。以后每上一样新东西，是"登记一位 +
                                     在表里映射"，不需要再造门控。
                                     ⚠️ 门控用 capability 而不是 protocol_version：

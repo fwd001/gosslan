@@ -370,7 +370,7 @@ CASES: list[Case] = [
         "     门控删掉」一定会被抓 —— 注入方式就是删掉那次调用（不是改成 if false，那仍然算调用）",
         file=TAURI / "src" / "commands" / "chat.rs",
         injections=[(
-            "        if !crate::protocol::kind_allowed_by_features(&kind, peer_features.unwrap_or(0)) {\n"
+            "        if !crate::protocol::dm_allowed_by_features(&kind, peer_features.unwrap_or(0)) {\n"
             "            return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));\n"
             "        }",
             "        let _ = (&kind, peer_features);",
@@ -404,8 +404,8 @@ CASES: list[Case] = [
         "     注入方式：把 CONTENT_FEATURE_MERGE 从本机广播的位图里摘掉",
         file=TAURI / "src" / "protocol.rs",
         injections=[(
-            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE | CONTENT_FEATURE_FILE_EPOCH\n}",
-            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL | CONTENT_FEATURE_FILE_EPOCH\n}",
+            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL\n        | CONTENT_FEATURE_MERGE\n        | CONTENT_FEATURE_FILE_EPOCH\n        | CONTENT_FEATURE_FLEX_DM_KIND\n}",
+            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL\n        | CONTENT_FEATURE_FILE_EPOCH\n        | CONTENT_FEATURE_FLEX_DM_KIND\n}",
         )],
         cmd=cargo("test", "--lib", "every_gated_kind_is_advertised_by_us"),
         cwd=TAURI,

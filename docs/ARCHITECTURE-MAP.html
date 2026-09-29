@@ -439,7 +439,7 @@ const MODS = [
     role: "发单聊/已读/删除/搜索/内容请求。<b>自聊走纯本地路径</b>（不进 outbox、不 gossip、不加密）。⚠️ <b>这里没有「撤回」和「重发」</b>：单聊版两条命令 2026-09-25 已删（前端从未调用），撤回只有群聊版 <code>recall_group_message</code>，界面上的「重发」= <code>chat.send</code> 重发一条<b>新消息</b>（详见 <code>protocol-invariants.md</code> §6）。",
     in: ["friend_id str, content str, kind str ← api-invoke", "身份与密钥 ← 领域层（身份域 + peers/friends 表）"],
     out: ["MessageRecord → messages + outbox", "ensure_link / try_send → 传输域", "emit(message-acked 等) → api-evt"],
-    data: ["≤50 000 字符拒断不截断", "能力位门禁：kind_required_feature / kind_allowed_by_features"] },
+    data: ["≤50 000 字符拒断不截断", "能力位门禁两张表：1:1 发送口 <code>dm_required_features</code> / <code>dm_allowed_by_features</code>（不门控不许发）；群侧 <code>kind_required_feature</code> + <code>kind_audience</code>（只报受众、不拦发送）"] },
   { id: "cmd-group", l: "cmd", n: "群命令（含卡片载荷）", s: "groups · group_files · group_announcements · todo/dispatch/keys", fm: ["groups", "group_files", "group_announcements", "group_todo_media", "group_file_dispatch", "group_file_keys"],
     role: "成员与群密钥生命周期；公告/任务等卡片载荷统一走 <code>send_group_payload</code>（<code>poll</code> / <code>poll_vote</code> 的<b>接收与渲染仍在</b>，但两条发起命令 2026-09-25 已删 ⇒ 本端不再产生新投票）；群文件按<b>每收件人一行</b>推进度。",
     in: ["groupId + 成员表 ← groups", "群密钥 ← state.group_keys（gk:{group_id}）", "封装后的文件密钥 ← gfk:{transfer_id}（明文只活在内存）"],
@@ -1162,7 +1162,7 @@ const DRIFT = [
    + "<br>· <b>当前真正生产路径</b>（命令层）已由 <code>src/utils/mapContract.test.ts</code> 双向核对 —— 它把本页 <code>CMDS</code> 第一列与 <code>src/api</code> 里 <code>invoke(…)</code> 的名单比差集，所以「注册了但界面没人调」是被守着的。⚠️ 顺带纠一处极易读错的形状：<code>CMDS</code> 一行是 <code>[名字, 领域, 入参, 返回]</code>，<b>第三列空 = 该命令无入参</b>，不是「前端没调用」。"
    + "<br>· <b>测试专用路径</b>：协议级假 peer 与各轮 harness 都在生产二进制之外，复跑 <code>ls src-tauri/examples/*.rs</code> 与 <code>grep -oE 'ROUND === &quot;[a-z0-9-]+&quot;' scripts/e2e-multi-instance.mjs | sort -u</code>。"
    + "<br>· <b>计划中的扩展点</b>：复跑 <code>grep -l '^- Status: Proposed' docs/adr/*.md</code>（⚠️ 别去掉那个行首锚定 —— ADR 正文里也会出现 Proposed 这个词，宽着搜会把已 Accepted 的那几份也算进来）。本页现读到的第一条实例是 §四-A 点名的「用户自定义 3 位后缀」：全仓只命中 <code>device.rs</code> 里那句长度注释、<b>没有实现入口</b>（复跑 <code>grep -rn 自定义.*后缀 --include='*.rs' --include='*.ts' --include='*.vue' .</code>，只有一行）。"
-   + "<br>· <b>已废弃但代码仍存在 / dead code</b>：本页上面那两条收口记录（门面 5 条、注册了但零引用的 5 条命令）就是这一类的样例；但「某个还在的旧实现是不是死的」今天<b>没有机器判据</b>，靠人回头改 —— 这句话本身就是这一格的登记处。"
+   + "<br>· <b>已废弃但代码仍存在 / dead code</b>：本页上面那两条收口记录（门面 5 条、注册了但零引用的 5 条命令）就是这一类的样例；但「某个还在的旧实现是不是死的」今天<b>没有机器判据</b>，靠人回头改 —— 这句话本身就是这一格的登记处。<br>· 本轮新登记的实例：<code>protocol::kind_allowed_by_features</code> 自 4.31.23 起在<b>生产码里零调用点</b>（1:1 改用 <code>dm_allowed_by_features</code>，群侧走 <code>kind_audience</code>），只剩单元断言与那条「全仓只许一处」的守卫在钉它 ⇒ 属于「已废弃但代码仍存在」；删不删归到「门面下无调用点包装」那件待拍板的事，本轮不自行删。"
    + "<br>· <b>已实现 / 部分实现</b>：不在本页逐节点标，交给 <code>docs/acceptance/stability-smoke-matrix.md</code> 那两张表 —— 那里每一格点名「判据在哪个具名入口、哪一层、进不进远端 CI」，且条数由 <code>scripts/check-doc-numbers.mjs</code> 现算对账。"
    + "<br>⚠️ 诚实边界：于是七类状态在本页以<b>口径 + 出处</b>存在，而不是以七个标签存在。要把它升级成逐节点标签，前置问题是「哪一道门管得住一整张表的状态列不漂」—— 答不出来就先别贴。"],
   ];

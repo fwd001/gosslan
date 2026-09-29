@@ -219,6 +219,19 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "护栏注入锚点静态核对",
+    light: true,
+    why: `挡住「护栏的锚点跟着被钉的那段码搬家，从此注入注不上去、那条守卫静默空转」——
+      实测 2026-09-29：1:1 门控换成 dm_allowed_by_features、content_features() 又多了第四个位，
+      两条 rust Case 的锚点当场失效（verify-guards.py --list 退 1），而快速层与全量层的护栏步
+      **只扫前端子集** ⇒ 两层当时都是绿的，这个洞只能靠 --list 或 40 分钟的整跑才看得见。
+      跑的就是 --list 那条起跑前核对：不编译、不注入，秒级成本。`,
+    cwd: ROOT,
+    cmd: "python3",
+    args: ["scripts/verify-guards.py", "--list"],
+  },
+  {
+    group: "frontend",
     name: "BLE 常量单一事实来源",
     why: "挡住「同一个概念多处各算一遍」——CHANGELOG 4.18.7→4.18.10 连着四版修的就是它",
     cwd: ROOT,
@@ -908,13 +921,20 @@ const heldOut = steps.length - active.length;
  * 内部都在跑 cargo）。
  */
 function mayTouchToolchain(s) {
+  // 不可豁免的那一半：args 里出现 cargo，作者声明挡不住它。
+  if (s.args.some((a) => typeof a === "string" && a.startsWith("cargo"))) return true;
+  // 可豁免的那一半：由步骤作者显式声明"这个入口不拉 Rust 工具链"。
+  // 为什么允许声明而不是只按 cmd 判：cmd=python3 只说明解释器，说明不了脚本内部 ——
+  // `verify-guards.py --list` 只读文件、不编译不注入（秒级），不带 --list 时才会逐条重编译。
+  // 撒谎不会被静默吞掉：这一步在快速层里自己印秒数，变慢了当场看得见
+  //（分层自检要防的是"没人会去查原因"，不是"作者声明过就必须信"）。
+  if (s.light === true) return false;
   return (
     s.cmd === "cargo" ||
     s.cmd === "rustup" ||
     s.cmd === "bash" ||
     s.cmd === "python3" ||
-    s.cmd === "python" ||
-    s.args.some((a) => typeof a === "string" && a.startsWith("cargo"))
+    s.cmd === "python"
   );
 }
 

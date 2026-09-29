@@ -131,6 +131,12 @@
 | 21 | 跨版本优雅降级（INV-P24） | SIMULATED | `unknown_wire_frame_is_tolerated_after_auth`、`messageKinds.test.ts` | 「新旧安装包互发」= MANUAL-HARDWARE → Smoke-6 |
 | 22 | 大文件进行时聊天/控制帧不被饿死 | SIMULATED | P3 字节封顶用例、优先级队列用例 | 真并发下的时序无跨进程证明 → A-3 |
 
+## 消息呈现族（23–23）
+
+| # | 验收项 | 等级 | 证据 | 缺口 |
+|---|---|---|---|---|
+| 23 | 表情回应（群 + 1:1，同一表情多人聚合、能看谁点的与谁最后追加） | **部分 AUTOMATED** | 跨实例：`--round=dmreaction`（B 侧恰好落一条 + `kind` 仍是 `reaction` + 会话 `last_msg`/`last_ts` 一字未动 + A 侧队列由对端 Ack 回收）与群聊轮 `--round=group` 那条 reaction 族；折叠与聚合：`utils/reactions.test.ts`（LWW 折叠、按 `(seq,msg_id)` 排、`ROSTER_VISIBLE` 折 +N）；线上形状：`protocol_tests.rs`（载荷校验、门控位图、"群侧不许被 1:1 门控污染"）；接线：`dmReaction.test.ts` | 三格明写未自动化：① **「折叠成一枚胶囊 + 谁最后追加」是渲染层**，DB 里没有那一格 ⇒ 只有 TS 用例与运行时探针级证据；② **1:1 发送侧门控** harness 判不到（`dm_allowed_by_features` 在 `send_message` 里面，进程外没有"让应用执行一条命令"的入口）⇒ 只有源码护栏 + 单元用例；③ **真机观感**（名单浮层位置、「+N」可读性、移动端 450ms 长按）= MANUAL，本机锁屏未跑 → Smoke-11 |
+
 ## 组合面对账（总任务 §七-4 点名的那 14 条：A+B，而不是"A 绿 + B 绿"）
 
 口径：每行只写**判据在哪个具名入口、哪一层、进不进远端 CI**，不写条数（条数由该入口自己打印）。
@@ -151,7 +157,7 @@
 | Bluetooth + LAN | `ble_only_link_must_not_start_a_hopeless_large_file`、`ble_start_does_not_block_on_the_peripheral_state_wait`；**真机 BLE 收发＝Smoke-2，人工**（同机 peripheral 的广播不会回喂本机 central，实测） | 单元 + 人工 | ✅（本地层那份二进制也带 `--features bluetooth`，见 `scripts/verify.mjs` 里 build 那一步） | SIMULATED |
 | LAN + 中继/routed | `unhealthy_lan_does_not_block_healthy_routed`、`route_order_plus_send_delivers_on_healthy_link_after_lan_degraded`；跨实例关局域网轮 `--round=lanoff`（反证 `lanoff-lie`） | 单元 + 本地 E2E | 单元 ✅ | AUTOMATED-LOCAL；"断一条链路看谁接管"已判为**单机不可自动**（routed 与 LAN 共用同一个 TCP 监听口） |
 | 多连接 + 大文件（队列内存封顶，P3） | 护栏「链路队列必须按字节封顶：折算槽数不许被换成常量深度」「链路队列的字节预算必须真的参与折算」；`inflight_cap_blocks_state_flood`、`never_awaits_while_holding_the_links_lock` | 护栏 + 单元 | 单元 ✅ | AUTOMATED |
-| 大文件 + 群同步（§三 点名的 600MB+ 那一格） | **旅程轮现跑的档位只有 `--size=0.001` 与 `--size=10`**（复跑 `grep -n -- '--size=' scripts/verify.mjs`）；**100 MB 那一档在自动化里是有的，但只出现在三个故障窗口轮**（`E2E_KILL_MB` / `E2E_SENDKILL_MB` / `E2E_STALL_MB` 默认都是 100 ⇒ 接收中被杀 / 发送中被杀 / 字节在飞时冻住对端），而**这三条都不判"传完之后聊天与群同步照常"**；形状最近的判据是 `group_rows_survive_the_link_flap_window_that_kills_single_chats` 与群密钥重递那一族 | 本地 E2E（故障轮）+ 单元 | 单元 ✅ | **2026-09-29 就地改直（群同步那一半已落地）**：续发轮的 J4 在 J2（文件）与 J3（1:1 续发文本）都收尾之后才往 A 的 `group_outbox` 排一条群消息 ⇒ 判到 B 侧那个群会话恰好落一条 + 明文解得回来 + 那一行的 `conv_id` 就是群会话 + A 侧队列行被送达回收；600 MB 档按**含 J4 的这一轮**整跑复证过（复跑 `E2E_FILE_MB=600 npm run test:e2e:posttext` ⇒ 退码 0，且它自己打印「多实例 E2E 全绿（28 条断言）」；时长不在这里抄，每步秒数由那一轮自己印）。⇒ 旧那句"没有任何自动化层"里挂在下面的**时长理由就此撤回**：600 MB 这一档跑得完，缺的从来是判据不是时间。⚠️ **仍缺的是「跨实例建群」那一半，而且原因不是时长**：`create_group` 与 `distribute_group_key` 是 Tauri IPC 命令，harness 从进程外只能写 SQLite，写不出那一条群密钥分发帧 ⇒ 这一格属真机 / 第二设备那一层，既不许记成"已覆盖"，也不许记成"自动化通过" |
+| 大文件 + 群同步（§三 点名的 600MB+ 那一格） | **旅程轮现跑的档位只有 `--size=0.001` 与 `--size=10`**（复跑 `grep -n -- '--size=' scripts/verify.mjs`）；**100 MB 那一档在自动化里是有的，但只出现在三个故障窗口轮**（`E2E_KILL_MB` / `E2E_SENDKILL_MB` / `E2E_STALL_MB` 默认都是 100 ⇒ 接收中被杀 / 发送中被杀 / 字节在飞时冻住对端），而**这三条都不判"传完之后聊天与群同步照常"**；形状最近的判据是 `group_rows_survive_the_link_flap_window_that_kills_single_chats` 与群密钥重递那一族 | 本地 E2E（故障轮）+ 单元 | 单元 ✅ | **2026-09-29 就地改直（群同步那一半已落地）**：续发轮的 J4 在 J2（文件）与 J3（1:1 续发文本）都收尾之后才往 A 的 `group_outbox` 排一条群消息 ⇒ 判到 B 侧那个群会话恰好落一条 + 明文解得回来 + 那一行的 `conv_id` 就是群会话 + A 侧队列行被送达回收；600 MB 档按**含 J4、但还没有 J5 的那一版**整跑复证过（复跑 `E2E_FILE_MB=600 npm run test:e2e:posttext` ⇒ **今天这一整轮已在 600 MB 档重跑过一遍并全绿**，条数与每步用时都由那一轮自己打印、这里不抄；口径变化要说清：更早那一趟只有 28 条，缺的正是后来加的 J5 那六条「快速连续发送」⇒ 那六条现在也在这个档位上过了一次）。⇒ 旧那句"没有任何自动化层"里挂在下面的**时长理由就此撤回**：600 MB 这一档跑得完，缺的从来是判据不是时间。⚠️ **仍缺的是「跨实例建群」那一半，而且原因不是时长**：`create_group` 与 `distribute_group_key` 是 Tauri IPC 命令，harness 从进程外只能写 SQLite，写不出那一条群密钥分发帧 ⇒ 这一格属真机 / 第二设备那一层，既不许记成"已覆盖"，也不许记成"自动化通过" |
 | A + B + C（文件在途 + 群同步 + 进程被杀） | `--round=groupcrash`（群只长在发送端盘上 → SIGKILL → 再起两端：对端自己学到这个群、密钥逐字节相同、不多出会话行）+ 反证 `groupcrash-lie` | 本地 E2E 层 | ❌ | AUTOMATED-LOCAL |
 
 **600MB 那一档今天真量了一次（2026-09-29，一次性证据、不接进任何门禁层）**：复跑
@@ -166,7 +172,7 @@ A 侧 `file_outbox` 行被收尾删除、同一条传输只记一次、接收目
 ⇒ **当天稍后这一格就按这个结论补上了**：`--round=posttext` 落地，并当场在 600MB 档跑过一遍
 （复跑 `E2E_FILE_MB=600 node scripts/e2e-multi-instance.mjs --round=posttext` ⇒ 退码 0）
 ⇒ 「600MB 传完之后普通消息 / 文件消息 / **群同步**照常」这一半不再靠推断（群同步那一半由同一轮的 J4 兜住，档位复证见上一行）。⚠️ **仍缺的那一半换成更准的一句**：
-群聊创建 / 群同步在 600MB 档没有判据（群相关的轮次跑自己的档位，不与这条旅程合流）
+群聊**创建**在 600MB 档没有判据 —— 原因不是时长也不是档位，是 `create_group` 与 `distribute_group_key` 是 Tauri IPC 命令，harness 从进程外写不出那一条群密钥分发帧（与本节第一行末那句同一个原因）。⚠️ 这一句今天收窄：它原来连「群同步」一起否掉，而群同步那一半已由同一轮的 J4 判到 ⇒ 照抄会让本节自己前后矛盾
 ⇒ 别把这一格读成"§三 全闭合"。
 
 ★ 这张表**不许读成「CI 覆盖组合面」**：远端只有 unit / lint / clippy / rust 测试 / android 检查与三份出包流水线，**双实例轮一条都不在远端**（复跑：`grep -n "verify.mjs --group" .github/workflows/verify.yml`）。
