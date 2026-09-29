@@ -740,7 +740,7 @@ if (groupFlag === "local") {
         + "这一轮不加新预置、不换链路：同两个实例、同一条已建立的链路，只是把那条文本放到 J2 之后塞进 outbox。"
         + "判的是四件事：B 侧恰好落一条（既不卡死也不重复）、明文解得回来、A 侧 outbox 由**对端 Ack** 删除、"
         + "A 侧状态前进过 sending；再加一条 §五 的隔离形状 —— 续发这条不许把刚完成那份的终态从 done 改回去（P7）。"
-        + `反向 --round=posttext-lie 只翻判据读的那三份值（1:1 的期望明文 + 读台账用的 transfer_id + 群那条读的会话 id），预置与时序一字不动。`
+        + `反向 --round=posttext-lie 只翻判据读的那几份值（1:1 的期望明文 + 读台账用的 transfer_id + 群那条读的会话 id + 连发第 3 条的期望明文），预置与时序一字不动。`
         + `每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」一处。${LOCAL_ONLY_WHY}`,
       cwd: ROOT,
       cmd: NODE_EXE,

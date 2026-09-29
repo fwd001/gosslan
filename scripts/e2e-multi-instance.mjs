@@ -1626,6 +1626,95 @@ if (POSTTEXT) {
     hit?.conv_id === convId, convId, hit?.conv_id);
   check("A 侧 group_outbox 那行被回收（送达才算收尾，不是入队即删）", queued() === 0, 0, queued());
   });
+
+// §三 点名的「快速连续发送」：以前只有 L2 那条 store 层用例（`src/utils/messages.test.ts:558`
+// 「连续快速发送10条，Ack 乱序，全部不是 sending」），它判的是**乐观态与 Ack 回收**；
+// 从来没有一次跨进程跑证明"N 条真过线、一条不多一条不少、各自内容不串味"。
+// 这一格同时是 §七-1（dedup）与 §七-3（历史回归）要的那一半，所以它排在**同一条已经被大文件
+// 与群同步压过的链路**上：前面几步已经把这条连接用满，这里再看连发还成不成立。
+// ⚠️ **刻意不判到达顺序**：产品口径是"Ack 可以乱序"（就是那条 L2 用例），把 FIFO 写成判据
+// 会把一条允许的行为判成缺陷；这里只判"每条各一次 + 内容逐条对上 + 队列回收干净"。
+// 反向只多翻判据读的那份期望明文（第 3 条那格），预置与时序一字不动。
+  step("J5 连发五条普通文本：各恰好落一行、明文逐条对上不许串味、outbox 全被对端 Ack 回收", async () => {
+    const t0 = nowMs();
+    const burst = [];
+    for (let k = 0; k < 5; k++) {
+      burst.push({ id: eid(), plain: `burst ${k + 1} of 5`, ts: t0 + k, seq: 3 + k });
+    }
+    const ids = burst.map((m) => m.id);
+    // 五条一次性写进去：这才叫"连发"。逐条 step 会变成五次串行往返，测不到同一批里的相互影响。
+    seed(INSTANCES[0].db, (db) => {
+      for (const m of burst) {
+        const payload = JSON.stringify({
+          type: "chat_message", msg_id: m.id, from: idA.runtimeId, to: idB.runtimeId,
+          kind: "text", content: "enc1:harness-placeholder", ts: m.ts, seq: m.seq,
+        });
+        db.prepare("DELETE FROM messages WHERE msg_id=?1").run(m.id);
+        db.prepare("DELETE FROM outbox WHERE msg_id=?1").run(m.id);
+        db.prepare(
+          `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+           VALUES(?1,?2,?3,?4,'text',?5,?6,?7,'sending')`,
+        ).run(m.id, idB.runtimeId, idA.runtimeId, idB.runtimeId, m.plain, m.ts, m.seq);
+        db.prepare("INSERT INTO outbox(msg_id,peer_id,payload,created_at) VALUES(?1,?2,?3,?4)")
+          .run(m.id, idB.runtimeId, payload, m.ts);
+      }
+    });
+    const readB = (id) => {
+      const d = openDb(INSTANCES[1].db, true);
+      try {
+        return d.prepare("SELECT conv_id,content FROM messages WHERE msg_id=?1").all(id);
+      } finally { d.close(); }
+    };
+    const stillQueued = () => {
+      const d = openDb(INSTANCES[0].db, true);
+      try {
+        return d.prepare("SELECT COUNT(*) c FROM outbox WHERE msg_id IN (?1,?2,?3,?4,?5)")
+          .get(...ids).c;
+      } finally { d.close(); }
+    };
+    const statuses = () => {
+      const d = openDb(INSTANCES[0].db, true);
+      try {
+        return d.prepare("SELECT msg_id,status FROM messages WHERE msg_id IN (?1,?2,?3,?4,?5)")
+          .all(...ids);
+      } finally { d.close(); }
+    };
+    await waitFor(() => burst.every((m) => readB(m.id).length > 0), 180_000, "B 侧五条连发的文本都到齐");
+    await waitFor(() => stillQueued() === 0, 90_000, "A 侧五条 outbox 全被对端 Ack 删除");
+    await sleep(1500); // 给"重复投递"这种退化留出显形窗口
+
+    const perId = burst.map((m) => ({ m, rows: readB(m.id) }));
+    check("连发五条在 B 侧各恰好一行（不丢、不重复投 —— 被文件与群消息压过的链路上 dedup 照常）",
+      perId.every(({ rows }) => rows.length === 1), "五条各 1 行",
+      perId.map(({ m, rows }) => `${m.plain}=${rows.length}`).join(" "));
+    const expectOf = (k) => (POSTTEXT_LIE && k === 2 ? `${burst[k].plain} (tampered)` : burst[k].plain);
+    check("每条落库的明文就是它自己那一条（同批连发最贵的破坏是串味，必须逐条对上）",
+      perId.every(({ rows }, k) => rows[0]?.content === expectOf(k)),
+      burst.map((_m, k) => expectOf(k)).join(" / "),
+      perId.map(({ rows }) => rows[0]?.content ?? "无行").join(" / "));
+    // ⚠️ 这一条的期望值**当场被正向跑纠正过一次**（红在判据、不在产品）：1:1 会话的行在每一侧
+    // 都以"对端那个 id"为键 —— B 库里这五条的 conv_id 是 **A 的** runtimeId，不是 B 自己的。
+    // 我第一版写成 idB.runtimeId，正向立刻红：预期 …-i2 / 实际 …-i1。判据要判的是
+    // "连发有没有把会话归属写散"，所以钉"五条同一个 conv_id"+"那一个就是以对端为键的这条 1:1"。
+    const convs = [...new Set(perId.flatMap(({ rows }) => rows.map((r) => r.conv_id)))];
+    check("五条都落在同一条 1:1 会话里（连发不许把归属写散；B 侧这条会话以**对端 A** 的 id 为键）",
+      convs.length === 1 && convs[0] === idA.runtimeId, idA.runtimeId, convs.join(","));
+    check("A 侧五条 outbox 行全部被对端 Ack 回收（不是本端写完 socket 就删）",
+      stillQueued() === 0, 0, stillQueued());
+    const st = statuses();
+    check("A 侧五条状态都前进过 sending（每条由对端确认点亮，没有一条停在原地或被打回 failed）",
+      st.length === 5 && st.every((r) => !["sending", "failed"].includes(r.status)),
+      "五条都是 sent/delivered/read",
+      st.map((r) => `${r.msg_id.slice(0, 6)}=${r.status}`).join(" "));
+    const fileNow = (() => {
+      const d = openDb(INSTANCES[0].db, true);
+      try {
+        return d.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId)?.status;
+      } finally { d.close(); }
+    })();
+    check("连发这五条不许把前面那份文件的终态带回去（P7：已完成的终态不是后来消息能改的）",
+      fileNow === "done", "done", fileNow ?? "无行");
+  });
 }
 
 // §十四要的「错误行为测试」+ §七/§八的「文件 hash 不一致 / .part 已存在」：
