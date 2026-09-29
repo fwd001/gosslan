@@ -25,17 +25,22 @@ db 锁作用域归 INV-P25，终态能否降级归 INV-P26。
   同一趟变异改由第一条红。⇒ 跑变异不许只数"红了几条"，必须读它红在哪一条断言上。
 - 三条判据的非空转各跑了一趟单点变异（每次只红对应那一条，还原后三条绿）：群侧与单聊侧改源码文本，
   completed 终态保护那条由护栏用例自己把 `.any(…)` 注入成常量 false（改坏即 FAIL、恢复即 PASS）。
+- 末尾 Required Test Matrix 补了 INV-P28 的正/反两行（本仓加不变量是"四件事一起动"：新节 + 钩子行、
+  矩阵两行、README 与索引里的范围、`check-invariant-hooks` 复跑 —— 我第一刀只做了三件，矩阵那两行是
+  事后按清单补的，而**漏它不会让任何门禁红**）。
 - README 与 `docs/AI_ENGINEERING_INDEX.md` 里手抄的不变量范围改成指向现算命令
   （`node scripts/check-invariant-hooks.mjs`）：这一格 09-28 一天漂过三次，每次都是新增一节没人回头改。
 
 本笔之后四层的复跑（同一条链上顺序跑，tip `ee23e69`，退码全部裸取）：
-快速层 **14 步、失败 1 步**（唯一红 = Change Budget 守门，即上面那条数出来的红 + `5a0cfcc` 标题缺 `[plan]`）；
+快速层 **15 步、失败 1 步（共 14.2s）**（步数按它自己打印的 `[N/15]` 现数；唯一红 = Change Budget 守门，即上面那条数出来的红 + `5a0cfcc` 标题缺 `[plan]`）；
 release 二进制重编（带 bluetooth）退 0；跨进程本地层 **21 步全绿（796.4s）**，各轮断言数由那一轮自己打印；
 全量层 **21 步、失败 1 步（578.5s）**，红的还是同一步 Change Budget，其余 20 步含
 `cargo fmt --check --all`、`cargo clippy --features bluetooth -D warnings`、Rust 单测、测试清单守卫（Rust）、
-护栏非空转（前端子集 70 条）、Android 编译门禁都过。
-⚠️ 护栏 **200 条整跑**（`python3 scripts/verify-guards.py` 不带参数）在本 tip 上还没跑过 ⇒
-它是这一串里最后一个要补的长跑，跑完才谈得上"整跑绿在这个 tip 上"。
+护栏非空转（前端子集，条数由那一步自己打印）、Android 编译门禁都过。
+✅ 收尾补跑（同一条链的下一步）：护栏 **200 条整跑**（`python3 scripts/verify-guards.py` 不带参数）
+跑完并过 —— 结论行「✅ 其余 200 条护栏都通过了非空转验证（改坏即 FAIL、恢复即 PASS）」、`RC_SWEEP=0`（裸取，
+不是后台通知那个退码），跑完 `git status` 除 `HANDOFF.md` 外干净 ⇒ 200 处注入全部还原。
+本机这一趟约 59 分钟（此前同层量过 39 分 36 秒 / 52 分 47 秒，差值主要在 rust 档每次重新编译 ⇒ 时长只当观感）。
 
 
 ## [4.31.36] - 2026-09-30
