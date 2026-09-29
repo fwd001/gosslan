@@ -467,6 +467,15 @@ store 说亮了 ⇒ 界面上真看得见、整行的 accessible name 里真有�
    ★ 但量到一条比这一格更值钱的**结构性事实**：**控制帧拿不到"队列行被 Ack 回收"这种送达证据** ——
    `Message::Ack` 那一支要先 `SELECT sender_id FROM messages` 才肯删 outbox 行（`transport.rs:3382-3407`），
    而生产侧 `rename_group` 从不写 `messages` ⇒ 拿"队列被回收"判控制帧**恒不成立**（我第一次就是这么红的，红在探针不在产品）。
+   ★ 这一格**已经补上的那一半**补在落库这一层（不是跨进程）：`db::rename_group` 那两处写现在有两条 Rust 用例钉住
+   （`src-tauri/src/db/groups.rs` 的 `group_rename_tests`：一条正的 = 群名与会话标题一起变且不带动别的群；
+   一条反例 = 群不存在时会话行一字不动）。两次变异各自精确红在对应那一条，另一条照常 ok：
+   把会话那处写挡死 ⇒ 正的 FAILED；拆掉 `changed > 0` 那道闸 ⇒ 反例 FAILED。复跑：
+   `cd src-tauri && cargo test --lib rename_group`。
+   ⇒ 上面那"三种解释"里剩下的两种（没冲队 / 到 B 后被丢）**仍然没有判据**，这一格整体还是"缺跨进程判据"。
+   ⚠️ 顺带记一条踩过的坑，省下一个人的 E0428：`db/*.rs` 是被 `db.rs` 用 `include!` 贴进同一个 `db` 命名空间的
+   （`db/clocks.rs:50` 与 `db/offline_queue.rs:114` 各留了一句提醒）⇒ 在这里新增测试模块**不能叫 `tests`**，
+   模块名要在 `db` 作用域里全局唯一。
    ★★★ 更要紧的是**这一趟顺手读到的一条代码级事实**（它是读出来的，不是测出来的，别和上面那条混）：
    **改名帧没有任何离线补偿** —— 群主改名那一步只做「本地写两行 + 逐成员 `try_send` 且 `let _ =` 丢掉错误」，
    既不写 1:1 的 `outbox`、也不写 `group_outbox`（那两套补发只服务单聊消息与群消息 —— `outbound.rs:213-214`

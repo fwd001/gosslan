@@ -247,3 +247,70 @@ pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
+
+// 模块名刻意不叫 `tests`：本文件被 `db.rs` 用 `include!` 贴进 `db` 命名空间，
+// 同名模块会和 `favorites_tests.rs` 里的 `mod tests` 撞成 E0428。
+#[cfg(test)]
+mod group_rename_tests {
+    use super::{rename_group, upsert_group};
+    use crate::db::{ensure_conversation, SCHEMA};
+    use rusqlite::Connection;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn
+    }
+
+    fn name_of(conn: &Connection, sql: &str, id: &str) -> Option<String> {
+        conn.query_row(sql, [id], |r| r.get::<_, String>(0)).ok()
+    }
+
+    /// 群改名是**两处写**：`groups.name` 与去规范化到会话行的 `conversations.name`。
+    /// 第二处漏掉时，会话列表停在旧标题、群详情已是新名 —— 两处用户都直接看得见。
+    /// 这一条只判"落库这一半"；跨进程那一半（成员那头收不收得到）今天仍没有判据，
+    /// 记在 docs/final-architecture-review.md 的 §七 取数纪律第 6 条。
+    #[test]
+    fn rename_group_updates_both_group_row_and_its_conversation_title() {
+        let conn = mem();
+        upsert_group(&conn, "g1", "旧名", "me", &["me".to_string(), "b".to_string()]).unwrap();
+        ensure_conversation(&conn, "group:g1", "group", "旧名", None).unwrap();
+        upsert_group(&conn, "g2", "隔壁群", "me", &["me".to_string()]).unwrap();
+        ensure_conversation(&conn, "group:g2", "group", "隔壁群", None).unwrap();
+
+        rename_group(&conn, "g1", "新名").unwrap();
+
+        assert_eq!(
+            name_of(&conn, "SELECT name FROM groups WHERE id=?1", "g1").as_deref(),
+            Some("新名"),
+            "groups.name 要跟着改"
+        );
+        assert_eq!(
+            name_of(&conn, "SELECT name FROM conversations WHERE id=?1", "group:g1").as_deref(),
+            Some("新名"),
+            "会话行那份去规范化的名字必须一起改（漏了就是标题漂移）"
+        );
+        assert_eq!(
+            name_of(&conn, "SELECT name FROM conversations WHERE id=?1", "group:g2").as_deref(),
+            Some("隔壁群"),
+            "别的群不许被带动"
+        );
+    }
+
+    /// 反例输入：`groups` 里没有这一行时，`changed > 0` 那道闸必须把第二处写挡住 ——
+    /// 否则一条对不上号的改名请求会凭空改掉一个同名会话的标题。
+    /// 没有这一条，上面那个正例挡不住"去掉 if changed > 0 看着更简洁"的回归。
+    #[test]
+    fn rename_group_of_missing_group_leaves_conversation_row_untouched() {
+        let conn = mem();
+        ensure_conversation(&conn, "group:nope", "group", "残留标题", None).unwrap();
+
+        rename_group(&conn, "nope", "不该生效").unwrap();
+
+        assert_eq!(
+            name_of(&conn, "SELECT name FROM conversations WHERE id=?1", "group:nope").as_deref(),
+            Some("残留标题"),
+            "群不存在时会话标题必须一字不动"
+        );
+    }
+}
