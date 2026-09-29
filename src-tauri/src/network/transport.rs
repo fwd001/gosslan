@@ -1708,7 +1708,11 @@ async fn reader_loop(
         // 那两步之间挤进来的新 FileOffer 会被误判死，见 file::take_group_receives_for_peer）。
         let taken = file::take_group_receives_for_peer(&state, &peer_id);
         // 收尾在锁外：里面要写库、要 emit，都不该持着接收表。
-        for (tid, _r) in taken {
+        // ★ 摘出来的那一份必须一起用完：`fail_taken_group_receive` 是群收件人**内容台账**
+        //   （`record_failure` ⇒ Incomplete，建链时按退避自动重取）的唯一写点，只调 finalize
+        //   那一半会把台账留在 Active。超时那一路（`sweep_stalled_receives`）一直是成对调的。
+        for (tid, r) in taken {
+            file::fail_taken_group_receive(&state, &r);
             finalize_failed_group_receive(&state, &tid);
         }
     }

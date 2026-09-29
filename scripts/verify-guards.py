@@ -565,6 +565,24 @@ CASES: list[Case] = [
         tags=["rust", "new-guards"],
     ),
     Case(
+        name="群断链收尾必须吃掉原子摘出来的那一份（内容台账的唯一写点）",
+        why="`5a0cfcc` 把断链那一路改成「原子摘 → 逐个收尾」时，循环写成 `for (tid, _r) in taken`，\n"
+        "     只调了 finalize 那一半（气泡 / 内存 key / recipient 台账）—— 而群收件人**内容台账**的\n"
+        "     `record_failure ⇒ Incomplete` 只有 `fail_taken_group_receive` 这一个写点。后果静默：\n"
+        "     台账停在 Active ⇒ 重取改走「Active 超 60s」那条兜底，退避口径变了、要多等一轮，\n"
+        "     而当时四层门禁 + 200 条护栏整跑**全绿**（没有任何判据看「摘出来的那份有没有被用完」）。\n"
+        "     注入方式：删掉那一行调用 ⇒ 形状判据必须红（这是 INV-P28 后半句的非空转证明）",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "            file::fail_taken_group_receive(&state, &r);\n",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "peer_offline_group_cleanup_takes_before_finalizing"),
+        cwd=TAURI,
+        expect_fail_hint="摘出来的 FileReceiver 没被收尾吃掉",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
         name="中继文件接收幂等（重复 offer 不清空已收切片）",
         why="多邻居泛洪会送来重复的 RelayFileOffer；覆盖式 insert 会清空已收到的切片 ⇒ "
             "文件永远缺片（完整性校验也必然失败）",

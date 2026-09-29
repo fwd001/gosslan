@@ -2059,13 +2059,43 @@ mod group_receive_atomicity_tests {
         let at = src
             .find("if peer_now_offline {")
             .expect("对端下线那一段改名/搬走了 ⇒ 同步改这条判据");
-        let body = &src[at..at + 1600];
-        // 断言必须带上**调用形状**。只写函数名会被上面那句注释里的
-        // `file::take_group_receives_for_peer` 满足 —— 2026-09-29 的单点变异实测就是这么让
-        // 第一条放行、只靠"旧形状不许回来"那条抓住的（等于半个守卫）。
+        // 窗口取"到下一个函数头为止"，不拍固定字符数：固定长度会越界读进邻居函数（这条判据
+        // 第一次假红就是这么来的），而新加几行注释又会让它在收尾那行之前悄悄截短。
+        // ⚠️ 找不到函数头必须炸，不许回退成"整份文件" —— 那会让下面两条否定断言扫到
+        //    邻居函数里的同名形状，判据当场变成摆设。
+        let rest = &src[at..];
+        let end = [
+            "\nfn ",
+            "\npub fn ",
+            "\nasync fn ",
+            "\npub(crate) fn ",
+            "\npub(crate) async fn ",
+        ]
+        .iter()
+        .filter_map(|m| rest.find(m))
+        .min()
+        .expect("这段之后的下一个函数头改名/搬走了 ⇒ 同步改这条判据（不许放宽成整文件）");
+        let body = &rest[..end];
+        // 反空转闸：窗口必须真的盖到"收尾那一行"，否则下面所有断言都在判空气。
+        assert!(
+            body.contains("finalize_failed_group_receive"),
+            "窗口没覆盖到收尾那一行 ⇒ 这条判据已失去落点，改它而不是放行"
+        );
         assert!(
             body.contains("take_group_receives_for_peer("),
             "对端下线没有走原子摘取 ⇒ 摘表与判据又分成了两次持锁"
+        );
+        // ★ 摘出来的那一份必须被用完（INV-P28 的后半句）：群收件人的**内容台账**
+        // `record_failure ⇒ Incomplete` 只有 `fail_taken_group_receive` 这一个写点，
+        // 只调 finalize 那一半 ⇒ 台账停在 Active，重取走的是另一条兜底口径。
+        // 这是 `5a0cfcc` 自己引入过的漏（`for (tid, _r)` 把那份丢了，四层门禁全绿）。
+        assert!(
+            body.contains("fail_taken_group_receive(&state, &r)"),
+            "摘出来的 FileReceiver 没被收尾吃掉 ⇒ 群内容台账这次没人写 Incomplete"
+        );
+        assert!(
+            !body.contains("(tid, _r) in taken"),
+            "又把摘出来的那份丢了 ⇒ 正是 5a0cfcc 那半收尾的形状，内容台账会停在 Active"
         );
         assert!(
             !body.contains("let group_ids: Vec<String>"),
