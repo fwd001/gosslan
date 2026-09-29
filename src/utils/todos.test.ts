@@ -17,6 +17,8 @@ import {
   todoMentionsMe,
   openTodosForMe,
   putTodoRows,
+  TODO_PRIORITIES,
+  TODO_PRIORITY_DEFAULT,
   resolveTodoNumbers,
   mergeIncomingTodoRows,
   todoRowsFor,
@@ -486,4 +488,31 @@ test("没有撞号时恒等：已显示的号不会因为来了新任务而漂�
   assert.equal(m.get("t2"), 2);
   assert.equal(m.get("t3"), 7);
   assert.equal(m.has("old"), false);
+});
+
+// ── 任务优先级（三档：紧急 / 常规 / 不急）───────────────────────────
+test("优先级从载荷带进折叠结果", () => {
+  const rows = foldTodos([numRec("m1", 5, '{"todo_id":"t1","title":"甲","priority":"high"}')]);
+  assert.equal(rows[0]?.priority, "high");
+});
+
+test("载荷缺 priority 或值不认识 ⇒ 回落「常规」（不是空白、也不是没优先级）", () => {
+  assert.equal(foldTodos([numRec("m1", 5, '{"todo_id":"t1","title":"甲"}')])[0]?.priority, "normal");
+  assert.equal(
+    foldTodos([numRec("m2", 5, '{"todo_id":"t2","title":"乙","priority":"urgent"}')])[0]?.priority,
+    "normal",
+  );
+});
+
+test("优先级表就是那三档、缺省在表内（改这张表要同时改 Rust 那张）", () => {
+  assert.deepEqual([...TODO_PRIORITIES], ["high", "normal", "low"]);
+  assert.ok((TODO_PRIORITIES as readonly string[]).includes(TODO_PRIORITY_DEFAULT));
+});
+
+test("改派别人之后，新被指派人也能改优先级（判权与「谁能改状态」同一档）", () => {
+  const rows = foldTodos([numRec("m1", 5, '{"todo_id":"t1","title":"甲","assignees":["b"],"priority":"low"}')]);
+  const it = rows[0]!;
+  assert.equal(it.priority, "low");
+  assert.equal(canUpdateTodo(it, "b", "g"), true); // 关联人
+  assert.equal(canUpdateTodo(it, "z", "g"), false); // 路人（既非发起人也不是群主）
 });

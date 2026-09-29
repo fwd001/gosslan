@@ -92,6 +92,7 @@ pub async fn send_group_todo(
         assignees,
         status: crate::protocol::default_todo_status(),
         creator: s.device_id.clone(),
+        priority: crate::protocol::default_todo_priority(),
         deleted: false,
         description,
         images,
@@ -226,7 +227,7 @@ fn same_images(
 /// 一次改动请求里需要**与库里最新定义逐字段比对**的那些字段。
 ///
 /// 为什么打包成一个入参：这两条窄档的判据都是"除了一位别的都不许动"，
-/// 比对的字段一共六个；按位置参数摊开就是九个入参（读调用点时看不出谁是谁），
+/// 比对的字段一共七个；按位置参数摊开就是十个入参（读调用点时看不出谁是谁），
 /// 抽成结构体之后"窄"这件事本身就是类型说的。
 struct TodoEdit<'a> {
     deleted: bool,
@@ -236,6 +237,7 @@ struct TodoEdit<'a> {
     description: &'a str,
     images: &'a [crate::protocol::TodoImage],
     archived: Option<bool>,
+    priority: &'a str,
 }
 
 /// 本次请求是否**只动归档位**：其余字段与库里最新定义逐字相同，且归档值确实翻转了。
@@ -251,6 +253,8 @@ fn archive_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> 
         && e.assignees == def.assignees
         && e.description == def.description
         && same_images(e.images, &def.images)
+        // 只改优先级不算"只动归档位"：那条窄档对整个群都放行，优先级不该顺着它进去
+        && e.priority == def.priority
 }
 
 /// 本次请求是否**只是"还原"**：库里状态是「完成」，请求把它退回「待办」，其余字段逐字相同。
@@ -354,6 +358,7 @@ pub async fn update_group_todo(
     description: Option<String>,
     images: Option<Vec<crate::protocol::TodoImage>>,
     archived: Option<bool>,
+    priority: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     let title = title.trim().to_string();
@@ -368,6 +373,13 @@ pub async fn update_group_todo(
             return Err("任务状态不合法".to_string());
         }
         check_todo_assignees(s, &group_id, &assignees)?;
+    }
+    // 优先级只在**给了值**时校验并覆盖；没给就沿用库里那份（编辑描述不该顺手把号改掉，
+    // 同理编辑状态也不该把优先级重置成"常规"）。非法值明确拒绝，不静默吞。
+    if let Some(p) = priority.as_deref() {
+        if !crate::protocol::todo_priority_is_valid(p) {
+            return Err("任务优先级不合法".to_string());
+        }
     }
     let (def, group_creator, members) = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -393,6 +405,10 @@ pub async fn update_group_todo(
     // （用户 2026-09-24 与同日追加）。见 [`may_change_todo`]。
     // `edits_assignees` 在这里**只用来挑错误文案**（同一档里三种角色各自的提示不同），
     // 不参与判权 —— 判权只需要"是不是结构改动"与"这次改动落在哪条窄档"这两个输入。
+    let priority = match priority {
+        Some(p) => p,
+        None => def.priority.clone(),
+    };
     let edits_assignees = assignees != def.assignees;
     let edits_structure = deleted || title != def.title;
     let edit = TodoEdit {
@@ -403,6 +419,7 @@ pub async fn update_group_todo(
         description: &description,
         images: &images,
         archived,
+        priority: &priority,
     };
     let lane = MemberLane {
         archive_only: archive_only_change(&def, &edit),
@@ -454,6 +471,7 @@ pub async fn update_group_todo(
         // 编号是创建那一刻定死的**绝对坐标**：编辑 / 归档 / 还原 / 删除都从原定义带过来，
         // 不接受客户端自报（与 `creator` 同一口径），否则"改一次换个号"就回来了。
         number: def.number,
+        priority,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let (todo_id, status) = (payload.todo_id.clone(), payload.status.clone());

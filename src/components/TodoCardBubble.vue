@@ -16,7 +16,14 @@ import { useMemberProfile } from "@/composables/useMemberProfile";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
-import { TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, parseTodo, type TodoStatus } from "@/utils/todos";
+import {
+  TODO_PRIORITY_CLASS,
+  TODO_PRIORITY_LABEL_KEY,
+  TODO_STATUS_LABEL_KEY,
+  TODO_STATUS_PILL,
+  parseTodo,
+  type TodoStatus,
+} from "@/utils/todos";
 import { t } from "@/i18n";
 import { ChevronRight, ListTodo } from "lucide-vue-next";
 import type { MessageRecord } from "@/types";
@@ -99,6 +106,14 @@ function statusText(s: TodoStatus): string {
         :aria-label="`任务 ${todo?.number} 号`"
       >
         #{{ todo?.number }}
+      </span>
+      <!-- 优先级（紧急 / 常规 / 不急）：只有「紧急」抢权重，其余压次级色，
+           免得三档一起亮反而读不出重点。谁能改见 `canUpdateTodo`（发起人/关联人/群主）。 -->
+      <span
+        class="shrink-0 text-[11px]"
+        :class="TODO_PRIORITY_CLASS[todo?.priority ?? 'normal']"
+      >
+        {{ t(TODO_PRIORITY_LABEL_KEY[todo?.priority ?? "normal"]) }}
       </span>
       <span
         class="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--gosslan-card-ink)]"

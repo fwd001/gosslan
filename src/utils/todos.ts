@@ -24,6 +24,32 @@ export const TODO_STATUSES = ["todo", "doing", "overdue", "done"] as const;
 
 export type TodoStatus = (typeof TODO_STATUSES)[number];
 
+/**
+ * 任务优先级三档的**唯一取值表**（与 Rust `TODO_PRIORITIES` 同序同值）。
+ * ⚠️ 与那张表今天**没有**跨语言守卫（`messageKinds.test.ts` 只比状态与 wire kind）⇒
+ * 改这里要同时改 Rust 那一处，别只改一边（一边改完界面显示空白、另一边照样存旧值）。
+ */
+export const TODO_PRIORITIES = ["high", "normal", "low"] as const;
+export type TodoPriority = (typeof TODO_PRIORITIES)[number];
+/** 缺省档（历史任务与旧版载荷读出来都是它，不是"没优先级"）。 */
+export const TODO_PRIORITY_DEFAULT: TodoPriority = "normal";
+/** 展示名：一句话说得清、卡片里放得下。 */
+export const TODO_PRIORITY_LABEL_KEY: Record<TodoPriority, string> = {
+  high: "todo.priority.high",
+  normal: "todo.priority.normal",
+  low: "todo.priority.low",
+};
+/** 只有「紧急」抢视觉权重；常规/不急刻意压在次级色，避免三档都变红海。 */
+export const TODO_PRIORITY_CLASS: Record<TodoPriority, string> = {
+  high: "font-medium text-[var(--gosslan-primary)]",
+  normal: "text-[var(--gosslan-text-2)]",
+  low: "text-[var(--gosslan-text-2)]",
+};
+
+function isTodoPriority(v: unknown): v is TodoPriority {
+  return typeof v === "string" && (TODO_PRIORITIES as readonly string[]).includes(v);
+}
+
 /** 新建任务的缺省状态（与 Rust `default_todo_status()` 同值）。 */
 export const TODO_STATUS_DEFAULT: TodoStatus = "todo";
 
@@ -101,6 +127,8 @@ export interface TodoItem {
   assignees: string[];
   status: TodoStatus;
   creator: string;
+  /** 优先级（三档，缺省常规）。 */
+  priority: TodoPriority;
   /** 长文本描述（2026-09-17 优化）。 */
   description: string;
   /** 描述里附带的图片（仅元数据，真实字节走群文件管线）。 */
@@ -151,6 +179,8 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
       // 未知/缺失状态一律回落「待办」：宁可显示成一条待办，也不要让这条任务从列表里消失
       status: isTodoStatus(p.status) ? p.status : TODO_STATUS_DEFAULT,
       creator: typeof p.creator === "string" ? p.creator : "",
+      // 未知/缺失一律回落「常规」：宁可给一档可读的默认，也不让这条任务的优先级变成空白
+      priority: isTodoPriority(p.priority) ? p.priority : TODO_PRIORITY_DEFAULT,
       deleted: p.deleted === true,
       description: typeof p.description === "string" ? p.description : "",
       images: Array.isArray(p.images)
@@ -227,13 +257,14 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       if (a.seq !== b.seq) return b.seq - a.seq; // 新的在前
       return a.msgId < b.msgId ? 1 : -1; // 同 seq 按 msg_id 比（与 newer 同规则）
     })
-    .map(({ todoId, title, assignees, status, creator, description, images, archived, doneAt }) => ({
+    .map(({ todoId, title, assignees, status, creator, priority, description, images, archived, doneAt }) => ({
       todoId,
       number: numbers.get(todoId) ?? 0,
       title,
       assignees,
       status,
       creator,
+      priority,
       description,
       images,
       archived,

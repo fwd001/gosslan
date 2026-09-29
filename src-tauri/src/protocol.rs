@@ -867,6 +867,12 @@ pub struct TodoPayload {
     /// 是否已归档（用户 2026-09-17：完成/过期/不用的任务可归档）。缺省 false。
     #[serde(default)]
     pub archived: bool,
+    /// 任务优先级（**三档**：`high` 紧急 / `normal` 常规 / `low` 不急）。
+    /// 缺省 = 常规 ⇒ 这一版之前建的历史任务、以及旧版本对端发来的载荷，读出来都是
+    /// "常规"，不是"没优先级"（把缺数据读成第三种状态会让界面要么空白要么瞎猜）。
+    /// 谁能改：创建者 / 群主 / 当前被指派人（命令层的宽档，见 `may_change_todo`）。
+    #[serde(default = "default_todo_priority")]
+    pub priority: String,
     /// 群内**固定**任务编号（1 起递增、组内唯一、永不复用）。
     ///
     /// 分配只有一处（`db::next_todo_number`），**创建那一刻**定下来；之后每一次改状态 /
@@ -900,6 +906,23 @@ pub fn default_todo_status() -> String {
 /// 状态取值是否合法（命令层校验用；未知值一律拒收，避免脏状态流进群里）。
 pub fn todo_status_is_valid(s: &str) -> bool {
     TODO_STATUSES.contains(&s)
+}
+
+/// 任务优先级的**唯一取值表**（三档，用户 2026-09-29：只分三级、默认中等）。
+///
+/// 与前端 `src/utils/todos.ts` 的 `TODO_PRIORITIES` 必须一致。⚠️ 今天这条**没有**跨语言守卫
+/// （`messageKinds.test.ts` 那份只比 `TODO_STATUSES` / `WIRE_KINDS`）⇒ 已登记为"缺判据"，
+/// 不是"已判住"；补守卫时别把两张表各写一遍家（同一条规则两处各半是缺陷形状）。
+pub const TODO_PRIORITIES: [&str; 3] = ["high", "normal", "low"];
+
+/// 缺省优先级 = 常规。也是载荷里 `priority` 缺失时的解析回落值。
+pub fn default_todo_priority() -> String {
+    "normal".to_string()
+}
+
+/// 优先级取值是否合法（命令层校验用；未知值一律拒收，与状态同口径）。
+pub fn todo_priority_is_valid(s: &str) -> bool {
+    TODO_PRIORITIES.contains(&s)
 }
 
 /// 投票的**定义**层（`kind = "poll"`）。结构与任务同构。

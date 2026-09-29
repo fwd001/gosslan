@@ -737,6 +737,7 @@ mod tests {
             archived: false,
             done_at: None,
             number: 0,
+            priority: "normal".to_string(),
         };
         let insert = |msg_id: &str, seq: i64, p: &TodoPayload| {
             conn.execute(
@@ -785,6 +786,7 @@ mod tests {
             archived: false,
             done_at: None,
             number: 0,
+            priority: "normal".to_string(),
         };
         // 参数顺序：(def, actor, group_creator, edits_structure)
         // 档位只有两档（结构 = 改标题/删除；其余 = 描述/图片/指派人/状态/归档），
@@ -858,6 +860,7 @@ mod tests {
                 description: &r.description,
                 images: &r.images,
                 archived: r.archived,
+                priority: "normal",
             }
         }
         let def = TodoPayload {
@@ -872,6 +875,7 @@ mod tests {
             archived: false,
             done_at: Some(1),
             number: 0,
+            priority: "normal".to_string(),
         };
         // 成员窄档只对"什么别的都没动"的请求成立，所以每个否定用例都从**已满足**的那一位
         // 出发再加一处改动 —— 否则测的是另一个判据，不是"夹带"这一条。
@@ -1135,5 +1139,34 @@ mod tests {
             (false, None),
             "非完成态不得被归档（否则进行中的任务会从活动列表消失）"
         );
+    }
+}
+
+/// 优先级那三档的表与缺省（协议层唯一的家）。
+#[cfg(test)]
+mod todo_priority_tests {
+    use crate::protocol::{TODO_PRIORITIES, default_todo_priority, todo_priority_is_valid};
+
+    #[test]
+    fn priority_defaults_to_medium() {
+        assert_eq!(default_todo_priority(), "normal");
+        assert!(TODO_PRIORITIES.contains(&"normal"));
+        assert_eq!(TODO_PRIORITIES.len(), 3);
+    }
+
+    #[test]
+    fn unknown_priority_is_rejected() {
+        assert!(todo_priority_is_valid("high") && todo_priority_is_valid("low"));
+        assert!(!todo_priority_is_valid("urgent"));
+        assert!(!todo_priority_is_valid(""));
+    }
+
+    /// 旧载荷没有 `priority` ⇒ 解析成"常规"，而不是解析失败（这条红了就说明
+    /// 新字段把历史任务的读取弄坏了）。
+    #[test]
+    fn legacy_payload_without_priority_reads_medium() {
+        let p: crate::protocol::TodoPayload =
+            serde_json::from_str(r#"{"todo_id":"t","title":"x"}"#).unwrap();
+        assert_eq!(p.priority, "normal");
     }
 }
