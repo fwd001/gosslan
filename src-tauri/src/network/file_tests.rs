@@ -2074,6 +2074,36 @@ mod group_receive_atomicity_tests {
         );
     }
 
+    /// 同一刀必须也落在**单聊**那半边（"同一开关的另一个面"最容易在"已改"那行底下继续漏）。
+    /// 判据与群侧那条同形：摘表一次持锁做完，收尾只吃已经摘出来的接收器。
+    #[test]
+    fn single_peer_offline_cleanup_also_takes_before_finalizing() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/network/file.rs"
+        ))
+        .expect("读不到 file.rs ⇒ 这条判据失去落点");
+        let at = src
+            .find("pub fn fail_receives_for_peer(")
+            .expect("单聊 peer-wide 收尾改名了 ⇒ 同步改这条判据");
+        // 窗口取"到下一个函数头为止"。拍固定字符数会越界读进邻居函数 ——
+        // 这条判据第一次跑就是这么假红的（`.collect(); for id in ids` 在下一个函数里）。
+        let rest = &src[at..];
+        let end = rest[10..]
+            .find("\npub fn ")
+            .map(|i| i + 10)
+            .unwrap_or_else(|| rest.len());
+        let body = &rest[..end];
+        assert!(
+            body.contains("take_receives_for_peer("),
+            "单聊侧没有走原子摘取 ⇒ 与群侧又不是同一族规则"
+        );
+        assert!(
+            !body.contains("fail_receive(state,"),
+            "单聊侧又退回「逐个调完整函数」⇒ 摘表与判据重新分成两次持锁"
+        );
+    }
+
     /// `completed` 的终态保护必须**在生产 handler 里真的读收件人状态**。
     ///
     /// 这条是被一条假测试逼出来的：`favorites_tests.rs::complete_ack_failure_cannot_downgrade_completed`

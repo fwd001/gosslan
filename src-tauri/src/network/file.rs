@@ -2096,17 +2096,32 @@ pub fn fail_taken_receive(state: &AppState, transfer_id: &str, r: &FileReceiver,
 }
 
 /// 对端断链时终止其所有未完成接收，避免下载目录长期堆积临时文件。
-pub fn fail_receives_for_peer(state: &AppState, peer_id: &str) {
-    let ids: Vec<String> = state
+/// 对端确认一条链路都不剩时，**原子摘取**它名下全部单聊接收（判据与摘表同一次持锁）。
+///
+/// 与群侧 `take_group_receives_for_peer` 同一族。旧写法是"锁内 `collect()` 出 id、锁外逐个
+/// `fail_receive`"：`fail_receive` 虽然会核对 `peer_id`（别人的原样插回），但**同 peer、同
+/// transfer_id 的新 attempt** 正好可以在那两步之间建起来 ⇒ 上一轮的 teardown 会把这一轮
+/// 正在收的传输判死。后果有界（内容记 Incomplete、建链时按退避自动重取），
+/// 但"多等一轮"本身就是用户看到的"下载卡在重试"。
+pub fn take_receives_for_peer(state: &AppState, peer_id: &str) -> Vec<(String, FileReceiver)> {
+    let mut recv = state
         .file_receivers
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(|e| e.into_inner());
+    let ids: Vec<String> = recv
         .iter()
         .filter(|(_, r)| r.peer_id == peer_id)
-        .map(|(id, _)| id.clone())
+        .map(|(k, _)| k.clone())
         .collect();
-    for id in ids {
-        let _ = fail_receive(state, &id, peer_id, "对端连接已断开");
+    ids.into_iter()
+        .filter_map(|k| recv.remove(&k).map(|r| (k, r)))
+        .collect()
+}
+
+pub fn fail_receives_for_peer(state: &AppState, peer_id: &str) {
+    // 摘与收尾分开：摘在锁内一次做完，收尾（写库 + emit）一律在锁外。
+    for (id, r) in take_receives_for_peer(state, peer_id) {
+        fail_taken_receive(state, &id, &r, "对端连接已断开");
     }
 }
 

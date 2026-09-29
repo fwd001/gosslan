@@ -413,6 +413,7 @@ network::dispatch::tests::normal_scheduled_before_low
 network::dispatch::tests::stress_mixed_priorities_no_starvation
 network::file::group_receive_atomicity_tests::completed_guard_reads_recipient_status_in_the_handler
 network::file::group_receive_atomicity_tests::peer_offline_group_cleanup_takes_before_finalizing
+network::file::group_receive_atomicity_tests::single_peer_offline_cleanup_also_takes_before_finalizing
 network::file::tests::a_full_length_part_without_rename_is_not_progress
 network::file::tests::accepts_real_world_transfer_ids
 network::file::tests::all_recipients_share_one_session_key

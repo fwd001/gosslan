@@ -10,6 +10,29 @@
 
 ## [Unreleased]
 
+## [4.31.36] - 2026-09-30
+
+### 修复（单聊断链收尾也是"快照 id → 逐个收尾"—— 群侧修完剩下的那半边）
+
+`5a0cfcc` 只把**群**接收的摘表改成原子持锁，`file.rs` 里单聊那半边 `fail_receives_for_peer`
+仍是旧形状。`fail_receive` 虽然核对 `peer_id`（别人的原样插回），但**同 peer、同 transfer_id
+的新 attempt** 正好可以挤在"快照"与"收尾"之间建起来 ⇒ 上一轮 teardown 把这一轮正在收的传输判死。
+后果有界（内容记 Incomplete、建链时按退避自动重取），但"多等一轮"就是用户看到的"下载卡在重试"。
+
+- 新增 `take_receives_for_peer`（判据与摘表同一次持锁），收尾复用现成的 `fail_taken_receive`，
+  与群侧 `take_group_receives_for_peer` 归同一族规则。
+- 新增判据 `single_peer_offline_cleanup_also_takes_before_finalizing`，并**顺带修掉自己刚犯的错**：
+  它第一次跑是假红，因为窗口拍了固定 900 字符、越界读进下一个函数（正是本文件几小时前刚记过的
+  "拍固定字符数"那个坑）⇒ 改成"窗口到下一个函数头为止"，否定项也从"某段子串"换成
+  "不许再直接调 `fail_receive(`"。
+- 单点变异自证：把函数体改回旧形状 ⇒ 恰好 1 条红（`file_tests.rs:2097`「单聊侧没有走原子摘取」）；
+  还原逐字节相同后 1 条过。
+- Rust 测试清单基线 787 → 788（`--update` + `--sync-baselines`）。
+
+证据：`cargo test --features bluetooth` 788 passed / 0 failed；`cargo fmt --check --all` 退 0；
+`cargo clippy --features bluetooth -- -D warnings` 退 0。
+⚠️ 这一版内容上的四层复跑结果见下一条提交（本笔改了接收路径，local 层必须重跑才算数）。
+
 ## [4.31.35] - 2026-09-30
 
 ### chore：`cargo fmt` 补跑（上一笔 transport 改动漏了格式化）
