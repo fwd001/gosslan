@@ -55,9 +55,51 @@ jobs:
           path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
-      - name: Create GitHub Release (tag 触发)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+  # 一个 workflow 一个收尾发布 job：所有 matrix 腿打完包、产物也上传成功之后，
+  # 由这**唯一一条**任务把文件挂到 Release 上。
+  #
+  # 为什么必须这样（2026-09-30 在 v4.31.37 上实测到）：原来是每条 matrix 腿各自调
+  # `softprops/action-gh-release`，于是同一个 tag 上有多条腿并发"创建/更新同一个 Release"。
+  # 那一版 Windows x64 那条腿**构建、蓝牙 feature 旁证、上传产物三步全成功**，
+  # 只红在"挂发布页"那一步，而同一次 run 的 arm64 腿成功 ⇒ Release 少一份安装包，
+  # 而且是**概率性**少（同批 mac 两腿与 Android 恰好都抢赢了）。
+  #
+  # 现在：① 每个 workflow 只发一次；② "Release 已存在"走查询而不是并发创建；
+  # ③ 挂文件带退避重试（并发窗口是秒级）；④ 任何一次真失败仍然 exit 1 ——
+  #    绝不加 `continue-on-error`：把发布失败静音，比少一份产物危险得多（§十五）。
+  release:
+    name: 挂到 GitHub Release（单一任务·带重试）
+    needs: build-macos
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 取回本次构建的产物
+        uses: actions/download-artifact@v4
         with:
-          files: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-          generate_release_notes: true
+          pattern: gosslan-macos-*
+          merge-multiple: true
+          path: assets
+      - name: 发布（不存在就建，存在就挂文件）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          command -v gh >/dev/null || { echo "runner 上没有 gh CLI"; exit 1; }
+          [ -d assets ] || { echo "没有 assets 目录 ⇒ download-artifact 一条都没取到，不许静默发空 Release"; exit 1; }
+          mapfile -t files < <(find assets -type f | sort)
+          if [ "${#files[@]}" -eq 0 ]; then echo "assets 是空的"; exit 1; fi
+          tag="$GITHUB_REF_NAME"
+          if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$GITHUB_SHA" --generate-notes --title "$tag"
+          fi
+          attempt=0
+          until gh release upload "$tag" "${files[@]}" --clobber; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 5 ]; then echo "挂了 5 次仍失败：并发抢注没让开，或权限不足"; exit 1; fi
+            echo "第 $attempt 次上传失败，等 $((attempt * 5))s 再试"
+            sleep $((attempt * 5))
+          done
+          echo "已挂上 $tag 的文件："
+          printf '  %s\n' "${files[@]}"
