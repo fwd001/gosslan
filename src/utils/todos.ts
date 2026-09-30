@@ -203,6 +203,21 @@ interface TodoDef extends TodoItem {
   deleted: boolean;
   seq: number;
   msgId: string;
+  /**
+   * 这一份载荷里，`priority` / `category` / `number` 哪几格**没读出一个合法值**
+   * （键不存在，或值不认识 ⇒ 本端表达不了就等于"这位没说这一格"）。
+   *
+   * 为什么非要留这一份信息：`4.31.14` 之前的载荷根本没有这三个键，而按默认值读会让
+   * "老对端改一次状态"顺手把类型/优先级/编号抹平（mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态）。
+   * ⇒ 折叠时**没说的格子沿用这条任务已知的值**，见 [`carryAbsentTodoFields`]。
+   */
+  absent?: TodoAbsent;
+}
+
+interface TodoAbsent {
+  priority: boolean;
+  category: boolean;
+  number: boolean;
 }
 
 /** 完成态超过该天数后自动归档（前端计算，见 `isEffectivelyArchived`）。 */
@@ -222,6 +237,13 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
   try {
     const p = JSON.parse(rec.content) as Record<string, unknown>;
     if (typeof p.todo_id !== "string" || !p.todo_id) return null;
+    // 「这一格没说」= 键不存在 **或** 值本端读不出合法值（后者含未来新增的档位：
+    // 本端表达不了就等于没说，宁可沿用自己的已知值，也不要每来一份新载荷就回落默认值抖一次）。
+    const absent: TodoAbsent = {
+      priority: !isTodoPriority(p.priority),
+      category: !isTodoCategory(p.category),
+      number: !(typeof p.number === "number" && p.number > 0),
+    };
     return {
       todoId: p.todo_id,
       title: typeof p.title === "string" ? p.title : "",
@@ -232,8 +254,9 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
       status: isTodoStatus(p.status) ? p.status : TODO_STATUS_DEFAULT,
       creator: typeof p.creator === "string" ? p.creator : "",
       // 未知/缺失一律回落「常规」：宁可给一档可读的默认，也不让这条任务的优先级变成空白
+      //（⚠️ 这里的缺省只在**没有前一份定义**时成立；有前一份 ⇒ 折叠时沿用，见 carryAbsentTodoFields）
       priority: isTodoPriority(p.priority) ? p.priority : TODO_PRIORITY_DEFAULT,
-      // 类型同口径：旧载荷没有这一格 ⇒ 读成「普通任务」，不是"没类型"
+      // 类型同口径：读不出合法值 ⇒ 先当"没说这一格"，由折叠决定沿用还是回落
       category: isTodoCategory(p.category) ? p.category : TODO_CATEGORY_DEFAULT,
       deleted: p.deleted === true,
       description: typeof p.description === "string" ? p.description : "",
@@ -249,10 +272,30 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
       createdAt: null,
       seq: rec.seq,
       msgId: rec.msg_id,
+      absent,
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * 一条任务的后一份定义**没说到**的格子，沿用前一份已知值。
+ *
+ * ★ 这条规矩必须与 Rust `commands::latest_todo_def` 里的同一份一致（那边也要沿用才判得出权），
+ *   两处分头实现 ⇒ 改动时两个文件一起改，别只改一边。
+ *   `number` 还有一层：**它是创建那一刻定死的绝对坐标**，折叠另外只认创建那一条显式带的号
+ *   （老对端从库里整份重建载荷时会写 0，那种 0 也算"没说"）。
+ */
+export function carryAbsentTodoFields(prev: TodoDef, next: TodoDef): TodoDef {
+  const a = next.absent;
+  if (!a || (!a.priority && !a.category && !a.number)) return next;
+  return {
+    ...next,
+    priority: a.priority ? prev.priority : next.priority,
+    category: a.category ? prev.category : next.category,
+    number: a.number ? prev.number : next.number,
+  };
 }
 
 /** 折叠出当前全部任务（墓碑不列），按**最新定义的 seq 从大到小**（＝"最近被改过的在最前"）。
@@ -294,6 +337,9 @@ export function resolveTodoNumbers(defs: { todoId: string; number: number }[]): 
 export function foldTodos(records: MessageRecord[]): TodoItem[] {
   const defs = new Map<string, TodoDef>();
   const created = new Map<string, number>();
+  // 创建那一条**显式带来的号**：`number` 是绝对坐标，只有创建那一刻说的话算数
+  // （取 seq 最小的那条创建记录 —— 同一 todo_id 理论上只有一条，这里是防御）。
+  const createdNumber = new Map<string, { n: number; seq: number }>();
   for (const rec of records) {
     const d = parseTodo(rec);
     if (!d) continue;
@@ -301,10 +347,20 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       // 防御性保留较早的 ts（同一 todo_id 只应有一条创建记录）。
       const prev = created.get(d.todoId);
       if (prev === undefined || rec.ts < prev) created.set(d.todoId, rec.ts);
+      if (!d.absent?.number) {
+        const keep = createdNumber.get(d.todoId);
+        if (!keep || d.seq < keep.seq) createdNumber.set(d.todoId, { n: d.number, seq: d.seq });
+      }
     }
-    if (newer(d.seq, d.msgId, defs.get(d.todoId))) defs.set(d.todoId, d);
+    const prevDef = defs.get(d.todoId);
+    // ★ 后一份定义**没说到**的格子沿用已知的值（老对端的载荷根本没有这三格 ⇒
+    //   不沿用就会被一次编辑抹平）。规矩与 Rust `commands::latest_todo_def` 同一条。
+    const merged = prevDef ? carryAbsentTodoFields(prevDef, d) : d;
+    if (newer(merged.seq, merged.msgId, prevDef)) defs.set(d.todoId, merged);
   }
-  const live = [...defs.values()].filter((d) => !d.deleted);
+  const live = [...defs.values()]
+    .filter((d) => !d.deleted)
+    .map((d) => ({ ...d, number: createdNumber.get(d.todoId)?.n ?? d.number }));
   const numbers = resolveTodoNumbers(live);
   return live
     .sort((a, b) => {

@@ -154,6 +154,14 @@ fn check_todo_assignees(s: &AppState, group_id: &str, assignees: &[String]) -> R
 /// 这一件事、不做完整折叠；**LWW 规则必须与前端 `src/utils/todos.ts` 的 `newer()` 一致**
 /// （`(seq, msg_id)` 元组比较，同 seq 时按 msg_id 字符串比）。
 ///
+/// ★ 还有一条必须与前端 `carryAbsentTodoFields` 一致的规矩（两份实现、改动要同批改两边）：
+/// `priority` / `category` / `number` 这三格，**最新那一份载荷没说**（键不存在，或值本端
+/// 读不出合法档位）时，往更旧的几份里找最近说过的值**沿用**；`number` 再优先认创建那一条
+/// （`kind = 'todo'`）—— 它是创建那一刻定死的绝对坐标。
+/// 不这么做的真实后果：`4.31.14` 之前的对端结构体里根本没有这三格，它改一次状态就把
+/// 类型抹回「普通任务」、优先级抹回「常规」、编号抹成 0；而这里返回的 def 还是**判权的输入**
+/// （三条窄道逐字比对类型与优先级）⇒ 抹平之后连"谁能改这条任务"都跟着错。
+///
 /// 已删除（墓碑）的定义照样返回：改/删的鉴权同样需要它的 creator。
 fn latest_todo_def(
     conn: &rusqlite::Connection,
@@ -164,21 +172,74 @@ fn latest_todo_def(
         .prepare(
             // 两种 kind 都要看：创建是 `todo`、后续每次改动是 `todo_update`，
             // 它们同属一条 LWW 序列（载荷同构）。
-            "SELECT content FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update') \
+            "SELECT kind, content FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update') \
              ORDER BY seq DESC, msg_id DESC",
         )
         .ok()?;
     let rows = stmt
-        .query_map(rusqlite::params![conv_id], |r| r.get::<_, String>(0))
+        .query_map(rusqlite::params![conv_id], |r| {
+            Ok::<_, rusqlite::Error>((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
         .ok()?;
+    let mut latest: Option<crate::protocol::TodoPayload> = None;
+    // 这三格的"最近说过的值"：从新到旧扫，第一个说到的（可能就是最新那一份）胜出。
+    let mut carry_priority: Option<String> = None;
+    let mut carry_category: Option<String> = None;
+    let mut carry_number: Option<i64> = None;
+    // 创建那一条说过的号：绝对坐标，压过任何一份更新里的号。DESC 扫到最后一刻 = 最旧那条创建。
+    let mut created_number: Option<i64> = None;
     for row in rows.flatten() {
-        if let Ok(p) = serde_json::from_str::<crate::protocol::TodoPayload>(&row) {
-            if p.todo_id == todo_id {
-                return Some(p);
-            }
+        let (kind, content) = row;
+        // 先按 Value 读**键在不在**：`TodoPayload` 的 `serde(default)` 会把"没带"抹成默认值，
+        // 而那正是这条规矩要区分的两种情况。
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        let stated_priority = v
+            .get("priority")
+            .and_then(|x| x.as_str())
+            .filter(|s| crate::protocol::todo_priority_is_valid(s))
+            .map(str::to_string);
+        let stated_category = v
+            .get("category")
+            .and_then(|x| x.as_str())
+            .filter(|s| crate::protocol::todo_category_is_valid(s))
+            .map(str::to_string);
+        let stated_number = v.get("number").and_then(|x| x.as_i64()).filter(|n| *n > 0);
+        let Ok(p) = serde_json::from_value::<crate::protocol::TodoPayload>(v) else {
+            continue;
+        };
+        if p.todo_id != todo_id {
+            continue;
+        }
+        if latest.is_none() {
+            latest = Some(p);
+        }
+        if carry_priority.is_none() {
+            carry_priority = stated_priority;
+        }
+        if carry_category.is_none() {
+            carry_category = stated_category;
+        }
+        if carry_number.is_none() {
+            carry_number = stated_number;
+        }
+        if kind == "todo" && stated_number.is_some() {
+            created_number = stated_number;
         }
     }
-    None
+    let mut p = latest?;
+    // "没说"沿用已知的；说了的已经在最新那份里了，这里赋回同一个值是恒等。
+    if let Some(x) = carry_priority {
+        p.priority = x;
+    }
+    if let Some(x) = carry_category {
+        p.category = x;
+    }
+    if let Some(n) = created_number.or(carry_number) {
+        p.number = n;
+    }
+    Some(p)
 }
 
 /// 谁能改一条任务 —— **纯函数**，便于单测。

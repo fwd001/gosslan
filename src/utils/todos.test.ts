@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   TODO_AUTO_ARCHIVE_DAYS,
   TODO_STATUS_BAR,
@@ -122,8 +125,203 @@ test("改标题 / 换指派人 / 删除都是同一层的 LWW", () => {
 
 test("排序：按创建版本从新到旧（此前按随机 todo_id 字符串，等于没排序）", () => {
   const out = foldTodos([def("t1", 1), def("t2", 7), def("t3", 3)]);
+  assert.deepEqual(out.map((t) => t.number), [0, 0, 0], "没带号的用例不该被凭空发号");
   assert.deepEqual(out.map((t) => t.todoId), ["t2", "t3", "t1"]);
 });
+
+/**
+ * 「线上**没带**这一格」与「就是这一格」在两版对端之间必须能区分开。
+ *
+ * 为什么这是真问题而不是洁癖：`4.31.14` 之前的 `TodoPayload` 里根本没有
+ * `priority` / `category` / `number` 三个键，而 `serde(default)` 把"没带"读成默认值 ⇒
+ * 混合版本群里**老对端改一次状态**，就把这三格抹平（类型回到「普通任务」、
+ * 优先级回到「常规」、详情里那枚认领按钮消失、固定编号变成没号）。
+ * mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态。
+ *
+ * 规矩（与 Rust `commands::latest_todo_def` 同一条，两边各自实现、不许只改一边）：
+ * ① 没带的键**沿用这条任务已知的值**；显式带的键照常覆盖（所以正常改动一点都不受影响）。
+ * ② `number` 是创建那一刻定死的**绝对坐标** ⇒ 只认创建那一条显式带的号；
+ *    创建早于 4.31.14、本身没带号时，才退到最新一份显式带的号。
+ */
+test("老对端的更新不许把优先级与类型抹回默认（没带 ≠ 就是这个默认值）", () => {
+  const created = rec(
+    "todo",
+    "m-new",
+    "a",
+    {
+      todo_id: "t1", title: "旧", assignees: ["a"], status: "todo", creator: "a", deleted: false,
+      description: "", images: [], archived: false,
+      priority: "high", category: "requirement", number: 7,
+    },
+    1,
+  );
+  // 老版本载荷：这三个键**根本不存在**（不是 null，也不是默认值）
+  const legacy = rec(
+    "todo_update",
+    "m-old",
+    "b",
+    {
+      todo_id: "t1", title: "旧", assignees: ["a", "b"], status: "done", creator: "a", deleted: false,
+      description: "", images: [], archived: false, done_at: 100,
+    },
+    2,
+  );
+  const [t] = foldTodos([created, legacy]);
+  assert.equal(t.status, "done", "老对端确实改得动状态");
+  assert.deepEqual(t.assignees, ["a", "b"], "它显式带的键照常覆盖");
+  assert.equal(t.priority, "high", "没带的这一格不许被抹成「常规」");
+  assert.equal(t.category, "requirement", "没带的类型不许被抹成「普通任务」");
+  assert.equal(t.number, 7, "编号不许因为一份旧载荷而变成没号");
+});
+
+test("显式带的值仍然覆盖 —— 沿用只针对没带的那几格", () => {
+  const created = rec(
+    "todo",
+    "m1",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "todo", creator: "a", deleted: false,
+      description: "", images: [], archived: false, priority: "normal", category: "task", number: 3,
+    },
+    1,
+  );
+  const explicit = rec(
+    "todo_update",
+    "m2",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "doing", creator: "a", deleted: false,
+      description: "", images: [], archived: false, priority: "high", category: "bug",
+    },
+    2,
+  );
+  const [t] = foldTodos([created, explicit]);
+  assert.equal(t.priority, "high", "新版本用户显式改优先级必须生效");
+  assert.equal(t.category, "bug");
+  assert.equal(t.status, "doing");
+  assert.equal(t.number, 3, "这份更新没带号 ⇒ 用创建那一条的号");
+
+  // 另一面：present 但本端读不出合法值（未来新增的档位）也算"没说这一格"⇒ 沿用已知值，
+  // 而不是每来一份新对端载荷就抖回默认值。
+  const unknown = rec(
+    "todo_update",
+    "m3",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "done", creator: "a", deleted: false,
+      description: "", images: [], archived: false, priority: "later_version_tier", category: "bug",
+    },
+    3,
+  );
+  const [u] = foldTodos([created, explicit, unknown]);
+  assert.equal(u.priority, "high", "认识不了的值不许把已知的优先级抹回默认");
+  assert.equal(u.category, "bug", "认得了的那格照常生效");
+  assert.equal(u.status, "done");
+});
+
+test("编号只认创建那一条；创建本身没号才退到最新一份带的号", () => {
+  const createdWithNumber = rec(
+    "todo",
+    "m1",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "todo", creator: "a", deleted: false,
+      description: "", images: [], archived: false, number: 7,
+    },
+    1,
+  );
+  // 一份把号写成 0 的更新（老客户端从库里整份重建载荷时就会出现）
+  const zeroing = rec(
+    "todo_update",
+    "m2",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "done", creator: "a", deleted: false,
+      description: "", images: [], archived: false, number: 0,
+    },
+    2,
+  );
+  assert.equal(foldTodos([createdWithNumber, zeroing])[0].number, 7, "创建有号 ⇒ 更新改不动它");
+
+  const legacyCreated = rec(
+    "todo",
+    "m3",
+    "a",
+    { todo_id: "t9", title: "x", assignees: ["a"], status: "todo", creator: "a", deleted: false },
+    1,
+  );
+  const newUpdate = rec(
+    "todo_update",
+    "m4",
+    "a",
+    {
+      todo_id: "t9", title: "x", assignees: ["a"], status: "doing", creator: "a", deleted: false, number: 12,
+    },
+    2,
+  );
+  assert.equal(
+    foldTodos([legacyCreated, newUpdate])[0].number,
+    12,
+    "创建早于 4.31.14（本身没号）⇒ 退到最新一份显式带的号，别让这条任务永远没号",
+  );
+  assert.equal(
+    foldTodos([legacyCreated])[0].number,
+    0,
+    "两个来源都没有 ⇒ 保持 0（不许在读取时凭空发号，那是第二个事实来源）",
+  );
+});
+
+test("没带类型的老载荷不许点亮认领按钮的判据（缺格沿用之后仍然读得到 requirement）", () => {
+  const created = rec(
+    "todo",
+    "m1",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "todo", creator: "a", deleted: false,
+      category: "requirement",
+    },
+    1,
+  );
+  const legacy = rec(
+    "todo_update",
+    "m2",
+    "b",
+    { todo_id: "t1", title: "x", assignees: ["a"], status: "done", creator: "a", deleted: false },
+    2,
+  );
+  const [t] = foldTodos([created, legacy]);
+  assert.equal(t.category, "requirement", "抹平类型会连带让认领按钮消失，所以这一格单独钉一条");
+});
+
+/**
+ * 跨语言契约：后端取"最新一条定义"那一步也必须区分**"没带这一格"**与**"就是这一格"**。
+ *
+ * 为什么这条必须有：`latest_todo_def` 是服务端**判权的唯一输入**（三条窄道逐字比对类型与优先级）。
+ * 前端折出来沿用了、后端却拿 `serde(default)` 抹平后的值去比 ⇒ 同一句规矩两个家各说一份，
+ * 而表现只是"某些人少了几个按钮"，界面上查不出根因（本仓反复栽过的那一形状）。
+ *
+ * 这条只钉"后端那几步还在不在"；后端的行为由 Rust 用例
+ * `latest_todo_def_carries_fields_the_newest_payload_never_stated` 自己判。
+ */
+test("跨语言：后端也必须沿用没说的三格（与前端 carryAbsentTodoFields 同规矩）", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(join(here, "../../src-tauri/src/commands/group_files.rs"), "utf8");
+  const problems = (text: string): string[] => {
+    const out: string[] = [];
+    for (const key of ["priority", "category", "number"]) {
+      if (!text.includes(`.get("${key}")`)) out.push(`没按"键在不在"读 ${key} ⇒ serde(default) 会把没带抹成默认值`);
+      if (!text.includes(`carry_${key}`)) out.push(`没有把 ${key} 沿用下去的那一步`);
+    }
+    if (!text.includes("created_number")) out.push('没有"编号只认创建那一条"这一步');
+    return out;
+  };
+  assert.deepEqual(problems(src), [], "后端这几步必须都还在（两个家要一起改，别只改前端）");
+  // 阳性对照：各拿掉一步，判据都必须报出问题 —— 否则这条本身就是空转的
+  assert.ok(problems(src.replace('.get("category")', '.get("?")')).length > 0, "拿掉读键那步必须报");
+  assert.ok(problems(src.replaceAll("carry_priority", "xx")).length > 0, "拿掉沿用那步必须报");
+  assert.ok(problems(src.replaceAll("created_number", "xx")).length > 0, "拿掉创建号优先那步必须报");
+});
+
 
 test("多个任务互不干扰；非任务消息被忽略", () => {
   const out = foldTodos([def("t1", 1), def("t2", 2)]);

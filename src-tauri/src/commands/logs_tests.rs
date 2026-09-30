@@ -766,6 +766,80 @@ mod tests {
         );
     }
 
+    /// 「线上**没带**这一格」不等于「就是这一格」：`4.31.14` 之前的载荷里根本没有
+    /// `priority` / `category` / `number` 三个键，而 `serde(default)` 会把"没带"读成默认值 ⇒
+    /// 老对端改一次状态就把这三格抹平（类型回「普通任务」、优先级回「常规」、编号变 0）。
+    /// 而 `latest_todo_def` 是**服务端判权的唯一输入**（三条窄道逐字比对类型与优先级）
+    /// ⇒ 抹平之后连"谁能改这条任务"都跟着错，且界面上完全看不出来。
+    ///
+    /// 规矩与前端 `src/utils/todos.ts::carryAbsentTodoFields` 是同一条（两处分头实现 ⇒ 改动同批改两边）。
+    #[test]
+    fn latest_todo_def_carries_fields_the_newest_payload_never_stated() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        let conv = "group:g1";
+        let insert = |msg_id: &str, kind: &str, seq: i64, content: &str| {
+            conn.execute(
+                "INSERT INTO messages (msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status) \
+                 VALUES (?1, ?2, 'alice', 'bob', ?3, ?4, 0, ?5, 'sent')",
+                rusqlite::params![msg_id, conv, kind, content, seq],
+            )
+            .unwrap();
+        };
+        // 创建：新版客户端发的，三格都说了
+        insert(
+            "m1",
+            "todo",
+            1,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"todo","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,
+               "priority":"high","category":"requirement","number":7,"done_at":null}"#,
+        );
+        // 老对端的一次改状态：这三个键**不存在**（不是 null，也不是默认值）
+        insert(
+            "m2",
+            "todo_update",
+            2,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice","bob"],"status":"done","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,"done_at":100}"#,
+        );
+        let def = super::latest_todo_def(&conn, conv, "t1").expect("取不到这条任务的定义");
+        assert_eq!(def.status, "done", "它说了的状态照常生效");
+        assert_eq!(
+            def.assignees,
+            vec!["alice".to_string(), "bob".to_string()],
+            "它显式带的键照常覆盖"
+        );
+        assert_eq!(def.priority, "high", "没带的这一格不许被抹回「常规」");
+        assert_eq!(def.category, "requirement", "没带的类型不许被抹回「普通任务」");
+        assert_eq!(def.number, 7, "创建那条说过的号是绝对坐标");
+
+        // 一份把号写成 0 的更新（老客户端从库里整份重建载荷时就是这个形状）
+        insert(
+            "m3",
+            "todo_update",
+            3,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"doing","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,"number":0}"#,
+        );
+        let def2 = super::latest_todo_def(&conn, conv, "t1").unwrap();
+        assert_eq!(def2.status, "doing", "最新一份的状态仍然是它说的");
+        assert_eq!(def2.number, 7, "更新里的 0 不许把固定编号抹掉");
+
+        // 反向：显式说了新值必须生效 —— 沿用只针对"没说"的那几格
+        insert(
+            "m4",
+            "todo_update",
+            4,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"done","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,
+               "priority":"low","category":"bug"}"#,
+        );
+        let def3 = super::latest_todo_def(&conn, conv, "t1").unwrap();
+        assert_eq!(def3.priority, "low", "说了就覆盖：这条规矩不许把正常改动也挡住");
+        assert_eq!(def3.category, "bug");
+    }
+
     /// 任务改动的鉴权判据 —— 两档 + 「只动归档位」的放宽档（口径来自用户 2026-09-17、
     /// 2026-09-20 与 2026-09-24）：
     /// · 结构（改标题 / 删除）：创建者 **或** 群主
