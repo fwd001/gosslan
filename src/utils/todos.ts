@@ -47,6 +47,19 @@ export const TODO_PRIORITY_CLASS: Record<TodoPriority, string> = {
   low: "text-[var(--gosslan-text-2)]",
 };
 
+/**
+ * 优先级胶囊（详情弹窗那一格与看板行共用）。
+ *
+ * 配色形状刻意与 [`TODO_CATEGORY_PILL`] 同构（同一批 token、同一档 alpha）：
+ * 只有「紧急」抢主色，另两档走中性底 —— 同一条任务上「类型」和「优先级」两个角标
+ * 都上彩色的话会互相抢注意力。
+ */
+export const TODO_PRIORITY_PILL: Record<TodoPriority, string> = {
+  high: "bg-[color-mix(in_srgb,var(--gosslan-primary)_14%,transparent)] text-[var(--gosslan-accent-ink)]",
+  normal: "bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]",
+  low: "bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]",
+};
+
 function isTodoPriority(v: unknown): v is TodoPriority {
   return typeof v === "string" && (TODO_PRIORITIES as readonly string[]).includes(v);
 }

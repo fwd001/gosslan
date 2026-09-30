@@ -926,11 +926,12 @@ watch(
               </span>
             </div>
           </button>
-          <!-- 类型角标：只有「需求 / 缺陷」画，「任务」这一档刻意不画。
-               每一行都挂一个灰标签的话，"区分"就被噪声淹掉了（用户那句「不要为了区分而增加复杂 UI」）。
-               旧数据没有这一格时读出来就是「任务」⇒ 与不画完全同形，不会出现"老任务少个标签"的错觉。 -->
+          <!-- 类型角标：**三档一律画**（用户 2026-09-30 实测反馈「暗夜模式下有 bug，
+               而且在列表上没有明显标识、不好区分」）。
+               以前只有「需求 / 缺陷」画、「任务」刻意不画，理由是"每行都挂一个灰标签会把区分淹掉"——
+               实际结果是**反向的**：没有标签那一档才是最难认的，扫一眼只能靠猜。
+               「任务」用中性档（hover 底 + text-2），彩色只留给需求/缺陷 ⇒ 噪声没有涨上去。 -->
           <span
-            v-if="x.category !== 'task'"
             class="shrink-0 inline-flex h-5 items-center justify-center rounded-full px-2 text-[11px] leading-none"
             :class="TODO_CATEGORY_PILL[x.category]"
             :title="t(TODO_CATEGORY_LABEL_KEY[x.category])"

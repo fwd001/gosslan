@@ -1777,3 +1777,75 @@ test("已读回执推进的排除清单在前端只许走那个纯函数，不�
   assert.ok(!weak.test(store), "store 里又出现内联的弱谓词（只排除 read）");
   assert.ok(weak.test('if (m.sender_id === myDeviceId.value && m.status !== "read" && m.ts <= p.last_read_ts) {'), "这台解析器抓不到坏形状 ⇒ 上面那句 !test 是空转");
 });
+
+// 这两条判据都在**源文本**里找形状，而注释里出现被禁的字面量是好事（正是在解释为什么禁）
+// ⇒ 必须先剥注释再比（本文件 ⑳ 那处已有同样口径，这里只是把它抽出来给两条共用）。
+const stripShapeComments = (s: string): string =>
+  s
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+// 对照样本必须三种注释各写一处被禁字面量，同时留一行真代码不许被剥掉：
+// 少了任何一种 ⇒ 这条判据会把解释性注释判成违规（假红），多了就变成空转。
+{
+  const stripped = stripShapeComments(
+    '// 原生 <select> 的弹层是系统画的\n/* 同理 <option> 也看不见 */\n<!-- 模板注释里再写一次 <option> -->\nconst keepMe = 1;\n',
+  );
+  assert.ok(!stripped.includes("<select>"), "行注释没被剥掉 ⇒ 判据会假红在解释上");
+  assert.ok(!stripped.includes("<option>"), "块注释或模板注释没被剥掉 ⇒ 判据会假红在解释上");
+  assert.ok(stripped.includes("const keepMe"), "剥注释把真代码也吃了 ⇒ 判据变成摆设");
+}
+
+// ---------------- ㉓ 详情弹窗的三选一字段只许走那一个共用组件（暗夜下的原生弹层是系统画的） ----------------
+//
+// 用户 2026-09-30 实测：暗夜模式里展开「类型」下拉，「任务」「缺陷」两行几乎看不见。
+// 根因不是配色错，是**渲染者不同**：原生 `<select>` 的弹层由系统画，而我们给控件写了
+// `bg-transparent` + 主题文字色 ⇒ 浅底上落近白字，只有当前项因系统反色才读得出来。
+// 同弹窗里「状态」早就是自绘菜单（`.gosslan-menu`），一处原生一处自绘才会只坏一半。
+test("详情弹窗的三选一字段只许走 TodoPickField，不许再出现原生 select", () => {
+  const root = join(import.meta.dirname, "..");
+  const dialog = stripShapeComments(readFileSync(join(root, "components", "TodoDetailDialog.vue"), "utf8"));
+  const field = stripShapeComments(readFileSync(join(root, "components", "TodoPickField.vue"), "utf8"));
+  // 三格（状态 / 优先级 / 类型）都在，且一个不少
+  assert.equal(
+    (dialog.match(/<TodoPickField\b/g) ?? []).length,
+    3,
+    "详情弹窗里三选一字段应当是 3 处 TodoPickField（状态 / 优先级 / 类型）",
+  );
+  for (const bad of ["<select", "<option"]) {
+    assert.ok(!dialog.includes(bad), `详情弹窗又出现了 ${bad} ⇒ 暗夜下那半截看不见的弹层会回来`);
+  }
+  // 共用组件必须吃主题（自绘菜单），且不许写死色值
+  assert.ok(field.includes("gosslan-menu"), "TodoPickField 不再走 .gosslan-menu ⇒ 观感分叉");
+  assert.ok(field.includes("update:modelValue"), "TodoPickField 不再往上抛值 ⇒ 三格点了没反应");
+  assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(field), "TodoPickField 里出现了写死的十六进制色 ⇒ 暗色档不会跟着变");
+  // 反空转：这台判据必须抓得住"退回原生下拉"那个坏形状
+  const native = /<select\b/;
+  assert.ok(
+    native.test('<select id="todo-category-pick" class="bg-transparent"><option>a</option></select>'),
+    "判据抓不到原生 select ⇒ 上面那句 includes 是空转",
+  );
+});
+
+// ---------------- ㉔ 看板行的类型角标三档一律画（「任务」不许再靠"不画"来降噪） ----------------
+//
+// 以前只有需求/缺陷画标签，理由是"每行都挂一个灰标签会把区分淹掉"。用户实测的结论相反：
+// **没有标签那一档才是最难认的**，扫一眼只能靠猜 ⇒ 三档一律画，「任务」用中性档。
+test("看板行的类型角标三档一律画，不许再用「任务不画」降噪", () => {
+  const root = join(import.meta.dirname, "..");
+  const board = stripShapeComments(readFileSync(join(root, "components", "GroupTasksBoard.vue"), "utf8"));
+  const todos = readFileSync(join(root, "utils", "todos.ts"), "utf8");
+  assert.ok(
+    !/category\s*!==\s*['"]task['"]/.test(board),
+    "看板又回到「只有需求/缺陷画角标」⇒ 用户那句「列表上没明显标识、不好区分」就还在",
+  );
+  assert.ok(board.includes("TODO_CATEGORY_PILL[x.category]"), "看板行的类型角标不再吃那张配色表");
+  for (const k of ["task", "requirement", "bug"]) {
+    assert.ok(new RegExp(`^\\s*(${k}|"${k}")\\s*:`, "m").test(todos), `配色表里少了 ${k} 那一档`);
+  }
+  // 反空转：坏形状必须被上面那条正则抓到
+  assert.ok(
+    /category\s*!==\s*['"]task['"]/.test('<span v-if="x.category !== \'task\'" :class="TODO_CATEGORY_PILL[x.category]">'),
+    "判据抓不到「任务不画」那个条件 ⇒ 上面那句 !test 是空转",
+  );
+});

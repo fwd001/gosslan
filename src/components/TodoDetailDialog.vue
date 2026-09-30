@@ -6,16 +6,19 @@
  * 纯展示 + 意图上抛：真正的改状态/归档/编辑/删除都在 `GroupTasksBoard` 里
  * （那里已经握有折叠数据、权限判据与 API 调用），这里只渲染与 `emit`。
  */
-import { computed, ref, watch } from "vue";
+import { computed, watch } from "vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
+import TodoPickField from "@/components/TodoPickField.vue";
 import {
   TODO_CATEGORIES,
   TODO_CATEGORY_LABEL_KEY,
+  TODO_CATEGORY_PILL,
   TODO_PRIORITIES,
   TODO_PRIORITY_LABEL_KEY,
+  TODO_PRIORITY_PILL,
   TODO_STATUSES,
   TODO_STATUS_LABEL_KEY,
   TODO_STATUS_PILL,
@@ -25,7 +28,7 @@ import {
   type TodoStatus,
 } from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
-import { Archive, Check, ChevronDown, Pencil, RotateCcw, Trash2, UserPlus } from "lucide-vue-next";
+import { Archive, Check, Pencil, RotateCcw, Trash2, UserPlus } from "lucide-vue-next";
 import { t } from "@/i18n";
 
 const props = defineProps<{
@@ -84,18 +87,18 @@ function statusText(s: TodoStatus): string {
 }
 
 /**
- * 状态改成**显式两步**（用户 2026-09-17：「一不小心就把状态改了」）。
+ * 三格（状态 / 优先级 / 类型）的候选表。
  *
- * 此前是一排 4 个分段按钮，一点即写库 —— 而且它长得跟看板顶部的**筛选**分段控件一模一样，
- * 用户会以为是"切视图"，于是顺手点、状态就变了。现在：当前状态是一个胶囊（一眼看清现状），
- * 改动要点开菜单再选（当前项直接置灰不可点），误触代价从"改错状态"变成"多看一眼"。
+ * 文案走 i18n ⇒ 必须是 computed：写成模块级常量的话，用户在设置里切语言之后
+ * 菜单里还是旧文案（这类"只有切换后才露出来"的破绽最难被查）。
  */
-const menuOpen = ref(false);
-function choose(s: TodoStatus) {
-  menuOpen.value = false;
-  if (s === props.item?.status) return; // 当前项本就不可点，双保险
-  emit("status", s);
-}
+const statusOptions = computed(() => TODO_STATUSES.map((s) => ({ value: s, label: statusText(s) })));
+const priorityOptions = computed(() =>
+  TODO_PRIORITIES.map((p) => ({ value: p, label: t(TODO_PRIORITY_LABEL_KEY[p]) })),
+);
+const categoryOptions = computed(() =>
+  TODO_CATEGORIES.map((c) => ({ value: c, label: t(TODO_CATEGORY_LABEL_KEY[c]) })),
+);
 
 /**
  * 图片点开大图（用户 2026-09-21：「任务详情里图片不能点击预览」）。
@@ -139,7 +142,6 @@ watch(
   () => props.open,
   (v) => {
     if (!v) {
-      menuOpen.value = false;
       // 详情被别处关掉（改状态/归档/完成后 closeDetail）时，按来源收掉这份相册
       if (sourceKey.value) preview.closeIfFrom(sourceKey.value);
     }
@@ -152,35 +154,29 @@ watch(
     <div v-if="item" class="space-y-4">
       <!-- 优先级三档（默认「常规」）。可用的人 = 发起人 / 关联人 / 群主：
            与「改状态」同一档，所以复用同一个 `canChangeStatus` 入参，不另起一套判权。
-           用原生 select：键盘走得通、屏幕阅读器读得出，比自造下拉更接近系统习惯。 -->
-      <div class="flex items-center justify-between gap-2">
-        <label class="text-xs text-[var(--gosslan-text-2)]" for="todo-priority-pick">{{ t("todo.priorityLabel") }}</label>
-        <select
-          id="todo-priority-pick"
-          class="tap-safe h-7 rounded-md border border-[var(--gosslan-border)] bg-transparent px-2 text-[12px] text-[var(--gosslan-card-ink)] disabled:opacity-50"
-          :value="item.priority ?? 'normal'"
-          :disabled="!canChangeStatus"
-          :title="t('todo.priorityHint')"
-          @change="emit('priority', ($event.target as HTMLSelectElement).value as TodoPriority)"
-        >
-          <option v-for="p in TODO_PRIORITIES" :key="p" :value="p">{{ t(TODO_PRIORITY_LABEL_KEY[p]) }}</option>
-        </select>
-      </div>
-      <!-- 类型三档（默认「任务」）。判权与优先级同一档 ⇒ 复用同一个 canChangeStatus；
-           同样用原生 select（键盘走得通、读屏读得出，且少一处自己维护的焦点逻辑）。 -->
-      <div class="flex items-center justify-between gap-2">
-        <label class="text-xs text-[var(--gosslan-text-2)]" for="todo-category-pick">{{ t("todo.categoryLabel") }}</label>
-        <select
-          id="todo-category-pick"
-          class="tap-safe h-7 rounded-md border border-[var(--gosslan-border)] bg-transparent px-2 text-[12px] text-[var(--gosslan-card-ink)] disabled:opacity-50"
-          :value="item.category ?? 'task'"
-          :disabled="!canChangeStatus"
-          :title="t('todo.categoryHint')"
-          @change="emit('category', ($event.target as HTMLSelectElement).value as TodoCategory)"
-        >
-          <option v-for="c in TODO_CATEGORIES" :key="c" :value="c">{{ t(TODO_CATEGORY_LABEL_KEY[c]) }}</option>
-        </select>
-      </div>
+           三格（状态 / 优先级 / 类型）共用 `TodoPickField` —— 观感与键盘行为只有一份，
+           也修掉了原生 select 在暗夜模式下的"浅底 + 近白字"（见该组件头部注释）。 -->
+      <TodoPickField
+        :label="t('todo.priorityLabel')"
+        :hint="t('todo.priorityHint')"
+        :model-value="item.priority ?? 'normal'"
+        :current="t(TODO_PRIORITY_LABEL_KEY[item.priority ?? 'normal'])"
+        :current-class="TODO_PRIORITY_PILL[item.priority ?? 'normal']"
+        :options="priorityOptions"
+        :disabled="!canChangeStatus"
+        @update:model-value="(v: string) => emit('priority', v as TodoPriority)"
+      />
+      <!-- 类型三档（默认「任务」）。判权与优先级同一档 ⇒ 复用同一个 canChangeStatus。 -->
+      <TodoPickField
+        :label="t('todo.categoryLabel')"
+        :hint="t('todo.categoryHint')"
+        :model-value="item.category ?? 'task'"
+        :current="t(TODO_CATEGORY_LABEL_KEY[item.category ?? 'task'])"
+        :current-class="TODO_CATEGORY_PILL[item.category ?? 'task']"
+        :options="categoryOptions"
+        :disabled="!canChangeStatus"
+        @update:model-value="(v: string) => emit('category', v as TodoCategory)"
+      />
       <!-- 认领：只在这一格出现 —— 需求 + 自己还不在名单里（+ 本群成员，由 canClaim 判）。
            按下之后走的是"改指派人"那条既有命令，不新增接口，也不新增一次同步。 -->
       <div v-if="canClaim" class="flex items-center justify-between gap-2">
@@ -198,59 +194,18 @@ watch(
       <!-- 状态：**显式两步**（用户 2026-09-17：「一不小心就把状态改了」）。
            此前是一排 4 个分段按钮、一点即写库，而且与看板顶部的**筛选**分段控件长得一样，
            用户当成"切视图"就顺手点了。现在当前状态是一个胶囊（看清现状），改动要点开菜单再选，
-           当前项置灰不可点 —— 误触代价从"改错状态"变成"多看一眼"。 -->
-      <div class="flex items-center justify-between gap-2">
-        <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.statusLabel") }}</span>
-        <div class="relative">
-          <button
-            v-if="canChangeStatus"
-            type="button"
-            class="tap-safe inline-flex h-6 items-center justify-center gap-1 rounded-full px-2.5 text-[12px] font-medium leading-none transition hover:opacity-80"
-            :class="TODO_STATUS_PILL[item.status]"
-            :title="t('todo.statusChange')"
-            :aria-label="t('todo.statusChange')"
-            :aria-expanded="menuOpen"
-            aria-haspopup="menu"
-            @click="menuOpen = !menuOpen"
-          >
-            {{ statusText(item.status) }}
-            <ChevronDown class="h-3 w-3" />
-          </button>
-          <span
-            v-else
-            class="inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[12px] font-medium leading-none"
-            :class="TODO_STATUS_PILL[item.status]"
-          >
-            {{ statusText(item.status) }}
-          </span>
-
-          <!-- 状态菜单（应用统一的 .gosslan-menu 观感；当前项置灰不可点） -->
-          <template v-if="canChangeStatus && menuOpen">
-            <button
-              type="button"
-              class="fixed inset-0 z-40 cursor-default"
-              :aria-label="t('todo.closeMenu')"
-              @click="menuOpen = false"
-            />
-            <div class="gosslan-menu frost absolute right-0 top-full z-50 mt-1" role="menu" aria-orientation="vertical">
-              <button
-                v-for="s in TODO_STATUSES"
-                :key="s"
-                type="button"
-                role="menuitem"
-                class="gosslan-menu-item"
-                :class="s === item.status ? 'font-medium text-[var(--gosslan-primary)]' : ''"
-                :disabled="s === item.status"
-                :aria-current="s === item.status ? 'true' : undefined"
-                @click="choose(s)"
-              >
-                {{ statusText(s) }}
-              </button>
-            </div>
-          </template>
-        </div>
-      </div>
-
+           当前项置灰不可点 —— 误触代价从"改错状态"变成"多看一眼"。
+           菜单形状与优先级 / 类型 两格同一份（`TodoPickField`）。 -->
+      <TodoPickField
+        :label="t('todo.statusLabel')"
+        :hint="t('todo.statusChange')"
+        :model-value="item.status"
+        :current="statusText(item.status)"
+        :current-class="TODO_STATUS_PILL[item.status]"
+        :options="statusOptions"
+        :disabled="!canChangeStatus"
+        @update:model-value="(v: string) => emit('status', v as TodoStatus)"
+      />
       <!-- 元信息：创建时间 / 创建人 / 指派 / 完成时间（用户 2026-09-17：时间要回显） -->
       <div class="space-y-1 text-[12px] text-[var(--gosslan-text-2)]">
         <div v-if="item.createdAt">{{ t("todo.createdAt", { time: fmtConversationTime(item.createdAt) }) }}</div>
