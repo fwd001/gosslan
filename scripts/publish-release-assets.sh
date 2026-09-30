@@ -3,8 +3,8 @@
 #
 # 为什么从三份 YAML 里抽出来（2026-09-30 实测）：`build.yml` / `build-macos.yml` / `build-android.yml`
 # 各带一个 `release:` 任务，同一个 tag 三条**并发**跑，而旧写法是「先查不存在 ⇒ 再创建」——
-# 这个窗口里的第二家会拿到 "Release already exists" 而整步判红（今天红在 mac 那条：
-# run 36686037190 的「挂到 GitHub Release（单一任务·带重试）」= failure）。创建那一步当时**没有**重试，
+# 这个窗口里的第二家会拿到 "Release already exists" 而整步判红（⚠️ 但 2026-09-30 那次三条全红**不是**这个 ——
+# 见下面「今天的第二次纠正」：真因是缺仓库上下文，这段并发窗口只是它顺手一起收掉的旧隐患）。创建那一步当时**没有**重试，
 # 只有上传有；而这段逻辑抄三份本身就是一份会漂的真相。
 #
 # 今天的第二次纠正（v4.31.40 那次三条全红，逐 step 现读后才看清）：
@@ -68,6 +68,12 @@ release_exists() { "$gh_bin" api "repos/$repo/releases/tags/$tag" >/dev/null 2>&
 if release_exists; then
   echo "Release $tag 已存在 ⇒ 不重复创建，只补文件"
 else
+  # ★ 创建必须知道挂在哪条提交上。CI 里有 GITHUB_SHA，本地补挂没有 ⇒ 空 `--target` 会被 gh
+  #   当成"找一个叫空字符串的对象"，报错还落在下一行，读起来像脚本坏了。所以在这里明确要参数。
+  if [ -z "$sha" ]; then
+    echo "Release $tag 不存在，而创建它必须知道挂在哪条提交 ⇒ 传 --sha（本地可用 git rev-parse $tag^{commit}）" >&2
+    exit 2
+  fi
   if ! create_err=$("$gh_bin" release create "$tag" --repo "$repo" --target "$sha" --generate-notes --title "$tag" 2>&1); then
     echo "创建没成功（原样贴出，方便分清是被抢先建好还是权限/网络）："
     echo "$create_err"

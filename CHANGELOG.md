@@ -10,6 +10,11 @@
 
 ## [Unreleased]
 
+### 工具口径修正（只动 `scripts/` 与 `docs/` ⇒ 按 `isAppCodePath` 不占版本号）
+
+- **`scripts/sign-readiness.mjs` 那句「接在哪」原先是错的，现读改掉**：它叫人在 `tauri build` 之后另写 `codesign --sign` 与 `notarytool submit --wait + stapler staple` 两步，而本仓装的 **tauri-cli 2.11.4 自己就做签名与公证**。现读三处：`./node_modules/.bin/tauri --version` ⇒ `tauri-cli 2.11.4`；`tauri build --help` 里有 `--no-sign` 与 `--skip-stapling`（后者说明默认它会等公证完并 staple）；`config.schema.json` 里有 `bundle > macOS > signingIdentity` 与 `bundle > windows > signCommand`（Windows 的钩子是这条带 `%1` 的自定义命令，不是内置 signtool）；`cli.darwin-arm64.node` 的字符串表里出现 `APPLE_SIGNING_IDENTITY`、`APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD`、`APPLE_API_KEY` / `APPLE_API_KEY_PATH` / `APPLE_API_ISSUER`、`APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`、`APPLE_DEVELOPMENT_TEAM`、`APPLE_PROVIDER_SHORT_NAME` ⇒ 该挂的是**那一步的 env 与配置键**，不是再加两步 shell。⚠️ 边界：以上全是版本固定的**读数**，本仓没有凭据、**一次都没实跑过签名或公证**；换 CLI 版本这段要重读。
+- 验收矩阵加 `Smoke-13` 一行（标题栏遮挡 / 表情入口 / 任务编号列的真机走查），写明机器只判到浏览器内、等级不往上抬；维护规则第 4 条那句「当前只有第 14 行满足」改成内容锚 + 现读 `verify.yml` 的口径。
+
 ## [4.31.41] - 2026-09-30
 
 ### 发布与运行时证据（远程 CI 那条红 + 两处界面改动第一次有真读数）

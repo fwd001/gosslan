@@ -67,7 +67,7 @@ interface Run {
 }
 
 /** 跑一次脚本：assets 里放两份假产物，`gh` 换成假的那份。 */
-function run(scenario: string, opts: { files?: number; attempts?: number } = {}): Run {
+function run(scenario: string, opts: { files?: number; attempts?: number; sha?: string } = {}): Run {
   const dir = mkdtempSync(join(tmpdir(), "rel-case-"));
   const binDir = join(dir, "bin");
   mkdirSync(binDir);
@@ -86,7 +86,7 @@ function run(scenario: string, opts: { files?: number; attempts?: number } = {})
     SCRIPT,
     "--assets", assets,
     "--tag", "v9.9.9",
-    "--sha", "deadbeef",
+    "--sha", opts.sha === undefined ? "deadbeef" : opts.sha,
     "--repo", "octo/thing",
     "--attempts", String(opts.attempts ?? 5),
     "--sleep-base", "0",
@@ -170,4 +170,19 @@ test("空产物：在任何一次 gh 调用之前就红（宁可不发，也不�
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /一个文件都没有/);
   assert.deepEqual(r.calls, [], "空产物还去问 Release 存在与否 ⇒ 这一步本该完全不碰 gh");
+});
+
+test("本地补挂要创建却没有 --sha：必须在任何一次 release create 之前就红（不是把空串当提交名去查）", () => {
+  const r = run("new", { sha: "" });
+  assert.equal(r.code, 2, `空 sha 被当成能凑合的形状？输出：${r.out}`);
+  assert.match(r.out, /创建它必须知道挂在哪条提交/);
+  assert.equal(r.calls.filter((c) => c.startsWith("release create")).length, 0,
+    "该红就该停在创建之前——带空 --target 去 create 就是让 gh 报一句读不懂的话");
+});
+
+test("反面对照：Release 已存在时空 sha 不算缺陷（那条路径根本不碰 --target）⇒ 仍要绿", () => {
+  const r = run("exists", { sha: "" });
+  assert.equal(r.code, 0, `已存在那一趟被空 sha 拦住了？输出：${r.out}`);
+  assert.equal(r.calls.filter((c) => c.startsWith("release create")).length, 0, "已存在就不该再创建");
+  assert.equal(r.calls.filter((c) => c.startsWith("release upload")).length, 1);
 });
