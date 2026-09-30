@@ -148,3 +148,31 @@ jobs:
           name: gosslan-windows-${{ matrix.label }}-webview2-bundled
           path: src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
           if-no-files-found: error
+
+  # ★ 这一档以前只 upload-artifact、从不挂 Release ⇒ Release 的下载列表里永远看不见"内置 WebView2"那个包，
+  #   产物只在 Actions 里活着（会过期）。2026-09-30 决定挂上：需要这一档的人正是装不上 WebView2 运行时的人，
+  #   藏在 artifact 里等于没有。附件名自带 webview2-bundled ⇒ 与默认档一眼可分，不会拿错。
+  #   发布逻辑仍然只在 scripts/publish-release-assets.sh 那一处（这里是第四个消费者，不是第二份实现）。
+  release:
+    name: 挂到 GitHub Release（与默认档同一个 Release，附件名不冲突）
+    needs: build-windows-fixed-webview2
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 取出发布脚本（发布逻辑只在 scripts/ 那一处）
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/publish-release-assets.sh
+          fetch-depth: 1
+      - name: 取回本次构建的产物（只取本 run 的两档 webview2 包）
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gosslan-windows-*-webview2-bundled
+          merge-multiple: true
+          path: assets
+      - name: 挂到 Release（创建幂等 + 上传退避重试）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/publish-release-assets.sh --assets assets

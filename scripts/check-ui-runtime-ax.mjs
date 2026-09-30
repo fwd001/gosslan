@@ -21,11 +21,17 @@
  *   node scripts/check-ui-runtime-ax.mjs --pid 12345    # 只读一个已在跑的进程（判据照判 ⇒ 这也是非空转的
  *                                                       #   反证入口：指到一个没有 WebView 的进程必须红）
  *   node scripts/check-ui-runtime-ax.mjs --instance 12  # 换多开编号（默认 41，避开 harness 用的 1/2/3）
+ *   node scripts/check-ui-runtime-ax.mjs --fixture=todo  # 读数前置：先给这个隔离实例写一条生产形状的
+ *                                                       #   群任务行，再读真窗口里那颗编号角标。
+ *                                                       #   ★ 这是**读数**，不判红、不改退码判据
  *
  * 退出码：0 = 通过；1 = 判据红；2 = 环境不具备（**不是通过**，且会打印缺哪一条）。
  */
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
+import { DatabaseSync } from "node:sqlite";
+import { FIXTURES, TODO_FIXTURE, seedTodoFixture } from "./axTodoFixture.mjs";
 import os from "node:os";
 import path from "node:path";
 import { axEnvironmentReady, probeTree } from "./ax-tree.mjs";
@@ -37,6 +43,19 @@ const flag = (name, dflt) => {
 };
 const INSTANCE = Number(flag("instance", "41"));
 const TARGET_PID = flag("pid", null);
+const FIXTURE = flag("fixture", null);
+// ★ 只认 `--fixture todo` 这种空格写法：`--fixture=todo` 会被上面的 flag() 整个忽略 ⇒
+//   使用者以为拿到了夹具读数、其实跑的是空库。这里宁可拒跑，也不给一份"看着像"的读数。
+const eqForm = process.argv.find((a) => /^--(fixture|pid|instance)=/.test(a));
+if (eqForm) {
+  console.error(`✗ 参数写法 ${eqForm} 不被解析（本脚本只认空格形式）⇒ 改成 ${eqForm.replace("=", " ")}；`    + " 宁可拒跑，也不给一份被静默忽略的读数");
+  process.exit(2);
+}
+const FIX = FIXTURE === null ? null : FIXTURES[FIXTURE];
+if (FIXTURE !== null && !FIX) {
+  console.error(`✗ 不认识的 --fixture=${FIXTURE}（可选：${Object.keys(FIXTURES).join(" / ")}）`);
+  process.exit(2);
+}
 
 const fails = [];
 const notes = [];
@@ -62,8 +81,44 @@ const dbPath = path.join(appData, `gosslan-${INSTANCE}.db`);
 const dbPreExisted = existsSync(dbPath);
 if (TARGET_PID && dbPreExisted) note(`--pid 模式：不碰 ${path.relative(os.homedir(), dbPath)}`);
 
+if (FIXTURE && TARGET_PID) {
+  console.error("✗ --fixture 不能和 --pid 同时用：那会往一个不在本脚本管辖里的实例库写行");
+  process.exit(2);
+}
+if (FIXTURE && dbPreExisted) {
+  console.error(`✗ --fixture 只允许写**本次新建**的隔离库，而 gosslan-${INSTANCE}.db 本来就存在`    + " ⇒ 换个数（--instance 47）或先确认那不是你的库；这条限制就是为了不碰用户数据");
+  process.exit(2);
+}
 let pid = Number(TARGET_PID);
 let child = null;
+if (FIX && !TARGET_PID) {
+  // 库表是应用第一次启动时建的（迁移在 Rust 侧）⇒ 夹具只能"先起一次让它建表、停下、写行、再起"。
+  const boot = spawn(BIN, [], {
+    env: { ...process.env, GOSSLAN_INSTANCE: String(INSTANCE) }, stdio: "ignore", detached: true,
+  });
+  boot.unref();
+  note(`夹具前置：先起一次让应用建表（pid ${boot.pid}）`);
+  for (let i = 0; i < 30 && !existsSync(dbPath); i += 1) await sleep(1000);
+  if (!existsSync(dbPath)) {
+    console.error(`✗ 起了 30 s 还没出现 gosslan-${INSTANCE}.db ⇒ 应用没建库，夹具不做第二次猜测`);
+    try { process.kill(-boot.pid, "SIGTERM"); } catch { /* 已经没了 */ }
+    process.exit(2);
+  }
+  await sleep(3000);
+  try { process.kill(-boot.pid, "SIGTERM"); } catch { /* 已经没了 */ }
+  await sleep(2500);
+  const db = new DatabaseSync(dbPath);
+  try {
+    const me = db.prepare("SELECT value FROM settings WHERE key='device_id'").get();
+    if (!me) { console.error("✗ 库里没有 device_id ⇒ 这次启动没完成，夹具不写"); process.exit(2); }
+    seedTodoFixture(db, me.value, FIX.over);
+    note(`夹具已写入：conv=${TODO_FIXTURE.convId} 档=${FIXTURE} `
+      + `number=${FIX.over.number ?? TODO_FIXTURE.number} ⇒ 期望：`
+      + (FIX.expect
+        ? `读到可见码 ${FIX.expect.visible} 与可访问名字 ${FIX.expect.named}`
+        : "一条编号读数都不该出现（反面对照档）"));
+  } finally { db.close(); }
+}
 if (!TARGET_PID) {
   child = spawn(BIN, [], {
     // 刻意**不带** GOSSLAN_AUTOSTART：#89 之后"预置说关就不该被 env 顶开"，这里连预置都没有 ⇒ 少一份网络噪音
@@ -93,6 +148,31 @@ const { parsed, tries, text } = probe;
 const dumpPath = path.join(os.tmpdir(), `gosslan-ax-dump-${pid}.txt`);
 writeFileSync(dumpPath, text);
 
+if (FIX) {
+  // ★ 这一段是**读数**：只打印，不调 ok()/bad() ⇒ 夹具档不改变这个入口的四条判据与退码。
+  //   为什么不做成判据：这一屏要的是"读屏用户实际念到什么"，而那条文案（「任务编号 …」）
+  //   改了 i18n 就该跟着改期望 ⇒ 进任何一层都会变成"改文案要改门禁"。
+  const want = FIX.expect;
+  const hitVisible = want ? parsed.names.filter((n) => n.label === want.visible) : [];
+  const hitNamed = want ? parsed.names.filter((n) => n.label.includes(want.named)) : [];
+  const anyCode = parsed.names.filter((n) => /[RBT]\d{1,6}/.test(n.label));
+  if (!want) {
+    console.log(`  [fixture] 反面对照档：界面上带编号字样的名字应为 0，实到 ${anyCode.length} 个`
+      + (anyCode.length ? ` ⇒ ${anyCode.map((n) => `${n.role}=${n.label}`).join(" ｜ ")}` : " ⇒ 一个都没有"));
+  } else {
+    console.log(`  [fixture] 读到可见码 ${want.visible}：${hitVisible.length} 个`
+      + `（${hitVisible.map((n) => n.role).join("/") || "无"}）；`
+      + `读到完整码「${want.named}」：${hitNamed.length} 个（${hitNamed.map((n) => n.role).join("/") || "无"}）`);
+  }
+  console.log(`  [fixture] 界面上全部带编号字样的名字：`
+    + (anyCode.map((n) => `${n.role}=${n.label}`).join(" ｜ ")
+      || "（一个都没有 ⇒ 那一格没渲染；带号档里这就是夹具/折叠没到位，无号档里这正是期望）"));
+  if (want && (!hitVisible.length || !hitNamed.length)) {
+    console.log("  [fixture] ⇒ 两种成因分不开时先看上面那行：整屏没有编号字样 = 夹具/折叠没到位；"
+      + "有编号但不是这两个值 = 显示口径变了（那是产品事实，不是这条读数的失败）");
+  }
+  note("夹具档是读数，**不判红**：上面两行无论是什么，本入口的退码只由那四条判据决定");
+}
 // 判据 1：内容树真的挂上了（路由 B 的前提本身）
 if (parsed.hung) ok(`内容树挂上了：AXWebArea=${parsed.webArea}（第 ${tries} 次读拿到，窗口标题 ${JSON.stringify(parsed.windowTitle)}）`);
 else bad(`读了 ${tries} 次仍没有 AXWebArea ⇒ 真 WebView 的内容没暴露成控件树（或遍历器/时机坏了：AXWindows rc=${parsed.winRc}）`);

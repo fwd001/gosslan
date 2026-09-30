@@ -15,6 +15,27 @@
 - **`scripts/sign-readiness.mjs` 那句「接在哪」原先是错的，现读改掉**：它叫人在 `tauri build` 之后另写 `codesign --sign` 与 `notarytool submit --wait + stapler staple` 两步，而本仓装的 **tauri-cli 2.11.4 自己就做签名与公证**。现读三处：`./node_modules/.bin/tauri --version` ⇒ `tauri-cli 2.11.4`；`tauri build --help` 里有 `--no-sign` 与 `--skip-stapling`（后者说明默认它会等公证完并 staple）；`config.schema.json` 里有 `bundle > macOS > signingIdentity` 与 `bundle > windows > signCommand`（Windows 的钩子是这条带 `%1` 的自定义命令，不是内置 signtool）；`cli.darwin-arm64.node` 的字符串表里出现 `APPLE_SIGNING_IDENTITY`、`APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD`、`APPLE_API_KEY` / `APPLE_API_KEY_PATH` / `APPLE_API_ISSUER`、`APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`、`APPLE_DEVELOPMENT_TEAM`、`APPLE_PROVIDER_SHORT_NAME` ⇒ 该挂的是**那一步的 env 与配置键**，不是再加两步 shell。⚠️ 边界：以上全是版本固定的**读数**，本仓没有凭据、**一次都没实跑过签名或公证**；换 CLI 版本这段要重读。
 - 验收矩阵加 `Smoke-13` 一行（标题栏遮挡 / 表情入口 / 任务编号列的真机走查），写明机器只判到浏览器内、等级不往上抬；维护规则第 4 条那句「当前只有第 14 行满足」改成内容锚 + 现读 `verify.yml` 的口径。
 
+### 真窗口读数进了仓 + 内置 WebView2 那一档开始挂 Release
+
+- ★ **`npm run verify:ax` 多了两档"读数前置"**：`--fixture todo` 先给一个**本次新建**的隔离实例库写一条
+  生产形状的群任务定义行，再读真实 WKWebView 的无障碍树；`--fixture todo-nonumber` 是同一条但 `number=0`。
+  现跑读数（真 App，不是浏览器）：带号档 `AXStaticText=R2345` 与 `AXGroup=任务编号 R12345` **各 1 个**，
+  无号档带编号字样的名字 **0 个** ⇒ 那两条不是探针自己造的。
+  **有意不判红**：这一段只打印，不调 `ok()/bad()` ⇒ 该入口那四条判据与退码一字不改（这一屏要的是
+  "读屏用户实际念到什么"，文案改了期望就该跟着改，进任何一层都会变成"改文案要改门禁"）。
+  新增 `scripts/axTodoFixture.mjs`（两档 + 写库）与 `scripts/axTodoFixture.test.ts` 五条用例，其中一条
+  **现读 `src-tauri/src/protocol.rs` 的 `TodoPayload` 字段名**当分母 ⇒ 生产加字段而夹具没跟上就红
+  （这条一落地就抓到我今天那份一次性探针**漏了 `done_at`**）；`seedTodoFixture` 两档各占独立 `msg_id`
+  （同 id 会互相顶掉）。参数只认空格写法：`--fixture=todo` 现在**拒跑**（退 2）而不是被静默忽略后
+  给出一份"看着像夹具"的读数。矩阵 `Smoke-13` 那一格同步改口（编号列已有真窗口读数，遮挡与 hover 仍无）。
+- **`build-windows-webview2.yml` 加了一个 `release` 任务**（负责人选 A）：这一档以前只 `upload-artifact`、
+  从不挂 Release ⇒ Release 的下载列表里永远看不见"内置 WebView2 运行时"那个包，产物只在 Actions 里活着会过期。
+  现在与另三条同构（取那一份 `scripts/publish-release-assets.sh` → 取本 run 的两档包 → 挂上同一个 Release），
+  附件名自带 `webview2-bundled` ⇒ 与默认档一眼可分。⚠️ 本机没有任何 YAML 解析器，这份文件**没被一层判据读过**
+  （现读：`verify-guards.py` 里没有一条用例的注入目标是 workflow 文件），第一次真跑只能等下一个 tag。
+- 顺手记一条今天的事实：`v4.31.41` 的 Release 页已由 CI 建好，**8 个附件**（两份 APK + 两份 `.sha256`、
+  两份 dmg、两份 exe），四条腿全 success ⇒ 这就是那条 `--repo` 修复的第一次真跑；
+  ⚠️ **只有 Android 带校验文件**，mac 的 dmg 与 win 的 exe 都没有 `.sha256`（要不要补齐是另一个决定）。
 ## [4.31.41] - 2026-09-30
 
 ### 发布与运行时证据（远程 CI 那条红 + 两处界面改动第一次有真读数）
