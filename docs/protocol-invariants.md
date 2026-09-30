@@ -1126,13 +1126,14 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 凡是"按某个条件把东西从**内存表**里摘出来、再对它做收尾（写库 / emit / 改名 / 记台账）"的地方，
 **判据与 `remove` 必须在同一次持锁里完成**；收尾一律在锁外，且只使用已经摘出来的那一份。
 
-这条不是风格。本仓三次撞上同一个形状（每次都单独修一半，于是第四次又来）：
+这条不是风格。本仓**四次**撞上同一个形状（每次单独修一半，于是下一次又来）：
 
 | 犯案点 | 旧形状 | 用户看到什么 |
 |---|---|---|
 | 单聊超时回收 | 先快照一批 id，再逐个收尾 | 快照与收尾之间挤进新 `FileOffer` ⇒ 把正在收的那一单判死 |
 | 群文件断链 | 锁内 `collect()` 出 id、锁外 `fail_group_file_chunk` | 同上（`fail_group_file_chunk` 连归属都不核对） |
 | 单聊断链 | 锁内 `collect()` 出 id、锁外逐个 `fail_receive` | `peer_id` 核对挡住了"别人的"，挡不住**同 peer 同 transfer_id 的新 attempt** ⇒ 多等一轮重试 |
+| 群断链（`5a0cfcc` 自己引入）| 已经原子摘了，循环却写 `for (tid, _r) in taken` —— **摘出来的那份被丢掉**，只调 finalize 那一半 | 群收件人的**内容台账** `record_failure ⇒ Incomplete` 没人写 ⇒ 行停在 `Active`，重取改走「Active 超 60s」那条兜底，退避口径变了、多等一轮。**这一条五层门禁 + 护栏 200 条整跑全绿，是评审抓到的** |
 
 规则：
 
@@ -1141,6 +1142,9 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
   新增同类逻辑要么调它们，要么照它们的形状另写一条判据，不许在调用点重排"先看后摘"。
 * **收尾函数成对存在**：每个 `take_*` 配一个 `fail_taken_*`，签名里带**已摘出来的那份**（`&FileReceiver`），
   这样"拿 id 回头再查表"在类型上就走不通。
+* ⚠️ 但"成对存在"不等于"被调用"：`take_*` 返回的那一份**必须在调用点被用完**。下划线前缀的绑定
+  （`for (x, _y)`）在 Rust 里是"我故意不用"，编译器与 clippy 都不响 ⇒ 本条的第四次就是这么犯下的。
+  ⇒ 判据要钉**带实参的调用形状**（`fail_taken_group_receive(&state, &r)`），钉函数名存在性会被注释喂饱。
 * ⚠️ 边界：本条管的是**内存表**的摘取原子性，不管 db 锁的作用域（那是 INV-P25：发射事件不得持 db 锁）；
   也不管终态本身能不能被降级（那是 INV-P26）。三条常常在同一处代码里同时出现，所以必须分开判。
 * 与 INV-P26 的分界说清：断链/超时**允许**把一次传输记成可恢复的失败（`Incomplete`，建链时自动重取），
@@ -1151,12 +1155,13 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 
 | 判据 | 钉住什么 | 去掉修好的代码会不会红（2026-09-29 各跑一趟单点变异，每次只红对应那一条） |
 |---|---|---|
-| `peer_offline_group_cleanup_takes_before_finalizing` | 群侧必须走 `take_group_receives_for_peer(`。断言钉的是**调用形状**：只写函数名会被上面那句点名 helper 的注释满足 ⇒ 半个守卫（这一趟变异实测就是这么让第一条放行的，因此把它改严了） | 把 `if peer_now_offline` 那段改回「锁内 `collect()` 出 id ⇒ 锁外逐个收尾」⇒ 恰好这一条红，同批另两条绿 |
+| `peer_offline_group_cleanup_takes_before_finalizing` | 群侧三件事一起钉：① 必须走 `take_group_receives_for_peer(`；② 摘出来的那份必须被用完 —— 必须有 `fail_taken_group_receive(&state, &r)`、不许出现 `for (tid, _r) in taken`；③ 不许退回快照 id 的旧写法。断言一律钉**调用形状**：只写函数名会被上面点名 helper 的注释满足 ⇒ 半个守卫（第一次变异实测就是这么让第一条放行的）。窗口取「到下一个函数头为止」，另有一条**反空转闸**：盖不到 `finalize_failed_group_receive` 那一行就直接炸 | 三趟变异各红对应那一条：改回「锁内 `collect()` ⇒ 逐个收尾」红第 ①/③；删掉 `fail_taken_group_receive(&state, &r)` 那行红第 ②；**同一份断言在 `1a37376` 之前的 HEAD 上也直接红** ⇒ 咬的是真实犯过的形状。配套护栏用例「群断链收尾必须吃掉原子摘出来的那一份」（CASES 200 → 201）已过「改坏即 FAIL、恢复即 PASS」 |
 | `single_peer_offline_cleanup_also_takes_before_finalizing` | 单聊侧同一族规则（★ 专防"只修一个面"） | 把 `fail_receives_for_peer` 改回「快照 id ⇒ 逐个 `fail_receive(state, …)`」⇒ 恰好这一条红，另两条绿 |
 | `completed_guard_reads_recipient_status_in_the_handler` | 终态保护必须在**生产 handler** 里真的读收件人状态，不许只活在测试的模拟里 | 护栏用例「群文件 completed 的终态保护必须真读库」把那句 `.any(…)` 注入成常量 `.any(\|_\| false)` ⇒ 改坏即 FAIL、恢复即 PASS |
 
-三条各自那趟变异的复跑（前两条改 `transport.rs` / `file.rs` 后单跑再还原，第三条由护栏自己注入并还原）：
-`cargo test --lib group_receive_atomicity_tests` · `python3 scripts/verify-guards.py --only "completed 的终态保护"`（在仓库根目录起跑）。
+复跑（改 `transport.rs` / `file.rs` 后单跑再还原，护栏那两条自己注入并还原）：
+`cargo test --lib group_receive_atomicity_tests` · `python3 scripts/verify-guards.py --only "completed 的终态保护"` ·
+`python3 scripts/verify-guards.py --only "群断链收尾必须吃掉"`（都在仓库根目录起跑）。
 
 - 钩子：`network::file::group_receive_atomicity_tests::peer_offline_group_cleanup_takes_before_finalizing` `network::file::group_receive_atomicity_tests::single_peer_offline_cleanup_also_takes_before_finalizing` `network::file::group_receive_atomicity_tests::completed_guard_reads_recipient_status_in_the_handler`
 
