@@ -122,31 +122,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: 取出发布脚本（发布逻辑只在 scripts/ 那一处）
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/publish-release-assets.sh
+          fetch-depth: 1
       - name: 取回本次构建的产物
         uses: actions/download-artifact@v4
         with:
           pattern: gosslan-android-abis
           merge-multiple: true
           path: assets
-      - name: 发布（不存在就建，存在就挂文件）
+      # ★ 发布逻辑不在这里抄第三份：三份内联 shell 是同一件事的三个家（2026-09-30 那条并发红
+      # 就是这样被复制三遍的）。唯一的一份在 `scripts/publish-release-assets.sh`，
+      # 它的七种结局由 `scripts/publishRelease.test.ts` 用假 `gh` 在本地判（不需要凭据）。
+      - name: 挂到 Release（创建幂等 + 上传退避重试）
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          command -v gh >/dev/null || { echo "runner 上没有 gh CLI"; exit 1; }
-          [ -d assets ] || { echo "没有 assets 目录 ⇒ download-artifact 一条都没取到，不许静默发空 Release"; exit 1; }
-          mapfile -t files < <(find assets -type f | sort)
-          if [ "${#files[@]}" -eq 0 ]; then echo "assets 是空的"; exit 1; fi
-          tag="$GITHUB_REF_NAME"
-          if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --target "$GITHUB_SHA" --generate-notes --title "$tag"
-          fi
-          attempt=0
-          until gh release upload "$tag" "${files[@]}" --clobber; do
-            attempt=$((attempt + 1))
-            if [ "$attempt" -ge 5 ]; then echo "挂了 5 次仍失败：并发抢注没让开，或权限不足"; exit 1; fi
-            echo "第 $attempt 次上传失败，等 $((attempt * 5))s 再试"
-            sleep $((attempt * 5))
-          done
-          echo "已挂上 $tag 的文件："
-          printf '  %s\n' "${files[@]}"
+        run: bash scripts/publish-release-assets.sh --assets assets

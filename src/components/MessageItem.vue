@@ -1118,6 +1118,7 @@ async function copyFileToClipboard() {
              `hidden group-hover/msg:flex`：悬停本条才出现（组名在 `.group/msg` 上，本列在其内 ✓）。 -->
         <button
           ref="reactionBtnRef"
+          data-reaction-entry
           v-if="canReact && !selectMode"
           class="tap-safe hover-reveal pointer-events-auto absolute -right-11 bottom-0 z-20 h-6 w-6 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition"
           :class="[

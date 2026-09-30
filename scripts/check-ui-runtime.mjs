@@ -152,6 +152,22 @@ class Cdp {
     }));
     await sleep(90);
   }
+  /**
+   * 把指针真的移到某个坐标上（`Input.dispatchMouseEvent`）。
+   * 为什么要两条：CSS 的 `:hover` 只在浏览器真的移动过指针时才成立，
+   * 用 `elementFromPoint` 或加 class 都替代不了 —— 而那颗表情入口恰恰是 `hidden group-hover/msg:flex`
+   * （不悬停就根本不存在于布局里，量不到任何几何）。先移到别处再移到目标点，逼一次重新命中。
+   */
+  async hover(x, y) {
+    const send = (cx, cy) => this.ws.send(JSON.stringify({
+      id: ++this.seq, method: "Input.dispatchMouseEvent",
+      params: { type: "mouseMoved", x: cx, y: cy },
+    }));
+    send(Math.max(0, x - 120), Math.max(0, y - 60));
+    await sleep(30);
+    send(x, y);
+    await sleep(120);
+  }
 }
 
 // ── 页面侧装进 window 的夹具（一次装好，之后每步只调函数）────────────
@@ -249,6 +265,126 @@ window.__probe = (() => {
     document.addEventListener('click', () => { clickCount++; }, true);
     return { ok: true, cmp: cmpPath, pinia: !!pinia };
   };
+  /**
+   * 标题栏 × 内容浮层那一路的**合成**夹具（2026-09-30 用户：「所有独立窗口标题栏都不会被内容栏遮住」）。
+   * 单挂一个组件量不出这件事：要判的是**绘制顺序 + 命中测试**，必须让 caption 与遮罩真的在同一个
+   * 根层叠上下文里共存。这里按辅助窗口的真实组成挂：TitleBar + 内容 + ImageLightbox（teleport 到 body）。
+   * topInset 给值 = 独立预览窗口那一路；给空串 = 主窗口那一路（铺满整窗，只靠层级让开）。
+   */
+  H.composeStack = async (topInset) => {
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: '先跑一次 install 把页面那份 vue 拿进来' };
+    const [tbM, lbM] = await Promise.all([
+      import('/src/components/TitleBar.vue'),
+      import('/src/components/message/ImageLightbox.vue'),
+    ]);
+    const TitleBar = tbM.default;
+    const Lightbox = lbM.default;
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'stack-host';
+    host.className = 'flex h-screen flex-col overflow-hidden';
+    document.body.appendChild(host);
+    const Root = {
+      render() {
+        return V.h('div', { class: 'flex h-full flex-col' }, [
+          V.h(TitleBar, { title: '相闻 · 图片预览' }),
+          V.h('div', { class: 'min-h-0 flex-1 bg-white' }, '内容区'),
+          V.h(Lightbox, {
+            images: [{ dataSrc: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'probe.gif' }],
+            index: 0,
+            open: true,
+            topInset: topInset || undefined,
+            hideClose: true,
+            onClose: () => { window.__probe.events.push(['close']); },
+            'onUpdate:index': () => {},
+          }),
+        ]);
+      },
+    };
+    const app = V.createApp(Root);
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    await V.nextTick(); await V.nextTick();
+    return { ok: true, topInset: topInset || '' };
+  };
+  /** 现读那一横条与那张遮罩的矩形、层级，以及 caption 中点**实际命中的是谁**。 */
+  H.stackRead = () => {
+    const cap = document.querySelector('[data-caption]');
+    const ov = document.querySelector('[role="dialog"]');
+    if (!cap || !ov) return { ok: false, why: '没同时挂出 caption 与遮罩' };
+    const cr = cap.getBoundingClientRect();
+    const or = ov.getBoundingClientRect();
+    const hit = document.elementFromPoint(Math.round(cr.left + cr.width / 2), Math.round(cr.top + cr.height / 2));
+    return {
+      ok: true,
+      capTop: Math.round(cr.top), capBottom: Math.round(cr.bottom),
+      capZ: getComputedStyle(cap).zIndex, ovZ: getComputedStyle(ov).zIndex,
+      ovTop: Math.round(or.top),
+      hitInCaption: !!hit && (hit === cap || cap.contains(hit)),
+      hitTag: hit ? (hit.tagName + '.' + String(hit.className).slice(0, 40)) : 'null',
+    };
+  };
+  /** 反面对照用：把 caption 的层级按回修之前（非定位、无 z-index）⇒ 同一点必须不再命中标题栏。 */
+  H.setCaptionStack = (mode) => {
+    const cap = document.querySelector('[data-caption]');
+    if (!cap) return false;
+    if (mode === 'off') { cap.style.zIndex = '0'; cap.style.position = 'static'; }
+    else { cap.style.zIndex = ''; cap.style.position = ''; }
+    return true;
+  };
+
+  /**
+   * 量那颗"添加表情回复"入口（用户 2026-09-30：「按钮位置在视觉观感上应该与聊天内容最下边对齐，
+   * 按钮再紧凑一些，现在有点大」）。
+   * 列（=按钮的定位父元素，也就是气泡那一列）不从外面找：按钮就挂在那一列的直接子级上，
+   * 它的 parentElement 就是那一列 —— 少一个选择器就少一处会漂的锚。
+   */
+  H.reactionBtn = () => {
+    const btn = document.querySelector('[data-reaction-entry]');
+    if (!btn) return { ok: false, why: '没找到那颗入口（canReact 没给？还是这一条根本没挂出来）' };
+    const cs = getComputedStyle(btn);
+    const b = btn.getBoundingClientRect();
+    const col = btn.parentElement;
+    const cr = col ? col.getBoundingClientRect() : null;
+    return {
+      ok: true,
+      display: cs.display,
+      w: Math.round(b.width), h: Math.round(b.height), bottom: Math.round(b.bottom),
+      colBottom: cr ? Math.round(cr.bottom) : null,
+      colClass: col ? String(col.className).slice(0, 46) : null,
+      title: btn.getAttribute('title'),
+      aria: btn.getAttribute('aria-label'),
+      // classList 而不是正则啃 className：这段在模板字符串里，反斜杠会被模板吃掉一层
+      // （实测写 \s 到了页面里就变成 s ⇒ 那条 tap-safe 判据永远假红）
+      tapSafe: btn.classList.contains('tap-safe'),
+    };
+  };
+  /** 悬停目标：那颗入口没悬停时是 display:none（量不到矩形），所以指针要移到它**那一列**上。 */
+  H.colRect = () => {
+    const btn = document.querySelector('[data-reaction-entry]');
+    const col = btn ? btn.parentElement : null;
+    if (!col) return null;
+    const r = col.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), bottom: Math.round(r.bottom) };
+  };
+
+  /** 对照：把入口按回"旧的中线居中"（top-1/2 + translateY(-50%)）⇒ 底边对齐差必须变大。 */
+  H.forceLegacyReaction = (on) => {
+    const btn = document.querySelector('[data-reaction-entry]');
+    if (!btn) return false;
+    if (on) {
+      btn.style.top = '50%';
+      btn.style.bottom = 'auto';
+      btn.style.transform = 'translateY(-50%)';
+    } else {
+      btn.style.top = '';
+      btn.style.bottom = '';
+      btn.style.transform = '';
+    }
+    return true;
+  };
+
   /** 替掉一条 api 命令。api 是普通对象 ⇒ 按名字替换，比伪造整个 __TAURI__ 便宜得多。 */
   H.stubApi = async (name, payload) => {
     const m = await import('/src/api/index.ts');
@@ -617,10 +753,14 @@ async function main() {
     const search = !ONLY || ONLY === "search";
     const task = !ONLY || ONLY === "task";
     const convbadge = !ONLY || ONLY === "convbadge";
+    const caption = !ONLY || ONLY === "caption";
+    const reaction = !ONLY || ONLY === "reaction";
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (task) await runTaskCard(cdp, url);
     if (convbadge) await runConvBadge(cdp, url);
+    if (caption) await runCaption(cdp, url);
+    if (reaction) await runReaction(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
@@ -636,6 +776,127 @@ async function main() {
     try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* 交给系统 */ }
     process.exit(exitCode);
   }
+}
+
+/**
+ * 那颗「添加表情回复」入口的几何（用户 2026-09-30：「按钮位置在视觉观感上应该与聊天内容最下边对齐。
+ * 按钮再紧凑一些，现在有点大」）。
+ * 为什么这段值得真悬停一次：入口是 `hidden group-hover/msg:flex` —— 不悬停时它**不在布局里**，
+ * 任何静态读法都量不到尺寸与底边；而"跟气泡底边对齐"恰恰只能量出来。
+ */
+async function runReaction(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const MSG = {
+    msg_id: "m-react-probe-1", sender_id: "dev-me", kind: "text",
+    // 刻意用一条会折成多行的长内容：单行时那一列本来就矮，"中线居中"与"贴底"只差 2~3px，
+    // 那条对照就变成没判（第一版就是这么红的）。用户那句观感意见针对的正是多行消息。
+    content: "这条要量那颗表情入口的底边对齐，所以写得长一点，让它折成好几行：一、二、三、四、五、六、七、八、九、十，后面再补一些字让宽度确实放不下。",
+    ts: 1700000000000, conv_id: "group:g1", seq: 1,
+  };
+  const mounted = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
+    + JSON.stringify(JSON.stringify({ message: MSG, canReact: true, isGroup: true, senderName: "测试者" })) + ")");
+  check("消息行挂出来了（表情入口那颗才有得量）", !!mounted && mounted.ok === true,
+    "install ok", JSON.stringify(mounted));
+
+  const hidden = await cdp.eval("window.__probe.reactionBtn()");
+  check("不悬停时那颗入口确实不在布局里（后面的读数才不是量了个隐形的东西）",
+    hidden.ok === true && hidden.display === "none" && hidden.h === 0,
+    "display=none 且高 0", JSON.stringify(hidden));
+
+  const col = await cdp.eval("window.__probe.colRect()");
+  check("那一列有可悬停的面积（拿不到矩形就没法移指针）", !!col && col.bottom > 0, "colRect 非空", JSON.stringify(col));
+  await cdp.hover(col.x, col.y);
+
+  const a = await cdp.eval("window.__probe.reactionBtn()");
+  check("悬停后入口出现，且是紧凑的正方形小按钮（高=宽，且不大于 28px）",
+    a.ok === true && a.display !== "none" && a.h > 0 && a.h === a.w && a.h <= 28,
+    "h===w 且 h<=28", JSON.stringify(a));
+  check("入口底边与气泡那一列的底边对齐（用户那句「与聊天内容最下边对齐」）",
+    a.ok === true && a.colBottom !== null && Math.abs(a.bottom - a.colBottom) <= 1,
+    "|btn.bottom - col.bottom| <= 1", "btn=" + a.bottom + " col=" + a.colBottom);
+  check("触屏热区没被这次收窄弄丢（tap-safe 仍在：h-6 靠它扩到 40px）",
+    a.ok === true && a.tapSafe === true, "class 里有 tap-safe", JSON.stringify(a));
+
+  // tooltip / 可访问名：换成自己那句"添加表情回复"，不再是借输入框那颗的「表情」。
+  const names = await cdp.eval(`(async () => {
+    const i = await import('/src/i18n');
+    return { own: i.t('msg.reactionAddEntry'), composer: i.t('chat.composer.emoji') };
+  })()`);
+  check("它的 title 与 aria-label 都是「添加表情回复」那句（不是借输入框那颗的文案）",
+    !!a.title && a.title === names.own && a.aria === names.own && names.own !== names.composer,
+    names.own, "title=" + a.title + " aria=" + a.aria + " 而输入框那颗=" + names.composer);
+
+  // 反面对照：按回旧的"中线居中"写法 ⇒ 底边对齐差必须变大（不然上面那句就是恒真）。
+  await cdp.eval("window.__probe.forceLegacyReaction(true)");
+  const b = await cdp.eval("window.__probe.reactionBtn()");
+  check("对照：改回旧的中线居中 ⇒ 多行气泡上底边就飘起来（证明那条对齐判据会咬）",
+    // 阈值不是拍一个数：正向那格用的容差是 ±1px，这里要求**至少飘出容差的 4 倍**（实测 13px，
+    // 那一列多高就飘多少 —— 写死 24 是我第一次的猜测，它在两行气泡上根本不成立，红得没道理）。
+    b.ok === true && Math.abs(b.bottom - b.colBottom) > 4,
+    "|差| > 4（正向那格容差 ±1 的 4 倍）",
+    "btn=" + b.bottom + " col=" + b.colBottom + " 差=" + Math.abs(b.bottom - b.colBottom));
+  await cdp.eval("window.__probe.forceLegacyReaction(false)");
+  const c = await cdp.eval("window.__probe.reactionBtn()");
+  check("对照可逆：恢复后底边又对齐（不是把页面改坏了一次）",
+    c.ok === true && Math.abs(c.bottom - c.colBottom) <= 1, "|差| <= 1",
+    "btn=" + c.bottom + " col=" + c.colBottom);
+}
+
+/**
+ * 标题栏 × 内容浮层那一段（用户 2026-09-30：「图片预览独立窗口会遮住头部标题栏关闭最小化那块，
+ * 应该只在下面内容区。所有独立窗口标题栏都不会被内容栏遮住，标题栏优先度最高」）。
+ *
+ * 为什么值得单开一段：这条修的是**绘制顺序 + 命中测试**，静态判据（层级现算）只能证明
+ * "数字比大小成立"，证不了"那横条上的 ✕/− 与拖拽区实际还点得着"。而 `elementFromPoint`
+ * 走的正是浏览器真实的命中顺序 —— 它命中标题栏，用户的鼠标才点得到。
+ */
+async function runCaption(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  // 先借 install 把"页面自己在用的那份 vue/pinia"接进 __probe（composeStack 依赖它们）
+  await cdp.eval("window.__probe.install('/src/components/TitleBar.vue', '', '')");
+
+  const inset = "var(--gosslan-title-h)";
+  const comp = await cdp.eval('window.__probe.composeStack(' + JSON.stringify(inset) + ')');
+  check("辅助窗口那一路：TitleBar 与图片遮罩真的同时挂在页面上", !!comp && comp.ok === true,
+    "composeStack ok", JSON.stringify(comp));
+
+  const a = await cdp.eval("window.__probe.stackRead()");
+  check("遮罩把标题栏那一条让开了（overlay 顶边不低于 caption 底边）",
+    a.ok === true && a.ovTop >= a.capBottom,
+    "ovTop >= capBottom(" + (a.capBottom ?? "?") + ")", JSON.stringify(a));
+  check("标题栏那一条仍高于遮罩（现算两个计算样式，不抄数字）",
+    a.ok === true && Number(a.capZ) > Number(a.ovZ),
+    "capZ > ovZ", "capZ=" + a.capZ + " ovZ=" + a.ovZ);
+  check("caption 中点实际命中的是标题栏 ⇒ ✕/− 与整窗唯一拖拽区点得着",
+    a.ok === true && a.hitInCaption === true, "elementFromPoint 落在 [data-caption] 内",
+    "命中 " + a.hitTag);
+
+  // 主窗口那一路：**没有** top-inset（遮罩铺到 ovTop=0，几何上真的压在标题栏上），
+  // 于是"点得到 ✕/−"完全靠层级 —— 也正是在这一路，反面对照才有意义。
+  // （辅助窗口那一路让位是几何给的，把层级按回去照样命中 ⇒ 在那一路做对照是恒真，
+  //   第一版就栽在这里：那一条红得很有道理，因为它测的是不存在的关系。）
+  const comp2 = await cdp.eval('window.__probe.composeStack("")');
+  const d = await cdp.eval("window.__probe.stackRead()");
+  check("主窗口那一路：遮罩确实铺到顶（ovTop=0）—— 所以下一条不是靠让位蒙对",
+    !!comp2 && comp2.ok === true && d.ok === true && d.ovTop <= 1, "ovTop<=1", JSON.stringify(d));
+  check("即便如此，caption 中点仍命中标题栏（层级独立于让位，两处宿主都成立）",
+    d.ok === true && d.hitInCaption === true, "hitInCaption=true", "命中 " + d.hitTag);
+
+  // 反面对照：按回"修之前"的形状（非定位、无层级）⇒ 同一个点必须被遮罩吃掉。
+  // 少了这一条，上面那句命中判据就是恒真（遮罩没压上来时它也成立）。
+  await cdp.eval("window.__probe.setCaptionStack('off')");
+  const b = await cdp.eval("window.__probe.stackRead()");
+  check("对照：把标题栏层级按回修之前 ⇒ 同一个点被遮罩吃掉（证明那条命中判据会咬）",
+    b.ok === true && b.hitInCaption === false, "hitInCaption=false", JSON.stringify(b));
+  await cdp.eval("window.__probe.setCaptionStack('on')");
+  const c = await cdp.eval("window.__probe.stackRead()");
+  check("对照可逆：恢复后同一个点又回到标题栏（不是「测一次就把页面弄坏了」）",
+    c.ok === true && c.hitInCaption === true, "hitInCaption=true", JSON.stringify(c));
 }
 
 /** 表情面板那一段：键盘出口（N1）+ 反向对照（不带 text 的 Enter 必须零次激活）。 */

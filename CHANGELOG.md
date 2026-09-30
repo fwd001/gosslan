@@ -10,6 +10,67 @@
 
 ## [Unreleased]
 
+## [4.31.41] - 2026-09-30
+
+### 发布与运行时证据（远程 CI 那条红 + 两处界面改动第一次有真读数）
+
+**先记一条红灯本身，以及我第一次判错的那个原因**：`v4.31.40` 的 tag 一打，三条 workflow 末尾那个
+「挂到 GitHub Release（单一任务·带重试）」**全红**（runs `36686037190` / `36686037238` / `36686037210`）。
+我第一版判成"三条并发抢创建、后到的拿到 `Release already exists`" —— **那句在此作废**：
+逐 step 现读匿名端点 `/actions/runs/<run>/jobs` 与 `GET /repos/.../releases/tags/v4.31.40` 之后，
+同 run 的「取回本次构建的产物」都是 success、而 Release **根本不存在（404）** ⇒ 三条里没有任何一条建成过，
+谈不上"被抢先"。真正的共同点是**那三个 release job 都没有 `actions/checkout`**：
+`gh release create/upload` 要仓库上下文，不在 git 工作目录里、参数又没带 `--repo` 就直接失败；
+而脚本里那句 `gh api repos/$GITHUB_REPOSITORY/...` 因为手写全路径"看着是好的"，
+失败点落在下一行、注解里只留一句 "Process completed with exit code 1."（匿名能读到的全部就这些）。
+⇒ 教训写在这里：**"三条都红"与"三条里一条红"是两种病**。我只数了 check-run 的名字就下了并发结论，
+差一步逐 step 读数，判出来的是一条不存在的关系。
+
+
+- 发布逻辑从三份 YAML 里收成一份：`scripts/publish-release-assets.sh`
+  （创建 = 有则复用；创建失败后**再查一次**：被并发建好就认它并继续上传，仍然不存在才算真失败；
+  上传仍带退避重试；产物目录空/缺 ⇒ 在任何一次 `gh` 调用之前就红 —— 宁可不发，也不发"看着成功而附件少一档"的 Release）。
+- 新增 `scripts/publishRelease.test.ts`：一份假 `gh` 把**七种结局**各跑一遍（新建 / 已存在复用 / 被抢先 /
+  权限真失败必须红 / 上传抖两次才成 / 上传一直失败必须红 / 空产物不碰 gh）。这条是今天唯一能拿到的行为证据——
+  发布步骤只在 tag 上跑，本机没有任何 YAML 解析器可校 workflow 结构。
+- ★ 新增 `scripts/sign-readiness.mjs`：**"还欠签名"从今天起是一条命令量得出来的东西**，而且每一项都是三态（有 / 没有 / 这台机器问不出来）—— 本机现读：mac 签名身份 ❌ 没有（`0 valid identities found`）、公证凭据 ❔ 问不出来（`~/.appstoreconnect/private` 读不到且无 `APPLE_API_*`）、Windows 证书 ❌ 没有；`--require` 时不就绪就非零退出。它**不碰构建也不写无法验证的 YAML**：每项都写清"缺的是哪样资产 + 拿到之后接在哪一个 workflow 的哪两步之间"。
+  判据 `scripts/signReadiness.test.ts` 八条（含"unknown 不许通往就绪"与"非 mac 平台那一格是问不出来、不是没有证书"两条反直觉的）。
+- ★ **根因那一半**：每条 `gh release ...` 现在都显式带 `--repo`，release job 也补了 `actions/checkout`（sparse 只取那一个脚本，且**排在 `download-artifact` 之前** —— 反序会被它默认清未跟踪文件把刚下载的产物扫掉）。假 `gh` 会**拒绝任何不带 `--repo` 的 release 调用**，这就是今天那条红的本地判据；红侧实测：把脚本里的 `--repo` 摘掉 ⇒ 七条里 **4 条红**、装回去 ⇒ 7/7 绿。
+- **浏览器内运行时判据第一次量到那两处界面改动**（`scripts/check-ui-runtime.mjs` 新增两段，判据 46 → 63）：
+  - `caption × 遮罩`：把 TitleBar 与图片遮罩真的挂在同一页上，量 `elementFromPoint` 命中的是谁。
+    静态"层级比大小"判不出"✕/− 与整窗唯一拖拽区实际点得着"，而那句才是用户报的东西。
+    带可逆反面对照：把标题栏层级按回修之前 ⇒ 同一个点被遮罩吃掉。
+    ⚠️ 这段第一次的对照做错了地方：在**辅助窗口**那一路做（那里遮罩几何上已经让开，
+    把层级按回去也照样命中标题栏 ⇒ 那条对照红得毫无道理）。挪到**主窗口**那一路（遮罩铺到 ovTop=0，
+    只剩层级在赢）才量到真的关系。
+  - `那颗表情入口`：真发一次 `Input.dispatchMouseEvent` 把指针移进气泡那一列 —— 那颗按钮写的是
+    `hidden group-hover/msg:flex`，不悬停就不在布局里，尺寸与底边都量不到。读数：悬停后 24×24、
+    底边与气泡那一列底边差 0px、`tap-safe` 仍在（触屏热区扩到 40px）、title/aria 都是「添加表情回复」
+    而不是借输入框那颗的文案。对照阈值从正向那格的 ±1px 容差推出来（>4px），
+    不是我拍的 24 —— 第一版拍了 24，在两行气泡上根本不成立（实测差 13px）。
+- 为这两段加了**两处稳定 DOM 钩子**（`data-caption`、`data-reaction-entry`）：探针按类名长串抓元素
+  是会静默少判一格的写法（徽标那一枚就是这么漏过的），所以给组件留可命名的钩子。
+  ⇒ 这一条动了应用码（两个 .vue），因此占一个版本号。
+- ⚠️ 一条工具级教训：夹具那段源码在**模板字符串里**，我写的 `\s` 到了页面里被吃掉一层变成 `s` ⇒
+  那条 `tap-safe` 判据永远假红。改成 `classList.contains('tap-safe')` 绕开整类问题
+  （这个文件本来就有一条"注释里不许出现反引号"的同族纪律，这是它的第二个形态）。
+- ★ 那份新脚本自己带着一个 **macOS 才咬人**的坑，是护栏整跑替我抓出来的：`publish-release-assets.sh` 里
+  写成 `$upload_err）` 和 `$tag：` —— 变量名后面紧跟一个全角标点。macOS 自带 bash 3.2 在 **UTF-8 `LC_CTYPE`**
+  下会把全角 `）` 的第一个字节并进变量名 ⇒ `set -u` 当场报 unbound ⇒ 重试那句消息永远打不出来 ⇒
+  `publishRelease.test.ts` 七条里 **5 条红**（`:95` 咬到三条、`:99` 再咬两条）。修法是两处加花括号。
+  **为什么只有护栏层红、快速/全量层自己那步 `npm test` 绿**：`verify-guards.py` 由 CPython 起，PEP 538 的
+  C-locale 强转把 `LC_CTYPE=C.UTF-8` 复制进了子进程 env（现读
+  `env -u LANG -u LC_CTYPE python3 -c 'import os;print(os.environ.get("LC_CTYPE"))'` ⇒ `C.UTF-8`），
+  而 node 起的步骤不做这个转换 ⇒ **同一条命令两种结局**。这条 49 个用例一起报"恢复源码之后测试仍然失败"
+  就是这么来的（49 = `cmd=npm("test")` 的用数），判据没错、是被测内容真坏了。
+  现在把 `LC_CTYPE: "C.UTF-8"` 直接钉进那份测试的 env ⇒ 这一类以后在**快速层**就会红，不必再等护栏层的 locale 意外。
+  红-绿两侧现跑：改前 `LC_CTYPE=C.UTF-8 node --test scripts/publishRelease.test.ts` ⇒ 5 fail；
+  改后不带任何 env 前缀 ⇒ 7/7 绿，而 `LC_CTYPE=C.UTF-8 npm test` ⇒ 795 pass / 0 fail（整套只有这两处受 locale 影响）。
+  ⚠️ **我第一次把这条红归因成"我在全量层跑着的时候改了被测文件"**（报错里那个乱码标识符看着像半份文件的证据），
+  冻结工作树整层重跑后它一字不差地复现 ⇒ 那个解释也不成立。教训一条：**自我归因也要过同一道否证** ——
+  当时 `git status` 里那个文件已经干净、字节级也没有 NUL，这句话本身就否证了"读到半份文件"，
+  而我没拿它去否证自己的解释（`scripts/ci-run.sh:23` 的注释里其实早记过同一个坑，说明这是本仓第二次踩）。
+
 ### 门禁与判据（本轮只动 scripts/，不动应用码 ⇒ 不占版本号）
 
 - **浏览器内运行时判据跟着编号那轮改口**（`scripts/check-ui-runtime.mjs`）：它原先给任务卡喂

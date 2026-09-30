@@ -164,6 +164,7 @@ onBeforeUnmount(() => {
   <div
     v-if="!isMobile"
     class="relative z-[85] flex shrink-0 select-none items-center bg-[var(--gosslan-caption)]"
+    data-caption
     :class="isMac ? 'justify-start pl-[13px]' : 'justify-end'"
     :style="{ height: 'var(--gosslan-title-h)' }"
     @mousedown="onDragStart"
