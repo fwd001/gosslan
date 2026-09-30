@@ -46,7 +46,43 @@ jobs:
         run: npm ci
 
       - name: Build .app + .dmg (${{ matrix.label }})
-        run: npm run tauri -- build --target ${{ matrix.target }} --features bluetooth
+        # ★ 为什么这里要重试而不是直接跑一条：`bundle_dmg.sh`（hdiutil attach + Finder 排版）在
+        #   macOS runner 上是**已知会偶发失败**的一步。2026-09-30 实测：同一个 `x86_64` 腿
+        #   11:17 那趟（v4.31.41）绿、12:23 这趟（main）红，两次输入一字未变（那次提交没动应用码也没动
+        #   这份文件），日志里 vite build ✅、cargo 4m40s ✅、`Built application` ✅、`Bundling Gosslan.app` ✅，
+        #   只有 `Running bundle_dmg.sh` 之后 exit 1。
+        #   偶发的正确处置是**有界重试**，绝不是 `continue-on-error` —— 那会把"Release 少一档安装包"
+        #   静音成绿（v4.31.37 就是这么丢的 Windows x64）。三次仍失败 ⇒ 判红，不装成功。
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rel="src-tauri/target/$TARGET/release"
+          dmg_dir="$rel/bundle/dmg"
+          attempt=0
+          while :; do
+            if npm run tauri -- build --target "$TARGET" --features bluetooth; then
+              break
+            fi
+            attempt=$((attempt + 1))
+            # 只重试"二进制都编出来了、只有打包那一步挂"这一种形状：编译错、依赖缺、
+            # 配置错重试三次只是拖慢红灯。
+            if [ ! -x "$rel/gosslan" ]; then
+              echo "第 $attempt 次失败且 $rel/gosslan 没产出 ⇒ 编译/链接问题，不是打包偶发，不重试" >&2
+              exit 1
+            fi
+            if ls "$dmg_dir"/*.dmg >/dev/null 2>&1; then
+              echo "第 $attempt 次失败但 .dmg 已经在 ⇒ 挂在打包之后那一步，重试没有意义" >&2
+              exit 1
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              echo "连试 $attempt 次都没打出 $TARGET 的 .dmg ⇒ 不再当偶发处理，判红" >&2
+              exit 1
+            fi
+            echo "第 $attempt 次：.app 已出、.dmg 没出 ⇒ 20s 后重试整步（cargo 有缓存，主要重跑打包）"
+            sleep 20
+          done
+          ls -l "$dmg_dir"
 
       - name: Upload .dmg artifact
         uses: actions/upload-artifact@v4

@@ -36,6 +36,29 @@
 - 顺手记一条今天的事实：`v4.31.41` 的 Release 页已由 CI 建好，**8 个附件**（两份 APK + 两份 `.sha256`、
   两份 dmg、两份 exe），四条腿全 success ⇒ 这就是那条 `--repo` 修复的第一次真跑；
   ⚠️ **只有 Android 带校验文件**，mac 的 dmg 与 win 的 exe 都没有 `.sha256`（要不要补齐是另一个决定）。
+### 修一条远程红灯：macOS 的 DMG 打包步加了"只认偶发"的有界重试
+
+- **红在哪一步（负责人贴的日志，run `36714419638`）**：`build-macos (x86_64-apple-darwin, x86_64)` 的
+  「Build .app + .dmg (x86_64)」，日志顺序是 vite build ✅ → cargo `Finished release profile in 4m40s` ✅ →
+  `Built application at .../x86_64-apple-darwin/release/gosslan` ✅ → `Bundling Gosslan.app` ✅ →
+  `Bundling Gosslan_4.31.41_x64.dmg` → `Running bundle_dmg.sh` →
+  `failed to bundle project: error running bundle_dmg.sh` → `Process completed with exit code 1.`，
+  后面 `Upload .dmg artifact` 被跳过。**同一条 run 的 arm64 腿绿**，而**同一个 x86_64 腿 1 小时前
+  （v4.31.41 那趟）也是绿的** —— 中间那次提交没动应用码也没动这份 workflow ⇒ 输入一字未变、结局不同，
+  这是 `bundle_dmg.sh`（hdiutil attach + Finder 排版）在 macOS runner 上的偶发，不是回归。
+  ⚠️ 我一开始想自己读逐 step 结论，匿名 API 额度 20:50 打到 0（`remaining=0`/403，21:31 才回），
+  是负责人把日志页贴出来才定到位；Actions 的 HTML 列表页我没当证据用 —— 它把 `v4.31.40` 的 macOS 也
+  显示成 Success，而那次红在发布步是 API 逐 step 证实过的。
+- **修法：有界重试，但只认"偶发"那一种形状**（`build-macos.yml` 那一步现在自己判）：
+  二进制没产出 ⇒ 判编译/链接问题，**不重试**直接红；`.dmg` 已经在 ⇒ 挂在打包之后那一步，**不重试**直接红；
+  `.app 出了、.dmg 没出` ⇒ 才重试，最多三次，三次仍无 `.dmg` 就红。
+  **绝不加 `continue-on-error`** —— 那正是把"Release 少一档安装包"静音成绿的做法（v4.31.37 丢 Windows x64 就是这么丢的）。
+- 五条分支本机现跑（`/tmp/retrytest`，桩 `npm` 造出各档结局，`sleep` 缩到 0）：
+  编译失败 ⇒ 退 1 且不重试；打包失败且无 `.dmg` ⇒ 重试到第 3 次退 1；失败但 `.dmg` 已在 ⇒ 退 1 并说"重试没有意义"；
+  一次成功 ⇒ 退 0；**前两次挂第三次成 ⇒ 退 0（这条才是"偶发被接住"的正面证据）**。
+- 边界：这份 workflow **不被任何一层判据读**（现读 `verify-guards.py` 无一条用例的注入目标是 workflow 文件，
+  `verify.mjs` 不解析 YAML），本机也没有 YAML 解析器 ⇒ 这段重试在真 runner 上的第一次执行只能等下一个 tag；
+  本地能证的只有"抽出来的那段 shell `bash -n` 退 0 + 上面五条分支"。
 ## [4.31.41] - 2026-09-30
 
 ### 发布与运行时证据（远程 CI 那条红 + 两处界面改动第一次有真读数）
