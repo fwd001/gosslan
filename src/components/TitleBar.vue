@@ -152,10 +152,18 @@ onBeforeUnmount(() => {
 <template>
   <!-- 顶部 caption（桌面端）：横贯整窗，作为窗口拖拽区 + 窗口控制按钮 + 功能名。
        整条浅灰，与下方三列的 rail/chat 浅灰连成一体（list 白底除外）。
-       辅助窗口只多一个功能名（`title`），其余与主窗口完全同一套。 -->
+       辅助窗口只多一个功能名（`title`），其余与主窗口完全同一套。
+       ⚠️ `z-[85]`：**这一条不许被任何内容浮层盖住**（用户 2026-09-30 实测「图片预览独立窗口
+       会遮住头部标题栏关闭最小化那块，应该只在下面内容区」，并要求「所有独立窗口标题栏都不会
+       被内容栏遮住，标题栏优先度最高」）。根因是浮层全都 `Teleport` 到 `<body>`（`fixed` +
+       `z-[60..80]`），而本条原先既无 `position` 也无 `z-index` ⇒ 按绘制顺序**任何定位元素都压在
+       它上面**，于是 ✕/−/拖拽区看不见也点不着（辅助窗那条 caption 是整扇窗唯一的拖拽区）。
+       85 落在既有阶梯的哪一格见 `BaseModal.vue` 里那条阶梯；选它而不是更高：只有 Toast（`z-[90]`、
+       `pointer-events-none`）允许浮在 caption 上，因为失败提示被压住就等于没有反馈。
+       层级由设计判据 ㉕ 从源码现算核对，不靠这里的数字被人记住。 -->
   <div
     v-if="!isMobile"
-    class="flex shrink-0 select-none items-center bg-[var(--gosslan-caption)]"
+    class="relative z-[85] flex shrink-0 select-none items-center bg-[var(--gosslan-caption)]"
     :class="isMac ? 'justify-start pl-[13px]' : 'justify-end'"
     :style="{ height: 'var(--gosslan-title-h)' }"
     @mousedown="onDragStart"

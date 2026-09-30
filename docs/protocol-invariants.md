@@ -1193,6 +1193,58 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 
 ---
 
+## 29. Group Todo Numbering
+
+### INV-P29 — 群任务编号 = 类型字母 + 组内永久递增数字，短码只是显示态
+
+用户 2026-09-30 定的八条，收敛成他原文那句"最终规则"：
+
+> 群任务编号 = 当前类型字母 + 永久递增数字；数字从 1 开始、唯一、删除/归档后永不复用；
+> 类型变化只改字母，优先级完全独立；数字超过 4 位时紧凑界面默认只显后四位，
+> 并且必须能让用户看到完整编号。
+
+**"唯一"的范围先写清楚**（这句是刻意留的，因为"全局"能被读成两种）：数字是**群内全局**唯一 ——
+一个群内三种类型共用同一条序列（所以会出现 `R1 / B2 / T3 / R4 / B5` 这种穿插），
+每个群各自从 1 起。这与"每个群任务都是从 1 开始、之后所有任务编号顺延"是同一句话，
+也让口头引用（"看板上 B12 那条"）在本群内唯一可解。
+
+| # | 规则 | 今天靠什么成立（不是靠谁记得） |
+|---|---|---|
+| 1 | 编号 = 字母 + 数字（`R` 需求 / `B` 缺陷 / `T` 任务） | 字母表 `TODO_CATEGORY_LETTER` 与算码函数 `todoCode` 只在 `src/utils/todos.ts` 一处；数字侧由 `db::todo_number_tests::numbers_start_at_one_and_increment_within_the_group` 钉 |
+| 2 | 数字从 1 起、唯一、只增、删除/归档都不回收 | 分配口只有一处 `db::next_todo_number` = 高水位 +1；高水位两个来源取大（`settings` 里那份 + 扫过的载荷里最大号，Lamport 式"见过就要躲"）⇒ `numbers_are_not_reused_after_messages_are_deleted` 与 `peer_allocated_numbers_are_avoided` 各钉一半 |
+| 3 | 改类型只换字母、数字一字不动 | **字母不落库、不上线**，由当前 `category` 现推 ⇒ 根本没有"改类型的迁移"这件事；`todos.test.ts#改类型只换字母` 钉住 |
+| 4 | 优先级不参与编号 | 编号只读 `category` + `number` 两格；反向判据 `todos.test.ts#优先级怎么改都不进编号`（连改三档，码一字不动） |
+| 5 | 数字超过 4 位时紧凑界面只显后四位 | `TODO_CODE_DIGITS` + `todoCode().label`；卡片与看板两格都只取 `label`，位数规则不在界面里重算（㉖ 那条判据钉"界面里不许出现 TODO_CODE_DIGITS"） |
+| 6 | 缩短时必须让用户知道"这不是全码" | PC 悬停 `title`（`todo.codeShortTip` 那句）；读屏的 `aria-label` **永远给全码**；移动端点卡片进详情 —— **详情标题不是紧凑界面，写的就是全码**（规则 7 那一格） |
+| 7 | 短码只是视觉，库/同步/引用一律用完整编号 + 内部 id | 线上载荷里只有 `pub number: i64`（完整数字），**没有 `letter` 这一格**（判据直接扫 `protocol.rs`）；所有引用键是 `todo_id` |
+| 8 | 多人同时发起不冲突 | 撞号由折叠层确定性收敛：`resolveTodoNumbers` 按 (号, todo_id) 定序、小的保号其余顺延，是纯函数 ⇒ 各端拿到同一批定义必然算出同一套号，**不需要仲裁帧**；判据 `todos.test.ts#多人同时发起撞了号` 含"顺序无关"那一条 |
+
+**为什么字母坚决不存进库里**（这条如果被"顺手优化"成存字符串，规则 3 就会变成一次数据迁移）：
+存了 `R12` 之后，"需求改成缺陷"要改所有已同步的事件、要和老对端争夺同一格、要在折叠里再判一次谁赢 ——
+那是把同一件事写成两个事实来源。字母能由类型现推，所以它**只能是显示态**。
+
+**这条不管的事**（别把它读成"号永远不会变"）：撞号顺延只动**撞上的那一条**（`t-b` 从 5 变 6），
+已经显示出去的号不会因为"来了新任务"漂移（`没有撞号时恒等` 钉住）。撞号那两条在各自库里的载荷
+仍写着当初分配的号（不改写已同步的事件），但**每一端的显示与引用都用折叠后的那一套号** ⇒ 界面与
+口头引用一致；要按号查库请先看折叠结果，主键永远是 `todo_id`（规则 7）。
+
+**清除聊天记录不会把号清零**：高水位是 `settings` 里的 `todo_num:<群>` 那一行，而
+`clear_all_data` 那句只删 `key LIKE 'gk:%'` ⇒ 清了记录再建任务照样避开用过的号（规则 2）。
+⚠️ 这条判据跑的是**测试里重抄的那段 SQL**（`db::tests::clear_all_data_sql_deletes_and_preserves`），
+不是生产函数本身 —— 那是这条用例原有的边界，别把它读成"改了生产 SQL 也会红"。
+
+**没号那一档**：4.31.14 之前对端建的任务载荷里根本没有 `number` ⇒ `todoCode` 返回 null、三处界面
+那一格一律留空（看板留的是**占位**，不让标题列左右跳）。宁可什么都不显示，也不按顺序补一个号 ——
+补出来的号会随集合变，正是规则 2 要防的形状（`legacy_payload_without_number_still_parses_as_zero`）。
+
+复跑（都在仓库根目录）：`npm test`（`src/utils/todos.test.ts` 里那几条 + `src/utils/designGuards.test.ts`
+㉖ + `src/utils/channelState.test.ts` 的"卡片实时状态/编号同源"）·
+`cargo test --lib todo_number_tests`（在 `src-tauri/` 下）· `node scripts/check-invariant-hooks.mjs`。
+
+- 钩子：`db::todo_number_tests::numbers_start_at_one_and_increment_within_the_group` `db::todo_number_tests::numbers_are_not_reused_after_messages_are_deleted` `db::todo_number_tests::peer_allocated_numbers_are_avoided` `db::todo_number_tests::legacy_payload_without_number_still_parses_as_zero` `db::tests::clear_all_data_sql_deletes_and_preserves` `src/utils/todos.test.ts#改类型只换字母、数字一字不动` `src/utils/todos.test.ts#优先级怎么改都不进编号` `src/utils/todos.test.ts#超过 4 位只留后四位并标出被缩短` `src/utils/todos.test.ts#多人同时发起撞了号` `src/utils/todos.test.ts#实时表给的是当前状态` `src/utils/designGuards.test.ts#群任务编号只有一个家` `src/utils/channelState.test.ts#群任务三处外显同源`
+
+---
+
 # 27. Required Test Matrix
 
 核心消息功能至少覆盖：
@@ -1230,3 +1282,5 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 | 一份更新把固定编号写成 0（INV-P24 反向） | 编号**不许被任何更新抹掉** —— 只认创建那一条说过的号；这条存在的意义是让"顺手把 def 里的号发回去"变红 |
 | 对端下线的接收收尾（INV-P28） | 群侧与单聊侧都必须"判据与摘表同一次持锁"，收尾只吃已摘出的那一份 ⇒ 摘取动作走 `take_*` 那一族 |
 | 把它改回「锁内 collect 出 id ⇒ 锁外逐个收尾」（INV-P28 反向） | 群侧与单聊侧那两条形状判据**各红自己那一条**；只红一边＝另一个面又被漏掉，那正是本条要防的形状 |
+| 两人同时发起群任务、各自分到同一个号（INV-P29） | 折叠后每一端都必须给出**互不相同且只增**的号（小的保号、其余顺延），且把定义换个顺序喂进来结果一致；卡片/看板/详情三处显示的是同一套号 |
+| 把编号改成「按当前显示顺序数 1..N」或把字母写进载荷（INV-P29 反向） | `designGuards` ㉖ 与 `channelState` 那条外显同源判据**各红自己那一条**⇒ 位置序号不能当编号、字母只能是显示态 |

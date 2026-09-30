@@ -38,7 +38,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import MessageReactionBar from "@/components/message/MessageReactionBar.vue";
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import type { ReactionChip } from "@/utils/reactions";
-import type { TodoStatus } from "@/utils/todos";
+import type { TodoLive } from "@/utils/todos";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import TodoCardBubble from "@/components/TodoCardBubble.vue";
 import UnsupportedKindBubble from "@/components/message/UnsupportedKindBubble.vue";
@@ -84,10 +84,11 @@ const props = withDefaults(
     /** 多选模式下本行是否已选中（决定勾选框的实心态）。 */
     selected?: boolean;
     /**
-     * 群任务卡片的**当前状态**表（`todo_id` → 状态），由会话层折叠一次传下来。
-     * 卡片自己的载荷是创建那一刻的快照，不查这张表就会永远显示「待办」。
+     * 群任务卡片的**当前**状态与编号表（`todo_id` → 那两格），由会话层折叠一次传下来。
+     * 卡片自己的载荷是创建那一刻的快照，不查这张表就会永远显示「待办」，
+     * 类型改成缺陷了也还会写着旧的字母。
      */
-    todoLiveStatus?: Map<string, TodoStatus>;
+    todoLive?: Map<string, TodoLive>;
   }>(),
   {
     prev: null,
@@ -101,7 +102,7 @@ const props = withDefaults(
     selfMention: null,
     selectMode: false,
     selected: false,
-    todoLiveStatus: () => new Map(),
+    todoLive: () => new Map(),
   },
 );
 
@@ -1111,21 +1112,23 @@ async function copyFileToClipboard() {
              ⚠️ 按钮与选择器都 **absolute 脱离文档流**：悬停/选表情不改变本条消息的高度
              （上一版把一排快捷表情挂在流内，一悬停整条长高 ⇒ 「鼠标划过跳来跳去」）。
              位置：别人的消息在**气泡右侧**（`-right-11`）、自己的消息在**气泡左侧**（`-left-11`），
-             竖向对齐气泡中线；锚在**本列**（列宽=气泡宽）所以按钮紧贴气泡，不贴面板边。
+             竖向**与气泡底边对齐**（`bottom-0`）—— 用户 2026-09-30：「按钮位置在视觉观感上应该与
+             聊天内容最下边对齐」。以前是 `top-1/2 -translate-y-1/2` 居中线，单行消息上看着像
+             浮在半空、多行消息上又和回应条错开。锚在**本列**（列宽=气泡宽）所以按钮紧贴气泡，不贴面板边。
              `hidden group-hover/msg:flex`：悬停本条才出现（组名在 `.group/msg` 上，本列在其内 ✓）。 -->
         <button
           ref="reactionBtnRef"
           v-if="canReact && !selectMode"
-          class="tap-safe hover-reveal pointer-events-auto absolute -right-11 top-1/2 z-20 h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition"
+          class="tap-safe hover-reveal pointer-events-auto absolute -right-11 bottom-0 z-20 h-6 w-6 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition"
           :class="[
             mine ? '-left-11' : '-right-11',
             reactionPickerOpen ? 'flex' : 'hidden group-hover/msg:flex',
           ]"
-          :title="t('chat.composer.emoji')"
-          :aria-label="t('chat.composer.emoji')"
+          :title="t('msg.reactionAddEntry')"
+          :aria-label="t('msg.reactionAddEntry')"
           @click.stop="toggleReactionPicker"
         >
-          <Smile class="h-4 w-4 text-[var(--gosslan-text-2)]" :stroke-width="1.75" />
+          <Smile class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" :stroke-width="1.75" />
         </button>
         <!-- 完整表情选择器：**Teleport 到 body + fixed 坐标**（坐标由入口按钮算出，见 positionReactionPicker）。
              挂在消息里会被列表的 `overflow-y: auto` 裁掉 —— 这就是"弹出位置不对"的原因。 -->
@@ -1295,7 +1298,7 @@ async function copyFileToClipboard() {
             v-else-if="message.kind === 'todo'"
             :message="message"
             :card-style="cardStyle"
-            :live-status="todoLiveStatus"
+            :live-todo="todoLive"
             :mention-names="mentionNames"
             :self-mention="selfMention"
             :mention-targets="message.mention_targets"

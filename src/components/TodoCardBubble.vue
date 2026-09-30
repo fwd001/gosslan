@@ -7,7 +7,7 @@ import type { CSSProperties } from "vue";
  * 渲染成一张可读的卡片（标题 / 状态 / 描述 / 图片 / 指派人 + 打开面板入口）。
  *
  * 载荷是**创建那一刻的快照**（改状态走的是 `todo_update`，那一条是静默事件、不进时间线），
- * 所以状态**必须**查父层传来的实时表 `liveStatus`（用户 #23：不查的话卡片永远挂着「待办」，
+ * 所以状态与**当前类型**必须查父层传来的实时表 `liveTodo`（用户 #23：不查的话卡片永远挂着「待办」，
  * 而任务其实早干完了）；表里查不到（任务已删 / 那条消息没被折叠进来）才退回快照。
  * 标题/描述/指派人仍是创建时的样子 —— 那些字段没有实时源，看板才是权威列表。
  */
@@ -24,6 +24,8 @@ import {
   TODO_STATUS_LABEL_KEY,
   TODO_STATUS_PILL,
   parseTodo,
+  todoCode,
+  type TodoLive,
   type TodoStatus,
 } from "@/utils/todos";
 import { t } from "@/i18n";
@@ -37,10 +39,10 @@ const props = defineProps<{
   /** 从父层 MessageItem 透传的卡片样式（固定底色，不跟随 mine/other）。 */
   cardStyle?: CSSProperties;
   /**
-   * 任务 `todo_id` → **当前**状态（会话层折叠一次传下来，见 `ChatWindow.todoLiveStatus`）。
-   * 缺省空表 = 单测/别的宿主没传 ⇒ 退回卡片自己的快照。
+   * 任务 `todo_id` → **当前**状态与当前编号码（会话层折叠一次传下来，见 `ChatWindow.todoLive`）。
+   * 缺省空表 = 单测/别的宿主没传 ⇒ 退回卡片自己的创建快照。
    */
-  liveStatus?: Map<string, TodoStatus>;
+  liveTodo?: Map<string, TodoLive>;
   /**
    * @ 渲染的判定输入（由 MessageItem 透传，与聊天正文同一份）。
    * 缺省 = 单测/别的宿主没传 ⇒ 描述里的 @ 不高亮，但文案仍是原文（不会退化成「@你」）。
@@ -86,7 +88,15 @@ function openCardImage(i: number) {
  * 也不要空着或骗人说已同步。
  */
 const status = computed<TodoStatus>(
-  () => (todoId.value ? props.liveStatus?.get(todoId.value) : undefined) ?? todo.value?.status ?? "todo",
+  () => (todoId.value ? props.liveTodo?.get(todoId.value)?.status : undefined) ?? todo.value?.status ?? "todo",
+);
+/**
+ * 卡片上那串编号（字母 + 数字）。口径整份在 `utils/todos.ts` 的 `todoCode`，这里只负责取用：
+ * 字母取**当前**类型（折叠表里那一份），查不到才退回创建快照 ⇒「改成缺陷了还写着 R」不会发生；
+ * 数字是创建那一刻那一个（`resolveTodoNumbers` 已保证各端对同一批定义算出同一套号）。
+ */
+const code = computed(() =>
+  props.liveTodo?.get(todoId.value ?? "")?.code ?? todoCode(todo.value?.category, todo.value?.number),
 );
 const assignees = computed(() => todo.value?.assignees ?? []);
 
@@ -100,14 +110,18 @@ function statusText(s: TodoStatus): string {
     <div class="overflow-hidden rounded-[var(--gosslan-bubble-radius)]">
     <div class="flex items-center gap-2 px-3 pt-2.5">
       <ListTodo class="h-4 w-4 shrink-0 text-[var(--gosslan-primary)]" />
-      <!-- 群内固定编号（#N）：成员各自库里同一条任务是同一个号，所以口头引用对得上。
-           旧版本对端建的任务没有号 ⇒ 不显示，也不按顺序补一个（补出来的号会随集合变）。 -->
+      <!-- 群内固定编号（`R12` / `B2345`）：成员各自库里同一条任务是同一个号，口头引用才对得上。
+           没号（旧版本对端建的载荷里没这个键）⇒ 不显示，也不按顺序补一个（补出来的号会随集合变）。
+           数字超过 4 位时这一行只显**后四位**（用户 2026-09-30 规则 5），全码有三个出口：
+           PC 悬停（`title`）、读屏（aria-label 永远给全码）、点卡片进详情（详情标题写全码）。
+           缩短那一份只是视觉识别码 —— 落库、上线、引用的都是完整编号 + 内部 todoId（规则 7）。 -->
       <span
-        v-if="todo?.number"
+        v-if="code"
         class="shrink-0 font-mono text-[11px] text-[var(--gosslan-text-2)]"
-        :aria-label="`任务 ${todo?.number} 号`"
+        :aria-label="t('todo.codeAria', { code: code.full })"
+        :title="code.shortened ? t('todo.codeShortTip', { full: code.full }) : undefined"
       >
-        #{{ todo?.number }}
+        {{ code.label }}
       </span>
       <!-- 优先级（紧急 / 常规 / 不急）：只有「紧急」抢权重，其余压次级色，
            免得三档一起亮反而读不出重点。谁能改见 `canUpdateTodo`（发起人/关联人/群主）。 -->

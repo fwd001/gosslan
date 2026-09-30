@@ -620,6 +620,8 @@ test("通讯录「（我）」标记：两个渲染分支都要挂，判据与�
  * 1. **时间线里的任务卡片**读的是创建那条 `todo` 消息的载荷，而之后所有改动都走
  *    `todo_update`（静默、不进时间线）⇒ 卡片自己的载荷永远停在创建时，而新建恒为「待办」。
  *    表现："群里任务早干完了，聊天里那条还挂着待办" —— 这正是要点卡片去看的原因。
+ *    同一句话还管着编号的**类型字母**：载荷里的 `category` 也是创建那一刻的，
+ *    所以字母必须由实时表里那份当前类型现推（否则「改成缺陷了卡片还写着 R」）。
  *    修法只能是会话层折一次传下去（`reactionMap` 同构）；每条气泡自己折叠就是 O(n²)。
  * 2. **两处任务计数**（弹窗标题 / 成员面板摘要）原先算"含归档的全部"，而看板默认那一档
  *    是活动任务 ⇒ 标题写 (9) 进去只看到 6 条。三处消费者必须同一次 `foldTodos` +
@@ -631,20 +633,27 @@ test("群任务三处外显同源：卡片实时状态 / 两处计数口径 / �
   const chatWin = read("components/ChatWindow.vue");
   assert.match(
     chatWin,
-    /const todoLiveStatus = computed\(\(\) => \{[\s\S]{0,400}foldTodos\(chat\.messages\[convId/,
-    "会话层折叠一次产出 todo_id → 当前状态（不许放进每条气泡）",
+    /const todoLive = computed\(\(\) => \{[\s\S]{0,400}foldTodos\(chat\.messages\[convId/,
+    "会话层折叠一次产出 todo_id → 当前状态与当前编号（不许放进每条气泡）",
   );
-  assert.match(chatWin, /:todo-live-status="todoLiveStatus"/, "折叠结果要传给 MessageItem");
+  assert.match(chatWin, /:todo-live="todoLive"/, "折叠结果要传给 MessageItem");
   assert.match(
     read("components/MessageItem.vue"),
-    /:live-status="todoLiveStatus"/,
+    /:live-todo="todoLive"/,
     "再传给任务卡片（少这一环等于白折）",
   );
   const card = read("components/TodoCardBubble.vue");
   assert.match(
     card,
-    /const status = computed<TodoStatus>\(\s*\(\) =>[^;]*props\.liveStatus/,
-    "卡片的状态必须优先查实时表，查不到才退回快照",
+    /const status = computed<TodoStatus>\(\s*\(\) =>[^;]*props\.liveTodo/,
+    "卡片的状态必须优先查实时表，查不到才退回创建快照",
+  );
+  // 编号那一格是同一个开关的**另一面**（用户 2026-09-30 规则 3：改类型只换字母）：
+  // 字母由**当前**类型现推，所以卡片也必须查这张表 —— 只修状态那一面就是"改成缺陷了还写着 R"。
+  assert.match(
+    card,
+    /const code = computed\(\(\) =>\s*props\.liveTodo\?\.get\(/,
+    "卡片的编号码必须优先查实时表：只看创建快照会让改完类型后的字母停在旧值",
   );
 
   for (const f of ["components/GroupTasksPanel.vue", "components/GroupMemberPanel.vue"]) {

@@ -113,6 +113,52 @@ export const TODO_CATEGORY_TEXT_CLASS: Record<TodoCategory, string> = {
   bug: "text-[var(--gosslan-danger-ink)]",
 };
 
+/**
+ * 群任务编号的**唯一显示口径**（用户 2026-09-30 那八条规则，全文见
+ * `docs/protocol-invariants.md` 的 INV-P29「群任务编号规则」）。
+ *
+ * 编号 = **当前类型的字母** + **组内永久递增的数字**（`R12` / `B12345` / `T3`）：
+ * - 字母**不落库、不上线**，只由 `category` 现推 ⇒ 改类型天然只换字母、数字一字不动（规则 3），
+ *   也不必为"换类型要保留原号"再写一条迁移；
+ * - 数字的唯一来源是 `resolveTodoNumbers`（创建那一刻由后端 `next_todo_number` 从高水位 +1 分配、
+ *   删除与归档都不回收；多人同时发起时折叠按 (号, id) 确定性顶开 ⇒ 各端算出同一份）（规则 2/4）；
+ * - 数字超过 `TODO_CODE_DIGITS` 位时，**紧凑界面**（聊天里的任务卡片、看板行）只显示后四位，
+ *   完整编号靠悬停（PC）/ 打开详情（移动端，详情本来就是全码）露出（规则 5/6）；
+ * - 缩短那份**只是视觉识别码**：库、线上载荷、引用与口头核对用的都是 `full` + 内部 `todoId`（规则 7）。
+ */
+export const TODO_CATEGORY_LETTER: Record<TodoCategory, string> = {
+  requirement: "R",
+  bug: "B",
+  task: "T",
+};
+
+/** 紧凑界面里数字最多占几位；超出只留**后**几位（前缀字母永远在）。 */
+export const TODO_CODE_DIGITS = 4;
+
+export interface TodoCode {
+  /** 完整编号（如 `B12345`）：详情、复制、引用与对账用的都是它。 */
+  full: string;
+  /** 紧凑界面用的码；没被缩短时与 `full` 逐字相同。 */
+  label: string;
+  /** true ⇒ `label` 是后四位，界面必须同时给出"这不是全码"的说明（规则 6）。 */
+  shortened: boolean;
+}
+
+/**
+ * 算出这串编号的三种形态。`number` 为 0/缺（旧版本对端建的任务载荷里就没这个键）时返回
+ * **null**：宁可什么都不显示，也不按顺序补一个号 —— 补出来的号会随集合变，正是本条要防的形状。
+ */
+export function todoCode(category: unknown, number: unknown): TodoCode | null {
+  if (!isTodoCategory(category)) return null;
+  const n = typeof number === "number" && Number.isFinite(number) ? Math.trunc(number) : 0;
+  if (n <= 0) return null;
+  const letter = TODO_CATEGORY_LETTER[category];
+  const digits = String(n);
+  const shortened = digits.length > TODO_CODE_DIGITS;
+  const full = `${letter}${digits}`;
+  return { full, label: shortened ? `${letter}${digits.slice(-TODO_CODE_DIGITS)}` : full, shortened };
+}
+
 /** 新建任务的缺省状态（与 Rust `default_todo_status()` 同值）。 */
 export const TODO_STATUS_DEFAULT: TodoStatus = "todo";
 
@@ -201,9 +247,10 @@ export interface TodoItem {
   /** 是否**显式**归档（完成之后手动归档；用户 2026-09-17 起完成不再自动归档）。 */
   archived: boolean;
   /**
-   * 群内固定编号（1 起、组内唯一、创建时定、编辑/归档不改）；0 = 无号
-   * （旧版本对端建的任务，载荷里根本没有这个字段 ⇒ 不猜号、不补号）。
-   * 显示为「#N」的唯一来源就是这里（`resolveTodoNumbers`），别再在别处按顺序数一遍。
+   * 群内固定编号的数字部分（1 起、组内唯一、创建时定、编辑/归档不改、删了也不回收）；
+   * 0 = 无号（旧版本对端建的任务，载荷里根本没有这个字段 ⇒ 不猜号、不补号）。
+   * 界面上那个「R12 / B2345」的码只许由 `todoCode()` 从这一格 + `category` 现算
+   * （`resolveTodoNumbers` 是数字的唯一来源），别再在别处按顺序数一遍。
    */
   number: number;
   /** 状态变为「完成」的权威时间戳（ms）；未完成/旧载荷为 null。 */
@@ -397,6 +444,29 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       doneAt,
       createdAt: created.get(todoId) ?? null,
     }));
+}
+
+/**
+ * 时间线上每张任务卡片**现在**该显示的那一格（状态 + 编号码）。
+ *
+ * 两个字段走的是同一条道理（用户 #23 + 2026-09-30 的编号规则 3）：卡片气泡读的是创建那条
+ * `todo` 消息的载荷，之后的改动全走静默的 `todo_update` ⇒ 载荷**永远停在创建那一刻**。
+ * 所以「干完了还挂着待办」和「改成缺陷了还写着 R」是同一个缺陷的两个面：
+ * 状态要查折叠结果，**类型字母也一样要查**（字母由当前 `category` 现推，数字仍是创建那个号）。
+ * 与看板同源：这里只是把 `foldTodos` 的结果换成按 `todo_id` 查表，判据不在这里再写一遍。
+ */
+export interface TodoLive {
+  status: TodoStatus;
+  /** null = 折叠结果里没有可显示的号（旧版本对端建的）⇒ 卡片退回自己的创建快照。 */
+  code: TodoCode | null;
+}
+
+export function todoLiveMap(items: TodoItem[]): Map<string, TodoLive> {
+  const m = new Map<string, TodoLive>();
+  for (const x of items) {
+    m.set(x.todoId, { status: x.status, code: todoCode(x.category, x.number) });
+  }
+  return m;
 }
 
 /**

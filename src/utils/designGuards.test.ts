@@ -1849,3 +1849,91 @@ test("看板行的类型角标三档一律画，不许再用「任务不画」�
     "判据抓不到「任务不画」那个条件 ⇒ 上面那句 !test 是空转",
   );
 });
+
+// ---------------- ㉕ 自绘标题栏压在**一切**内容浮层之上（只有 Toast 可以盖它） ----------------
+//
+// 真实缺陷（用户 2026-09-30 实测「图片预览独立窗口会遮住头部标题栏关闭最小化那块，应该只在
+// 下面内容区」+「所有独立窗口标题栏都不会被内容栏遮住，标题栏优先度最高」）：
+// ⑫ 那条只钉住**五个具名**浮层之间的先后，钉不住"第六个浮层随手写个更大的数就把 caption 压下去了"。
+// 而 `TitleBar` 原先根本没有 `position`/`z-index` ⇒ 按绘制顺序**任何**定位元素都高于它：
+// ✕/− 看不见也点不着，辅助窗那条 caption 还是整扇窗唯一的拖拽区（窗口连移都移不动）。
+// 所以这条判据的作用点是**全体 .vue**，不是清单：标题栏必须严格高于除 Toast 外的最大层级，
+// 且严格低于 Toast（Toast 是 `pointer-events-none` 的失败反馈，被压住等于没有反馈）。
+// 层级一律从源码现算，不在这里抄任何数字 ⇒ 新增浮层抬高自己时会当场红，而不是靠人记得阶梯。
+test("自绘标题栏高于一切内容浮层、只低于 Toast（层级从源码现算）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  /** 剥注释后取该文件里**所有** z-[NN]（一个文件可能有多处浮层）。 */
+  const zsOf = (text: string) =>
+    ((stripShapeComments(text).match(/z-\[(\d+)\]/g) ?? []).map((s) => Number(s.slice(3, -1))));
+
+  const titlePath = join(srcDir, "components", "TitleBar.vue");
+  const toastPath = join(srcDir, "components", "ToastHud.vue");
+  const titleZ = Math.max(...zsOf(readFileSync(titlePath, "utf8")));
+  const toastZ = Math.max(...zsOf(readFileSync(toastPath, "utf8")));
+
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const content: { file: string; z: number }[] = [];
+  for (const f of files) {
+    if (f === titlePath || f === toastPath) continue;
+    for (const z of zsOf(readFileSync(f, "utf8"))) content.push({ file: f.replace(`${srcDir}/`, ""), z });
+  }
+  assert.ok(content.length > 0, `一个内容层级都没扫到（${files.length} 个 .vue）⇒ 这条判据在空转`);
+  const top = content.reduce((a, b) => (b.z > a.z ? b : a));
+  assert.ok(
+    titleZ > top.z,
+    `标题栏(z-${titleZ}) 被内容浮层压住了：${top.file} 写着 z-[${top.z}] ⇒ caption 的 ✕/− 与唯一拖拽区会看不见点不着`,
+  );
+  assert.ok(titleZ < toastZ, `Toast(z-${toastZ}) 压不到标题栏(z-${titleZ}) 之上 ⇒ 顶部那条失败提示会被 caption 挡住`);
+
+  // 反空转：① 抬高一档的内容浮层必须被上面那句抓到；② 注释里写的 z-[NN] 不许算数。
+  assert.ok(zsOf('<div class="glass fixed inset-0 z-[200]">').includes(200), "现算取不到内容层级 ⇒ 上面那条比较是摆设");
+  assert.deepEqual(
+    zsOf("<!-- 阶梯里写 z-[200] 只是解释 -->\n/* z-[300] */\n// z-[400]\nconst keep = 'z-[7]';"),
+    [7],
+    "剥注释没生效 ⇒ 任何一句解释文字都能把这条判据顶红（假红）",
+  );
+});
+
+// ---------------- ㉖ 群任务那串编号只许由 todoCode 出（字母不落库、短码不落库） ----------------
+//
+// 用户 2026-09-30 那八条里最容易改坏的是两件"看着无害"的事：
+// ① 某个界面自己拼一次 `#N`、或按当前顺序数一个 1..N —— 于是同一条任务在两处显示两个号
+//    （看板左列原本就是 ordinals，切一次筛选号就变，正是那条缺陷的形状）；
+// ② 把字母或"后四位"这种**显示态**写进载荷/库里 —— 那是第二个事实来源，跨端一旦不一致就再也对不上。
+// 所以这条钉的是：字母表 + 位数规则只在 `utils/todos.ts` 一处，三处界面都只许调用 `todoCode`，
+// 而线上载荷里根本没有"字母"这一格（规则 7）。
+test("群任务编号只有一个家：字母表与缩短规则在 todos.ts，界面只许调用", () => {
+  const root = join(import.meta.dirname, "..");
+  const todos = stripShapeComments(readFileSync(join(root, "utils", "todos.ts"), "utf8"));
+  const protocol = readFileSync(join(root, "..", "src-tauri", "src", "protocol.rs"), "utf8");
+
+  // ① 一个家：字母表、位数上限、算码的函数、会话层那张实时表都只在 utils/todos.ts
+  for (const shape of ["TODO_CATEGORY_LETTER", "TODO_CODE_DIGITS", "export function todoCode", "export function todoLiveMap"]) {
+    assert.ok(todos.includes(shape), `utils/todos.ts 里少了 ${shape} ⇒ 编号口径没有家了`);
+  }
+  for (const k of ["task", "requirement", "bug"]) {
+    assert.ok(
+      new RegExp(`^\\s*(${k}|"${k}")\\s*:`, "m").test(todos),
+      `字母表里少了 ${k} 那一档 ⇒ 该类型的新任务会整个不出码`,
+    );
+  }
+
+  // ② 三处界面（卡片 / 看板 / 详情）只许取用，不许各拼一份
+  for (const rel of ["components/TodoCardBubble.vue", "components/GroupTasksBoard.vue", "components/TodoDetailDialog.vue"]) {
+    const src = stripShapeComments(readFileSync(join(root, rel), "utf8"));
+    assert.ok(/todoCode\(/.test(src), `${rel} 不再通过 todoCode 取编号 ⇒ 显示口径出现第二份`);
+    assert.ok(!/#\$\{/.test(src), `${rel} 又手写了一次「# + 号」那种前缀`);
+    assert.ok(!/\bordinals\b/.test(src), `${rel} 把位置序号当编号用了 ⇒ 切一次筛选同一条任务就换号`);
+    assert.ok(!/TODO_CODE_DIGITS/.test(src), `${rel} 自己数了位数 ⇒ 缩短规则会有两份`);
+  }
+
+  // ③ 字母与短码都是**现推的显示态**：线上载荷里根本没有这一格
+  assert.ok(!/\bletter\b/.test(protocol), "群任务载荷里出现了 letter ⇒ 字母变成第二个事实来源");
+  assert.ok(/pub number: i64,/.test(protocol), "载荷里的 number 不再是那个完整数字 ⇒ 编号口径被动过");
+
+  // 反空转：三种坏形状必须被上面那几条抓到
+  assert.ok(/#\$\{/.test("const t = `#" + "${item.number} `;"), "抓不到手写前缀 ⇒ 那句 !test 是空转");
+  assert.ok(/\bordinals\b/.test("const ordinals = computed(() => new Map());"), "抓不到位置序号 ⇒ 那句 !test 是空转");
+  assert.ok(/\bletter\b/.test("pub letter: String,"), "抓不到载荷里的 letter ⇒ 那句 !test 是空转");
+});

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 任务详情（用户 2026-09-17：列表改成「微信式极简」—— 行内只留序号/标题/状态/元信息，
+ * 任务详情（用户 2026-09-17：列表改成「微信式极简」—— 行内只留固定编号/标题/状态/元信息，
  * **描述与图片、以及所有状态与编辑操作都收进这里**，点行打开）。
  *
  * 纯展示 + 意图上抛：真正的改状态/归档/编辑/删除都在 `GroupTasksBoard` 里
@@ -22,6 +22,7 @@ import {
   TODO_STATUSES,
   TODO_STATUS_LABEL_KEY,
   TODO_STATUS_PILL,
+  todoCode,
   type TodoCategory,
   type TodoItem,
   type TodoPriority,
@@ -147,10 +148,18 @@ watch(
     }
   },
 );
+/**
+ * 标题前缀那串编号：详情**不是**紧凑界面，所以永远给完整编号（用户 2026-09-30 规则 7）。
+ * 卡片与看板那一格超过 4 位只显后四位，这一格就是用户核对全码的出口；
+ * 没有号（旧版本对端建的）整个前缀不出现，与那两格同一口径。
+ */
+const fullCode = computed(() =>
+  props.item ? todoCode(props.item.category, props.item.number)?.full ?? "" : "",
+);
 </script>
 
 <template>
-  <BaseModal :open="open" :title="(item?.number ? `#${item.number} ` : '') + (item?.title ?? t('todo.title'))" width="max-w-lg" @close="onDialogClose">
+  <BaseModal :open="open" :title="(fullCode ? fullCode + ' ' : '') + (item?.title ?? t('todo.title'))" width="max-w-lg" @close="onDialogClose">
     <div v-if="item" class="space-y-4">
       <!-- 优先级三档（默认「常规」）。可用的人 = 发起人 / 关联人 / 群主：
            与「改状态」同一档，所以复用同一个 `canChangeStatus` 入参，不另起一套判权。

@@ -1292,6 +1292,9 @@ mod tests {
         set_setting(&conn, "device_id", "dev-1").unwrap();
         set_setting(&conn, "nickname", "昵称").unwrap();
         set_setting(&conn, "gk:g1", "secret").unwrap();
+        // 群任务编号的高水位也是 settings 里的一行（`todo_num:<群>`）：
+        // 清除聊天数据的 SQL 只删 `gk:%`，这一行必须留下 —— 留下才谈得上"号永不复用"（INV-P29）。
+        set_setting(&conn, "todo_num:g1", "7").unwrap();
 
         // 模拟 clear_all_data SQL 部分
         let tx = conn.unchecked_transaction().unwrap();
@@ -1319,6 +1322,11 @@ mod tests {
         assert!(get_friend(&conn, "f1").is_some());
         assert_eq!(get_setting(&conn, "device_id").as_deref(), Some("dev-1"));
         assert_eq!(get_setting(&conn, "nickname").as_deref(), Some("昵称"));
+        assert_eq!(
+            get_setting(&conn, "todo_num:g1").as_deref(),
+            Some("7"),
+            "高水位被清掉了 ⇒ 下次建任务会从 1 重开，把已经用过的号再发一遍"
+        );
     }
 
     // ---------- 群文件 per-recipient 投递状态 ----------

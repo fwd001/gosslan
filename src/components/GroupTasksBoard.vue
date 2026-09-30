@@ -5,7 +5,7 @@
  *
  * **观感（用户 2026-09-17：「还是太丑，至少要参考飞书/微信/钉钉」）**：走**微信式极简** ——
  * 无卡片无边框，纯列表行 + 分组小标题 + 分割线，尽量少色块；行内只保留
- * **序号 + 标题 + 状态 + 元信息**（描述/图片/所有操作点开**任务详情**看，见 `TodoDetailDialog`），
+ * **固定编号 + 标题 + 状态 + 元信息**（描述/图片/所有操作点开**任务详情**看，见 `TodoDetailDialog`），
  * 这样行高统一（不再"行高参差、满屏 pill"）。
  *
  * **归档**：不再自动归档（完成只记 `doneAt`）——「已归档」是筛选里的一个胶囊（带计数），
@@ -45,6 +45,7 @@ import {
   foldTodos,
   isEffectivelyArchived,
   parseTodo,
+  todoCode,
   type TodoImage,
   type TodoItem,
   type TodoCategory,
@@ -222,19 +223,24 @@ const counts = computed<Record<TodoFilter, number>>(() => ({
 }));
 
 /**
- * 序号：按**当前显示顺序** 1..N（切筛选/切分组会重排 —— 用户要的是"列表里第几个"，
- * 内部 `todoId` 不适合展示）。
+ * 行首那串**固定编号**（`R12` / `B2345`）—— 口径整份在 `utils/todos.ts` 的 `todoCode`，这里只取用。
+ *
+ * 这一格以前数的是"当前显示顺序"1..N：切一次筛选或换一次分组，同一条任务的号就变了，
+ * 而口头引用要的恰恰是"同一条永远同一个号"（用户 2026-09-30 规则 2/8）⇒ 位置序号不能当编号，
+ * 整块换成折叠结果里的固定号。看板算**紧凑界面**：数字超过 4 位只显后四位（规则 5），
+ * 悬停那句必须说明"这不是全码"（规则 6）；全码在详情弹窗那格给。
+ * 旧版本对端建的任务没有号 ⇒ 这一格留空（占位仍留着，免得标题列左右跳），不补号。
  */
-const ordinals = computed(() => {
-  const m = new Map<string, number>();
-  let n = 0;
-  if (filter.value === "archived") {
-    for (const x of archivedTodos.value) m.set(x.todoId, ++n);
-  } else {
-    for (const g of grouped.value) for (const x of g.items) m.set(x.todoId, ++n);
-  }
-  return m;
-});
+function codeLabel(x: TodoItem): string {
+  return todoCode(x.category, x.number)?.label ?? "";
+}
+
+/** 悬停说明：被缩短时必须带上"只显后四位"那句；没缩短时直接给完整编号。 */
+function codeTip(x: TodoItem): string {
+  const c = todoCode(x.category, x.number);
+  if (!c) return "";
+  return c.shortened ? t("todo.codeShortTip", { full: c.full }) : t("todo.codeAria", { code: c.full });
+}
 
 /** 当前视图的条数（空态分流用）。 */
 const shownCount = computed(() =>
@@ -906,9 +912,10 @@ watch(
             :class="TODO_STATUS_BAR[x.status]"
             aria-hidden="true"
           ></span>
-          <span class="w-5 shrink-0 text-center text-[11px] tabular-nums text-[var(--gosslan-text-2)]">
-            {{ ordinals.get(x.todoId) }}
-          </span>
+          <span
+            class="w-9 shrink-0 font-mono text-[11px] tabular-nums text-[var(--gosslan-text-2)]"
+            :title="codeTip(x)"
+          >{{ codeLabel(x) }}</span>
           <button type="button" class="min-w-0 flex-1 text-left" @click="openDetail(x)">
             <div class="truncate text-[13px] font-medium text-[var(--gosslan-text-2)]" :title="x.title">
               {{ x.title }}
@@ -977,7 +984,7 @@ watch(
             <span class="text-[11px] text-[var(--gosslan-text-2)]">{{ g.items.length }}</span>
           </div>
 
-          <!-- 任务行：序号 + 标题/元信息（点开详情）+ 状态 + 快捷完成 -->
+          <!-- 任务行：固定编号 + 标题/元信息（点开详情）+ 状态 + 快捷完成 -->
           <div
             v-for="x in g.items"
             :key="x.todoId"
@@ -990,9 +997,10 @@ watch(
               :class="TODO_STATUS_BAR[x.status]"
               aria-hidden="true"
             ></span>
-            <span class="w-5 shrink-0 text-center text-[11px] tabular-nums text-[var(--gosslan-text-2)]">
-              {{ ordinals.get(x.todoId) }}
-            </span>
+            <span
+              class="w-9 shrink-0 font-mono text-[11px] tabular-nums text-[var(--gosslan-text-2)]"
+              :title="codeTip(x)"
+            >{{ codeLabel(x) }}</span>
             <button type="button" class="min-w-0 flex-1 text-left" @click="openDetail(x)">
               <!-- 完成态**不再划删除线**（用户 2026-09-24 #37：「完成的不要加横线，像删除一样」）：
                    完成是这条任务的结论，划掉会让它读成"作废"。状态由左缘色条 + 右侧胶囊 +

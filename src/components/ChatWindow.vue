@@ -24,7 +24,7 @@ import { fileToDataUrl } from "@/utils/imageBytes";
 import { MAX_MERGE_ITEMS, buildMergePayload } from "@/utils/mergeCard";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
 import { foldPinned, isPinned } from "@/utils/pins";
-import { foldTodos, type TodoStatus } from "@/utils/todos";
+import { foldTodos, todoLiveMap, type TodoLive } from "@/utils/todos";
 import { isRenderedInTimeline } from "@/utils/messageKinds";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
@@ -334,21 +334,21 @@ const reactionMap = computed(() => {
 });
 
 /**
- * 时间线上每张任务卡片的**当前状态**（`todo_id` → 状态）。
+ * 时间线上每张任务卡片的**当前**状态与**当前**编号码（`todo_id` → 那两格）。
  *
  * 为什么必须单独算：卡片气泡读的是**创建那条 `todo` 消息的载荷**，而之后的每次改动都走
  * `todo_update`（静默事件、不进时间线）⇒ 卡片自己的载荷**永远停在创建那一刻**，
  * 而新建任务恒为「待办」，于是"干完了的任务在聊天里还挂着待办"（用户 #23）。
+ * 同一句道理管着编号：改成「缺陷」后卡片不该还写着 `R`（用户 2026-09-30 规则 3「只换字母、
+ * 数字不变」），所以这里连同**现推的字母码**一起给，而不是只给状态。
  * 判据仍只有 `foldTodos` 一份（与看板、成员面板同一折叠结果），这里只是把它换成
- * 按 `todo_id` 查表的形式。与 `reactionMap` 同构：**会话层算一次**，
+ * 按 `todo_id` 查表的形式（`todoLiveMap`）。与 `reactionMap` 同构：**会话层算一次**，
  * 放进气泡里各自折叠就是 O(n²)。
  */
-const todoLiveStatus = computed(() => {
-  const m = new Map<string, TodoStatus>();
+const todoLive = computed(() => {
   const convId = chat.activeConv;
-  if (!convId) return m;
-  for (const x of foldTodos(chat.messages[convId] ?? [])) m.set(x.todoId, x.status);
-  return m;
+  if (!convId) return new Map<string, TodoLive>();
+  return todoLiveMap(foldTodos(chat.messages[convId] ?? []));
 });
 
 /**
@@ -1277,7 +1277,7 @@ function onLoadMore() {
             @locate="locateMessage"
             @open-image="openImageAt"
             @open-tasks="openTasks($event)"
-            :todo-live-status="todoLiveStatus"
+            :todo-live="todoLive"
           />
         </template>
       </VirtualList>

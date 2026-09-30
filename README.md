@@ -26,7 +26,7 @@
 | **★★★ 必读** | [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md) | **v1.0 验收标准**：P0 地基 + mesh 本体清单（含跨版本降级）、禁止事项、必须运行的验证命令 |
 | **★★★ 必读** | [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) | **项目全景**：完整功能清单、架构与代码导读、E2EE 状态机、工程约定、测试口径 |
 | **★★★ 必读** | [docs/stability-roadmap.md](docs/stability-roadmap.md) | **稳定版工作地图（当前阶段的地图）**：审计结论、10 条风险、26 条在途任务的 A/B/C/D 重判与保留/修复/优化/延后/删除理由、自动化 vs 人工覆盖边界、8 条高风险旅程、执行顺序与每阶段退出判据。**做任何稳定性工作前先在这里定位自己在哪一格** |
-| **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01~P28，条数现算 `node scripts/check-invariant-hooks.mjs`，含 INV-P24 跨版本优雅降级、INV-P25 发射不持锁、INV-P26 终态不可降级）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
+| **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01~P29，条数现算 `node scripts/check-invariant-hooks.mjs`，含 INV-P24 跨版本优雅降级、INV-P25 发射不持锁、INV-P26 终态不可降级、INV-P29 群任务编号规则）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
 | **★★ 参考** | [docs/AI_ENGINEERING_INDEX.md](docs/AI_ENGINEERING_INDEX.md) | 约束文档导航索引 + 文档与代码冲突时的处理规则 |
 | **★★ 参考** | [docs/adr/](docs/adr/) | **架构决策记录**：协议版本化（ADR-0007，2026-09-20 Accepted）、状态机边界、Rust/TS 契约、多路径选路、BLE、中继授权、故障注入测试 |
 | **★★ 参考** | [CHANGELOG.md](CHANGELOG.md) | **版本历史**：每个版本改了什么、为什么改（含所有已修 bug 的根因） |
@@ -88,7 +88,7 @@ gosslan/
 │   ├── stability-roadmap.md      # ★★★ 稳定版工作地图：风险/任务重判/覆盖边界/执行顺序
 │   ├── ARCHITECTURE-REVIEW-2026-09-24.md  # ★ 架构复审：根因 + 8 步路线
 │   ├── final-architecture-review.md  # ★ 第二阶段复审：现算基线 + 巨型文件审计 + 四态结论
-│   ├── protocol-invariants.md    # 协议不变量明细 INV-P01~P28
+│   ├── protocol-invariants.md    # 协议不变量明细 INV-P01~P29
 │   ├── acceptance/               # 版本验收标准（当前：1.0 release）
 │   ├── adr/                      # 架构决策记录（含 ADR-0020 公网哑管道中继）
 │   └── templates/                # Bug 修复 / ADR 模板

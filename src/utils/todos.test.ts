@@ -23,6 +23,12 @@ import {
   TODO_PRIORITIES,
   TODO_PRIORITY_DEFAULT,
   resolveTodoNumbers,
+  TODO_CATEGORIES,
+  TODO_CATEGORY_DEFAULT,
+  TODO_CATEGORY_LETTER,
+  TODO_CODE_DIGITS,
+  todoCode,
+  todoLiveMap,
   mergeIncomingTodoRows,
   todoRowsFor,
   isTodoRowsLoaded,
@@ -678,6 +684,82 @@ test("撞号时两端算出同一套号：todo_id 小的保住原号，其余顺
   // 纯函数 ⇒ 换一个成员拿到同一批定义（顺序不同）结果一致
   const b = resolveTodoNumbers([{ todoId: "t-c", number: 2 }, { todoId: "t-a", number: 1 }, { todoId: "t-b", number: 1 }]);
   assert.deepEqual([...b.entries()], [["t-a", 1], ["t-b", 2], ["t-c", 3]]);
+});
+
+// ── 编号的**显示口径**（字母 + 数字；用户 2026-09-30 那八条，全文见 INV-P29）──────
+test("三档类型各有一个字母，且字母表与取值表一一映射", () => {
+  assert.deepEqual(TODO_CATEGORY_LETTER, { requirement: "R", bug: "B", task: "T" });
+  // 一一映射（两个方向都不许撞）：加第四种类型时这张表必须补齐，否则两条断言之一会红
+  assert.equal(new Set(TODO_CATEGORIES.map((c) => TODO_CATEGORY_LETTER[c])).size, TODO_CATEGORIES.length);
+  assert.equal(new Set(Object.values(TODO_CATEGORY_LETTER)).size, TODO_CATEGORIES.length);
+  for (const c of TODO_CATEGORIES) assert.ok(TODO_CATEGORY_LETTER[c], `${c} 没有字母`);
+});
+
+test("编号 ≤4 位时原样显示，超过 4 位只留后四位并标出被缩短", () => {
+  const short = todoCode("bug", 12);
+  assert.deepEqual(short, { full: "B12", label: "B12", shortened: false }, "没超位时 label 必须与 full 逐字相同");
+  const edge = todoCode("requirement", 9_999);
+  assert.equal(edge?.shortened, false, "4 位是边界内，不许缩短");
+  const first = todoCode("requirement", 10_000);
+  assert.deepEqual(first, { full: "R10000", label: "R0000", shortened: true }, "刚好越界那一个数也要缩短");
+  const big = todoCode("bug", 12_345);
+  assert.deepEqual(big, { full: "B12345", label: "B2345", shortened: true });
+});
+
+test("没号（旧对端建的）与不认识的类型都不出码：宁可空白也不补一个会漂移的号", () => {
+  assert.equal(todoCode("task", 0), null);
+  assert.equal(todoCode("task", undefined), null);
+  assert.equal(todoCode("task", -3), null);
+  assert.equal(todoCode(undefined, 5), null);
+  assert.equal(todoCode("story" as never, 5), null, "载荷里来了本端不认识的类型 ⇒ 不猜字母");
+});
+
+test("改类型只换字母、数字一字不动（规则 3）", () => {
+  const rows = foldTodos([
+    numRec("m1", 5, '{"todo_id":"t1","title":"甲","number":12,"category":"requirement"}'),
+    numRec("m2", 9, '{"todo_id":"t1","number":12,"category":"bug"}', "todo_update"),
+  ]);
+  const code = todoCode(rows[0]?.category, rows[0]?.number);
+  assert.equal(code?.full, "B12", "字母跟着**当前**类型走");
+  assert.equal(rows[0]?.number, 12, "数字不许因为换类型被重新分配");
+});
+
+test("优先级怎么改都不进编号（规则 4）", () => {
+  const rows = foldTodos([
+    numRec("m1", 5, '{"todo_id":"t1","title":"甲","number":8,"priority":"normal"}'),
+    numRec("m2", 9, '{"todo_id":"t1","number":8,"priority":"high"}', "todo_update"),
+    numRec("m3", 12, '{"todo_id":"t1","number":8,"priority":"low"}', "todo_update"),
+  ]);
+  assert.equal(todoCode(rows[0]?.category, rows[0]?.number)?.full, "T8");
+});
+
+test("多人同时发起撞了号：折叠给的两套码互不相同，且顺序无关", () => {
+  const recs = [
+    numRec("m1", 3, '{"todo_id":"t-b","title":"乙","number":5,"category":"bug"}'),
+    numRec("m2", 4, '{"todo_id":"t-a","title":"甲","number":5,"category":"requirement"}'),
+  ];
+  const codes = (list: MessageRecord[]) => {
+    const rows = foldTodos(list);
+    return rows.map((x) => `${x.todoId}=${todoCode(x.category, x.number)?.full}`);
+  };
+  assert.deepEqual(codes(recs), ["t-a=R5", "t-b=B6"]);
+  // 另一个成员先看到哪一条不影响结果（纯函数 + 同一批定义 ⇒ 同一套号）
+  assert.deepEqual(codes([...recs].reverse()), codes(recs));
+  assert.equal(new Set(codes(recs)).size, 2, "码必须互不相同，否则口头引用还是会对不上");
+});
+
+// 会话层那张实时表：卡片的状态与字母**同源**，两个面不许只修一半（见 channelState 那条守卫）
+test("实时表给的是当前状态 + 当前类型算出的码，不是创建快照", () => {
+  const rows = foldTodos([
+    numRec("m1", 5, '{"todo_id":"t1","title":"甲","number":4,"category":"requirement","status":"todo"}'),
+    numRec("m2", 9, '{"todo_id":"t1","number":4,"category":"bug","status":"done"}', "todo_update"),
+  ]);
+  const live = todoLiveMap(rows);
+  assert.equal(live.get("t1")?.status, "done");
+  assert.equal(live.get("t1")?.code?.full, "B4", "字母要跟着当前类型；卡片不查这张表就会写着创建时的 R");
+  // 无号那条 ⇒ code 是 null（不是 undefined、也不是补出来的号），卡片据此退回自己的快照
+  const noNum = todoLiveMap(foldTodos([numRec("m3", 2, '{"todo_id":"t9","title":"丙"}')]));
+  assert.equal(noNum.get("t9")?.code, null);
 });
 
 test("没有撞号时恒等：已显示的号不会因为来了新任务而漂移", () => {
