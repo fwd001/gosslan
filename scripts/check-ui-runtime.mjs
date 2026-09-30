@@ -180,6 +180,20 @@ window.__probe = (() => {
     }
     const Vue = await import(vueUrl);
     const mod = await import(cmpPath);
+    // 样式表**也要等**，而且是同一类竞态的另一半：vite dev 把 style.css 当模块注入，
+    // navigate 之后它可能还在飞。没穿上衣服的页面里所有计算样式都是 0px / clip，
+    // 于是「两枚徽标的半径不同」「名字必须是省略号」这类判据会报成设计回归 —— 而真相只是时机。
+    // （2026-09-30 本地实测：同一份内容两次跑，第一次这两条红、第二次全绿 ⇒ 不是回归，是没等。）
+    // 判据现读 :root 上那个 token：它由 style.css 定义，取到非空值就等于那份样式表已经生效。
+    let cssReady = false;
+    for (let i = 0; i < 60 && !cssReady; i += 1) {
+      const tok = String(getComputedStyle(document.documentElement).getPropertyValue('--gosslan-radius-pill') || '').trim();
+      cssReady = tok !== '';
+      if (!cssReady) await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!cssReady) {
+      throw new Error('15s 内样式表没生效（--gosslan-radius-pill 取不到值）⇒ 计算样式全是 0，下面的判据只能假红');
+    }
     // 组件里用 useAppStore() ⇒ 必须给这一个 app 挂上 pinia，而且要用**页面已经在用的那份 pinia**
     // （自己 import('pinia') 会拿到第二份实例，store 互不相认，报的错还长得像"store 坏了"）。
     let pinia = null;
@@ -195,12 +209,17 @@ window.__probe = (() => {
     const state = Vue.reactive({ open: false, initialKeyword: '' });
     window.__st = state;
     // 夹具原先把 props 写死成 open/initialKeyword + 三个回调；任务卡那一族要的是
-    // message / liveStatus / mentionNames / selfMention ⇒ 第三参收一份 JSON props。
-    // liveStatus 是 Map，JSON 传不了 ⇒ 约定用 liveStatusPairs（[[id,status],…]）在这里还原。
+    // message / liveTodo / mentionNames / selfMention ⇒ 第三参收一份 JSON props。
+    // liveTodo 是 Map，JSON 传不了 ⇒ 约定用 liveTodoPairs（[[id,status,category,number],…]）在这里还原，
+    // 而且**必须走应用自己那份 todoLiveMap**（import 到的还是组件用的同一个模块实例）：
+    // 在这里手写一遍"字母怎么拼、几位要缩短"就是给编号口径开第二个家，探针会先骗过自己。
     const extra = propsJson ? JSON.parse(propsJson) : {};
-    if (Array.isArray(extra.liveStatusPairs)) {
-      extra.liveStatus = new Map(extra.liveStatusPairs);
-      delete extra.liveStatusPairs;
+    if (Array.isArray(extra.liveTodoPairs)) {
+      const T = await import('/src/utils/todos.ts');
+      extra.liveTodo = T.todoLiveMap(extra.liveTodoPairs.map((p) => ({
+        todoId: p[0], status: p[1], category: p[2], number: p[3],
+      })));
+      delete extra.liveTodoPairs;
     }
     // ★ 这个对象必须**建在渲染函数里面**：open: state.open 是对 reactive 状态的读，
     //   提到外面求值一次就把 props 冻在 false 上 —— 表情面板那段当场整块不渲染（格子数 0），
@@ -270,8 +289,11 @@ window.__probe = (() => {
     const e = document.querySelector(sel);
     if (!e) return null;
     const r = e.getBoundingClientRect();
+    // title / text 是 2026-09-30 那轮加的（编号那一格要同时量"可见的后四位"和"title/aria 里的全码"）：
+    // 只加不减 ⇒ 现有消费者（读 tabindex / aria / 宽高）行为一字不变。
     return { role: e.getAttribute('role'), tabindex: e.getAttribute('tabindex'),
-      aria: e.getAttribute('aria-label'), w: Math.round(r.width), h: Math.round(r.height) };
+      aria: e.getAttribute('aria-label'), title: e.getAttribute('title'),
+      text: (e.textContent || '').trim(), w: Math.round(r.width), h: Math.round(r.height) };
   };
   H.focusThumb = () => {
     const t = document.querySelector('[role="button"]');
@@ -865,17 +887,41 @@ async function runTaskCard(cdp, url) {
     `${longDesc.scrollH} > ${longDesc.clientH}? 高亮=${longDesc.tokH}px 行高=${longDesc.lineHeight}`);
 
   // —— 实时状态表那一环（#23：载荷是创建时快照，卡片必须查父层那张表）——
+  // 同一张表现在还管着编号：类型字母由**当前**类型现推（用户 2026-09-30 规则 3），
+  // 而"超过 4 位只显后四位 + 全码要能查到"（规则 5/6）只有真渲染出来才量得动。
   await mount({
     message: JSON.parse(MSG),
     mentionNames: ["小布"],
     selfMention: null,
-    liveStatusPairs: [[TODO_ID, "done"]],
+    liveTodoPairs: [[TODO_ID, "done", "bug", 12345]],
   });
   const t2 = await text();
   check("传了实时表说这条已完成 ⇒ 胶囊换成已完成（查不到才退回快照，查到就不许再显示旧值）",
     t2.includes(labels.done) && !t2.includes(labels.todo), labels.done, t2.slice(0, 80));
+  const codeCell = await cdp.eval("window.__probe.el('.font-mono')");
+  const cText = codeCell ? codeCell.text : "";
+  const cTitle = codeCell ? String(codeCell.title || "") : "";
+  const cAria = codeCell ? String(codeCell.aria || "") : "";
+  check("编号那格的字母来自**实时表里的当前类型**（夹具的创建快照既没类型也没号 ⇒ 不查表一个字都出不来）",
+    cText === "B2345", "可见文本 B2345", JSON.stringify(codeCell));
+  check("五位数字 ⇒ 可见只有后四位，而 title 与 aria 都带完整编号 B12345（短码不许被当成全码）",
+    cTitle.includes("B12345") && cAria.includes("B12345") && !cText.includes("12345"),
+    "title/aria 含 B12345、可见文本不含", JSON.stringify(codeCell));
+
+  // 反面对照：不传实时表 ⇒ 卡片只剩那份"既没类型也没号"的创建快照，那一格必须整个不出现。
+  // 少了这一条，上面两句就成了探针自己造出来的号。
+  await mount({ message: JSON.parse(MSG), mentionNames: ["小布"], selfMention: null });
+  const codeOff = await cdp.eval("window.__probe.el('.font-mono')");
+  check("对照：不传实时表 ⇒ 那格没有任何补出来的号（宁可空白，也不按顺序数一个会随集合漂移的号）",
+    codeOff === null, "找不到 .font-mono", JSON.stringify(codeOff));
 
   // —— 键盘可达 + 按 Enter 真的开了那份统一预览 ——
+  await mount({
+    message: JSON.parse(MSG),
+    mentionNames: ["小布"],
+    selfMention: null,
+    liveTodoPairs: [[TODO_ID, "done", "bug", 12345]],
+  });
   const thumb = await cdp.eval(`window.__probe.el('[role="button"]')`);
   check("卡片里的缩略图是键盘可达的（role=button + tabindex=0 + 有可访问名）",
     !!thumb && thumb.tabindex === "0" && !!thumb.aria, "role=button/tabindex=0/aria-label",

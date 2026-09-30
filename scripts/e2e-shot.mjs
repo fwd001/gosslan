@@ -152,6 +152,27 @@ export function captureShot(runDir, tag) {
  * 15 扇 vs 40 扇，而且**同一个 pid 在两次调用之间从"有窗口"变成"没窗口"**（切了 Space）
  * ⇒ 拿瞬时读数当判据是本仓第二次踩这个形状（第一次见 roadmap §12.7 被撤掉的那条判据）。
  */
+/** 上一次「问窗口清单」为什么失败；成功之后清成 null（别让上一轮的原因串到这一轮）。 */
+let lastWindowQueryWhy = null;
+export function windowQueryWhy() {
+  return lastWindowQueryWhy;
+}
+
+/** 预算可用环境变量调，默认 25s（实测本机这条查询要 ~20s；CI/别的机器给到 8s 也够）。 */
+export function winQueryBudgetMs() {
+  const raw = Number(process.env.GOSSLAN_WINQUERY_MS);
+  return Number.isFinite(raw) && raw >= 1 ? Math.trunc(raw) : 25_000;
+}
+
+/** 把 execFileSync 的四种失败分开说：没 python3 / 没 pyobjc / 被预算杀掉 / python 自己报错。 */
+function describeWindowQueryError(e, budgetMs) {
+  if (e?.code === "ENOENT") return "python3 不在 PATH";
+  if (e?.killed || e?.signal) return `问窗口清单超时（预算 ${budgetMs}ms，这台机器更慢 ⇒ 用 GOSSLAN_WINQUERY_MS 抬）`;
+  if (e?.status === 3) return "这台机器没装 pyobjc（python3 里 import Quartz 失败）";
+  if (e instanceof SyntaxError) return "窗口清单返回的不是 JSON（那段 python 坏了）";
+  return `python3 问窗口清单失败（退码 ${e?.status ?? "?"}）`;
+}
+
 export function listPidWindows(pid = null) {
   const py = `
 import sys,json
@@ -176,12 +197,21 @@ out.sort(key=lambda r:(-r['on'],-(r['w']*r['h'])))
 print(json.dumps(out))
 `;
   try {
+    // 预算走环境变量（GOSSLAN_WINQUERY_MS，默认 25s）。本机 2026-09-30 两个读数都记在这里，
+    // 免得下一个人重新量：空载跑这条查询 **11.2s**（38 扇窗）/ 最宽口径 19.8s，
+    // 而**一轮 E2E 正在跑的时候 25s 也不够**（报告里那句"超时"就是这么来的）；旧预算 8s 则从来没通过过。
+    // ⇒ 窗口帧今天仍拿不到是**实测的环境上限**，不是依赖缺失（同一段 python 直接跑出过 725 扇窗）。
     const out = execFileSync("python3", ["-c", py, pid === null ? "-" : String(pid)],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 8000 });
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: winQueryBudgetMs() });
     const arr = JSON.parse(out);
+    lastWindowQueryWhy = null;
     return Array.isArray(arr) ? arr : null;
-  } catch {
-    return null; // 退码 3（没 pyobjc）与"python3 根本不在 PATH"都算问不出来，不冒充"没有窗口"
+  } catch (e) {
+    // 三态分开之外，**为什么问不出来也要分开**：写死成"没装 pyobjc"会把超时说成缺依赖，
+    // 而本轮那条红就是这样被误归因的（真装得上，直接跑同一段 python 出 725 扇窗）。
+    // null（问不出来）仍然不等于"这个进程没有界面"。
+    lastWindowQueryWhy = describeWindowQueryError(e, winQueryBudgetMs());
+    return null;
   }
 }
 
@@ -231,7 +261,7 @@ export function captureWindowBySpec(runDir, tag, win) {
 export function captureWindowShot(runDir, tag, pid) {
   if (!Number.isInteger(pid) || pid <= 0) return { ok: false, why: "没有这个实例的 pid" };
   const wins = listPidWindows(pid);
-  if (!wins) return { ok: false, why: "这台机器问不出窗口清单（没有 python3/pyobjc）" };
+  if (!wins) return { ok: false, why: `问不出窗口清单：${windowQueryWhy() ?? "原因未记"}` };
   if (!wins.length) return { ok: false, why: `pid ${pid} 名下没有 ≥80×80 的窗口` };
   return captureWindowBySpec(runDir, tag, wins[0]);
 }
