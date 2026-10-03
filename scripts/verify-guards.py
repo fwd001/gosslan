@@ -3010,6 +3010,38 @@ CASES: list[Case] = [
         },
         tags=["frontend", "change-budget", "new-guards"],
     ),
+    # ---------------- force push 后的 before 不可达（2026-10-03 真实事故） ----------------
+    Case(
+        name="Change Budget:force push 后 before 不可达不得判空转（改回去必须红）",
+        why="真实事故 2026-10-03（CI run 37106836002）：发 v4.33.0 时用了 amend + "
+            "--force-with-lease，于是事件里的 event.before 是**刚被改写掉的那个提交**"
+            "（1231aa2），它不在任何 ref 上，而 CI 是从 GitHub 全新克隆（fetch-depth: 0 "
+            "只拉 ref 上的对象）⇒ `git cat-file -e <before>^{commit}` 必然失败 ⇒ "
+            "拿不到 before..sha，脚本退到 `HEAD~1..HEAD`。**它确实判到了 1 个 commit 并把"
+            "三条判据全跑完**，却仅因「来源不是 before..sha」被判 exit 1 ⇒ 门禁自己兜住了"
+            "范围、又自己判这个兜底无效，自相矛盾。`docs/VERSIONING.md` §3 明确允许改写已推送"
+            "历史（那条流程第一步就是 amend + force push），所以这不是该拦的形态。"
+            "本用例把 force push 的例外分支摘掉=把缺陷装回去：注入态必须 exit 1 且报"
+            "「受检范围」，还原态必须 0。与上一条（真·env 没喂必须红）互为对照："
+            "**两条都守住，才既不误红又不放松**。",
+        file=ROOT / "scripts" / "check-change-budget.mjs",
+        injections=[(
+            "  if (beforeGivenButUnreachable) {",
+            "  if (false && beforeGivenButUnreachable) {",
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="受检范围",
+        env={
+            "GOSSLAN_BUDGET_STRICT": "1",
+            "GITHUB_EVENT_NAME": "push",
+            "GITHUB_REF_NAME": "main",
+            # ★ 给一个**不可达**的 before：模拟 force push 后的真实形态
+            "GITHUB_EVENT_BEFORE": "0000000000000000000000000000000000000000",
+            "GITHUB_SHA": "HEAD",
+        },
+        tags=["frontend", "change-budget", "new-guards"],
+    ),
     # 守门读真实 git 历史,没法"改坏源文件"来验证 —— 所以脚本留了 --from-json 测试接缝,
     # 用 fixture 喂数据。fixture 的默认状态是全 PASS(每条判定路径都走到),下面四条用例
     # 各自破坏一个条件来验证对应判据会红。fixture 本身提交进仓库,是可以 review 的测试数据。

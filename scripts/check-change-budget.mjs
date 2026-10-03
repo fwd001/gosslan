@@ -687,17 +687,48 @@ const strict = process.env.GOSSLAN_BUDGET_STRICT === "1";
 // 非空转用例里每一条 `--from-json` 的"恢复后即 PASS"半边都被这里判成 exit 1 —— 本地没有这个
 // env 所以从来不红，而它藏了 7 天（从 d056422 起），因为 Change Budget 在护栏之前一步、
 // fail-fast 把护栏那步吞成了"未跑"。
+// ★ 2026-10-03 补一个**合法例外**：`before` 喂进来了但对象不可达 = force push
+//   （`docs/VERSIONING.md` §3 明确允许改写已推送历史，那条流程的第一步就是 amend + force push）。
+//   GitHub 此时给的 `event.before` 是**被改写掉的那个提交**，它不在任何 ref 上，
+//   而 CI 是从 GitHub 全新克隆（`fetch-depth: 0` 只拉 ref 上的对象）
+//   ⇒ `git cat-file -e <before>^{commit}` 必然失败 ⇒ 探测拿不到 before..sha。
+//   **实测（run 37106836002）**：脚本退到 `HEAD~1..HEAD`、**真的判到了 1 个 commit
+//   并把三条判据全跑完**，却仅因为"来源不是 before..sha"被判 exit 1 —— 门禁自己
+//   兜住了范围，又自己判这个兜底无效。这是自相矛盾，不是它该拦的东西。
+//   真的空转（"看起来判了、其实一个 commit 都没看"）由下面 `zeroCoverage` 那条兜：
+//   候选全空时退出码 2，且那句文案写明"没有新 commit 可判"。
+//
+//   ⚠️ 别把它放松成"before 拿不到就当绿"：那样 `GITHUB_EVENT_BEFORE` 整个没喂进来时
+//   也会静默过 —— 而那正是本条判据 2026-09-28 立起来要拦的洞（见上面那段注释）。
+//   所以分三种情形，且**只有"env 压根没喂"才硬失败**。
+const beforeGivenButUnreachable =
+  Boolean(process.env.GITHUB_EVENT_BEFORE) && !rangeFromEventBefore && !fromJson;
+
 if (ok && strict && ciPushMain && !fromJson && !rangeFromEventBefore) {
-  // CI 上 push 到 main，唯一**正确**的范围是 `github.event.before..github.sha`。走到这里
-  // 说明它没拿到（env 没映射 / before 不可达 / 候选全空）⇒ 这一步看的不是本次推送的内容。
-  // 必须红，而且要红得能被 `ci-run.sh` 转成注解（匿名可读渠道）—— 否则"CI 全绿"会被当成
-  // "Change Budget 判过这次推送"，而它可能一个 commit 都没看过。
-  console.error(
-    `\n✗ CI push→main 的受检范围不是事件里的 before..sha` +
-      `（范围 ${usedRange}，来源：${rangeSource ?? "未知"}）⇒ 门禁看的不是本次推送（空转）。\n` +
-      `  先查 verify.yml 顶部那段 env：GITHUB_EVENT_BEFORE: \${{ github.event.before }}`,
-  );
-  process.exit(1);
+  if (beforeGivenButUnreachable) {
+    // force push：范围由 `HEAD~1..HEAD` 等候选兜住，判据确实跑了。
+    // ⚠️ 但**不要把它说成"全部都判到了"** —— 实测（run 37106836002）那次 force push
+    //   引入 3 个提交，而 `HEAD~1..HEAD` 只判到最后一个：固定深度猜不出这次改写动了几个
+    //   （`HEAD~2`/`HEAD~3` 能覆盖，但下一次可能是 5 个）。所以只如实说判到了哪些。
+    const judged = Number(git("rev-list", "--count", usedRange).trim());
+    console.warn(
+      `\n⚠️ 本次是**改写历史的推送**（force push / amend 后重推）：` +
+        `事件里的 before=${process.env.GITHUB_EVENT_BEFORE} 在 CI 克隆里不可达` +
+        `（它是刚被改写掉的那个提交，不在任何 ref 上），因此改用 ${usedRange} 判。\n` +
+        `  ⇒ 已判 ${judged} 个提交（${usedRange} 内）。**判不到的**：若这次改写一次动了多个\n` +
+        `    提交，只有最后一个落在 ${usedRange} 内 —— 本门禁无法从事件里知道被改写的范围有多大。\n` +
+        `    需要全覆盖请在本地跑：node scripts/check-change-budget.mjs --range <推送前>..HEAD`,
+    );
+  } else {
+    // 真的空转：env 没映射 / 候选全空。必须红，且要红得能被 `ci-run.sh` 转成注解
+    // （匿名可读渠道）—— 否则"CI 全绿"会被当成"Change Budget 判过这次推送"。
+    console.error(
+      `\n✗ CI push→main 的受检范围不是事件里的 before..sha` +
+        `（范围 ${usedRange}，来源：${rangeSource ?? "未知"}）⇒ 门禁看的不是本次推送（空转）。\n` +
+        `  先查 verify.yml 顶部那段 env：GITHUB_EVENT_BEFORE: \${{ github.event.before }}`,
+    );
+    process.exit(1);
+  }
 }
 
 if (ok && zeroCoverage) {

@@ -10,6 +10,30 @@
 
 ## [Unreleased]
 
+## [4.33.2] - 2026-10-03
+
+### fix(guard): force push 后 Change Budget 不再自己判自己空转
+- **真实事故（CI run 37106836002）**：发 `v4.33.0` 时用了 amend + `--force-with-lease`
+  改写提交声明（patch → minor），于是 GitHub 事件里的 `event.before` 指向的是
+  **刚被改写掉的那个提交**（`1231aa2`）。它不在任何 ref 上，而 CI 是从 GitHub
+  全新克隆（`fetch-depth: 0` 只拉 ref 上的对象）⇒ `git cat-file -e <before>^{commit}`
+  必然失败 ⇒ 脚本拿不到 `before..sha`，退到 `HEAD~1..HEAD`。
+- **矛盾在哪**：那条兜底范围**确实判到了 1 个 commit 并把三条判据全跑完**，
+  却仅因为「来源不是 `before..sha`」被判 `exit 1`。门禁自己兜住了范围，又自己判这个
+  兜底无效 —— 自相矛盾。而 `docs/VERSIONING.md` §3 明确允许改写已推送历史
+  （那条流程第一步就是 amend + force push），所以这不是该拦的形态。
+- **修法**：把"env 压根没喂"与"喂了但 `before` 不可达"分成两种情形。
+  只有前者硬失败（那正是这条判据 2026-09-28 立起来要拦的洞）；后者打一条
+  **如实说明覆盖局限**的警告后放行 —— 不写"全部提交都判到了"（实测那次 force push
+  引入 3 个提交而 `HEAD~1..HEAD` 只判到最后一个，固定深度猜不出这次改写动了几个），
+  而是打印判到了几个、判不到的是什么、需要全覆盖时该在本地跑什么。
+- **判据**：`verify-guards.py` 新增一条非空转 Case「force push 后 before 不可达
+  不得判空转（改回去必须红）」，与既有的「真·env 没喂必须红」互为对照 ——
+  两条都守住，才既不误红又不放松。非空转实测：注入 `if (false && …)` ⇒ `exit 1`；
+  还原 ⇒ `exit 0`。
+- 顺带把 `docs/ARCHITECTURE-MAP.html` 里手写的护栏非空转用例数从 201 改成 202
+  （由 `check-doc-numbers.mjs` 对账现算，不是手改数字了事）。
+
 ## [4.33.0] - 2026-10-03
 
 > **为什么是 minor 而不是 patch**：提交原本声明 `patch`，但这一批里有一条
