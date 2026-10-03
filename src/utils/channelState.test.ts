@@ -420,15 +420,32 @@ test("托盘红点的实现必须整块 cfg 到非 macOS（否则 macOS 腿 clip
  * 两条根因都在这条测试里钉死：
  * 1. 前端只按"在不在节点表"判在线 ⇒ 有活跃链路但广播没收到的好友被显示离线；
  * 2. 聊天头的链路状态只按"消息条数"刷新 ⇒ 链路切回直连后仍显示「桥接」。
+ *
+ * ⚠️ 2026-10-03：在线判定已从 store 私有函数抽到 `utils/friendOnline.ts`
+ * （原先被抄成两份，`searchNearbyPeers` 那份漏了 `linkedIds`）。判据随之跟到新家 ——
+ * **要盯的是"判定必须含 linkedIds"这件事，不是它住在哪个文件**。
+ * 这里同时钉住两个调用点都走共用函数，否则那份"第二个家"会重新长出来。
  */
 test("链路徽标/在线状态必须实时（不能只看节点表或消息快照）", () => {
-  const chat = read("stores/useChatStore.ts");
+  const online = read("utils/friendOnline.ts");
   assert.match(
-    chat,
+    online,
     /linkedIds\.has\(f\.device_id\)/,
     "在线必须包含「有活跃链路」的节点（与后端 friend_is_online 同口径）",
   );
-  assert.match(chat, /filter\(\(x\) => x\.link\)/, "peers-updated 的 link 字段必须被用上");
+  assert.match(online, /filter\(\(x\) => x\.link\)/, "peers-updated 的 link 字段必须被用上");
+  // 两个调用点共用同一份实现：AI_RULES §32（同一份语义不许有两个家）。
+  // 少了任一条 ⇒ 那条路径会退回"只看节点表"的旧口径。
+  // 数的是**调用**（`markFriendsOnlineFrom(` 带左括号），import 那行不带括号，不计入。
+  const chat = read("stores/useChatStore.ts");
+  const calls = [...chat.matchAll(/[^.\w]markFriendsOnlineFrom\(/g)].length;
+  assert.equal(
+    calls,
+    2, // onPeers 与 searchNearbyPeers 各一次
+    `useChatStore 里 markFriendsOnlineFrom 被调用 ${calls} 次，期望 2（onPeers + searchNearbyPeers）。
+     任一调用点改成自己算 online，linkedIds 那一层就会被悄悄丢掉 —— 那正是本条判据
+     2026-09-14 钉住的缺陷。`,
+  );
   const win = read("components/ChatWindow.vue");
   assert.match(
     win,

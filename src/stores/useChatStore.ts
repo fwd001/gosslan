@@ -44,6 +44,7 @@ import { invalidateFilePreview } from "@/utils/filePreview";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
 import { mergePeerList } from "@/utils/peerMerge";
+import { markFriendsOnlineFrom } from "@/utils/friendOnline";
 import {
   onAction,
   registerActionTypes,
@@ -554,8 +555,7 @@ export const useChatStore = defineStore("chat", () => {
     if (!refreshGuard.isCurrent("peers", tok)) return peers.value;
     const merged = mergePeerList(peers.value, list);
     if (merged) peers.value = merged;
-    const onlineIds = new Set(list.map((x) => x.device_id));
-    friends.value.forEach((f) => (f.online = onlineIds.has(f.device_id)));
+    markFriendsOnlineFrom(friends.value, list);
     return peers.value;
   }
   async function refreshFriends() {
@@ -1177,14 +1177,54 @@ export const useChatStore = defineStore("chat", () => {
    * `mentionIds` 只有群文本消息有用：**这条消息 @ 的是哪些人（设备 id）**。
    * 传 `undefined`（非选择器输入的发送路径都这样）= 随老格式发出去，
    * 接收端按昵称兜底判 —— 新字段只让"带上了 id 的那些"更准，不会让别的入口变暗。
+   *
+   * `retryOfMsgId` = **重发**时那条 failed 气泡的 `msg_id`（见 `retrySend`）。
+   * 传它就**不再新建乐观气泡**，而是把那条 failed 原地转回 sending ——
+   * 否则列表里会同时留着"发送失败的原文"和"重发中的原文"两条，而 failed 那条
+   * **永远不会被删**（全库无删除路径，且 `appendLocalOnly` 每次重开会话都会把
+   * `tmp-*` 重新追加到快照尾部）。
+   *
+   * ⚠️ 为什么不能字面复用同一 msg_id（INV-001 在本项目做不到"客户端指定"那一半）：
+   * 后端 msg_id = `SHA-256(sender_id + nonce + payload)`（`protocol.rs::compute_message_id`），
+   * nonce 每条新消息都不同 ⇒ 重发**必然**是新 msg_id；且 `send_message` 只有
+   * `(friend_id, content, kind)` 三个参数，压根没有 msg_id 可传。所以 INV-001 的
+   * "重试复用同一 msg_id"在本项目落在**接收侧幂等**（`message_exists` 按 msg_id 去重），
+   * 前端这一侧改成"**旧气泡原地复用**"—— 逻辑消息在界面上仍是同一条。
    */
   async function send(
     convId: string,
     content: string,
     kind: string,
     mentionIds?: string[],
+    retryOfMsgId?: string,
   ): Promise<MessageRecord> {
     const myId = app.device?.device_id ?? "";
+
+    // ---- 重发：把那条 failed 气泡原地转回 sending，不再新建乐观记录 ----
+    // 找不到（切了会话 / 已被快照吞掉）就退回新建 —— 宁可多一条也不静默丢消息。
+    if (retryOfMsgId) {
+      const list = messages.value[convId];
+      const i = list?.findIndex((m) => m.msg_id === retryOfMsgId) ?? -1;
+      if (list && i >= 0) {
+        const reverted = { ...list[i], status: "sending" as const };
+        messages.value[convId] = [...list.slice(0, i), reverted, ...list.slice(i + 1)];
+        try {
+          const rec = await sendToBackend(convId, content, kind, mentionIds);
+          // Ack 可能已在 await 期间到达 ⇒ 直接提升到 delivered（与下面新建路径同一处理）
+          const acked = pendingAcks.delete(rec.msg_id);
+          replaceMessage(
+            convId,
+            retryOfMsgId,
+            acked ? { ...rec, status: furthestStatus(rec.status, "delivered") } : rec,
+          );
+          return rec;
+        } catch (e) {
+          replaceMessage(convId, retryOfMsgId, { ...reverted, status: "failed" });
+          throw e;
+        }
+      }
+    }
+
     // 乐观消息先占一个很大的逻辑序号，保证它出现在会话底部；后端返回真实记录后会替换为权威 seq。
     const optimistic: MessageRecord = {
       id: -1,
@@ -1200,12 +1240,7 @@ export const useChatStore = defineStore("chat", () => {
     };
     enqueueMessage(optimistic);
     try {
-      let rec: MessageRecord;
-      if (convId.startsWith("group:")) {
-        rec = await api.sendGroupMessage(convId.slice(6), content, kind, mentionIds);
-      } else {
-        rec = await api.sendMessage(convId, content, kind);
-      }
+      const rec = await sendToBackend(convId, content, kind, mentionIds);
       // 如果 Ack 已在 await 期间到达：直接把 real record 提升到 delivered，
       // 然后一次性替换 optimistic → real（不再二次 replaceMessage）。
       const acked = pendingAcks.delete(rec.msg_id);
@@ -1219,6 +1254,19 @@ export const useChatStore = defineStore("chat", () => {
       replaceMessage(convId, optimistic.msg_id, { ...optimistic, status: "failed" });
       throw e;
     }
+  }
+
+  /** 单聊/群聊的 invoke 分流（重发与首次发送共用，避免两份实现漂移）。 */
+  async function sendToBackend(
+    convId: string,
+    content: string,
+    kind: string,
+    mentionIds?: string[],
+  ): Promise<MessageRecord> {
+    if (convId.startsWith("group:")) {
+      return api.sendGroupMessage(convId.slice(6), content, kind, mentionIds);
+    }
+    return api.sendMessage(convId, content, kind);
   }
 
   /**
@@ -1933,14 +1981,7 @@ export const useChatStore = defineStore("chat", () => {
         // （消息行模板里的 nicknameOf 读的就是 peers）。没变就不写。
         const merged = mergePeerList(peers.value, p);
         if (merged) peers.value = merged;
-        const onlineIds = new Set(p.map((x) => x.device_id));
-        // 有活跃链路的节点即使在广播里缺席（局域网丢广播 / 刚被 sweep）也算在线，
-        // 与后端 get_friends 的 friend_is_online 口径一致 ——
-        // 否则会「局域网明明连上了，在线状态却不实时/显示离线」。
-        const linkedIds = new Set(p.filter((x) => x.link).map((x) => x.device_id));
-        friends.value.forEach(
-          (f) => (f.online = onlineIds.has(f.device_id) || linkedIds.has(f.device_id)),
-        );
+        markFriendsOnlineFrom(friends.value, p);
         // 同步好友/单聊会话的昵称/头像（对方改名后立即生效）
         syncProfileFromPeers(friends.value, conversations.value, p);
         // 拓扑（节点数/中继数/平均 RTT/在线）变化很慢，而 peers-updated 最多 3/s；

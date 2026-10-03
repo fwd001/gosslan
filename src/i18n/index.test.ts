@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { zhCN, enUS } from "./locales.ts";
 import {
@@ -28,6 +28,72 @@ test("zh-CN 与 en-US 的 key 集合完全一致（防漏翻译）", () => {
 test("字典值非空（不允许空字符串占位）", () => {
   for (const [k, v] of Object.entries(zhCN)) assert.ok(v.length > 0, `zh-CN ${k} 为空`);
   for (const [k, v] of Object.entries(enUS)) assert.ok(v.length > 0, `en-US ${k} 为空`);
+});
+
+// ---------------- 调用点护栏：t() 引用的 key 必须真的存在 ----------------
+
+/**
+ * 扫全仓 `t("...")` / `t('...')` **字面量**调用点，要求每个 key 都在中英词典里命中。
+ *
+ * ## 为什么必须守（真实缺陷，2026-10-03 审计）
+ * `settings/StorageSection.vue` 的自动删除确认弹窗标题写的是 `t('settings.storage.limit')`，
+ * 而这个 key **在中英两个词典里都不存在** —— `t()` 的回落是 `dict.value[key] ?? key`
+ * （`index.ts:93`），于是破坏性确认弹窗的标题直接显示字面量 `settings.storage.limit`。
+ * 同文件正文用的 `settings.storage.confirm.body` **是存在的**，说明是漏了一条而不是有意为之。
+ *
+ * 上面那两条字典护栏抓不到它：它们只查「中英 key 集合互相一致」和「值非空」，
+ * 对**调用点引用了不存在的 key** 完全无感 ⇒ 假绿。
+ *
+ * ## 为什么只查字面量、为什么跳过测试文件
+ * 存在 `t(\`prefix.${kind}\`)` 这类模板字符串调用（见本文件下方「中继探测档位」那条用例），
+ * 静态扫不出它展开后的全部 key。这类调用由各自的专项用例钉住
+ * （例如 relay.rs 的 `as_str` ↔ TS 联合类型 ↔ 两种语言那条三向断言）。
+ * **静默漏报比误报危险**，所以模板字符串一律跳过、不算失败。
+ *
+ * `.test.ts` 整个跳过：测试**本来就要**引用不存在的 key 来验回落
+ * （本文件下方 `t("no.such.key")` 与 storeContract 的正则夹具都靠它）。
+ * 扫它们得到的红是假的，而假红会让人养成"先加白名单再跑"的习惯 —— 那比漏报更危险。
+ */
+test("所有 t() 字面量调用点的 key 都存在于中英词典（防裸 key 上屏）", () => {
+  const root = join(import.meta.dirname, "../..");
+  /** @type {{file: string, text: string}[]} */
+  const files: { file: string; text: string }[] = [];
+  const skipDirs = new Set(["node_modules", "dist", "target", ".git", ".workbuddy", "test-results"]);
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (skipDirs.has(e.name)) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      // .vue 的模板里 t() 写在属性里，脚本写在 setup 里 —— 两种都要扫。
+      // 测试文件跳过（理由见上方注释）。
+      else if (/\.(?:vue|ts)$/.test(e.name) && !/\.test\.ts$/.test(e.name)) {
+        files.push({ file: p, text: readFileSync(p, "utf8") });
+      }
+    }
+  };
+  walk(join(root, "src"));
+
+  // `t("x.y")` / `t('x.y')`，带或不带第二参数都算
+  const CALL = /\bt\(\s*(["'])([a-z][\w]*(?:\.[\w]+)+)\1/g;
+  const missing: string[] = [];
+  let scanned = 0;
+  for (const { file, text } of files) {
+    for (const m of text.matchAll(CALL)) {
+      const key = m[2];
+      scanned++;
+      for (const [name, dict] of [["zh-CN", zhCN], ["en-US", enUS]] as const) {
+        if (!dict[key]) missing.push(`${name} 缺 ${key}（${file.slice(root.length + 1)}）`);
+      }
+    }
+  }
+
+  // 扫描本身要先确认有效：一条都扫不到 ⇒ 正则失配或目录搬了，这条护栏就成了空转
+  assert.ok(scanned > 50, `只扫到 ${scanned} 个 t() 调用点，护栏本身失效了（正则或目录变了？）`);
+  assert.deepEqual(
+    [...new Set(missing)].sort(),
+    [],
+    `t() 引用了不存在的 key ⇒ 界面上会显示裸 key：\n${[...new Set(missing)].join("\n")}`,
+  );
 });
 
 // ---------------- 系统语言检测（纯函数） ----------------

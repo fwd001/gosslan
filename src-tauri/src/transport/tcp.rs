@@ -6,19 +6,29 @@
 //! - 这里**不认识** `Message` / Gossip / ChatMessage / SQLite，只搬字节；
 //! - 业务序列化（serde_json）留在上层，Transport 不做任何领域假设。
 //!
-//! ## 接线状态：**大部分已接线**（2026-09-16 逐项核对调用点，修正了此前的"旁路阶段"）
+//! ## 接线状态：**大部分已接线**
 //!
 //! | 项 | 状态 |
 //! |---|---|
-//! | `write_bytes` / `read_bytes` / `read_bytes_capped` | ✅ **已接线**：`network/transport.rs:57,62,69`（`read_bytes_capped` 传 `MAX_PREAUTH_FRAME`）；那边注释自述「单一真相源见 `transport::tcp`（P-A03）」 |
-//! | `TcpReceiver` / `TcpSender` + 它们的 `AsyncRead` / `AsyncWrite` 实现 | ✅ **已接线**：`network/transport.rs:1231,1232,1529,1613,2368,2369` |
+//! | `write_bytes` / `read_bytes` / `read_bytes_capped` | ✅ **已接线**：`network/transport/outbound.rs:45`（`write_bytes`）、`:105`（`read_bytes_capped` 传 `MAX_PREAUTH_FRAME`）；那边注释自述「单一真相源见 `transport::tcp`（P-A03）」 |
+//! | `TcpReceiver` / `TcpSender` + 它们的 `AsyncRead` / `AsyncWrite` 实现 | ✅ **已接线**：`network/transport/relay.rs:392,393`（中继电路的 `w: &mut TcpSender` / `r: &mut TcpReceiver`）、`transport/relay_seal.rs:829,831`（测试） |
 //! | `TcpTransport`（组合结构体） | ⚠️ **未接线**：只在本文件测试里用（它是"先拆半再交给 writer_loop / reader_loop"的旧形态） |
 //!
-//! ⚠️ **历史（2026-09-16 修正）**：本文件此前挂着**文件级** `#![allow(dead_code)]`
-//! 并注明「旁路阶段：待接线后移除」—— 那句话只对 `TcpTransport` **一个结构体**成立，
-//! 而文件里的帧原语**早已在跑**。文件级 allow 的坏处正是"把已经接线的事实也一起静音"
-//! （同类问题已在 `ble_framing.rs`（Phase 3）与 `transport/bluetooth.rs`（Phase 5）各发现一次）。
-//! 现改为**逐个标注**：只有 `TcpTransport` 及其 `impl` 带 `#[allow(dead_code)]`，其余交给编译器守。
+//! ⚠️ **行号会腐烂，这里刻意只钉"文件 + 符号"**：本行上一版写的是
+//! `network/transport.rs:57,62,69` 与 `:1231,1232,1529,1613,2368,2369` —— 那些行号今天
+//! 逐个核对**全部指向无关代码**（`"transport"` / `format!(` / `high_open` …），因为
+//! `network/transport.rs` 已目录化、数据面搬进了 `network/transport/*.rs`。
+//! 注释说"已接线"是对的，**行号是烂的** —— 这比"注释撒谎"更隐蔽：顺行号去核对的人会
+//! 看到无关代码，从而误判"注释在骗人"而把好的接线拆掉。
+//! 这类漂移靠人核不牢（本次就是 2026-09-16 核过、2026-10-30 又烂掉的），根治要靠门禁
+//! 扫"注释里的 `file:line` 是否落在真符号上"——本轮尚未落地，落地前请以**符号名**为准。
+//!
+//! ⚠️ **历史（2026-09-16 修正，2026-10-03 再修正行号）**：本文件此前挂着**文件级**
+//! `#![allow(dead_code)]` 并注明「旁路阶段：待接线后移除」—— 那句话只对 `TcpTransport`
+//! **一个结构体**成立，而文件里的帧原语**早已在跑**。文件级 allow 的坏处正是"把已经接线的事实
+//! 也一起静音"（同类问题已在 `ble_framing.rs`（Phase 3）与 `transport/bluetooth.rs`（Phase 5）
+//! 各发现一次，这是第三次）。现改为**逐个标注**：只有 `TcpTransport` 及其 `impl` 带
+//! `#[allow(dead_code)]`，其余交给编译器守。
 //!
 //! `TcpTransport` 之所以留着：把 `writer_loop` / `reader_loop` 换成端点类型时要用它
 //! （只换类型、分帧逻辑不动 ⇒ 行为等价，见本文件测试

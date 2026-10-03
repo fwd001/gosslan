@@ -244,6 +244,10 @@ export const zhCN: MessageDict = {
   "settings.storage.confirm.keepForever": "永久保留",
   "settings.storage.confirm.cap": "总占用不超过 {n} MB",
   "settings.storage.confirm.capUnlimited": "占用不限制",
+  // 上面那个确认弹窗的标题。此前 StorageSection.vue 引用了本 key，
+  // 但中英词典都没有 ⇒ t() 回落到字面量，破坏性确认弹窗的标题直接显示
+  // "settings.storage.limit"（2026-10-03 由「t() 调用点必须命中词典」那条护栏抓出来）。
+  "settings.storage.confirm.title": "确认自动清理策略",
   "settings.storage.confirm.body":
     "将改为「{keep}、{cap}」。\n\n超出范围的已接收图片与文件会被自动删除（聊天文字不受影响），但历史消息里对应的图片/文件将无法再打开。\n\n确定吗？",
 
@@ -416,6 +420,10 @@ export const zhCN: MessageDict = {
   "common.text": "文本",
   "common.system": "系统",
   "common.closeEsc": "关闭 (Esc)",
+  // BaseModal 关闭按钮的 title + aria-label。此前只写了 closeEsc，
+  // 导致这个按钮的悬浮提示与无障碍标签在两种语言下都显示裸 key "common.close"
+  // （2026-10-03 由「t() 调用点必须命中词典」那条护栏抓出来）。
+  "common.close": "关闭",
   "common.resetZoom": "还原缩放",
   "common.prev": "上一张 (←)",
   "common.next": "下一张 (→)",
@@ -483,6 +491,13 @@ export const zhCN: MessageDict = {
   "msg.recallFail": "撤回失败",
   "msg.cancelSend": "取消发送",
   "msg.canceled": "已取消发送",
+  // 取消发送的三条结果提示。此前 MessageItem.vue 的 doCancelSend 把它们硬编码成中文，
+  // 英文界面下会看到中文 toast —— 而同一函数里 @cancel 的入口文案走了 t()，自相矛盾。
+  // 不复用 `msg.canceled`：那条是"已取消发送"（onFileCancelled 的事件提示），
+  // 而这三条讲的是"用户点了取消之后发生了什么"，语义不同、语气也不同。
+  "msg.cancelSend.requested": "已请求取消发送",
+  "msg.cancelSend.alreadyEnded": "标记为已取消（传输可能已结束）",
+  "msg.cancelSend.fail": "取消发送失败",
   "msg.reactionAdd": "回应 {emoji}",
   "msg.reactionToggle": "切换回应 {emoji}",
   "msg.reactionWho": "{n} 人回应",
@@ -1246,6 +1261,7 @@ export const enUS: MessageDict = {
   "settings.storage.confirm.keepForever": "keep forever",
   "settings.storage.confirm.cap": "total usage no more than {n} MB",
   "settings.storage.confirm.capUnlimited": "no usage limit",
+  "settings.storage.confirm.title": "Confirm auto-cleanup policy",
   "settings.storage.confirm.body":
     "This changes it to \"{keep}, {cap}\".\n\nImages and files outside this range will be deleted automatically (chat text is not affected), but the corresponding images/files in history will no longer open.\n\nAre you sure?",
 
@@ -1408,6 +1424,7 @@ export const enUS: MessageDict = {
   "common.text": "Text",
   "common.system": "System",
   "common.closeEsc": "Close (Esc)",
+  "common.close": "Close",
   "common.resetZoom": "Reset Zoom",
   "common.prev": "Previous (←)",
   "common.next": "Next (→)",
@@ -1488,6 +1505,9 @@ export const enUS: MessageDict = {
   "msg.read": "Read",
   "msg.cancelSend": "Cancel send",
   "msg.canceled": "Send canceled",
+  "msg.cancelSend.requested": "Cancellation requested",
+  "msg.cancelSend.alreadyEnded": "Marked as canceled (the transfer may have already finished)",
+  "msg.cancelSend.fail": "Failed to cancel sending",
   "msg.openLinkFail": "Failed to open link",
   "msg.forwardTo": "Forward To",
   "msg.searchConversation": "Search conversations",

@@ -664,8 +664,11 @@ CASES: list[Case] = [
     Case(
         name="在线状态必须包含有活跃链路的节点（不能只看节点表）",
         why="用户 2026-09-14：局域网直连上了，好友在线状态却不实时。前端原来只按\"在不在 peers 表\""
-            "判在线，而有链路但广播没收到（防火墙/组播限制）或刚被 sweep 的节点会被判离线。",
-        file=ROOT / "src" / "stores" / "useChatStore.ts",
+            "判在线，而有链路但广播没收到（防火墙/组播限制）或刚被 sweep 的节点会被判离线。"
+            "2026-10-03：这段判定从 store 私有函数搬到 utils/friendOnline.ts（原先被抄成两份，"
+            "searchNearbyPeers 那份漏了 linkedIds），注入锚点随之跟到新家 —— "
+            "要盯的是\"判定必须含 linkedIds\"，不是它住在哪个文件。",
+        file=ROOT / "src" / "utils" / "friendOnline.ts",
         injections=[(
             "f.online = onlineIds.has(f.device_id) || linkedIds.has(f.device_id)",
             "f.online = onlineIds.has(f.device_id)",

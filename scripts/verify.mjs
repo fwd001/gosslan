@@ -211,6 +211,14 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "文档 file:line 引用对账",
+    why: "挡住「文档里的 file:line 指向不存在的文件或早已超出文件范围」——实测 2026-10-03：台账引 `transport/mod.rs:122`（该文件只有 118 行）、`lib.rs:1920`（全文 560 行），全部照亮通过。与上一条同一立场（能被现算的东西不许留第二份手抄），只是那条管「数字」、这条管「指向」",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-doc-citations.mjs"],
+  },
+  {
+    group: "frontend",
     name: "判据脚本自身可解析",
     why: "挡住「门禁的判据脚本自己语法坏了，而只有贵层才发现」——实测：#126 往 harness 一条提示语后接第二行，落在已闭合的模板字符串外，E2E 层从此跑不了；能发现它的只有 E2E 层自己（一次 500s+，改一句提示语不会有人去跑）",
     cwd: ROOT,

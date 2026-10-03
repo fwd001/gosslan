@@ -231,7 +231,7 @@ watch(
   <!-- 自动删除策略：开启前确认（替代 window.confirm，与整体样式一致） -->
   <BaseModal
     :open="!!pendingPolicy"
-    :title="t('settings.storage.limit')"
+    :title="t('settings.storage.confirm.title')"
     @close="cancelPolicyChange"
   >
     <div class="space-y-3">

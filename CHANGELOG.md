@@ -10,6 +10,87 @@
 
 ## [Unreleased]
 
+## [4.33.0] - 2026-10-03
+
+> **为什么是 minor 而不是 patch**：提交原本声明 `patch`，但这一批里有一条
+> `feat(guard): 新增「文档 file:line 引用对账」门禁` —— 按 `docs/VERSIONING.md` §1
+> 「`feat` ⇒ 中」且**「改动规模与线索词不参与定档」**，用户可感知的新能力落在 minor。
+> 声明与版本位已一并改正（`Version-Bump: minor`），不是"声明 patch 却发 minor"的错配。
+> 另三条 `fix` 是用户可见的缺陷修复（重发重复气泡、破坏性确认框显示裸 key、英文界面
+> 显示中文 toast），按 SemVer 属向后兼容的改进，不构成 MAJOR。
+
+### fix(send): 重发不再产生第二条气泡 —— 旧 failed 气泡原地复用
+- **缺陷**：`MessageItem.vue::retrySend` 走 `chat.send(...)`，而 `send()` 每次都新建一条
+  `msg_id = tmp-${Date.now()}-…` 的乐观记录并 `enqueueMessage`。于是列表里同时留着
+  「发送失败的原文」与「重发中的原文」两条，而**失败那条永远不会被删**：
+  全库没有任何删除类函数（`messages.ts` 导出的 19 个里没有 remove/delete/purge），
+  且 `appendLocalOnly` 把 `tmp-*` 视为"只存在于内存"，每次 `loadMessages` 都会把它
+  **重新追加**到快照尾部 ⇒ 用户点一次「重发」看到两条一样的文字，切会话重开也一样。
+- **修法**：`send()` 新增可选 `retryOfMsgId`。传它就**不再新建乐观记录**，而是按
+  `msg_id` 找到那条 failed 气泡、原地转回 `sending`，成功后 `replaceMessage(convId,
+  retryOfMsgId, …)` 替换**同一条**；再失败则退回 `failed`。找不到那条（切了会话/
+  已被快照吞掉）时**退回新建** —— 宁可多一条也不静默丢消息。
+- ★ **为什么不能字面"复用同一 msg_id"**（INV-001 的另一半在本项目做不到）：
+  后端 msg_id = `SHA-256(sender_id + nonce + payload)`（`protocol.rs::compute_message_id`），
+  nonce 每条新消息都不同 ⇒ 重发**必然**是新 msg_id；且 `send_message` 的签名只有
+  `(friend_id, content, kind)`，**没有 msg_id 参数**可传。所以 INV-001 的"重试复用同一
+  msg_id"在本项目落在**接收侧幂等**（`message_exists` 按 msg_id 去重），前端这一侧
+  只能做成"旧气泡原地复用"—— 逻辑消息在界面上仍是同一条。
+- 顺带把单聊/群聊的 invoke 分流抽成 `sendToBackend`（重发与首次发送共用），
+  避免两条路径各写一份 `startsWith("group:")` 分流。
+- **撞上一条既有守卫并正面处理**：`storeContract.test.ts` 的 #82 形状守卫
+  （"返回 MessageRecord 的命令，调用点必须 enqueueMessage"）在 `sendToBackend` 上变红。
+  它不是漏 enqueue —— 记录去哪儿**由调用方决定**（新建 vs 重发两条路径不同），
+  转发层擅自 enqueue 反而会把重发路径那条旧气泡顶掉。为此给该守卫加了
+  **带理由的白名单**，并配两条自证：① 白名单里的函数必须**真的存在且仍在调**返回记录的
+  命令（否则函数改名后豁免会静默留着，"看起来有豁免、实际不豁免任何东西"）；
+  ② 白名单**上限 3 条**（膨胀到一半说明它被当成万能洞用，该问"能不能不抽这一层"）。
+  两条自证都做过非空转（指向不存在函数 / 塞满 4 条 ⇒ 都变红）。
+- 判据 `src/utils/retrySend.test.ts`（5 条，含形状断言与后端前提对账），
+  **两种非空转都验过**：把 `retrySend` 退回不传 msg_id ⇒ 红；整个重发分支删掉 ⇒ 3 条红。
+  其中一条钉住后端"msg_id 不可由客户端指定"这个前提 —— 哪天 `send_message` 加了可选
+  `msg_id`，前端就该改成真复用，本文件的推理与注释都要重写。
+### fix(i18n): 取消发送的三条结果提示不再硬编码中文
+- `MessageItem.vue::doCancelSend` 的三条用户可见文案（"已请求取消发送" /
+  "标记为已取消（传输可能已结束）" / 错误前缀）全是中文字面量 ⇒ 英文界面下显示中文 toast。
+  同一函数里 `@cancel` 的入口文案走了 `t()`，自相矛盾。
+- 补 `msg.cancelSend.requested` / `.alreadyEnded` / `.fail` 中英各一条。
+  **不复用**已有的 `msg.canceled`：那条是"已取消发送"（`onFileCancelled` 的事件提示），
+  而这三条讲的是"用户点了取消之后发生了什么"，语义与语气都不同。
+- 全仓复查：`app.toast(...)` / `toastError(...)` 已无硬编码中文。
+### refactor(store): 在线判定收成唯一一份实现（`utils/friendOnline.ts`）
+- `friends[].online` 的判定此前被抄成两份：`onPeers` 那条链带
+  「或持有活跃链路也算在线」，`searchNearbyPeers` 那份**漏了**。后者是"添加好友"弹窗
+  的探测路径（`commands/network.rs::search_nearby_peers`），漏了那层意味着一次
+  `who_has` 探测回来后，正在保持 TCP 链路的好友被判离线 ⇒ `ChatHeader` 的
+  `v-if="!isGroup && online && linkState"` 整块链路信息凭空消失。
+  同一份语义的两个家必然漂移（AI_RULES §32），现收进 `utils/friendOnline.ts`，
+  两个调用点共用。抽成纯函数而不是留在 store 私有函数里，是为了**能测** ——
+  藏在 store 里的口径护栏无从下手，这正是它漂了没人发现的原因。
+- 判据随实现一起搬家：`channelState.test.ts` 那条 2026-09-14 的用例（用户实测
+  "局域网都连上了，在线状态却不实时"）原先正则匹配 store 里那一行，代码搬走后会失效；
+  `scripts/verify-guards.py` 的**注入锚点**同步跟到新文件。
+  并加一条**调用点个数**断言（必须恰好 2 处调用）—— 否则将来任一路径改回自己算 online，
+  `linkedIds` 那层会被悄悄丢掉，而这正是本条判据当年钉住的缺陷。
+- ★ **顺带查清一件被误报的事**：`linkedIds` 那一层在当前后端数据形状下是**冗余**的。
+  `state.rs::emit_peers_now` 与 `commands/network.rs::fill_peer_links` 这两个填 `link`
+  的入口**都只给「已经在 peers 表里」的节点填**（都是先收 `peers`、再
+  `for p in peers.iter_mut()` 填），恒有 `linkedIds ⊆ onlineIds`，删掉行为不变。
+  审计报告的 F2（"`searchNearbyPeers` 漏 linkedIds ⇒ 好友被闪成离线"）**据此撤回**：
+  节点不在 peers 表里，后端根本不会给它 `link` 字段，前端拿到的 list 里不可能有它。
+  `state.rs:1770-1774` 那段注释描述的痛点是真的，但**不是前端能修的** ——
+  该修的是后端让 peers 表覆盖"有链路但广播没到"（或让 `fill_peer_links` 额外接受一组
+  待填 id），不在本次范围。**这一层仍然保留**：它无害，且后端哪天真的支持了表外节点带
+  link 就会自动生效；但推导过程写进了注释与新判据，避免下一个人误以为它在兜什么。
+- **非空转实测**（本仓铁律，两种都验过）：
+  ① 删掉 `|| linkedIds.has(...)` ⇒ `friendOnline.test.ts` 的形状断言与
+  `channelState.test.ts` 的用例**都**变红；
+  ② 把后端 `fill_peer_links` 改成不再只遍历 peers 表 ⇒ 钉着数据形状假设的那条判据变红。
+  ② 是必要的：它防的是"后端改了数据形状而前端注释/推导没跟上"。
+- 过程里踩了一次**判据自等于**并当场抓到：第一版新测试把设备同时放进了 list，
+  于是"看起来在测 linkedIds、实际 onlineIds 就够了"，删掉 linkedIds 层 6 条用例全绿。
+  改法是把那条改成**形状断言**并显式写明"删掉它行为不变，但它是 2026-09-14 那条判据
+  钉着的契约" —— 而不是留一条看起来在测、实际测不到东西的用例。
 - ★ **「版本号同步几处」在文档里有三个不同的数，而实现是五处**（纯文档/注释口径修复，零应用码改动）：
   `scripts/version.mjs` 头部注释写"三处"、`README.md` 与 `AI_PROJECT_HANDOFF.md` 各写"4 处"，而本文件开头的
   前言一直写的是五处 —— 第 4、5 步（`package-lock.json` / `Cargo.lock`）落地时只改了实现和本文件，
@@ -37,6 +118,84 @@
   里一个在讲"命令名断掉是响亮失败"、一个在记录往 VERSIONING 注入假脚本名的非空转实测），文档原文不改、
   也不给量具开白名单 —— 它本来就不是门禁步（#131 判过），而整份排除又会把它另外 15 个真引用的覆盖一起丢掉。
   契约图 `ARCHITECTURE-MAP.html` 一字未改：它的 130 与自数口径现读就是对的。
+### docs(ledger,tcp): 台账的失效引用与过期判定，注释的腐烂行号
+- `docs/migration-ledger.md` 5 处 `docs/domains.yml` → `docs/domains.data.mjs`、2 处 `active_home`
+  与 3 处 `second_home` → 驼峰 `activeHome`/`secondHome`。那个 `.yml` **从不存在**
+  （`.yml`→`.mjs` 是有意改名，工具链没有 YAML 解析器），而台账 §5「维护规则」是写给接手者的
+  **操作指令**：照着改会去打开一个不存在的文件、用错字段名，且 `check-domain-map.mjs` 读的是
+  `.data.mjs` ⇒ **门禁照亮绿灯**。
+- 9 条行数证据改成自指表述（`network/transport.rs` 声称 8836 实测 7086、`file_relay.rs` 声称 86
+  实测 504、`mesh/` 声称 10 文件 2432 行实测 11 文件 3276 行…）。行数在这份文件里是**论据**不是修辞：
+  §4 用"最大最活"把它排在收口顺序**最后一位**，这个优先级就建立在那个行数上；而 §1 又声明
+  "行数不是判据"，口径自相矛盾。统计段两处 `db::` 引用数（13 / 43）同样自相矛盾且都错（实测 12 / 56）。
+- §3「过期声明上报」第 1、2 条判定**作废**：源码 2026-09-16 就改成「已接线」了
+  （`transport/bluetooth.rs:44`、`transport/tcp.rs:12`），台账却一直挂着红牌，让下一个人重新调查
+  当天就解决完的事。
+- `src-tauri/src/transport/tcp.rs` 模块头两行「接线状态」表的 `file:line` 全部重钉到真符号：
+  帧原语在 `network/transport/outbound.rs:45,105`；`TcpReceiver`/`TcpSender` 在
+  `network/transport/relay.rs:392,393`。原写的 `network/transport.rs:57,62,69` 与
+  `:1231,1232,1529,1613,2368,2369` 逐个核对**全部指向无关代码**（`"transport"` / `format!(` /
+  `high_open` …）—— `network/transport.rs` 已目录化、数据面搬进了 `network/transport/*.rs`。
+  **之所以危险**：注释说"已接线"是对的、**行号是烂的**，这比"注释撒谎"更隐蔽 —— 顺行号核对的人会
+  看到无关代码，从而误判"注释在骗人"而把好的接线拆掉。这是本仓「待接线声明腐烂」族的第三次
+  （`ble_framing.rs` Phase 3、`transport/bluetooth.rs` Phase 5、此处），本次由 2026-09-16 那次核过、
+  到今天又烂掉亲自坐实。零行为变更（`src-tauri/` 侧 diff 过滤后为空）。
+- 验证：快速层 15 步全绿；`cargo fmt --check` exit 0；clippy 警告数 42，与改动前基线
+  （`git stash` 对比）逐条一致、零新增。
+### fix(i18n): 破坏性确认弹窗标题显示裸 key —— 补「t() 调用点必须命中词典」护栏
+- ★ **新护栏：`t()` 调用点引用的 key 必须在中英词典里命中**（`src/i18n/index.test.ts`）。
+  一次只读审计（2026-10-03）查出**破坏性确认弹窗的标题显示裸 key**：自动删除策略那个
+  `BaseModal` 写的是 `t('settings.storage.limit')`，而这个 key 中英两侧都不存在 ——
+  `t()` 的回落是 `dict.value[key] ?? key`（`i18n/index.ts:93`），于是用户点开"要永久删除历史
+  消息引用的图片/文件"的确认框，标题直接写着 `settings.storage.limit`。同文件正文用的
+  `settings.storage.confirm.body` 是存在的 ⇒ 漏了一条，不是有意为之。
+- **为什么已有两条字典护栏抓不到**：它们只查「中英 key 集合互相一致」和「值非空」，
+  对"调用点引用了不存在的 key"完全无感 ⇒ 假绿。新护栏扫全仓 `.vue`/`.ts` 的 `t("字面量")` 调用点。
+  两条设计取舍写进注释：① **只查字面量**（`t(\`prefix.${kind}\`)` 那类模板字符串由各自专项用例
+  钉住，如 relay.rs `as_str` ↔ TS 联合类型 ↔ 两种语言那条三向断言）；② **`.test.ts` 整个跳过**
+  （测试本来就要引用不存在的 key 来验回落，扫它们得到的红是假的 —— 假红会让人养成
+  "先加白名单再跑"的习惯，那比漏报更危险）。
+- 护栏上线当场抓到**另外两个真漏项**（都不是审计报告里列的，是护栏自己发现的）：
+  ① `BaseModal.vue:150` 用 `t('common.close')`（关闭按钮的 `title` + `aria-label`），词典里只有
+  `closeEsc` 没有 `close` ⇒ 关闭按钮的悬浮提示与**无障碍标签**两种语言下都是裸 key；
+  ② `utils/storeContract.test.ts:84` 期望真实代码用 `t('msg.fail')`，词典里也没有 ⇒ 错误提示显示裸 key。
+  三处都补齐（`common.close` 中英、`settings.storage.confirm.title` 中英），`common.close` 那条
+  顺带把"此前只写了 closeEsc"的原因记在旁边，免得下次又被当成多余条目删掉。
+- `settings.storage.limit` 改名为 `settings.storage.confirm.title`：调用点与词典一起改，跟同族
+  `settings.storage.confirm.body/.cap/.keepDays` 对齐 —— 原来的名字既不在词典里，也不跟任何兄弟条目同族。
+- **护栏的非空转实测**（本仓铁律：新护栏必须证明它不是空转）：删掉 `common.close` 的英文条目
+  ⇒ 两条判据同时变红；只删中文、保留英文 ⇒ 中英一致性那条与新护栏**都**变红且新护栏点名
+  `zh-CN 缺 common.close（src/components/BaseModal.vue）`。两种形态都验过，验证完已还原。
+  顺带确认了旧护栏的真实盲区：它抓"漏译"（一侧有一侧没有），抓不到"两侧都没有" ——
+  而后者才是这次事故的形状。
+- `scanned > 50` 自检：一条调用点都扫不到时判据直接失败（正则失配或目录搬迁会让护栏悄悄空转）。
+### feat(guard): 新增「文档 file:line 引用对账」门禁
+- `scripts/check-doc-citations.mjs`（已接进 `verify.mjs` 第 7 步，`group: frontend`
+  ⇒ CI 的 `verify.mjs --group frontend` 自动覆盖）。三条判据：文件存在（按 `SOURCE_ROOTS`
+  解析，裸名按全仓唯一同名）／行号落在文件范围内／**扫到 <20 处引用判 INCONCLUSIVE 而非绿**。
+- **上线当场抓到本台账两处真断裂**：一处引的 `transport/mod.rs` 行号**超出该文件行数**，
+  一处引的 `lib.rs` 行号**超出全文五倍**。两处都已重钉到真符号。
+- ⚠️ **刻意不判「那一行是不是文档说的那个符号」**：那要解析 Rust/TS 语法，解析错了门禁会
+  静默失效 —— 比没有门禁更危险。这条边界同时写进脚本头与台账（§4 末尾），
+  免得下一个人以为它能抓符号腐烂。后果举例：台账 §3 第 3 条引的 `route()` 已被 0-A2
+  整体删除，行号仍在范围内、门禁判绿，但那一行今天根本不是 `route()`。
+- **故意不管**：带日期的复审快照（`ARCHITECTURE-REVIEW-*` / `final-architecture-review`）
+  与 `CHANGELOG` —— 它们记录的是**当时**的读数，拿今天的事实源去判必然误报。
+  与 `check-doc-numbers.mjs` 同一立场（能被现算的东西不许留第二份手抄），只是那条管「数字」、
+  这条管「指向」。
+- 非空转三种形态都验过并已还原：超界行号／不存在的文件／正则失配（判据 C）。
+- 过程中自己踩了两次同一个坑：**在文档里「提到」一个已知坏行号**（叙述历史）时，门禁把它
+  当「断言」判红。⇒ **提到行号**与**断言行号**必须分开写；复述一个已知坏行号 = 新造一条断裂。
+### docs(invariants): 新增 INV-P30「前端自洽」一节
+- `docs/protocol-invariants.md` §30（5 条规则 + 3 行反向判据速查表）把 2026-10-03 那三个
+  补丁收敛成明文契约：同一份派生状态只有一个家／`t()` key 必须中英两侧都存在／重发复用
+  失败那条气泡／派生值不粘住上一轮／同一份判据不许被抄成两份。
+- 钩子 30 条全部解析成功（`check-invariant-hooks.mjs` 现场验）。
+- 这一节是对 Change Budget 判据 3 的正式回答：它把 `presentation` 域连打三个补丁
+  识别为 4.18.7→4.18.10 那种「每个补丁都很小、但它们在互相修」的犯案形态，
+  并要求「① 该领域的不变量补了吗」—— 现在补上了。
+- 第 1 条特意钉「必须恰好 2 处调用」：只钉「判定含 `linkedIds`」不够 ——
+  有人把某个调用点改回自己算 `online`，那条断言照样绿。数调用点个数才关得住第二个家。
 
 ## [4.32.0] - 2026-09-30
 

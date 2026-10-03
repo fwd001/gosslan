@@ -828,11 +828,11 @@ function doCancelSend() {
   api.cancelFileTransfer(transferId).then(
     (signalled) => {
       app.toast(
-        signalled ? "已请求取消发送" : "标记为已取消（传输可能已结束）",
+        t(signalled ? "msg.cancelSend.requested" : "msg.cancelSend.alreadyEnded"),
         "info",
       );
     },
-    (e: unknown) => app.toastError(e, "取消发送失败"),
+    (e: unknown) => app.toastError(e, t("msg.cancelSend.fail")),
   );
 }
 
@@ -917,9 +917,12 @@ async function retrySend() {
   const msg = props.message;
   if (msg.status !== "failed" || msg.kind === "file") return;
   try {
-    await chat.send(msg.conv_id, msg.content, msg.kind);
+    // 传 `msg.msg_id`：store 会把**这条 failed 气泡原地**转回 sending 再重发。
+    // 不传的话会新建一条乐观记录，而这条 failed 因为全库无删除路径 +
+    // `appendLocalOnly` 每次重开会话都重新追加 `tmp-*` ⇒ 界面上永远留两条一样的文字。
+    await chat.send(msg.conv_id, msg.content, msg.kind, undefined, msg.msg_id);
   } catch {
-    // 失败状态已由 send() 内部处理
+    // 失败状态已由 send() 内部处理（原地退回 failed）
   }
 }
 

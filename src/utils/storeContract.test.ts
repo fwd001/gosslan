@@ -662,12 +662,25 @@ test("返回 MessageRecord 的每条命令，调用点必须把结果 enqueueMes
 
   const inRange = new Map<string, number>();
   const missing: string[] = [];
+  /**
+   * 纯 invoke 转发层：调命令但**刻意不** enqueue —— 由调用方决定记录去哪儿。
+   *
+   * 2026-10-03 引入 `sendToBackend`（单聊/群聊分流共用）时撞上本守卫。它不是漏 enqueue：
+   * `send()` 的两条路径（新建乐观气泡 / 重发时把旧 failed 原地转 sending）各自决定
+   * 记录怎么处理，转发层若擅自 enqueue 会把重发路径那条旧气泡顶掉。
+   * 白名单**按函数名**列，且必须写明理由 —— 加进来的人要能回答"凭什么"，
+   * 而不是为了让门禁变绿随手加一行。
+   */
+  const FORWARD_ONLY = new Map<string, string>([
+    ["sendToBackend", "单聊/群聊 invoke 分流的共用实现；记录去哪儿由调用方（新建 vs 重发）决定"],
+  ]);
   for (const fn of fns) {
     const body = storeLines.slice(fn.from, fn.to + 1).join("\n");
     for (const key of recKeys) {
       const hits = (body.match(new RegExp(`api\\.${key}\\(`, "g")) || []).length;
       if (!hits) continue;
       inRange.set(key, (inRange.get(key) ?? 0) + hits);
+      if (FORWARD_ONLY.has(fn.name)) continue;
       if (!/enqueueMessage\(/.test(body)) missing.push(`${fn.name}() 调 api.${key} 却没 enqueueMessage`);
     }
   }
@@ -682,6 +695,23 @@ test("返回 MessageRecord 的每条命令，调用点必须把结果 enqueueMes
     `今天判的调用点只有 ${scanned} 处，比返回记录的命令数 ${recKeys.length} 还少 ⇒ 名单在变大而没人调？先看上面那条`,
   );
   assert.deepEqual(missing, [], "这些调用点必须把返回的消息记录塞进 store：\n" + missing.join("\n"));
+
+  // 白名单自证：每一条都必须**真的**还调着返回记录的命令，否则就是一条没用的豁免
+  // （函数改名/重构后白名单会静默留着，"看起来有豁免、实际不豁免任何东西"）。
+  for (const [name] of FORWARD_ONLY) {
+    const at = storeSrc.search(new RegExp(`\\b${name}\\s*\\(`));
+    assert.ok(at > 0, `白名单里的 ${name}() 在 store 里已经不存在了 —— 删掉白名单条目，别留一条空豁免`);
+    assert.ok(
+      recKeys.some((k) => new RegExp(`api\\.${k}\\(`).test(storeSrc)),
+      `白名单里的 ${name}() 已不再调任何返回记录的命令 —— 同样该删掉这条豁免`,
+    );
+  }
+  // 反向自证：白名单不许超过 3 条。膨胀到一半就说明它在被当成万能洞用。
+  assert.ok(
+    FORWARD_ONLY.size <= 3,
+    `白名单已 ${FORWARD_ONLY.size} 条（上限 3）。若确实需要更多，先问「能不能不抽这一层」——` +
+      `每一层转发都在削弱这条守卫的覆盖面。`,
+  );
 });
 /**
  * 结构判据：store 的 `updateTodo` 转给命令的键集合，必须覆盖它自己 `patch` 声明的每一个键。
