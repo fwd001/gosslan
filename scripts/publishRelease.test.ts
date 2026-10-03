@@ -67,7 +67,10 @@ interface Run {
 }
 
 /** 跑一次脚本：assets 里放两份假产物，`gh` 换成假的那份。 */
-function run(scenario: string, opts: { files?: number; attempts?: number; sha?: string } = {}): Run {
+function run(
+  scenario: string,
+  opts: { files?: number; attempts?: number; sha?: string; label?: string; names?: string[] } = {},
+): Run {
   const dir = mkdtempSync(join(tmpdir(), "rel-case-"));
   const binDir = join(dir, "bin");
   mkdirSync(binDir);
@@ -80,11 +83,18 @@ function run(scenario: string, opts: { files?: number; attempts?: number; sha?: 
   const assets = join(dir, "assets");
   mkdirSync(assets, { recursive: true });
   const n = opts.files === undefined ? 2 : opts.files;
-  for (let i = 0; i < n; i += 1) writeFileSync(join(assets, `Gosslan_${i}.dmg`), "x");
+  // 默认夹具是 macOS 那种 `Gosslan_<i>.dmg`；传 `names` 可以换成 Windows 的 exe 形状，
+  // 用来验"两档 exe 同名会覆盖"那条守卫（`names` 里故意给同名项）。
+  const names = opts.names ?? Array.from({ length: n }, (_, i) => `Gosslan_${i}.dmg`);
+  for (const nm of names) writeFileSync(join(assets, nm), "x");
 
   const r = spawnSync("bash", [
     SCRIPT,
     "--assets", assets,
+    // ★ 必须显式声明档位：脚本不认"默认档"（2026-10-03 起）—— 新加一档却忘了声明会红，
+    //   而默默按 base 放行恰好是那次静默覆盖 bug 的形状。这批夹具默认是 macOS 那种
+    //   `Gosslan_x.dmg`，属于默认档。
+    "--label", opts.label ?? "base",
     "--tag", "v9.9.9",
     "--sha", opts.sha === undefined ? "deadbeef" : opts.sha,
     "--repo", "octo/thing",
@@ -185,4 +195,58 @@ test("反面对照：Release 已存在时空 sha 不算缺陷（那条路径根�
   assert.equal(r.code, 0, `已存在那一趟被空 sha 拦住了？输出：${r.out}`);
   assert.equal(r.calls.filter((c) => c.startsWith("release create")).length, 0, "已存在就不该再创建");
   assert.equal(r.calls.filter((c) => c.startsWith("release upload")).length, 1);
+});
+
+// ---------------------------------------------------------------------------
+//  档位标识守卫（2026-10-03，用户实报"Release 上看不到内置 WebView2 那个包"）
+// ---------------------------------------------------------------------------
+
+/** 两档 Windows 的 exe **逐字同名** —— tauri 只用 productName+version 命名，webview2 那一档
+ *  也一样，所以 `merge-multiple: true` 下载到同一目录时会互相覆盖。 */
+const WIN_EXE = "Gosslan_4.33.0_x64-setup.exe";
+
+test("★ webview2 档忘了改名：必须在任何 gh 调用之前就红（那份会被默认档覆盖掉）", () => {
+  const r = run("new", { label: "webview2", names: [WIN_EXE] });
+  assert.equal(r.code, 1, `裸名 exe 放过去了？输出：${r.out}`);
+  assert.match(r.out, /不带标识/);
+  assert.match(r.out, /webview2-bundled/, "报错要直接告诉人该改成什么名字");
+  assert.deepEqual(r.calls, [], "这一步一个 gh 都不该调 —— 附件已经错了，再问 Release 存在与否没意义");
+});
+
+test("★ webview2 档改名后放行（这是修好之后的形状）", () => {
+  const r = run("new", {
+    label: "webview2",
+    names: ["Gosslan_4.33.0_x64-setup-webview2-bundled.exe"],
+  });
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.calls.filter((c) => c.startsWith("release upload")).length, 1);
+});
+
+test("webview2 档一个带标识的 exe 都没有 ⇒ 也得红（这一档等于没发出来）", () => {
+  const r = run("new", { label: "webview2", names: ["Gosslan_4.33.0_arm64.dmg"] });
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /一个 \*-webview2-bundled\.exe 都没有/);
+});
+
+test("反面对照：默认档的裸名 exe 是**基线**，不许被这条守卫拦下", () => {
+  // 名字必须不同：同名写进同一目录会互相覆盖（那正是本条守卫要防的机制本身）
+  const r = run("new", { label: "base", names: [WIN_EXE, "Gosslan_4.33.0_arm64-setup.exe"] });
+  assert.equal(r.code, 0, `默认档被自己的守卫拦了？输出：${r.out}`);
+  // ⚠️ 脚本是**一次 `gh release upload` 带上全部文件**（`"${files[@]}"`），
+  // 不是每个文件调一次 ⇒ 这里断言"两个文件都在那一条命令里"，不能数调用次数。
+  const up = r.calls.find((c) => c.startsWith("release upload")) ?? "";
+  assert.ok(up.includes("x64-setup.exe") && up.includes("arm64-setup.exe"),
+    `两个 exe 必须都在同一条 upload 命令里，实际：${up}`);
+});
+
+test("反面对照：macOS/Android 档（dmg / apk，不含 setup.exe）不受影响", () => {
+  const r = run("new", { label: "base", names: ["Gosslan_4.33.0_aarch64.dmg", "gosslan-4.33.0.apk"] });
+  assert.equal(r.code, 0, r.out);
+});
+
+test("未知档位一律红（新加一档忘了声明/声明错，不许默默按 base 放行）", () => {
+  const r = run("new", { label: "brand-new", names: ["Gosslan_1.dmg"] });
+  assert.equal(r.code, 1, `未知档位放过去了？输出：${r.out}`);
+  assert.match(r.out, /未知档位/);
+  assert.deepEqual(r.calls, [], "判不准档位就不许碰 gh");
 });

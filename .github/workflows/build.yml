@@ -109,4 +109,4 @@ jobs:
       - name: 挂到 Release（创建幂等 + 上传退避重试）
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/publish-release-assets.sh --assets assets
+        run: bash scripts/publish-release-assets.sh --assets assets --label base

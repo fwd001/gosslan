@@ -10,6 +10,38 @@
 
 ## [Unreleased]
 
+## [4.33.3] - 2026-10-03
+
+### fix(release): 内置 WebView2 那一档在 Release 上被默认档**覆盖**了（用户实报）
+
+- **症状**：Release 的 Assets 里只有 2 个 Windows 安装包（`Gosslan_…_x64-setup.exe` /
+  `…_arm64-setup.exe`），**没有**"内置 WebView2"那个包；而
+  `Build Windows + 内置 WebView2` 那个 run **Status Success**、两档产物都在
+  （arm64 176MB / x64 187MB，与默认档大小逐字相同）。
+- **机制（静默覆盖）**：tauri 生成的 exe 文件名只由 `productName` + version 决定，
+  **两档的 exe 逐字同名**。webview2 那档用 `merge-multiple: true` 把产物下载到
+  同一个 `assets/` 目录 ⇒ **同名文件互相覆盖**，只剩一份，且不带任何 webview2 标识
+  ⇒ 这一档在 Release 上彻底消失。artifact 名（带 `webview2-bundled`）是分开的，
+  但 `merge-multiple` 恰恰把那个区分**抹掉**了 —— 注释里写"附件名自带 webview2-bundled
+  ⇒ 与默认档一眼可分"，而事实是附件名来自 exe 自身，压根没带。
+  为什么"产物大小与默认档相同"是**预期**而不是"没换包"：这一档的差别只在内嵌 runtime
+  怎么装（`webviewInstallMode`），产物路径与命名都照旧 ⇒ 靠大小分不出，只能靠文件名。
+- **修法**：
+  ① `build-windows-webview2.yml` 在下载后、上传前给每个 exe 加 `-webview2-bundled`
+     后缀（`.sha256` 同步改名）⇒ 与默认档**文件名**不再冲突，两档能同挂一个 Release；
+  ② `publish-release-assets.sh` 新增 `--label`（`base` / `webview2`）与**档位守卫**：
+     webview2 档出现裸名 exe ⇒ 硬失败并直接告诉人该改成什么名字；
+     一个带标识的都没有 ⇒ 也红（这一档等于没发出来）；未知 label ⇒ 红
+     （**不默认当 base** —— 默默放行正是这次 bug 的形状）。
+- **判据**：`scripts/publishRelease.test.ts` 6 条新用例（15/15 绿），
+  两向非空转都验过：把守卫短路 ⇒ 3 条变红、还原 ⇒ 15/15。
+  含两条**反面对照**：默认档的裸名 exe 是基线、不许被自己的守卫拦下；
+  macOS/Android 档（dmg/apk，不含 `setup.exe`）不受影响。
+- 顺带修一个**我自己写出来又当场被测试抓住**的隐患：守卫里 `echo "… --label=$label（…）"`
+  的 `$label` 紧跟全角括号 ⇒ bash 报 `label?: unbound variable`
+  （本仓 `ci-run.sh` 早前也踩过同一个，注释里记着）。已写 `${label}`。
+  ⇒ 这类"变量紧跟全角字符"目前**没有护栏**，今天两处各中一次，值得补。
+
 ## [4.33.2] - 2026-10-03
 
 ### fix(guard): force push 后 Change Budget 不再自己判自己空转

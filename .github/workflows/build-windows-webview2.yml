@@ -172,7 +172,45 @@ jobs:
           pattern: gosslan-windows-*-webview2-bundled
           merge-multiple: true
           path: assets
+      # ★★ 这里必须重命名，否则这一档在 Release 上**看不见**（2026-10-03 用户实报）。
+      #
+      # 机制：artifact 名带 `webview2-bundled` 标识，但 tauri 生成的 **exe 文件名**只由
+      # `productName` + version 决定 ⇒ 两档的 exe **逐字同名**
+      # （都是 `Gosslan_<版本>_<arch>-setup.exe`）。而 `merge-multiple: true` 把它们
+      # 合并进同一个 `assets/` 目录 ⇒ 同名互相覆盖，**只剩最后下载的那一份**。
+      # 实测：v4.33.0 的 webview2 run（run 37106934484）**Status Success、两档产物都在**
+      # （arm64 176MB / x64 187MB，与默认档大小逐字相同），但 Release 上只有 2 个 exe
+      # 且**没有任何 webview2 标识** ⇒ 那一档被默认档覆盖了。
+      #
+      # 为什么"产物大小与默认档相同"是**预期**而不是"没换包"：这一档的差别只在内嵌
+      # WebView2 固定版 runtime 怎么装（`webviewInstallMode` 指向解出来的 cab），
+      # **产物路径与命名都照旧** —— 所以只能靠文件名区分，靠大小是分不出的
+      # （arm64 176MB / x64 187MB 与默认档逐字相同）。这也是为什么"用户拿到的是哪一档"
+      # 完全取决于上传顺序，而那个顺序不该由运气决定。
+      #
+      # 改法：下载后立刻加 `-webview2-bundled` 后缀再上传。两处都要：Release 上
+      # ① 附件名自带标识，② 与默认档**文件名**不冲突 ⇒ 两档能同挂一个 Release 而互不覆盖。
+      - name: 给这一档的 exe 加标识（与默认档同名会被覆盖，见上面那段）
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          n=0
+          for f in assets/*-setup.exe; do
+            mv "$f" "${f%.exe}-webview2-bundled.exe"
+            n=$((n + 1))
+          done
+          # 顺带把 sha256 也改名，否则 `.sha256` 里记的还是旧文件名
+          for f in assets/*.sha256; do
+            [ -e "$f" ] || continue
+            mv "$f" "${f%.sha256}-webview2-bundled.sha256"
+          done
+          if [ "$n" -eq 0 ]; then
+            echo "assets/ 里一个 *-setup.exe 都没有 ⇒ 这一档没产物，拒绝发空附件" >&2
+            exit 1
+          fi
+          echo "已加标识的附件："
+          ls -1 assets/
       - name: 挂到 Release（创建幂等 + 上传退避重试）
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/publish-release-assets.sh --assets assets
+        run: bash scripts/publish-release-assets.sh --assets assets --label webview2

@@ -30,6 +30,9 @@ gh_bin="${GH_BIN:-gh}"
 tag="${GOSSLAN_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
 sha="${GOSSLAN_RELEASE_SHA:-${GITHUB_SHA:-}}"
 repo="${GOSSLAN_RELEASE_REPO:-${GITHUB_REPOSITORY:-}}"
+# 调用方自报的档位（base / webview2）。**不给默认值** —— 新加一档却忘了声明，
+# 应当在这里红掉，而不是默默按 base 放行（那正是 2026-10-03 那个覆盖 bug 的形状）。
+label="${GOSSLAN_RELEASE_LABEL:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,7 +42,8 @@ while [ $# -gt 0 ]; do
     --repo) repo="$2"; shift 2 ;;
     --attempts) max_attempts="$2"; shift 2 ;;
     --sleep-base) sleep_base="$2"; shift 2 ;;
-    *) echo "未知参数: $1（可用 --assets/--tag/--sha/--repo/--attempts/--sleep-base）" >&2; exit 2 ;;
+    --label) label="$2"; shift 2 ;;
+    *) echo "未知参数: $1（可用 --assets/--tag/--sha/--repo/--attempts/--sleep-base/--label）" >&2; exit 2 ;;
   esac
 done
 
@@ -60,6 +64,43 @@ while IFS= read -r f; do
 done < <(find "$assets_dir" -type f | sort)
 if [ "${#files[@]}" -eq 0 ]; then
   echo "$assets_dir 里一个文件都没有 ⇒ 拒绝发空 Release" >&2
+  exit 1
+fi
+
+# ⚠️ 档位标识守卫（2026-10-03，用户实报"Release 上看不到内置 WebView2 那个包"）。
+#
+# 事故机制：Windows 有**两档**产物，而 tauri 生成的 exe 文件名只由 `productName` + version
+# 决定 ⇒ 两档的 exe **逐字同名**（`Gosslan_<版本>_<arch>-setup.exe`）。webview2 那档用
+# `merge-multiple: true` 下载到同一目录时，**同名文件互相覆盖**，只剩一份，且不带任何
+# webview2 标识 ⇒ 这一档在 Release 上彻底消失（而 run 是 Success，产物 176MB/187MB
+# 明明都在，看板上一切正常 —— 静默覆盖就是这样藏住的）。
+#
+# 这道守卫的形状：**调用方必须自报档位**（`--label`）：
+#   · `--label base`     = 默认档（裸名 exe 是**基线**，不许拦 —— 用户已经习惯那个文件名）
+#   · `--label webview2` = 内置 WebView2 那一档（**必须**每个 exe 都带 `-webview2-bundled`）
+# 别的 label 一律拒绝 —— 新加一档而忘了改名，就是下一个"静默覆盖"。
+# ⚠️ 为什么不按"有没有裸名"一刀切：默认档的 exe 本来就是裸名（`Gosslan_…-setup.exe`），
+#   那样判会把它一起拦掉，等于把唯一能用的那一档也弄红（我第一版就犯了这个错）。
+bare_exe=$(find "$assets_dir" -type f -name '*-setup.exe' | sort || true)
+labelled_exe=$(find "$assets_dir" -type f -name '*-webview2-bundled.exe' | sort || true)
+if [ "$label" = "webview2" ]; then
+  if [ -n "$bare_exe" ]; then
+    echo "❌ 你是 webview2 那一档，但 $assets_dir 里有**不带标识**的安装包：" >&2
+    echo "$bare_exe" | sed 's/^/     /' >&2
+    echo "   两档 exe 文件名逐字相同（tauri 只用 productName+version 命名），挂同一个 Release" >&2
+    echo "   时会同名覆盖 ⇒ 内置 WebView2 那一档会整个消失。必须先改名成" >&2
+    echo "     <原名>-webview2-bundled.exe" >&2
+    exit 1
+  fi
+  if [ -z "$labelled_exe" ]; then
+    echo "❌ 你是 webview2 那一档，但 $assets_dir 里一个 *-webview2-bundled.exe 都没有。" >&2
+    echo "   这一档就是给"装不上 WebView2 运行时的人"用的（企业版/Server 版 Windows），" >&2
+    echo "   没有带标识的包等于这一档没发出来。" >&2
+    exit 1
+  fi
+elif [ "$label" != "base" ]; then
+  echo "❌ 未知档位 --label=${label}（可用：base / webview2）。" >&2
+  echo "   新加一档时，先想清楚它的 exe 会不会与别的档**重名** —— 会，就必须改名。" >&2
   exit 1
 fi
 
