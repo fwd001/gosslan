@@ -131,15 +131,37 @@ export function isZeroImpact(row) {
 /**
  * 这条提交**是否算已声明**：
  * - 标题带 `[plan]`（本仓既有标记，Change Budget 也读它）⇒ 视为"零影响声明"，不动版本；
+ * - 标题是 `chore(release): …` ⇒ 豁免（见下）；
  * - 否则必须有 `Version-Bump: <级别>`，且与自己被定级的那一档一致。
+ *
+ * ★ 2026-10-03 补上 `chore(release)` 豁免，理由是**它本来就该有、只是本文件漏了**：
+ * `docs/VERSIONING.md` §3 第 4 条与 `check-change-budget.mjs:67` 都写了
+ * 「`chore(release)` 例外：那条流的声明就在 subject 里」—— 也就是说
+ * **`chore(release): 4.33.0 …` 的版本号本身**就是它的声明，不需要再写一遍 trailer。
+ * 缺了这条豁免的后果是每次发版 `npm run version:check` 必红，而它偏偏又不是门禁步
+ * （§3 明说"这条没有进 CI"）⇒ 变成一条没人修、也没人敢关的红。
+ * 判据 4 那侧早就豁免了（`check-change-budget.mjs:626` 打印"chore(release) 豁免声明"），
+ * 两边不一致会让读代码的人以为其中一边是 bug —— 现在对齐到文档。
  */
 export function declaresBump(row) {
   if (isZeroImpact(row)) return true;
+  if (isReleaseCommit(row)) return true;
   return parseBumpTrailer(row.message ?? "") === row.level;
 }
 
 /**
- * 这批提交**真正欠**的版本档位 = 非零影响提交里的最高档（零影响那条既不加也不稀释）。
+ * `chore(release)` 提交（发布记账那种）。
+ *
+ * 它**不是**零影响声明（`isZeroImpact` 判的是"带 `[plan]` 且不动应用码"），但同样
+ * 不该参与"真欠的档位"：版本号在它之前那次 bump 就提完了。
+ */
+export function isReleaseCommit(row) {
+  return /^chore\(release\):/.test(row.subject ?? "");
+}
+
+/**
+ * 这批提交**真正欠**的版本档位 = 非零影响、非 release 提交里的最高档
+ * （零影响那条既不加也不稀释，release 那条是记账不是欠账）。
  *
  * 为什么不能直接用整个范围的最高档：`classifyCommit` 对**任何**提交都至少给 patch，
  * 而 `since` 是"最后一次真改了版本号的提交" ⇒ 只要范围里还留着一条纯文档提交，
@@ -149,9 +171,15 @@ export function declaresBump(row) {
  *
  * ⚠️ 这一条**不放松**任何纪律：动应用代码的提交只写 `[plan]` 仍被 `declaresBump` 判红，
  * 于是它照样落进这里（见 `smuggled` 那格用例）。
+ *
+ * ★ 2026-10-03 把 `chore(release)` 一并排除（与 `declaresBump` 对齐）：
+ * 只改声明检查会让"版本落后"那条照红；只改这里则声明检查仍红。
+ * 两边口径不一致，读代码的人会以为其中一边是 bug。
  */
 export function owedBumpLevel(rows) {
-  return requiredLevel(rows.filter((r) => !isZeroImpact(r)).map((r) => r.level));
+  return requiredLevel(
+    rows.filter((r) => !isZeroImpact(r) && !isReleaseCommit(r)).map((r) => r.level),
+  );
 }
 
 export function filterUnpushed(rows, pushedShorts) {

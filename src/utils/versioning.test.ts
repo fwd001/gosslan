@@ -20,6 +20,7 @@ import {
   declaresBump,
   filterUnpushed,
   isAppCodePath,
+  isReleaseCommit,
   owedBumpLevel,
 } from "../../scripts/semver.mjs";
 
@@ -165,4 +166,35 @@ test("真正欠的版本档位：零影响提交（[plan] 且不动应用码）�
   assert.equal(owedBumpLevel([smuggled]), "patch");
   // 空范围不欠档（非空转闸：上面四格任何一条解析失效都会撞红）
   assert.equal(owedBumpLevel([]), null);
+});
+
+/**
+ * `chore(release)` 是**发布记账**，版本号在它之前那次 bump 就提完了 ⇒ 不欠档。
+ *
+ * 为什么单开一格（2026-10-03 实测踩到）：发完 4.33.0 那一刻，
+ * `version:check` 报「当前版本 4.33.0 落后于未发布提交要求的 4.33.1」——
+ * 而正确的动作是什么都不做。若按它说的跑 `version:release`，就是纯通胀
+ * （`docs/VERSIONING.md` §2 废弃的"逐提交累加"那条路正是这么撑坏版本号的）。
+ */
+test("chore(release) 是记账不是欠账：不逼出下一位版本号，且豁免声明", () => {
+  const rel = {
+    subject: "chore(release): 4.33.0 —— 发出去",
+    message: "chore(release): 4.33.0 —— 发出去",
+    level: "patch",
+    touchesCode: false,
+  };
+  assert.equal(owedBumpLevel([rel]), null, "发版提交本身不欠档");
+  assert.equal(declaresBump(rel), true, "它的声明就是 subject 里的版本号，不需要 trailer");
+  // 反向对照：release 提交**不该**把真正欠的档位吃掉
+  const feat = {
+    subject: "feat(z): 新能力",
+    message: "feat(z): 新能力\n\nVersion-Bump: minor",
+    level: "minor",
+    touchesCode: true,
+  };
+  assert.equal(owedBumpLevel([rel, feat]), "minor", "真正的代码提交仍按它自己的档位算");
+  // 边界：前缀必须精确到 `chore(release):`，`chore(release-whatever):` 不该被豁免
+  const lookalike = { subject: "chore(released): 顺手改个字", message: "x", level: "patch", touchesCode: false };
+  assert.equal(isReleaseCommit(lookalike), false, "相似前缀不得当成 release 提交");
+  assert.equal(isReleaseCommit(rel), true);
 });
