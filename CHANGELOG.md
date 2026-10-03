@@ -10,6 +10,34 @@
 
 ## [Unreleased]
 
+- ★ **「版本号同步几处」在文档里有三个不同的数，而实现是五处**（纯文档/注释口径修复，零应用码改动）：
+  `scripts/version.mjs` 头部注释写"三处"、`README.md` 与 `AI_PROJECT_HANDOFF.md` 各写"4 处"，而本文件开头的
+  前言一直写的是五处 —— 第 4、5 步（`package-lock.json` / `Cargo.lock`）落地时只改了实现和本文件，
+  那三份副本没被带上。现在统一成五处，并修掉 version.mjs 里重复编号的第二个 `// 5)`（→ `// 6)`）。
+- **判据 4 的一条理由与实现相反**：`check-change-budget.mjs` 注释写着 `Cargo.lock`"由 cargo 构建时同步、
+  可以合法地晚一版"，而 `version.mjs` 第 5 步现在把晚一版直接 `exit 1` 拒掉。对账集仍是那四个清单文件
+  （没有放宽任何判定），理由换成"第五处已由 version.mjs 自己断言，不在判据里重复数一遍"。
+  留着错理由的代价是具体的：下一个人会据此认为 `Cargo.lock` 不一致是可接受的。
+- **README 手抄的 IPC 命令数漂了一格**（写 129、注册表 130）。契约图自己早就为这个形状改过口
+  （那张表的行数由页头 `CMDS.length` 现数，图里还点名说"以前这里抄过 129、同页另一行写 130，两条都是手抄"），
+  但 README 那份副本没跟着走，而 `check-doc-numbers` 只覆盖门禁步数与 E2E 断言数 ⇒ 属于静默漂移那一类。
+  README 现在不带这个数，改指向 `CMDS.length` 与 `check-key-boundary.mjs` 自己打印的那行"注册表 N 条"。
+- **两处"用现在时命名过去读数"的表头**：`AI_PROJECT_HANDOFF.md` §6 那张表的列名从"现状"改成
+  "当时读数（v1.0.0 · 2026-09-08，今天不作数）"，并在表下给出三把现成量具
+  （`check-test-manifest.mjs` / `cargo test --lib` 末行 / `e2e_peer` 自己打印的结果块），
+  同时写明别把读数抄回表里 —— 那张表正是这么坏的；`docs/VERSIONING.md` §4 的标题从"现在的台账与数字"
+  改成"台账与数字怎么取"，184 / 23 / 45 / 116 与 `2.1.2 → 3.0.0` 就地标为 3.0.0 那一次的读数。
+- **约束导航漏了 5 份文档**。`docs/AI_ENGINEERING_INDEX.md` 作为"约束文档导航"没提它们，其中
+  `docs/VERSIONING.md`（自题"从 2026-09-12 起强制执行"）和受硬数字守卫的活文档
+  `docs/acceptance/stability-smoke-matrix.md` 在 README / 索引 / AI_RULES 三处入口全是零引用
+  ⇒ 只从 README 找约束的人根本碰不到它们；`docs/P1-image-out-of-sqlite-overview.md` 此前全仓零引用。
+  索引新增一节逐份写明角色与时效（含 `ARCHITECTURE-EXPLAINED.md` 自带的 v4.2.7 快照戳已漂），
+  README 的 `docs/` 目录树同步补齐。
+- 没动的两处附理由：`probe-doc-command-names.mjs` 报的 2 条"断链"是它咬到自己（`docs/final-architecture-review.md`
+  里一个在讲"命令名断掉是响亮失败"、一个在记录往 VERSIONING 注入假脚本名的非空转实测），文档原文不改、
+  也不给量具开白名单 —— 它本来就不是门禁步（#131 判过），而整份排除又会把它另外 15 个真引用的覆盖一起丢掉。
+  契约图 `ARCHITECTURE-MAP.html` 一字未改：它的 130 与自数口径现读就是对的。
+
 ## [4.32.0] - 2026-09-30
 
 ### 工具口径修正（只动 `scripts/` 与 `docs/` ⇒ 按 `isAppCodePath` 不占版本号）

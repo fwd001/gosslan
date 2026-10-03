@@ -61,8 +61,9 @@
  * **判据 4 —— 版本声明必须落地**(2026-09-21 加,PR #22/#23 的真实缺口):
  * message 里写了 `Version-Bump: patch|minor|major`,提交里就必须**同时**动这四个版本
  * 清单文件 —— `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、
- * `src-tauri/tauri.conf.json`(`scripts/version.mjs` 一次写这四个;`Cargo.lock` 归 cargo
- * 管、可能延后同步,所以不要求)。反方向同样:四个都动了却没声明 ⇒ 红
+ * `src-tauri/tauri.conf.json`(`scripts/version.mjs` 一次写**五处**:这四个 + `Cargo.lock`;
+ * 判据只要这四个 —— 少的那一处由 version.mjs 自己断言,跟不上就 exit 1,不在这里重复一遍)。
+ * 反方向同样:四个都动了却没声明 ⇒ 红
  * (`chore(release)` 例外:那条流的声明就在 subject 里)。
  * 为什么两个方向都要:判据 3 现在**消费这个 trailer**,一个不成立的 trailer 就等于
  * "窗口可以靠不写 trailer 躲开" —— 装饰性声明比没有声明更糟。
@@ -158,8 +159,12 @@ const OFFENDER_WINDOW = 5;
 const OFFENDER_LIMIT = 3;
 
 /**
- * 一次真 bump 必定同时出现的四个版本清单文件(`scripts/version.mjs` 直接写这四个)。
- * 不含 `Cargo.lock`:那个由 cargo 在构建时同步,可以合法地晚一版。
+ * 判据 4 对账用的四个版本清单文件。
+ * ⚠️ 这一格以前写的是"`scripts/version.mjs` 直接写这四个,`Cargo.lock` 由 cargo 构建时
+ * 同步、可以合法地晚一版" —— 那个**理由已经反了**:version.mjs 现在写**五处**(这四个 +
+ * `Cargo.lock`),且 lock 晚一版会被它自己 `exit 1` 拒掉(见 version.mjs 第 5 步)。
+ * 判据这边仍然只要这四个,但成立的理由换成"那一处已由 version.mjs 断言,不在这里重复数一遍",
+ * 不是"它可以不一致"。
  */
 const VERSION_FILES = [
   "package.json",
@@ -170,8 +175,8 @@ const VERSION_FILES = [
 
 /**
  * 规模判据（判据 1/2）**永远不数**的文件 = 上面那四个 + `Cargo.lock`。
- * 与 `VERSION_FILES` 同源，不抄第二份清单；多出 `Cargo.lock` 是因为它由 cargo 同步、
- * 判据 4 不要求它，但一次 bump 常把它一起带上（package-lock 那种几百行的机器改动）。
+ * 与 `VERSION_FILES` 同源，不抄第二份清单；多出 `Cargo.lock` 是因为判据 4 不要求它，
+ * 而一次 bump 现在**必然**把它一起带上（`version.mjs` 第 5 步的机器改动，几百行）。
  * 理由见文件头「版本清单文件永不计入预算」那一段。
  */
 const VERSION_MANIFESTS = new Set([...VERSION_FILES, "src-tauri/Cargo.lock"]);

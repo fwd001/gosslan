@@ -15,8 +15,11 @@
 
 ## 0. ⚠️ 时效性声明（2026-09-13 核对，**先读这一节**）
 
-本文主体的快照停在 **v1.0.0（2026-09-08）**，而仓库**实际已经在 `4.2.19`**，
+本文主体的快照停在 **v1.0.0（2026-09-08）**：那时仓库**实际已经在 `4.2.19`**，
 主干是 **`next`** 分支（`main` 停在 v2.1.2，落后 36 个提交）。
+**⚠️ 上面这一句里的四个数都是当天读数、不是现状**（`next` 在本地分支与远端跟踪引用里都已找不着，
+现读 `git branch -a` 看有没有它）。当前版本读 `npm run version:show`，当前分支读
+`git rev-parse --abbrev-ref HEAD`，落后/领先数读 `git rev-list --left-right --count "@{u}..HEAD"`。
 也就是说：**下面 §2 的功能清单、§7 的历史时间线都不是当前全貌**，只能当"早期架构与设计理由"读。
 
 当前状态请以这些为准（按可信度排序）：
@@ -137,7 +140,7 @@ gosslan/
 │   └── build-android.yml    # Android APK（4 ABI）
 ├── package.json             # npm 脚本
 ├── scripts/
-│   ├── version.mjs          # 版本号统一维护（同步 4 处 + CHANGELOG [Unreleased] 落日志）
+│   ├── version.mjs          # 版本号统一维护（同步 5 处版本号 + CHANGELOG [Unreleased] 落日志）
 │   └── android/…            # Android 权限模板（CI 注入）
 ├── docs/
 │   ├── AI_ENGINEERING_INDEX.md  # ★ 约束文档导航 + 文档/代码冲突处理规则
@@ -311,7 +314,7 @@ gosslan/
 
 ## 6. 测试与验证口径
 
-| 层 | 命令 | 现状 |
+| 层 | 命令 | 当时读数（v1.0.0 · 2026-09-08，**今天不作数**） |
 |---|---|---|
 | 前端纯函数 | `npm test`（node --test，需 Node ≥22） | 22/22 |
 | 前端类型+构建 | `npm run build`（vue-tsc + vite build） | 通过 |
@@ -320,6 +323,12 @@ gosslan/
 | 协议级 E2E | `src-tauri/examples/e2e_peer.rs`（无 GUI 直连真实实例，15+ 断言） | 手动跑 |
 | 全功能 dev 验证 | `scripts/e2e-dev.sh`（单机双实例，29 项断言） | 手动跑 |
 | 桌面冒烟 | `npx tauri build --debug` → 启动 .app 验证托盘/启动日志 | 手动跑 |
+
+**要看今天的数就跑这三把现成量具，别把读数抄回本表**（抄回来就是这张表当年的坏法）：
+
+- 前端测试文件数 / Rust 测试条数：`node scripts/check-test-manifest.mjs` —— 它自己打印"磁盘 N 个文件全部已登记"与"Rust 测试清单：基线 N 条全部在跑"。
+- 跑起来的实际通过数：`cd src-tauri && cargo test --lib` 末行的 `N passed`（⚠️ 单跑 `cargo test <过滤词>` 时过滤打空照样退 0，`filtered out` 那一半必须一起看，否则"没跑"会读成"跑过且绿"）。
+- 协议级 E2E 的断言条数：`e2e_peer` 跑完自己打印「E2E 验证结果」那块 —— 条数在那块里，不在本文。
 
 Android 交叉编译检查（无需 Gradle，快速验证代码能否过 Android 编译）：
 

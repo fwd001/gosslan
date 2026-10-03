@@ -33,6 +33,23 @@
 > 由 `scripts/check-domain-map.mjs` 守门（路径存在、一文件不属两域、无文件漏归属、
 > `enforce` 只能开在已收口的单家领域）。
 
+## 其余在 `docs/` 里的文档（为什么不进上面的必读，各自写明）
+
+上面那份"必读"是**每次动手前都要过**的清单，所以刻意不把所有文档塞进去（塞进去＝每次都变贵）。
+但这几份此前在导航里**一个字都没出现**，其中前两份其实是要强制遵守的：
+
+- `docs/VERSIONING.md` — **版本号强制规则**（每个提交的档位声明 + 同提交提版；判据 4 的对账口径）。
+  动到提交/发版就必读，不在"读代码前"那一批里，所以之前没人能找到它。
+- `docs/acceptance/stability-smoke-matrix.md` — **稳定版验证覆盖矩阵**（AUTOMATED / SIMULATED /
+  MANUAL-HARDWARE）。它是受硬数字守卫的**活文档**之一（`check-doc-numbers.mjs` 的扫描范围里有它），
+  判"某件事到底有没有被测过"以它为准，不许凭印象说 PASS。
+- `docs/version-ledger.md` — 分类台账，由 `npm run version:ledger` 生成，**别手改**（改了会被下次生成覆盖）。
+- `docs/ARCHITECTURE-EXPLAINED.md` — 架构图解（新人版，写给不读代码的人）。⚠️ 它自己标了快照基线
+  `v4.2.7 · 2026-09-12`，行号与模块清单**早已漂**；当"为什么这样分层"读，别当现状清单读。
+- `docs/P1-image-out-of-sqlite-overview.md` — 一次**已落地**修复（图片不再以 base64 内联 SQLite）的
+  交付说明。是历史，不是约束；**此前全仓零引用**（下面这条导航就是第一条指向它的话），
+  留着只为"当时为什么这么改"可查。
+
 ## Templates
 
 - `docs/templates/BUG_FIX.md`

@@ -3,6 +3,8 @@
 > 结论先说：**未发布的一批提交里（排除「零影响」那几条）最高档是什么，这次发布就提升哪一位**；
 > 每个提交必须在提交信息里声明自己的档位（`Version-Bump:`）**并在同一个提交里把版本提上去**。
 > CI 上把门的是 `check-change-budget.mjs` 判据 4（声明与四个版本清单文件必须一致，见 §3.3–3.4）；
+> ⚠️ 别把这里的"四个"读成"版本号一共只有四处"—— `scripts/version.mjs` 一次 bump 写**五处**（多一个
+> `Cargo.lock`，它自己断言），见 §3 第 5 条。
 > `npm run version:check` 是同一件事的**记账口径**，历史上是红的、没进 CI。
 > 依据：SemVer 的"一次发布取最高档" + conventional commits 的类型约定。
 
@@ -27,7 +29,8 @@
 ## 2. 怎么"累加"：两个口径，别混用
 
 - **逐提交累加**（字面执行"每次提交进一位"）：`npm run version:classify` / 台账里的"累计版本"列。
-  仅用于**审计**。把这套规则套到历史 backlog（184 个提交、其中 23 个大）会算出 `25.1.2` ——
+  仅用于**审计**。把这套规则套到历史 backlog（184 个提交、其中 23 个大 —— 3.0.0 前的当天读数，
+  今天现算见 §4 第一条）会算出 `25.1.2` ——
   它既不表达"这次发布有多大"，也和安装包/后端的版本语义脱节，所以**不用它定版本**。
 - **一次发布取最高档**（SemVer 标准做法，**实际采用**）：`requiredLevel()`，取档时先经
   `owedBumpLevel()` 排掉零影响提交（标题 `[plan]` 且不动应用码），出口是 `version:release`。
@@ -72,15 +75,17 @@
    `check-change-budget.mjs` 判据 4（写了 trailer 必须动满四个版本清单文件，反之亦然；
    `chore(release)` 前缀豁免声明），以及它前面那三道规模/敏感/犯案判据。
 5. 攒够一批（或要发版时）跑 **`npm run version:release`**：按**真欠的那一档**（`owedBumpLevel()`）一次性提升
-   `package.json` / `Cargo.toml` / `tauri.conf.json` / `package-lock.json` 并落 CHANGELOG 版本小节。
+   `package.json` / `Cargo.toml` / `tauri.conf.json` / `package-lock.json` / `Cargo.lock` 五处
+   （前四个才是判据 4 对账的那四个清单文件；`Cargo.lock` 由 `version.mjs` 自己断言跟上、晚一版就
+   `exit 1`，判据不在这里重复数它）并落 CHANGELOG 版本小节。
    （新口径下这步通常已经在每个提交里做掉了，留作补账与发版用。）
 
 
-## 4. 现在的台账与数字
+## 4. 台账与数字怎么取（下面那几个具体数是 3.0.0 那一次的读数，不是现状）
 
-- 全量分类台账：`docs/version-ledger.md`（184 个提交：**23 大 / 45 中 / 116 小**，由 `npm run version:ledger` 生成）；
-- 逐提交字面累加：`2.1.2 → 25.1.2`（仅审计口径）；
-- **本次实际发布：`2.1.2 → 3.0.0`**（最高档 = 大：多窗口架构重做、Mesh/中继协议分层、Android BLE 外设支持等）。
+- 全量分类台账：`docs/version-ledger.md`，由 `npm run version:ledger` 现生成 —— **条数与档位分布读那份文件本身，别抄进本文**。这里曾抄过一份"184 个提交：23 大 / 45 中 / 116 小"，那是 3.0.0 发布前的 backlog；今天的总数现读 `git rev-list --count HEAD`。
+- 逐提交字面累加（仅审计口径）：当时算得 `2.1.2 → 25.1.2`；这个口径今天不用于定版本，见 §2。
+- **当时实际发布：`2.1.2 → 3.0.0`**（最高档 = 大：多窗口架构重做、Mesh/中继协议分层、Android BLE 外设支持等）。
 
 ## 5. 2026-09-15 修订：MAJOR 只留给「向后不兼容」
 

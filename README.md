@@ -32,7 +32,7 @@
 | **★★ 参考** | [CHANGELOG.md](CHANGELOG.md) | **版本历史**：每个版本改了什么、为什么改（含所有已修 bug 的根因） |
 | **★★ 参考** | [docs/ARCHITECTURE-REVIEW-2026-09-24.md](docs/ARCHITECTURE-REVIEW-2026-09-24.md) | **架构复审（2026-09-24）**：12 条结构性问题的根因（全部带 file:line）、保持/收缩/拆分/解耦/延后的判断、8 步安全改造路线。**动核心链路前先看这份**，它同时是「为什么现在不做 X」的记录 |
 | **★★ 参考** | [docs/final-architecture-review.md](docs/final-architecture-review.md) | **第二阶段架构复审（2026-09-27）**：基线现算值、Large File Audit、11 问四态结论、Release 判定与「已有锁别再重做」清单 |
-| **★★ 参考** | [docs/ARCHITECTURE-MAP.html](docs/ARCHITECTURE-MAP.html) | **架构与接口契约图**（单文件，浏览器直接打开）：分层大图 + 129 条 IPC 命令的「输入 → 输出」规则表（条数由 `mapContract.test.ts` 与后端注册表逐条双向核对） + 事件/表结构/流程穿透 + 已核出的漂移清单。判「方向对不对」不用读代码 |
+| **★★ 参考** | [docs/ARCHITECTURE-MAP.html](docs/ARCHITECTURE-MAP.html) | **架构与接口契约图**（单文件，浏览器直接打开）：分层大图 + IPC 命令的「输入 → 输出」规则表（**条数不在这里抄**：图里那张表由页头 `CMDS.length` 现数，与后端注册表逐条双向核对由 `mapContract.test.ts` 判；权威口径 = `node scripts/check-key-boundary.mjs` 自己打印的那行"注册表 N 条"。此处曾长期手抄一个数、而注册表后来变了 ⇒ 这正是图自己改口要消灭的形状） + 事件/表结构/流程穿透 + 已核出的漂移清单。判「方向对不对」不用读代码 |
 | **★ 按需** | [docs/templates/BUG_FIX.md](docs/templates/BUG_FIX.md) | Bug 修复报告模板（复现 / 根因 / 影响 / 修复 / 回归） |
 | **★ 按需** | [docs/templates/ADR.md](docs/templates/ADR.md) | 新增架构决策记录模板 |
 
@@ -88,8 +88,14 @@ gosslan/
 │   ├── stability-roadmap.md      # ★★★ 稳定版工作地图：风险/任务重判/覆盖边界/执行顺序
 │   ├── ARCHITECTURE-REVIEW-2026-09-24.md  # ★ 架构复审：根因 + 8 步路线
 │   ├── final-architecture-review.md  # ★ 第二阶段复审：现算基线 + 巨型文件审计 + 四态结论
-│   ├── protocol-invariants.md    # 协议不变量明细 INV-P01~P29
-│   ├── acceptance/               # 版本验收标准（当前：1.0 release）
+│   ├── protocol-invariants.md    # 协议不变量明细（INV-P 的条数与上界由 check-invariant-hooks 现打印，别抄）
+│   ├── VERSIONING.md             # ★ 版本号强制规则：每个提交声明档位 + 同一个提交把版本提上去
+│   ├── design-guidelines.md      # UI 规范（动界面必读：圆角 / hover / 配色 / 窗口边界）
+│   ├── migration-ledger.md       # 迁移台账：同一关注点有几个家、哪个在跑数据
+│   ├── domains.data.mjs          # 领域图数据（check-domain-map.mjs 读的就是这份）
+│   ├── ARCHITECTURE-EXPLAINED.md # 架构图解（新人版）⚠️ 自带 v4.2.7 快照戳，行号早已漂
+│   ├── acceptance/               # 验收标准 1.0-release + 稳定版验证覆盖矩阵（冒烟矩阵）
+│   ├── notes/                    # 历史审计笔记（"当时发现了什么"，不是约束）
 │   ├── adr/                      # 架构决策记录（含 ADR-0020 公网哑管道中继）
 │   └── templates/                # Bug 修复 / ADR 模板
 ├── src/                      # Vue 3 前端
@@ -249,7 +255,7 @@ npm run dist:win:msi    # 额外产出 MSI
 仓库内置三端 workflow（Windows / macOS / Android），推送一个 `v*` 标签即自动构建三端安装包并发布 Release（apk/dmg/exe 三件套）：
 
 ```bash
-npm run version:patch                 # 例：1.0.0 -> 1.0.1（同步 4 处版本 + CHANGELOG）
+npm run version:patch                 # 例：1.0.0 -> 1.0.1（同步 5 处版本号 + CHANGELOG）
 git add -A && git commit -m "release v1.0.1"
 git tag v1.0.1
 git push origin main && git push origin v1.0.1

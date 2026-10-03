@@ -3,8 +3,14 @@
 //   node scripts/version.mjs show          # 打印当前版本
 //   node scripts/version.mjs patch|minor|major
 //
-// 一次 bump 会同步更新三处版本号：package.json / src-tauri/Cargo.toml / src-tauri/tauri.conf.json，
+// 一次 bump 会同步更新**五处**版本号（按下面的编号步序）：
+//   1 package.json · 2 src-tauri/Cargo.toml · 3 src-tauri/tauri.conf.json
+//   4 package-lock.json · 5 src-tauri/Cargo.lock
 // 并把 CHANGELOG.md 的 [Unreleased] 小节落为带日期的版本小节。
+// ⚠️ 第 4、5 步是后补的（头部注释曾长期只写"三处"，与实现相反 —— 那份口径曾经同时
+// 存在于 README / AI_PROJECT_HANDOFF / 本注释三处副本里，每处各抄一次、各自过期）。
+// 守卫侧对的是**四个清单文件**（`check-change-budget.mjs` 判据 4），比这里少一个
+// `Cargo.lock`：那一处由下面第 5 步自己断言（跟不上就 exit 1），不在判据里重复一遍。
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
@@ -93,7 +99,7 @@ if (existsSync(cargoLockPath)) {
   console.log(`✓ Cargo.lock 已同步：${cargoName} ${block[1]}`);
 }
 
-// 5) CHANGELOG.md（可选）
+// 6) CHANGELOG.md（可选）
 //    若不存在 [Unreleased] 小节则自动补一个占位小节，保证每次发版都有更新日志。
 const changelogPath = "CHANGELOG.md";
 if (existsSync(changelogPath)) {
