@@ -3029,7 +3029,15 @@ CASES: list[Case] = [
             "  if (beforeGivenButUnreachable) {",
             "  if (false && beforeGivenButUnreachable) {",
         )],
-        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        # ⚠️ **不能用 `--from-json`**（2026-10-03 实测踩到：这条 Case 头一次是空转的，
+        #   是本文件自己的非空转扫描报出来的）。原因：被守的那段硬失败带 `!fromJson`
+        #   条件（`check-change-budget.mjs:707`），而 `--from-json` 模式 `fromJson=true`
+        #   ⇒ **整段不执行** ⇒ 注入之后测试照样绿。
+        #   与上面那条 [60/66] 的差别也正在这里：它注入的是 `!fromJson` 条件**本身**
+        #   （摘掉之后那段被执行，所以咬得住）；而这条摘的是**内层子分支**，
+        #   外层的 `!fromJson` 仍然把整段挡掉 ⇒ 静默空转。
+        # ⇒ 这条必须用**真实 git 范围**跑（不给 --from-json），整段才会执行。
+        cmd=["node", "scripts/check-change-budget.mjs"],
         cwd=ROOT,
         expect_fail_hint="受检范围",
         env={
@@ -3037,6 +3045,10 @@ CASES: list[Case] = [
             "GITHUB_EVENT_NAME": "push",
             "GITHUB_REF_NAME": "main",
             # ★ 给一个**不可达**的 before：模拟 force push 后的真实形态
+            #   （事件里的 before 是刚被改写掉的那个提交，CI 从 GitHub 全新克隆里
+            #   拿不到那个对象 ⇒ `git cat-file -e` 失败 ⇒ 拿不到 before..sha）。
+            #   全 0 的 sha 保证在任何克隆里都不可达，连本地也一样 ——
+            #   用真实的 before 值会**因地而异**（本地仓库里那个对象还在）。
             "GITHUB_EVENT_BEFORE": "0000000000000000000000000000000000000000",
             "GITHUB_SHA": "HEAD",
         },
