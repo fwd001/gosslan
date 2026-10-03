@@ -10,6 +10,36 @@
 
 ## [Unreleased]
 
+## [4.33.4] - 2026-10-03
+
+### fix(scripts): `$var` 紧跟中文时 bash 会吞掉变量值 —— 修 10 处 + 加门禁
+
+- **实测确认的坏法**（不是理论推断）：
+  ```console
+  $ bash -c 'SRC=/tmp/app; echo "A: $SRC（后续）"'   →   A: ��后续）      ← /tmp/app 整个没了
+  $ bash -c 'B=x; echo "C=$B）"'                      →   C=��
+  ```
+  bash 把 `$name` 之后**紧邻**的中文字节算进变量名解析，值整段丢失。
+  代价不是崩，而是**错误消息里最该看清的那个值不见了** —— 而这些行几乎都在错误分支上
+  （"[错误] 未找到 $BIN，请先…"、"缺少 Rust 目标 $TARGET"），正是排障时唯一要看的那一行。
+- **修了 10 处**（`check-mobile.sh` / `e2e-dev.sh` / `pack-macos-app.sh` /
+  `t2-learn-id.sh` / `t3-presence-relay.sh` / `t4-mirror-dial.sh`），一律写 `${var}`。
+  逐行复核过 diff：只改**紧跟中文的那一个**，同一行里前面是空格的 `$TARGET` 等保持原样。
+- **新增门禁 `scripts/check-shell-var-cjk.mjs`**（已接进 `verify.mjs`，`group: frontend`
+  ⇒ CI 自动覆盖）。三类误报必须排除，否则它立刻变噪音：
+  ① **注释里引用这个坑当反面案例**（`ci-run.sh:23` 写着 `` `$status（` `` 并解释为什么要写
+  `${var}`）—— 那是**文档**不是代码，走**按行号登记**的 `EXEMPT`（不接受通配）；
+  ② `.yml` 里的 **PowerShell 块**（pwsh 不做这种解析）—— 靠 `run: |` 块内的 pwsh cmdlet
+  标记**预扫描整块**；⚠️ 第一版写成"从当前行往上找最近的 `run: |`"，结果
+  `build-windows-webview2.yml:96` 没被排除（实测才发现），已改成先标记整块；
+  ③ 已是 `${name}` 的形状。
+  另有覆盖面自证：扫到 <5 个文件直接红（路径挪了/正则失配 ⇒ 静默空转）。
+- **非空转**：注入一处裸写 ⇒ 退出码 1；还原 ⇒ 0。
+- 起因是 2026-10-03 一天内**两处**踩到同一件事：`ci-run.sh` 的注释早记着它，
+  我在 `publish-release-assets.sh` 写新守卫时又犯了一次（`--label=$label（` 直接
+  `unbound variable`）。⇒ 这类"看起来是风格问题、实际会静默吃掉值"的坑值得机器钉。
+- ⚠️ 顺带记一条工具事实：**macOS 的 `grep` 不支持 `-P`**，这类 Unicode 扫描用 Python 正则写。
+
 ## [4.33.3] - 2026-10-03
 
 ### fix(release): 内置 WebView2 那一档在 Release 上被默认档**覆盖**了（用户实报）

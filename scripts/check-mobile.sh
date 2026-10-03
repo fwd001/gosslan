@@ -47,7 +47,7 @@ CLANG="$TOOLCHAIN/${TARGET}24-clang"
 
 # ---- 目标是否已装 ----
 if ! rustup target list --installed 2>/dev/null | grep -qx "$TARGET"; then
-  echo "[错误] 缺少 Rust 目标 $TARGET。请先：rustup target add $TARGET"
+  echo "[错误] 缺少 Rust 目标 ${TARGET}。请先：rustup target add $TARGET"
   exit 2
 fi
 

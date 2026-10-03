@@ -43,7 +43,7 @@ cleanup() {
 trap cleanup EXIT
 
 command -v sqlite3 >/dev/null 2>&1 || { echo "[错误] 需要 sqlite3"; exit 2; }
-[ -x "$BIN" ] || { echo "[错误] 未找到 $BIN，请先 cd src-tauri && cargo build"; exit 2; }
+[ -x "$BIN" ] || { echo "[错误] 未找到 ${BIN}，请先 cd src-tauri && cargo build"; exit 2; }
 
 cleanup
 mkdir -p "$DBDIR"
@@ -133,7 +133,7 @@ B_CONN_C="$(grep -c "\[mesh\] +conn peer=${PEER3}" "$LOG2")"
 if [ "$B_CONN_A" -ge 1 ] && [ "$B_CONN_C" -ge 1 ]; then
     pass "B 已连 A(${B_CONN_A}) 和 C(${B_CONN_C})"
 else
-    fail "B 连接不全（A=$B_CONN_A, C=$B_CONN_C）"
+    fail "B 连接不全（A=$B_CONN_A, C=${B_CONN_C}）"
 fi
 
 # ----------------------------------------------------------------------------
@@ -145,7 +145,7 @@ C_CONN_A="$(grep -c "\[mesh\] +conn peer=${PEER1}" "$LOG3")"
 if [ "$A_CONN_C" -eq 0 ] && [ "$C_CONN_A" -eq 0 ]; then
     pass "A 与 C 无直连，纯跨跳发现"
 else
-    fail "A 与 C 存在直连（A→C=$A_CONN_C, C→A=$C_CONN_A），拓扑不纯"
+    fail "A 与 C 存在直连（A→C=$A_CONN_C, C→A=${C_CONN_A}），拓扑不纯"
 fi
 
 # ----------------------------------------------------------------------------

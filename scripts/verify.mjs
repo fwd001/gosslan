@@ -219,6 +219,14 @@ const steps = [
   },
   {
     group: "frontend",
+    name: "shell 变量护栏",
+    why: "挡住「$var 紧跟中文 ⇒ bash 把中文一起吞进变量名、该变量的值整段丢失」——实测 `bash -c 'echo \"$SRC（后续）\"'` 输出 `��后续）`，路径整个没了；本仓 2026-10-03 一天内两处踩到（ci-run.sh 的注释记着它，新写守卫时又犯一次），而这些行几乎都在**错误分支**上，正是排障时唯一要看的那一行",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-shell-var-cjk.mjs"],
+  },
+  {
+    group: "frontend",
     name: "判据脚本自身可解析",
     why: "挡住「门禁的判据脚本自己语法坏了，而只有贵层才发现」——实测：#126 往 harness 一条提示语后接第二行，落在已闭合的模板字符串外，E2E 层从此跑不了；能发现它的只有 E2E 层自己（一次 500s+，改一句提示语不会有人去跑）",
     cwd: ROOT,

@@ -13,7 +13,7 @@ OUT="$ROOT/release-artifacts/macos"
 mkdir -p "$OUT"
 
 if [ ! -d "$SRC" ]; then
-  echo "❌ 找不到 .app：$SRC（先跑 npm run dist:mac:app 或直接 tauri build --bundles app）"
+  echo "❌ 找不到 .app：${SRC}（先跑 npm run dist:mac:app 或直接 tauri build --bundles app）"
   exit 1
 fi
 

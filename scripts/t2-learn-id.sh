@@ -48,7 +48,7 @@ trap cleanup EXIT
 # 准备
 # ----------------------------------------------------------------------------
 command -v sqlite3 >/dev/null 2>&1 || { echo "[错误] 需要 sqlite3"; exit 2; }
-[ -x "$BIN" ] || { echo "[错误] 未找到 $BIN，请先 cd src-tauri && cargo build"; exit 2; }
+[ -x "$BIN" ] || { echo "[错误] 未找到 ${BIN}，请先 cd src-tauri && cargo build"; exit 2; }
 
 cleanup
 

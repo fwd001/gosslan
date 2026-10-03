@@ -29,8 +29,8 @@ SHARE="/tmp/gosslan-dev-share"
 KEEP="${1:-}"
 
 command -v sqlite3 >/dev/null 2>&1 || { echo "[错误] 需要 sqlite3"; exit 2; }
-[ -x "$BIN" ] || { echo "[错误] 未找到 $BIN，请先: cd src-tauri && cargo build"; exit 2; }
-[ -x "$PEER" ] || { echo "[错误] 未找到 $PEER，请先: cd src-tauri && cargo build --example e2e_peer"; exit 2; }
+[ -x "$BIN" ] || { echo "[错误] 未找到 ${BIN}，请先: cd src-tauri && cargo build"; exit 2; }
+[ -x "$PEER" ] || { echo "[错误] 未找到 ${PEER}，请先: cd src-tauri && cargo build --example e2e_peer"; exit 2; }
 
 echo "==> [1/5] 清理残留实例"
 pkill -f "target/debug/gosslan" 2>/dev/null

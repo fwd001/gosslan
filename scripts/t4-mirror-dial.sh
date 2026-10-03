@@ -34,8 +34,8 @@ SUBJECT_ID=aaa-mirror-peer
 CONTROL_ID=aab-control-peer
 
 command -v nc >/dev/null 2>&1 || { echo "[错误] 需要 nc"; exit 2; }
-[ -x "$BIN" ] || { echo "[错误] 未找到 $BIN，请先: cd src-tauri && cargo build --bin gosslan"; exit 2; }
-[ -x "$PEER" ] || { echo "[错误] 未找到 $PEER，请先: cd src-tauri && cargo build --example mirror_dial"; exit 2; }
+[ -x "$BIN" ] || { echo "[错误] 未找到 ${BIN}，请先: cd src-tauri && cargo build --bin gosslan"; exit 2; }
+[ -x "$PEER" ] || { echo "[错误] 未找到 ${PEER}，请先: cd src-tauri && cargo build --example mirror_dial"; exit 2; }
 
 echo "==> [1/3] 清理残留实例与干扰配置"
 pkill -f "target/debug/gosslan" 2>/dev/null
