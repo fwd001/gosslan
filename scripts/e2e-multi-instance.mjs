@@ -119,6 +119,8 @@ let envBlockReason = null;
 const FAULT = (process.argv.find((a) => a.startsWith("--fault=")) || "").slice("--fault=".length);
 //   --shot-selfcheck         → 只跑 §十六 截图判据的三格自证（假 PNG 判假 / 缺文件判假 / 真截图判真），
 //                             不起实例、不需要 release 产物：npm run test:e2e:shot-selfproof
+//   --prune-selfcheck        → 只跑跨轮保留的 8 格自证（含"被文档点名的绿轮不许删"那一对），
+//                             不起实例、不碰任何目录：node scripts/e2e-multi-instance.mjs --prune-selfcheck
 //   E2E_NO_CAPTURE=1         → 把采集器关掉（= 截图判据读的那个输入）⇒ 那条截图判据必须红
 const POISON = FAULT === "poison-part" || FAULT === "poison-part-lie";
 /// 注入②：接收端已有**真实前缀** ⇒ 必须按前缀续传，不许从 0 重灌整份。
@@ -388,6 +390,88 @@ function noteId(id) {
   return id;
 }
 const RUN_DIR = path.join(ROOT, "test-results", `run-${ISO}`);
+
+// ── 跨轮保留判据（§十六 产物保留的第二半：历史攒多少轮）──────────────
+/// 为什么在模块级、而不是留在收尾的 `finally` 里：原来它长在最后一段，要证明"那几格断言
+/// 真会失败"就得先跑满一轮（30–45 分钟）—— 而 `--logtail-selfcheck` / `--shot-selfcheck` /
+/// `--report-contract-selfcheck` 这三个先例存在的原因就是同一个：**判据必须能秒级自证**。
+/// 收尾那一段现在调的就是这里的同一份函数，不留第二个家。
+/**
+ * 被文档点名的 run 目录名（那些"实测锚点 `run-…Z`"就是证据本体）。
+ * ⚠️ 拿不到名单时必须返回 **null**，不能返回空集合 —— "扫不到引用"和"没有引用"是两件事，
+ * 只有后者才允许删（同一形状：`--locked` 读不到 lock 时宁可报错，不许当成"没有依赖"）。
+ * 扫的范围只到 `*.md` / `*.html`：证据锚点写在文档里；自证夹具用的是 `run-a` 这种合成名，
+ * 不匹配下面那个 ISO 形状，不会被误当引用。
+ */
+function citedRunIds() {
+  const listed = spawnSync("git", ["ls-files", "-z", "--", "*.md", "*.html"], { cwd: ROOT, encoding: "utf8" });
+  if (listed.status !== 0) return null;
+  const set = new Set();
+  for (const rel of listed.stdout.split("\0").filter(Boolean)) {
+    let txt;
+    try {
+      txt = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    } catch {
+      continue; // 台账里点过名、文件已经不在了 ⇒ 不构成对现场的引用
+    }
+    for (const m of txt.matchAll(/run-2026-\d\d-\d\dT[\d-]+Z/g)) set.add(m[0]);
+  }
+  return set;
+}
+function prunePlan({ runs, keep, negative, cited }) {
+  if (negative) return [];
+  if (!Number.isFinite(keep) || keep < 0) return [];
+  if (!cited) return []; // fail-closed：引用名单拿不到 ⇒ 一个都不删（和"自证不过就不删"同一立场）
+  const greens = runs
+    .filter((r) => r.outcome === "green" && !cited.has(r.name)) // ★ 被文档点名的绿轮不占删除名额
+    .sort((a, b) => (a.name < b.name ? 1 : -1)); // 目录名是 ISO 时间戳 ⇒ 字典序倒排 = 新的在前
+  // 返回**按名字升序**（= 从最老的删起），让调用侧与自证都不依赖 sort 的方向
+  return greens.slice(keep).map((r) => r.name).sort();
+}
+/** 自证：每格只换一个输入。不这么写的话"上限生效"可以只是"绿轮恰好都被留着"。 */
+function selfcheckPrune() {
+  const fails = [];
+  const eq = (name, got, want) => {
+    const a = JSON.stringify(got), b = JSON.stringify(want);
+    if (a !== b) fails.push(`${name}：预期 ${b} / 实际 ${a}`);
+  };
+  const mk = (tag, outcome) => (outcome ? { name: "run-" + tag, outcome } : { name: "run-" + tag });
+  const greens = [mk("a", "green"), mk("b", "green"), mk("c", "green")]; // c 最新
+  const NONE = new Set();
+  eq("绿轮超上限 ⇒ 删最老的那几个", prunePlan({ runs: greens, keep: 1, negative: false, cited: NONE }), ["run-a", "run-b"]);
+  eq("没超上限 ⇒ 一个都不删", prunePlan({ runs: greens, keep: 9, negative: false, cited: NONE }), []);
+  eq("红轮永远保留（哪怕上限 0）", prunePlan({ runs: [mk("x", "green"), mk("y", "red")], keep: 0, negative: false, cited: NONE }), ["run-x"]);
+  eq("跑不出 summary ⇒ 按红处理", prunePlan({ runs: [mk("z", "unknown")], keep: 0, negative: false, cited: NONE }), []);
+  eq("反向模式 ⇒ 一趟都不删", prunePlan({ runs: greens, keep: 1, negative: true, cited: NONE }), []);
+  eq("上限写坏了（NaN/负数）⇒ 不删", prunePlan({ runs: greens, keep: Number.NaN, negative: false, cited: NONE }), []);
+  // ★ 这两格是一对：同一批输入，**只换"有没有被文档点名 / 名单拿不拿得到"这一个输入**。
+  //   第一格红 ⇒ 证明"留下 a"是引用给的，不是排序巧合；第二格红 ⇒ 证明 fail-closed 那条真的关着门。
+  eq("被文档点名的绿轮 ⇒ 哪怕超上限也不删", prunePlan({ runs: greens, keep: 1, negative: false, cited: new Set(["run-a"]) }), ["run-b"]);
+  eq("引用名单拿不到（null）⇒ 一个都不删", prunePlan({ runs: greens, keep: 1, negative: false, cited: null }), []);
+  return fails;
+}
+{
+  if (process.argv.includes("--prune-selfcheck")) {
+    const fails = selfcheckPrune();
+    for (const f of fails) console.error(`  ❌ ${f}`);
+    console.log(fails.length ? `✗ 跨轮保留判据自证红 ${fails.length} 条` : "✅ 跨轮保留判据自证成立（8 格）");
+    // 引用普查：这条入口顺手回答"文档点名了几个 / 盘上还缺几个"。那 9 个已缺失的锚点以前只能靠
+    // 临时脚本现算才看见（而现写的脚本只证明"我看到了什么"，不证明"工具管不管"）⇒ 数交给判据自己印。
+    const cited = citedRunIds();
+    if (!cited) {
+      console.error("⚠️ 引用名单拿不到（`git ls-files` 失败）⇒ 真实一轮会一个都不删");
+    } else {
+      const root = path.join(ROOT, "test-results");
+      const present = new Set(fs.existsSync(root) ? fs.readdirSync(root).filter((n) => n.startsWith("run-")) : []);
+      const missing = [...cited].filter((n) => !present.has(n)).sort();
+      console.log(`引用普查：文档点名 ${cited.size} 个 run-* · 仍在盘上 ${cited.size - missing.length} 个 · 已缺失 ${missing.length} 个`);
+      for (const m of missing) console.log(`  · 已缺失（历史淘汰，不可恢复）：${m}`);
+    }
+    process.exit(fails.length ? 1 : 0);
+  }
+  // ⚠️ 这里**不**在起跑前 throw：清理逻辑坏了不该让一整轮（30–45 分钟）根本跑不起来。
+  //   立场与原来一致 —— 收尾那一跑先自证，自证不过就"一个都不删 + 本轮记一条不合格"。
+}
 
 // ── 环境事实（不认识的平台直接退，不猜）────────────────────────────
 function appDataDir() {
@@ -4690,35 +4774,13 @@ try {
   }
   // 跨轮上限（2026-09-27 用户拍板"按你建议"）：绿轮只留最近 N 个，**红轮与跑不出结论的轮次一个都不删**。
   // 上面那条策略 C 只管"本轮内部"省空间，从没管过"历史攒多少" ⇒ `test-results/` 才会涨到几百轮十几 GB。
-  // 删目录不可逆，所以三条硬约束：① 先自证（每格只换一个输入），自证不过 ⇒ 这一趟一个都不删并把本轮判红；
-  // ② 只允许碰 `test-results/run-*`，且**跳过本轮自己**；③ 想多留用 GOSSLAN_KEEP_RUNS 调大上限。
+  // 删目录不可逆，所以四条硬约束：① 先自证（每格只换一个输入），自证不过 ⇒ 这一趟一个都不删并把本轮判红；
+  // ② 只允许碰 `test-results/run-*`，且**跳过本轮自己**；③ 想多留用 GOSSLAN_KEEP_RUNS 调大上限；
+  // ④ **被文档点名的 run-* 不进删除名额**，而名单拿不到时（`git ls-files` 失败）一个都不删（2026-10-03 加，
+  //    起因：#65 那批"实测锚点 run-…Z"已经被淘汰掉几个，而当时没有任何机器会报这件事）。
   const KEEP_GREEN_RUNS = Number(process.env.GOSSLAN_KEEP_RUNS || 30);
-  function prunePlan({ runs, keep, negative }) {
-    if (negative) return [];
-    if (!Number.isFinite(keep) || keep < 0) return [];
-    const greens = runs
-      .filter((r) => r.outcome === "green")
-      .sort((a, b) => (a.name < b.name ? 1 : -1)); // 目录名是 ISO 时间戳 ⇒ 字典序倒排 = 新的在前
-    // 返回**按名字升序**（= 从最老的删起），让调用侧与自证都不依赖 sort 的方向
-    return greens.slice(keep).map((r) => r.name).sort();
-  }
-  /** 自证：每格只换一个输入。不这么写的话"上限生效"可以只是"绿轮恰好都被留着"。 */
-  function selfcheckPrune() {
-    const fails = [];
-    const eq = (name, got, want) => {
-      const a = JSON.stringify(got), b = JSON.stringify(want);
-      if (a !== b) fails.push(`${name}：预期 ${b} / 实际 ${a}`);
-    };
-    const mk = (tag, outcome) => (outcome ? { name: "run-" + tag, outcome } : { name: "run-" + tag });
-    const greens = [mk("a", "green"), mk("b", "green"), mk("c", "green")]; // c 最新
-    eq("绿轮超上限 ⇒ 删最老的那几个", prunePlan({ runs: greens, keep: 1, negative: false }), ["run-a", "run-b"]);
-    eq("没超上限 ⇒ 一个都不删", prunePlan({ runs: greens, keep: 9, negative: false }), []);
-    eq("红轮永远保留（哪怕上限 0）", prunePlan({ runs: [mk("x", "green"), mk("y", "red")], keep: 0, negative: false }), ["run-x"]);
-    eq("跑不出 summary ⇒ 按红处理", prunePlan({ runs: [mk("z", "unknown")], keep: 0, negative: false }), []);
-    eq("反向模式 ⇒ 一趟都不删", prunePlan({ runs: greens, keep: 1, negative: true }), []);
-    eq("上限写坏了（NaN/负数）⇒ 不删", prunePlan({ runs: greens, keep: Number.NaN, negative: false }), []);
-    return fails;
-  }
+  // `prunePlan` / `selfcheckPrune` / `citedRunIds` 都在模块级（连同 `--prune-selfcheck` 那条秒级入口，
+  // 见 `RUN_DIR` 下面那一段）—— 判据只留一个家，收尾这里只按它给的名单删。
   function classifyRun(dir) {
     const sum = path.join(dir, "summary.json");
     if (!fs.existsSync(sum)) return "unknown"; // 崩在半路 ⇒ 现场比"省空间"值钱
@@ -4729,14 +4791,21 @@ try {
       return "unknown";
     }
   }
-  function pruneOldRuns() {
+  function pruneOldRuns(cited) {
     const root = path.join(ROOT, "test-results");
-    if (!fs.existsSync(root)) return { deleted: [], bytes: 0, left: 0 };
+    if (!fs.existsSync(root)) return { deleted: [], bytes: 0, left: 0, spared: 0, missingCited: 0, citedAvailable: !!cited };
     const cur = path.basename(RUN_DIR);
-    const runs = fs.readdirSync(root, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && e.name.startsWith("run-") && e.name !== cur)
-      .map((e) => ({ name: e.name, outcome: classifyRun(path.join(root, e.name)) }));
-    const doomed = prunePlan({ runs, keep: KEEP_GREEN_RUNS, negative: NEGATIVE });
+    const dirs = fs.readdirSync(root, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith("run-"))
+      .map((e) => e.name);
+    const present = new Set(dirs);
+    const runs = dirs.filter((n) => n !== cur)
+      .map((n) => ({ name: n, outcome: classifyRun(path.join(root, n)) }));
+    const doomed = prunePlan({ runs, keep: KEEP_GREEN_RUNS, negative: NEGATIVE, cited });
+    // `spared` = 被文档点名且还在盘上的目录数（红轮本来也不删，所以它是"证据正被保护"的分母，
+    // 不等于"这一趟多救下几个"）。`missingCited` = 文档点名但盘上找不到 ⇒ 只报数，不改判。
+    const spared = cited ? dirs.filter((n) => cited.has(n)).length : 0;
+    const missingCited = cited ? [...cited].filter((n) => !present.has(n)).length : 0;
     let bytes = 0;
     const gone = [];
     for (const name of doomed) {
@@ -4748,17 +4817,21 @@ try {
     }
     const left = fs.readdirSync(root, { withFileTypes: true })
       .filter((e) => e.isDirectory() && e.name.startsWith("run-")).length;
-    return { deleted: gone, bytes, left };
+    return { deleted: gone, bytes, left, spared, missingCited, citedAvailable: !!cited };
   }
   const pruneFails = selfcheckPrune();
   if (pruneFails.length) {
     console.error(`✗ 跨轮保留自证不成立 ⇒ 旧轮次一律不删（宁可留一堆，也不能删错）：\n  ${pruneFails.join("\n  ")}`);
     REPORT_GAPS.push(`跨轮保留自证不成立：${pruneFails.join(" / ")}`);
   } else {
-    const pr = pruneOldRuns();
+    const pr = pruneOldRuns(citedRunIds());
     console.log(`跨轮保留：绿轮上限 ${KEEP_GREEN_RUNS} ⇒ 删最老的绿轮 ${pr.deleted.length} 个` +
       `（释放 ${(pr.bytes / 1024 / 1024).toFixed(1)} MB），现存 ${pr.left} 个 run-*；` +
       `红轮与没有 summary.json 的轮次一个都不删（GOSSLAN_KEEP_RUNS 可调上限）`);
+    console.log(pr.citedAvailable
+      ? `  引用保护：文档点名且仍在盘上的 run-* ${pr.spared} 个一律不删，只有名单外的绿轮才进删除名额` +
+        (pr.missingCited ? `；⚠️ 另有 ${pr.missingCited} 个被文档点名的 id 在 test-results 里已经找不到` : "")
+      : "  ⚠️ 引用名单没拿到（`git ls-files` 失败）⇒ 这一趟一个都没删");
   }
   if (backups.size) console.log(`已还原用户原有实例库 ${backups.size} 个`);
   // 报告本身不合格 ⇒ 这一轮不许以"跑完了"收场。放在 finally 最末（清理之后、退出之前），
