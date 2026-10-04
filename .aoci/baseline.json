@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-10-04T15:21:11Z",
+  "updated_at": "2026-10-04T15:56:51Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -83,15 +83,15 @@
     },
     "README.md": {
       "role": "index",
-      "sha256": "fd8da6140ebe5fc1e5c02607497f6287e2be83583dc12d55936bce263f549ef3",
-      "size": 28715,
-      "normalized_sha256": "fd8da6140ebe5fc1e5c02607497f6287e2be83583dc12d55936bce263f549ef3"
+      "sha256": "f19b2f6a2461bbfebbbefdcd83082e7ad46cc94dcaeab7f26cca61fb2fa802e0",
+      "size": 29115,
+      "normalized_sha256": "f19b2f6a2461bbfebbbefdcd83082e7ad46cc94dcaeab7f26cca61fb2fa802e0"
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "8efe9325387f211d3362490059881535976ed57d88b7f2f9c3d6bf443337eb69",
-      "size": 220476,
-      "normalized_sha256": "8efe9325387f211d3362490059881535976ed57d88b7f2f9c3d6bf443337eb69"
+      "sha256": "b75a315dd6f4cef70f3b5c4606d97be3629a4acfb7dc3da51a56afff382496ed",
+      "size": 221407,
+      "normalized_sha256": "b75a315dd6f4cef70f3b5c4606d97be3629a4acfb7dc3da51a56afff382496ed"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -107,9 +107,9 @@
     },
     "docs/AI_ENGINEERING_INDEX.md": {
       "role": "index",
-      "sha256": "f51a10fc94b01052d3f7fecea1da4c795e041a49f880bb17de53af70236fcb4b",
-      "size": 6773,
-      "normalized_sha256": "f51a10fc94b01052d3f7fecea1da4c795e041a49f880bb17de53af70236fcb4b"
+      "sha256": "ec4d0d733ce8be2e21599d7156c1fa70a1faf710cbf3ce77b5fe39134057d74d",
+      "size": 7184,
+      "normalized_sha256": "ec4d0d733ce8be2e21599d7156c1fa70a1faf710cbf3ce77b5fe39134057d74d"
     },
     "docs/ARCHITECTURE-EXPLAINED.md": {
       "role": "index",
@@ -242,6 +242,12 @@
       "sha256": "816372c8e8d594c2a43c7caa59d7a6e6143b14a75aa5508fba61348834ee8803",
       "size": 6793,
       "normalized_sha256": "816372c8e8d594c2a43c7caa59d7a6e6143b14a75aa5508fba61348834ee8803"
+    },
+    "docs/aoci-usage.md": {
+      "role": "index",
+      "sha256": "441b797559d4d2acb9f3414cc6ff729896f1f67b629b1e0475d0f8e6ce69d7ea",
+      "size": 8987,
+      "normalized_sha256": "441b797559d4d2acb9f3414cc6ff729896f1f67b629b1e0475d0f8e6ce69d7ea"
     },
     "docs/design-guidelines.md": {
       "role": "index",

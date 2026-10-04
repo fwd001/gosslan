@@ -35,6 +35,7 @@
 | **★★ 参考** | [docs/ARCHITECTURE-MAP.html](docs/ARCHITECTURE-MAP.html) | **架构与接口契约图**（单文件，浏览器直接打开）：分层大图 + IPC 命令的「输入 → 输出」规则表（**条数不在这里抄**：图里那张表由页头 `CMDS.length` 现数，与后端注册表逐条双向核对由 `mapContract.test.ts` 判；权威口径 = `node scripts/check-key-boundary.mjs` 自己打印的那行"注册表 N 条"。此处曾长期手抄一个数、而注册表后来变了 ⇒ 这正是图自己改口要消灭的形状） + 事件/表结构/流程穿透 + 已核出的漂移清单。判「方向对不对」不用读代码 |
 | **★ 按需** | [docs/templates/BUG_FIX.md](docs/templates/BUG_FIX.md) | Bug 修复报告模板（复现 / 根因 / 影响 / 修复 / 回归） |
 | **★ 按需** | [docs/templates/ADR.md](docs/templates/ADR.md) | 新增架构决策记录模板 |
+| **★ 按需** | [docs/aoci-usage.md](docs/aoci-usage.md) | **AOCI 仓库认知层使用手册**：哪些文件入库、换机器怎么接宿主、谁在什么时候必须调它、9 个 MCP 工具与 CLI 只读命令速查、一条 Entry 的格式与 `S` 的两层配额、收尾三件套（verify→check→guide）。文中的配额上限与实况数字**都挂着现算命令**，别抄数字 |
 
 **阅读顺序**：`AI_RULES.md`（约束）→ `docs/acceptance/1.0-release.md`（目标与验收）→ `AI_PROJECT_HANDOFF.md`（项目全貌）→ 涉及网络/协议时读 `docs/protocol-invariants.md` 与相关 ADR → 代码。
 

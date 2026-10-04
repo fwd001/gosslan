@@ -49,6 +49,9 @@
 - `docs/P1-image-out-of-sqlite-overview.md` — 一次**已落地**修复（图片不再以 base64 内联 SQLite）的
   交付说明。是历史，不是约束；**此前全仓零引用**（下面这条导航就是第一条指向它的话），
   留着只为"当时为什么这么改"可查。
+- `docs/aoci-usage.md` — **AOCI 仓库认知层使用手册**（工具用法，不是代码约束）：认知层怎么读、什么时候必须 `aoci_maintain` 收尾、
+  `S` 的两层配额与标签字典的现读口、CLI 只读命令与两个坑（CLI 写路径在 Volumes v1 下是拒的、`guide` 必带 `--agent`）。
+  约束本体在 `AGENTS.md` 的 AOCI 区块，这份只补"具体怎么操作"。
 
 ## Templates
 

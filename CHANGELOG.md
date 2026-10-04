@@ -57,6 +57,14 @@
   `aoci check` 0（五净）/ `aoci verify` structure_valid+governance_aligned 双 true /
   `aoci index agent guide` stage=aligned、complete=true、next_action=none /
   全库 497 条 Entry 的 R 项逐条复审（存在性 + 是否跟踪 + 是否目录）异常 0 处。零应用码改动 ⇒ 不提版本。
+- 新增 `docs/aoci-usage.md` —— **AOCI 认知层使用手册**（工具用法：哪些文件入库、换机器怎么接宿主、
+  谁在什么时候必须调它、9 个 MCP 工具与 CLI 只读命令速查、一条 Entry 的格式与 `S` 的两层配额、
+  收尾三件套）。写的时候现跑了一遍自查，抓到两处我自己想当然的假命令：**CLI 没有 `aoci header`**
+  （字典的现读口是 MCP `aoci_header` 或 `aoci_maintain` 响应里的 `authoring_meta`），以及
+  `aoci guide` 不存在 —— Guide 的真位置是 `aoci index agent guide` 且 **`--agent` 必填**。
+  已按"每条命令都要在读者站的位置跑得通"逐条改口，并在文档里登记这两个坑。
+  导航同步：README 的「AI 开发必读」表加一行（★ 按需）、`docs/AI_ENGINEERING_INDEX.md` 的
+  「其余在 docs/ 里」加一条 —— 新建文档不进导航＝约束失效。零代码改动 ⇒ 不提版本。
 
 ## [4.33.4] - 2026-10-03
 
