@@ -18,7 +18,8 @@ android {
     // btleplug 的 Android Java 实现（只被 native 代码按类名调用，必须编译进 App）
     // 两个包都在仓库里：com/nonpolynomial/** 与 io/github/gedgygedgy/**
     //（crates.io 的 btleplug 包里没有后者，见 scripts/android/btleplug-java/README.md）
-    sourceSets["main"].java.srcDirs("/Users/wendongfu/Documents/code/gosslan/scripts/android/btleplug-java")
+    // 相对 App 模块目录解析（入库文件不许带本机绝对路径）
+    sourceSets["main"].java.srcDirs(file("../../../../scripts/android/btleplug-java"))
     // GOSSLAN_BTLEPLUG_JAVA_END
     // GOSSLAN_SIGNING_BEGIN
     signingConfigs {

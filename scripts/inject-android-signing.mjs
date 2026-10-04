@@ -235,14 +235,34 @@ function injectBtleplugJava(source) {
         "`failed to resolve Java class 'io/github/gedgygedgy/rust/future/Future'`（蓝牙不可用）",
     );
   }
+  // 写进 Gradle 文件的必须是**相对 App 模块目录**的路径，不能是绝对路径。
+  // 原因：`build.gradle.kts` 是入库文件，而 Gradle 对**不存在的 srcDir 一个字都不报**
+  // ——绝对路径在别人机器/CI 上解析到空目录，Java 两半不进 dex，构建期全绿，
+  // 只在真机 logcat 里现形（就是上面那条 panic）。相对写法与同文件里
+  // `file("release.keystore")`、`file("tauri.properties")` 是同一套解析口径。
+  const appDir = path.dirname(gradlePath);
+  const vendoredRel = path
+    .relative(appDir, vendored)
+    .split(path.sep)
+    .join("/");
+  if (path.resolve(appDir, vendoredRel) !== path.normalize(vendored)) {
+    throw new Error(
+      `[android-btleplug] 相对路径折回来不是那个目录（file("${vendoredRel}") → ` +
+        `${path.resolve(appDir, vendoredRel)}，应为 ${vendored}）—— 拒绝写入。`,
+    );
+  }
   const block =
     "    // GOSSLAN_BTLEPLUG_JAVA_BEGIN\n" +
     "    // btleplug 的 Android Java 实现（只被 native 代码按类名调用，必须编译进 App）\n" +
     "    // 两个包都在仓库里：com/nonpolynomial/** 与 io/github/gedgygedgy/**\n" +
     "    //（crates.io 的 btleplug 包里没有后者，见 scripts/android/btleplug-java/README.md）\n" +
-    `    sourceSets["main"].java.srcDirs(${kotlinString(vendored)})\n` +
+    "    // 相对 App 模块目录解析（入库文件不许带本机绝对路径）\n" +
+    `    sourceSets["main"].java.srcDirs(file(${kotlinString(vendoredRel)}))\n` +
     "    // GOSSLAN_BTLEPLUG_JAVA_END\n";
-  console.log(`[android-btleplug] 已注入仓库自带的 Java 源码目录（两个包共 28 个 .java）：${vendored}`);
+  console.log(
+    `[android-btleplug] 已注入仓库自带的 Java 源码目录（两个包共 28 个 .java）：` +
+      `file("${vendoredRel}") → ${vendored}`,
+  );
   return cleaned.replace("android {\n", `android {\n${block}`);
 }
 

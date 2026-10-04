@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-10-04T15:00:03Z",
+  "updated_at": "2026-10-04T15:21:11Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -89,9 +89,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "0b5b6f1b4ddc4746349c1ea4d3ef4d2349ac42548cfe0bd3c0e20cf4021a6cbd",
-      "size": 219988,
-      "normalized_sha256": "0b5b6f1b4ddc4746349c1ea4d3ef4d2349ac42548cfe0bd3c0e20cf4021a6cbd"
+      "sha256": "8efe9325387f211d3362490059881535976ed57d88b7f2f9c3d6bf443337eb69",
+      "size": 220476,
+      "normalized_sha256": "8efe9325387f211d3362490059881535976ed57d88b7f2f9c3d6bf443337eb69"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -833,9 +833,9 @@
     },
     "scripts/inject-android-signing.mjs": {
       "role": "index",
-      "sha256": "567cbf8f5e34ff7f9bf6ece06577383316b75099895aafb8b0a0f79dffe77e6c",
-      "size": 17820,
-      "normalized_sha256": "567cbf8f5e34ff7f9bf6ece06577383316b75099895aafb8b0a0f79dffe77e6c"
+      "sha256": "61e8a655f92f44731c966279cf57160adb6abc22f4d369fc25cf654368cd7aad",
+      "size": 18906,
+      "normalized_sha256": "61e8a655f92f44731c966279cf57160adb6abc22f4d369fc25cf654368cd7aad"
     },
     "scripts/install-env.ps1": {
       "role": "index",
@@ -1049,9 +1049,9 @@
     },
     "src-tauri/gen/android/app/build.gradle.kts": {
       "role": "index",
-      "sha256": "228101af3a5128a7ebb75130b71cdaf9131df16db897b2705efe433dd02ebac9",
-      "size": 3044,
-      "normalized_sha256": "228101af3a5128a7ebb75130b71cdaf9131df16db897b2705efe433dd02ebac9"
+      "sha256": "2a9103aa5312206e854d882e42760426cb0908fe141899a967361b384e6151ea",
+      "size": 3104,
+      "normalized_sha256": "2a9103aa5312206e854d882e42760426cb0908fe141899a967361b384e6151ea"
     },
     "src-tauri/gen/android/app/proguard-rules.pro": {
       "role": "index",

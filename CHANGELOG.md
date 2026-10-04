@@ -35,6 +35,28 @@
   安卓/依赖下载缓存 2.7 GB、安卓目标产物 371 MB，`git gc` 把 `.git` 从 166 MB 收到 23 MB
   （`git fsck` 裸退码 0；**`src-tauri/target/release` 特意留着**，它是让下次 `cargo build --release`
   走增量而不是冷编的那半）。仓库 16 GB ⇒ 5.2 GB。
+- ★ **入库的那份安卓 gradle 里写的是这台机器的绝对路径**（`src-tauri/gen/android/app/build.gradle.kts`
+  第 22 行那条 btleplug Java 源目录，由 `scripts/inject-android-signing.mjs` 注入）。不只是难看 ——
+  它是一条**静默坏包**通道：Gradle 对**不存在的 `srcDir` 一个字都不报** ⇒ 别人机器/CI 上那个目录解析为空，
+  btleplug 的两半 Java 不进 dex，构建全绿，只在真机 logcat 里现形
+  （`failed to resolve Java class 'io/github/gedgygedgy/rust/future/Future'`，正是该文件注释里那条事故）。
+  现在注入的是**相对 App 模块目录**的 `file("../../../../scripts/android/btleplug-java")`
+  （与同文件里 `file("release.keystore")` 同一套解析口径），脚本另加一条折回核对：算出的相对路径
+  resolve 回来不是那个目录就**拒绝写入** ⇒ 生产通道再也产不出带绝对路径的那一行。
+  机器证明（`./gradlew --offline -I <打印 main java srcDirs 的 init 脚本> help`，正反对照同一份判据）：
+  相对写法 ⇒ `:app` 那个目录 `exists=true`、`.java` 28 个（`com/nonpolynomial` 10 + `io/github/gedgygedgy` 18，
+  正是 `build-android-releases.sh` ⓪b 反查 dex 要的那两半）；把它换成"别人机器上的绝对路径"这一形状 ⇒
+  **退码仍是 0，而 `exists=false`、计数掉到 0** —— 这类坏法第一次被当场看到，而不是靠下次真机报错。
+  同批（AOCI 索引收尾）：`scrape-douyin-emoji.py` 那条 Entry 的 R 原来指着 `code:src/assets`（目录、
+  非托管对象，全库唯一一处 dangling），现按现读到的真实关系链改成 `code:src/data/emojis.ts`
+  （它首行写明「由 scripts/douyin_comments_emoji/emojis.json 生成」，而那份产物目录不入库）；
+  `logs.rs` 那条 Entry 里一个中英夹生词已由机器的 cognition_optimization 批次重写，重写时把
+  ⚠️ 一处**注释与代码不符**登记了进去 —— `prewarm_aux_windows` 上方那段"只预热预览这一扇"是过期的，
+  函数体现在预览与群任务两扇都建。改那段注释要动应用码 ⇒ 不在本轮，只登记。
+  回归：`verify-guards.py --list` 0（那份 gradle 没被任何锚点钉着，改它不会改坏注入锚点）/
+  `aoci check` 0（五净）/ `aoci verify` structure_valid+governance_aligned 双 true /
+  `aoci index agent guide` stage=aligned、complete=true、next_action=none /
+  全库 497 条 Entry 的 R 项逐条复审（存在性 + 是否跟踪 + 是否目录）异常 0 处。零应用码改动 ⇒ 不提版本。
 
 ## [4.33.4] - 2026-10-03
 
