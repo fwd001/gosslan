@@ -53,3 +53,11 @@ src-tauri/gen/schemas
 src-tauri/gen/android/app/release.keystore
 src-tauri/gen/android/app/*.keystore
 test-results/
+
+# AOCI agent host integration (machine-bound; do not commit)
+.mcp.json
+.mcp.json.backup.*
+.codex/config.toml
+.codex/config.toml.backup.*
+# Qoder CLI 的 MCP 宿主配置：内嵌本机绝对路径，入库后在别的机器上就是坏的
+.qoder/
