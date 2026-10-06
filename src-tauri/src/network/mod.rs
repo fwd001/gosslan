@@ -231,9 +231,10 @@ pub(crate) fn transport_src_for_guards() -> String {
     // 所有以"transport 全集"为判据的守卫**看不见拨号器本身**（假绿，不是假红 —— 更危险的那种）。
     src.push('\n');
     src.push_str(include_str!("transport/relay.rs"));
-    // `transport/tests.rs` 是 2026-09-28 从主文件搬出去的尾部测试块（`include!` 回同一模块）。
-    // 一起登记 ⇒ 视图与搬动前的文本全集等价，守卫不会因为搬家而少看一段。
-    src.push_str(include_str!("transport/tests.rs"));
+    // `transport/tests.rs` **刻意不并进视图**：视图是生产码全集，掺进测试字面量会让
+    // 以它为判据的守卫多看见一堆字符串常量（本文件上面 commands/db 那段注释写的同一条规矩）。
+    // 2026-10-06 实测：分册把 writer_loop / reader_loop 搬出主文件后，视图里先撞上
+    // tests.rs 中的 `"async fn reader_loop("` 字面量，窗口飘到测试文本上 ⇒ 4 条守卫假红。
     // 2026-10-06 大文件拆分的头四册（`transport.rs` 里对应的四行 `include!`）。
     // 必须登记在这里：所有以"transport 全集"为判据的守卫读的是这份视图，漏一册就是
     // 守卫看不见那段生产码 —— 假绿，比假红危险（relay.rs 在 4.25.0 接线时漏登记过两次）。
@@ -241,6 +242,11 @@ pub(crate) fn transport_src_for_guards() -> String {
     src.push_str(include_str!("transport/peer_state.rs"));
     src.push_str(include_str!("transport/member_notices.rs"));
     src.push_str(include_str!("transport/outbox_flush.rs"));
+    src.push_str(include_str!("transport/queue_policy.rs"));
+    src.push_str(include_str!("transport/link_state.rs"));
+    src.push_str(include_str!("transport/relay_file.rs"));
+    src.push_str(include_str!("transport/outbox_sweep.rs"));
+    src.push_str(include_str!("transport/read_receipt.rs"));
     src
 }
 

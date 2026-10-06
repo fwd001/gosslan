@@ -1194,11 +1194,7 @@ mod tests {
     /// （形状判据：本仓撞过太多次"点名式判据 = 半个守卫"，这条钉的是"只有一个家"。）
     #[test]
     fn group_chunk_seq_rule_has_exactly_one_home() {
-        let transport = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/network/transport.rs"
-        ))
-        .expect("读不到 transport.rs ⇒ 这条判据失去落点");
+        let transport = crate::network::transport_src_for_guards();
         let at = transport
             .find("fn handle_group_file_chunk")
             .expect("群分片入口改名了 ⇒ 同步改这条判据");
@@ -2051,11 +2047,7 @@ mod group_receive_atomicity_tests {
     /// 那个形状被同文件 `take_stalled_receive` 的注释明确判死过（中间挤进来的新 FileOffer 会被误判死）。
     #[test]
     fn peer_offline_group_cleanup_takes_before_finalizing() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/network/transport.rs"
-        ))
-        .expect("读不到 transport.rs ⇒ 这条判据失去落点");
+        let src = crate::network::transport_src_for_guards();
         let at = src
             .find("if peer_now_offline {")
             .expect("对端下线那一段改名/搬走了 ⇒ 同步改这条判据");
@@ -2145,11 +2137,7 @@ mod group_receive_atomicity_tests {
     /// 届时这条必须红 —— 两条一起才是完整的非空转证明。
     #[test]
     fn completed_guard_reads_recipient_status_in_the_handler() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/network/transport.rs"
-        ))
-        .expect("读不到 transport.rs ⇒ 这条判据失去落点");
+        let src = crate::network::transport_src_for_guards();
         let at = src
             .find("async fn handle_group_file_complete_ack")
             .expect("群文件 complete ACK 处理改名了 ⇒ 同步改这条判据");

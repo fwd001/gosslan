@@ -3213,7 +3213,7 @@ mod tests {
     /// 那条判据只许有一个家：读循环收尾必须调用它，不许再内联一份 `removed && empty`。
     #[test]
     fn peer_offline_rule_has_one_home() {
-        let src = include_str!("../transport.rs");
+        let src = crate::network::transport_src_for_guards();
         assert!(
             src.contains("peer_offline_after_tail(removed, empty)"),
             "读循环收尾不再调用那个判据 ⇒ 真值表与现场分家"

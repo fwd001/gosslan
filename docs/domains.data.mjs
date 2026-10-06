@@ -229,6 +229,11 @@ export default {
         "src-tauri/src/network/transport/peer_state.rs", // 分册：会话链路快照 + peers 在线状态 + 成员公钥（同模块）
         "src-tauri/src/network/transport/member_notices.rs", // 分册：成员变动的群内系统消息与文案（同模块）
         "src-tauri/src/network/transport/outbox_flush.rs", // 分册：单聊/群聊离线队列补发（同模块）
+        "src-tauri/src/network/transport/queue_policy.rs", // 分册：链路队列字节预算与槽数折算（同模块，2026-10-06 第二批搬出）
+        "src-tauri/src/network/transport/link_state.rs", // 分册：conv_link 快照与连接登记表（同模块，2026-10-06 第二批搬出）
+        "src-tauri/src/network/transport/relay_file.rs", // 分册：中继文件传输 offer/chunk（同模块，2026-10-06 第二批搬出）
+        "src-tauri/src/network/transport/outbox_sweep.rs", // 分册：Outbox 超时清扫与过期终态（同模块，2026-10-06 第二批搬出）
+        "src-tauri/src/network/transport/read_receipt.rs", // 分册：已读回执路由与待发队列（同模块，2026-10-06 第二批搬出）
         "src-tauri/src/network/dispatch.rs", // 三优先级调度 + BLE yield + 发送状态定义（新建，2026-09）
         "src-tauri/src/transport", // 新栈（部分接线）
       ],

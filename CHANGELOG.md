@@ -10,6 +10,29 @@
 
 ## [Unreleased]
 
+## [4.33.6] - 2026-10-06
+
+### refactor(network): transport.rs 第二批 —— 再搬 1,388 行进五个分册，并修掉「视图掺测试文本」这个潜伏守卫 bug
+- **`transport.rs` 第二批：再搬 1,388 行进五个 `include!` 分册，主文件 6,648 ⇒ 5,266 行**。
+  新分册 `transport/{queue_policy 264, relay_file 535, outbox_sweep 201, read_receipt 118, link_state 296}`
+  （复跑 `wc -l src-tauri/src/network/transport*.rs src-tauri/src/network/transport/*.rs`）。
+  恒等判据同第一条：`cargo test --features bluetooth --lib` 仍 **789 passed / 0 failed**、
+  **逐条用例名与基线差集 0 行**，`cargo fmt --check --all` 与 `cargo clippy --features bluetooth -- -D warnings` 退 0，
+  快速层 17 步退 0，测试清单守卫与领域图退 0。
+- ★ **搬完 26 条护栏锚点的实际归属是现算出来的**：19 条仍在主文件、5 条跟着进了 `queue_policy.rs`、
+  1 条进 `outbox_sweep.rs`、1 条进 `relay_file.rs`，解析失败 0 条 ⇒ `include!` 分册下**锚点自动跟随**
+  这件事第一次拿到正对照（不是只读代码读出来的结论）。
+- ★ **顺带修掉一个潜伏的守卫设计 bug（早于本轮存在，是这次搬家把它逼出来的）**：
+  `transport_src_for_guards()` 那份"生产码全集"视图里一直拼着 `transport/tests.rs`。
+  搬家前生产码都在主文件、排在前面，所以没人发现；搬完之后视图里**先撞上 tests.rs 中的字符串字面量**
+  （`"async fn reader_loop("` 这类），于是按窗口取段的守卫飘到测试文本上 ⇒ 4 条守卫假红
+  （`writer_loop_splits_local_from_socket_failure_exactly_once`、
+  `peer_wide_receiver_cleanup_is_gated_on_total_link_loss`、`peer_offline_rule_has_one_home`、
+  `peer_offline_group_cleanup_takes_before_finalizing`）。修法是按本仓自己写在 `mod.rs` 注释里的规矩来：
+  **视图只装生产码**，把 tests 分册移出视图，登记对账用例的过滤条件同步补上"恰好名为 `tests.rs`"这一种；
+  同时把 4 处"直读 transport.rs 单文件文本"的守卫改指全集视图（原来只读主文件 ⇒ 下一次搬家必然再假红一次）。
+  这条属于「守卫看着绿、其实读错了文本」那一类，比少一条用例危险。
+
 ## [4.33.5] - 2026-10-06
 
 ### refactor(network): `transport.rs` 第一刀搬出四个 `include!` 分册（同批：AOCI 认知层接入、安卓 gradle 相对路径修复、大文件拆分计划与两份文档守卫登记）
