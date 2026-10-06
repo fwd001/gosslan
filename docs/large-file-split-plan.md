@@ -222,3 +222,45 @@ D 拿这份数与门禁 local/release 两层互点）⇒ 一次改动要同时�
 
 然后是**函数级**的 `handle_message`（1,562 行，`transport.rs:993-2554`）/ `handle_gossip`
 （840 行，`transport/gossip.rs:124-963`）拆分 —— 那是真重构、另案提交。
+
+## 5. 「更优雅的写法」实测到哪一步（函数级，不动文件大小）
+
+### 5.1 先量拆分前提：`handle_message` **没有跨分支共享局部量**（现算）
+
+```bash
+python3 - <<'PY'
+import io,re
+L=io.open('src-tauri/src/network/transport.rs',encoding='utf-8').read().split('\n')
+s=next(i for i,l in enumerate(L) if l.startswith('pub async fn handle_message('))
+e=s
+while L[e] != '}': e += 1
+print('span', e-s+1, 'arms', sum(1 for i in range(s+1,e) if re.match('^        Message::', L[i])))
+PY
+```
+
+实测：函数体 **1562 行、38 个顶层分支**；`match` 之前唯一被 `let` 出来的名字是
+`allowed` / `cfg` / `dbc`，而它们全在 `if let Some(to) = directed_relay_target(…)` 那个**早退分支的内部**
+（那条分支跑不到 `match`）。分支体里出现的 `allowed` / `cfg` / `now` 也都是各分支自己 `let` 的
+（现算 7 处）。⇒ **「一个消息族一个 handler」在这里是机械活而不是重写**：
+新函数只需要 `(&AppState, &str peer_id)` 加上自己那几个解构字段，不需要造上下文结构体。
+
+⚠️ 但这一刀**不让任何文件变小**（`transport.rs` 早已在阈值内），改的又是控制流 ⇒
+按本仓既有口径属于「真重构」，而 2026-09-25 复审时这一处已被判过「纯搬家、短期只降稳定」而暂缓 ⇒
+**等他点头再动**。真要动：一族一提交，每步跑与前五刀同一套恒等判据
+（`cargo test --lib -- --list` 的 789 条差集 0 行 + `verify-guards.py --list` 的 202 条 + clippy/fmt/快速层）。
+
+### 5.2 顺手抓到一处真缺陷：中继授权闸有 **3 个家**，而现有判据正替这个形状把关
+
+现算 `decide_relay_from_peer(` 的生产调用点：`src-tauri/src/network/transport.rs:1003`、`src-tauri/src/network/transport.rs:1278`、`src-tauri/src/network/transport/relay_file.rs:459`
+
+`lib_relay_data_tests.rs` 的 `relay_data_plane_respects_policy` 判的是 `wired >= 3`，
+语义是「三个转发点都接过闸」。⇒ **这条判据现在要求的就是"重复三遍"这个形状**：
+谁把闸收成一处 helper、三个消费者共调，`wired` 会掉到 1 ⇒ 判据当场红，而代码其实变好了。
+这正是本仓反复踩的两件事叠在一起：「同一个判据长在多处」+「守卫把缺陷钉成契约」。
+
+⇒ 修法必须**一件事两件一起做**（谁也别先动）：
+① 抽 `relay_gate_allows_forward(state, peer_id) -> bool` 当唯一的家，内联处改成调用它；
+② 判据同步**改严而不是改松**：从「`decide_relay_from_peer(` ≥3 处」改成
+   「策略函数调用恰好 1 处（在家里）+ helper 的调用点恰好 3 处（三个消费者）」，
+   并配两条反证：摘掉任意一个消费者 ⇒ 红；把闸内联回某一处 ⇒ 红。
+不同批改 ② 的话，"消红最顺手"的动作就是再复制一份第四遍 —— 那才是把缺陷真正钉死。
