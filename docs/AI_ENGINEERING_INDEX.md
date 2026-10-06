@@ -52,6 +52,10 @@
 - `docs/aoci-usage.md` — **AOCI 仓库认知层使用手册**（工具用法，不是代码约束）：认知层怎么读、什么时候必须 `aoci_maintain` 收尾、
   `S` 的两层配额与标签字典的现读口、CLI 只读命令与两个坑（CLI 写路径在 Volumes v1 下是拒的、`guide` 必带 `--agent`）。
   约束本体在 `AGENTS.md` 的 AOCI 区块，这份只补"具体怎么操作"。
+- `docs/large-file-split-plan.md` — **大文件拆分计划**（>3000 行的清点、transport.rs 的分节构成与 26 条护栏锚点风险、
+  「行为不变」的恒等判据、下刀顺序）。当**在途工作地图**读：里面每条数字都挂现算命令，跑一遍再引。
+  ⚠️ 它与 2026-09-25 复审那条「拆 store / handle_message 分册 暂缓」不冲突：那条反对的是改语义与拆 AppState，
+  本计划只做文件级搬家 + 再导出（`AI_RULES.md:121` 允许）。
 
 ## Templates
 

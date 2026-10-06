@@ -59,6 +59,7 @@ const LIVE_DOCS = [
   "AI_PROJECT_HANDOFF.md",
   "docs/migration-ledger.md",
   "docs/protocol-invariants.md",
+  "docs/large-file-split-plan.md",
 ];
 
 /**

@@ -36,6 +36,7 @@
 | **★ 按需** | [docs/templates/BUG_FIX.md](docs/templates/BUG_FIX.md) | Bug 修复报告模板（复现 / 根因 / 影响 / 修复 / 回归） |
 | **★ 按需** | [docs/templates/ADR.md](docs/templates/ADR.md) | 新增架构决策记录模板 |
 | **★ 按需** | [docs/aoci-usage.md](docs/aoci-usage.md) | **AOCI 仓库认知层使用手册**：哪些文件入库、换机器怎么接宿主、谁在什么时候必须调它、9 个 MCP 工具与 CLI 只读命令速查、一条 Entry 的格式与 `S` 的两层配额、收尾三件套（verify→check→guide）。文中的配额上限与实况数字**都挂着现算命令**，别抄数字 |
+| **★ 按需** | [docs/large-file-split-plan.md](docs/large-file-split-plan.md) | **大文件拆分计划（>3000 行）**：现算出真正超阈值的 6 个文件、transport.rs 的 15 节构成、**26/202 条护栏锚点指着它**这一静默风险、行为不变的恒等判据与下刀顺序。动大文件前先读它 |
 
 **阅读顺序**：`AI_RULES.md`（约束）→ `docs/acceptance/1.0-release.md`（目标与验收）→ `AI_PROJECT_HANDOFF.md`（项目全貌）→ 涉及网络/协议时读 `docs/protocol-invariants.md` 与相关 ADR → 代码。
 

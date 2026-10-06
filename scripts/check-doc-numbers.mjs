@@ -62,6 +62,7 @@ const LIVE_DOCS = [
   "docs/protocol-invariants.md",
   "docs/ARCHITECTURE-MAP.html",
   "scripts/verify.mjs",
+  "docs/large-file-split-plan.md",
 ];
 
 const fails = [];
