@@ -28,7 +28,7 @@ PY
 
 | 行数 | 文件 | 是什么 | 拆的判定 |
 |---|---|---|---|
-| 13,268 | `CHANGELOG.md` | 版本记账台账（发版脚本按行首锚点插入新小节、快速层有「CHANGELOG 结构」判据） | ✅ **已按 A 分卷**（2026-10-07 他点头后执行）：主文件 13,592 ⇒ **720 行**（未发布小节 + 4.32 及以后共 8 版），4.31.41 及更早的 **303 节 / 12,888 行**整段搬到 `docs/notes/changelog-archive.md`。**只搬不改**——摘掉两段新增说明后与原文**逐字节相同**（同 SHA）。**判据一处未改**（为什么见 §2-ter） |
+| 13,268 | `CHANGELOG.md` | 版本记账台账（发版脚本按行首锚点插入新小节、快速层有「CHANGELOG 结构」判据） | ✅ **已按 A 分卷**（2026-10-07 他点头后执行）：主文件 13,592 ⇒ **743 行**（未发布小节 + 4.32 及以后共 8 版；分卷当场是 720，本次记账条目写进去后 743），4.31.41 及更早的 **303 节 / 12,888 行**整段搬到 `docs/notes/changelog-archive.md`。**只搬不改**——摘掉两段新增说明后与原文**逐字节相同**（同 SHA）。**判据一处未改**（为什么见 §2-ter） |
 | **7,087** | `src-tauri/src/network/transport.rs` | 网络传输层本体（启动/选路/分发/中继/群密钥/清扫） | ✅ **已拆完**（2026-10-06 四批 ⇒ 主文件进阈值，见 §4 末） |
 | 4,845 | `scripts/e2e-multi-instance.mjs` | 双/多实例 E2E harness（按 `--round` / `--fault` 分轮次） | ✅ **已拆完**（2026-10-07 四小段）：驱动 **910 行** = 预检 + 默认轮 + 26 条分发 + 报告；新家 `scripts/e2e/core.mjs` 679（引擎层 + 共享量）与 `scripts/e2e/rounds/` **19 册**（一族一册，最大 `task.mjs` 535；19 册合计 3,664 行）。26 个轮次块 / 3,285 行全部出去，**判据 C 现算的 20 个轮次标签自始至终逐轮一字不差**。判据 D 与契约图那条 `ROUND === "…"` 现读命令**一字未改**（旗标与分发留在驱动）。原写「不划算」与后来写「必须改成显式入参 = 重写」这两个前提**都被这次搬家自己推翻**，见本节末 |
 | 4,176 | `scripts/verify-guards.py` | 护栏非空转 runner（**202 条 Case**） | ✅ **已拆完**（2026-10-07：runner 385 行 + `scripts/guard_cases/` 7 册，最大 771 行）。判据 E 同批改了计数范围（现在 glob 分册目录数），`guard_cases/__init__.py` 另加一条「目录里的分册 ≠ `MODULES` 名单就当场 ImportError」的对账 —— 那条正是 E 自己买不到的那一半 |
@@ -110,7 +110,7 @@ EOF
 | `src-tauri/src/network/transport/tests.rs` 3,227 ⇒ 壳 29 + 15 册 | **96 个测试**：`handshake 11` / `framing 10` / `outbound 10` / `read_receipt 8` / `dispatch 7` / `route 7`，其余各 ≤6 | `grep -cE '^\s*#\[(tokio::)?test\]' src-tauri/src/network/transport/*_tests.rs` |
 | `src-tauri/src/lib_tests.rs` 4,009 ⇒ 壳 205 + 11 册 | **75 个测试**：`lib_ble 14` / `lib_window 11` / `lib_delivery_shape 10` / `lib_file 7` / `lib_startup_config 7`；`lib_source_view 1` 是那条登记对账守卫自己 | 同上，glob 换 `src-tauri/src/lib_*_tests.rs` |
 | `scripts/e2e-multi-instance.mjs` 4,845 ⇒ 驱动 910 + core 679 + 19 册 | 19 册里共 **175 条 `check("`**，加上驱动里默认轮那 18 条 ⇒ 每一轮的真数 = `18 + 本册数`（与判据 C 现算逐轮吻合，两条独立量法互点：本表数 `check(\"`，判据 C 数同一形状再与文档对账） | `grep -c 'check(\"' scripts/e2e/rounds/<族>.mjs` |
-| `CHANGELOG.md` 13,592 ⇒ **主文件 720 + 归档 12,888**（2026-10-07 按 A 分卷） | 分卷时共 **312 个版本小节**（主文件 9：未发布 + 4.32.0~4.33.7；归档 303）；一节中位 29 行、最大 861 行；**最近 10 节只占全文 6%** ⇒ 天天要读的那一小块本来就这么大，历史是冷的 | `grep -c '^## \[' CHANGELOG.md` ⇒ 9；`grep -c '^## \[' docs/notes/changelog-archive.md` ⇒ 303 |
+| `CHANGELOG.md` 13,592 ⇒ **主文件 743 + 归档 12,888**（2026-10-07 按 A 分卷） | 分卷时共 **312 个版本小节**（主文件 9：未发布 + 4.32.0~4.33.7；归档 303）；一节中位 29 行、最大 861 行；**最近 10 节只占全文 6%** ⇒ 天天要读的那一小块本来就这么大，历史是冷的 | `grep -c '^## \[' CHANGELOG.md` ⇒ 9；`grep -c '^## \[' docs/notes/changelog-archive.md` ⇒ 303 |
 
 读出来的一句话结论：**这六个文件里只有 `CHANGELOG.md` 的"大"是内容本身的大**（一次发版一节，
 历史不能压扁），其余五个的"大"都是**多个关注点挤在一个文件里** —— 这正是它们能按边界切开、
@@ -120,7 +120,7 @@ EOF
 
 台账与前面五刀有一个根本差别：**它的大头不是热区**。现算（分卷前那份）——312 个版本小节里
 最近 10 节只占全文 6%，未发布小节 242 行，剩下 94% 是"当时发生过什么"。所以按"保留 4.32 及以后"
-切一刀，主文件落到 720 行，历史整段进 `docs/notes/changelog-archive.md`。
+切一刀，主文件落到 720 行（写完本次记账条目 743），历史整段进 `docs/notes/changelog-archive.md`。
 
 判据一处都没改，三条都是当场读过而不是推测：
 - 结构判据与发版脚本只认**行首**的未发布小节锚点 ⇒ 锚点仍在主文件且仍唯一。（历史事故就是把那句
@@ -249,7 +249,7 @@ EOF
 §1 那条命令现在印 4 行：`docs/notes/changelog-archive.md` 12,888（历史分卷 —— 不是热区、也不是现状声明）/
 `src-tauri/Cargo.lock` 6,036 与 `package-lock.json` 3,028（生成物）/ `.aoci/baseline.json` 5,051（工具基线）。
 ⇒ 本轮范围内的 6 个全部处理完：`transport.rs`、`transport/tests.rs`、`lib_tests.rs`、`verify-guards.py`、
-`e2e-multi-instance.mjs` 已进阈值，`CHANGELOG.md` 13,592 ⇒ 主文件 **720 行**（按 A 分卷，他 2026-10-07 点头后执行）。
+`e2e-multi-instance.mjs` 已进阈值，`CHANGELOG.md` 13,592 ⇒ 主文件 **743 行**（按 A 分卷，他 2026-10-07 点头后执行）。
 留一句口径出处（护栏 runner 那一刀）：判据 E 原来只在那一个文本里按 Case 构造行现算条数，分册后会得 0，
 而那条判据故意「数到 0 就 throw」⇒ 它必须与搬家**同批**改，不能先搬后补。
 harness 那一刀同理：**判据 C 跟着改口、判据 D 不动** —— 分发留在驱动，那两条现读命令的输入没搬家。
