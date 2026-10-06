@@ -10,6 +10,35 @@
 
 ## [Unreleased]
 
+- ★ **`transport/tests.rs` 第五刀（3,227 ⇒ 壳 29 行 + 15 个 `<concern>_tests.rs`，最大一册 336 行）
+  ⇒ Rust 侧今天已经没有 > 3,000 行的文件**（量法见 `docs/large-file-split-plan.md` §1 那条现算命令；
+  逐册行数 `wc -l src-tauri/src/network/transport/*.rs` 现数）。
+- **计划初稿那句"测试归位到各生产分册"被否掉了**，两条理由都是机器定的：
+  ① `network::transport_src_for_guards()` 那份"生产码全集"视图**只许装生产码** —— 测试字面量掺进去
+  会把按窗口取段的守卫飘到测试文本上（4.33.6 已经为此修过一次，再并进去就是把那个 bug 请回来）；
+  ② `lib_tests.rs` 的 `guard_source_views_register_every_include_subfile` 按**文件名后缀 `_tests.rs`**
+  豁免测试分册 ⇒ 新册名必须以此结尾。叫 `tests_*.rs` 会被判"漏登记"，而消红最顺手的做法
+  （把测试并进视图）正好是**假绿的形状** —— 所以册名是被判据选定的，不是我起的。
+  册内仍用 `include!` 拼回**同一个 `mod tests`** ⇒ 模块路径、`use`、可见性、**测试全名一字未变**。
+- **恒等判据与前四批同一套，且这次用到最硬的那一种**：拆前/拆后 `cargo test --features bluetooth
+  --lib -- --list` 各 789 条、**排序后差集 0 行**（其中 95 条 `network::transport::tests::*` 逐字相同），
+  `cargo test --features bluetooth --lib` **789 passed / 0 failed**；`cargo fmt --check --all` 退 0、
+  `cargo clippy --features bluetooth -- -D warnings` 退 0（`--all-targets` 那 37 条测试码既有异味
+  拆前拆后同为 37，这次搬家没改动它）；`python3 scripts/verify-guards.py --list` 退 0
+  ——「202 条用例的注入锚点都在各自文件里恰好命中一次」；`check-test-manifest --only rust` 退 0
+  （基线 789 条全部在跑）；`check-domain-map` / `check-domain-deps` 退 0（15 个新册已登记进
+  `docs/domains.data.mjs` 的 transport 领域，判据 D「coverageRoots 下不许有无主文件」靠的就是这份登记）。
+- **搬家手法本身也自证了一次**：脚本按花括号深度切出 113 个顶层项、块与块之间**无缝覆盖全文件**
+  （`covered == span` 断言），分配阶段断言"未分配 0 项 / 重复分配 0 项"（第一次跑就逮到 1 项漏分：
+  `gossip_trust_for_known_friend_never_tofus`），末尾再把块按原序拼回原文逐字对账 ⇒
+  "内容没动"是脚本算出来的，不是我读出来的。
+- 文档两处随批：`docs/large-file-split-plan.md` §1 表改成**首量快照**并标注去向（数字一律以 §1 那条
+  现算命令为准），§4 那句"预期主文件落到 <300"按实测改口 —— 没达成也没必要达成：差的正是
+  `startup 1,281` / `dispatch 1,658`（含 `handle_message` 1,562 行）两段，**文件级已进阈值，
+  再搬只是壳里套壳**，该动的是函数级拆分，那是改控制流的重构、不能和"只搬不改"混在一次提交里 ⇒ 另案。
+- 零应用码改动（`isAppCodePath` 把 `*_tests.rs` 与 `tests.rs` 判成测试）⇒ **不提版本**；
+  快速层那一步「CHANGELOG 结构」判据读的是本文件的形状，不是这里的条数。
+
 ## [4.33.7] - 2026-10-06
 
 ### refactor(network): transport.rs 第三、四批 —— 主文件进 3,000 阈值，并推翻"最大单函数 59 行"这个错结论

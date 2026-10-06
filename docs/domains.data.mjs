@@ -221,7 +221,7 @@ export default {
       paths: [
         "src-tauri/src/network/ble.rs", // BLE 中央角色（活）
         "src-tauri/src/network/transport.rs", // TCP 数据面（活，主文件；正按 include! 分册中）
-        "src-tauri/src/network/transport/tests.rs", // 分册：尾部行为测试（include! 回同一模块，2026-09-28 搬出）
+        "src-tauri/src/network/transport/tests.rs", // 分册：行为测试的模块壳（只剩 use + 15 行 include!，2026-10-06 再切）
         "src-tauri/src/network/transport/outbound.rs", // 分册：出站投递 + 链路选路（同模块，非新领域）
         "src-tauri/src/network/transport/gossip.rs", // 分册：Gossip 消费判据与 handle_gossip（同模块）
         "src-tauri/src/network/transport/relay.rs", // 分册：公网盲管道中继的会合循环与协商接线（ADR-0020，同模块）
@@ -240,6 +240,24 @@ export default {
         "src-tauri/src/network/transport/peer_registry.rs", // 分册（同模块，2026-10-06 第三批搬出）
         "src-tauri/src/network/transport/handshake.rs", // 分册（同模块，2026-10-06 第四批搬出）
         "src-tauri/src/network/transport/dial.rs", // 分册（同模块，2026-10-06 第四批搬出）
+        // ↓ 2026-10-06：`tests.rs`（原 3,227 行、113 个顶层项）按内聚再切 15 册。
+        // 册名一律以 `_tests.rs` 结尾 —— `lib_tests.rs` 的登记对账守卫按这个后缀把它们豁免在
+        // 「生产码全集」视图之外（视图只装生产码）。这些是测试分册，不是新领域。
+        "src-tauri/src/network/transport/handshake_tests.rs", // 测试分册：握手帧预算 + Hello 验签 + 公钥锚
+        "src-tauri/src/network/transport/peer_state_tests.rs", // 测试分册：在线判定 + 成员公钥解析/补绑
+        "src-tauri/src/network/transport/dial_tests.rs", // 测试分册：拨号判据
+        "src-tauri/src/network/transport/route_tests.rs", // 测试分册：多链路选路次序
+        "src-tauri/src/network/transport/outbound_tests.rs", // 测试分册：出站投递/failover/背压
+        "src-tauri/src/network/transport/queue_tests.rs", // 测试分册：链路队列字节预算与创建点
+        "src-tauri/src/network/transport/framing_tests.rs", // 测试分册：帧编解码与读写循环
+        "src-tauri/src/network/transport/relay_tests.rs", // 测试分册：中继定向转发与中继侧 Ack
+        "src-tauri/src/network/transport/gossip_tests.rs", // 测试分册：Gossip 消费判据与传播层
+        "src-tauri/src/network/transport/e2ee_tests.rs", // 测试分册：直连 E2EE 载荷解封与重密封
+        "src-tauri/src/network/transport/group_keys_tests.rs", // 测试分册：待发群密钥登记与重发
+        "src-tauri/src/network/transport/dispatch_tests.rs", // 测试分册：入站去重/副作用/好友权限门
+        "src-tauri/src/network/transport/outbox_tests.rs", // 测试分册：离线队列与过期终态
+        "src-tauri/src/network/transport/read_receipt_tests.rs", // 测试分册：已读回执
+        "src-tauri/src/network/transport/listen_tests.rs", // 测试分册：监听口平台语义
         "src-tauri/src/network/dispatch.rs", // 三优先级调度 + BLE yield + 发送状态定义（新建，2026-09）
         "src-tauri/src/transport", // 新栈（部分接线）
       ],
