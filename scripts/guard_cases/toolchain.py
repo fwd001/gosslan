@@ -128,7 +128,7 @@ CASES: list[Case] = [
         )],
         cmd=["node", "scripts/check-doc-numbers.mjs"],
         cwd=ROOT,
-        expect_fail_hint="local 层",
+        expect_fail_hint="但 verify.mjs 的门禁层没有它",
         tags=["gates", "frontend", "new-guards"],
     ),
     Case(
