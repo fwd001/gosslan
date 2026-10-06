@@ -10,6 +10,38 @@
 
 ## [Unreleased]
 
+- ★ **护栏 runner 第七刀：`scripts/verify-guards.py` 4,176 ⇒ runner 385 行 + `scripts/guard_cases/` 7 个域分册
+  （最大 771 行）** —— 202 条 `Case` 按**锚定的被守物**分册，runner 只剩注入/还原/报告那一套。
+  这一刀与前面几刀不同类：它**必须同批改判据本身**（判据 E 的计数范围跟着搬家），所以两件事各补了非空转对照。
+- **恒等判据换了形状，但仍是硬的那种**：`python3 scripts/verify-guards.py --list` 拆前拆后都是 624 行、
+  **排序后逐字节差集 0 行**（202 条用例名与说明一字未变）；运行次序按 `MODULES` 分段变了 ——
+  只影响 `[n/m]` 进度号，而**没有判据读那个序号**（现算：代码里没有 `CASES[` / `CASES.index`；
+  文档里 `[197/197]` 那种写的是**总数**、与次序无关）。
+  ⚠️ 搬完第一跑就抓到**我自己造的新噪声**：册头里写了一句带反斜杠括号的正则，Python 报 7 条
+  `SyntaxWarning: invalid escape sequence` ⇒ 改成中文原样描述后 stderr 0 行。
+- ★ **三处判据跟着搬家改口径，每一处都当场证明没空转**：
+  ① `check-doc-numbers.mjs` 判据 E 现在 glob `scripts/guard_cases/*.py` 数 `^    Case\(`（仍故意「数到 0 就 throw」）
+     —— 摘掉一条 `Case(` ⇒ 它报「现算 201 与图上那格 202 对不上」；还原 ⇒ 退 0；
+  ② `guard_cases/__init__.py` 加了一条**起跑前就炸**的对账：目录里的分册集合 ≠ `MODULES` 名单 ⇒ `AssertionError`
+     点名差集。这条守的是 E **买不到的那一半**：E 按目录 glob 数，「漏点名一册」在它眼里条数不变（＝假绿），
+     只有装配表自己知道自己少装了谁。实测：临时丢进一册 `zzz_probe.py` ⇒ `--list` 退 1 并打印差集，删掉即复绿；
+  ③ `check-scripts-parse.mjs` 的 import 闭包原来只走 `.mjs`（`node --check` 不解析 import ⇒ 共用件坏了没人知道），
+     现在补上 Python 的 `from <pkg> import` ⇒ 分册里的语法错落在秒级层被抓。实测：`= [` 改成 `= [)` ⇒ 该步报红，还原即绿。
+- **路由规则踩过一次 substring 假命中，已改**：第一版按裸 substring 判域，于是 `TodoCardBubble.vue`（含「ble」）
+  被分进蓝牙册、`FriendProfile.vue`（含「file」）被分进文件册 —— 各 2 条。改成按**路径段/文件名主干**匹配后归位；
+  这条教训写进了每一册的册头，因为下一个加用例的人会同样手滑。
+- **`ROOT` 的深度换了，配一条当场断言**：分册在 `scripts/guard_cases/` 下 ⇒ `ROOT` 必须是 `parents[2]`；
+  数错时 `src-tauri/Cargo.toml` 就不在 ⇒ `base.py` 直接抛，而不是让 202 条用例去找不着的文件。
+  同批让 `verify-guards.py` 自己把脚本目录插进 `sys.path`：`docs/final-architecture-review.md` 里有一条用
+  `spec_from_file_location` 数 `CASES` 的复跑命令，那种加载方式下 `from guard_cases import` 会
+  `ModuleNotFoundError`（**改之前实测整条命令已作废**）⇒ 指路句必须在读者站的位置原样跑得通，不能只写「应该能跑」。
+  ⇒ 修的是**模块自己**（不把 `sys.path` 的責任推给每个读者），文档那条命令一字未改、现在原样返回 202。
+- 零应用码改动（都在 `scripts/` 与 `docs/`）⇒ **不提版本**。快速层第 10 步「护栏注入锚点静态核对」正是这一刀的
+  常驻回归（它 import 整个包 ⇒ 装配表少点名会当场红）；第 14 步 `Change Budget` 那条红与本刀无关
+  （窗口里仍是 a1c4301/615c659/339b8ae 三条 transport 补丁形状提交）。
+- ★ 顺手改掉上一刀里我自己抄错的一格：那句写成了「`[61/66] force push 后 …`」—— 用例**序号**会随 `MODULES`
+  分段而漂，正是本轮要避免的抄法 ⇒ 改成只点用例名、不点序号（同一条纪律第二次用上）。
+
 - ★ **`lib_tests.rs` 第六刀（4,009 ⇒ 壳 205 行 + 11 个 `lib_<concern>_tests.rs`，最大一册 614 行）
   ⇒ `src-tauri/src` 下所有 `.rs`（含分册）今天已经没有 > 3,000 行的文件**
   （量法见 `docs/large-file-split-plan.md` §1 那条现算命令；逐册 `wc -l src-tauri/src/lib_*.rs`）。
@@ -44,7 +76,7 @@
 - 零应用码改动（`isAppCodePath` 把 `lib_*_tests.rs` 判成测试）⇒ **不提版本**。
   全量层 23 步这次跑出 2 条红，两条同一根因、且都早于本刀：`Change Budget 守门`（窗口里是
   a1c4301/615c659/339b8ae 三条带 `Version-Bump: patch` 的 transport 提交）与
-  `护栏非空转（前端子集）` 里那条 `[61/66] force push 后 before 不可达不得判空转` ——
+  `护栏非空转（前端子集）` 里那条「force push 后 before 不可达不得判空转」——
   后者的"恢复源码后即 PASS"半边正好被前者顶住（受检范围内一直是红的），不是新的坏。
 
 - ★ **`transport/tests.rs` 第五刀（3,227 ⇒ 壳 29 行 + 15 个 `<concern>_tests.rs`，最大一册 336 行）

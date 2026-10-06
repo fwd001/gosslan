@@ -31,8 +31,9 @@
  *    不在这里手抄；同时反向钉两条：门禁里出现 `-lie` 模式 = 红（预期红的东西不许进门禁），
  *    门禁里出现 harness 没有的 `--fault=` 值 = 红。
  *
- * **E. 护栏非空转用例数由脚本自己数**：真值只存在于 `scripts/verify-guards.py` 的 `CASES` 列表里
- *    （跑起来那一步自己打印「[48/189]」这种进度），而契约图给人看的那张统计卡是**手抄的第二份**。
+ * **E. 护栏非空转用例数由脚本自己数**：真值只存在于 `scripts/guard_cases/<域>.py` 各分册的 `CASES`
+ *    列表里（2026-10-07 之前它们在 `verify-guards.py` 一份 3,747 行的字面量里，搬家后计数范围跟着搬），
+ *    跑起来那一步自己打印「[48/202]」这种进度，而契约图给人看的那张统计卡是**手抄的第二份**。
  *    今天它就在眼前漂了一次：本轮把常驻群任务窗口那条 `:key` 护栏登记进 CASES（它早就有断言、
  *    从没被证明过会红），总数从 189 变 190，而图上那一格一字未动 ⇒ 光靠"记得改"是守不住的。
  *    与判据 C 同一条立场：**能被现算的数字不许留第二份手抄**，并且**那一格被删掉也算红**
@@ -364,16 +365,34 @@ try {
   process.exit(1);
 }
 
-// ---------- 判据 E：护栏非空转用例数由 verify-guards.py 自己数 ----------
-const GUARD_SCRIPT = "scripts/verify-guards.py";
+// ---------- 判据 E：护栏非空转用例数由 guard_cases/ 各分册自己数 ----------
+const GUARD_CASE_DIR = "scripts/guard_cases";
 let guardCases = 0;
 try {
-  const src = fs.readFileSync(path.join(ROOT, GUARD_SCRIPT), "utf8");
-  // 只数 CASES 里顶格四空格的构造调用。类型标注 `list[Case]` 不带 `(` 所以不会被算进来；
-  // 2026-09-27 现算过：严格形状与宽松形状（全文任意 `Case(`）**同为 189** ⇒ 两个口径今天同值，
-  // 将来若分叉，分叉本身就说明"注释里写出了构造形状"，那时再收紧。
-  guardCases = (src.match(/^    Case\(/gm) ?? []).length;
-  if (guardCases === 0) throw new Error("数到 0 条 —— 锚定形状变了，先修这条判据再谈文档");
+  // 2026-10-07：202 条 `Case` 从主文件切进 `guard_cases/<域>.py` ⇒ 计数范围跟着搬家。
+  // ⚠️ 这一处**只数分册文件**（`base.py` 装的是数据类、`__init__.py` 是装配表，两条都不构造用例）：
+  //   把主文件也扫进来会多算一次，而多算的那一份今天根本不存在。
+  // ★ 这条判据买不到的那一半，由 `guard_cases/__init__.py` 里那条**起跑前就炸**的对账补：
+  //   目录里的分册 ≠ `MODULES` 名单 ⇒ ImportError（漏点名的册子一条用例都不会跑 = 假绿）。
+  //   两件判据各守一侧：这里守"文档抄的数字对不对"，那里守"装配表有没有漏掉一册"。
+  const files = fs
+    .readdirSync(path.join(ROOT, GUARD_CASE_DIR))
+    .filter((f) => f.endsWith(".py") && f !== "base.py" && f !== "__init__.py")
+    .map((f) => path.join(GUARD_CASE_DIR, f));
+  for (const rel of files) {
+    const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    // 只数 CASES 里顶格四空格的构造调用（与搬家前同一条形状规则）。
+    guardCases += (src.match(/^    Case\(/gm) ?? []).length;
+  }
+  if (guardCases === 0) {
+    throw new Error(
+      `数到 0 条 —— ${GUARD_CASE_DIR} 里的锚定形状变了（或目录空了），先修这条判据再谈文档`,
+    );
+  }
+  console.log(
+    `· 判据 E 现算护栏条数：${guardCases} 条（${files.length} 个分册；` +
+      `复跑 \`grep -h '^    Case(' ${GUARD_CASE_DIR}/*.py | wc -l\` 应得同一个数）`,
+  );
 } catch (e) {
   console.error(`✗ 读不到护栏用例数：${e.message}`);
   process.exit(1);
@@ -388,7 +407,7 @@ for (const rel of LIVE_DOCS) {
     const n = Number(m[1]);
     if (n === guardCases) continue;
     fails.push(
-      `${rel}：手写「护栏非空转用例 ${m[1]}」= ${n}，现算 ${GUARD_SCRIPT} 是 ${guardCases} —— ` +
+      `${rel}：手写「护栏非空转用例 ${m[1]}」= ${n}，现算 ${GUARD_CASE_DIR}/*.py 是 ${guardCases} —— ` +
         `往 CASES 里加/删一条用例时，改的应该是那条用例而不是文档里的数字`,
     );
   }

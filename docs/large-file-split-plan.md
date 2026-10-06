@@ -31,7 +31,7 @@ PY
 | 13,268 | `CHANGELOG.md` | 版本记账台账（`scripts/version.mjs` 读写、快速层有「CHANGELOG 结构」判据） | **不自行拆**：拆＝改记账口径，交他拍板（A 归档分卷 / B 不动） |
 | **7,087** | `src-tauri/src/network/transport.rs` | 网络传输层本体（启动/选路/分发/中继/群密钥/清扫） | ✅ **已拆完**（2026-10-06 四批 ⇒ 主文件进阈值，见 §4 末） |
 | 4,845 | `scripts/e2e-multi-instance.mjs` | 双/多实例 E2E harness（按 `--round` / `--fault` 分轮次） | ✅ 可行但**不划算**：现算 顶格 `if (MODE)` 轮次块共 **3,146 行**、非轮次部分 **1,699 行** ⇒ 光搬引擎/夹具最多落到 ~3,100；而判据 C 是按"顶格 `}` 收块"从**这一个文件**里数每轮断言数的，判据 D 再拿这份数与门禁 local 层互点 ⇒ 分册必然同批改这两条判据（改尺子的风险大于收益）。**先做 verify-guards.py**，这一条排最后 |
-| 4,176 | `scripts/verify-guards.py` | 护栏非空转 runner（**202 条 Case**） | ✅ 按 `tags` 域切 Case 清单，runner 逻辑只留一份；⚠️ **必须先改判据 E**（它只在 `verify-guards.py` 这一个文件里按 `^    Case\(` 数条数 ⇒ 分册后现算会变 0，那条判据自己 throw） |
+| 4,176 | `scripts/verify-guards.py` | 护栏非空转 runner（**202 条 Case**） | ✅ **已拆完**（2026-10-07：runner 385 行 + `scripts/guard_cases/` 7 册，最大 771 行）。判据 E 同批改了计数范围（现在 glob 分册目录数），`guard_cases/__init__.py` 另加一条「目录里的分册 ≠ `MODULES` 名单就当场 ImportError」的对账 —— 那条正是 E 自己买不到的那一半 |
 | 4,004 | `src-tauri/src/lib_tests.rs` |  crate 层测试 | ✅ **已拆完**（2026-10-06：壳 205 行 + 11 个 `lib_<concern>_tests.rs`，最大 614） |
 | 3,227 | `src-tauri/src/network/transport/tests.rs` | 传输层测试 | ✅ **已拆完**（2026-10-06：壳 + 15 个 `<concern>_tests.rs`，见 §4 末） |
 
@@ -149,7 +149,7 @@ EOF
 | 主动建链 / 中继文件传输 / Outbox 超时清扫 | 各 1 |
 | 待发群密钥登记表及其后（第一刀的四节） | **0** |
 
-**已完成（2026-10-06 起六批）**
+**已完成（截至 2026-10-07，四个文件切完）**
 
 1. `transport.rs` 7,087 ⇒ **2,742 行，进阈值**；产出 13 个 `include!` 生产分册
    （最大四册 `group_file 839` / `dial 625` / `handshake 581` / `relay_file 535`）。
@@ -173,16 +173,52 @@ EOF
    `lib_source_view_tests.rs` 的那条守卫当场 `FAILED` 并指名缺哪一个分册（`1 failed; 788 filtered out`
    ⇒ 过滤确实命中，不是打空退 0）；还原后 `1 passed`。
 
+4. `scripts/verify-guards.py` 4,176 ⇒ **runner 385 行 + `scripts/guard_cases/` 7 个域分册（最大 771）**。
+   202 条 `Case` 一块没丢：`--list` 输出**排序后与拆前逐字节相同**（两边都是 624 行 / 202 条）。
+   ⚠️ 运行次序按 `MODULES` 分段变了 —— 只有 `[n/m]` 进度号受影响，而**没有判据读那个序号**
+   （现算：代码里没有 `CASES[` / `CASES.index`；文档里 `[197/197]` 那种写的是**总数**、与次序无关）。
+   两条**新对账**各自当场验过非空转：① 摘掉一条 `Case(` ⇒ 判据 E 报「现算 201 与图上那格 202 对不上」，
+   还原即复绿；② 往目录里丢一册却不写进 `MODULES` ⇒ `--list` 起跑前 `AssertionError` 点名差集。
+   ② 守的正是 E 买不到的那一半：E 按目录 glob 数条数，所以「漏点名一册」在它眼里条数不变（＝假绿）。
+   另：`check-scripts-parse.mjs` 的 import 闭包原来只走 `.mjs`，现在补上 Python 的 `from <pkg> import`
+   ⇒ 分册里的语法错落到秒级层（实测把 `= [` 改成 `= [)` 该步报红，还原即绿）。
 每批的恒等判据都是同一套：`cargo test --features bluetooth --lib` **789 passed / 0 failed** 且
 `-- --list` 那 789 条用例名与拆前**差集 0 行**（比"条数相等"硬）+ clippy/fmt/`verify-guards --list`
 （202 条锚点各恰好命中一次）/测试清单守卫（基线 789 条全在跑）/领域图/领域依赖/快速层全退 0。
 复跑：`wc -l src-tauri/src/network/transport.rs src-tauri/src/network/transport/*.rs src-tauri/src/lib_tests.rs src-tauri/src/lib_*_tests.rs`。
 
-**剩余（用 §1 那条命令现算，2026-10-07）**：Rust 侧**已经没有 >3,000 行的文件**。还超的三个都不是代码聚合问题：
-`scripts/verify-guards.py` 4,176（按 `tags` 切 Case 清单 ⇒ **同批必须改判据 E**：它只在主文件这一个文本里
-按 `^    Case\(` 数条数，分册后现算得 0，而那条判据故意"数到 0 就 throw"）→
+**剩余（用 §1 那条命令现算，2026-10-07 晚）**：Rust 侧与护栏 runner 都进阈值了。还超的只剩两个（其中台账那一本等你拍板 A/B）：
+`scripts/verify-guards.py` 4,176 ⇒ **已做**（见本节末第 4 条）。留一句口径出处：判据 E 原来只在
+这一个文本里按 Case 构造行现算条数，分册后会得 0，而那条判据故意「数到 0 就 throw」
+⇒ 它必须与搬家**同批**改，不能先搬后补。→
 `scripts/e2e-multi-instance.mjs` 4,845（现算：顶格 `if (MODE)` 轮次块共 3,146 行、非轮次部分 1,699 行
 ⇒ 光搬引擎最多落到 ~3,100，而判据 C/D 的尺子就长在这一个文件上 ⇒ 排最后）→
-`CHANGELOG.md` 13,352 等 A/B 决定。
+`CHANGELOG.md` 13,352 等 A/B 决定（harness 那一刀的成本核算见下面专门那一节）。
+### 关于 `scripts/e2e-multi-instance.mjs`（4,845）这一刀：量完作用点后**本轮不拆**，理由是可复算的
+
+```bash
+python3 - <<'PY'   # 顶格 if (MODE) { … } 以顶格 } 收尾（与判据 C 同一套形状规则）
+import io,re
+L=io.open('scripts/e2e-multi-instance.mjs',encoding='utf-8').read().split(chr(10))
+s=[i for i,l in enumerate(L) if re.match(r'^if \([A-Z_]+',l)]
+tot=0
+for i in s:
+    j=i
+    while j<len(L) and L[j]!='}': j+=1
+    tot+=j-i+1
+print('轮次块',tot,'非轮次',len(L)-tot,'合计',len(L))
+PY
+```
+
+现算：**轮次块 3,146 行 / 非轮次部分 1,699 行**。⇒ 只把引擎与夹具搬走，主文件还剩 ~3,150，
+**过不了阈值**（复跑旗标数：`grep -cE '^const [A-Z_]+(_LIE)? = (FAULT|ROUND) === ' scripts/e2e-multi-instance.mjs` ⇒ 29 个，形如 `const POISON = FAULT === "poison-part"`）；
+要过就得把轮次块本身搬走，而那些块读的就是这 29 个**文件顶部旗标** ⇒ 搬出去必须改成显式入参，
+**那是重写而不是搬家**。同时判据 C 与判据 D 的尺子就长在这一个文件上（C 按顶格 `}` 数每轮 `check(` 条数，
+D 拿这份数与门禁 local/release 两层互点）⇒ 一次改动要同时动「harness + 两条判据 + 20 轮的对账」。
+而这一层的复证成本是**每轮 30–45 分钟、全链路 20 轮**，搬家出错的表现不是编译错而是某一轮的断言数悄悄变了。
+⇒ 按「先量作用点、再决定动不动」这条既有纪律，**本轮把它记为已量、不动**，
+真要动的时候应当连着「让轮次块可参数化」这件设计一起做（那是 `docs/stability-roadmap.md` 级别的活），
+而不是为了凑阈值改一把正在承重尺子。
+
 然后是**函数级**的 `handle_message`（1,562 行，`transport.rs:993-2554`）/ `handle_gossip`
 （840 行，`transport/gossip.rs:124-963`）拆分 —— 那是真重构、另案提交。

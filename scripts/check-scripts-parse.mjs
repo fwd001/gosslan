@@ -30,15 +30,48 @@ for (const f of ["scripts/verify.mjs", "package.json"]) {
  * `ax-tree.mjs` 之后，这个洞第一次有了真实的被守对象。
  */
 const importRe = /(?:from|import\()\s*["'](\.\/[^"']+\.mjs)["']/g;
+/**
+ * ★ Python 侧的同一条：2026-10-07 把 `verify-guards.py` 的 202 条 Case 切进 `scripts/guard_cases/` 之后，
+ * 只查主文件等于什么都没查 —— 那个包是 `importlib.import_module(f".{m}")` **动态**加载的，
+ * 静态正则看不见模块名。所以规则是：`from <pkg> import` 指到一个包目录 ⇒ 把目录里的 `.py` 全收
+ * （Python 自己也是这么加载的），`from .x import` 这种相对导入同理。
+ */
+const pyImportRe = /^from\s+([.\w]+)\s+import/gm;
+function pyClosure(rel) {
+  const abs = path.join(ROOT, rel);
+  if (!rel.endsWith(".py") || !fs.existsSync(abs)) return [];
+  const dir = path.dirname(abs);
+  const out = [];
+  for (const m of fs.readFileSync(abs, "utf8").matchAll(pyImportRe)) {
+    const dotted = m[1];
+    const rel2 = dotted.startsWith(".")
+      ? path.relative(ROOT, path.resolve(dir, ...dotted.slice(1).split("/").filter(Boolean) || ".")).split(path.sep).join("/")
+      : `scripts/${dotted.split(".").join("/")}`;
+    if (!rel2) continue;
+    const asFile = `${rel2}.py`;
+    if (fs.existsSync(path.join(ROOT, asFile))) out.push(asFile);
+    const pkgInit = path.join(ROOT, rel2, "__init__.py");
+    if (fs.existsSync(pkgInit)) {
+      for (const f of fs.readdirSync(path.join(ROOT, rel2))) {
+        if (f.endsWith(".py")) out.push(`${rel2}/${f}`.split(path.sep).join("/"));
+      }
+    }
+  }
+  return out;
+}
 let frontier = [...refs];
 const all = new Set(refs);
 while (frontier.length) {
   const next = [];
   for (const rel of frontier) {
     const abs = path.join(ROOT, rel);
-    if (!fs.existsSync(abs) || !rel.endsWith(".mjs")) continue;
-    for (const m of fs.readFileSync(abs, "utf8").matchAll(importRe)) {
-      const child = path.relative(ROOT, path.resolve(path.dirname(abs), m[1])).split(path.sep).join("/");
+    if (!fs.existsSync(abs)) continue;
+    const kids = rel.endsWith(".py")
+      ? pyClosure(rel)
+      : [...fs.readFileSync(abs, "utf8").matchAll(importRe)].map((m) =>
+          path.relative(ROOT, path.resolve(path.dirname(abs), m[1])).split(path.sep).join("/")
+        );
+    for (const child of kids) {
       if (!all.has(child)) { all.add(child); next.push(child); }
     }
   }
