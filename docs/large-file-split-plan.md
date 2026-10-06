@@ -99,6 +99,23 @@ EOF
    零 `use` 改动" ⇒ 模块路径、可见性、测试全名一字不变。先例：`transport/{gossip 964, outbound 538,
    relay 845, tests 3226}`。继续用同名目录 + `include!`，属于顺势而非发明。
 
+### 2-bis 其余五个文件由什么构成（现算，2026-10-07 收尾）
+
+上面 §2 只把 `transport.rs` 拆到节级别。剩下五个超阈值的文件"具体在干嘛"也按**内部构成**量一遍，
+每个数都挂能跑的复跑命令（别把这张表当第二个事实源抄到别处）：
+
+| 文件（拆前 ⇒ 现在） | 内部构成（现算读数） | 复跑 |
+|---|---|---|
+| `scripts/verify-guards.py` 4,176 ⇒ runner 385 + 7 册 | 202 条 Case 按**被守物**分域：`ble_android 39` / `file_transfer 32` / `frontend_ui 30` / `toolchain 29` / `transport_network 27` / `desktop_misc 26` / `frontend_state 19` | `grep -c '^    Case(' scripts/guard_cases/<册>.py`（总数由判据 E 现算，与图上那格互点） |
+| `src-tauri/src/network/transport/tests.rs` 3,227 ⇒ 壳 29 + 15 册 | **96 个测试**：`handshake 11` / `framing 10` / `outbound 10` / `read_receipt 8` / `dispatch 7` / `route 7`，其余各 ≤6 | `grep -cE '^\s*#\[(tokio::)?test\]' src-tauri/src/network/transport/*_tests.rs` |
+| `src-tauri/src/lib_tests.rs` 4,009 ⇒ 壳 205 + 11 册 | **75 个测试**：`lib_ble 14` / `lib_window 11` / `lib_delivery_shape 10` / `lib_file 7` / `lib_startup_config 7`；`lib_source_view 1` 是那条登记对账守卫自己 | 同上，glob 换 `src-tauri/src/lib_*_tests.rs` |
+| `scripts/e2e-multi-instance.mjs` 4,845 ⇒ 驱动 910 + core 679 + 19 册 | 19 册里共 **175 条 `check("`**，加上驱动里默认轮那 18 条 ⇒ 每一轮的真数 = `18 + 本册数`（与判据 C 现算逐轮吻合，两条独立量法互点：本表数 `check(\"`，判据 C 数同一形状再与文档对账） | `grep -c 'check(\"' scripts/e2e/rounds/<族>.mjs` |
+| `CHANGELOG.md` 13,572（**没动**，等你拍板 A/B） | **312 个版本小节**（`## [x.y.z]`），平均一节 43 行；最长的不是代码而是记账文本 | `grep -c '^## \[' CHANGELOG.md` |
+
+读出来的一句话结论：**这六个文件里只有 `CHANGELOG.md` 的"大"是内容本身的大**（一次发版一节，
+历史不能压扁），其余五个的"大"都是**多个关注点挤在一个文件里** —— 这正是它们能按边界切开、
+而切完每一册都能被自己的判据现数的原因。台账那一本要不要分卷，是记账口径问题，所以留给你拍板。
+
 ## 3. 安全网（先建网，再动刀）
 
 1. **锚点风险实测比初稿小一个量级**——初稿写「26 条会被静默弄死」，那是一条没读实现的推断，已作废：
