@@ -40,7 +40,7 @@
  * 退出码：0 = 每条不变量的钩子都能解析；1 = 有解析不出来的钩子或有未登记缺口。
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -61,7 +61,17 @@ const read = (p) => (existsSync(p) ? readFileSync(p, "utf8") : null);
 
 const baselineNames = new Set((read(BASELINE) ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
 const guardNames = (() => {
-  const src = read(path.join(ROOT, "scripts", "verify-guards.py")) ?? "";
+  // 2026-10-07：202 条 Case 从 `verify-guards.py` 切进 `scripts/guard_cases/<域>.py` ⇒ 取名的范围跟着搬。
+  // 这里**故意不做"读不到就退回只读主文件"**：目录空了/改名了 ⇒ guardNames 变少 ⇒ 钩子当场解析失败（红），
+  // 而不是静默地少判 —— 与判据 E「数到 0 就 throw」同一条立场。
+  const files = [path.join(ROOT, "scripts", "verify-guards.py")];
+  const dir = path.join(ROOT, "scripts", "guard_cases");
+  if (existsSync(dir)) {
+    for (const f of readdirSync(dir).filter((x) => x.endsWith(".py")).sort()) {
+      files.push(path.join(dir, f));
+    }
+  }
+  const src = files.map((p) => read(p) ?? "").join("\n");
   return [...src.matchAll(/name\s*=\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
 })();
 const smokeDoc = read(path.join(ROOT, "docs", "acceptance", "stability-smoke-matrix.md")) ?? "";
@@ -84,7 +94,7 @@ function resolveHook(tok) {
   if (tok.startsWith("guards:")) {
     const frag = tok.slice(7);
     return { ok: guardNames.some((n) => n.includes(frag)), kind: "guard-case",
-      why: `verify-guards.py 里没有 name 含「${frag}」的用例` };
+      why: `verify-guards.py 与 scripts/guard_cases/*.py 里没有 name 含「${frag}」的用例` };
   }
   if (tok.startsWith("e2e:")) {
     const frag = tok.slice(4);
