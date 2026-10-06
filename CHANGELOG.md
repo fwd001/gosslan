@@ -10,6 +10,43 @@
 
 ## [Unreleased]
 
+- ★ **`lib_tests.rs` 第六刀（4,009 ⇒ 壳 205 行 + 11 个 `lib_<concern>_tests.rs`，最大一册 614 行）
+  ⇒ `src-tauri/src` 下所有 `.rs`（含分册）今天已经没有 > 3,000 行的文件**
+  （量法见 `docs/large-file-split-plan.md` §1 那条现算命令；逐册 `wc -l src-tauri/src/lib_*.rs`）。
+- **分册与 `lib_tests.rs` 同级平铺，不是随手放的**：这个文件近 50 处 `include_str!("commands.rs")`、
+  `include_str!("../gen/android/…")` 是**相对本文件**解析的，挪进 `lib_tests/` 子目录会让它们整体偏移一位。
+  编译器会拒（不静默），但那就不再是"逐字未变"的搬家 ⇒ 恒等判据从"块文本逐字相同"降级成
+  "我读过觉得没变"。这条规矩本来就读得到：`lib_tests.rs` 头部 2026-09-28 那段注释写的正是同一条，
+  并拿 `network/transport/tests.rs` 那次换目录必须改 `../ble.rs` 当反例 ⇒ 这次是照它做。
+  留在壳里的只有三份守卫视图（`all_commands_src` / `all_db_src`）与解析器 ——
+  登记对账那条守卫读的是 `include_str!("lib_tests.rs")` 并按函数名切体，把视图搬走就是弄丢它自己的锚点。
+- **搬家用的跨度规则换了（这一步是必须的，不是偏好）**：前一版按字符数 `{`/`}` 算函数跨度，
+  在 `lib_tests.rs` 上把 96 项只认出 **57 项** —— 那个文件里就有 `'{' => depth += 1` 这种字符字面量，
+  按字符数括号会把它当成真的花括号，于是把 29 个项当成 1 个项（顺带把某项算成 1,126 行，实测 29 行）。
+  改成"声明行 `^    fn` ⇒ 收口行 `^    }`"（rustfmt 保证嵌套收口更深），并把
+  **认出项数 == `fn` 声明数** 当断言跑（96 == 96 才继续）。同一条断言在上一刀里是 113 == 113。
+- **恒等判据同前一批且全绿**：`cargo test --features bluetooth --lib -- --list` 拆前/拆后各 789 条、
+  排序后差集 **0 行**；`cargo test --lib` **789 passed / 0 failed**；`cargo fmt --check --all` 0、
+  `cargo clippy --features bluetooth -- -D warnings` 0、`verify-guards.py --list` 0
+  （202 条锚点各恰好命中一次）、`check-test-manifest --only rust` 0、`check-domain-map` 0
+  （11 个新册同批登记进 `unmapped` —— 判据 D「coverageRoots 下不许有无主文件」靠的就是这份登记，
+  而它们跨业务领域，不该塞进某个领域的 paths）、`check-domain-deps` / `check-doc-numbers` /
+  `check-doc-citations` 0。
+- **搬走的守卫自己还会咬（现跑对照，不是推断）**：摘掉 `network/mod.rs` 里 `transport/dial.rs` 那一行登记
+  ⇒ 搬进 `lib_source_view_tests.rs` 的 `guard_source_views_register_every_include_subfile` 当场 `FAILED`
+  并指名缺哪一个分册（输出 `1 failed; 788 filtered out` ⇒ 过滤确实命中，不是打空退 0 那种假绿）；
+  还原后 `1 passed`。摘动的是判据的输入、不是判据本身，跑完 `git checkout` 复原，工作树只留下本次搬家。
+- 顺带把**下一刀该动谁**用现算定下来（`docs/large-file-split-plan.md` §1/§4 已改口）：
+  `verify-guards.py` 4,176 那条 Case 清单可以先切，但**必须同批改判据 E** —— 它只在主文件这一个文本里
+  按 `^    Case\(` 数条数，分册后现算会得 0，而那条判据故意"数到 0 就 throw"（这是设计，不是 bug）；
+  `e2e-multi-instance.mjs` 4,845 排最后 —— 现算顶格 `if (MODE)` 轮次块 3,146 行、非轮次部分 1,699 行，
+  光搬引擎最多落到 ~3,100（还在阈值边上），而判据 C/D 的尺子就长在这一个文件上 ⇒ 改尺子的风险大于收益。
+- 零应用码改动（`isAppCodePath` 把 `lib_*_tests.rs` 判成测试）⇒ **不提版本**。
+  全量层 23 步这次跑出 2 条红，两条同一根因、且都早于本刀：`Change Budget 守门`（窗口里是
+  a1c4301/615c659/339b8ae 三条带 `Version-Bump: patch` 的 transport 提交）与
+  `护栏非空转（前端子集）` 里那条 `[61/66] force push 后 before 不可达不得判空转` ——
+  后者的"恢复源码后即 PASS"半边正好被前者顶住（受检范围内一直是红的），不是新的坏。
+
 - ★ **`transport/tests.rs` 第五刀（3,227 ⇒ 壳 29 行 + 15 个 `<concern>_tests.rs`，最大一册 336 行）
   ⇒ Rust 侧今天已经没有 > 3,000 行的文件**（量法见 `docs/large-file-split-plan.md` §1 那条现算命令；
   逐册行数 `wc -l src-tauri/src/network/transport/*.rs` 现数）。

@@ -79,7 +79,21 @@ export default {
   unmapped: [
     ["src-tauri/src/main.rs", "6 行，只有 tauri::Builder 的入口调用"],
     ["src-tauri/src/lib.rs", "560 行：模块注册 + 窗口管理 + 命令注册表（跨领域组装点，Phase 7）。2026-09-28 起测试整段搬进同目录的 lib_tests.rs ⇒ 本文件只剩生产码"],
-    ["src-tauri/src/lib_tests.rs", "分册（include! 回 lib.rs 同一模块）：源码守卫与启动期测试，3952 行"],
+    ["src-tauri/src/lib_tests.rs", "分册（include! 回 lib.rs 同一模块）：源码守卫的三份「视图」+ 11 行 include! 壳，2026-10-06 从 4,009 行切出来"],
+    // ↓ 同一刀的另外 11 册：**必须与 lib_tests.rs 同级平铺**，因为册内 `include_str!("commands.rs")` /
+    //   `include_str!("../gen/android/…")` 是相对本文件的路径，换目录会整体偏移一位（编译器会拒，
+    //   但那就不是"逐字未变"的搬家，恒等判据降级）。它们都是"守门人的守门人"，跨业务领域 ⇒ 归 unmapped。
+    ["src-tauri/src/lib_source_view_tests.rs", "测试分册：三份守卫视图的登记对账 + 按形状取源码的解析器"],
+    ["src-tauri/src/lib_window_tests.rs", "测试分册：capability 窗口标签、辅助窗口单例/串行、Cmd-W、外链协议门"],
+    ["src-tauri/src/lib_android_jni_tests.rs", "测试分册：Rust extern 与 Kotlin 签名互点、release 的 proguard keep 名单"],
+    ["src-tauri/src/lib_ble_tests.rs", "测试分册：BLE 指定拨号器、握手跳帧、外设节奏、载荷预算单一来源"],
+    ["src-tauri/src/lib_file_tests.rs", "测试分册：文件传输形状（泡前不整档扫、进度按已写字节、取消按收件人）"],
+    ["src-tauri/src/lib_relay_data_tests.rs", "测试分册：中继数据面策略、回收终态在锁外、口令不进日志、电路标 Relay"],
+    ["src-tauri/src/lib_outbox_tests.rs", "测试分册：Outbox 与过期终态（先落库再 emit、破坏性写延后）"],
+    ["src-tauri/src/lib_friend_identity_tests.rs", "测试分册：好友申请/自动接受与「三条路径各绑一次公钥」"],
+    ["src-tauri/src/lib_compat_gating_tests.rs", "测试分册：跨版本声明、新帧类型在发送口门控、受众三态"],
+    ["src-tauri/src/lib_startup_config_tests.rs", "测试分册：降级拒绝早于写、锁内不 await、符号链、通道偏好持久化"],
+    ["src-tauri/src/lib_delivery_shape_tests.rs", "测试分册：未知帧容忍、离线仍列出、群密钥先于群消息等接线形状"],
     [
       "src-tauri/src/commands.rs",
       "142 行 + 25 个子模块 / 26 个 tauri command：**前后端边界**，按领域拆是 Phase 7 的事",

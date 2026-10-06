@@ -30,9 +30,9 @@ PY
 |---|---|---|---|
 | 13,268 | `CHANGELOG.md` | 版本记账台账（`scripts/version.mjs` 读写、快速层有「CHANGELOG 结构」判据） | **不自行拆**：拆＝改记账口径，交他拍板（A 归档分卷 / B 不动） |
 | **7,087** | `src-tauri/src/network/transport.rs` | 网络传输层本体（启动/选路/分发/中继/群密钥/清扫） | ✅ **已拆完**（2026-10-06 四批 ⇒ 主文件进阈值，见 §4 末） |
-| 4,845 | `scripts/e2e-multi-instance.mjs` | 双/多实例 E2E harness（按 `--round` / `--fault` 分轮次） | ✅ 按轮次族切 + 一张注册表；⚠️ selfproof 档位名口径会受影响 |
-| 4,176 | `scripts/verify-guards.py` | 护栏非空转 runner（**202 条 Case**） | ✅ 按 `tags` 域切 Case 清单，runner 逻辑只留一份 |
-| 4,004 | `src-tauri/src/lib_tests.rs` |  crate 层测试 | ✅ 按域切分册 |
+| 4,845 | `scripts/e2e-multi-instance.mjs` | 双/多实例 E2E harness（按 `--round` / `--fault` 分轮次） | ✅ 可行但**不划算**：现算 顶格 `if (MODE)` 轮次块共 **3,146 行**、非轮次部分 **1,699 行** ⇒ 光搬引擎/夹具最多落到 ~3,100；而判据 C 是按"顶格 `}` 收块"从**这一个文件**里数每轮断言数的，判据 D 再拿这份数与门禁 local 层互点 ⇒ 分册必然同批改这两条判据（改尺子的风险大于收益）。**先做 verify-guards.py**，这一条排最后 |
+| 4,176 | `scripts/verify-guards.py` | 护栏非空转 runner（**202 条 Case**） | ✅ 按 `tags` 域切 Case 清单，runner 逻辑只留一份；⚠️ **必须先改判据 E**（它只在 `verify-guards.py` 这一个文件里按 `^    Case\(` 数条数 ⇒ 分册后现算会变 0，那条判据自己 throw） |
+| 4,004 | `src-tauri/src/lib_tests.rs` |  crate 层测试 | ✅ **已拆完**（2026-10-06：壳 205 行 + 11 个 `lib_<concern>_tests.rs`，最大 614） |
 | 3,227 | `src-tauri/src/network/transport/tests.rs` | 传输层测试 | ✅ **已拆完**（2026-10-06：壳 + 15 个 `<concern>_tests.rs`，见 §4 末） |
 
 2,000–3,000 那一档（不在本轮范围，作为下一步候选）：`network/file.rs` 2,495、`network/ble.rs` 2,392、
@@ -149,7 +149,7 @@ EOF
 | 主动建链 / 中继文件传输 / Outbox 超时清扫 | 各 1 |
 | 待发群密钥登记表及其后（第一刀的四节） | **0** |
 
-**已完成（2026-10-06 五批）**
+**已完成（2026-10-06 起六批）**
 
 1. `transport.rs` 7,087 ⇒ **2,742 行，进阈值**；产出 13 个 `include!` 生产分册
    （最大四册 `group_file 839` / `dial 625` / `handshake 581` / `relay_file 535`）。
@@ -161,13 +161,28 @@ EOF
      豁免测试分册 ⇒ 新册名必须以 `_tests.rs` 结尾。叫 `tests_*.rs` 会被判成"漏登记"，而消红的唯一
      "顺手"办法就是把测试并进视图 —— 那正好是假绿的形状。
    册内仍是 `include!` 回**同一个 `mod tests`** ⇒ 95 条 `network::transport::tests::*` 的**全名一字未变**。
+3. `lib_tests.rs` 4,009 ⇒ **壳 205 行 + 11 个 `lib_<concern>_tests.rs`（最大 614）**。
+   ⚠️ 这一刀的分册**必须与 `lib_tests.rs` 同级平铺**、不许挪进 `lib_tests/` 子目录：册里近 50 处
+   `include_str!("commands.rs")` / `include_str!("../gen/android/…")` 是**相对本文件**解析的，
+   换目录就整体偏移一位（编译器会拒、不静默 —— 但那就不再是"逐字未变"的搬家，恒等判据要降级）。
+   这条规矩不是我发明的：`lib_tests.rs` 头部 2026-09-28 那段注释就写着"同目录 ⇒ 零路径风险"，
+   并拿 `network/transport/tests.rs` 那次换目录必须改 `../ble.rs` 作反例。同目录先例 `protocol_tests.rs`。
+   留在壳里的只有三份守卫视图（`all_commands_src` / `all_db_src`）与它的解析器 —— 登记对账那条守卫读的是
+   `include_str!("lib_tests.rs")` 并按函数名切体，把视图搬走就是弄丢它自己的锚点。
+   **非空转对照（现跑，不是推断）**：摘掉 `network/mod.rs` 里 `transport/dial.rs` 那一行登记 ⇒ 搬进
+   `lib_source_view_tests.rs` 的那条守卫当场 `FAILED` 并指名缺哪一个分册（`1 failed; 788 filtered out`
+   ⇒ 过滤确实命中，不是打空退 0）；还原后 `1 passed`。
 
 每批的恒等判据都是同一套：`cargo test --features bluetooth --lib` **789 passed / 0 failed** 且
 `-- --list` 那 789 条用例名与拆前**差集 0 行**（比"条数相等"硬）+ clippy/fmt/`verify-guards --list`
 （202 条锚点各恰好命中一次）/测试清单守卫（基线 789 条全在跑）/领域图/领域依赖/快速层全退 0。
-复跑：`wc -l src-tauri/src/network/transport.rs src-tauri/src/network/transport/*.rs`。
+复跑：`wc -l src-tauri/src/network/transport.rs src-tauri/src/network/transport/*.rs src-tauri/src/lib_tests.rs src-tauri/src/lib_*_tests.rs`。
 
-**剩余（用 §1 那条命令现算，2026-10-06 晚）**：Rust 侧**已经没有 >3,000 行的文件**。还超的是
-`lib_tests.rs` 4,009（按域切）→ `scripts/e2e-multi-instance.mjs` 4,845（按轮次切）→
-`scripts/verify-guards.py` 4,176（按 `tags` 切）→ `CHANGELOG.md` 13,352 等 A/B 决定。
-然后是**函数级**的 `handle_message`（1,562 行）/ `handle_gossip`（840）拆分 —— 那是真重构、另案提交。
+**剩余（用 §1 那条命令现算，2026-10-07）**：Rust 侧**已经没有 >3,000 行的文件**。还超的三个都不是代码聚合问题：
+`scripts/verify-guards.py` 4,176（按 `tags` 切 Case 清单 ⇒ **同批必须改判据 E**：它只在主文件这一个文本里
+按 `^    Case\(` 数条数，分册后现算得 0，而那条判据故意"数到 0 就 throw"）→
+`scripts/e2e-multi-instance.mjs` 4,845（现算：顶格 `if (MODE)` 轮次块共 3,146 行、非轮次部分 1,699 行
+⇒ 光搬引擎最多落到 ~3,100，而判据 C/D 的尺子就长在这一个文件上 ⇒ 排最后）→
+`CHANGELOG.md` 13,352 等 A/B 决定。
+然后是**函数级**的 `handle_message`（1,562 行，`transport.rs:993-2554`）/ `handle_gossip`
+（840 行，`transport/gossip.rs:124-963`）拆分 —— 那是真重构、另案提交。
