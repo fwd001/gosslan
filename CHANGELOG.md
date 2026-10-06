@@ -10,6 +10,36 @@
 
 ## [Unreleased]
 
+## [4.33.5] - 2026-10-06
+
+### refactor(network): `transport.rs` 第一刀搬出四个 `include!` 分册（同批：AOCI 认知层接入、安卓 gradle 相对路径修复、大文件拆分计划与两份文档守卫登记）
+- **`transport.rs` 的第一刀：446 行搬进四个 `include!` 分册，行为不变的证据是「测试用例名逐字相同」**。
+  主文件 7,087 ⇒ **6,647 行**（复跑 `wc -l src-tauri/src/network/transport.rs`），新增
+  `transport/{pending_keys 194, member_notices 131, peer_state 92, outbox_flush 41}.rs`。
+  手法沿用本仓先例（`include!` 回同一模块 ⇒ 模块路径、可见性、`use`、测试全名都不变），
+  所以恒等判据能用最硬的那种：`cargo test --features bluetooth --lib` 拆前 **789 passed / 0 failed**，
+  拆后仍 **789 / 0**，**逐条用例名排序后与基线差集 0 行**（不是"条数相等"这种弱判据）；
+  `cargo clippy --features bluetooth -- -D warnings` 退 0、`cargo fmt --check --all` 退 0、
+  `python3 scripts/verify-guards.py --list` 退 0。
+- ★ **三条守卫立刻报红，且三条都是"我漏登记"而不是"代码坏了"** —— 这仓按源码形状钉住的东西必须同批登记，
+  这次被机器当场逮到：① `guard_source_views_register_every_include_subfile` 断言**每个 `include!` 子文件
+  都要进守卫视图**（视图＝`network/mod.rs` 的 `transport_src_for_guards()`；漏登记是**假绿**，
+  relay.rs 在 4.25.0 接线时漏过两次）；② `offline_peer_stays_listed_but_is_not_online` 在源码文本里
+  找不到 `pub(crate) async fn mark_peer_offline(` —— 因为我把它按横幅错分进了 `pending_keys.rs`，
+  **它按内聚该在 `peer_state.rs`**（同一条证据：作者留的分节横幅不等于内聚，照横幅切会切出杂糅文件）；
+  ③ `friend_identity_anchor_has_one_binding_rule` 的计数从 3 掉到 2 —— 视图少看一册，
+  「成为好友的三条路径各绑一次公钥」这条判据就少看见一条路。补登记 + 重归位后三条全回绿。
+  同批还要在 `docs/domains.data.mjs` 的分册清单里登记这 4 个文件（`check-domain-map` 退 0）。
+- **锚点会跟着 `include!` 走，不必改 26 条 Case 的 `file=`**（推翻拆分计划初稿的推断，已改口）：
+  `verify-guards.py` 的 `_list_includes()` + `_resolve_anchor_file()` 会递归展开子模块树、把注入写回
+  真正含锚点的文件。正对照是活的：**全仓 202 条 Case 里已有 18 条的锚点本来就落在 include 子文件中**
+  （chat.rs 4、settings.rs 2、friends.rs 2、favorites.rs 2、logs.rs 2…），且 202/202 解析零失败。
+  真实约束因此是另一条：**同一锚点必须在整棵树里恰好出现一次**。
+- 拆分进度（阈值 3,000）：`transport.rs` 还差 **3,647 行**才达标，锚点分布已现算排好序——
+  下一刀按 `outbox_sweep 316` → `queue_policy 263` → `peers 251` → `mesh_sync 297` → `dial 624` →
+  `relay_file 534` → `group_keys 1,094` → `startup 1,281` → `dispatch 1,658`（含 10 条锚点、最后做）。
+  计划与安全网见 `docs/large-file-split-plan.md`。
+
 - 新增 `docs/large-file-split-plan.md` —— **>3000 行大文件的清点与拆分计划**（分析交付，未动一行业务码）。
   现算结论：12 个超阈值文件里 3 个是图标按换行数误算、3 个是生成物 ⇒ **真正要处理 6 个**；
   `transport.rs` 7,087 行由 15 条作者横幅分成 13 个关注点，**最大单函数仅 59 行** ⇒ 病症在文件聚合

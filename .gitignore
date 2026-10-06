@@ -53,6 +53,8 @@ src-tauri/gen/schemas
 src-tauri/gen/android/app/release.keystore
 src-tauri/gen/android/app/*.keystore
 test-results/
+# Python 字节码缓存：跑过一次 scripts/verify-guards.py 就会脏一次工作树
+__pycache__/
 
 # AOCI agent host integration (machine-bound; do not commit)
 .mcp.json

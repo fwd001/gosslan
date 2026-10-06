@@ -225,6 +225,10 @@ export default {
         "src-tauri/src/network/transport/outbound.rs", // 分册：出站投递 + 链路选路（同模块，非新领域）
         "src-tauri/src/network/transport/gossip.rs", // 分册：Gossip 消费判据与 handle_gossip（同模块）
         "src-tauri/src/network/transport/relay.rs", // 分册：公网盲管道中继的会合循环与协商接线（ADR-0020，同模块）
+        "src-tauri/src/network/transport/pending_keys.rs", // 分册：待发群密钥登记表（同模块，2026-10-06 搬出）
+        "src-tauri/src/network/transport/peer_state.rs", // 分册：会话链路快照 + peers 在线状态 + 成员公钥（同模块）
+        "src-tauri/src/network/transport/member_notices.rs", // 分册：成员变动的群内系统消息与文案（同模块）
+        "src-tauri/src/network/transport/outbox_flush.rs", // 分册：单聊/群聊离线队列补发（同模块）
         "src-tauri/src/network/dispatch.rs", // 三优先级调度 + BLE yield + 发送状态定义（新建，2026-09）
         "src-tauri/src/transport", // 新栈（部分接线）
       ],

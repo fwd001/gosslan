@@ -234,6 +234,13 @@ pub(crate) fn transport_src_for_guards() -> String {
     // `transport/tests.rs` 是 2026-09-28 从主文件搬出去的尾部测试块（`include!` 回同一模块）。
     // 一起登记 ⇒ 视图与搬动前的文本全集等价，守卫不会因为搬家而少看一段。
     src.push_str(include_str!("transport/tests.rs"));
+    // 2026-10-06 大文件拆分的头四册（`transport.rs` 里对应的四行 `include!`）。
+    // 必须登记在这里：所有以"transport 全集"为判据的守卫读的是这份视图，漏一册就是
+    // 守卫看不见那段生产码 —— 假绿，比假红危险（relay.rs 在 4.25.0 接线时漏登记过两次）。
+    src.push_str(include_str!("transport/pending_keys.rs"));
+    src.push_str(include_str!("transport/peer_state.rs"));
+    src.push_str(include_str!("transport/member_notices.rs"));
+    src.push_str(include_str!("transport/outbox_flush.rs"));
     src
 }
 

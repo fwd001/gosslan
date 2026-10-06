@@ -61,23 +61,34 @@ PY
 
 **结论（这一条决定了「更优雅的写法」往哪使）**：全文件**最大的单个函数只有 59 行**
 （复跑：按顶层 `fn` 的花括号跨度排序取前 25）。也就是说——**这文件的问题不在函数级写得烂，
-全在文件级聚合**：13 个关注点被横幅隔开却共处一文件。所以最佳实践就是
-**沿横幅把关注点切成 Rust 子模块**，而不是顺手重写逻辑（重写会让"行为不变"再也证不出来）。
-同目录 `transport/{gossip 964, outbound 538, relay 845, tests 3226}` 就是这仓已经在用的分册手法
-⇒ 继续用同名目录切，属于顺势而非发明。
+全在文件级聚合**：13 个关注点被横幅隔开却共处一文件。所以最佳实践是**按关注点切分册、
+不重写逻辑**（一重写，"行为不变"就再也拿不出证据）。
+
+⚠️ 两条**推翻本文初稿**的现读事实（都靠读实现/读守卫拿到，不是推理）：
+
+1. **横幅不等于内聚**：照横幅原样切会切出杂糅文件——`待发群密钥登记表`（L6319-6770）这一节里
+   同时住着群密钥登记表、成员变动文案、昵称/群名解析、离线补发四种关注点 ⇒ 下刀按**内聚**重分组（§4 已据此改过）。
+2. **这仓的分册手法是 `include!` 而不是 `mod`**：`transport.rs` 已经用
+   `include!("transport/{outbound,relay,gossip,tests}.rs")` 拆过四次，文件头 L45 写明"同一模块、
+   零 `use` 改动" ⇒ 模块路径、可见性、测试全名一字不变。先例：`transport/{gossip 964, outbound 538,
+   relay 845, tests 3226}`。继续用同名目录 + `include!`，属于顺势而非发明。
 
 ## 3. 安全网（先建网，再动刀）
 
-1. **锚点是最大的静默风险**：全仓 202 条护栏 Case 里 **26 条的 `file=` 指着 transport.rs**。
-   把代码搬走 ⇒ 这些注入锚点在原文件里找不到字面量、护栏**空转但报绿**（本仓踩过）。
-   每刀必须同批改 `file=` 路径，并跑秒级核对：`python3 scripts/verify-guards.py --list`（退 0＝锚点都活着）。
+1. **锚点风险实测比初稿小一个量级**——初稿写「26 条会被静默弄死」，那是一条没读实现的推断，已作废：
+   `verify-guards.py` 自带 `_list_includes()` + `_resolve_anchor_file()`，它从根文件**递归展开
+   `include!` 子模块树**，把注入写回真正含该锚点的那个文件 ⇒ 搬进分册时**锚点自动跟随，
+   不需要改那 26 条 Case 的 `file=`**。真正的约束是另一条：**同一锚点必须在整棵树里恰好出现一次**
+   （否则它自己报「在多个文件里都出现了」）。每刀仍跑 `python3 scripts/verify-guards.py --list`
+   退 0，并抽一条做反证：把某锚点从分册里删掉必须报红——不报红就是这条守卫空转。
 2. **产物恒等判据**（行为没变的证据，不是"我读过觉得没变"）：
    - `cargo test --features bluetooth` 的**断言条数逐字相同**（清单：`src-tauri/test-baseline.macos.txt`，
      其中 transport 出现 153 次；拆完必须现算对账、不许净减）；
    - `cargo clippy --features bluetooth -- -D warnings` 退 0；`cargo fmt --check --all` 退 0；
    - 快速层 17 步绿；动 Rust 的那一层要跑含 Rust 的层（快速层不含 clippy ⇒ 只跑快速层会把红推上去）。
-3. **机械手法固定**：新分册 + 主文件 `mod x;` + `pub use x::*;` 再导出
-   ⇒ `crate::network::transport::*` 的**所有调用点零改动**，编译器会当场把私有项跨模块的漏改暴露出来。
+3. **机械手法固定**：把连续区间整段搬进 `transport/<concern>.rs`，原位置换成一行
+   `include!("transport/<concern>.rs");` ⇒ **同一模块、同一命名空间**：调用点、`use`、可见性、
+   测试全名一行都不变（这正是它比 `mod` + 再导出更适合本轮"只搬不改"的原因）。
 4. **同批改口的指名点**：`docs/migration-ledger.md`（"几个家"要重数）、`docs/ARCHITECTURE-MAP.html`
    （LIVE_DOCS，图上有现算统计）、`docs/domains.data.mjs`、ADR-0014 / ADR-0020 等的 file 指名、
    两份复审文档（不在 LIVE_DOCS＝数字无守卫，只改路径不改数字）。
@@ -87,13 +98,26 @@ PY
 
 ## 4. 下刀顺序
 
-耦合从低到高，先用最薄的一刀把机械流程跑通，再啃大的：
-
-`pending_group_keys 452`（横幅自述零 AppState 依赖）→ `outbox_sweep 316` → `queue_policy 263`
-→ `peers 251` → `mesh_sync 297` → `dial 624` → `relay_file 534` → `group_keys 1,094`
-→ `startup 1,281` → `dispatch 1,658`（含 handle_message，最后做）。
+按内聚重分组后的**第一刀**（都落在 L6319-6769 这段，锚点 0 条）：
+`transport/pending_keys.rs`（L6319-6555 登记表与重发）→ `transport/peer_state.rs`
+（L6556-6601 链路快照 + 好友/成员公钥）→ `transport/member_notices.rs`（L6603-6730 成员变动
+系统消息与文案 + 昵称/群名解析）→ `transport/outbox_flush.rs`（L6732-6769 离线补发）。
+之后：`outbox_sweep 316` → `queue_policy 263`（5 条锚点）→ `peers 251` → `mesh_sync 297`
+→ `dial 624` → `relay_file 534` → `group_keys 1,094`（2 条）→ `startup 1,281`（3 条）
+→ `dispatch 1,658`（**10 条锚点、含 handle_message**，最后做）。
 小段落（E2EE 载荷 116 / 副作用策略 20 / gossip 头 4）留在主文件或并入相邻分册。
 预期：transport.rs 落到 <300，各分册 ≤1,700 ⇒ 全部在阈值内。
+
+锚点按节分布是**现算**的（import 那份守卫脚本读它自己的 `CASES` 列表，不另写一份解析）：
+
+| 分节 | 锚点条数 |
+|---|---|
+| 消息分发 | 10 |
+| 队列容量策略 | 5 |
+| 服务启动 | 3 |
+| 头部注释 / 群密钥 | 各 2 |
+| 主动建链 / 中继文件传输 / Outbox 超时清扫 | 各 1 |
+| 待发群密钥登记表及其后（第一刀的四节） | **0** |
 
 之后依次：`transport/tests.rs` 归位 → `lib_tests.rs` 按域切 → `e2e-multi-instance.mjs` 按轮次切 →
 `verify-guards.py` 按 tags 切。`CHANGELOG.md` 等 A/B 决定。
