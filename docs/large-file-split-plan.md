@@ -30,7 +30,7 @@ PY
 |---|---|---|---|
 | 13,268 | `CHANGELOG.md` | 版本记账台账（`scripts/version.mjs` 读写、快速层有「CHANGELOG 结构」判据） | **不自行拆**：拆＝改记账口径，交他拍板（A 归档分卷 / B 不动） |
 | **7,087** | `src-tauri/src/network/transport.rs` | 网络传输层本体（启动/选路/分发/中继/群密钥/清扫） | ✅ **已拆完**（2026-10-06 四批 ⇒ 主文件进阈值，见 §4 末） |
-| 4,845 | `scripts/e2e-multi-instance.mjs` | 双/多实例 E2E harness（按 `--round` / `--fault` 分轮次） | ✅ 可行但**不划算**：现算 顶格 `if (MODE)` 轮次块共 **3,146 行**、非轮次部分 **1,699 行** ⇒ 光搬引擎/夹具最多落到 ~3,100；而判据 C 是按"顶格 `}` 收块"从**这一个文件**里数每轮断言数的，判据 D 再拿这份数与门禁 local 层互点 ⇒ 分册必然同批改这两条判据（改尺子的风险大于收益）。**先做 verify-guards.py**，这一条排最后 |
+| 4,845 | `scripts/e2e-multi-instance.mjs` | 双/多实例 E2E harness（按 `--round` / `--fault` 分轮次） | ✅ **可拆，排下一刀**（原写「不划算」的两个前提都被实测推翻，见本节末）：现算 顶格 `if (MODE)` 轮次块共 **3,146 行**、非轮次部分 **1,699 行** ⇒ 光搬引擎/夹具最多落到 ~3,100；而判据 C 是按"顶格 `}` 收块"从**这一个文件**里数每轮断言数的，判据 D 再拿这份数与门禁 local 层互点 ⇒ 分册必然同批改这两条判据（改尺子的风险大于收益）。**先做 verify-guards.py**，这一条排最后 |
 | 4,176 | `scripts/verify-guards.py` | 护栏非空转 runner（**202 条 Case**） | ✅ **已拆完**（2026-10-07：runner 385 行 + `scripts/guard_cases/` 7 册，最大 771 行）。判据 E 同批改了计数范围（现在 glob 分册目录数），`guard_cases/__init__.py` 另加一条「目录里的分册 ≠ `MODULES` 名单就当场 ImportError」的对账 —— 那条正是 E 自己买不到的那一半 |
 | 4,004 | `src-tauri/src/lib_tests.rs` |  crate 层测试 | ✅ **已拆完**（2026-10-06：壳 205 行 + 11 个 `lib_<concern>_tests.rs`，最大 614） |
 | 3,227 | `src-tauri/src/network/transport/tests.rs` | 传输层测试 | ✅ **已拆完**（2026-10-06：壳 + 15 个 `<concern>_tests.rs`，见 §4 末） |
@@ -192,9 +192,9 @@ EOF
 这一个文本里按 Case 构造行现算条数，分册后会得 0，而那条判据故意「数到 0 就 throw」
 ⇒ 它必须与搬家**同批**改，不能先搬后补。→
 `scripts/e2e-multi-instance.mjs` 4,845（现算：顶格 `if (MODE)` 轮次块共 3,146 行、非轮次部分 1,699 行
-⇒ 光搬引擎最多落到 ~3,100，而判据 C/D 的尺子就长在这一个文件上 ⇒ 排最后）→
+⇒ 光搬引擎最多落到 ~3,100，而判据 C/D 的尺子就长在这一个文件上 ⇒ 拆的第一动作就是同批改这两条尺子）→
 `CHANGELOG.md` 13,352 等 A/B 决定（harness 那一刀的成本核算见下面专门那一节）。
-### 关于 `scripts/e2e-multi-instance.mjs`（4,845）这一刀：量完作用点后**本轮不拆**，理由是可复算的
+### 关于 `scripts/e2e-multi-instance.mjs`（4,845）：量完作用点后的结论是**可以拆，下一刀就拆它**（先前写的「本轮不拆」被自己的实测推翻，见本节末）
 
 ```bash
 python3 - <<'PY'   # 顶格 if (MODE) { … } 以顶格 } 收尾（与判据 C 同一套形状规则）
@@ -214,28 +214,38 @@ PY
 **过不了阈值**（复跑旗标数：`grep -cE '^const [A-Z_]+(_LIE)? = (FAULT|ROUND) === ' scripts/e2e-multi-instance.mjs` ⇒ 29 个，形如 `const POISON = FAULT === "poison-part"`）；
 要过就得把轮次块本身搬走，而那些块读的就是这 29 个**文件顶部旗标** ⇒ 搬出去必须改成显式入参，
 **那是重写而不是搬家**。
-★ 还有一条**机制性**理由（比算术更硬）：Rust 那五刀能做到「只搬不改」靠的是 `include!` 的文本粘贴，
-  ESM 没有等价物。现算这个文件里**被顶层函数引用的模块级标识符有 43 个**（顶层共 144 个），
-  其中最多的是 `assertions`(6) / `ISO`(5) / `steps`(5) / `openDb`(4) / `sleep`(4) / `INSTANCES`(4) /
-  `RUN_DIR`(4)（数字＝被多少个顶层函数引用）—— 既有**可变流程状态**（`assertions` / `steps` / `INSTANCES`），
-  也有**运行目录与时钟**（`RUN_DIR` / `ISO`）与共用工具（`openDb` / `sleep`）⇒ 拆出去就得逐一
-  `export` / `import` 并把可变状态显式传参；少接一个名字不是编译错误就是行为改动，
-  而这一层没有秒级判据可依赖（每轮 30–45 分钟）。
-  复跑（仓库根，读数就是上面那几个数）：
+★ 2026-10-07 用 AST 把这件事量到底了（不再靠「引用了 43 个名字」这种聚合说法）：
+  模块级声明 **168 个**，其中**会被重新赋值的 51 个**；顶格轮次块 **26 个 / 3146 行**，
+  其中 **21 个块会往至少一个模块级可变名里写东西** —— 而对 ESM 的 import 绑定赋值是 SyntaxError，
+  ⇒ 这些写必须改成经由一个共享状态对象（如 `S.peerTo = …`）。
+  好消息是这 51 个名字**绝大多数是单轮自己的**（只被一个轮次块写：20 个，
+  如 `xferId2..8` / `srcFileN` / `taskCreateId` / `gMentionId`）—— 它们跟着自己那一轮走就行；
+  而按**轮次族**分组后真相是：**只有 1 个名字真被多个族写入** —— `peerTo`（POISON/RESUME/KILL/FREEZE/
+  SENDKILL/STALL/DISK/ROT/SHRINK/MULTI 十族都写它）；其余 **43 个只在各自那一族内共享**
+  （`xferId2..8` / `srcFileN` / `task*Id` / `gMention*` 等）⇒ 它们跟着自己那一族搬走就行。
+  ⇒ 所以这一刀的难点不是共享状态，而是「把 26 个 `if (FLAG) {…}` 包成 async 函数 + 一个 `peerTo` 的家」。  复跑（审计脚本是一次性的，不放仓里；这份文件里的每个数都出自它）：
   ```bash
-  python3 - <<'PY2'
-  import io,re,collections
-  L=io.open('scripts/e2e-multi-instance.mjs',encoding='utf-8').read()
-  top=set(re.findall(r'^(?:const|let|var|function|async function)\s+([A-Za-z_$][\w$]*)',L,re.M))
-  refs=collections.Counter()
-  for m in re.finditer(r'^(?:async )?function ([A-Za-z_$][\w$]*)',L,re.M):
-      end=L.find('\n}',m.start()); body=L[m.start():end if end>0 else len(L)]
-      for x in set(re.findall(r'[A-Za-z_$][\w$]*',body)):
-          if x in top and x!=m.group(1): refs[x]+=1
-  print('顶层标识符',len(top),'｜被顶层函数引用的模块级名',len(refs))
-  print(refs.most_common(8))
-  PY2
+  node /tmp/audit-harness-scope.mjs scripts/e2e-multi-instance.mjs
   ```
+  （它用 `@babel/parser` 走 AST：统计每个顶格区域引用了哪些模块级名、其中哪些会被重新赋值。
+  口径：读共享量在 ESM 里是安全的（import 是活绑定，`const` 数组/对象照样能改内容），
+  **只有「往模块级可变名里写」才是障碍** ⇒ 判可拆性要数的是后者，不是前者。）
+
+★ 复证成本也说清（原来这里写的「每轮 30–45 分钟」是我从记忆里抄的，没当场量）：
+  当场量的一次（`--round=dmreaction`，release 二进制刚重编）：**18 秒跑完 24 条断言，23 过 1 红**，
+  而那条红正是下面 ② 的环境格（「报告带两张全屏帧」）⇒ **每轮几十秒**，不是我原先抄的几十分钟；
+  全部 20 轮的真跑复证因此是**十几分钟量级**、不是隔夜工程。这条改口的直接后果：
+  本节下面「本轮不动」的判断**不再成立**，改完判据 C/D 之后按轮次族拆走。
+  既有读数是本地层 21 步（含全部轮次）一整层跑完的量 —— 见 CHANGELOG 里各趟「全量/本地层」结论行，
+  那一层的墙钟本来就是现算印出来的，所以这一格**不抄固定分钟数**。
+  真正卡住「能不能廉价复证」的不是分钟数，是这两条实测前置：
+  ① pre-flight 要 release 二进制**晚于**最后一次改 `src-tauri/src` 的提交（实测拒跑、退 2，
+     解法就一条：`cd src-tauri && cargo build --release --features bluetooth`）；
+  ② 屏幕锁定状态下「全屏帧」那一格必红，且 macOS 拒绝给不在当前 Space 的窗口出图
+     （实测：5 扇窗全拿不到图 ⇒ 判为环境限制，**不许为此放宽截图判据**）。
+  ⇒ 搬家期间可廉价验的：`node --check`、**ESM 链接期就会把漏 export 的名字报成 SyntaxError**、
+     判据 C 的每轮断言数（改造成 glob 轮次模块后要求与拆前**逐轮相同**）、`verify-guards.py --list`
+     （★ 现算：202 条护栏 Case 里**没有一条**把注入锚点打在这个文件上；锚在 `scripts/` 下的共 19 条，     指向的是 `verify.mjs` / `check-change-budget.mjs` / fixture 等 ⇒ 搬这个文件不会弄死护栏锚点，     真正的间接判据是：判据 C 静态数每轮 `check(` 条数、判据 D 拿它与门禁两层互点、     `npm run selfproof:check` 那 20 档反证跑的就是这个 harness，外加 4 条 `--*-selfcheck` 秒级入口。  ⇒ 换句话说：这一刀的**结构**能被廉价证，**行为**要靠真跑轮次；跑轮次要屏幕解锁 + 现编二进制。
   同时判据 C 与判据 D 的尺子就长在这一个文件上（C 按顶格 `}` 数每轮 `check(` 条数，
 D 拿这份数与门禁 local/release 两层互点）⇒ 一次改动要同时动「harness + 两条判据 + 20 轮的对账」。
 而这一层的复证成本是**每轮 30–45 分钟、全链路 20 轮**，搬家出错的表现不是编译错而是某一轮的断言数悄悄变了。
