@@ -19,9 +19,13 @@
  * **B. 禁令**：指定文件里不许再手写「取锁点」的条数 —— 真相是 `check-lock-scope.mjs`
  *    每次实算并打印的，抄一份进文档就等于制造第二个事实源。
  *
- * **C. 双实例 E2E 的断言数由 harness 现算**：`scripts/e2e-multi-instance.mjs` 里按模式归堆数 `check(`
- *    调用，文档凡声明「默认轮 N 断言 / 脏前缀轮 N 断言 / 续传轮 N 断言」必须等于现算值，
- *    且三种标注**一种都不许消失**（否则「删掉标签」就是绕过这条守卫的最短路径）。
+ * **C. 双实例 E2E 的断言数由 harness 现算**：按模式归堆数 `check(` 调用，文档凡声明
+ *    「默认轮 N 断言 / 脏前缀轮 N 断言 / 续传轮 N 断言」必须等于现算值，且这些标注**一种都不许消失**
+ *    （否则「删掉标签」就是绕过这条守卫的最短路径）。归堆范围随搬家一起改口（同判据 E 那条先例）：
+ *    · 还没拆的族 —— 从驱动 `scripts/e2e-multi-instance.mjs` 的「顶层 `if (MODE) {` … 顶格 `}`」取块；
+ *    · 已拆的族 —— 每个 `scripts/e2e/rounds/<族>.mjs` 一整册就是那一轮，MODE 从册里那行
+ *      `export const MODE = "…"` 现读（**这条是册头写给判据 C 的契约，不是注释**）。
+ *    并且钉死「一个 MODE 只许有一个家」：同一 MODE 既在驱动有块、又有分册 ⇒ 红（半搬状态）。
  *
  * **D. harness 的每条正向轮次都必须被门禁 `local` 层点名**（§十五）。
  *    判据 C 只管"断言数对不对"，管不到"这一轮**还在不在门禁里**"：把 `--group local` 里
@@ -144,6 +148,7 @@ for (const rel of LOCK_COUNT_BANNED) {
 
 // ---------- 判据 C：双实例 E2E 的断言数由 harness 现算 ----------
 const HARNESS = "scripts/e2e-multi-instance.mjs";
+const ROUND_DIR = "scripts/e2e/rounds";
 /** 按「顶层 if (MODE) { … } 顶格 } 收尾」把 check( 调用归堆。
  *  只认顶格的 `}` 收块 —— 与这个文件的写法一致；缩进的 } 一律不算闭合。 */
 /// harness 里的注入模式 → 活文档里必须出现的轮次名。**加一条注入就得在这里登记一行**：
@@ -191,6 +196,7 @@ function harnessAsserts() {
   const per = {};
   let mode = null;
   let common = 0;
+  const driverModes = new Set();
   for (const line of src.split("\n")) {
     // 注释行整条跳过。这条不是洁癖：09-26 在 harness 头部写了句"每轮几条断言不在这里写，由
     // check-doc-numbers 从下面的 check 调用点现算"——那行里出现了字面的 `check("(`，
@@ -199,7 +205,7 @@ function harnessAsserts() {
     // 反证形状：这行注释现在还留在 harness 里，而数字回到了真值 ⇒ 跳过确实生效。
     if (/^\s*\/\//.test(line)) continue;
     const open = line.match(/^\s*if \(([A-Z][A-Z_]*)\) \{/);
-    if (open) { mode = open[1]; if (mode !== "NEGATIVE") per[mode] = per[mode] || 0; continue; }
+    if (open) { mode = open[1]; if (mode !== "NEGATIVE") { per[mode] = per[mode] || 0; driverModes.add(mode); } continue; }
     if (/^}/.test(line)) { mode = null; continue; }
     // 只数「check("字符串名"」这种真断言调用点：`function check(` 与 `check(s.name, …)`
     //    （失败记录器）都不是断言，混进来会把数算大。
@@ -208,15 +214,46 @@ function harnessAsserts() {
     if (mode === "NEGATIVE") continue; // 反向模式复用同一条旅程，不新增断言数
     if (mode) per[mode] += n; else common += n;
   }
-  const unknown = Object.keys(per).filter((m) => !(m in MODE_LABEL));
+  // 分册：一册 = 一轮，MODE 从册里那行现读，check( 全归它
+  const dir = path.join(ROOT, ROUND_DIR);
+  const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".mjs")).sort() : [];
+  const fileModes = new Map();
+  for (const f of files) {
+    const text = fs.readFileSync(path.join(dir, f), "utf8");
+    const m = text.match(/^export const MODE = "([A-Z][A-Z_]*)";$/m);
+    if (!m) {
+      throw new Error(`${ROUND_DIR}/${f} 没有那行 export const MODE = "…" ⇒ 这一册的断言数没有归属，` +
+        `判据 C 买不到"这一轮几条"，而它恰恰是最需要被对账的那一格`);
+    }
+    const modeName = m[1];
+    if (fileModes.has(modeName)) throw new Error(`${modeName} 有两份家：${fileModes.get(modeName)} 与 ${f} —— 一个 MODE 只许一个家`);
+    fileModes.set(modeName, f);
+    if (driverModes.has(modeName)) throw new Error(`${modeName} 半搬：驱动里还有 if (${modeName}) 块，${f} 也已经存在`);
+    let n = 0;
+    for (const line of text.split("\n")) {
+      if (/^\s*\/\//.test(line)) continue;
+      n += (line.match(/\bcheck\(\s*"/g) || []).length;
+    }
+    per[modeName] = n;
+  }
+  const unknown = Object.keys(per).filter((m2) => !(m2 in MODE_LABEL));
   if (unknown.length) {
     throw new Error(
       `harness 里有没登记的注入模式块：${unknown.join(" / ")} —— 加一条注入要在 MODE_LABEL 登记轮次名，` +
         `否则这一轮的断言数永远不会被对账`,
     );
   }
+  // 反向也钉（搬家改严）：MODE_LABEL 里登记过的每一轮，必须能在驱动或 rounds/ 里找到一个家。
+  // 漏这条的表现是"分册被删掉 ⇒ 那一轮的断言数静默变成 0，而文档里那句 N 条断言跟着改 0 就绿了"。
+  const homeless = Object.keys(MODE_LABEL).filter((m2) => !driverModes.has(m2) && !fileModes.has(m2));
+  if (homeless.length) {
+    throw new Error(
+      `MODE_LABEL 登记了 ${homeless.join(" / ")}，但驱动与 ${ROUND_DIR}/ 里都没有它的块或分册 ⇒ ` +
+        `这一轮的断言数现在无人可数（删分册等于绕过判据 C，不许）`,
+    );
+  }
   const out = { 默认轮: common };
-  for (const [m, label] of Object.entries(MODE_LABEL)) out[label] = common + (per[m] || 0);
+  for (const [m2, label] of Object.entries(MODE_LABEL)) out[label] = common + (per[m2] || 0);
   return out;
 }
 

@@ -75,7 +75,15 @@ const guardNames = (() => {
   return [...src.matchAll(/name\s*=\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
 })();
 const smokeDoc = read(path.join(ROOT, "docs", "acceptance", "stability-smoke-matrix.md")) ?? "";
-const e2eSrc = read(path.join(ROOT, "scripts", "e2e-multi-instance.mjs")) ?? "";
+/// harness 的判据从 2026-10-07 起住在三处：驱动 + 引擎层 `e2e/core.mjs` + 各轮次分册 `e2e/rounds/<族>.mjs`。
+/// ⇒ `e2e:` 片段的检索面必须跟着搬家改口（同上面 guardNames 那条先例）：只搜驱动的话，
+///   已经拆进分册的那条判据会被判成「没有钩子」，而它其实是活的 —— 那是一条会指挥下一个人去「补钩子」的假红。
+const e2eFiles = [path.join(ROOT, "scripts", "e2e-multi-instance.mjs"), path.join(ROOT, "scripts", "e2e", "core.mjs")];
+{
+  const dir = path.join(ROOT, "scripts", "e2e", "rounds");
+  if (existsSync(dir)) for (const f of readdirSync(dir).filter((x) => x.endsWith(".mjs")).sort()) e2eFiles.push(path.join(dir, f));
+}
+const e2eSrc = e2eFiles.map((q) => read(q) ?? "").join("\n");
 const verifySrc = read(path.join(ROOT, "scripts", "verify.mjs")) ?? "";
 const pkgJson = read(path.join(ROOT, "package.json")) ?? "";
 
@@ -86,7 +94,7 @@ const pkgJson = read(path.join(ROOT, "package.json")) ?? "";
  *   src/…/x.test.ts[#片段]      前端测试文件（可选钉测试标题片段）
  *   scripts/xxx.mjs            护栏脚本：文件在 + 已接进门禁
  *   guards:名片段              verify-guards.py 里的 Case name
- *   e2e:判据片段               多实例 harness 里的真实判据
+ *   e2e:判据片段               多实例 harness 里的真实判据（驱动 + e2e/core.mjs + e2e/rounds/*.mjs 三份都算）
  *   smoke:行名片段             平台 Smoke 清单里的具名条目（=无自动化但有具名人工回归）
  *   NONE —— 理由               显式登记"这条今天没有自动化钩子"
  */
@@ -99,7 +107,7 @@ function resolveHook(tok) {
   if (tok.startsWith("e2e:")) {
     const frag = tok.slice(4);
     return { ok: e2eSrc.includes(frag), kind: "e2e",
-      why: `scripts/e2e-multi-instance.mjs 里找不到「${frag}」` };
+      why: `${e2eFiles.length} 份 harness 文件（驱动 + e2e/core.mjs + e2e/rounds/*.mjs）里都找不到「${frag}」` };
   }
   if (tok.startsWith("smoke:")) {
     const frag = tok.slice(6);

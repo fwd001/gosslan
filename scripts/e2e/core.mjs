@@ -25,6 +25,9 @@ export const S = {
   idA: null, idB: null, msgId: null, peerTo: null, xferId: null, srcFile: null, srcSha: null,
 };
 
+/// 发送侧重试上限（file.rs:259 MAX_FILE_OUTBOX_RETRIES）—— 判据用它钉"不许无限重试"。
+export const DISK_MAX_ATTEMPTS = 5;
+
 // ── 轮次配置：argv/env ⇒ 开关与常量（驱动与轮次分册共用同一份，别在第二处重新解析）──
 
 /// 故障注入模式（§八）。`--fault=poison-part` 见驱动脚本 e2e-multi-instance.mjs 里那段 preset 步骤的注释。

@@ -29,7 +29,7 @@ for (const f of ["scripts/verify.mjs", "package.json"]) {
  * 调用方的 `node --check` 仍退 0，只有真跑起来那一刻才炸）。2026-09-28 把 AX 解析抽成
  * `ax-tree.mjs` 之后，这个洞第一次有了真实的被守对象。
  */
-const importRe = /(?:from|import\()\s*["'](\.\/[^"']+\.mjs)["']/g;
+const importRe = /(?:from|import\()\s*["'](\.\.?\/?[^"']+\.mjs)["']/g;
 /**
  * ★ Python 侧的同一条：2026-10-07 把 `verify-guards.py` 的 202 条 Case 切进 `scripts/guard_cases/` 之后，
  * 只查主文件等于什么都没查 —— 那个包是 `importlib.import_module(f".{m}")` **动态**加载的，
