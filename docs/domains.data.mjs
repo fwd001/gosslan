@@ -234,6 +234,12 @@ export default {
         "src-tauri/src/network/transport/relay_file.rs", // 分册：中继文件传输 offer/chunk（同模块，2026-10-06 第二批搬出）
         "src-tauri/src/network/transport/outbox_sweep.rs", // 分册：Outbox 超时清扫与过期终态（同模块，2026-10-06 第二批搬出）
         "src-tauri/src/network/transport/read_receipt.rs", // 分册：已读回执路由与待发队列（同模块，2026-10-06 第二批搬出）
+        "src-tauri/src/network/transport/e2ee_payload.rs", // 分册（同模块，2026-10-06 第三批搬出）
+        "src-tauri/src/network/transport/group_file.rs", // 分册（同模块，2026-10-06 第三批搬出）
+        "src-tauri/src/network/transport/group_membership.rs", // 分册（同模块，2026-10-06 第三批搬出）
+        "src-tauri/src/network/transport/peer_registry.rs", // 分册（同模块，2026-10-06 第三批搬出）
+        "src-tauri/src/network/transport/handshake.rs", // 分册（同模块，2026-10-06 第四批搬出）
+        "src-tauri/src/network/transport/dial.rs", // 分册（同模块，2026-10-06 第四批搬出）
         "src-tauri/src/network/dispatch.rs", // 三优先级调度 + BLE yield + 发送状态定义（新建，2026-09）
         "src-tauri/src/transport", // 新栈（部分接线）
       ],

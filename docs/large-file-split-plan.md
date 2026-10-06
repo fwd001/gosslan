@@ -59,10 +59,33 @@ PY
 
 顶层项统计：`fn` 54 / `const` 13 / `enum` 5 / `use` 22 / 内联 `mod` 1（L1983 mesh_sync_tests）。
 
-**结论（这一条决定了「更优雅的写法」往哪使）**：全文件**最大的单个函数只有 59 行**
-（复跑：按顶层 `fn` 的花括号跨度排序取前 25）。也就是说——**这文件的问题不在函数级写得烂，
-全在文件级聚合**：13 个关注点被横幅隔开却共处一文件。所以最佳实践是**按关注点切分册、
-不重写逻辑**（一重写，"行为不变"就再也拿不出证据）。
+**结论（这条被实测推翻过一次，现在的版本是重新量出来的）**：初稿写"最大单函数只有 59 行"
+是**算错的**——那版跨度函数在遇到第一个无 `{` 的行就提前返回。按正确的括号深度重量（复跑见下）：
+
+```bash
+python3 - <<'EOF'          # 按顶层 fn 的花括号深度算跨度
+import io,re,glob
+def spans(f):
+    L=io.open(f,encoding='utf-8').read().split('\n'); res=[]; i=0
+    while i<len(L):
+        m=re.match(r'^(?:pub(?:\([^)]*\))? )?(?:async )?fn\s+([A-Za-z_]\w*)',L[i])
+        if m:
+            d=0; st=False
+            for j in range(i,len(L)):
+                d+=L[j].count('{')-L[j].count('}')
+                if '{' in L[j]: st=True
+                if st and d==0: res.append((j-i+1,m.group(1))); i=j; break
+        i+=1
+    return res
+top=sorted(sum([spans(f) for f in ['src-tauri/src/network/transport.rs']+glob.glob('src-tauri/src/network/transport/*.rs')],[]),reverse=True)
+for n,nm in top[:8]: print(n,nm)
+EOF
+```
+
+⇒ 真实结论是**两层都有病**：文件级聚合（13 个关注点共处一文件，本轮已按内聚切完）**并且**存在巨型函数
+（`handle_message` 1,562 行、`handle_gossip` 840、`handle_group_file_done` 335、`spawn` 304、
+`connect_to_peer` 247）。文件级搬家已完成、行为可由"用例名差集 0"证明；**函数级拆分是真重构**，
+必须一 handler 一提交、每步都过同一套恒等判据，不能和搬家混在一次提交里。
 
 ⚠️ 两条**推翻本文初稿**的现读事实（都靠读实现/读守卫拿到，不是推理）：
 
@@ -119,5 +142,10 @@ PY
 | 主动建链 / 中继文件传输 / Outbox 超时清扫 | 各 1 |
 | 待发群密钥登记表及其后（第一刀的四节） | **0** |
 
-之后依次：`transport/tests.rs` 归位 → `lib_tests.rs` 按域切 → `e2e-multi-instance.mjs` 按轮次切 →
-`verify-guards.py` 按 tags 切。`CHANGELOG.md` 等 A/B 决定。
+**已完成（2026-10-06 四批）**：`transport.rs` 7,087 ⇒ **2,742 行，进阈值**；产出 13 个 `include!` 分册
+（最大 `tests.rs` 之外的分册是 `group_file 839` / `dial 625` / `handshake 581` / `relay_file 535`）。
+每批的恒等判据都是同一套：`cargo test --features bluetooth --lib` **789 passed / 0 failed** 且
+**逐条用例名与拆前基线差集 0 行** + clippy/fmt/`verify-guards --list`/测试清单守卫/领域图/快速层全退 0。
+**剩余**：`transport/tests.rs` 3,226 行（按 concern 归位到各分册）→ `lib_tests.rs` 4,004 按域切 →
+`e2e-multi-instance.mjs` 4,845 按轮次切 → `verify-guards.py` 4,176 按 tags 切 →
+`CHANGELOG.md` 等 A/B 决定；然后是**函数级**的 `handle_message` / `handle_gossip` 拆分（真重构，另案提交）。

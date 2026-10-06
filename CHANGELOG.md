@@ -10,6 +10,27 @@
 
 ## [Unreleased]
 
+## [4.33.7] - 2026-10-06
+
+### refactor(network): transport.rs 第三、四批 —— 主文件进 3,000 阈值，并推翻"最大单函数 59 行"这个错结论
+- **`transport.rs` 第三、四批：再搬 2,531 行进八个分册，主文件 3,941 ⇒ 2,742 行 —— 进 3,000 阈值**。
+  这批新增 6 个分册 `transport/{group_file 839, dial 625, handshake 581, peer_registry 244,
+  group_membership 145, e2ee_payload 113}`；连同前两批共 13 个分册
+  （复跑 `ls src-tauri/src/network/transport/`、`wc -l src-tauri/src/network/transport*.rs`）。
+  恒等判据与前两批同一套：`cargo test --features bluetooth --lib` **789 / 0**、
+  **逐条用例名与拆前基线差集 0 行**、clippy/fmt/`verify-guards --list`/测试清单守卫/领域图/快速层全退 0；
+  26 条护栏锚点现在解析分布在 7 个文件（14 主文件 + group_file 2 + handshake 2 + queue_policy 5 +
+  relay_file 1 + outbox_sweep 1 + dial 1），**失败 0 条**。
+- ★ **推翻我自己前一轮写进文档的一个结论**：那句"最大单函数仅 59 行"是算错的——
+  我第一版跨度函数在遇到尚未开 `{` 的行就返回。按正确的括号深度重量：`handle_message` **1,562 行**、
+  `handle_gossip` 840、`handle_group_file_done` 335、`spawn` 304、`connect_to_peer` 247。
+  ⇒ 「更优雅的写法」不只是文件级聚合：**函数级拆分是真重构**，与本轮"只搬不改"是两类活，
+  必须一 handler 一提交、每步重跑同一套恒等判据，所以另案处理，文档已按实测改口。
+- ★ 两次搬家尝试被自己的机器拦下来（这两条记下来是给下一次省事）：一次把 `include!` 那行本身卷进
+  待搬段 ⇒ 子目录里的相对路径变成 `transport/transport/…` 编不过；一次按"墙"碎切成 26 段 ⇒
+  同一批项被复制进两处，`E0428 defined multiple times`。都是先编译再提交，工作树干净回退，
+  最终做法回到**一刀一整段连续块 + 块内断言无 `include!`/无分节横幅 + 结尾必须正好是该item的右花括号**。
+
 ## [4.33.6] - 2026-10-06
 
 ### refactor(network): transport.rs 第二批 —— 再搬 1,388 行进五个分册，并修掉「视图掺测试文本」这个潜伏守卫 bug

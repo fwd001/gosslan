@@ -247,6 +247,12 @@ pub(crate) fn transport_src_for_guards() -> String {
     src.push_str(include_str!("transport/relay_file.rs"));
     src.push_str(include_str!("transport/outbox_sweep.rs"));
     src.push_str(include_str!("transport/read_receipt.rs"));
+    src.push_str(include_str!("transport/e2ee_payload.rs"));
+    src.push_str(include_str!("transport/group_file.rs"));
+    src.push_str(include_str!("transport/group_membership.rs"));
+    src.push_str(include_str!("transport/peer_registry.rs"));
+    src.push_str(include_str!("transport/handshake.rs"));
+    src.push_str(include_str!("transport/dial.rs"));
     src
 }
 
