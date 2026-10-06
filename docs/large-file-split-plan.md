@@ -213,7 +213,30 @@ PY
 现算：**轮次块 3,146 行 / 非轮次部分 1,699 行**。⇒ 只把引擎与夹具搬走，主文件还剩 ~3,150，
 **过不了阈值**（复跑旗标数：`grep -cE '^const [A-Z_]+(_LIE)? = (FAULT|ROUND) === ' scripts/e2e-multi-instance.mjs` ⇒ 29 个，形如 `const POISON = FAULT === "poison-part"`）；
 要过就得把轮次块本身搬走，而那些块读的就是这 29 个**文件顶部旗标** ⇒ 搬出去必须改成显式入参，
-**那是重写而不是搬家**。同时判据 C 与判据 D 的尺子就长在这一个文件上（C 按顶格 `}` 数每轮 `check(` 条数，
+**那是重写而不是搬家**。
+★ 还有一条**机制性**理由（比算术更硬）：Rust 那五刀能做到「只搬不改」靠的是 `include!` 的文本粘贴，
+  ESM 没有等价物。现算这个文件里**被顶层函数引用的模块级标识符有 43 个**（顶层共 144 个），
+  其中最多的是 `assertions`(6) / `ISO`(5) / `steps`(5) / `openDb`(4) / `sleep`(4) / `INSTANCES`(4) /
+  `RUN_DIR`(4)（数字＝被多少个顶层函数引用）—— 既有**可变流程状态**（`assertions` / `steps` / `INSTANCES`），
+  也有**运行目录与时钟**（`RUN_DIR` / `ISO`）与共用工具（`openDb` / `sleep`）⇒ 拆出去就得逐一
+  `export` / `import` 并把可变状态显式传参；少接一个名字不是编译错误就是行为改动，
+  而这一层没有秒级判据可依赖（每轮 30–45 分钟）。
+  复跑（仓库根，读数就是上面那几个数）：
+  ```bash
+  python3 - <<'PY2'
+  import io,re,collections
+  L=io.open('scripts/e2e-multi-instance.mjs',encoding='utf-8').read()
+  top=set(re.findall(r'^(?:const|let|var|function|async function)\s+([A-Za-z_$][\w$]*)',L,re.M))
+  refs=collections.Counter()
+  for m in re.finditer(r'^(?:async )?function ([A-Za-z_$][\w$]*)',L,re.M):
+      end=L.find('\n}',m.start()); body=L[m.start():end if end>0 else len(L)]
+      for x in set(re.findall(r'[A-Za-z_$][\w$]*',body)):
+          if x in top and x!=m.group(1): refs[x]+=1
+  print('顶层标识符',len(top),'｜被顶层函数引用的模块级名',len(refs))
+  print(refs.most_common(8))
+  PY2
+  ```
+  同时判据 C 与判据 D 的尺子就长在这一个文件上（C 按顶格 `}` 数每轮 `check(` 条数，
 D 拿这份数与门禁 local/release 两层互点）⇒ 一次改动要同时动「harness + 两条判据 + 20 轮的对账」。
 而这一层的复证成本是**每轮 30–45 分钟、全链路 20 轮**，搬家出错的表现不是编译错而是某一轮的断言数悄悄变了。
 ⇒ 按「先量作用点、再决定动不动」这条既有纪律，**本轮把它记为已量、不动**，
