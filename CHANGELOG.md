@@ -10,6 +10,16 @@
 
 ## [Unreleased]
 
+- 纯文档一记（无码改动 ⇒ 不提版本）：把三处**会指挥下一步动作**的旧指路句按搬家后的真位置改口 ——
+  ① `docs/acceptance/stability-smoke-matrix.md` 顶部那句"判据 C 从 `e2e-multi-instance.mjs` 现算每轮条数"
+  改成两路归堆（驱动的块 + `rounds/*.mjs` 按册里 `export const MODE`），并写清"同一 MODE 两处家 = 红"；
+  ② 同一份矩阵里点名的 `openWhileOff` / `openWhenOn` / `probeControl` 三条判据，落点从主文件改到
+  `scripts/e2e/rounds/lanoff.mjs`（现读确认这三条只住在那儿了）；
+  ③ 拆分计划 §4「已完成」补第 5 条（harness 那一刀的形状、三条必须同批改的判据、惰性 import 那个洞），
+  标题计数改口为五个文件。
+  ★ 有一条**没改**并说清为什么：矩阵 §213 那句"`e2e-multi-instance.mjs` 起跑前 `renameSync(i.db, …)`"仍然成立 ——
+  库备份/还原那段确实还留在驱动里（现读 693 / 757 行），把它跟着别的指针一起改掉就是制造假修正。
+  复跑：`node scripts/check-doc-numbers.mjs`（20 轮数字仍逐轮一致）/ `check-doc-citations` 0 / `check-invariant-hooks` 30 条全绑定。
 - ★ **harness 第八刀第三段：剩下 9 族 13 个块（2,108 行）也搬完了 —— 至此 `scripts/e2e-multi-instance.mjs` 4,845 ⇒ 驱动 910**，
   `scripts/e2e/core.mjs` 679，`scripts/e2e/rounds/` **19 册 / 3,664 行**（最大 `task.mjs` 535）。驱动里顶格轮次块现为 **0**
   （复跑 `grep -cE '^if \([A-Z_]+\) \{$' scripts/e2e-multi-instance.mjs`），只剩 26 条分发行 + 默认轮 + 报告。

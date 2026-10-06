@@ -149,7 +149,7 @@ EOF
 | 主动建链 / 中继文件传输 / Outbox 超时清扫 | 各 1 |
 | 待发群密钥登记表及其后（第一刀的四节） | **0** |
 
-**已完成（截至 2026-10-07，四个文件切完）**
+**已完成（截至 2026-10-07，五个文件切完）**
 
 1. `transport.rs` 7,087 ⇒ **2,742 行，进阈值**；产出 13 个 `include!` 生产分册
    （最大四册 `group_file 839` / `dial 625` / `handshake 581` / `relay_file 535`）。
@@ -182,6 +182,27 @@ EOF
    ② 守的正是 E 买不到的那一半：E 按目录 glob 数条数，所以「漏点名一册」在它眼里条数不变（＝假绿）。
    另：`check-scripts-parse.mjs` 的 import 闭包原来只走 `.mjs`，现在补上 Python 的 `from <pkg> import`
    ⇒ 分册里的语法错落到秒级层（实测把 `= [` 改成 `= [)` 该步报红，还原即绿）。
+5. `scripts/e2e-multi-instance.mjs` 4,845 ⇒ **驱动 910 + `scripts/e2e/core.mjs` 679 + `scripts/e2e/rounds/` 19 册 / 3,664 行**
+   （一族一轮一册，最大 `task.mjs` 535）。**JS 没有 `include!` 那样的文本粘贴口子**，这一刀仍然做到逐字搬，
+   靠的是三件事而不是重写：
+   - ① 轮次块体**本来就是 2 格缩进**（顶层 `if` 之内）⇒ 去掉旗标行与它顶格的 `}` 之后**正好是函数体缩进**，一行没重排；
+   - ② **旗标与分发留在驱动**（`if (POISON) await poison.preset();`）⇒ 判据 D 与契约图那条 `ROUND === "…"`
+     的现读命令输入没搬家，**一字未改**（改严的是判据 C 自己：见下）；
+   - ③ 跨块可读的 7 个可变量（`idA`/`idB`/`peerTo`/`msgId`/`xferId`/`srcFile`/`srcSha`）进 `core.mjs` 的状态对象 `S`。
+     ⚠️ 理由**不是**"块会写它们"（AST 现数：这 7 个在块里一处写都没有，写全在驱动的预置里），
+     而是**分册不能 import 入口脚本** ⇒ 留在驱动的 `let` 对分册不可见。下次判"要不要抽状态对象"按这条，别按引用总数。
+   三处"判据/检索面必须同批改口"，每一处都当场交反证：
+   ① 判据 C 的归堆范围加 `rounds/*.mjs`（按册里 `export const MODE = "…"` 归堆），并**改严**两条
+     （同一 MODE 不许两份家 / MODE_LABEL 每一轮必须找得到一个家）—— 四条 lie 全红、恢复即绿；
+   ② `check-invariant-hooks.mjs` 的 `e2e:` 片段检索面从 1 份扩到 12 份 —— 这条**不是预防**：
+     `INV-P06` 的 `e2e:故障注入判据③` / `…⑧` 搬完后只住在 `rounds/kill.mjs` / `rounds/rot.mjs`，
+     把检索面收回只读驱动会当场退 1（实测）。不扩的表现是"这两条不变量没有钩子"⇒ 指挥下一个人去补一条本来就活着的钩子；
+   ③ `check-scripts-parse.mjs` 的 import 闭包补跟 `../` 边 ⇒ 当场多查一个文件（41 ⇒ 52，新增的
+     `docs/domains.data.mjs` 此前从未被任何层查过）。
+   ★ 抓到一类**只有"路径落得到真文件"这性能看见**的洞：块体里有惰性 `await import("./ax-tree.mjs")`（群聊轮两处）。
+     静态 import 表不认它（不是 import 语句）、把每册 `await import()` 跑一遍也不认它（那一行没执行）、`node --check` 更不认
+     ⇒ 唯一报红的是 `check-scripts-parse` 的「被引用但文件不存在」。修法一行：重定基成 `../../ax-tree.mjs`。
+
 每批的恒等判据都是同一套：`cargo test --features bluetooth --lib` **789 passed / 0 failed** 且
 `-- --list` 那 789 条用例名与拆前**差集 0 行**（比"条数相等"硬）+ clippy/fmt/`verify-guards --list`
 （202 条锚点各恰好命中一次）/测试清单守卫（基线 789 条全在跑）/领域图/领域依赖/快速层全退 0。
