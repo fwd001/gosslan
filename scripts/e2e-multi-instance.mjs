@@ -103,17 +103,6 @@ let envBlockReason = null;
   }
   if (fails.length) throw new Error(`报告契约判据自证不成立，先修判据再跑轮：\n  ${fails.join("\n  ")}`);
 }
-/// 故障注入模式（§八）。`--fault=poison-part` 见下方 preset 步骤的注释。
-/// 另有**旅程轮** `--round=`（不是注入，是补一整条没测过的用户路径）：
-///   --round=group    → 群聊这一族跨实例真跑：两端预置群 → A 排三条群消息（正文/撤回/正文）→
-///                      对端上线后靠 flush_group_outbox 补发 → 判落库/解密/清队列/G-Set/不串味
-///   --round=group-lie→ 预置与投递完全不动，只把判据读的 msg_id 换成不存在的值 ⇒ 预期按设计报红
-///   --round=group-targets-lie→ 同上但**只摘掉线上明文里的 mention_targets 键** ⇒
-///                       预期恰好"落点穿过管道"那一条红（`group-lie` 够不到它，因为它读真 id）
-///   断言条数不在这里写，由 check-doc-numbers 现算对账（同下面每一轮）。
-///   --round=gfile    → 群文件跨实例（A 只备货、B 上线后生产自己投）；--round=gfile-lie → 只翻判据读的那份摘要
-///   断言条数不在这里写，由 check-doc-numbers 现算对账（同下面每一轮）。
-const FAULT = (process.argv.find((a) => a.startsWith("--fault=")) || "").slice("--fault=".length);
 //   --shot-selfcheck         → 只跑 §十六 截图判据的三格自证（假 PNG 判假 / 缺文件判假 / 真截图判真），
 //                             不起实例、不需要 release 产物：npm run test:e2e:shot-selfproof
 //   --prune-selfcheck        → 只跑跨轮保留的 8 格自证（含"被文档点名的绿轮不许删"那一对），
@@ -224,21 +213,6 @@ let xferId7, srcFile7;
 ///   少一个文件、或落地内容集合少一份，就是这条被判红 —— 不是"看着不顺眼"，是丢东西。
 const MULTI = FAULT === "multi-file" || FAULT === "multi-file-lie";
 let multiSpec = [];
-/// 轮次（§九 旅程族，与 `--fault=` 的注入族并列）：`--round=group` = 群聊这一族跨实例真跑。
-/// 为什么这一格值一轮：此前 harness **从未建过群** —— `grep -c group` 只命中 file_outbox 的
-/// `group_id` 列名，§九「群聊：创建/同步/发送/成员离线/重新上线/撤回」在跨实例层面是零判据，
-/// 而群消息走的是一条与 1:1 完全不同的管道（`group_outbox` 按成员一行 + Gossip 信封 +
-/// `GroupAck` 删行 + G-Set 撤回）。
-/// ⚠️ 与 1:1 的关键差异（决定了这一轮为什么要自己签名加密）：
-///   `flush_group_outbox`（transport.rs:6689-6693）**不做 re-seal**，只是 `from_str` 之后原样
-///   `try_send` —— 而 1:1 的 `flush_outbox` 每条都过 `reseal_for_send`。所以停机写入的那段
-///   payload 必须**在写库那一刻就已经是合法、已密封、已签名的 Gossip 信封**，
-///   放占位串只会得到"B 静默丢弃"（verify_envelope 不过 ⇒ handle_gossip 直接 return，
-///   gossip.rs:61-99/194-204），那红的是脚本不是产品。
-/// 这一轮顺带就是 §五 点名的两格组合：`群聊 + 离线成员重新上线`（入队时对端进程还没起，
-/// 只能靠建链后的 flush 送达）与 `聊天 + 群聊 + 文件`（同一对实例同时背 1:1 与群两条管道，
-/// 判据里专门有一格查两者互不串味）。
-const ROUND = (process.argv.find((a) => a.startsWith("--round=")) || "").slice("--round=".length);
 const GROUP = ROUND === "group" || ROUND === "group-lie" || ROUND === "group-targets-lie";
 /// 反向模式：注入与预置完全不动，只把**判据要去找的那个 msg_id** 换成一个必定不存在的值。
 /// 报不出红 ⇒ 那几条断言读的不是真落库行。
@@ -314,14 +288,6 @@ const POSTTEXT_LIE = ROUND === "posttext-lie";
 const CHAIN_TEXT = "two-hop group message via B";
 // 补递轮用另一段正文：判据里的文本比对就只可能命中这一轮的落库行
 const LATE_TEXT = "late joiner replayed by B";
-const GROUP_ID = "g-e2e-harness";
-const GROUP_NAME = "E2E-Group";
-/// 群对称密钥：settings 表 `gk:{group_id}` = base64 的**正好 32 字节**
-/// （transport.rs:5984-5986 解码后 `try_into::<[u8;32]>()`，长度不对直接 None ⇒ 永不解密）。
-/// 先例：`e2e_peer.rs:62` 的 `GROUP_KEY_B64` 就是同一形状。
-const GROUP_KEY_B64 = Buffer.alloc(32);
-for (let i = 0; i < 32; i += 4) GROUP_KEY_B64.writeUInt32BE(0x6e00_0000 + i, i);
-const GROUP_KEY_STR = GROUP_KEY_B64.toString("base64");
 let gTextId, gRecallId, gText2Id;
 /// §8「存储永远保存真实身份」那一格：A 打出来的 @ 正文（用的是 A 自己给 B 存的昵称）。
 /// 呈现层可以把它换成「@你」，**库里那串字节一个字都不许动** —— 所以文本与 id 都要留着当比对基准。
@@ -335,27 +301,6 @@ let gLegacyShapeId = "";
 /// 否则镜像函数哪天数成 0 条，红会挂在产品名下（本项目挂过好几次的形状：红在判据、不在被测物）。
 let gMentionTargets = [];
 
-/// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
-/// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
-const LIE = FAULT.endsWith("-lie");
-const LIE_SHA = "0".repeat(64);
-/// 传输尺寸（默认 1 MB，`E2E_FILE_MB=N` 或 `--size=N` 覆盖）。这个旋钮不是为了测"大文件"本身，
-/// 而是先量出**一次传输在回环上真实耗时多久**：「接收中杀进程」这类注入能不能做成
-/// 非竞态，取决于窗口有没有那么长。量不出来就老实标 SIMULATED，不许伪装 PASS（§十）。
-/// `--size=` 是给**尺寸阶梯**用的：同一轮旅程（文本 + 文件 + 重启）换档位重跑，
-/// 证明"换尺寸"不是一条只在一个尺寸上成立的测试。**故意不做成新的注入轮次** ——
-/// 加轮次要同步四处登记（MODE_LABEL / 门禁 local 层 / 判据 C 的轮次声明 / 正反两跑），
-/// 而阶梯要测的东西与故障无关，复用默认轮的断言才是这一格的正解。
-/// ⚠️ 必须 `Math.round`（实测，不是猜的）：`Buffer.alloc(1048.576)` **不抛错**，它静默给一个
-/// **1048 字节**的 buffer ⇒ 于是后面那条 `bytes.length === FILE_BYTES` 变成
-/// "1048 === 1048.576" = 假 ⇒ 报出来的红长得像产品 bug（"B 侧字节数与发送端一致"失败），
-/// 坏的实际是档位算术。本仓已多次踩"红的是脚本不是被保护的东西"，所以取整是这条阶梯的承重。
-const SIZE_ARG = process.argv.find((a) => a.startsWith("--size="));
-const FILE_MB = SIZE_ARG
-  ? Number(SIZE_ARG.slice("--size=".length))
-  : Number(process.env.E2E_FILE_MB || 1);
-const FILE_BYTES = Math.round(FILE_MB * 1024 * 1024);
-
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createCipheriv, createPrivateKey, randomBytes, randomUUID, sign } from "node:crypto";
 import fs from "node:fs";
@@ -365,62 +310,8 @@ import { DatabaseSync } from "node:sqlite";
 import { BOOT_LINE, bootBaseline, bootReady, countLog, readLogTail, selfcheckLogtail, stashLogs } from "./e2e-logtail.mjs";
 import { captureShot, captureWindowShot, describeShotDir, screenBlockedReason, selfcheckShot } from "./e2e-shot.mjs";
 // 引擎层（常量 + 共享量 + 工具函数）在 scripts/e2e/core.mjs：整段搬过去、只在声明行加了 export；
-import { S,
-  ALL_INST,
-  APPDATA,
-  BIN,
-  GROUP_TTL,
-  INSTANCES,
-  INST_C,
-  ISO,
-  MINTED_IDS,
-  NO_ROUTED,
-  PKCS8,
-  ROOT,
-  RUN_DIR,
-  TCP_BASE,
-  appDataDir,
-  assertions,
-  binaryPath,
-  bootAndStop,
-  bootBaseOf,
-  buildGroupEnvelope,
-  buildMentionTargets,
-  check,
-  citedRunIds,
-  ed25519Priv,
-  eid,
-  launch,
-  newestMtime,
-  noteId,
-  nowMs,
-  openDb,
-  procs,
-  procsLeft,
-  prunePlan,
-  pubFromSecret,
-  readIdentity,
-  readReportContract,
-  reportContractGaps,
-  runStep,
-  seed,
-  seedPair,
-  selfcheckPrune,
-  selfcheckReportContract,
-  shotFiles,
-  shotSources,
-  sleep,
-  step,
-  stepBadge,
-  steps,
-  stopAll,
-  stopOne,
-  tailLog,
-  takeShot,
-  tcpOpen,
-  traceExcerpt,
-  waitFor,
-  waitSendTerminal,
+import {
+  ALL_INST, APPDATA, BIN, FAULT, FILE_BYTES, GROUP_ID, GROUP_KEY_B64, GROUP_KEY_STR, GROUP_NAME, GROUP_TTL, INSTANCES, INST_C, ISO, LIE, LIE_SHA, MINTED_IDS, NO_ROUTED, PKCS8, ROOT, ROUND, RUN_DIR, S, TCP_BASE, appDataDir, assertions, binaryPath, bootAndStop, bootBaseOf, buildGroupEnvelope, buildMentionTargets, check, citedRunIds, ed25519Priv, eid, launch, newestMtime, noteId, nowMs, openDb, procs, procsLeft, prunePlan, pubFromSecret, readIdentity, readReportContract, reportContractGaps, runStep, seed, seedPair, selfcheckPrune, selfcheckReportContract, shotFiles, shotSources, sleep, step, stepBadge, steps, stopAll, stopOne, tailLog, takeShot, tcpOpen, traceExcerpt, waitFor, waitSendTerminal,
 } from "./e2e/core.mjs";
 
 
@@ -543,10 +434,7 @@ if (!fs.existsSync(BIN)) {
 const anyFail = () => assertions.some((a) => a.verdict === "FAIL");
 /// 「起 A/B 并等链路真的建立」那一步的下标。反向自证要求红**落在它之后**：
 /// 红若落在建链之前，那只是应用没起来，证明不了「断言依赖真实投递」。
-const linkStepIdx = () => steps.findIndex((s) => s.name.startsWith("起 A/B"));
-
-// ── J1：文本消息 A→B 全链路 ────────────────────────────────────────
-let idA, idB, msgId, NODES, peerTo, xferId, srcFile, srcSha;
+const linkStepIdx = () => steps.findIndex((s) => s.name.startsWith("起 A/B"));let NODES;
 let xferId2, srcFile2, srcSha2, xferId3, srcFile3, srcSha3;
 let chainMsgId; // 链式轮那条群消息的 msg_id（信封里是 sha256，由 buildGroupEnvelope 算出来）
 /// #143 正面判据用的"就绪之后才送"的那条 @。
@@ -557,50 +445,50 @@ let gLateSeed = null;
 step("停机预置：好友 + routed 端点 + 独立接收目录", () => seedPair(NODES));
 
 step("L-A 入队：在 A 的库里留下「已入队待发送」的事实", () => {
-  msgId = eid();
+  S.msgId = eid();
   // 反向模式：链路照建，只是注定送不到 —— 报红必须来自投递断言本身
-  peerTo = NEGATIVE ? `${idB.runtimeId}-ghost` : idB.runtimeId;
+  S.peerTo = NEGATIVE ? `${S.idB.runtimeId}-ghost` : S.idB.runtimeId;
   const ts = nowMs();
   const payload = JSON.stringify({
     type: "chat_message",
-    msg_id: msgId,
-    from: idA.runtimeId,
-    to: peerTo,
+    msg_id: S.msgId,
+    from: S.idA.runtimeId,
+    to: S.peerTo,
     kind: "text",
     content: "enc1:harness-placeholder", // 占位；应用会 re-seal 成真密文
     ts,
     seq: 1,
   });
   seed(INSTANCES[0].db, (db) => {
-    db.prepare("DELETE FROM messages WHERE msg_id=?1").run(msgId);
-    db.prepare("DELETE FROM outbox WHERE msg_id=?1").run(msgId);
+    db.prepare("DELETE FROM messages WHERE msg_id=?1").run(S.msgId);
+    db.prepare("DELETE FROM outbox WHERE msg_id=?1").run(S.msgId);
     // 陷阱 10：两行必须成对 —— 只插 outbox 则 re-seal 没有明文，只插 messages 则 Ack 找不到人
     db.prepare(
       `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
        VALUES(?1,?2,?3,?4,'text',?5,?6,1,'sending')`,
-    ).run(msgId, idB.runtimeId, idA.runtimeId, peerTo, "hello from harness", ts);
+    ).run(S.msgId, S.idB.runtimeId, S.idA.runtimeId, S.peerTo, "hello from harness", ts);
     db.prepare("INSERT INTO outbox(msg_id,peer_id,payload,created_at) VALUES(?1,?2,?3,?4)")
-      .run(msgId, peerTo, payload, ts);
+      .run(S.msgId, S.peerTo, payload, ts);
   });
 });
 
 step("L-A 入队：A 的一个 1 MB 文件也排好队（停机窗口内）", () => {
-  xferId = eid("x");
+  S.xferId = eid("x");
   const dir = path.join(RUN_DIR, "src");
   fs.mkdirSync(dir, { recursive: true });
-  srcFile = path.join(dir, `${xferId}.bin`);
+  S.srcFile = path.join(dir, `${S.xferId}.bin`);
   // 真随机字节：全零会被任何"压缩/去重"路径悄悄改掉而断言看不出来
   const buf = Buffer.alloc(FILE_BYTES);
   for (let i = 0; i < buf.length; i += 32) buf.writeUInt32BE(Math.floor(Math.random() * 2 ** 32), i);
-  fs.writeFileSync(srcFile, buf);
-  srcSha = createHash("sha256").update(buf).digest("hex");
+  fs.writeFileSync(S.srcFile, buf);
+  S.srcSha = createHash("sha256").update(buf).digest("hex");
   seed(INSTANCES[0].db, (db) => {
-    db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(xferId);
+    db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(S.xferId);
     // 陷阱 8：local_path 必须真实存在，否则每次重试白烧一个 attempts 配额
     db.prepare(
       `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
        VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
-    ).run(xferId, peerTo, srcFile, `${xferId}.bin`, buf.length, nowMs());
+    ).run(S.xferId, S.peerTo, S.srcFile, `${S.xferId}.bin`, buf.length, nowMs());
   });
 });
 
@@ -625,7 +513,7 @@ if (POISON) {
       db.prepare(
         `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
          VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
-      ).run(xferId2, peerTo, srcFile2, `${xferId2}.bin`, buf.length, nowMs());
+      ).run(xferId2, S.peerTo, srcFile2, `${xferId2}.bin`, buf.length, nowMs());
     });
     // 脏前缀必须严格短于文件：等长或更长会让接收端回 received >= size，那走的是
     // AlreadyHave 分支（合法地宣布"我早收完了"），就不是在测 hash 拒收这一格。
@@ -659,7 +547,7 @@ if (RESUME) {
       db.prepare(
         `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
          VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
-      ).run(xferId3, peerTo, srcFile3, `${xferId3}.bin`, buf.length, nowMs());
+      ).run(xferId3, S.peerTo, srcFile3, `${xferId3}.bin`, buf.length, nowMs());
     });
     const dl = path.join(RUN_DIR, "recv", "B");
     fs.mkdirSync(dl, { recursive: true });
@@ -711,7 +599,7 @@ let taskImages = [];
 /// deleted/description/images/archived/done_at），**snake_case 无 rename**。
 if (TASK) {
   step("任务预置：两端各写一份群 + 同一份群密钥，A 排「创建」与「完成」两条任务载荷", () => {
-    const members = [idA.runtimeId, idB.runtimeId];
+    const members = [S.idA.runtimeId, S.idB.runtimeId];
     const convId = `group:${GROUP_ID}`;
     const ts = nowMs();
     for (const inst of INSTANCES) {
@@ -719,7 +607,7 @@ if (TASK) {
         db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)")
           .run(`gk:${GROUP_ID}`, GROUP_KEY_STR);
         db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
-          .run(GROUP_ID, GROUP_NAME, idA.runtimeId, ts);
+          .run(GROUP_ID, GROUP_NAME, S.idA.runtimeId, ts);
         db.prepare("DELETE FROM group_members WHERE group_id=?1").run(GROUP_ID);
         for (const m of members) {
           db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)")
@@ -733,14 +621,14 @@ if (TASK) {
     }
     const todoId = "todo-e2e-1";
     const mk = (over) => JSON.stringify({
-      todo_id: todoId, title: "e2e task", assignees: [idB.runtimeId], status: "todo",
-      creator: idA.runtimeId, deleted: false, description: "", images: [], archived: false,
+      todo_id: todoId, title: "e2e task", assignees: [S.idB.runtimeId], status: "todo",
+      creator: S.idA.runtimeId, deleted: false, description: "", images: [], archived: false,
       done_at: null, ...over,
     });
     const base = {
-      groupKey: GROUP_KEY_B64, senderId: idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
-      x25519Pub: idA.x25519Pub, ed25519Pub: idA.ed25519Pub,
-      groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId, members,
+      groupKey: GROUP_KEY_B64, senderId: S.idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
+      x25519Pub: S.idA.x25519Pub, ed25519Pub: S.idA.ed25519Pub,
+      groupId: GROUP_ID, groupName: GROUP_NAME, creator: S.idA.runtimeId, members,
     };
     const c = buildGroupEnvelope({ ...base, kind: "todo", content: mk({}), ts, seq: 1 });
     const u = buildGroupEnvelope({
@@ -773,11 +661,11 @@ if (TASK) {
         db.prepare(
           `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'sent')`,
-        ).run(env.messageId, convId, idA.runtimeId, GROUP_ID, kind, content, at, seq);
+        ).run(env.messageId, convId, S.idA.runtimeId, GROUP_ID, kind, content, at, seq);
         db.prepare(
           `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
            VALUES(?1,?2,?3,?4,?5)`,
-        ).run(env.messageId, GROUP_ID, idB.runtimeId, env.wire, at);
+        ).run(env.messageId, GROUP_ID, S.idB.runtimeId, env.wire, at);
       }
       db.prepare(
         "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
@@ -808,14 +696,14 @@ if (TASK) {
       },
     ];
     const mk2 = (over) => JSON.stringify({
-      todo_id: todoId2, title: "e2e task by B", assignees: [idA.runtimeId], status: "todo",
-      creator: idB.runtimeId, deleted: false, description: "", images: taskImages,
+      todo_id: todoId2, title: "e2e task by B", assignees: [S.idA.runtimeId], status: "todo",
+      creator: S.idB.runtimeId, deleted: false, description: "", images: taskImages,
       archived: false, done_at: null, ...over,
     });
     const baseB = {
-      groupKey: GROUP_KEY_B64, senderId: idB.runtimeId, priv: ed25519Priv(INSTANCES[1]),
-      x25519Pub: idB.x25519Pub, ed25519Pub: idB.ed25519Pub,
-      groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId, members,
+      groupKey: GROUP_KEY_B64, senderId: S.idB.runtimeId, priv: ed25519Priv(INSTANCES[1]),
+      x25519Pub: S.idB.x25519Pub, ed25519Pub: S.idB.ed25519Pub,
+      groupId: GROUP_ID, groupName: GROUP_NAME, creator: S.idA.runtimeId, members,
     };
     const b1 = buildGroupEnvelope({ ...baseB, kind: "todo", content: mk2({}), ts: ts + 4, seq: 5 });
     const b2 = buildGroupEnvelope({
@@ -834,11 +722,11 @@ if (TASK) {
         db.prepare(
           `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'sent')`,
-        ).run(env.messageId, convId, idB.runtimeId, GROUP_ID, kind, content, at, seq);
+        ).run(env.messageId, convId, S.idB.runtimeId, GROUP_ID, kind, content, at, seq);
         db.prepare(
           `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
            VALUES(?1,?2,?3,?4,?5)`,
-        ).run(env.messageId, GROUP_ID, idA.runtimeId, env.wire, at);
+        ).run(env.messageId, GROUP_ID, S.idA.runtimeId, env.wire, at);
       }
       db.prepare(
         "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
@@ -850,7 +738,7 @@ if (TASK) {
 
 if (GROUP) {
   step("群聊预置：两端各写一份群 + 同一份群密钥，A 再排两条群消息（正文 + 撤回）", () => {
-    const members = [idA.runtimeId, idB.runtimeId];
+    const members = [S.idA.runtimeId, S.idB.runtimeId];
     const convId = `group:${GROUP_ID}`;
     const ts = nowMs();
     for (const inst of INSTANCES) {
@@ -858,7 +746,7 @@ if (GROUP) {
         db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)")
           .run(`gk:${GROUP_ID}`, GROUP_KEY_STR);
         db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
-          .run(GROUP_ID, GROUP_NAME, idA.runtimeId, ts);
+          .run(GROUP_ID, GROUP_NAME, S.idA.runtimeId, ts);
         db.prepare("DELETE FROM group_members WHERE group_id=?1").run(GROUP_ID);
         for (const m of members) {
           db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)")
@@ -930,9 +818,9 @@ if (GROUP) {
       });
     }
     const base = {
-      groupKey: GROUP_KEY_B64, senderId: idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
-      x25519Pub: idA.x25519Pub, ed25519Pub: idA.ed25519Pub,
-      groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId, members,
+      groupKey: GROUP_KEY_B64, senderId: S.idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
+      x25519Pub: S.idA.x25519Pub, ed25519Pub: S.idA.ed25519Pub,
+      groupId: GROUP_ID, groupName: GROUP_NAME, creator: S.idA.runtimeId, members,
     };
     const t = buildGroupEnvelope({ ...base, kind: "text", content: "hello from group harness", ts, seq: 1 });
     const r = buildGroupEnvelope({
@@ -952,11 +840,11 @@ if (GROUP) {
     // ⚠️ 为什么落在 `mt` 而不是 `mo`：`mo` 的正文刻意不含任何 `@`，当前版本给它算不出落点，
     //    那正好是"名单有、落点没有"的第三种形状（= 4.30.x 那个只带名单的对端），留着当对照。
     const gMentionName = `e2e-${INSTANCES[1].label}`;
-    gMentionTargets = buildMentionTargets(gMentionText, [idB.runtimeId],
-      (id) => (id === idB.runtimeId ? gMentionName : undefined));
+    gMentionTargets = buildMentionTargets(gMentionText, [S.idB.runtimeId],
+      (id) => (id === S.idB.runtimeId ? gMentionName : undefined));
     const mt = buildGroupEnvelope({
       ...base, kind: "text", content: gMentionText, ts: ts + 3, seq: 4,
-      mentions: [idB.runtimeId],
+      mentions: [S.idB.runtimeId],
       // ★ `--round=group-targets-lie` 就是从这里摘掉那一份：其余（拓扑、时序、名单、正文）
       //   与正向档一字不差，所以红只可能来自"落点没穿过 seal→网络→解析"这一件事。
       targets: TARGETS_LIE ? undefined : gMentionTargets,
@@ -967,7 +855,7 @@ if (GROUP) {
     // 这正是"改过名字的人收不到历史上那些 @"的线上形态。
     const mo = buildGroupEnvelope({
       ...base, kind: "text", content: "这条只带身份号，正文里没有名字",
-      mentions: [idB.runtimeId], ts: ts + 4, seq: 5,
+      mentions: [S.idB.runtimeId], ts: ts + 4, seq: 5,
     });
     const lg = buildGroupEnvelope({
       ...base, kind: "text", content: "旧形状的一条正文", ts: ts + 5, seq: 6,
@@ -983,12 +871,12 @@ if (GROUP) {
       const LATE_CONTENT = "这条在界面就绪之后才送";
       const late = buildGroupEnvelope({
         ...base, kind: "text", content: LATE_CONTENT, ts: ts + 60, seq: 7,
-        mentions: [idB.runtimeId],
+        mentions: [S.idB.runtimeId],
       });
       noteId(late.messageId);
       gLateSeed = {
         messageId: late.messageId, wire: late.wire, content: LATE_CONTENT,
-        convId, groupId: GROUP_ID, senderId: idA.runtimeId, peerId: idB.runtimeId, at: ts + 60,
+        convId, groupId: GROUP_ID, senderId: S.idA.runtimeId, peerId: S.idB.runtimeId, at: ts + 60,
       };
     }
     seed(INSTANCES[0].db, (db) => {
@@ -1007,12 +895,12 @@ if (GROUP) {
         db.prepare(
           `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'sent')`,
-        ).run(env.messageId, convId, idA.runtimeId, GROUP_ID, kind, content, at, seq);
+        ).run(env.messageId, convId, S.idA.runtimeId, GROUP_ID, kind, content, at, seq);
         // 每个非自身成员一行（window.rs:210-216）；payload 就是那整条已签名帧
         db.prepare(
           `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
            VALUES(?1,?2,?3,?4,?5)`,
-        ).run(env.messageId, GROUP_ID, idB.runtimeId, env.wire, at);
+        ).run(env.messageId, GROUP_ID, S.idB.runtimeId, env.wire, at);
       }
       // 时钟必须一起推进，否则 A 之后自己发的消息会撞 seq（window.rs:127-130）
       db.prepare(
@@ -1032,14 +920,14 @@ if (GROUP) {
 // 这一条是 §三 点名的「大文件之后群同步是否仍然正常」那一半的起点。
 if (POSTTEXT) {
   step("群预置（续发轮）：两端各写同一份群 + 同一份群密钥，不排任何群消息", () => {
-    const members = [idA.runtimeId, idB.runtimeId];
+    const members = [S.idA.runtimeId, S.idB.runtimeId];
     const ts = nowMs();
     for (const inst of INSTANCES) {
       seed(inst.db, (db) => {
         db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)")
           .run(`gk:${GROUP_ID}`, GROUP_KEY_STR);
         db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
-          .run(GROUP_ID, GROUP_NAME, idA.runtimeId, ts);
+          .run(GROUP_ID, GROUP_NAME, S.idA.runtimeId, ts);
         db.prepare("DELETE FROM group_members WHERE group_id=?1").run(GROUP_ID);
         for (const m of members) {
           db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)")
@@ -1060,7 +948,7 @@ step("起 A/B 并等链路真的建立（routed 拨号一轮 10s）", async () =
     await waitFor(() => tcpOpen(i.port), 60_000, `实例 ${i.label} TCP ${i.port} 可连`);
   }
   // 断言链路成立，而不是靠 sleep：日志里的 +conn peer= 必须出现「对端那个 id」
-  const other = { A: { inst: INSTANCES[0], id: idB }, B: { inst: INSTANCES[1], id: idA } };
+  const other = { A: { inst: INSTANCES[0], id: S.idB }, B: { inst: INSTANCES[1], id: S.idA } };
   for (const side of ["A", "B"]) {
     const { inst, id } = other[side];
     await waitFor(
@@ -1075,8 +963,8 @@ step("起 A/B 并等链路真的建立（routed 拨号一轮 10s）", async () =
   // 判据是"两侧合计 ≥1"而不是"每一侧各 1"：谁先拨到谁记 routed、另一侧只看到入站连接，
   // 11 轮实测里 A=routed/B=lan 与 A=lan/B=routed 两种都出现过 ⇒ 按侧断言会漂。
   const routedDialed = () =>
-    countLog(INSTANCES[0].log, `建链 peer=${idB.runtimeId} path=routed`) +
-    countLog(INSTANCES[1].log, `建链 peer=${idA.runtimeId} path=routed`);
+    countLog(INSTANCES[0].log, `建链 peer=${S.idB.runtimeId} path=routed`) +
+    countLog(INSTANCES[1].log, `建链 peer=${S.idA.runtimeId} path=routed`);
   await waitFor(routedDialed, 45_000, "至少一侧打出与对端的 path=routed 建链行");
   check("这对外部以手动配置的 Routed 端点拨出过链路（§19 网络·Routed）",
     routedDialed() >= 1, "≥1 条 path=routed 建链", routedDialed());
@@ -1086,8 +974,8 @@ step("起 A/B 并等链路真的建立（routed 拨号一轮 10s）", async () =
 
 step("A→B 送达 + Ack 回收 + 无重复", async () => {
   const [aDb, bDb] = [openDb(INSTANCES[0].db, true), openDb(INSTANCES[1].db, true)];
-  const peekB = () => bDb.prepare("SELECT * FROM messages WHERE msg_id=?1").all(msgId);
-  const outboxLeft = () => aDb.prepare("SELECT COUNT(*) c FROM outbox WHERE msg_id=?1").get(msgId).c;
+  const peekB = () => bDb.prepare("SELECT * FROM messages WHERE msg_id=?1").all(S.msgId);
+  const outboxLeft = () => aDb.prepare("SELECT COUNT(*) c FROM outbox WHERE msg_id=?1").get(S.msgId).c;
   await waitFor(async () => peekB().length > 0, 60_000, "B 侧出现这条消息");
   // 等条件而不是等时间：Ack 回来才继续（否则慢机器上会把"还没到"读成"丢了"）
   await waitFor(() => outboxLeft() === 0, 30_000, "A 侧 outbox 被 Ack 删除");
@@ -1098,31 +986,31 @@ step("A→B 送达 + Ack 回收 + 无重复", async () => {
   check("B 侧内容与应用解密结果一致",
     rowsB[0]?.content === "hello from harness", "hello from harness", rowsB[0]?.content);
   check("B 侧方向正确（sender 是 A）",
-    rowsB[0]?.sender_id === idA.runtimeId, idA.runtimeId, rowsB[0]?.sender_id);
+    rowsB[0]?.sender_id === S.idA.runtimeId, S.idA.runtimeId, rowsB[0]?.sender_id);
 
-  const left = aDb.prepare("SELECT COUNT(*) c FROM outbox WHERE msg_id=?1").get(msgId).c;
+  const left = aDb.prepare("SELECT COUNT(*) c FROM outbox WHERE msg_id=?1").get(S.msgId).c;
   check("A 侧 outbox 被 Ack 清空", left === 0, 0, left);
-  const st = aDb.prepare("SELECT status FROM messages WHERE msg_id=?1").get(msgId)?.status;
+  const st = aDb.prepare("SELECT status FROM messages WHERE msg_id=?1").get(S.msgId)?.status;
   check("A 侧状态前进过 sending", !["sending", "failed"].includes(st), "sent/delivered/read", st);
   const uniq = bDb.prepare(
     "SELECT COUNT(*) c FROM messages WHERE msg_id=?1",
-  ).get(msgId).c;
+  ).get(S.msgId).c;
   check("msg_id 在 B 侧唯一（INV-P01）", uniq === 1, 1, uniq);
   aDb.close(); bDb.close();
 });
 
 step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一致", async () => {
   const recvB = path.join(RUN_DIR, "recv", "B");
-  const landed = path.join(recvB, `${xferId}.bin`);
-  await waitFor(() => fs.existsSync(landed), 120_000, `B 的接收目录出现 ${xferId}.bin（只认 rename 后的最终名）`);
+  const landed = path.join(recvB, `${S.xferId}.bin`);
+  await waitFor(() => fs.existsSync(landed), 120_000, `B 的接收目录出现 ${S.xferId}.bin（只认 rename 后的最终名）`);
   const bytes = fs.readFileSync(landed);
   check("B 侧字节数与发送端一致", bytes.length === FILE_BYTES, FILE_BYTES, bytes.length);
   const got = createHash("sha256").update(bytes).digest("hex");
-  check("B 侧 sha256 与源文件一致（INV-P17 分片可验证）", got === srcSha, srcSha.slice(0, 12) + "…", got.slice(0, 12) + "…");
+  check("B 侧 sha256 与源文件一致（INV-P17 分片可验证）", got === S.srcSha, S.srcSha.slice(0, 12) + "…", got.slice(0, 12) + "…");
 
   // ⚠️ 这里以前是"看到 B 的终名文件就立刻读 A"⇒ 判据读在 ack 之前（见 waitSendTerminal 的注释）。
   //   默认轮一直绿只是因为 waitFor 的 500ms 轮询恰好盖住了 ack 的往返时间，不是这条链没有窗口。
-  const sentJ2 = await waitSendTerminal(xferId);
+  const sentJ2 = await waitSendTerminal(S.xferId);
   const left = sentJ2.queued;
   const aRow = sentJ2.row;
   check("A 侧 file_outbox 行已被收尾删除", left === 0, 0, left);
@@ -1134,13 +1022,13 @@ step("J2 文件 A→B：只有 rename 之后才算完成，且字节与 hash 一
   check("A 侧 send 记录进度到位", aRow && aRow.progress === 1.0, 1, aRow?.progress);
 
   const bDb = openDb(INSTANCES[1].db, true);
-  const bRow = bDb.prepare("SELECT status,path FROM file_transfers WHERE id=?1").get(xferId);
-  const bDup = bDb.prepare("SELECT COUNT(*) c FROM file_transfers WHERE id=?1").get(xferId).c;
+  const bRow = bDb.prepare("SELECT status,path FROM file_transfers WHERE id=?1").get(S.xferId);
+  const bDup = bDb.prepare("SELECT COUNT(*) c FROM file_transfers WHERE id=?1").get(S.xferId).c;
   bDb.close();
   check("B 侧 receive 记录终态是 done（不是 active/failed）", bRow && bRow.status === "done", "done", bRow ? bRow.status : "无行");
   check("B 侧同一条传输只记一次", bDup === 1, 1, bDup);
   const strays = fs.existsSync(recvB)
-    ? fs.readdirSync(recvB).filter((f) => f.includes(xferId) && f !== `${xferId}.bin`)
+    ? fs.readdirSync(recvB).filter((f) => f.includes(S.xferId) && f !== `${S.xferId}.bin`)
     : [];
   check("接收目录没有 .part / 改名副本残留", strays.length === 0, 0, strays.join(", ") || 0);
 });
@@ -1159,9 +1047,9 @@ if (DMREACT) {
     const reactMsgId = eid();
     const ts = nowMs();
     // 被回应的"原消息"用 J1 那条真落库的 id：静默事件必须指向一条真实存在的消息。
-    const plain = JSON.stringify({ target: msgId, emoji: "[赞]", add: true });
+    const plain = JSON.stringify({ target: S.msgId, emoji: "[赞]", add: true });
     const payload = JSON.stringify({
-      type: "chat_message", msg_id: reactMsgId, from: idA.runtimeId, to: idB.runtimeId,
+      type: "chat_message", msg_id: reactMsgId, from: S.idA.runtimeId, to: S.idB.runtimeId,
       kind: "reaction", content: "enc1:harness-placeholder", ts, seq: 9,
     });
     // 把 B 侧那条会话摆成一个可分辨的静止态。钉的是 last_msg / last_ts 两列 —— 它们**只有**
@@ -1175,7 +1063,7 @@ if (DMREACT) {
     const QUIET_TS = 1_700_000_000_000;
     seed(INSTANCES[1].db, (db) => {
       db.prepare("UPDATE conversations SET last_msg=?1,last_ts=?2 WHERE id=?3")
-        .run(SENT, QUIET_TS, idA.runtimeId);
+        .run(SENT, QUIET_TS, S.idA.runtimeId);
     });
     // 与 J1/J3 同一个配方：两行必须成对，只插 outbox 则 re-seal 没有明文，只插 messages 则 Ack 找不到人。
     seed(INSTANCES[0].db, (db) => {
@@ -1184,9 +1072,9 @@ if (DMREACT) {
       db.prepare(
         `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
          VALUES(?1,?2,?3,?4,'reaction',?5,?6,9,'sending')`,
-      ).run(reactMsgId, idB.runtimeId, idA.runtimeId, idB.runtimeId, plain, ts);
+      ).run(reactMsgId, S.idB.runtimeId, S.idA.runtimeId, S.idB.runtimeId, plain, ts);
       db.prepare("INSERT INTO outbox(msg_id,peer_id,payload,created_at) VALUES(?1,?2,?3,?4)")
-        .run(reactMsgId, idB.runtimeId, payload, ts);
+        .run(reactMsgId, S.idB.runtimeId, payload, ts);
     });
     const readB = () => {
       const d = openDb(INSTANCES[1].db, true);
@@ -1198,7 +1086,7 @@ if (DMREACT) {
       const d = openDb(INSTANCES[1].db, true);
       try {
         return d.prepare("SELECT last_msg,last_ts FROM conversations WHERE id=?1")
-          .get(idA.runtimeId);
+          .get(S.idA.runtimeId);
       } finally { d.close(); }
     };
     const queued = () => {
@@ -1243,12 +1131,12 @@ if (POSTTEXT) {
   const ts = nowMs();
   // 反证档翻的是**判据读的两份值**：期望的明文（内容那条）与读台账行用的 transfer_id（终态那条）。
   const expectContent = POSTTEXT_LIE ? "after the large file (tampered)" : "after the large file";
-  const wantXfer = POSTTEXT_LIE ? `${xferId}-ghost` : xferId;
+  const wantXfer = POSTTEXT_LIE ? `${S.xferId}-ghost` : S.xferId;
   const payload = JSON.stringify({
     type: "chat_message",
     msg_id: postMsgId,
-    from: idA.runtimeId,
-    to: idB.runtimeId,
+    from: S.idA.runtimeId,
+    to: S.idB.runtimeId,
     kind: "text",
     content: "enc1:harness-placeholder", // 占位；应用会 re-seal 成真密文
     ts,
@@ -1261,9 +1149,9 @@ if (POSTTEXT) {
     db.prepare(
       `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
        VALUES(?1,?2,?3,?4,'text',?5,?6,2,'sending')`,
-    ).run(postMsgId, idB.runtimeId, idA.runtimeId, idB.runtimeId, "after the large file", ts);
+    ).run(postMsgId, S.idB.runtimeId, S.idA.runtimeId, S.idB.runtimeId, "after the large file", ts);
     db.prepare("INSERT INTO outbox(msg_id,peer_id,payload,created_at) VALUES(?1,?2,?3,?4)")
-      .run(postMsgId, idB.runtimeId, payload, ts);
+      .run(postMsgId, S.idB.runtimeId, payload, ts);
   });
   // 这一行是在**应用已经跑着、链路已经建好**之后才塞进队列的 ⇒ 没有"下一次建链"来冲它，
   // 只能等它自己那趟心跳/重试。所以这里的等待窗口按那一趟的节奏放宽，不拿 J1 的 60s 硬套。
@@ -1292,7 +1180,7 @@ if (POSTTEXT) {
     rowsB.length === 1, 1, rowsB.length);
   check("B 侧内容与明文一致（走完大文件那条链之后 re-seal/解密这条路径照常）",
     rowsB[0]?.content === expectContent, expectContent, rowsB[0]?.content);
-  check("B 侧方向正确（sender 还是 A）", rowsB[0]?.sender_id === idA.runtimeId, idA.runtimeId, rowsB[0]?.sender_id);
+  check("B 侧方向正确（sender 还是 A）", rowsB[0]?.sender_id === S.idA.runtimeId, S.idA.runtimeId, rowsB[0]?.sender_id);
   check("A 侧这条的 outbox 行被对端 Ack 删除（不是本端写完就回收）", outboxLeft() === 0, 0, outboxLeft());
   const st = (() => {
     const d = openDb(INSTANCES[0].db, true);
@@ -1328,10 +1216,10 @@ if (POSTTEXT) {
   const convId = `group:${GROUP_ID}`;
   const ts = nowMs();
   const env = buildGroupEnvelope({
-    groupKey: GROUP_KEY_B64, senderId: idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
-    x25519Pub: idA.x25519Pub, ed25519Pub: idA.ed25519Pub,
-    groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId,
-    members: [idA.runtimeId, idB.runtimeId],
+    groupKey: GROUP_KEY_B64, senderId: S.idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
+    x25519Pub: S.idA.x25519Pub, ed25519Pub: S.idA.ed25519Pub,
+    groupId: GROUP_ID, groupName: GROUP_NAME, creator: S.idA.runtimeId,
+    members: [S.idA.runtimeId, S.idB.runtimeId],
     kind: "text", content: "group msg after the large file", ts, seq: 1,
   });
   const wantConv = POSTTEXT_LIE ? `${convId}-ghost` : convId;
@@ -1344,11 +1232,11 @@ if (POSTTEXT) {
     db.prepare(
       `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
        VALUES(?1,?2,?3,?4,'text',?5,?6,1,'sent')`,
-    ).run(env.messageId, convId, idA.runtimeId, GROUP_ID, gPlain, ts);
+    ).run(env.messageId, convId, S.idA.runtimeId, GROUP_ID, gPlain, ts);
     db.prepare(
       `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
        VALUES(?1,?2,?3,?4,?5)`,
-    ).run(env.messageId, GROUP_ID, idB.runtimeId, env.wire, ts);
+    ).run(env.messageId, GROUP_ID, S.idB.runtimeId, env.wire, ts);
   });
   const readG = () => {
     const d = openDb(INSTANCES[1].db, true);
@@ -1400,7 +1288,7 @@ if (POSTTEXT) {
     seed(INSTANCES[0].db, (db) => {
       for (const m of burst) {
         const payload = JSON.stringify({
-          type: "chat_message", msg_id: m.id, from: idA.runtimeId, to: idB.runtimeId,
+          type: "chat_message", msg_id: m.id, from: S.idA.runtimeId, to: S.idB.runtimeId,
           kind: "text", content: "enc1:harness-placeholder", ts: m.ts, seq: m.seq,
         });
         db.prepare("DELETE FROM messages WHERE msg_id=?1").run(m.id);
@@ -1408,9 +1296,9 @@ if (POSTTEXT) {
         db.prepare(
           `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
            VALUES(?1,?2,?3,?4,'text',?5,?6,?7,'sending')`,
-        ).run(m.id, idB.runtimeId, idA.runtimeId, idB.runtimeId, m.plain, m.ts, m.seq);
+        ).run(m.id, S.idB.runtimeId, S.idA.runtimeId, S.idB.runtimeId, m.plain, m.ts, m.seq);
         db.prepare("INSERT INTO outbox(msg_id,peer_id,payload,created_at) VALUES(?1,?2,?3,?4)")
-          .run(m.id, idB.runtimeId, payload, m.ts);
+          .run(m.id, S.idB.runtimeId, payload, m.ts);
       }
     });
     const readB = (id) => {
@@ -1452,7 +1340,7 @@ if (POSTTEXT) {
     // "连发有没有把会话归属写散"，所以钉"五条同一个 conv_id"+"那一个就是以对端为键的这条 1:1"。
     const convs = [...new Set(perId.flatMap(({ rows }) => rows.map((r) => r.conv_id)))];
     check("五条都落在同一条 1:1 会话里（连发不许把归属写散；B 侧这条会话以**对端 A** 的 id 为键）",
-      convs.length === 1 && convs[0] === idA.runtimeId, idA.runtimeId, convs.join(","));
+      convs.length === 1 && convs[0] === S.idA.runtimeId, S.idA.runtimeId, convs.join(","));
     check("A 侧五条 outbox 行全部被对端 Ack 回收（不是本端写完 socket 就删）",
       stillQueued() === 0, 0, stillQueued());
     const st = statuses();
@@ -1463,7 +1351,7 @@ if (POSTTEXT) {
     const fileNow = (() => {
       const d = openDb(INSTANCES[0].db, true);
       try {
-        return d.prepare("SELECT status FROM file_transfers WHERE id=?1").get(xferId)?.status;
+        return d.prepare("SELECT status FROM file_transfers WHERE id=?1").get(S.xferId)?.status;
       } finally { d.close(); }
     })();
     check("连发这五条不许把前面那份文件的终态带回去（P7：已完成的终态不是后来消息能改的）",
@@ -1483,7 +1371,7 @@ if (POSTTEXT) {
     const NEW_GID = "g-e2e-afterfile";
     const NEW_NAME = "E2E-AfterBigFile";
     const newConv = `group:${NEW_GID}`;
-    const members = [idA.runtimeId, idB.runtimeId];
+    const members = [S.idA.runtimeId, S.idB.runtimeId];
     // 反向轮照 groupcrash / gfile 的先例：预置、时序、拓扑一字不动，只翻**判据读的那份 id**
     // ⇒ 红只能来自"读的不是真落库那行"，不来自基础设施（等待用的仍是真 id）。
     const flip = (h) => h.slice(0, -1) + (h.endsWith("0") ? "1" : "0");
@@ -1520,7 +1408,7 @@ if (POSTTEXT) {
       db.prepare("DELETE FROM group_members WHERE group_id=?1").run(NEW_GID);
       db.prepare("DELETE FROM groups WHERE id=?1").run(NEW_GID);
       db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
-        .run(NEW_GID, NEW_NAME, idA.runtimeId, ts);
+        .run(NEW_GID, NEW_NAME, S.idA.runtimeId, ts);
       for (const m of members) {
         db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)").run(NEW_GID, m);
       }
@@ -1563,7 +1451,7 @@ if (POSTTEXT) {
     const convergedMs = nowMs() - t0;
     const learned = onDisk(INSTANCES[1].db, wantGid);
     check("B 重新上线后必须自己学到这个新群（150s 内）—— 大文件把链路用满之后，名册仍是事实源",
-      learned.group !== null && learned.group.creator === idA.runtimeId && learned.group.name === NEW_NAME,
+      learned.group !== null && learned.group.creator === S.idA.runtimeId && learned.group.name === NEW_NAME,
       `1 行、creator=A、name=${NEW_NAME}`,
       learned.group === null
         ? `无行（等了 ${(convergedMs / 1000).toFixed(1)}s）`
@@ -1648,8 +1536,8 @@ if (TASK) {
       !!pc && !!pu && pc.todo_id === pu.todo_id && pc.todo_id === "todo-e2e-1",
       "todo-e2e-1", `${pc?.todo_id} / ${pu?.todo_id}`);
     check("创建那条的指派里必须有 B 的 device_id（「与我相关」的输入就是这个）",
-      Array.isArray(pc?.assignees) && pc.assignees.includes(idB.runtimeId),
-      `含 ${idB.runtimeId}`, JSON.stringify(pc?.assignees));
+      Array.isArray(pc?.assignees) && pc.assignees.includes(S.idB.runtimeId),
+      `含 ${S.idB.runtimeId}`, JSON.stringify(pc?.assignees));
     check("创建那条的 status 是 todo、完成那条是 done 且带 done_at",
       pc?.status === "todo" && pu?.status === "done" && !!pu?.done_at,
       "todo → done(+done_at)", `${pc?.status} → ${pu?.status} done_at=${pu?.done_at}`);
@@ -1657,10 +1545,10 @@ if (TASK) {
       rowC[0]?.seq === 1 && rowU[0]?.seq === 2, "1 / 2",
       `${rowC[0]?.seq} / ${rowU[0]?.seq}`);
     check("creator 由载荷带着，且必须是 A（改/删授权判据靠它）",
-      pc?.creator === idA.runtimeId && pu?.creator === idA.runtimeId,
-      idA.runtimeId, `${pc?.creator} / ${pu?.creator}`);
+      pc?.creator === S.idA.runtimeId && pu?.creator === S.idA.runtimeId,
+      S.idA.runtimeId, `${pc?.creator} / ${pu?.creator}`);
     check("发送方在 B 侧记为 A 的 runtimeId（不许被改写成接收者自己）",
-      rowC[0]?.sender_id === idA.runtimeId, idA.runtimeId, rowC[0]?.sender_id);
+      rowC[0]?.sender_id === S.idA.runtimeId, S.idA.runtimeId, rowC[0]?.sender_id);
     check("A 侧这两条的 group_outbox 必须被 GroupAck 清干净（队列残留=还会重发）",
       queued === 0, 0, queued);
     check("四条载荷的 msg_id 互不相同且各唯一（INV-P01 幂等的前提）",
@@ -1715,17 +1603,17 @@ if (TASK) {
       `${bRowC.length}/${bRowU.length} conv=${bRowC[0]?.conv_id} leak=${bLeak}`);
     check("A 侧解出来的明文指向 B 建的那条任务，creator 就是发送者 B（授权读的是这个字段）",
       !!pbc && !!pbu && pbc.todo_id === "todo-e2e-2" && pbu.todo_id === "todo-e2e-2"
-      && pbc.creator === idB.runtimeId && pbu.creator === idB.runtimeId,
-      `todo-e2e-2 + creator=${idB.runtimeId}`,
+      && pbc.creator === S.idB.runtimeId && pbu.creator === S.idB.runtimeId,
+      `todo-e2e-2 + creator=${S.idB.runtimeId}`,
       `${pbc?.todo_id}/${pbu?.todo_id} creator=${pbc?.creator}/${pbu?.creator}`);
     check("创建那条指派的是 A、seq 5→6 且 todo→done 带 done_at（对端视角的「与我相关」输入）",
-      Array.isArray(pbc?.assignees) && pbc.assignees.includes(idA.runtimeId)
+      Array.isArray(pbc?.assignees) && pbc.assignees.includes(S.idA.runtimeId)
       && pbc?.status === "todo" && pbu?.status === "done" && !!pbu?.done_at
       && bRowC[0]?.seq === 5 && bRowU[0]?.seq === 6,
       "assignees 含 A + 5/6 + todo→done(+done_at)",
       `${JSON.stringify(pbc?.assignees)} seq=${bRowC[0]?.seq}/${bRowU[0]?.seq} ${pbc?.status}→${pbu?.status} done_at=${pbu?.done_at}`);
     check("发送方在 A 侧记为 B 的 runtimeId（对端发起的不得被写成接收者自己）",
-      bRowC[0]?.sender_id === idB.runtimeId, idB.runtimeId, bRowC[0]?.sender_id);
+      bRowC[0]?.sender_id === S.idB.runtimeId, S.idB.runtimeId, bRowC[0]?.sender_id);
     check("B 侧这一单的 group_outbox 也被 Ack 清干净（发起方的队列残留=下次建链还会重发）",
       bQueued === 0, 0, bQueued);
 
@@ -1764,17 +1652,17 @@ if (TASK) {
     await stopAll();
     const ts = nowMs();
     const convId = `group:${GROUP_ID}`;
-    const members = [idA.runtimeId, idB.runtimeId];
+    const members = [S.idA.runtimeId, S.idB.runtimeId];
     const todoId = "todo-e2e-3";
     const mk = (over) => JSON.stringify({
-      todo_id: todoId, title: "e2e task crash", assignees: [idB.runtimeId], status: "todo",
-      creator: idA.runtimeId, deleted: false, description: "", images: [], archived: false,
+      todo_id: todoId, title: "e2e task crash", assignees: [S.idB.runtimeId], status: "todo",
+      creator: S.idA.runtimeId, deleted: false, description: "", images: [], archived: false,
       done_at: null, ...over,
     });
     const base = {
-      groupKey: GROUP_KEY_B64, senderId: idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
-      x25519Pub: idA.x25519Pub, ed25519Pub: idA.ed25519Pub,
-      groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId, members,
+      groupKey: GROUP_KEY_B64, senderId: S.idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
+      x25519Pub: S.idA.x25519Pub, ed25519Pub: S.idA.ed25519Pub,
+      groupId: GROUP_ID, groupName: GROUP_NAME, creator: S.idA.runtimeId, members,
     };
     const c1 = buildGroupEnvelope({ ...base, kind: "todo", content: mk({}), ts, seq: 7 });
     const c2 = buildGroupEnvelope({
@@ -1791,11 +1679,11 @@ if (TASK) {
         db.prepare(
           `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'sent')`,
-        ).run(env.messageId, convId, idA.runtimeId, GROUP_ID, kind, content, at, seq);
+        ).run(env.messageId, convId, S.idA.runtimeId, GROUP_ID, kind, content, at, seq);
         db.prepare(
           `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
            VALUES(?1,?2,?3,?4,?5)`,
-        ).run(env.messageId, GROUP_ID, idB.runtimeId, env.wire, at);
+        ).run(env.messageId, GROUP_ID, S.idB.runtimeId, env.wire, at);
       }
       db.prepare(
         "INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
@@ -1881,7 +1769,7 @@ if (TASK) {
     const pd = safeParse(rowsCrash[1]);
     check("重启补送到的这两条在 B 侧各恰好一行、明文解得开、seq 7→8 且 todo→done（重放不许送坏内容）",
       rowsCrash.every((r) => r.length === 1) && rowsCrash[0][0]?.conv_id === convId
-      && rowsCrash[0][0]?.sender_id === idA.runtimeId
+      && rowsCrash[0][0]?.sender_id === S.idA.runtimeId
       && pc?.todo_id === todoId && pd?.todo_id === todoId
       && pc?.status === "todo" && pd?.status === "done" && !!pd?.done_at
       && rowsCrash[0][0]?.seq === 7 && rowsCrash[1][0]?.seq === 8,
@@ -1971,8 +1859,8 @@ if (GROUP) {
     check("A 打出的那句 @ 在 B 库里必须逐字等于原文（存储只保存真实昵称，「@你」是渲染时才换的）",
       mt.length === 1 && mt[0].content === gMentionText, gMentionText, JSON.stringify(mt[0]?.content));
     check("存储里既不许出现「@你」，也不许把昵称规范化成 device id（两个相反的破坏方向各钉一次）",
-      mt.length === 1 && !mt[0].content.includes("@你") && !mt[0].content.includes(idB.runtimeId)
-      && !mt[0].content.includes(idA.runtimeId),
+      mt.length === 1 && !mt[0].content.includes("@你") && !mt[0].content.includes(S.idB.runtimeId)
+      && !mt[0].content.includes(S.idA.runtimeId),
       "只含真实昵称那一串", JSON.stringify(mt[0]?.content));
     // #103 的线级那一半：`mentions` 到底能不能穿过"seal → 网络 → 解密 → 解析"到达对端进程。
     // 读的是 **B 自己的日志**（不是 harness 写进去的东西）⇒ 判的是对端自己解出来的结果，
@@ -1994,7 +1882,7 @@ if (GROUP) {
     // 夹具哪天算成 0 条，跨进程那条会红，而产品一个字没错（红要能归因，这是本文件的老规矩）。
     check("夹具自查：harness 侧按规则给这条正文算出了 1 个落点（否则下一条红在夹具、不在产品）",
       gMentionTargets.length === 1 && gMentionTargets[0].n === 1
-      && gMentionTargets[0].id === idB.runtimeId && gMentionTargets[0].name
+      && gMentionTargets[0].id === S.idB.runtimeId && gMentionTargets[0].name
       && gMentionText.includes(`@${gMentionTargets[0].name}`),
       "1 条、n=1、id=B、name 真的出现在正文里", JSON.stringify(gMentionTargets));
     const targetLineCount = countLog(
@@ -2138,8 +2026,8 @@ if (GROUP) {
       t2.length === 1 && t2[0].content === "second group message",
       "second group message", JSON.stringify(t2[0]?.content));
     check("发送方必须是 A 的 runtimeId、seq 必须照信封给（seq 是排序权威）",
-      t2.length === 1 && t2[0].sender_id === idA.runtimeId && t2[0].seq === 3,
-      `${idA.runtimeId} / seq=3`, `${t2[0]?.sender_id} / seq=${t2[0]?.seq}`);
+      t2.length === 1 && t2[0].sender_id === S.idA.runtimeId && t2[0].seq === 3,
+      `${S.idA.runtimeId} / seq=3`, `${t2[0]?.sender_id} / seq=${t2[0]?.seq}`);
     check("B 侧终态必须是 delivered（收到即记，不等 Ack 回传）",
       t2.length === 1 && t2[0].status === "delivered", "delivered", t2[0]?.status);
     check("撤回必须把目标**物化**成 kind=recalled + 空正文，而且**不许删行**（G-Set 语义）",
@@ -2286,7 +2174,7 @@ if (KILL) {
           db.prepare(
             `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
              VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
-          ).run(xferId4, peerTo, srcFile4, `${xferId4}.bin`, KILL_BYTES, nowMs());
+          ).run(xferId4, S.peerTo, srcFile4, `${xferId4}.bin`, KILL_BYTES, nowMs());
         });
         break;
       } catch (e) {
@@ -2409,7 +2297,7 @@ if (FREEZE) {
             db.prepare(
               `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
                VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
-            ).run(xferId5, peerTo, srcFile5, `${xferId5}.bin`, FREEZE_BYTES, nowMs());
+            ).run(xferId5, S.peerTo, srcFile5, `${xferId5}.bin`, FREEZE_BYTES, nowMs());
           });
           break;
         } catch (e) {
@@ -2506,21 +2394,21 @@ if (SENDKILL) {
           db.prepare("DELETE FROM messages WHERE msg_id=?1").run(`file-${idK}`);
           const ts = nowMs();
           const seq = db.prepare("SELECT COALESCE(MAX(seq),0)+1 s FROM messages WHERE conv_id=?1")
-            .get(peerTo).s;
+            .get(S.peerTo).s;
           db.prepare(
             `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
              VALUES(?1,?2,?3,?4,'file',?5,?6,?7,'sent')`,
-          ).run(`file-${idK}`, peerTo, idA.runtimeId, peerTo,
+          ).run(`file-${idK}`, S.peerTo, S.idA.runtimeId, S.peerTo,
             JSON.stringify({ name: `${idK}.bin`, path: srcFileK, size: SENDKILL_BYTES, sha256: "", subtype: "file" }),
             ts, seq);
           db.prepare(
             `INSERT INTO file_transfers(id,peer_id,name,size,direction,status,path,progress,created_at)
              VALUES(?1,?2,?3,?4,'send','pending',?5,0,?6)`,
-          ).run(idK, peerTo, `${idK}.bin`, SENDKILL_BYTES, srcFileK, ts);
+          ).run(idK, S.peerTo, `${idK}.bin`, SENDKILL_BYTES, srcFileK, ts);
           db.prepare(
             `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
              VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
-          ).run(idK, peerTo, srcFileK, `${idK}.bin`, SENDKILL_BYTES, ts);
+          ).run(idK, S.peerTo, srcFileK, `${idK}.bin`, SENDKILL_BYTES, ts);
         });
         break;
       } catch (e) {
@@ -2631,7 +2519,7 @@ if (STALL) {
       db.prepare(
         `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
          VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
-      ).run(idS, peerTo, srcFileS, `${idS}.bin`, STALL_BYTES, nowMs());
+      ).run(idS, S.peerTo, srcFileS, `${idS}.bin`, STALL_BYTES, nowMs());
     });
 
     let frozen = false;
@@ -2754,7 +2642,7 @@ if (DISK) {
             db.prepare(
               `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
                VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
-            ).run(xferId6, peerTo, srcFile6, `${xferId6}.bin`, DISK_BYTES, nowMs());
+            ).run(xferId6, S.peerTo, srcFile6, `${xferId6}.bin`, DISK_BYTES, nowMs());
           });
           break;
         } catch (e) {
@@ -2849,7 +2737,7 @@ if (ROT) {
             db.prepare(
               `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
                VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
-            ).run(xferId8, peerTo, srcFile8, name8, ROT_BYTES, nowMs());
+            ).run(xferId8, S.peerTo, srcFile8, name8, ROT_BYTES, nowMs());
           });
           break;
         } catch (e) {
@@ -2957,21 +2845,21 @@ if (SHRINK) {
             db.prepare("DELETE FROM messages WHERE msg_id=?1").run(`file-${xferId7}`);
             const ts = nowMs();
             const seq = db.prepare("SELECT COALESCE(MAX(seq),0)+1 s FROM messages WHERE conv_id=?1")
-              .get(peerTo).s;
+              .get(S.peerTo).s;
             db.prepare(
               `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
                VALUES(?1,?2,?3,?4,'file',?5,?6,?7,'sent')`,
-            ).run(`file-${xferId7}`, peerTo, idA.runtimeId, peerTo,
+            ).run(`file-${xferId7}`, S.peerTo, S.idA.runtimeId, S.peerTo,
               JSON.stringify({ name: name7, path: srcFile7, size: SHRINK_BYTES, sha256: "", subtype: "file" }),
               ts, seq);
             db.prepare(
               `INSERT INTO file_transfers(id,peer_id,name,size,direction,status,path,progress,created_at)
                VALUES(?1,?2,?3,?4,'send','pending',?5,0,?6)`,
-            ).run(xferId7, peerTo, name7, SHRINK_BYTES, srcFile7, ts);
+            ).run(xferId7, S.peerTo, name7, SHRINK_BYTES, srcFile7, ts);
             db.prepare(
               `INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
                VALUES(?1,?2,NULL,?3,?4,?5,'pending',0,0,?6)`,
-            ).run(xferId7, peerTo, srcFile7, name7, SHRINK_BYTES, ts);
+            ).run(xferId7, S.peerTo, srcFile7, name7, SHRINK_BYTES, ts);
           });
           break;
         } catch (e) {
@@ -3082,7 +2970,7 @@ if (MULTI) {
           );
           for (const s of multiSpec) {
             db.prepare("DELETE FROM file_outbox WHERE transfer_id=?1").run(s.tid);
-            ins.run(s.tid, peerTo, s.src, s.name, s.bytes, nowMs());
+            ins.run(s.tid, S.peerTo, s.src, s.name, s.bytes, nowMs());
           }
         });
         break;
@@ -3150,12 +3038,12 @@ step("L-B 故障注入：两端重启后仍正确", async () => {
   await stopAll();
   await bootAndStop("重启");
   const bDb = openDb(INSTANCES[1].db, true);
-  const rows = bDb.prepare("SELECT * FROM messages WHERE msg_id=?1").all(msgId);
+  const rows = bDb.prepare("SELECT * FROM messages WHERE msg_id=?1").all(S.msgId);
   bDb.close();
   check("重启后 B 侧仍只有一条、内容不变",
     rows.length === 1 && rows[0].content === "hello from harness", 1, rows.length);
   const aDb = openDb(INSTANCES[0].db, true);
-  const again = aDb.prepare("SELECT COUNT(*) c FROM outbox WHERE msg_id=?1").get(msgId).c;
+  const again = aDb.prepare("SELECT COUNT(*) c FROM outbox WHERE msg_id=?1").get(S.msgId).c;
   aDb.close();
   check("重启不复活已 Ack 的 outbox 行（不二次投递）", again === 0, 0, again);
   // §十六「报告要带 screenshots/」这一格第一次有产物。判据只管"截图真落盘、不是空图"，
@@ -3269,7 +3157,7 @@ if (CHAIN) {
       db.prepare(
         `INSERT INTO friends(device_id,nickname,avatar,x25519_pubkey,ed25519_pubkey,added_at)
          VALUES(?1,?2,NULL,?3,NULL,?4)`,
-      ).run(idB.runtimeId, `e2e-${INSTANCES[1].label}`, idB.x25519Pub, Date.now());
+      ).run(S.idB.runtimeId, `e2e-${INSTANCES[1].label}`, S.idB.x25519Pub, Date.now());
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('routed_endpoints',?1)")
         .run(JSON.stringify([{ address: `127.0.0.1:${INSTANCES[1].port}` }]));
       // 陷阱：macOS 上 load() 优先信书签 ⇒ 只写路径（与 seedPair 同口径）
@@ -3291,7 +3179,7 @@ if (CHAIN) {
     });
     // 三端各写一份群 + 同一份群密钥（逐列形状照群轮：content 存明文、receiver_id 是裸 group_id、
     // 初始 status='sent'、时钟一起推进否则撞 seq）。
-    const members = [idA.runtimeId, idB.runtimeId, idC.runtimeId];
+    const members = [S.idA.runtimeId, S.idB.runtimeId, idC.runtimeId];
     const convId = `group:${GROUP_ID}`;
     const ts = nowMs();
     for (const inst of ALL_INST) {
@@ -3299,7 +3187,7 @@ if (CHAIN) {
         db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)")
           .run(`gk:${GROUP_ID}`, GROUP_KEY_STR);
         db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
-          .run(GROUP_ID, GROUP_NAME, idA.runtimeId, ts);
+          .run(GROUP_ID, GROUP_NAME, S.idA.runtimeId, ts);
         db.prepare("DELETE FROM group_members WHERE group_id=?1").run(GROUP_ID);
         for (const m of members) {
           db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)")
@@ -3312,9 +3200,9 @@ if (CHAIN) {
       });
     }
     const env = buildGroupEnvelope({
-      groupKey: GROUP_KEY_B64, senderId: idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
-      x25519Pub: idA.x25519Pub, ed25519Pub: idA.ed25519Pub,
-      groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId, members,
+      groupKey: GROUP_KEY_B64, senderId: S.idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
+      x25519Pub: S.idA.x25519Pub, ed25519Pub: S.idA.ed25519Pub,
+      groupId: GROUP_ID, groupName: GROUP_NAME, creator: S.idA.runtimeId, members,
       kind: "text", content: CHAIN_TEXT, ts, seq: 1,
     });
     chainMsgId = env.messageId;
@@ -3324,12 +3212,12 @@ if (CHAIN) {
       db.prepare(
         `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
          VALUES(?1,?2,?3,?4,'text',?5,?6,1,'sent')`,
-      ).run(env.messageId, convId, idA.runtimeId, GROUP_ID, CHAIN_TEXT, ts);
+      ).run(env.messageId, convId, S.idA.runtimeId, GROUP_ID, CHAIN_TEXT, ts);
       // 只给 B 一行：C 从始至终不是 A 的直发对象（这一条本身就是判据，见下面 aDb 那格）。
       db.prepare(
         `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
          VALUES(?1,?2,?3,?4,?5)`,
-      ).run(env.messageId, GROUP_ID, idB.runtimeId, env.wire, ts);
+      ).run(env.messageId, GROUP_ID, S.idB.runtimeId, env.wire, ts);
       db.prepare("INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
         + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq").run(convId, 1);
     });
@@ -3349,7 +3237,7 @@ if (CHAIN) {
         `链式轮：实例 ${inst.label} 打出 boot 完成行`);
     }
     // 投递的同步点：C 必须先与 B 建成链路，否则"C 没收到"只是链路没建起来，判不到产品头上。
-    await waitFor(() => countLog(INST_C.log, `建链 peer=${idB.runtimeId}`) > 0,
+    await waitFor(() => countLog(INST_C.log, `建链 peer=${S.idB.runtimeId}`) > 0,
       60_000, "前置：C 与 B 先建成链路（这一步不过就不起 A）");
     launch(INSTANCES[0]);
     await waitFor(() => tcpOpen(INSTANCES[0].port), 60_000, "链式轮：A 的 TCP 可连");
@@ -3391,7 +3279,7 @@ if (CHAIN) {
     check("C 侧解出的是明文正文（解密发生在 C 自己身上，不是谁代解后送明文）",
       rows[0]?.content === CHAIN_TEXT, CHAIN_TEXT, rows[0]?.content);
     check("C 侧记的发送者仍是 A（经手不改归属）",
-      rows[0]?.sender_id === idA.runtimeId, idA.runtimeId, rows[0]?.sender_id);
+      rows[0]?.sender_id === S.idA.runtimeId, S.idA.runtimeId, rows[0]?.sender_id);
     check("C 侧落在群会话、seq 与信封一致",
       rows[0]?.conv_id === convId && rows[0]?.seq === 1, `${convId}/seq=1`,
       `${rows[0]?.conv_id}/seq=${rows[0]?.seq}`);
@@ -3442,7 +3330,7 @@ if (LATE) {
       db.prepare(
         `INSERT INTO friends(device_id,nickname,avatar,x25519_pubkey,ed25519_pubkey,added_at)
          VALUES(?1,?2,NULL,?3,NULL,?4)`,
-      ).run(idB.runtimeId, `e2e-${INSTANCES[1].label}`, idB.x25519Pub, Date.now());
+      ).run(S.idB.runtimeId, `e2e-${INSTANCES[1].label}`, S.idB.x25519Pub, Date.now());
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('routed_endpoints',?1)")
         .run(JSON.stringify([{ address: `127.0.0.1:${INSTANCES[1].port}` }]));
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('downloads_dir',?1)").run(recvC);
@@ -3460,7 +3348,7 @@ if (LATE) {
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('routed_endpoints',?1)")
         .run(JSON.stringify(eps));
     });
-    const members = [idA.runtimeId, idB.runtimeId, idC.runtimeId];
+    const members = [S.idA.runtimeId, S.idB.runtimeId, idC.runtimeId];
     const convId = `group:${GROUP_ID}`;
     const ts = nowMs();
     for (const inst of ALL_INST) {
@@ -3468,7 +3356,7 @@ if (LATE) {
         db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)")
           .run(`gk:${GROUP_ID}`, GROUP_KEY_STR);
         db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
-          .run(GROUP_ID, GROUP_NAME, idA.runtimeId, ts);
+          .run(GROUP_ID, GROUP_NAME, S.idA.runtimeId, ts);
         db.prepare("DELETE FROM group_members WHERE group_id=?1").run(GROUP_ID);
         for (const m of members) {
           db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)")
@@ -3481,9 +3369,9 @@ if (LATE) {
       });
     }
     const env = buildGroupEnvelope({
-      groupKey: GROUP_KEY_B64, senderId: idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
-      x25519Pub: idA.x25519Pub, ed25519Pub: idA.ed25519Pub,
-      groupId: GROUP_ID, groupName: GROUP_NAME, creator: idA.runtimeId, members,
+      groupKey: GROUP_KEY_B64, senderId: S.idA.runtimeId, priv: ed25519Priv(INSTANCES[0]),
+      x25519Pub: S.idA.x25519Pub, ed25519Pub: S.idA.ed25519Pub,
+      groupId: GROUP_ID, groupName: GROUP_NAME, creator: S.idA.runtimeId, members,
       kind: "text", content: LATE_TEXT, ts, seq: 1,
     });
     const lateMsgId = env.messageId;
@@ -3493,12 +3381,12 @@ if (LATE) {
       db.prepare(
         `INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
          VALUES(?1,?2,?3,?4,'text',?5,?6,1,'sent')`,
-      ).run(env.messageId, convId, idA.runtimeId, GROUP_ID, LATE_TEXT, ts);
+      ).run(env.messageId, convId, S.idA.runtimeId, GROUP_ID, LATE_TEXT, ts);
       // 只给 B 一行：C 从始至终不是 A 的直发对象（下面 A 侧那一格钉的就是这个）。
       db.prepare(
         `INSERT OR IGNORE INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
          VALUES(?1,?2,?3,?4,?5)`,
-      ).run(env.messageId, GROUP_ID, idB.runtimeId, env.wire, ts);
+      ).run(env.messageId, GROUP_ID, S.idB.runtimeId, env.wire, ts);
       db.prepare("INSERT INTO conversation_clocks(conv_id,seq) VALUES(?1,?2)"
         + " ON CONFLICT(conv_id) DO UPDATE SET seq=excluded.seq").run(convId, 1);
     });
@@ -3531,7 +3419,7 @@ if (LATE) {
     await waitFor(() => bootReady(INST_C.log, bootBaseOf.get(INST_C.n), BOOT_LINE),
       30_000, "补递轮：C 打出 boot 完成行");
     // 补递的触发点 = B 为 C 登记链路的那一刻（C 拨 B ⇒ B 侧走入站 accept）。
-    await waitFor(() => countLog(INST_C.log, `建链 peer=${idB.runtimeId}`) > 0,
+    await waitFor(() => countLog(INST_C.log, `建链 peer=${S.idB.runtimeId}`) > 0,
       60_000, "前置：C 与 B 建成链路（这一步不过就没有补递的触发点）");
     // ⚠️ 这里**不设断言**（2026-09-27 自己抓到的一条 flaky）：曾经写成
     //   "C 侧从来没有与 A 的建链行" ⇒ 判 `countLog(...) === 0`。同一台机器上三实例是**能**经局域网
@@ -3542,7 +3430,7 @@ if (LATE) {
     //     ① A 的逐成员直发队列里没有面向 C 的行（下面那条断言）⇒ 这一帧不是 A 直发的；
     //     ② B 的日志里有指向 C 的补递行 ⇒ 这一帧是 B 补的。
     //   读数继续打印，进报告产物，只是不当判据。
-    console.log(`     · [只记录，不判] C 侧与 A 的建链行数=${countLog(INST_C.log, `建链 peer=${idA.runtimeId}`)}`
+    console.log(`     · [只记录，不判] C 侧与 A 的建链行数=${countLog(INST_C.log, `建链 peer=${S.idA.runtimeId}`)}`
       + "（同机局域网能互达 ⇒ 这个数不是判据，见上面注释）");
 
     // 归因这一格：C 收到这一条**只能**来自补递 —— B 的日志里那一行是本机自己打的，
@@ -3574,7 +3462,7 @@ if (LATE) {
     check("★ C 的库里落了那条消息，且只有一行（它上线时 A 早发完了 ⇒ 只可能是中间人补的）",
       rows.length === 1, 1, rows.length);
     check("C 侧解出明文正文、发送者仍是 A、落在群会话且 seq 与信封一致",
-      rows[0]?.content === LATE_TEXT && rows[0]?.sender_id === idA.runtimeId
+      rows[0]?.content === LATE_TEXT && rows[0]?.sender_id === S.idA.runtimeId
       && rows[0]?.conv_id === convId && rows[0]?.seq === 1,
       `${LATE_TEXT} / A / ${convId} / seq=1`,
       `${rows[0]?.content} / ${rows[0]?.sender_id} / ${rows[0]?.conv_id} / seq=${rows[0]?.seq}`);
@@ -3630,9 +3518,9 @@ if (LANOFF) {
     await bootOf(INSTANCES[0]);
     await bootOf(B);
     // ① 前置：两边都开着（L-A 预置显式写了 lan_enabled='true'）时，A 要真学到过 B。
-    const sawFirst = await within(() => countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId)) > 0, 45_000);
+    const sawFirst = await within(() => countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId)) > 0, 45_000);
     check("前置：B 开着的时候 A 的日志里出现过它的 announce（否则下面那条「不涨」没有对照物）",
-      sawFirst, ">0 次", countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId)));
+      sawFirst, ">0 次", countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId)));
 
     // ② 停机把 B 的键显式写成"关"，再带着 GOSSLAN_AUTOSTART=1 起它 —— 这一轮要的就是这一对。
     await stopOne(B);
@@ -3664,9 +3552,9 @@ if (LANOFF) {
 
 
     // ③ 核心：A 活着且一直在听，两个广播周期内"学到 B"的次数一字不涨。
-    const base = countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId));
+    const base = countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId));
     await sleep(26_000);
-    const after = countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId));
+    const after = countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId));
     // 反向模式：注入、时序、读的东西全都一样，**只把这一条的期望翻成"该涨"**
     // ⇒ 产品没错时它必须红；报不出红就说明这条读的不是真日志行。
     check("★ 关掉之后 A 再也学不到 B（announce 计数一字不涨；env 没能把它偷偷打开）",
@@ -3680,9 +3568,9 @@ if (LANOFF) {
     launch(B);
     await bootOf(B);
     const grewBack = await within(
-      () => countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId)) > after, 45_000);
+      () => countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId)) > after, 45_000);
     check("对照：把键翻回「开」并重启 B，A 的 announce 计数重新开始涨（证明第 ③ 条不是空转）",
-      grewBack, "> 上一段读数", countLog(INSTANCES[0].log, learnedNeedle(idB.runtimeId)));
+      grewBack, "> 上一段读数", countLog(INSTANCES[0].log, learnedNeedle(S.idB.runtimeId)));
     check("对照：翻回「开」之后 B 自己的日志里 discovery_started 又出现（与上面那个 0 成对）",
       countLog(B.log, "discovery_started") > 0, ">0", countLog(B.log, "discovery_started"));
     // #95 的探针与它的两条对照（三条读数全设断言：①开=连得上、②闲口=连不上、③关=连不上）。
@@ -3727,7 +3615,7 @@ if (GCRASH) {
     await stopAll();
     const ts = nowMs();
     const convId = `group:${GROUP_ID}`;
-    const members = [idA.runtimeId, idB.runtimeId];
+    const members = [S.idA.runtimeId, S.idB.runtimeId];
     // 反向模式照 `group-lie` 的先例：**等待用真 id，判据读翻过的 id**。
     // 于是红只能来自"读的不是真落库行"这一件事，不来自基础设施噪声（预置、投递、时序全一样）。
     const flip = (h) => h.slice(0, -1) + (h.endsWith("0") ? "1" : "0");
@@ -3753,7 +3641,7 @@ if (GCRASH) {
       db.prepare("DELETE FROM group_members WHERE group_id=?1").run(GROUP_ID);
       db.prepare("DELETE FROM groups WHERE id=?1").run(GROUP_ID);
       db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
-        .run(GROUP_ID, GROUP_NAME, idA.runtimeId, ts);
+        .run(GROUP_ID, GROUP_NAME, S.idA.runtimeId, ts);
       for (const m of members) {
         db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)").run(GROUP_ID, m);
       }
@@ -3816,13 +3704,13 @@ if (GCRASH) {
     const convergedMs = nowMs() - t0;
     const b = groupFacts(INSTANCES[1].db, wantGid(GROUP_ID));
     check("发送端崩过一次之后，B 仍必须自己学到这个群（120s 内）—— 重递不许依赖那份已被杀掉的内存登记",
-      b.group !== null && b.group.creator === idA.runtimeId && b.group.name === GROUP_NAME,
+      b.group !== null && b.group.creator === S.idA.runtimeId && b.group.name === GROUP_NAME,
       `1 行、creator=A、name=${GROUP_NAME}`,
       b.group === null ? `0 行（等 ${convergedMs}ms 没学到）`
         : `creator=${b.group.creator} name=${b.group.name}`);
     check("B 学到的成员表恰好 2 位且是这两台（重复 requeue 是设计内的，所以 upsert 必须幂等）",
-      b.memberCount === 2 && b.members === [idA.runtimeId, idB.runtimeId].sort().join(","),
-      `2 位 = ${[idA.runtimeId, idB.runtimeId].sort().join(",")}`, `${b.memberCount} 位 = ${b.members}`);
+      b.memberCount === 2 && b.members === [S.idA.runtimeId, S.idB.runtimeId].sort().join(","),
+      `2 位 = ${[S.idA.runtimeId, S.idB.runtimeId].sort().join(",")}`, `${b.memberCount} 位 = ${b.members}`);
     check("B 手里那把对称密钥要与 A 盘上那份逐字节相同（解不开群消息的就是这一格）",
       b.key === a2.key && b.key === GROUP_KEY_STR, "逐字节等于 A 那份",
       b.key === null ? "null" : `${b.key.slice(0, 8)}…(${b.key.length}B)`);
@@ -3914,8 +3802,8 @@ if (GFILE) {
         db.prepare("DELETE FROM group_members WHERE group_id=?1").run(GROUP_ID);
         db.prepare("DELETE FROM groups WHERE id=?1").run(GROUP_ID);
         db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
-          .run(GROUP_ID, GROUP_NAME, idA.runtimeId, ts);
-        for (const m of [idA.runtimeId, idB.runtimeId]) {
+          .run(GROUP_ID, GROUP_NAME, S.idA.runtimeId, ts);
+        for (const m of [S.idA.runtimeId, S.idB.runtimeId]) {
           db.prepare("INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2)").run(GROUP_ID, m);
         }
         db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)").run(`gk:${GROUP_ID}`, GROUP_KEY_STR);
@@ -3925,11 +3813,11 @@ if (GFILE) {
     }
     seed(INSTANCES[0].db, (db) => {
       db.prepare("INSERT OR REPLACE INTO group_files(transfer_id,group_id,sender_id,name,size,sha256,status,created_at,scope,todo_id) VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,'chat','')")
-        .run(tid, GROUP_ID, idA.runtimeId, name, bytes, sha, ts);
+        .run(tid, GROUP_ID, S.idA.runtimeId, name, bytes, sha, ts);
       db.prepare("INSERT OR REPLACE INTO group_file_recipients(transfer_id,recipient_id,status,progress,updated_at) VALUES(?1,?2,'pending',0,?3)")
-        .run(tid, idB.runtimeId, ts);
+        .run(tid, S.idB.runtimeId, ts);
       db.prepare("INSERT OR REPLACE INTO file_transfers(id,peer_id,name,size,direction,status,path,progress,created_at) VALUES(?1,?2,?3,?4,'send','pending',?5,0,?6)")
-        .run(tid, idB.runtimeId, name, bytes, src, ts);
+        .run(tid, S.idB.runtimeId, name, bytes, src, ts);
       db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)").run(`gfk:${tid}`, sealed);
     });
 
@@ -4037,8 +3925,8 @@ function writeReport(failed) {
     verdict: failed || anyFail() ? "FAIL" : "PASS",
     negative: NEGATIVE,
     binary: BIN, platform: process.platform, duration_s: totalS,
-    instances: INSTANCES.map((i) => ({ label: i.label, n: i.n, port: i.port, runtimeId: (i.n === 1 ? idA : idB)?.runtimeId })),
-    trace: { msg_id: msgId ?? null, transfer_id: xferId ?? null, ids: [...new Set(MINTED_IDS)] },
+    instances: INSTANCES.map((i) => ({ label: i.label, n: i.n, port: i.port, runtimeId: (i.n === 1 ? S.idA : S.idB)?.runtimeId })),
+    trace: { msg_id: S.msgId ?? null, transfer_id: S.xferId ?? null, ids: [...new Set(MINTED_IDS)] },
     shots: shotFiles.filter(Boolean).map((f) => path.relative(RUN_DIR, f)),
     // #91：那几张帧各自的来源（窗口帧带 pid / 窗口 id / 几何；整屏兜底带"为什么"）。
     shot_sources: shotSources,
@@ -4062,7 +3950,7 @@ function writeReport(failed) {
 `<!doctype html><meta charset=utf-8><title>Gosslan 多实例 E2E ${ISO}</title>
 <body style="font:14px/1.6 system-ui;margin:32px;max-width:1100px">
 <h1>${sum.verdict === "PASS" ? "✅ PASS" : "❌ FAIL"} — 双实例 E2E ${ISO}${NEGATIVE ? " · 反向自证" : ""}</h1>
-<p>二进制 <code>${BIN}</code> · ${process.platform} · 总耗时 ${totalS}s · msg_id <code>${msgId ?? "-"}</code> · transfer_id <code>${xferId ?? "-"}</code></p>
+<p>二进制 <code>${BIN}</code> · ${process.platform} · 总耗时 ${totalS}s · msg_id <code>${S.msgId ?? "-"}</code> · transfer_id <code>${S.xferId ?? "-"}</code></p>
 <p>实例：${sum.instances.map((i) => `${i.label}=#${i.n} :${i.port} <code>${i.runtimeId ?? "-"}</code>`).join(" · ")}</p>
 <h2>步骤</h2>
 <table border=1 cellpadding=6 cellspacing=0 width=100%>
@@ -4110,9 +3998,9 @@ try {
   }
   console.log(`双实例 E2E · run ${ISO}\n  二进制 ${BIN}\n  appdata ${APPDATA}`);
   await bootAndStop("首启（生成身份密钥）");
-  [idA, idB] = INSTANCES.map(readIdentity);
-  NODES = INSTANCES.map((inst, i) => ({ ...[idA, idB][i], label: inst.label, port: inst.port }));
-  console.log(`  A=${idA.runtimeId}\n  B=${idB.runtimeId}`);
+  [S.idA, S.idB] = INSTANCES.map(readIdentity);
+  NODES = INSTANCES.map((inst, i) => ({ ...[S.idA, S.idB][i], label: inst.label, port: inst.port }));
+  console.log(`  A=${S.idA.runtimeId}\n  B=${S.idB.runtimeId}`);
   for (let i = 0; i < steps.length; i++) await runStep(i, steps[i]);
   // 总判据一律从断言账本推，不从「有没有抛异常」推。
   if (NEGATIVE) {

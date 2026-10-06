@@ -1194,7 +1194,7 @@ N4/N5/N6/N7 已各自拆成独立任务（#127–#130，每格带自己的复跑
 
 ★ **#76 的实测证据是脚手架造的（2026-09-27 凌晨，我自己复跑推翻自己写的产品结论）**
 - 机制（三处现读，全都是一条命令能复跑的）：
-  · `grep -n "GOSSLAN_AUTOSTART" scripts/e2e-multi-instance.mjs` ⇒ 第 554 行给**每一个**实例都塞了 `GOSSLAN_AUTOSTART: "1"`；
+  · `grep -n "GOSSLAN_AUTOSTART" scripts/e2e/core.mjs` ⇒ `launch()` 给**每一个**实例都塞了 `GOSSLAN_AUTOSTART: "1"`（2026-10-07 现读；这段是 09-27 的现场记录，当时那一行在主文件第 554 行，harness 拆出 `scripts/e2e/` 之后同一个 env 现在由 core 的 `launch` 塞）；
   · `grep -n "GOSSLAN_AUTOSTART" src-tauri/src/lib.rs` ⇒ 第 335 行读它、第 342 行是 `if forced || enabled`
     —— **forced 优先于用户那个键**，所以库里写 `lan_enabled='false'` 的那台照样整条网络栈起满；
   · 结论：那两轮观察到的"关了还被学到、被拨进来"测的是**环境变量**，不是设置页语义。

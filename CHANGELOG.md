@@ -10,6 +10,31 @@
 
 ## [Unreleased]
 
+- ★ **harness 第八刀第二段（上）：先把「谁都能碰的那份共享量」收成一个家** —— 主文件 4,321 ⇒ 4,209，`scripts/e2e/core.mjs` 602 ⇒ 676。
+  搬去 core 的是 12 条 argv/env 派生声明（`FAULT` / `ROUND` / `LIE` / `LIE_SHA` / `GROUP_ID` / `GROUP_NAME` / `GROUP_KEY_B64` 连它的填充循环 /
+  `GROUP_KEY_STR` / `SIZE_ARG` / `FILE_MB` / `FILE_BYTES`）；7 个「写在驱动、读在轮次块」的可变量（`idA` `idB` `msgId` `peerTo` `xferId` `srcFile` `srcSha`）
+  并进已有的状态对象 `S`。**26 个轮次块一个都没动** —— 这一段是下一步的前提：轮次块要搬出去，就得先拿到同一份共享量。
+- **为什么前一段说「43 个模块级标识符」不是拦路石，而共享量只有 7 个**：用 `node_modules` 里的 TypeScript 解析器现数
+  （一次性脚本在 /tmp、不入库，所以这两个数是**本轮读到的、不是读者能复跑的**；能复跑的是下面那两条恒等判据）⇒
+  **89 个名字只在某个块里出现**（各轮的旗标、`*_LIE`、字节数、`xferIdN` 这类族内 id —— 它们跟着块走，不需要任何家），
+  **只有 9 个跨越块或跨块/驱动**（7 个可变量 + `FILE_BYTES` + `GROUP_KEY_B64`）。上一段那句「43 个标识符 ⇒ 拆不得」是把"块引用过模块级名字"
+  误读成"必须共享"，实际绝大多数是**一族私有的**。
+- **盲加 `S.` 前缀会不会静默改语义 —— 先证两件事再动手**：这 7 个名字在块内**没有任何局部绑定**（无解构、无形参、无内层 `let`，AST 全文件扫：
+  除顶层那一条声明外零绑定），也**没有一处被写成对象简写属性**（`{ idA }` 这种加前缀会变成语法错或改语义的形状，实测 0 处）
+  —— 这两条同样是 AST 现数、随本次一次性脚本作废，但它们正是「234 处插入」的前提，所以写在这；后果由下面两把判据兜住 ⇒ 234 处插入
+  （`idA`97 / `idB`75 / `peerTo`23 / `xferId`17 / `msgId`16 / `srcFile`3 / `srcSha`3）全部按 AST 位置做，不靠正则。
+- **恒等与行为两把都交了**：判据 C 现算的 20 轮断言数**逐轮与搬前一字不差**（`node scripts/check-doc-numbers.mjs | grep 现算 E2E 断言数` 前后 diff 空）；
+  真跑默认轮 18 条 = 1 红（锁屏那一格，与拆前同形）；再跑 `--fault=poison-part-lie` 得 **22 条 3 红**，其中 **2 条是设计要红的脏前缀判据**
+  （『坏内容不许冒充成功』『两侧都不许 done』）—— 这两条亮着就是 `LIE`/`LIE_SHA` 从 core 读到的活证据，第 3 条才是锁屏。
+  便宜量具：`check-scripts-parse` 0（41 个脚本）、`check-invariant-hooks` 0（30 条钩子全绑定）、`check-doc-citations` 0（34 处 file:line）、
+  `verify-guards.py --list` 0。
+- **顺手拔掉一处会说谎的指路命令**：`docs/stability-roadmap.md` 那条「`grep -n GOSSLAN_AUTOSTART scripts/e2e-multi-instance.mjs` ⇒ 第 554 行」
+  在上一段搬家后就已经空了（那份 env 现在由 `scripts/e2e/core.mjs` 的 `launch()` 塞）—— 它是写给读者的复跑指令，不是历史读数 ⇒ 改成指向 core 并去掉硬行号；
+  同一条目里 `lib.rs:335/342` 那两处**留着不动**（那是 09-27 那次现场的记录，且本仓已把 `forced || enabled` 改掉，改了反而把历史覆盖掉）。
+- 零应用码改动 ⇒ 不提版本。下一段是真搬家：10 个文件注入族（POISON/RESUME/KILL/FREEZE/SENDKILL/STALL/DISK/ROT/SHRINK/MULTI，共 1,088 行）
+  整块搬进 `scripts/e2e/rounds/*.mjs` —— 块体缩进本来就是 2 格，正好是函数体的缩进 ⇒ **去掉 `if (FLAG) {` 与它顶格的 `}` 之后逐字即所得，一行都不必重排**；
+  旗标与分发留在驱动（判据 D 与契约图那条 `ROUND === "…"` 的现读命令因此一字不用改），判据 C 改成按分册里一行 `export const MODE` 归堆。
+
 - ★ **harness 第八刀第一段：`scripts/e2e-multi-instance.mjs` 4,845 ⇒ 主文件 4,321 + 新家 `scripts/e2e/core.mjs` 602 行**（55 个导出：常量、共享量、可复用的工具函数）。搬的段全是模块级声明（本来就在第 0 列）⇒ 唯一的文本改动是给声明行加 export 前缀；另有两处是**必须**改的：① `ROOT` 由本文件位置推导，搬进子目录要退两层（不改就静默指到 `scripts/`）；② 三个会被赋值的标量（`curStep` / `curStepIdx` / `stashSeq`）改由状态对象 `S` 承载 —— 6 个读写点，逐处数过。
 - ★ 这一段把「JS 里为什么不像 Rust 那样能纯搬」量成三条硬约束（每条都是本轮真跑出来的，已写进 core 册头）：
   ① **ESM 不给 import 绑定赋值** —— 第一版搬完真跑就报 Assignment to constant variable；

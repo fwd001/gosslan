@@ -18,7 +18,81 @@ import { DatabaseSync } from "node:sqlite";
 import { BOOT_LINE, bootBaseline, bootReady, countLog, readLogTail, selfcheckLogtail, stashLogs } from "../e2e-logtail.mjs";
 import { captureShot, captureWindowShot, describeShotDir, screenBlockedReason, selfcheckShot } from "../e2e-shot.mjs";
 
-export const S = { curStep: null, curStepIdx: -1, stashSeq: 0 }; // 会被赋值的标量：ESM 不给 import 绑定赋值，改成对象字段
+export const S = {
+  curStep: null, curStepIdx: -1, stashSeq: 0,
+  /// 两端身份与在途单：写在驱动的停机预置里、读在**各轮次分册**里 ⇒ 只能放对象字段
+  /// （ESM 不给 import 绑定赋值）。名字与原来的 let 声明一致，一个都不改。
+  idA: null, idB: null, msgId: null, peerTo: null, xferId: null, srcFile: null, srcSha: null,
+};
+
+// ── 轮次配置：argv/env ⇒ 开关与常量（驱动与轮次分册共用同一份，别在第二处重新解析）──
+
+/// 故障注入模式（§八）。`--fault=poison-part` 见驱动脚本 e2e-multi-instance.mjs 里那段 preset 步骤的注释。
+/// 另有**旅程轮** `--round=`（不是注入，是补一整条没测过的用户路径）：
+///   --round=group    → 群聊这一族跨实例真跑：两端预置群 → A 排三条群消息（正文/撤回/正文）→
+///                      对端上线后靠 flush_group_outbox 补发 → 判落库/解密/清队列/G-Set/不串味
+///   --round=group-lie→ 预置与投递完全不动，只把判据读的 msg_id 换成不存在的值 ⇒ 预期按设计报红
+///   --round=group-targets-lie→ 同上但**只摘掉线上明文里的 mention_targets 键** ⇒
+///                       预期恰好"落点穿过管道"那一条红（`group-lie` 够不到它，因为它读真 id）
+///   断言条数不在这里写，由 check-doc-numbers 现算对账（同每一轮）。
+///   --round=gfile    → 群文件跨实例（A 只备货、B 上线后生产自己投）；--round=gfile-lie → 只翻判据读的那份摘要
+///   断言条数不在这里写，由 check-doc-numbers 现算对账（同每一轮）。
+export const FAULT = (process.argv.find((a) => a.startsWith("--fault=")) || "").slice("--fault=".length);
+
+/// 轮次（§九 旅程族，与 `--fault=` 的注入族并列）：`--round=group` = 群聊这一族跨实例真跑。
+/// 为什么这一格值一轮：此前 harness **从未建过群** —— `grep -c group` 只命中 file_outbox 的
+/// `group_id` 列名，§九「群聊：创建/同步/发送/成员离线/重新上线/撤回」在跨实例层面是零判据，
+/// 而群消息走的是一条与 1:1 完全不同的管道（`group_outbox` 按成员一行 + Gossip 信封 +
+/// `GroupAck` 删行 + G-Set 撤回）。
+/// ⚠️ 与 1:1 的关键差异（决定了这一轮为什么要自己签名加密）：
+///   `flush_group_outbox`（transport.rs:6689-6693）**不做 re-seal**，只是 `from_str` 之后原样
+///   `try_send` —— 而 1:1 的 `flush_outbox` 每条都过 `reseal_for_send`。所以停机写入的那段
+///   payload 必须**在写库那一刻就已经是合法、已密封、已签名的 Gossip 信封**，
+///   放占位串只会得到"B 静默丢弃"（verify_envelope 不过 ⇒ handle_gossip 直接 return，
+///   gossip.rs:61-99/194-204），那红的是脚本不是产品。
+/// 这一轮顺带就是 §五 点名的两格组合：`群聊 + 离线成员重新上线`（入队时对端进程还没起，
+/// 只能靠建链后的 flush 送达）与 `聊天 + 群聊 + 文件`（同一对实例同时背 1:1 与群两条管道，
+/// 判据里专门有一格查两者互不串味）。
+export const ROUND = (process.argv.find((a) => a.startsWith("--round=")) || "").slice("--round=".length);
+
+export const GROUP_ID = "g-e2e-harness";
+
+export const GROUP_NAME = "E2E-Group";
+
+/// 群对称密钥：settings 表 `gk:{group_id}` = base64 的**正好 32 字节**
+/// （transport.rs:5984-5986 解码后 `try_into::<[u8;32]>()`，长度不对直接 None ⇒ 永不解密）。
+/// 先例：`e2e_peer.rs:62` 的 `GROUP_KEY_B64` 就是同一形状。
+export const GROUP_KEY_B64 = Buffer.alloc(32);
+
+for (let i = 0; i < 32; i += 4) GROUP_KEY_B64.writeUInt32BE(0x6e00_0000 + i, i);
+
+export const GROUP_KEY_STR = GROUP_KEY_B64.toString("base64");
+
+
+/// `poison-part-lie` = 这组判据自己的**非空转证明**：注入完全一样，只把比对用的期望摘要
+/// 换成一个必定不相等的值。产品没坏 ⇒ 判据必须报红；报不出红 ⇒ 那几条断言读的不是真字节。
+export const LIE = FAULT.endsWith("-lie");
+
+export const LIE_SHA = "0".repeat(64);
+
+/// 传输尺寸（默认 1 MB，`E2E_FILE_MB=N` 或 `--size=N` 覆盖）。这个旋钮不是为了测"大文件"本身，
+/// 而是先量出**一次传输在回环上真实耗时多久**：「接收中杀进程」这类注入能不能做成
+/// 非竞态，取决于窗口有没有那么长。量不出来就老实标 SIMULATED，不许伪装 PASS（§十）。
+/// `--size=` 是给**尺寸阶梯**用的：同一轮旅程（文本 + 文件 + 重启）换档位重跑，
+/// 证明"换尺寸"不是一条只在一个尺寸上成立的测试。**故意不做成新的注入轮次** ——
+/// 加轮次要同步四处登记（MODE_LABEL / 门禁 local 层 / 判据 C 的轮次声明 / 正反两跑），
+/// 而阶梯要测的东西与故障无关，复用默认轮的断言才是这一格的正解。
+/// ⚠️ 必须 `Math.round`（实测，不是猜的）：`Buffer.alloc(1048.576)` **不抛错**，它静默给一个
+/// **1048 字节**的 buffer ⇒ 于是后面那条 `bytes.length === FILE_BYTES` 变成
+/// "1048 === 1048.576" = 假 ⇒ 报出来的红长得像产品 bug（"B 侧字节数与发送端一致"失败），
+/// 坏的实际是档位算术。本仓已多次踩"红的是脚本不是被保护的东西"，所以取整是这条阶梯的承重。
+export const SIZE_ARG = process.argv.find((a) => a.startsWith("--size="));
+
+export const FILE_MB = SIZE_ARG
+  ? Number(SIZE_ARG.slice("--size=".length))
+  : Number(process.env.E2E_FILE_MB || 1);
+
+export const FILE_BYTES = Math.round(FILE_MB * 1024 * 1024);
 /// 反证开关（只喂给 `seedPair`）：清掉两端的手动 Routed 端点 ⇒ 那条 Routed 判据必须报红。
 /// 它改的是**判据读的那个输入**（配了什么端点），不是判据本身。
 export const NO_ROUTED = process.env.E2E_NO_ROUTED === "1";
