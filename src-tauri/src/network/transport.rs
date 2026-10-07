@@ -1658,72 +1658,19 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 &serde_json::json!({ "peer_id": from, "last_read_ts": effective_ts }),
             );
         }
-        Message::GroupReadReceipt {
-            from,
-            group_id,
-            last_read_ts,
-            last_read_msg_id,
-        } => {
-            if from != peer_id || from == state.device_id {
-                return;
-            }
-            let is_member = {
-                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::get_group(&dbc, &group_id)
-                    .map(|g| g.members.contains(&from) && g.members.contains(&state.device_id))
-                    .unwrap_or(false)
-            };
-            if !is_member {
-                return;
-            }
-            let effective_ts = {
-                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                last_read_msg_id
-                    .as_deref()
-                    .and_then(|msg_id| {
-                        dbc.query_row(
-                            "SELECT ts FROM messages WHERE msg_id = ?1 AND sender_id = ?2 AND conv_id = ?3",
-                            params![msg_id, state.device_id, format!("group:{group_id}")],
-                            |r| r.get::<_, i64>(0),
-                        )
-                        .ok()
-                    })
-                    .unwrap_or(last_read_ts)
-            };
-            {
-                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::upsert_group_read(&dbc, &group_id, &from, effective_ts).ok();
-            }
-            let _ = state.app.emit(
-                "group-read",
-                &serde_json::json!({
-                    "group_id": group_id,
-                    "reader_id": from,
-                    "last_read_ts": effective_ts,
-                }),
-            );
-        }
-        Message::GroupAck {
-            group_id,
-            msg_id,
-            from,
-        } => {
-            if from != peer_id || from == state.device_id {
-                return;
-            }
-            // 只清除该 peer 在该群中的待发记录；不存在时删除是安全的 no-op。
-            // 命中失败不向外暴露，避免用伪造 Ack 探测本地 outbox。
-            {
-                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = db::delete_group_outbox(&dbc, &msg_id, &from);
-            }
-            let _ = state.app.emit(
-                "group-message-acked",
-                &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
-            );
-        }
-        // 「1:1 文件收发」6 个变体的处理体在 `transport/handle_file.rs::handle_file_messages`
+        // 「群聊与群文件」11 个变体的处理体在 `transport/handle_group.rs::handle_group_messages`
         // （2026-10-07 拆出；分发臂用 `{ .. }` 不绑字段，绑定留在分册里那条同形状的模式上）。
+        m @ (Message::GroupReadReceipt { .. }
+        | Message::GroupAck { .. }
+        | Message::GroupKey { .. }
+        | Message::GroupRename { .. }
+        | Message::GroupMemberRemoved { .. }
+        | Message::GroupCreatorChanged { .. }
+        | Message::GroupMemberLeft { .. }
+        | Message::GroupFileOffer { .. }
+        | Message::GroupFileChunk { .. }
+        | Message::GroupFileDone { .. }
+        | Message::GroupFileCompleteAck { .. }) => handle_group_messages(state, peer_id, m).await,
         m @ (Message::FileOffer { .. }
         | Message::FileAccept { .. }
         | Message::FileReject { .. }
@@ -1732,109 +1679,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         | Message::FileDone { .. }) => handle_file_messages(state, peer_id, m).await,
         Message::Gossip { envelope } => {
             handle_gossip(state, peer_id, envelope).await;
-        }
-        // ---- 中继文件传输 ----
-        Message::GroupKey {
-            group_id,
-            from,
-            to,
-            key,
-            group_name,
-            members,
-            clock,
-        } => {
-            if from != peer_id {
-                return;
-            }
-            handle_group_key(state, group_id, from, to, key, group_name, members, clock).await;
-        }
-        Message::GroupRename {
-            group_id,
-            from,
-            name,
-        } => {
-            if from != peer_id {
-                return;
-            }
-            handle_group_rename(state, group_id, from, name).await;
-        }
-        Message::GroupMemberRemoved { group_id, from, to } => {
-            if from != peer_id {
-                return;
-            }
-            handle_group_member_removed(state, group_id, from, to).await;
-        }
-        Message::GroupCreatorChanged { group_id, from, to } => {
-            if from != peer_id {
-                return;
-            }
-            handle_group_creator_changed(state, group_id, from, to).await;
-        }
-        Message::GroupMemberLeft { group_id, from } => {
-            if from != peer_id {
-                return;
-            }
-            handle_group_member_left(state, group_id, from).await;
-        }
-        Message::GroupFileOffer {
-            transfer_id,
-            group_id,
-            sender_id,
-            name,
-            size,
-            sha256,
-            sealed_file_key,
-            scope,
-            todo_id,
-        } => {
-            handle_group_file_offer(
-                state,
-                peer_id,
-                transfer_id,
-                group_id,
-                sender_id,
-                name,
-                size,
-                sha256,
-                sealed_file_key,
-                scope,
-                todo_id,
-            )
-            .await;
-        }
-        Message::GroupFileChunk {
-            transfer_id,
-            group_id,
-            sender_id,
-            seq,
-            data,
-        } => {
-            handle_group_file_chunk(state, peer_id, transfer_id, group_id, sender_id, seq, data)
-                .await;
-        }
-        Message::GroupFileDone {
-            transfer_id,
-            group_id,
-            sender_id,
-        } => {
-            handle_group_file_done(state, peer_id, transfer_id, group_id, sender_id).await;
-        }
-        Message::GroupFileCompleteAck {
-            transfer_id,
-            group_id,
-            sender_id,
-            success,
-        } => {
-            handle_group_file_complete_ack(
-                state,
-                peer_id,
-                transfer_id,
-                group_id,
-                sender_id,
-                success,
-            )
-            .await;
-        }
+        } // ---- 中继文件传输 ----
     }
 }
 
@@ -2026,4 +1871,5 @@ include!("transport/read_receipt.rs");
 
 include!("transport/handle_file.rs");
 include!("transport/handle_share.rs");
+include!("transport/handle_group.rs");
 include!("transport/tests.rs");

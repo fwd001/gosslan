@@ -13,6 +13,14 @@
 
 ## [Unreleased]
 
+## [4.33.10] - 2026-10-07
+### Changed
+- ★ **`handle_message` 第三族：群聊与群文件 11 个变体整块搬进 `transport/handle_group.rs`**（167 行 → 分册 185 行），
+  主文件 2,029 ⇒ 1,866。并成一族的理由留在分册头部：这 11 个变体共用同一套群前提
+  （密钥必须先到、受众按群算的 G-Set 语义、群文件走另一条 outbox），留在原处时这些前提散在 11 个臂中间。
+  自证同一套：`cargo test --lib` 789 passed / 0 failed、用例名差集 0 行、clippy 与 fmt 干净、
+  `verify-guards --list` 202 条锚点各命中一次。
+
 ## [4.33.9] - 2026-10-07
 ### Changed
 - ★ **`handle_message` 拆出两族，主文件 2,743 ⇒ 2,029 行**（第一、二族并一个提交：两批改动都落在同一个函数的同一张 match 上，
