@@ -249,7 +249,6 @@ def verify(case: Case) -> tuple[bool, str]:
     targets = resolved_targets
 
     originals = [(path, read_source(path)) for path, _ in targets]
-    detail = ""
     try:
         for path, injections in targets:
             text = read_source(path)
@@ -267,8 +266,12 @@ def verify(case: Case) -> tuple[bool, str]:
         code, out = run(case.cmd, case.cwd, extra_env=case.env)
         if code == 0:
             return False, "改坏之后测试**仍然通过** ⇒ 这条护栏是空转的（没在守东西）"
-        if case.expect_fail_hint and case.expect_fail_hint not in out:
-            detail = f"（失败输出里没看到 `{case.expect_fail_hint}`，请确认是这条判据报的）"
+        # ★ 2026-10-07：`expect_fail_hint` 从"只附一句提示"改成**判据**（不匹配就 FAIL）。
+        # 为什么：注入后红了不代表红的是我声明的那一格。真实形状：local 层那条 hint 永远匹配不上
+        # （第 15 趟抓到、e9cdd32 换成判据真会打印的那句），而 advisory 的写法让这种过期
+        # **只出现在没人读的 detail 里**。现算 202/202 条 Case 都声明了 hint ⇒ 它就是契约的一部分：
+        # 不匹配 = 这条护栏正在守别的东西，必须响亮，不能附一句谁也看不见的括号。
+        hint_missing = bool(case.expect_fail_hint) and case.expect_fail_hint not in out
 
         for path, original in originals:  # 先恢复，再验证恢复后确实通过
             write_source(path, original)
@@ -276,7 +279,14 @@ def verify(case: Case) -> tuple[bool, str]:
         code2, out2 = run(case.cmd, case.cwd, extra_env=case.env)
         if code2 != 0:
             return False, f"恢复源码之后测试**仍然失败** ⇒ 源码或环境已被破坏：\n{out2[-800:]}"
-        return True, detail or "改坏即 FAIL、恢复即 PASS"
+        if hint_missing:
+            return False, (
+                f"注入后是红了，但失败输出里**没有**声明的那句判据关键词 `{case.expect_fail_hint}`\n"
+                f"  ⇒ 两种可能，都得人来分：① 那条判据的措辞改了（声明过期 ⇒ 换成它真会打印的那句）；"
+                f"② 红的是别的东西（这条注入其实没被那一格守住）。\n"
+                f"  实际失败输出尾部（挑新 hint 用）：\n{out[-600:]}"
+            )
+        return True, "改坏即 FAIL、恢复即 PASS，且红由声明的那条判据报出"
     finally:
         # 无论上面发生什么（断言失败/超时/异常），内容级恢复现场
         for path, original in originals:

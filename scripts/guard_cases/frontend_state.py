@@ -163,7 +163,7 @@ CASES: list[Case] = [
         )],
         cmd=npm("test"),
         cwd=ROOT,
-        expect_fail_hint="只有后端说 bluetooth",
+        expect_fail_hint="连接图标名与文案同源",
         tags=["frontend", "friend"],
     ),
     # ---------------- 前端：我的在线状态 = 任一通道在跑 ----------------

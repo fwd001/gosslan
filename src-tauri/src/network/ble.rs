@@ -510,10 +510,18 @@ mod tests {
     #[test]
     fn peripheral_handshake_failure_clears_the_handshaking_mark() {
         let src = crate::network::ble_src_for_guards();
+        // ⚠️ 检索式必须带行首换行（**不带**左括号 —— 这两个函数签名带泛型 `<S: …>`，加括号就找不到）：本测试自己那句字面量就在被扫的聚合文本里
+        //   （`ble.rs` 的内联测试模块是视图的第一段），旧写法 `find("async fn …")` 会先撞上
+        //   测试自己的字符串 ⇒ 断言恒真、注入照样绿（2026-10-07 切成 include! 分册后就是这么瞎的）。
         let start = src
-            .find("async fn peripheral_accept_loop")
-            .expect("必须还有 peripheral_accept_loop（本护栏锚点）");
+            .find("\nasync fn peripheral_accept_loop")
+            .expect("必须还有 peripheral_accept_loop（本护栏锚点）")
+            + 1;
         let body = &src[start..];
+        assert!(
+            body.starts_with("async fn peripheral_accept_loop"),
+            "取到的窗口不是那个函数本体 ⇒ 这条判据正在空转"
+        );
         let end = body.find("\n}\n").unwrap_or(body.len());
         let body = &body[..end];
         assert!(
@@ -730,9 +738,14 @@ mod tests {
     fn ble_reader_loop_refreshes_read_activity() {
         let src = crate::network::ble_src_for_guards();
         let start = src
-            .find("async fn ble_reader_loop")
-            .expect("必须还有 ble_reader_loop（本护栏锚点）");
+            .find("\nasync fn ble_reader_loop")
+            .expect("必须还有 ble_reader_loop（本护栏锚点）")
+            + 1;
         let body = &src[start..];
+        assert!(
+            body.starts_with("async fn ble_reader_loop"),
+            "取到的窗口不是那个函数本体 ⇒ 这条判据正在空转（同上一条的理由：自匹配）"
+        );
         // 顶层函数的闭合花括号在行首（缩进的都是内部块）
         let end = body.find("\n}\n").unwrap_or(body.len());
         let body = &body[..end];

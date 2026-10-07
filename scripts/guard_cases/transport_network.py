@@ -526,7 +526,7 @@ CASES: list[Case] = [
         )],
         cmd=cargo("test", "--lib", "group_keys_always_precede_group_messages"),
         cwd=TAURI,
-        expect_fail_hint="有一条群消息补发排在群密钥之前",
+        expect_fail_hint="有一处群消息补发排在群密钥之前",
         tags=["rust", "group", "stability", "new-guards", "rc2-group-sync"],
     ),
     Case(

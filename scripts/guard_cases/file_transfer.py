@@ -67,7 +67,7 @@ CASES: list[Case] = [
         )],
         cmd=cargo("test", "--lib", "file_send_progress_counts_wire_not_queue"),
         cwd=TAURI,
-        expect_fail_hint="成键",
+        expect_fail_hint="file_send_progress_counts_wire_not_queue",
         tags=["rust", "file", "lifecycle"],
     ),
     Case(

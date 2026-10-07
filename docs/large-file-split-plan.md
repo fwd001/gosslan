@@ -511,6 +511,7 @@ grep -c 'if relay_denied(' src-tauri/src/network/transport.rs src-tauri/src/netw
 | 7 | `scripts/check-scripts-parse.mjs` 的 import 闭包与 py 分册名单 | 分册语法错/漏登记 ⇒ 便宜层看不见 | `node scripts/check-scripts-parse.mjs` |
 | 8 | 活文档里的 `file:line` 引用 | 行号随搬家作废（响亮：退 1） | `node scripts/check-doc-citations.mjs --root=.` |
 | 9 | `check-domain-deps.mjs` 的内联耦合可见性 | 按物理文件判 ⇒ include! 让"use 在哪个文件"变任意，会报假增长（10-07 已改成按领域判，**上限一格没动**） | `node scripts/check-domain-deps.mjs`（30 处 / 6 对，搬家前后同一个数） |
+| 11 | **视图里那段"读源码的形状判据"自己**：`find("async fn x")` 在聚合文本里会先撞上判据自己的字面量 | 静默失明（本仓最危险那一类）——注入后测试照样绿。10-07 护栏整跑实测抓到 **2 条**：`ble_reader_loop_refreshes_read_activity`、`peripheral_handshake_failure_clears_the_handshaking_mark`，因为 `ble.rs` 的**内联测试模块**排在视图第一段，而函数本体被搬进了最后一段的 `ble/io_loops.rs` | 修法照 `transport/gossip_tests.rs` 的先例：检索式带**行首换行**（`"\nasync fn x"`，别加左括号——带泛型的签名加了就找不到），再加一条 `body.starts_with("async fn x")` 断言窗口真的是函数本体。复跑：`python3 scripts/verify-guards.py --only "BLE 读循环必须回灌读活性"` |
 | 10 | `docs/ARCHITECTURE-MAP.html` 的节点 `paths` | 图变成第二份名单 ⇒ 只在 notes 里指回 domains.data.mjs，逐册名单不抄 | 改完 `node --check` 那段内嵌 script |
 
 一把跑完的便宜层（秒级到十几秒，不含护栏整跑与 E2E）：
