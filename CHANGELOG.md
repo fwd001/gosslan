@@ -28,6 +28,22 @@
   环境侧的正解仍是把那台浏览器装回来（`npx playwright install chromium`），那是在他机器上，不在本仓。
 
 
+
+### Documentation（认知层第二批：把前两轮拆分的欠账补齐）
+- ★ 认知条目 **531 ⇒ 587 条**（新增 56 条：`scripts/e2e/core.mjs` + 19 本轮次分册、`scripts/guard_cases/` 9 本、
+  `lib_*_tests.rs` 11 本、`transport/*_tests.rs` 15 本、`CHANGELOG.md` 本体），基线文件 893 ⇒ **948**；
+  复跑 `grep -c ': F:' aoci.code.txt` 与 `aoci status`。另把 3 条**正文已失真**的条目改口：
+  harness 驱动那条（旗标与分发留在驱动、轮次体搬去 core/rounds）、拆分计划那条（不再是在途地图，
+  而是计划+两轮结果+11 行尺子表）、探针那条（"文件在 ≠ 起得来"）。
+  `aoci --json check` 现读：`code_missing / code_stale / code_unbaselined` **三格都归 0**，`structure_valid=true`。
+- ⚠️ 剩下的 `governance_aligned=false` 不是缺条目，而是** observe 证据要人工复核**（`aoci scope preview` 现读
+  「阶段 observed_evidence_review_required｜人工review 155」）。`aoci scope acknowledge` 的字面意思是"记录复核"，
+  我跑它就等于替负责人宣称"这些我看过并认可了"——AGENTS 里"人工裁决/审批边界不得忽略"就是这一格 ⇒ **不自行越过**，
+  如实报给他：要么他复核一次，要么在带 `aoci_maintain` 的会话里走正式 maintain 通道。
+- 机器事实两条（写进记忆，别再当"只有 MCP 能写"）：① **相同文本重传会被拒**（"重复批次: 正式索引零写入"）
+  ⇒ 过期条目不能靠原文重绑，必须真的改内容或走 maintain 签发的候选；② 整行有预算上限
+  （`entry_field_budget_exceeded` 实测：本条 S 到 435 字节被拒、422 字节通过 ⇒ 按字节而非字符数收）。
+
 ## [4.33.17] - 2026-10-07
 
 ### Documentation
