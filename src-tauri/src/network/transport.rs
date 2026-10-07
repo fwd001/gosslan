@@ -990,6 +990,36 @@ async fn retry_incomplete_content(state: &Arc<AppState>, peer_id: &str) {
     }
 }
 
+/// 数据面中继授权闸的**唯一入口**（2026-09-19 P0#5 的三处重复，2026-10-07 收成一个家）。
+///
+/// 三个转发点都从这里过：定向借道（`handle_message` 的 directed relay）、
+/// `OpaqueExternal` 外部帧转投、`RelayChunk` 文件分片转投（`relay_file.rs`）。
+/// 判据 `relay_data_plane_respects_policy` 钉的是"闸只有一个家 + 三个消费者各走它"，
+/// 不是"数得到三次调用" —— 后者会把"复制三遍"当成正确形状锁死（本轮之前正是如此）。
+///
+/// 授权主体是**经 Hello 验签的链路对端** `peer_id`（帧内 `from` 可自报伪造，不作依据）；
+/// Friends 档要多查一次好友表，所以这里必须碰 db 锁 —— 只在策略真需要时碰（Off/All 不查库）。
+///
+/// `why` 只在**被拒且节流放行**时求值：中继在文件分片的热路径上，每条分片都 `format!`
+/// 一次会白烧一次分配（收家之前它写在三个调用点上、每处也都无条件拼串）。
+/// 返回 true 时日志已经打好，调用方只需 `return`。
+fn relay_denied(state: &Arc<AppState>, peer_id: &str, why: impl FnOnce() -> String) -> bool {
+    let cfg = state.relay_policy_config();
+    let allowed = crate::mesh::relay_policy::decide_relay_from_peer(&cfg, peer_id, || {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_friend(&dbc, peer_id).is_some()
+    });
+    if allowed {
+        return false;
+    }
+    if log_throttled("relay_deny", 10_000) {
+        state
+            .logger
+            .warn("mesh", format!("按中继策略拒绝对端 {peer_id} 的{}", why()));
+    }
+    true
+}
+
 pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) {
     // ---- 定向中继（一跳）：不是给我的定向帧，借邻居的直连转投给 to ----
     // 共享目录（ShareTree/ShareFile）在无直连时会走这里；RelayFileOffer 同理。
@@ -997,20 +1027,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
     // relay_send_to_neighbors 的说明）。
     if let Some(to) = directed_relay_target(&msg, &state.device_id) {
         // 授权闸（2026-09-19 P0#5）：定向借道此前**不经任何策略** —— 设置里关掉
-        // 中继也照转，等于「开放文件中继/目录中继」。判据与 gossip 同一张真值表，
-        // 授权主体是经 Hello 验签的链路对端（帧内 from 可自报伪造，不作依据）。
-        let cfg = state.relay_policy_config();
-        let allowed = crate::mesh::relay_policy::decide_relay_from_peer(&cfg, peer_id, || {
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_friend(&dbc, peer_id).is_some()
-        });
-        if !allowed {
-            if log_throttled("relay_deny", 10_000) {
-                state.logger.warn(
-                    "mesh",
-                    format!("按中继策略拒绝对端 {peer_id} 的定向借道请求（to={to}）"),
-                );
-            }
+        // 中继也照转，等于「开放文件中继/目录中继」。判据与 gossip 同一张真值表。
+        // 2026-10-07：三处重复的判断收进 relay_denied 一个家（这条注释原来在每处各写一遍）。
+        if relay_denied(state, peer_id, || format!("定向借道请求（to={to}）")) {
             return;
         }
         if let Err(e) = try_send(state, to, &msg).await {
@@ -1274,18 +1293,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 payload,
             };
             // 数据面授权闸（P0#5）：外部帧同样必须吃中继策略，默认 All 行为不变
-            let cfg = state.relay_policy_config();
-            let allowed = crate::mesh::relay_policy::decide_relay_from_peer(&cfg, peer_id, || {
-                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::get_friend(&dbc, peer_id).is_some()
-            });
-            if !allowed {
-                if log_throttled("relay_deny", 10_000) {
-                    state.logger.warn(
-                        "mesh",
-                        format!("按中继策略拒绝对端 {peer_id} 的外部帧转投 id={id}"),
-                    );
-                }
+            if relay_denied(state, peer_id, || format!("外部帧转投 id={id}")) {
                 return;
             }
             let targets: Vec<String> = {

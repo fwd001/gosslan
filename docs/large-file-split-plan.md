@@ -383,18 +383,31 @@ PY
 **等他点头再动**。真要动：一族一提交，每步跑与前五刀同一套恒等判据
 （`cargo test --lib -- --list` 的 789 条差集 0 行 + `verify-guards.py --list` 的 202 条 + clippy/fmt/快速层）。
 
-### 5.2 顺手抓到一处真缺陷：中继授权闸有 **3 个家**，而现有判据正替这个形状把关
+### 5.2 抓到并已修掉一处真缺陷：中继授权闸曾有 **3 个家**，而当时的判据正替那个形状把关（2026-10-07 收家）
 
-现算 `decide_relay_from_peer(` 的生产调用点：`src-tauri/src/network/transport.rs:1003`、`src-tauri/src/network/transport.rs:1278`、`src-tauri/src/network/transport/relay_file.rs:459`
+**原来是什么**：`decide_relay_from_peer(` 在生产码里有三处逐字重复的判断（定向借道 / `OpaqueExternal` 转投 /
+`RelayChunk` 转投），而 `lib_relay_data_tests.rs` 的 `relay_data_plane_respects_policy` 钉的是
+「`decide_relay_from_peer(` 出现 ≥3 次」⇒ **这条判据要求的正是"抄三遍"这个形状**：谁把它收成一处 helper
+让三个消费者共调，计数掉到 1、判据当场红，而代码其实变好了；最顺手的消红动作是再抄第四遍。
+（本仓反复踩的两件事叠在一起：「同一个判据长在多处」+「守卫把缺陷钉成契约」。）
 
-`lib_relay_data_tests.rs` 的 `relay_data_plane_respects_policy` 判的是 `wired >= 3`，
-语义是「三个转发点都接过闸」。⇒ **这条判据现在要求的就是"重复三遍"这个形状**：
-谁把闸收成一处 helper、三个消费者共调，`wired` 会掉到 1 ⇒ 判据当场红，而代码其实变好了。
-这正是本仓反复踩的两件事叠在一起：「同一个判据长在多处」+「守卫把缺陷钉成契约」。
+**现在是什么**：一个家 `transport.rs::relay_denied(state, peer_id, why)`，三个转发点各自 `if relay_denied(...)`。
+`why` 是 `impl FnOnce() -> String` ⇒ **只在被拒且节流放行时**才拼日志串（中继在文件分片的热路径上，
+收家之前三处都无条件 `format!`，那是另一个小回归，顺手一起止住了）。
 
-⇒ 修法必须**一件事两件一起做**（谁也别先动）：
-① 抽 `relay_gate_allows_forward(state, peer_id) -> bool` 当唯一的家，内联处改成调用它；
-② 判据同步**改严而不是改松**：从「`decide_relay_from_peer(` ≥3 处」改成
-   「策略函数调用恰好 1 处（在家里）+ helper 的调用点恰好 3 处（三个消费者）」，
-   并配两条反证：摘掉任意一个消费者 ⇒ 红；把闸内联回某一处 ⇒ 红。
-不同批改 ② 的话，"消红最顺手"的动作就是再复制一份第四遍 —— 那才是把缺陷真正钉死。
+判据同批**改严而不是改松**，钉形状不钉次数：策略判定恰好 1 处（在家里）+ `fn relay_denied(` 恰好 1 处 +
+`if relay_denied(` 恰好 3 处（三个消费者），并且**两条反证都当场真跑过**：
+
+| 反证 | 怎么注入 | 实测 |
+|---|---|---|
+| 摘掉一个消费者 | 临时删掉 `RelayChunk` 那一处调用 | `FAILED … 都要走 relay_denied，实际 2 处` |
+| 把闸内联回去 | 在 helper 旁再抄一处 `decide_relay_from_peer(` | `FAILED … 必须只有 relay_denied 一个家，实际 2 处` |
+
+复跑（现读，别抄这里的数）：
+```bash
+grep -c 'decide_relay_from_peer(' src-tauri/src/network/transport.rs   # 1（在 relay_denied 内部）
+grep -c 'if relay_denied(' src-tauri/src/network/transport.rs src-tauri/src/network/transport/relay_file.rs
+```
+⇒ 恒等侧一起交过：`cargo test --lib` 789 passed / 0 failed、用例名与基线**差集 0 行**、
+`clippy -D warnings` 与 `fmt --check` 干净、`verify-guards.py --list` 202 条锚点各命中一次
+（**包括分发段那 10 条** —— 删掉的三段内联文本里有一条正是锚点读过的形状）。

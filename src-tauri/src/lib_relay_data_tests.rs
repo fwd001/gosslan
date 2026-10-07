@@ -16,13 +16,32 @@
     /// （定向借道 / RelayChunk / OpaqueExternal）曾长期裸奔 —— 用户把中继设成
     /// 「关闭」，文件分片照样借他的带宽一跳一跳地跑，**设置项只有一半是真的**。
     /// 这类"开关只管一条路径"的分裂在 UI 上完全看不出来，只能源码钉死。
+    ///
+    /// ⚠️ 2026-10-07 改严：这条原来钉的是 `decide_relay_from_peer(` 出现 **≥3 次**，
+    /// 而"三次"正是三段抄写的产物 —— 于是它把缺陷形状当成了要求：谁把闸收成一处 helper
+    /// 让三个消费者共调，计数掉到 1，这条判据当场红，而代码其实变好了（最顺手的消红动作
+    /// 是再抄第四遍）。现在钉的是**形状**：策略判定恰好一个家 + 三个转发点各自走它。
+    /// 两条反证（本轮实测过，不是设计意图）：摘掉任意一个消费者 ⇒ `wired` 少一 ⇒ 红；
+    /// 把闸内联回任一调用点 ⇒ `homes` 变 2 ⇒ 红。
     #[test]
     fn relay_data_plane_respects_policy() {
         let transport = crate::network::transport_src_for_guards();
-        let wired = transport.matches("decide_relay_from_peer(").count();
-        assert!(
-            wired >= 3,
-            "数据面三个转发点（定向借道 / RelayChunk / OpaqueExternal）都要过授权闸，实际 {wired} 处"
+        // ① 闸只有一个家：策略判定在整份生产码视图里恰好出现一次（就在 relay_denied 内部）。
+        let homes = transport.matches("decide_relay_from_peer(").count();
+        assert_eq!(
+            homes, 1,
+            "中继授权闸必须只有 relay_denied 一个家，实际 {homes} 处 —— \
+             多于 1 处就是把同一段判断抄在多个转发点里（这条判据以前正替那个形状把关）"
+        );
+        // ② 那个家必须是**函数**，不是一处裸调用（防止有人把三处合并成一处后删掉 helper）。
+        let defs = transport.matches("fn relay_denied(").count();
+        assert_eq!(defs, 1, "relay_denied 必须是唯一的闸函数，实际 {defs} 处定义");
+        // ③ 三个数据面转发点各自经过它：定向借道 / OpaqueExternal 转投 / RelayChunk 转投。
+        let wired = transport.matches("if relay_denied(").count();
+        assert_eq!(
+            wired, 3,
+            "数据面三个转发点（定向借道 / RelayChunk / OpaqueExternal）都要走 relay_denied，\
+             实际 {wired} 处 —— 少一个就是那条路径又变成不经策略裸奔（P0#5 的原病灶）"
         );
         // gossip 控制面原有闸不得被拆掉
         assert!(

@@ -453,20 +453,10 @@ async fn handle_relay_chunk(
         }
     } else if ttl > 1 {
         // 中继转发给最终接收方 —— 授权闸同「定向借道」（2026-09-19 P0#5）：
-        // 替谁转发按**提出请求的链路对端**判（Hello 验签背书），策略 Off/Friends/
-        // Allowlist 必须真正拦得下文件分片，而不是只拦 gossip。
-        let cfg = state.relay_policy_config();
-        let allowed = crate::mesh::relay_policy::decide_relay_from_peer(&cfg, requester, || {
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_friend(&dbc, requester).is_some()
-        });
-        if !allowed {
-            if log_throttled("relay_deny", 10_000) {
-                state.logger.warn(
-                    "mesh",
-                    format!("按中继策略拒绝对端 {requester} 的 RelayChunk 转投 tid={transfer_id}"),
-                );
-            }
+        // 策略 Off/Friends/Allowlist 必须真正拦得下文件分片，而不是只拦 gossip。
+        // 2026-10-07：闸收进 transport.rs 的 relay_denied 一个家（这里与定向借道、
+        // 外部帧转投那两处原来是同一段判断抄三遍）。
+        if relay_denied(state, requester, || format!("RelayChunk 转投 tid={transfer_id}")) {
             return;
         }
         let fwd = Message::RelayChunk {
