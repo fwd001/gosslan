@@ -29,6 +29,12 @@ export interface CardAnchor {
 /**
  * 卡片的落点：**每条轴只发一侧**（另一侧为 null），这样宽度按内容伸缩时
  * 靠住的那条边不会跑。`maxWidth` 是这一档的上限，不是写死的宽度。
+ *
+ * `placement` 把"这次到底往上还是往下弹"这个**语义**也带出去：
+ * 光有 `top`/`bottom` 两个数不够 —— 消费方常常还要按方向换箭头朝向、换动画原点
+ * （表情选择器就把这个值原样传进 `EmojiPicker` 的 `placement` prop）。
+ * 让它由摆位函数一次算定，比在每个消费点再 `top != null ? … : …` 猜一遍强：
+ * 猜的那一处和这里的 `above` 判据一旦分叉，浮层内容和浮层位置会互相不认。
  */
 export interface CardPlacement {
   left: number | null;
@@ -36,6 +42,7 @@ export interface CardPlacement {
   top: number | null;
   bottom: number | null;
   maxWidth: number;
+  placement: "above" | "below";
 }
 
 export interface CardOptions {
@@ -67,6 +74,7 @@ export function placeCard(anchor: CardAnchor, opts: CardOptions = {}): CardPlace
     top: above ? null : anchor.bottom + pad,
     bottom: above ? vh - anchor.top + pad : null,
     maxWidth: maxW,
+    placement: above ? "above" : "below",
   };
 }
 

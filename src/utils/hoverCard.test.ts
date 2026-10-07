@@ -50,3 +50,20 @@ test("cardStyle：未用的那一侧整个键都不出现（不留 undefined 让
   assert.equal(s.right, "60px");
   assert.ok(!("left" in s) && !("top" in s));
 });
+
+/**
+ * `placement` 存在的唯一理由是"方向只判一次"。表情选择器把它原样传进 `EmojiPicker`
+ * 换箭头朝向与动画原点 —— 若消费点再从 `top`/`bottom` 猜一遍，猜的那处和这里的
+ * `above` 判据一旦分叉，浮层内容和浮层位置就互相不认（表现为箭头指反方向）。
+ */
+test("placement 与 top/bottom 永远自洽", () => {
+  const below = placeCard({ left: 100, right: 140, top: 400, bottom: 428 }, opt());
+  assert.equal(below.placement, "below");
+  assert.notEqual(below.top, null, "往下长 ⇒ 发的是 top");
+  assert.equal(below.bottom, null);
+
+  const above = placeCard({ left: 1100, right: 1140, top: 600, bottom: 628 }, opt());
+  assert.equal(above.placement, "above");
+  assert.equal(above.top, null, "往上长 ⇒ 发的是 bottom");
+  assert.notEqual(above.bottom, null);
+});

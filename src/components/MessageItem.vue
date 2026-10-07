@@ -4,7 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { popupLeft, popupPlacement, popupWidth } from "@/utils/popupPosition";
+import { useHoverCard } from "@/composables/useHoverCard";
 import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
@@ -624,35 +624,39 @@ async function viewQuoted() {
  */
 const reactionPickerOpen = ref(false);
 const reactionBtnRef = ref<HTMLElement | null>(null);
-/** Teleport 到 body 的那层浮层（用来排除"它自己的内部滚动"被当成列表滚动） */
-const reactionPickerRef = ref<HTMLElement | null>(null);
-const reactionPickerPos = ref<{ left: number; top: number; placement: "above" | "below" } | null>(null);
 const reactionPopup = useExclusivePopup(`reaction-picker:${String(props.message.msg_id ?? props.message.id ?? "")}`);
+/**
+ * 摆位与"一滚就收"走通用那一套（`composables/useHoverCard` → `utils/hoverCard.placeCard`），
+ * 与表情名单、已读成员弹层同一个家。
+ *
+ * ⚠️ 这里 `maxWidth: 360` 只是**夹位用的上限**，不是写进布局的宽度：面板本体在
+ * `EmojiPicker` 里，是 `absolute` + 自带 `w-[min(360px,…)]`，而这个 Teleport 壳**没有高度**
+ * （它的子元素全是绝对定位）。所以 placeCard 在"往上弹"那一支发 `bottom`、与壳内
+ * `bottom-full` 复合出来的落点，和旧写法发 `top` 是同一个位置 —— 壳是零高度，top == bottom。
+ * 动这处之前先确认这一点，否则会误以为自己在改垂直位置。
+ */
+const {
+  pos: reactionPickerPos,
+  style: reactionPickerStyle,
+  setEl: setReactionPickerEl,
+  open: openReactionPickerCard,
+  close: closeReactionPickerCard,
+} = useHoverCard({ maxWidth: 360 });
 
-function positionReactionPicker() {
-  const btn = reactionBtnRef.value;
-  if (!btn) return;
-  const r = btn.getBoundingClientRect();
-  const pad = 8;
-  const w = popupWidth(360, window.innerWidth, pad);
-  const left = popupLeft({ left: r.left, right: r.right }, "start", w, window.innerWidth, pad);
-  const placement = popupPlacement(r.top, window.innerHeight);
-  const top = placement === "above" ? r.top - pad : r.bottom + pad;
-  reactionPickerPos.value = { left, top, placement };
-}
 function toggleReactionPicker() {
   if (reactionPickerOpen.value) {
     closeReactionPicker();
     return;
   }
-  positionReactionPicker();
+  const btn = reactionBtnRef.value;
+  if (btn) openReactionPickerCard(btn);
   reactionPickerOpen.value = true;
   reactionPopup.claim();
 }
 function closeReactionPicker() {
   reactionPopup.release();
   reactionPickerOpen.value = false;
-  reactionPickerPos.value = null;
+  closeReactionPickerCard();
 }
 /**
  * 被别的浮层抢走展开权 ⇒ 收起自己。
@@ -668,25 +672,19 @@ watch(reactionPopup.isActive, (mine) => {
 function onDocClickForReactionPicker() {
   closeReactionPicker();
 }
-/** 滚动/改尺寸就收起：列表在滚，固定坐标的浮层会飘。
- *  ⚠️ 必须**忽略选择器自己的内部滚动**（用户 2026-09-21：「我拉滚动条，弹框怎么没了」）：
- *  监听带了 `capture: true`，表情网格自己的 `overflow-y: auto` 一滚也会冒到 window 上，
- *  不做这个排除就会"一拉滚动条弹框就消失"。 */
-function onScrollOrResizeForReactionPicker(e: Event) {
-  if (!reactionPickerOpen.value) return;
-  const panel = reactionPickerRef.value;
-  if (e.type === "scroll" && panel && e.target instanceof Node && panel.contains(e.target)) return;
-  closeReactionPicker();
-}
-onMounted(() => {
-  document.addEventListener("click", onDocClickForReactionPicker);
-  window.addEventListener("scroll", onScrollOrResizeForReactionPicker, true);
-  window.addEventListener("resize", onScrollOrResizeForReactionPicker);
-});
-onBeforeUnmount(() => {
-  document.removeEventListener("click", onDocClickForReactionPicker);
-  window.removeEventListener("scroll", onScrollOrResizeForReactionPicker, true);
-  window.removeEventListener("resize", onScrollOrResizeForReactionPicker);
+// 滚动 / 改尺寸就收起。"忽略选择器自己的内部滚动"那条判断（用户 2026-09-21：
+// 「我拉滚动条，弹框怎么没了」）现在住在 useHoverCard 里，不再各写一遍。
+onMounted(() => document.addEventListener("click", onDocClickForReactionPicker));
+onBeforeUnmount(() => document.removeEventListener("click", onDocClickForReactionPicker));
+/**
+ * 滚动/改窗口只清得掉**坐标**（收起住在 useHoverCard 里）⇒ 坐标一空就把开态与展开权
+ * 一起收掉。不补这一条的话 `reactionPickerOpen` 与 `aria-expanded` 会停在 true，
+ * 而面板根本不在屏幕上。
+ */
+watch(reactionPickerPos, (p) => {
+  if (p || !reactionPickerOpen.value) return;
+  reactionPopup.release();
+  reactionPickerOpen.value = false;
 });
 function onReactionPick(emoji: string) {
   closeReactionPicker();
@@ -1138,14 +1136,15 @@ async function copyFileToClipboard() {
         >
           <Smile class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" :stroke-width="1.75" />
         </button>
-        <!-- 完整表情选择器：**Teleport 到 body + fixed 坐标**（坐标由入口按钮算出，见 positionReactionPicker）。
-             挂在消息里会被列表的 `overflow-y: auto` 裁掉 —— 这就是"弹出位置不对"的原因。 -->
+        <!-- 完整表情选择器：**Teleport 到 body + fixed 坐标**（坐标由入口按钮的矩形现算，
+             规则见 utils/hoverCard.placeCard）。挂在消息里会被列表的 `overflow-y: auto`
+             裁掉 —— 这就是"弹出位置不对"的原因。 -->
         <Teleport to="body">
           <div
             v-if="reactionPickerOpen && reactionPickerPos"
-            ref="reactionPickerRef"
+            :ref="setReactionPickerEl"
             class="fixed z-[70] w-[min(360px,calc(100vw-2rem))]"
-            :style="{ left: `${reactionPickerPos.left}px`, top: `${reactionPickerPos.top}px` }"
+            :style="reactionPickerStyle"
             @click.stop
           >
             <EmojiPicker
