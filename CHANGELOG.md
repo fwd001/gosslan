@@ -28,13 +28,7 @@
 
 ### Notes
 
-- **同一次评审查出的一格新的、没修**：输入框那个表情面板（`MessageComposer` 里挂的 `<EmojiPicker>`）
-  **不在这套判据的分母里** —— 它不自己算坐标，用 CSS `absolute bottom-full` 往上长，整块仍留在输入框卡片里面。
-  面板本体固定 300px 高 ⇒ 只有「按钮上方不足约 310px」的视口才切得到它，而**键盘把可视高度压到多少静态推不出**；
-  运行时探针只单独挂过 `EmojiPicker`、没挂过 `MessageComposer` ⇒ 这一格既没有运行时判据、也不能写成已验。
-  已登记进 `docs/acceptance/stability-smoke-matrix.md` 第 23 行「缺口」那一格（"三格"改成"四格"，第 ④ 条），
-  归人工 → Smoke-11。**没修，也没假装修**：要修得先给探针加一段挂载 `MessageComposer` 的 harness，
-  那是新写交互通路，不属于这轮"补判据"的范围。
+- **同一次评审查出的新的一格，没修**：输入框那一支有两个浮层**都不在这套判据的分母里** —— 它们不自己算坐标，全用 CSS `absolute bottom-full` 往上长、整块留在输入框卡片里面：`MessageComposer` 挂的 `<EmojiPicker>`（面板本体固定 300px 高 ⇒ 要按钮上方约 310px）与输入 @ 那张候选列表（`max-h-44` ⇒ 约 184px）。评审把这条**算准成两半**：表情面板一打开就把焦点从编辑区移进自己的网格里（`EmojiPicker` 那份 `restoreFocusTo` + 首个格子）⇒ 软键盘通常随之收起，它更可能是安全的；**真正该量的是 @ 候选列表** —— 它开着的时候键盘一定还在。但「焦点离开输入框 ⇒ IME 收起」是设备行为，本机（桌面 headless）判不了，而运行时探针只单独挂过 `EmojiPicker`、没挂过 `MessageComposer` ⇒ 两块都既无运行时判据、也不算已验。已登记进 `docs/acceptance/stability-smoke-matrix.md` 第 23 行「缺口」那一格（三格改成四格，第 ④ 条），归人工 → Smoke-11。**没修，也没假装修**：要修得先给探针加一段挂载 `MessageComposer` 的 harness，那是新写交互通路，不属于这轮补判据的范围。
 
 ## [4.33.25] - 2026-10-08
 
