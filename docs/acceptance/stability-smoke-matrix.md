@@ -137,7 +137,7 @@
 
 | # | 验收项 | 等级 | 证据 | 缺口 |
 |---|---|---|---|---|
-| 23 | 表情回应（群 + 1:1，同一表情多人聚合、能看谁点的与谁最后追加） | **部分 AUTOMATED** | 跨实例：`--round=dmreaction`（B 侧恰好落一条 + `kind` 仍是 `reaction` + 会话 `last_msg`/`last_ts` 一字未动 + A 侧队列由对端 Ack 回收）与群聊轮 `--round=group` 那条 reaction 族；折叠与聚合：`utils/reactions.test.ts`（LWW 折叠、按 `(seq,msg_id)` 排、`ROSTER_VISIBLE` 折 +N）；线上形状：`protocol_tests.rs`（载荷校验、门控位图、"群侧不许被 1:1 门控污染"）；接线：`dmReaction.test.ts` | 三格明写未自动化：① **「折叠成一枚胶囊 + 谁最后追加」是渲染层**，DB 里没有那一格 ⇒ 只有 TS 用例与运行时探针级证据；② **1:1 发送侧门控** harness 判不到（`dm_allowed_by_features` 在 `send_message` 里面，进程外没有"让应用执行一条命令"的入口）⇒ 只有源码护栏 + 单元用例；③ **真机观感**（名单浮层位置、「+N」可读性、移动端 450ms 长按）= MANUAL，本机锁屏未跑 → Smoke-11 |
+| 23 | 表情回应（群 + 1:1，同一表情多人聚合、能看谁点的与谁最后追加） | **部分 AUTOMATED** | 跨实例：`--round=dmreaction`（B 侧恰好落一条 + `kind` 仍是 `reaction` + 会话 `last_msg`/`last_ts` 一字未动 + A 侧队列由对端 Ack 回收）与群聊轮 `--round=group` 那条 reaction 族；折叠与聚合：`utils/reactions.test.ts`（LWW 折叠、按 `(seq,msg_id)` 排、`ROSTER_VISIBLE` 折 +N）；线上形状：`protocol_tests.rs`（载荷校验、门控位图、"群侧不许被 1:1 门控污染"）；接线：`dmReaction.test.ts` | 四格明写未自动化：① **「折叠成一枚胶囊 + 谁最后追加」是渲染层**，DB 里没有那一格 ⇒ 只有 TS 用例与运行时探针级证据；② **1:1 发送侧门控** harness 判不到（`dm_allowed_by_features` 在 `send_message` 里面，进程外没有"让应用执行一条命令"的入口）⇒ 只有源码护栏 + 单元用例；③ **真机观感**（名单浮层位置、「+N」可读性、移动端 450ms 长按）= MANUAL，本机锁屏未跑 → Smoke-11；④ **输入框那个表情面板没走 Teleport** —— `MessageComposer` 里挂的 `<EmojiPicker>`（不传 `placement` ⇒ 默认往上长 `absolute bottom-full`）整块仍留在输入框卡片里面。面板本体固定 300px 高 + 8px 间距 ⇒ 只有「按钮上方不足约 310px」的视口才会切到它，而**键盘把可视高度压到多少是静态推不出来的**；探针那一段只单独挂过 `EmojiPicker`、**没挂过 `MessageComposer`** ⇒ 这一格既没有运行时判据、也不能写成已验，归本行人工 → Smoke-11 |
 
 ## 组合面对账（总任务 §七-4 点名的那 14 条：A+B，而不是"A 绿 + B 绿"）
 
