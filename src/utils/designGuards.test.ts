@@ -1946,3 +1946,40 @@ test("群任务编号只有一个家：字母表与缩短规则在 todos.ts，�
   assert.ok(/\bordinals\b/.test("const ordinals = computed(() => new Map());"), "抓不到位置序号 ⇒ 那句 !test 是空转");
   assert.ok(/\bletter\b/.test("pub letter: String,"), "抓不到载荷里的 letter ⇒ 那句 !test 是空转");
 });
+
+/**
+ * 本人头像只有**一个**渲染处（`SelfAvatar`），且那三处确实都在用它。
+ *
+ * 真实现场（2026-10-07 用户报）：同一个账号在三个地方三张脸 ——
+ * 桌面导航栏是 emoji 小动物、移动端「我的」页顶部是 lucide 的 `UserCircle`（"一个蓝色的图标"）、
+ * 资料页虽是 emoji 却被一层常显的红色相机蒙版整个盖住（"一个红色的卡片"）。
+ * 这类缺陷**编译过、门禁绿、只有肉眼看得出**，所以必须机器盯。
+ *
+ * 两条一起用：正向钉"三个消费点都在"，反向钉"图片那一支没有第二个家"。
+ * 只写正向会漏掉"新站点又手写一份"；只写反向会漏掉"某处被改成不渲染头像"。
+ */
+test("本人头像三处都走 SelfAvatar", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const surfaces = [
+    "components/NavRail.vue",
+    "layouts/ResponsiveLayout.vue",
+    "components/settings/ProfileSection.vue",
+  ];
+  for (const rel of surfaces) {
+    const src = readFileSync(join(srcDir, rel), "utf8");
+    assert.match(src, /import SelfAvatar from "@\/components\/SelfAvatar\.vue";/, `${rel} 必须 import SelfAvatar`);
+    assert.match(src, /<SelfAvatar\b/, `${rel} 必须用 <SelfAvatar> 渲染本人头像`);
+  }
+});
+
+test("SelfAvatar 的那个「唯一数据源」确实是 store，不是各自传进来的 prop", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "components", "SelfAvatar.vue"), "utf8");
+  // 图片与默认脸都从 useAppStore 的 device 现读 —— 这是"三处同一个数据源"这句话的落点。
+  assert.match(src, /const src = computed\(\(\) =>/, "图片要有唯一的取值口");
+  assert.match(src, /app\.device\?\.avatar/, "图片必须来自 app.device.avatar");
+  assert.match(src, /avatarSeedFor\(app\.device\?\.device_id \|\| app\.device\?\.nickname \|\| null\)/,
+    "默认脸的种子必须来自 store 的 device_id（不许用调用点手里那份未保存的昵称）");
+  // 反空转：这条判据读的是真文件；若 SelfAvatar 被改名/删掉，上面三条会一起红，
+  // 而不是"扫到 0 处所以恒真"。
+  assert.match(src, /class="gosslan-avatar-box/, "根节点要带 gosslan-avatar-box（emoji 字号靠它的容器查询）");
+});

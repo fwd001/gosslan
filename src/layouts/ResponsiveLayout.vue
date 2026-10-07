@@ -9,6 +9,7 @@ import { useShortcuts } from "@/composables/useShortcuts";
 import { useBackLayer } from "@/composables/useBackLayer";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import NavRail from "@/components/NavRail.vue";
+import SelfAvatar from "@/components/SelfAvatar.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import ConversationList from "@/components/ConversationList.vue";
 import ChatWindow from "@/components/ChatWindow.vue";
@@ -608,10 +609,10 @@ function onResizeEnd() {
               :aria-label="t('nav.profile')"
               @click="openProfile()"
             >
-              <div class="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--gosslan-primary)]/10 text-2xl text-[var(--gosslan-primary)]">
-                <img v-if="app.device?.avatar" :src="app.device.avatar" alt="" class="h-full w-full object-cover" />
-                <UserCircle v-else class="h-10 w-10" />
-              </div>
+              <!-- 没上传头像时同样是那套 emoji 小动物（用户 2026-10-07：「它是一个蓝色的
+                   一个图标，跟那个头像没有同步」）。原来这里画的是 lucide 的 `UserCircle`
+                   ⇒ 同一个账号在导航栏是 emoji、在「我的」页是个蓝灰人形。 -->
+              <SelfAvatar class="h-14 w-14 shrink-0 rounded-full" />
               <div class="flex min-w-0 flex-1 flex-col">
                 <span class="truncate text-base font-medium" :title="app.device?.nickname || app.device?.device_id || t('nav.me')">{{ app.device?.nickname || app.device?.device_id || t("nav.me") }}</span>
                 <span class="truncate text-xs text-[var(--gosslan-text-2)]" :title="app.device?.device_id">{{ app.device?.device_id || "" }}</span>

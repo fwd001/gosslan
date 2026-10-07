@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { avatarSeedFor } from "@/utils/avatarSeed";
 import { MoreHorizontal, Moon, ScrollText, Settings, Sun } from "lucide-vue-next";
 import UnreadBadge from "@/components/UnreadBadge.vue";
+import SelfAvatar from "@/components/SelfAvatar.vue";
 import { t } from "@/i18n";
 
 const NAV_STATES = ["chats", "contacts", "links", "favorites", "me"] as const;
@@ -27,7 +27,6 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 const chat = useChatStore();
-const seed = computed(() => avatarSeedFor(app.device?.device_id ?? app.device?.nickname));
 
 // ---------------- 二级菜单（设置 / 运行日志 收进这里，用户 2026-09-17） ----------------
 // 惯用法与 ConversationList 的「+」菜单完全一致（useExclusivePopup 互斥 + 键盘可达）。
@@ -108,20 +107,14 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
     <!-- 顶部：本人头像（点开设置/我）；在线点放在 overflow-hidden 按钮外层，避免被裁切 -->
     <div class="relative shrink-0">
       <button
-        class="gosslan-avatar-box flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition hover:opacity-90"
+        class="block transition hover:opacity-90"
         :class="settingsOpening ? 'opacity-60' : ''"
         :aria-busy="settingsOpening"
-        :style="{ backgroundColor: seed?.bg }"
         :title="app.present ? t('nav.me.online') : t('nav.me.offline')"
         :aria-label="t('nav.me.openSettings', { status: app.present ? t('nav.me.online') : t('nav.me.offline') })"
         @click="emit('open-settings')"
       >
-        <img alt="" v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
-        <span
-          v-else
-          class="gosslan-avatar-emoji" aria-hidden="true"
-          >{{ seed?.emoji }}</span
-        >
+        <SelfAvatar class="h-10 w-10 rounded-[var(--gosslan-avatar-radius)]" />
       </button>
       <!-- 本人在线状态点 -->
       <span

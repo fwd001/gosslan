@@ -3,7 +3,7 @@ import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
-import { avatarSeedFor } from "@/utils/avatarSeed";
+import SelfAvatar from "@/components/SelfAvatar.vue";
 import { AVATAR_INPUT_LIMIT_MB, AVATAR_INPUT_MAX_BYTES, AVATAR_SIZE, pickAvatarJpeg } from "@/utils/avatarImage";
 import { Camera } from "lucide-vue-next";
 import { t } from "@/i18n";
@@ -159,24 +159,25 @@ function processAvatar(file: File): Promise<string> {
 <template>
   <SettingsGroup :title="t('settings.group.profile')">
     <div class="flex items-center gap-4 p-4">
-      <!-- 头像：点击更换 -->
+      <!-- 头像本体交给 SelfAvatar：与导航栏、"我的"页同一数据源、同一张默认脸。
+           换头像的入口从"整块红色蒙版"改成右下角标，两个理由：
+           ① 蒙版写的是 `opacity-0 group-hover:opacity-100`，而 `@media (hover: none)` 会把
+              触屏悬停兜底那个类强制成常显（见 style.css）⇒ 手机上头像被整个盖掉，
+              用户看到的就是一张红卡片（2026-10-07 反馈）；
+           ② `--gosslan-danger` 是危险色，"换一张图"不是破坏性动作。
+           角标做成**兄弟节点**而不是塞进 SelfAvatar：那层根节点带 overflow-hidden，
+           负偏移会被裁掉。`preview-src` 传的是本地那份乐观预览（失败会回滚）。 -->
       <button
-        class="gosslan-avatar-box group relative h-16 w-16 shrink-0 overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-        :style="{ backgroundColor: avatarSeedFor(app.device?.device_id ?? nickname)?.bg }"
+        class="relative shrink-0"
         :title="t('settings.profile.changeAvatar')"
         :aria-label="t('settings.profile.changeAvatar')"
         @click="avatarInput?.click()"
       >
-        <img alt="" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
+        <SelfAvatar :preview-src="avatar" class="h-16 w-16 rounded-[var(--gosslan-avatar-radius)]" />
         <span
-          v-else
-          class="gosslan-avatar-emoji" aria-hidden="true"
-          >{{ avatarSeedFor(app.device?.device_id ?? nickname)?.emoji }}</span
+          class="pointer-events-none absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border-2 border-[var(--gosslan-panel)] bg-[var(--gosslan-primary)] text-white"
         >
-        <span
-          class="hover-reveal-op absolute inset-0 flex items-center justify-center bg-[var(--gosslan-danger)] opacity-0 transition group-hover:opacity-100"
-        >
-          <Camera class="h-5 w-5" />
+          <Camera class="h-3.5 w-3.5" :stroke-width="2" />
         </span>
       </button>
 
