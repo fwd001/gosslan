@@ -69,23 +69,91 @@ function check(name, pass, expect, actual) {
   return ok;
 }
 
-/** 找 Chrome for Testing（playwright 缓存）；`GOSSLAN_CHROME` 可覆盖。找不到返回 null。 */
+/**
+ * 找可用浏览器。优先级（2026-10-07 加了第 3 档，负责人点头"用我自己的浏览器跑"）：
+ *   ① `GOSSLAN_CHROME` 指定的那一个（显式覆盖永远第一）；
+ *   ② playwright 缓存里的 Chrome for Testing —— **但"文件存在"不等于"起得来"**：
+ *      本机实测缓存那台丢了 Framework 二进制（`Versions/<ver>/… Framework` 不见了），
+ *      进程一触即溃 ⇒ 探针只会报 "CDP /json/list 里一直没有 page target"，看着像代码问题。
+ *      所以这里做一次性**可加载性**核对（.app 就核对那份 Framework 文件在不在）。
+ *   ③ 系统里已装的 Chromium 系浏览器（Brave / Chrome / Edge / Chromium）。
+ * ⚠️ 三档全空 ⇒ **判红，不是跳过**（§十：没跑不许写成 PASS）。
+ *    走 ③ 时会把"实际用的是谁"打在 `BROWSER_SOURCE` 里并由调用方印出来 ——
+ *    换内核跑属于**可追溯的降级**，不许静默：同一条判据在别的内核上测到的东西名义上不同。
+ */
+let BROWSER_SOURCE = "";
+
+/**
+ * .app 包里的框架二进制是否真在（不在 = 这台装坏了）。
+ *
+ * 判据取自 macOS 的 bundle 布局：`Versions/Current` 是指向真版本目录的符号链接，
+ * 加载器要的是 `Versions/Current/<Bundle 同名> Framework` 那个文件。本机实测那台缓存浏览器
+ * 只剩 `Helpers/Libraries/Resources` 三个目录、这个文件没了 ⇒ dlopen 失败、进程一触即溃，
+ * 而探针只会报"没有 page target"（看着像代码坏了）。所以**存在 ≠ 起得来**。
+ */
+function appBundleLoadable(binPath) {
+  const fwDir = path.join(path.dirname(binPath), "..", "Frameworks");
+  let frameworks;
+  try {
+    frameworks = fs.readdirSync(fwDir);
+  } catch {
+    return true; // 不是 .app 布局（Linux 那种散装），只做可执行核对
+  }
+  const bundle = frameworks.find((n) => /Framework\.framework$/.test(n));
+  if (!bundle) return false;
+  const core = bundle.slice(0, -".framework".length);
+  return fs.existsSync(path.join(fwDir, bundle, "Versions", "Current", core));
+}
+
+function usable(p) {
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+  } catch {
+    return false;
+  }
+  return appBundleLoadable(p);
+}
+
 function findChrome() {
-  if (process.env.GOSSLAN_CHROME && fs.existsSync(process.env.GOSSLAN_CHROME)) {
-    return process.env.GOSSLAN_CHROME;
+  const envBin = process.env.GOSSLAN_CHROME;
+  if (envBin && fs.existsSync(envBin)) {
+    BROWSER_SOURCE = "GOSSLAN_CHROME 指定";
+    return envBin;
   }
   const base = process.platform === "darwin"
     ? path.join(os.homedir(), "Library", "Caches", "ms-playwright")
     : path.join(process.env.HOME || os.homedir(), ".cache", "ms-playwright");
-  if (!fs.existsSync(base)) return null;
   const cands = [];
-  for (const dir of fs.readdirSync(base)) {
-    if (!/^chromium-/.test(dir)) continue;
-    cands.push(path.join(base, dir, "chrome-mac-arm64", "Google Chrome for Testing.app",
-      "Contents", "MacOS", "Google Chrome for Testing"));
-    cands.push(path.join(base, dir, "chrome-linux64", "chrome"));
+  if (fs.existsSync(base)) {
+    for (const dir of fs.readdirSync(base)) {
+      if (!/^chromium-/.test(dir)) continue;
+      cands.push(path.join(base, dir, "chrome-mac-arm64", "Google Chrome for Testing.app",
+        "Contents", "MacOS", "Google Chrome for Testing"));
+      cands.push(path.join(base, dir, "chrome-linux64", "chrome"));
+    }
   }
-  return cands.find((p) => fs.existsSync(p)) ?? null;
+  const pinned = cands.find(usable);
+  if (pinned) {
+    BROWSER_SOURCE = "playwright 缓存（Chrome for Testing）";
+    return pinned;
+  }
+  const system = [
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ];
+  const fallback = system.find(usable);
+  if (fallback) {
+    BROWSER_SOURCE = cands.some((p) => fs.existsSync(p))
+      ? "系统浏览器回退（playwright 缓存里那台存在但装坏了：框架二进制缺失）"
+      : "系统浏览器回退（没装 playwright 那份缓存）";
+    return fallback;
+  }
+  return null;
 }
 
 /** 极简 CDP 客户端：id 配对、一次 eval 一个往返。 */
@@ -698,12 +766,13 @@ async function main() {
   const chrome = findChrome();
   if (!chrome) {
     // 缺件必须红，不能"少一条 ✅"就当过了（§十）
-    check("环境：找得到 Chrome for Testing（playwright 缓存或 GOSSLAN_CHROME）", false,
-      "一个可执行文件", "没找到 —— 这一格就没跑");
+    check("环境：找得到可用浏览器（GOSSLAN_CHROME / playwright 缓存 / 系统 Chromium 系）", false,
+      "一个起得来的 Chromium 系浏览器", "三档都没有（或缓存那台装坏了且系统无同类）—— 这一格就没跑");
     console.log("\n✗ UI 运行时探针：环境缺件，判红（不是跳过）");
     process.exit(1);
   }
   console.log(`· 浏览器：${chrome}`);
+  console.log(`· 来源：${BROWSER_SOURCE}`);
   const viteBin = path.join(ROOT, "node_modules", "vite", "bin", "vite.js");
   if (!fs.existsSync(viteBin)) {
     check("环境：仓里有 vite 可执行（node_modules/vite/bin/vite.js）", false, "存在", "不存在");

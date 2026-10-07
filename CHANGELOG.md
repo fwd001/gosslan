@@ -13,6 +13,21 @@
 
 ## [Unreleased]
 
+### Changed
+- ★ **UI 运行时探针现在会核"这台浏览器起得来"，而不是只看文件在不在**（负责人点头"用我自己的浏览器跑"）：
+  实测那台 playwright 缓存里的 Chrome for Testing 只剩 `Helpers/Libraries/Resources`，
+  `Versions/Current/… Framework` 那个文件不见了 ⇒ dlopen 失败、进程一触即溃，
+  而探针只报 `CDP /json/list 里一直没有 page target` —— **一条环境缺陷被伪装成代码回归**，
+  在这台机器上连着两轮红在同一个位置，措辞一字不差。
+  解析顺序三档：① `GOSSLAN_CHROME`；② 缓存那台（**加一次可加载性核对**）；③ 系统里已装的 Chromium 系
+  （Brave / Chrome / Edge / Chromium，macOS + Linux 路径）。**三档全空仍然判红**，不许把没跑写成 PASS。
+  走 ③ 时会把"实际用的是谁"打在 `· 来源：…` 那一行 ⇒ 换内核属于**可追溯的降级**，不是静默换尺子。
+- 两条实测：真跑 ⇒ `· 来源：系统浏览器回退（playwright 缓存里那台存在但装坏了：框架二进制缺失）` +
+  **63/63 条判据绿**；反证（把系统回退名单临时清空的那份副本）⇒ 退 1 报
+  「环境：找得到可用浏览器（GOSSLAN_CHROME / playwright 缓存 / 系统 Chromium 系）」这条红。
+  环境侧的正解仍是把那台浏览器装回来（`npx playwright install chromium`），那是在他机器上，不在本仓。
+
+
 ## [4.33.17] - 2026-10-07
 
 ### Documentation
