@@ -13,6 +13,28 @@
 
 ## [Unreleased]
 
+## [4.33.17] - 2026-10-07
+
+### Documentation
+- ★ **AOCI 认知层按命令行通道补写本轮的 26 条对象行**（他授权"硬走一遍"）：**新增 17 条**
+  （`transport/handle_*` 5 册、`network/file/*` 5 册、`network/ble/*` 4 册、`i18n/locales/{dict,zh-cn,en-us}` 3 册）
+  **+ 重写 9 条**（`transport.rs` / `network/mod.rs` / `file.rs` / `ble.rs` / `locales.ts` / `file_tests.rs` /
+  `check-domain-deps.mjs` / `check-ble-constants.mjs` / `verify-guards.py`）。
+  索引条目 514 ⇒ **531**（复跑 `grep -c ': F:' aoci.code.txt`），基线文件 876 ⇒ 893。
+  机器事实（修正旧口径"写条目只有 MCP 一条通道"）：`aoci update-entry` 可用，但 `--entry` 必须是
+  **完整规范对象行**（含 `basename[TAG]: ` 键前缀；只给 `F:…|R:…` 会被判 `canonical_object_line=false`），
+  且要带 `--source-sha256`（自己按文件算）；`--preview` 只给人读文本、**不吐 JSON** ⇒ 批量脚本以裸退码为第一信号
+  （我第一版按 JSON 解析，把 26 条成功全报成失败 = 又是"整批读数一模一样 ⇒ 探针读错对象"）。
+- ⚠️ **同一台机器上那条 UI 运行时探针的红已定位成环境缺陷**：playwright 缓存里那台 Chrome for Testing 的
+  Framework 二进制不见了 ⇒ 浏览器起不来、探针报"CDP 里没有 page target"。换个完好的 Chromium 内核跑同一条探针
+  **63/63 全绿**（复跑：`GOSSLAN_CHROME="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" node scripts/check-ui-runtime.mjs`）
+  ⇒ 两条结论：这条红不是本轮回归；界面文案那侧（locales 拆册）在真浏览器里渲染正常。现象与复跑写进
+  `docs/large-file-split-plan.md` §6-bis，**没改探针、没放宽判据**（装回浏览器属于他机器上的动作）。
+- **AOCI 剩下的欠账不是我本轮造的**（现读 `aoci --json check`）：缺条目 56 条、条目过期 25 条、未入基线 55 个
+  —— 绝大多数是 10-06/10-07 那些拆分册（`scripts/e2e/core.mjs`、`e2e/rounds/*`、`guard_cases/*`、`lib_*_tests.rs` 等）
+  一直没补认知。`structure_valid=true`、`governance_aligned=false`、门禁各层不读它 ⇒ 补多少条等他拍板（见工单）。
+
+
 ## [4.33.16] - 2026-10-07
 
 ### Changed

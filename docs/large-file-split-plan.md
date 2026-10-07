@@ -514,6 +514,29 @@ grep -c 'if relay_denied(' src-tauri/src/network/transport.rs src-tauri/src/netw
 | 11 | **视图里那段"读源码的形状判据"自己**：`find("async fn x")` 在聚合文本里会先撞上判据自己的字面量 | 静默失明（本仓最危险那一类）——注入后测试照样绿。10-07 护栏整跑实测抓到 **2 条**：`ble_reader_loop_refreshes_read_activity`、`peripheral_handshake_failure_clears_the_handshaking_mark`，因为 `ble.rs` 的**内联测试模块**排在视图第一段，而函数本体被搬进了最后一段的 `ble/io_loops.rs` | 修法照 `transport/gossip_tests.rs` 的先例：检索式带**行首换行**（`"\nasync fn x"`，别加左括号——带泛型的签名加了就找不到），再加一条 `body.starts_with("async fn x")` 断言窗口真的是函数本体。复跑：`python3 scripts/verify-guards.py --only "BLE 读循环必须回灌读活性"` |
 | 10 | `docs/ARCHITECTURE-MAP.html` 的节点 `paths` | 图变成第二份名单 ⇒ 只在 notes 里指回 domains.data.mjs，逐册名单不抄 | 改完 `node --check` 那段内嵌 script |
 
+### 6-bis 本轮整层证据里那一条红：是环境坏了，不是代码坏了（现量，别再重查一遍）
+
+本地/E2E 层（`--group local`，21 步）在两个不同的 tip 上各红过同一步，正文与措辞一模一样：
+`❌ 探针自己跑完了（没在半路抛错） 预期 "正常结束" / 实际 "CDP /json/list 里一直没有 page target"`。
+**根因已定位**：playwright 缓存里那台 Chrome for Testing 的框架二进制不见了（目录只剩 `Helpers/Libraries/Resources`，
+`Versions/153.0.8010.12/Google Chrome for Testing Framework` 这个文件不存在）⇒ 浏览器起不来，探针自己那条
+注释就写了"缺浏览器时这一条是红，不是跳过"。复跑（现读）：
+
+```bash
+ls "/Users/$USER/Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents/Frameworks/Google Chrome for Testing Framework.framework/Versions/153.0.8010.12/"
+# 期望看到那个 Framework 文件；现在看不到 = 环境坏了，与本轮搬家无关
+```
+
+**同一台机器上换一个完好的 Chromium 内核浏览器跑同一条探针：63/63 条判据全绿**（探针支持 `GOSSLAN_CHROME` 覆盖）：
+
+```bash
+GOSSLAN_CHROME="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" node scripts/check-ui-runtime.mjs
+```
+
+⇒ 两件事一起被证明：① 那条红是环境缺陷，不是这轮拆分的回归；② 界面文案那侧（`i18n/locales.ts` 拆成门面 + 中英两册）
+在真浏览器里渲染正常。修法在他机器上（装回那台浏览器，或把探针固定指到可用的 Chromium），**不在本仓范围**，
+所以这里只登记现象与复跑命令，不改探针、不放宽判据。
+
 一把跑完的便宜层（秒级到十几秒，不含护栏整跑与 E2E）：
 ```bash
 npm run verify        # 快速层 17 步：上面第 3–10 行除了 cargo 侧那两条都在这里
