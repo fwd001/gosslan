@@ -1143,6 +1143,7 @@ async function copyFileToClipboard() {
           <div
             v-if="reactionPickerOpen && reactionPickerPos"
             :ref="setReactionPickerEl"
+            data-reaction-picker
             class="fixed z-[70] w-[min(360px,calc(100vw-2rem))]"
             :style="reactionPickerStyle"
             @click.stop

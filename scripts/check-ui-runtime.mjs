@@ -236,6 +236,25 @@ class Cdp {
     send(x, y);
     await sleep(120);
   }
+  /**
+   * 真的按下一次左键（mouseMoved → mousePressed → mouseReleased）。
+   * 和 hover 同理：DOM 上 `el.click()` 不经过命中测试，也就照不出"这颗按钮其实被谁盖住了"。
+   */
+  async click(x, y) {
+    const base = { x, y, button: "left", clickCount: 1 };
+    this.ws.send(JSON.stringify({
+      id: ++this.seq, method: "Input.dispatchMouseEvent", params: { type: "mouseMoved", ...base },
+    }));
+    await sleep(40);
+    this.ws.send(JSON.stringify({
+      id: ++this.seq, method: "Input.dispatchMouseEvent", params: { type: "mousePressed", ...base },
+    }));
+    await sleep(60);
+    this.ws.send(JSON.stringify({
+      id: ++this.seq, method: "Input.dispatchMouseEvent", params: { type: "mouseReleased", ...base },
+    }));
+    await sleep(160);
+  }
 }
 
 // ── 页面侧装进 window 的夹具（一次装好，之后每步只调函数）────────────
@@ -1507,6 +1526,53 @@ async function rosterChecks(cdp, url) {
     "短名字面板 " + r2.width + "px / 长名字面板 " + r1.width + "px");
   await shot("many");
 
+  // ============ 隔壁那支表情选择器：同一个坑的第二次现场 ============
+  // 这块面板宽 min(360px, 视口-32)，是这一类里最容易被窗口边缘切到的一支。
+  // 4.33.25 那轮它只有静态那一半守着（没有"点开"的通路），这里补上：真点一下入口按钮，
+  // 再对**那层壳**判 escape、对**里面的面板**判在不在视口内。
+  //   ⚠️ 两个对象不能混：壳是零高度的（它的孩子全 absolute），量壳的矩形证明不了"看得见"；
+  //      而里面那块面板是 absolute —— 对它只许读 inViewport，escapes 那一栏在这形状下本来就是假的
+  //      （absolute 的祖先里当然有 overflow，它的包含块是这层 fixed 壳，不该拿去判裁切）。
+  const eb = await cdp.eval("(function(){var b=document.querySelector('[data-reaction-entry]');"
+    + "if(!b)return null;var r=b.getBoundingClientRect();"
+    + "return {x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),"
+    + " display: getComputedStyle(b).display};})()");
+  check("选择器：拿得到表情入口那颗按钮的落点（点开的坐标来源）", !!eb, "entry 非空", JSON.stringify(eb));
+  let pickerOpen = false;
+  for (let k = 0; k < 5 && !pickerOpen; k += 1) {
+    await cdp.hover(Math.max(2, eb.x - 80), eb.y);
+    await cdp.click(eb.x, eb.y);
+    pickerOpen = !!(await cdp.eval("!!document.querySelector('[data-reaction-picker]')"));
+  }
+  const fp = await cdp.eval("window.__probe.floatLayer('[data-reaction-picker]')");
+  const pp = await cdp.eval("window.__probe.floatLayer('[data-reaction-picker] [role=dialog]')");
+  check("选择器：点开之后那层壳 escape 出裁切容器（挂在 body 上 + 没有祖先裁得到它）",
+    pickerOpen === true && fp.ok === true && fp.parentIsBody === true && fp.escapes === true,
+    "开得出、挂 body、且 escapes",
+    "开=" + pickerOpen + " 挂body=" + fp.parentIsBody + " position=" + fp.position
+      + " 切得到它的祖先=" + JSON.stringify(fp.clipped)
+      + " 变成包含块的祖先=" + JSON.stringify(fp.breakers));
+  check("选择器：那块面板整个在视口内（量的是里面的 dialog，不是零高度的壳）",
+    pp.ok === true && pp.inViewport === true,
+    "面板四边都在视口内",
+    "rect=" + JSON.stringify(pp.rect) + " 视口=" + pp.vw + "x" + pp.vh
+      + " 宽=" + (pp.rect.r - pp.rect.l) + " 高=" + (pp.rect.bo - pp.rect.t));
+  // 反面对照：把壳的 fixed 坐标推到视口右缘外 ⇒ 里面那块面板必须跟着出去
+  await cdp.eval("(function(){var el=document.querySelector('[data-reaction-picker]');"
+    + "if(!el)return false;el._o={left: el.style.left, right: el.style.right};"
+    + "el.style.right='auto';el.style.left=(window.innerWidth - 20) + 'px';return true;})()");
+  const ppOut = await cdp.eval("window.__probe.floatLayer('[data-reaction-picker] [role=dialog]')");
+  check("对照：把选择器那层壳推到视口右缘外 ⇒ 面板必须落到视口外（证明那条视口判据会咬）",
+    ppOut.ok === true && ppOut.inViewport === false,
+    "inViewport === false",
+    "rect=" + JSON.stringify(ppOut.rect) + " 视口=" + ppOut.vw);
+  await cdp.eval("(function(){var el=document.querySelector('[data-reaction-picker]');"
+    + "if(!el||!el._o)return false;el.style.left=el._o.left;el.style.right=el._o.right;"
+    + "delete el._o;return true;})()");
+  const ppBack = await cdp.eval("window.__probe.floatLayer('[data-reaction-picker] [role=dialog]')");
+  check("对照可逆：壳换回原来的锚点之后，面板又整个回到视口内（对照自己不留残留）",
+    ppBack.ok === true && ppBack.inViewport === true,
+    "inViewport === true", "rect=" + JSON.stringify(ppBack.rect));
 }
 
 /**
