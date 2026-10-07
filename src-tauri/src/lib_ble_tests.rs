@@ -25,7 +25,7 @@
     /// **保留**"对端不广播 ⇒ 必须我们拨"这个活口 —— 两条都不能被删掉。
     #[test]
     fn ble_link_has_a_designated_dialer() {
-        let ble = include_str!("network/ble.rs");
+        let ble = &crate::network::ble_src_for_guards();
         let body = rust_fn_body(ble, "fn should_dial_ble(");
         assert!(
             body.contains("my_id > peer_id"),
@@ -64,7 +64,7 @@
     /// ② 被丢掉的前导帧**不能**进 `handle_message`（身份未验签，那是一条安全边界）。
     #[test]
     fn ble_handshake_skips_leading_frames_without_processing_them() {
-        let ble = include_str!("network/ble.rs");
+        let ble = &crate::network::ble_src_for_guards();
         let ble_f = code_flat(ble);
         assert!(
             ble_f.contains("read_hello_frame(&mutreader,HANDSHAKE_TIMEOUT"),
@@ -102,7 +102,7 @@
     /// ④ 分片级统计必须存在（否则"没发出去"与"没收到"永远分不清）。
     #[test]
     fn ble_dial_is_deduplicated_and_disconnects_on_failure() {
-        let ble = include_str!("network/ble.rs");
+        let ble = &crate::network::ble_src_for_guards();
         let dial = rust_fn_body(ble, "async fn dial_and_register(");
         assert!(
             dial.contains("DialGuard::try_acquire") && dial.contains("ble:{ble_id}"),
@@ -154,7 +154,7 @@
             "最后一片之后不该再等（否则每帧白等一个间隔）"
         );
         // 发送侧的分片数必须留痕：与对端的 [FRAG] 数字对照才能判"发少了 / 收丢了"
-        let ble = include_str!("network/ble.rs");
+        let ble = &crate::network::ble_src_for_guards();
         assert!(
             ble.contains("分片={n}"),
             "写循环必须打出发出的分片数（与对端 [FRAG] 对照）"
@@ -208,7 +208,7 @@
             "文件分片不得逐条选路（跨连接乱序）"
         );
 
-        let ble = include_str!("network/ble.rs");
+        let ble = &crate::network::ble_src_for_guards();
         assert!(
             ble.contains("丢弃无法分片的帧（链路保留）"),
             "「帧无法分片」只该丢这一帧：拆链路会让同连接上其它传输一起失败"
@@ -275,7 +275,7 @@
             "必须在注释里写清为什么不能过滤 —— 否则下一个人很容易『顺手补一个校验』"
         );
         // 扫到候选必须留痕（否则这类缺陷在日志里完全不可见）
-        let ble = include_str!("network/ble.rs");
+        let ble = &crate::network::ble_src_for_guards();
         assert!(
             ble.contains("BLE 扫描：收到"),
             "每次扫描都要打日志（收到的广播总数 + 其中本服务的个数）：真机上这是区分\
@@ -295,7 +295,7 @@
     /// 收到的类型名 —— 否则下次真机日志里还是只有一句"不是 Hello"，无从下手。
     #[test]
     fn peripheral_reconnect_hello_replaces_the_stale_route() {
-        let ble = include_str!("network/ble.rs");
+        let ble = &crate::network::ble_src_for_guards();
         let action = rust_fn_body(ble, "fn peripheral_route_action(");
         assert!(
             action.contains("!has_route || frame_is_hello"),
@@ -367,7 +367,7 @@
     /// 只打 `type=?`，真机上完全看不出为什么写失败）。
     #[test]
     fn ble_write_failure_retries_then_tears_the_link_down() {
-        let ble = include_str!("network/ble.rs");
+        let ble = &crate::network::ble_src_for_guards();
         let body = rust_fn_body(ble, "async fn ble_writer_loop<S: FrameSink + 'static>(");
         assert!(
             body.contains("WRITE_RETRY_ATTEMPTS"),
@@ -423,7 +423,7 @@
     /// `stop()` 拿不到 handle ⇒ 发不出停机信号 ⇒ 那个外设任务永远活着（蓝牙关不掉）。
     #[test]
     fn ble_start_does_not_block_on_the_peripheral_state_wait() {
-        let ble = include_str!("network/ble.rs");
+        let ble = &crate::network::ble_src_for_guards();
         let body = rust_fn_body(ble, "pub async fn start(state: Arc<AppState>)");
         assert!(
             !body.contains("start_peripheral(state.clone(), shutdown_tx.subscribe()).await"),

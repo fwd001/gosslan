@@ -159,7 +159,7 @@ pub struct PeripheralStart {
 /// 阻塞 `join()`（`windows-future` 的 inherent 方法）可以直接等它 —— 建服务只有一次，
 /// 阻塞几十毫秒无妨，换来的是三个平台 `start()` 同形（`network/ble.rs` 零差异）。
 ///
-/// 失败就返回 `Err`：上层（`network/ble.rs::start_peripheral`）只记 warn 并继续做 central，
+/// 失败就返回 `Err`：上层（`network/ble/peripheral.rs::start_peripheral`）只记 warn 并继续做 central，
 /// **绝不影响局域网**。
 pub fn start() -> Result<PeripheralStart, String> {
     let (tx, rx) = mpsc::unbounded_channel();

@@ -187,7 +187,21 @@ for (const [name, home] of Object.entries(CANONICAL)) {
 console.log("\n判据 B：BLE 领域内不许用匿名常量重述受保护的字面量");
 const constDefRe = /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[^=]+=\s*([^;]+);/;
 let bFindings = 0;
-for (const rel of BLE_DOMAIN_FILES) {
+/**
+ * 判据 B 的**实际扫描面** = 点名的那几本 + `network/ble/` 目录下的全部文件（动态展开）。
+ *
+ * 2026-10-07：`network/ble.rs` 按角色切成 `include!` 分册（central / peripheral / frame_io / io_loops），
+ * 硬编码清单对新册是**静默失明**的 —— 漏扫不会红，只会让"匿名常量重述受保护字面量"这类缺陷
+ * 在新册里永远通过（本仓最忌讳的假绿形状）。所以那一侧改成按目录取。
+ * 点名的几本仍逐条做存在性检查（下面那句 `✗ 清单里的文件不存在`）：改名是响亮的，漏扫是沉默的，
+ * 沉默的那一半必须由目录覆盖兜住。
+ */
+function bleScanFace() {
+  const inBleDir = files.map((f) => f.rel).filter((r) => r.startsWith("network/ble/")).sort();
+  return [...BLE_DOMAIN_FILES, ...inBleDir];
+}
+
+for (const rel of bleScanFace()) {
   const f = byRel.get(rel);
   if (!f) {
     ok = false;
@@ -218,7 +232,7 @@ for (const rel of BLE_DOMAIN_FILES) {
   });
 }
 if (bFindings === 0) {
-  console.log(`  ✓ BLE 领域的 ${BLE_DOMAIN_FILES.length} 个文件里没有匿名重述`);
+  console.log(`  ✓ BLE 领域的 ${bleScanFace().length} 个文件里没有匿名重述（点名 ${BLE_DOMAIN_FILES.length} + network/ble/ 目录动态展开）`);
 }
 
 // ---------------- 判据 C：三个外设平台必须委托给规范换算 ----------------

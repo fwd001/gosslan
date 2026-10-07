@@ -234,6 +234,9 @@ export default {
       tier: "L3",
       paths: [
         "src-tauri/src/network/ble.rs", // BLE 中央角色（活）
+        // 分册目录：`network/ble/{central,peripheral,frame_io,io_loops}.rs`（2026-10-07 按角色切，
+        // `include!` 回同一模块 ⇒ 同域）。与 file 那册同一条理由：按目录认领，视图登记才逐册。
+        "src-tauri/src/network/ble",
         "src-tauri/src/network/transport.rs", // TCP 数据面（活，主文件；正按 include! 分册中）
         "src-tauri/src/network/transport/tests.rs", // 分册：行为测试的模块壳（只剩 use + 15 行 include!，2026-10-06 再切）
         "src-tauri/src/network/transport/outbound.rs", // 分册：出站投递 + 链路选路（同模块，非新领域）

@@ -298,6 +298,28 @@ pub(crate) fn file_src_for_guards() -> String {
     src
 }
 
+/// `ble` 模块的**生产码全集视图**（与上面两份同一条规矩；`#[cfg(test)]` 是因为只有守卫读它）。
+///
+/// 2026-10-07：`network/ble.rs` 从 2,392 行按角色切成四册（central 扫描拨号 / 外设 accept /
+/// 帧读写抽象 / 读写循环）。`include_str!` 看不见 `include!` 的展开 ⇒ 形状守卫一律读这份视图，
+/// 登记对账由 `lib_source_view_tests.rs` 的第五个用例钉两侧。
+/// ⚠️ 本模块整体在 `#[cfg(feature = "bluetooth")]` 之后，但**视图不需要那个 feature**：
+/// `include_str!` 读的是文本，所以 `lib_ble_tests.rs` 在未开蓝牙的测试构建里也读得到分册内容。
+#[cfg(test)]
+pub(crate) fn ble_src_for_guards() -> String {
+    let mut src = String::new();
+    src.push_str(include_str!("ble.rs"));
+    src.push('\n');
+    src.push_str(include_str!("ble/central.rs"));
+    src.push('\n');
+    src.push_str(include_str!("ble/peripheral.rs"));
+    src.push('\n');
+    src.push_str(include_str!("ble/frame_io.rs"));
+    src.push('\n');
+    src.push_str(include_str!("ble/io_loops.rs"));
+    src
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

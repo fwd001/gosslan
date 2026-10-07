@@ -69,10 +69,12 @@
     #[test]
     fn link_queues_are_created_from_one_place() {
         let mut src = crate::network::transport_src_for_guards();
-        // 路径相对**本文件**：这段测试原来在 `network/transport.rs` 里，`ble.rs` 指的就是
-        // 同目录之上的 `network/ble.rs`；搬进 `network/transport/` 之后必须写 `../ble.rs`，
-        // 否则读到的是不存在的路径（编译器直接拒，不会静默）。
-        src.push_str(include_str!("../ble.rs"));
+        // BLE 那半边读 `network::ble_src_for_guards()`（2026-10-07 起 ble.rs 按角色切成 include! 分册，
+        // 两个建链点搬进了 `ble/central.rs` 与 `ble/peripheral.rs`）。
+        // 这里原来是 `src.push_str(include_str!("../ble.rs"))` —— 读单个文件在搬家后会**少数**：
+        // 这条判据钉的是"四个建链点都走同一个策略"，只看见主册就变成 3 处 ⇒ 报红的形状是"少了建链点"，
+        // 而真正少的只是守卫的视野（假红，会指挥下一个人去"补一个并不缺的建链点"）。
+        src.push_str(&crate::network::ble_src_for_guards());
         // 两个探针都**拼起来写**：本文件就是被扫的源码之一，直接写字面量会数进自己
         // （今天已经在别处被这个坑咬过两次：一次假过、一次假红）。
         let literal = "mpsc::channel(10".to_string() + "24)";

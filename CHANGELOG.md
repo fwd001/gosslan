@@ -13,6 +13,40 @@
 
 ## [Unreleased]
 
+## [4.33.15] - 2026-10-07
+
+### Changed
+- ★ **`src-tauri/src/network/ble.rs` 按角色切成四册（tier-2 第三轮，也是 2,000–3,000 那一档的最后一本）**：
+  2,392 行 ⇒ 主文件 **745 行**（常量 + `start`/`stop` + 链路拆除 + 帧诊断 + 那份 274 行的内联测试模块）+
+  `ble/central.rs` 777（扫描→该不该拨→拨号→握手验签→登记链路，含拨号退避）+
+  `ble/peripheral.rs` 536（起广播→收 central→首帧判路由→握手→建链与顶替旧链）+
+  `ble/io_loops.rs` 275（三级抢占写循环 + 读活性判据，两条角色跑同一对循环）+
+  `ble/frame_io.rs` 112（`FrameSink`/`FrameSource` 两个 trait、四个 impl、两个薄封装）。
+  边界依据是模块文档自己那句："这一层只补两件 BLE 专属的事：**扫描/连接** 与 **分片收发**"。
+  分册不各写 `#[cfg(feature = "bluetooth")]` —— `network/mod.rs:10` 门控整个模块，`include!` 继承它。
+- **自证同一套**：`cargo test --features bluetooth --lib` 789 passed / 0 failed；`-- --list` 789 条用例名
+  与基线**差集 0 行**；clippy（门禁形态）干净；`verify-guards.py --list` 仍是"202 条锚点各命中一次"；
+  `check-ble-constants` 扫描面点名 6 + 目录动态展开 4 = 10 个文件；`check-domain-deps` 在这一刀之后
+  仍报 **30 处 / 6 对**（与拆分前同一个数 ⇒ 上一条口径改准是搬家不变的，不是把洞说小）。
+- **两处尺子跟着搬家改口（都是响亮的那种，靠现跑抓到）**：
+  · `network/mod.rs::ble_src_for_guards()` 立成第三个家 ⇒ 11 处读 `ble.rs` 文本的形状守卫
+    （`lib_ble_tests.rs` 9 处 + `ble.rs` 自己测试模块里 2 处 `include_str!("ble.rs")`）改读它；
+    `lib_source_view_tests.rs` 的登记对账 4 个用例 ⇒ **5 个**（canary = `ble/central.rs`）。
+  · `scripts/check-ble-constants.mjs` 的 `BLE_DOMAIN_FILES` 是**硬编码文件清单**：新册落在
+    `network/ble/` 里它不会红、只会永远看不见 ⇒ 判据 B 的扫描面改成"点名 6 + `network/ble/` 目录动态展开"，
+    分母由脚本自己打印。反证真跑：往 `ble/central.rs` 塞一行 `const GATT_CHUNK_PROBE: usize = 512;`
+    ⇒ `✗ network/ble/central.rs:2 const GATT_CHUNK_PROBE = 512`（退 1），删掉后回到 10 个文件 / 退 0。
+- ⚠️ **一条我自己数错的分母，记在这里因为它是流程缺陷而不是笔误**：动手前我把"读 ble.rs 文本的守卫"
+  数成 11 处（`include_str!("network/ble.rs")` + `include_str!("ble.rs")` 两种拼法），实际**还有第 12 处**
+  写成 `include_str!("../ble.rs")`（在 `network/transport/queue_tests.rs`，跨目录相对拼法）。
+  它是靠 `cargo test` 真跑红才现形的（`应为「定义 1 处 + 四个建链点各 1 处」left: 3 right: 5`），
+  而红报的形状是"少了建链点"——那会把下一个人推向"补一个并不缺的建链点"。
+  复跑口径：`grep -rnoE 'include_str!("[^"]*ble\.rs")' src-tauri/src scripts`（最宽形状，先修尺子再下结论）。
+- 契约图 `docs/ARCHITECTURE-MAP.html`：transport 与 files 两个节点的 `paths` 各补一条**目录**认领
+  （`network/ble`、`network/file`），并在 notes 写明"逐册名单的唯一来源是 `docs/domains.data.mjs`，
+  这张图不抄第二份"。改完按老规矩 `node --check` 那段内嵌 script（1 段，语法通过）。
+
+
 ## [4.33.14] - 2026-10-07
 
 ### Changed
