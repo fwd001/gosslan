@@ -1196,7 +1196,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         | Message::FileDone { .. }) => handle_file_messages(state, peer_id, m).await,
         Message::Gossip { envelope } => {
             handle_gossip(state, peer_id, envelope).await;
-        } // ---- 中继文件传输 ----
+        }
     }
 }
 
