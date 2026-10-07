@@ -174,6 +174,7 @@ EOF
 `startup 1,281` 与 `dispatch 1,658`（含 `handle_message` 那 1,562 行）留在主文件里 ——
 把它们再搬出去只剩"壳里再套一层壳"，而**文件级已经进阈值**；真正该动的是**函数级**拆分，
 那是会改控制流的重构、和"只搬不改"不能混在一次提交里 ⇒ 另案（见本节末"剩余"）。
+**这条另案已于 2026-10-07 执行完**（他点头后一族一提交）⇒ 现量见 §5.1-bis，主文件由 2,742 落到 1,394。
 
 锚点按节分布是**现算**的（import 那份守卫脚本读它自己的 `CASES` 列表，不另写一份解析）：
 
@@ -354,8 +355,8 @@ PY
     **每轮恰好 1 红且都是同一格**「报告带两张全屏帧」（会话锁定 ⇒ 环境判不了，照旧不放宽），条数与判据 C 现算一致；
     `--fault=poison-part-lie` 22 条里 2 条设计红 + 1 条环境红 ⇒ 反证那条路径仍然说话。
 
-然后是**函数级**的 `handle_message`（1,562 行，`transport.rs:993-2554`）/ `handle_gossip`
-（840 行，`transport/gossip.rs:124-963`）拆分 —— 那是真重构、另案提交。
+然后是**函数级**的 `handle_message` 拆分 —— 2026-10-07 他点头后按族做完，实测形状见 §5.1-bis；
+`handle_gossip`（840 行，`transport/gossip.rs:124-963`）的判定见 §5.1-ter。
 
 ## 5. 「更优雅的写法」实测到哪一步（函数级，不动文件大小）
 
@@ -378,10 +379,73 @@ PY
 （现算 7 处）。⇒ **「一个消息族一个 handler」在这里是机械活而不是重写**：
 新函数只需要 `(&AppState, &str peer_id)` 加上自己那几个解构字段，不需要造上下文结构体。
 
-⚠️ 但这一刀**不让任何文件变小**（`transport.rs` 早已在阈值内），改的又是控制流 ⇒
-按本仓既有口径属于「真重构」，而 2026-09-25 复审时这一处已被判过「纯搬家、短期只降稳定」而暂缓 ⇒
-**等他点头再动**。真要动：一族一提交，每步跑与前五刀同一套恒等判据
-（`cargo test --lib -- --list` 的 789 条差集 0 行 + `verify-guards.py --list` 的 202 条 + clippy/fmt/快速层）。
+⚠️ 这一刀的**前提**（不共享局部量 ⇒ 机械搬家）经上面现算成立，2026-10-07 他点头后按族执行完；
+`handle_gossip` 的前提**不成立**，判定见 §5.1-ter。
+
+### 5.1-bis `handle_message` 拆完后的实测形状（2026-10-07，一族一个提交，五族做完）
+
+```bash
+python3 - <<'PY'
+import io,re
+L=io.open('src-tauri/src/network/transport.rs',encoding='utf-8').read().split('\n')
+s=next(i for i,l in enumerate(L) if l.startswith('pub async fn handle_message('))
+e=s
+while L[e] != '}': e += 1
+body=L[s+1:e]
+print('函数体行数', e-s+1, '(', s+1, '-', e+1, ')')
+print('委托臂', sum(1 for l in body if re.match(r'^        m @ \(Message::', l)))
+print('原地臂', sum(1 for l in body if re.match(r'^        Message::', l)))
+PY
+```
+
+实测（2026-10-07）：**函数体 1,562 ⇒ 179 行**，臂 **5 条委托 + 3 条原地**。
+委托臂一律 `m @ (Message::A { .. } | Message::B { .. }) => handle_xxx(state, peer_id, m).await`
+（分发臂不绑字段，解构留在分册里那条同形状的模式上 ⇒ 处理体逐字没动）。
+原地那 3 条是 `Unknown`（只记一条日志）、`OpaqueExternal`（mesh 转投，含中继授权闸）、
+`Gossip { envelope }`（转 `gossip.rs`）—— 都不属于"某个消息族"，留在分发处才是内聚。
+
+| 分册（`src-tauri/src/network/transport/`） | 入口函数 | 变体数 | 行数 |
+|---|---|---|---|
+| `handle_file.rs` | `handle_file_messages` | 6 | 516 |
+| `handle_share.rs` | `handle_share_and_relay_messages` | 6 | 255 |
+| `handle_group.rs` | `handle_group_messages` | 11 | 184 |
+| `handle_identity.rs` | `handle_identity_and_friend_messages` | 8 | 283 |
+| `handle_messaging.rs` | `handle_messaging_arm` | 4 | 252 |
+
+⇒ **搬出 35 个变体 / 留 3**，`transport.rs` 2,742 ⇒ **1,394 行**（现算 `wc -l`）。
+每族一条链：搬 ⇒ `cargo fmt` ⇒ `cargo test --features bluetooth --lib` ⇒ clippy ⇒
+`verify-guards.py --list`（锚点 202 条不变）⇒ **用例名差集 0**（`-- --list` 对 `test-baseline.macos.txt`）⇒
+CHANGELOG ⇒ `version:patch` ⇒ `check-change-budget --staged` 读半径 ⇒ 提交。
+
+**这一轨真正需要改尺子的地方**（与文件级搬家不同）：形状守卫是**按函数名开窗**读源码的，
+处理体一搬走窗就找不到 ⇒ 它们会**响亮地红**（不是静默失明），同批把锚点改指分册入口：
+`lib_file_tests.rs` 一处 → `async fn handle_file_messages(`、`lib_friend_identity_tests.rs` 两处 →
+`async fn handle_identity_and_friend_messages(`；`transport/gossip_tests.rs` 那条读的是
+`transport_src_for_guards()` 的**聚合文本**，所以它跟着 `include!` 树自动搬，一字未改（现算复跑见 §4 末）。
+
+### 5.1-ter `handle_gossip`（840 行）量完前提后的判定：**这一条不拆**，理由是可复跑的数
+
+`handle_message` 能机械搬，靠的是"臂与臂之间不共享局部量"。同一个探针用在 `handle_gossip` 上：
+
+```bash
+python3 - <<'PY'
+import io,re
+L=io.open('src-tauri/src/network/transport/gossip.rs',encoding='utf-8').read().split('\n')
+mi=next(i for i,l in enumerate(L) if 'match &env.kind' in l)
+pre=L[124:mi]; arms=L[mi:962]
+names={m.group(1) for l in pre for m in [re.match(r'^\s*let\s+(?:mut\s+)?(\w+)', l)] if m}
+print('match 之前 let 出的名字', sorted(names))
+print('臂体内又被引用的', sorted(n for n in names if re.search(r'\b'+n+r'\b', '\n'.join(arms))))
+PY
+```
+
+实测：**`peers` / `gossip` / `plaintext` / `dbc` 四个名字在 `match &env.kind` 之前绑定、臂体里继续用**，
+其中 `peers`、`gossip` 是 `state.peers.lock()` / `state.gossip.lock()` 的**守卫量**。
+⇒ 按 kind 拆 handler 要么把 `MutexGuard` 当参数传（借断检查会连锁改写每条臂），
+要么造一个上下文结构体（那是重新设计，不是搬家）——**这条不满足"机械搬家"的前提**。
+加上 `gossip.rs` 只有 965 行、早已在阈值内，2026-09-25 复审对同类形状（`handle_message` 当时那一版）
+给的判定也是「纯搬家、短期只降稳定」⇒ **本轮不动，写下理由**。
+真要动：先做一次"锁的收家"（谁能持锁、持多久）而不是先切函数。
 
 ### 5.2 抓到并已修掉一处真缺陷：中继授权闸曾有 **3 个家**，而当时的判据正替那个形状把关（2026-10-07 收家）
 

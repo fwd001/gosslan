@@ -1058,7 +1058,9 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 `sent` 只证明字节写出去了、没有送达证据；`failed` / `cancelled` 更不是终点 ——
 
 > **`failed` 必须还能改回 `active`**：`retry_incomplete_content` 复用同一个 `transfer_id`
-> 发 `ContentRequest`（`network/transport.rs:2644`）。把 `failed` 一起钉死的后果是
+> 发 `ContentRequest`（`network/transport.rs:919`；2026-10-07 函数级拆分后这个函数**没搬**，
+> 它唯一的调用点搬进了 `network/transport/handle_identity.rs:103`，复跑
+> `grep -rn "retry_incomplete_content(" src-tauri/src --include=*.rs`）。把 `failed` 一起钉死的后果是
 > "一判死就永远停在失败，而字节其实还在流" —— 那恰好是本条要修的缺陷的反面。
 > 反向判据：`cascade_tests::a_failed_row_can_be_reactivated_by_the_next_attempt`。
 
