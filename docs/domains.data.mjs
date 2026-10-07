@@ -254,6 +254,15 @@ export default {
         "src-tauri/src/network/transport/peer_registry.rs", // 分册（同模块，2026-10-06 第三批搬出）
         "src-tauri/src/network/transport/handshake.rs", // 分册（同模块，2026-10-06 第四批搬出）
         "src-tauri/src/network/transport/dial.rs", // 分册（同模块，2026-10-06 第四批搬出）
+        // ↓ 2026-10-07：`handle_message` 按**消息族**做函数级拆分后各族的入口册。
+        // 同模块（`transport.rs` 用 include! 贴回同一个模块 ⇒ 模块路径/可见性/测试名全不变），
+        // 所以这不是新领域，只是"分发留在主文件、处理体各归一册"。
+        // 漏登记会被 `check-domain-map.mjs` 判据 D 当场拦下（"无主文件"），不会静默失明。
+        "src-tauri/src/network/transport/handle_file.rs", // 分册：单聊文件传输 6 个变体的处理体
+        "src-tauri/src/network/transport/handle_share.rs", // 分册：共享目录拉取 + 单跳中继 6 个变体
+        "src-tauri/src/network/transport/handle_group.rs", // 分册：群聊成员/密钥/群文件 11 个变体
+        "src-tauri/src/network/transport/handle_identity.rs", // 分册：身份握手与好友关系 8 个变体
+        "src-tauri/src/network/transport/handle_messaging.rs", // 分册：消息与送达回执 4 个变体
         // ↓ 2026-10-06：`tests.rs`（原 3,227 行、113 个顶层项）按内聚再切 15 册。
         // 册名一律以 `_tests.rs` 结尾 —— `lib_tests.rs` 的登记对账守卫按这个后缀把它们豁免在
         // 「生产码全集」视图之外（视图只装生产码）。这些是测试分册，不是新领域。
