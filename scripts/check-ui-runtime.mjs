@@ -518,16 +518,58 @@ window.__probe = (() => {
   });
 
   /**
-   * 直接在胶囊上派发一次真 mouseenter（走组件里同一条 "canHover && reveal(...)" 处理器、
-   * 同一个 currentTarget、同一套 getBoundingClientRect）。
-   * 只在真鼠标投递不过来时兜底，用途与边界写在调用点 hoverInto 上。
+   * 通用「浮层会不会被裁」量具 —— 量的是整类缺陷的共同不变量（表情名单、已读列表、
+   * 表情选择器是同一个坑的三次现场：absolute 浮层挂在带 overflow 的滚动容器里就一定被切）。
+   *
+   * 按 CSS 实际语义合成**一条**判据，不钉三条其中两条只是另一条的推论：
+   *  1) position:fixed 的包含块是视口 ⇒ 中间祖先的 overflow 裁不到它，body/html 的
+   *     overflow 也裁不到它（实测这个夹具页 body 就是 hidden/hidden ⇒ 把 body 算进链
+   *     就永远是假红）。真能裁到它的只有「祖先变成了包含块」⇒ transform/filter/
+   *     perspective/will-change/contain:paint 这一类连 body/html 一起查，记进 breakers。
+   *  2) 非 fixed ⇒ 往上（含 body/html）任何 overflow 不是 visible 的祖先都切它，记进 clipped。
+   * 两者都空 = escapes（没有任何东西裁得到它）。
    */
-  H.dispatchEnter = (i) => {
-    const all = document.querySelectorAll('[data-reaction-chip]');
-    const el = all[i] ?? all[0];
-    if (!el) return false;
-    el.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false, cancelable: false }));
-    return true;
+  H.floatLayer = (sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return { ok: false, why: 'not-mounted' };
+    const AXES = ['transform', 'filter', 'perspective'];
+    const isBreaker = (st) => (st.transform !== 'none' || st.filter !== 'none'
+      || st.perspective !== 'none' || AXES.some((k) => st.willChange.indexOf(k) >= 0)
+      || st.contain.indexOf('paint') >= 0);
+    const isClipper = (st) => (st.overflowX !== 'visible' || st.overflowY !== 'visible');
+    const name = (x) => (x === document.body ? 'body'
+      : x === document.documentElement ? 'html' : String(x.className || x.tagName).slice(0, 40));
+    const position = getComputedStyle(el).position;
+    const anc = [];
+    for (let n = el.parentElement; n; n = n.parentElement) anc.push(n);
+    const breakers = [];
+    const clipped = [];
+    anc.forEach((n) => {
+      const st = getComputedStyle(n);
+      if (isBreaker(st)) breakers.push(name(n));
+      if (position !== 'fixed' && isClipper(st)) clipped.push(name(n) + ':' + st.overflowY);
+    });
+    const b = el.getBoundingClientRect();
+    const chain = [];
+    for (let n = el; n; n = n.parentElement) {
+      chain.push(name(n));
+      if (n === document.body) break;
+    }
+    return {
+      ok: true,
+      position: position,
+      parentIsBody: el.parentElement === document.body,
+      clipped: clipped,
+      breakers: breakers,
+      escapes: clipped.length === 0 && breakers.length === 0,
+      inViewport: b.left >= -1 && b.right <= window.innerWidth + 1
+        && b.top >= -1 && b.bottom <= window.innerHeight + 1,
+      rect: { l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), bo: Math.round(b.bottom) },
+      vw: window.innerWidth,
+      vh: window.innerHeight,
+      chain: chain,
+      bodyOverflow: getComputedStyle(document.body).overflowY,
+    };
   };
 
   /** 名单里每一行：长名字必须**真的被省略**（截断 + 有 title 拿到全名），不能撑破面板。 */
@@ -634,6 +676,42 @@ window.__probe = (() => {
   };
 
   /** 反面对照（名单）：把 fixed 锚点强推到视口右缘外 ⇒ 右溢必须重新出现（证明判据不空转）。 */
+  /**
+   * 判据的反面对照：把名单**搬回**消息那一侧第一个带 overflow 的祖先里
+   * （= 修之前它待的地方）。搬完 floatLayer 必须报出裁切祖先 / 不再挂 body,
+   * 否则那条 escape 判据就是恒真。搬回去时按原位置插回，不动 Vue 的记账。
+   */
+  /**
+   * escape 判据的反面对照：把名单搬回「absolute 挂在裁切容器里」= 修之前它的形状。
+   * 真实应用里切它的是消息列表那个 overflow 滚动容器，这个夹具页里那一层不存在
+   * （名单到 body 之间是空的 ⇒ 上一版对照因此根本搬不动、白报红），所以这里给气泡
+   * 那一列补上 overflow 再把名单塞进去。撤的时候按原位置插回、inline 样式逐样还原。
+   */
+  H.reparentRoster = (on) => {
+    const r = document.querySelector('[data-reaction-roster]');
+    if (!r) return { ok: false, why: 'no-roster' };
+    if (on) {
+      const bar = document.querySelector('[data-reaction-bar]');
+      const cell = bar ? bar.parentElement : null;
+      if (!cell) return { ok: false, why: 'no-column' };
+      window.__rosterHome = {
+        parent: r.parentElement, next: r.nextSibling,
+        cell: cell, cellOverflow: cell.style.overflow, pos: r.style.position,
+      };
+      cell.style.overflow = 'hidden';
+      r.style.position = 'absolute';
+      cell.appendChild(r);
+      return { ok: true, into: String(cell.className || cell.tagName).slice(0, 40) };
+    }
+    const h = window.__rosterHome;
+    if (!h || !h.parent) return { ok: false, why: 'no-home-recorded' };
+    h.parent.insertBefore(r, h.next);
+    h.cell.style.overflow = h.cellOverflow || '';
+    r.style.position = h.pos || '';
+    delete window.__rosterHome;
+    return { ok: true };
+  };
+
   H.forceLegacyRoster = (on) => {
     const r = document.querySelector('[data-reaction-roster]');
     if (!r) return false;
@@ -1170,7 +1248,29 @@ async function runReaction(cdp, url) {
  * 而头像是 `h-9 w-9` = **36px**，还漏了消息行自己的 `px-4` = 16px ⇒ 两侧各差 8px。
  * 那 8px 只有浏览器知道，注释和 class 都不会告诉我。
  */
+/**
+ * 外层只干一件事：**把"页面有焦点/可见"这件事圈在本段内**。
+ *
+ * headless 起的探针页实测是 visibilityState="hidden" + hasFocus()=false，
+ * 而 mouseenter/mouseleave 是浏览器按它内部的 hover 追踪算出来的
+ * ⇒ 真鼠标投递间歇性丢（曾表现为"名单一次都没弹出、而单独跑 --only=roster 全绿"）。
+ * 开焦点模拟后，左右两列都在**第 0 次尝试**走通真鼠标。
+ *
+ * ⚠️ 刻意不外溢：emoji 那一段的 Enter 断言正是按"页面没焦点 ⇒ Enter 不激活被聚焦的格子"
+ * 写的（那条"Enter 不带 text ⇒ 零次激活"的对照就是它的前提）。全局开焦点模拟会让 Enter
+ * 真的激活格子，实测 select 事件刷到 8MB 日志。所以进来开、出去关，并用 finally 兜住。
+ */
 async function runReactionRoster(cdp, url) {
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+  await cdp.send("Page.bringToFront").catch(() => {});
+  try {
+    await rosterChecks(cdp, url);
+  } finally {
+    await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false }).catch(() => {});
+  }
+}
+
+async function rosterChecks(cdp, url) {
   /** 取证帧：`--shot=/tmp/x.png` 时两侧各存一张（左列 / 右列名单展开态）。 */
   const shot = async (name) => {
     if (!SHOT_PATH) return;
@@ -1205,36 +1305,27 @@ async function runReactionRoster(cdp, url) {
     return true;
   };
   /**
-   * 把指针真的移进第 i 颗胶囊，重试到名单出现。
-   * 为什么需要重试（实测）：**整段按顺序跑**时第二跳 mouseMoved 会被 Chrome 当成"位置没变"丢掉
-   * —— document 捕获层只看到第一跳的 target（行 div / 气泡里的 span），胶囊一个 enter 都收不到；
-   * 单独跑这一段又永远复现不了。判据仍然走真实 mouseenter 通路，只是把指针先抖开再送回去。
+   * 把指针真的移进第 i 颗胶囊，重试到名单出现。走的是**真鼠标**：
+   * 先退到一个明确不在胶囊上的点再回来（同一点重复 mouseMoved 会被 Chrome 判成
+   * "位置没变"丢掉），送回去之后等一帧再判（摆位在 mouseenter 那一拍算完，
+   * 但 DOM 要等 Vue 冲刷才出现）。
    *
-   * ⚠️ 抖开要退到**明确不在胶囊上**的点（退 1px 不算：Chrome 仍可能判成同一次移动）。
-   * ⚠️ 送回去之后要等一帧再判：摆位在 mouseenter 那一拍算完，但 DOM 要等 Vue 冲刷才出现。
-   *
-   * ② 那一档兜底的边界要说清楚：派发 `mouseenter` 仍然经过组件里同一条处理器、
-   * 同一个 `currentTarget`、同一套 `getBoundingClientRect` ⇒ 这一段真正要量的
-   * **摆位 / 裁切 / 省略号**判据照样成立；让掉的只有"浏览器会不会投递 mouseenter"
-   * 这一层，而那三层由上面 3 次真鼠标 + `reactionRoster.test.ts` 的静态接线判据兜着。
-   * 走到兜底会打印 `via=synthetic`，不静默。
+   * ⚠️ 这里刻意**不再**留"派发合成 mouseenter"那条兜底。它是探针页没焦点时的救急，
+   * 但留着就等于"hover 真不工作也能判绿"。焦点模拟（见 runReactionRoster 外层）
+   * 已经把真鼠标通路修稳，所以兜底删掉 —— 现在 hover 坏了一定是红的。
    */
   async function hoverInto(i) {
     const pt = await cdp.eval("window.__probe.reactionChipPoint(" + i + ")");
     if (!pt) return { pt: null, tries: -1, via: "no-chip", log: "" };
     await cdp.eval("window.__probe.watchChip()");
-    const open = () => cdp.eval("!!document.querySelector('[data-reaction-roster]')");
-    for (let k = 0; k < 3; k += 1) {
+    for (let k = 0; k < 5; k += 1) {
       await cdp.hover(Math.max(2, pt.x - 60), pt.y);
       await sleep(50);
       await cdp.hover(pt.x, pt.y);
       await sleep(150);
-      if (await open()) return { pt, tries: k, via: "mouse", log: await cdp.eval("window.__probe.chipLog()") };
-    }
-    const ok = await cdp.eval("window.__probe.dispatchEnter(" + i + ")");
-    await sleep(150);
-    if (ok && await open()) {
-      return { pt, tries: -1, via: "synthetic", log: await cdp.eval("window.__probe.chipLog()") };
+      if (await cdp.eval("!!document.querySelector('[data-reaction-roster]')")) {
+        return { pt, tries: k, via: "mouse", log: await cdp.eval("window.__probe.chipLog()") };
+      }
     }
     return { pt, tries: -1, via: "none", log: await cdp.eval("window.__probe.chipLog()") };
   }
@@ -1269,6 +1360,17 @@ async function runReactionRoster(cdp, url) {
   const plusL = await cdp.eval("(function(){var r=document.querySelector('[data-reaction-roster]');"
     + "if(!r)return null;var t=r.lastElementChild;"
     + "return t && !t.hasAttribute('data-roster-row') ? t.textContent.trim() : null;})()");
+  const fl_l = await cdp.eval("window.__probe.floatLayer('[data-reaction-roster]')");
+  check("左列：名单 escape 出裁切容器（挂在 body 上 + 没有任何祖先裁得到它）",
+    fl_l.ok === true && fl_l.parentIsBody === true && fl_l.escapes === true,
+    "parentIsBody 且 escapes",
+    "挂body=" + fl_l.parentIsBody + " position=" + fl_l.position
+      + " 切得到它的祖先=" + JSON.stringify(fl_l.clipped)
+      + " 变成包含块的祖先=" + JSON.stringify(fl_l.breakers)
+      + "（body overflow=" + fl_l.bodyOverflow + "：fixed 不被它裁 ⇒ 只有祖先变成包含块才裁得到）");
+  check("左列：名单整个在视口内（escape 出去 ≠ 看得见，坐标算错会飞出屏幕）",
+    fl_l.ok === true && fl_l.inViewport === true,
+    "四边都在视口内", "rect=" + JSON.stringify(fl_l.rect) + " 视口=" + fl_l.vw + "x" + fl_l.vh);
   check("左列：4 人名单恰好折成 3 行 + 一条 +N（不许把所有人列出来又说还有 N 人）",
     rowsL.ok === true && rowsL.rows.length === 3 && /^\+|\d|还有/.test(String(plusL)),
     "行数 === 3 且末条是 +N",
@@ -1297,6 +1399,16 @@ async function runReactionRoster(cdp, url) {
     "右溢 <= 0 且 左溢 <= 0",
     "右溢 " + rm.overRight + "px / 左溢 " + rm.overLeft + "px，名单宽 " + rm.width
       + "px，容器 " + rm.clipLeft + "…" + rm.clipRight + "，视口 " + rm.vw);
+  const fl_r = await cdp.eval("window.__probe.floatLayer('[data-reaction-roster]')");
+  check("右列：名单同样 escape 出裁切容器（这一支用 CSS right 钉，链路上必须一样干净）",
+    fl_r.ok === true && fl_r.parentIsBody === true && fl_r.escapes === true,
+    "parentIsBody 且 escapes",
+    "挂body=" + fl_r.parentIsBody + " position=" + fl_r.position
+      + " 切得到它的祖先=" + JSON.stringify(fl_r.clipped)
+      + " 变成包含块的祖先=" + JSON.stringify(fl_r.breakers) + " rect=" + JSON.stringify(fl_r.rect));
+  check("右列：名单整个在视口内",
+    fl_r.ok === true && fl_r.inViewport === true,
+    "四边都在视口内", "rect=" + JSON.stringify(fl_r.rect) + " 视口=" + fl_r.vw + "x" + fl_r.vh);
   check("右列：名单露出来的那部分确实是它自己（没被别的元素盖住）",
     rm.ok === true && rm.hitSelf === true,
     "elementFromPoint 命中名单自身", "命中 " + rm.hitTag);
@@ -1322,6 +1434,21 @@ async function runReactionRoster(cdp, url) {
   const fixed = await cdp.eval("window.__probe.reactionRoster()");
   check("对照可逆：换回新锚点后右溢归零",
     fixed.ok === true && fixed.overRight <= 0, "overRight <= 0", "右溢 " + fixed.overRight + "px");
+  const rep = await cdp.eval("window.__probe.reparentRoster(true)");
+  const mut = await cdp.eval("window.__probe.floatLayer('[data-reaction-roster]')");
+  check("对照：把名单搬回「absolute 挂在裁切容器里」（= 修之前的形状）⇒ escape 判据必须翻假",
+    rep.ok === true && mut.ok === true && mut.escapes === false,
+    "escapes === false",
+    "搬进 " + JSON.stringify(rep.into) + " position=" + mut.position
+      + " 切得到它的祖先=" + JSON.stringify(mut.clipped) + " 链=" + JSON.stringify(mut.chain));
+  await cdp.eval("window.__probe.reparentRoster(false)");
+  const undone = await cdp.eval("window.__probe.floatLayer('[data-reaction-roster]')");
+  check("对照可逆：搬回 body、position 又回到 fixed ⇒ escapes 恢复（对照自己不留残留）",
+    undone.ok === true && undone.escapes === true && undone.parentIsBody === true
+      && undone.position === "fixed",
+    "escapes 且 parentIsBody 且 position=fixed",
+    "escapes=" + undone.escapes + " 挂body=" + undone.parentIsBody + " position=" + undone.position
+      + " 切得到它的祖先=" + JSON.stringify(back.clipped));
   // ============ 一排十几颗（用户第二轮）：方向按**这颗的位置**翻，长名字要真省略 ============
   // 用户那句："不能特别固定的就往左偏或者往右偏，而是看这个图标的位置靠近哪边就往反方向偏"
   // ⇒ 判据必须同时钉"贴左那颗"和"贴右那颗"，而且**同一条消息上**（消息朝向相同、该偏的方向相反）。

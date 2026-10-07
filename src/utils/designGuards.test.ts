@@ -19,6 +19,7 @@ import {
   findTruncationWithoutTitle,
   checkTextFieldFocusRing,
   checkSelectionContract,
+  findFloatingLayerWithoutEscape,
 } from "./designGuards.ts";
 
 // ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
@@ -1982,4 +1983,69 @@ test("SelfAvatar 的那个「唯一数据源」确实是 store，不是各自传
   // 反空转：这条判据读的是真文件；若 SelfAvatar 被改名/删掉，上面三条会一起红，
   // 而不是"扫到 0 处所以恒真"。
   assert.match(src, /class="gosslan-avatar-box/, "根节点要带 gosslan-avatar-box（emoji 字号靠它的容器查询）");
+});
+
+// ---------------- 浮层必须 escape 出裁切容器（用户 2026-10-07 那句「被内部 DOM overflow 裁掉」） ----------------
+
+test("复现历史缺陷：自己算坐标但既没 Teleport、又用 absolute → 两半都报", () => {
+  const buggy = `<script setup>
+import { useHoverCard } from "@/composables/useHoverCard";
+const { style, open } = useHoverCard({ maxWidth: 256 });
+</script>
+<template>
+  <div class="relative flex">
+    <div class="absolute z-[70] border p-1.5" :style="style">名单</div>
+  </div>
+</template>`;
+  const issues = findFloatingLayerWithoutEscape(buggy);
+  assert.equal(issues.length, 2, `两半都缺要各报一条，实报 ${issues.map((i) => i.message).join(" / ")}`);
+  assert.match(issues[0].message, /Teleport/);
+  assert.match(issues[1].message, /fixed/);
+  assert.equal(issues[0].line, 3, "行号要指到那次 useHoverCard( 调用（import 那行没有括号，不该被算成分母）");
+});
+
+test("只缺 Teleport（已经 fixed 但还在容器里）→ 只报缺 Teleport 那一条", () => {
+  const half = `<script setup>
+const { style } = useHoverCard();
+</script>
+<template>
+  <div class="absolute z-[70] p-1"><div class="fixed border" :style="style">浮层</div></div>
+</template>`;
+  const issues = findFloatingLayerWithoutEscape(half);
+  assert.equal(issues.length, 1, `只该报缺 Teleport，实报 ${issues.length} 条`);
+  assert.match(issues[0].message, /Teleport/);
+});
+
+test("Teleport 到 body + fixed → 通过", () => {
+  const ok = `<script setup>
+const { style } = useHoverCard();
+</script>
+<template>
+  <Teleport to="body">
+    <div class="fixed z-[70] border p-1.5" :style="style">浮层</div>
+  </Teleport>
+</template>`;
+  assert.deepEqual(findFloatingLayerWithoutEscape(ok), []);
+});
+
+test("不自己算摆位的组件不归这条管（分母不能被放大）", () => {
+  const unrelated = `<template>
+  <div class="absolute inset-y-0 left-0 w-0.5 bg-black" />
+</template>`;
+  assert.deepEqual(findFloatingLayerWithoutEscape(unrelated), []);
+});
+
+test("src 下每个自算坐标的浮层都 escape 到 body（分母现算）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const consumers = files.filter((f) => /\b(useHoverCard|popupLeft|popupPlacement)\s*\(/.test(readFileSync(f, "utf8")));
+  assert.ok(consumers.length >= 3, `这条判据的分母不能是空的，现数 ${consumers.length} 个消费者`);
+  const bad: string[] = [];
+  for (const f of consumers) {
+    for (const issue of findFloatingLayerWithoutEscape(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  bad.sort();
+  assert.deepEqual(bad, [], `有浮层被搬回裁切容器里了（消费者：\n${consumers.map((c) => c.replace(srcDir + "/", "")).join("\n")}）\n${bad.join("\n")}`);
 });

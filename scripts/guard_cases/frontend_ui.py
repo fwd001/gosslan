@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """护栏非空转用例分册：前端呈现层（components / layouts / entries / 样式与打包配置里的界面判据）。
 
-本册 30 条 / 485 行，2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
-`CASES` 字面量里）按**锚定的被守物**切出来。块文本逐字未搬动过一字 ⇒
+本册现数 31 条（复跑 `grep -c '    Case(' scripts/guard_cases/frontend_ui.py`）；2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
+`CASES` 字面量里）按**锚定的被守物**切出来，切过来那 30 条的块文本逐字未搬动过一字 ⇒
 恒等判据＝`verify-guards.py --list` 的输出排序后与拆前**逐字节相同**（条数与用例名都不是"我觉得一样"）。
 
 ⚠️ 三条硬规矩（都是这仓自己踩出来的形状）：
@@ -505,4 +505,18 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="① 输入框没把名单随 send 交出去",
         tags=["frontend", "group", "stability", "new-guards", "mention-identity"],
+    ),
+    Case(
+        name="浮层搬回裁切容器里必须被 escape 守卫抓住（fixed ⇒ absolute 那一半）",
+        why="2026-10-07 用户那句「悬浮窗被内部的 DOM overflow hidden 裁掉」修完四处之后，"
+        "     新立的 `findFloatingLayerWithoutEscape` 只有一张夹具证明 ⇒ 按本仓库规矩"
+        "     （v4.22.31 之后：新守卫必须证明「改坏一定 FAIL」）这里把它接到真实文件上："
+        "     注入 = 把已读成员弹层的 `fixed` 改回 `absolute`（= 修之前名单的形状，"
+        "     坐标算得再对也会被那层 overflow 裁），必须被那条全库扫描抓住。",
+        file=ROOT / "src" / "components" / "message" / "MessageReceipt.vue",
+        injections=[('class="frost fixed z-[70]', 'class="frost absolute z-[70]')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="浮层根节点要用 fixed 定位",
+        tags=["frontend", "new-guards", "floating-layer"],
     ),]

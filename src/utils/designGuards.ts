@@ -1170,3 +1170,43 @@ export function checkTextFieldFocusRing(css: string, composer: string): GuardIss
   }
   return out;
 }
+
+// ---------------- 浮层必须 escape 出裁切容器 ----------------
+
+/** 自己算视口坐标的那一套入口（通用家 + 老的那两处直接调用）。 */
+const FLOATING_PLACEMENT_RE = /\b(useHoverCard|popupLeft|popupPlacement)\s*\(/;
+
+/**
+ * 浮层 escape 判据：自己算视口坐标的浮层必须 ① Teleport 到 body、② 用 fixed 定位。
+ *
+ * 为什么两半要一起钉（用户 2026-10-07：「这种悬浮窗被内部的 DOM 给 overflow hidden 裁掉」）：
+ * 挂在消息列表那种 `overflow-y: auto` 容器里的 absolute 层，**坐标算得再对也会被裁** ——
+ * 表情名单、已读列表、表情选择器、任务行内状态菜单四次现场全是这一条。
+ * 只钉 Teleport 会漏"Teleport 了但仍用 absolute"（包含块还是那个容器）；
+ * 只钉 fixed 会漏"在容器里写 fixed"（祖先一旦有 transform 就会被拽回去）。
+ *
+ * 分母是"用了这套摆位的 .vue"，不是"所有 .vue" ⇒ 不自己算坐标的组件不归这条管。
+ */
+export function findFloatingLayerWithoutEscape(src: string): GuardIssue[] {
+  const trig = FLOATING_PLACEMENT_RE.exec(src);
+  if (!trig) return [];
+  const line = lineAt(src, trig.index);
+  const out: GuardIssue[] = [];
+  if (!/<Teleport\b[^>]*to="body"/.test(src)) {
+    out.push({
+      line,
+      message:
+        "自己算视口坐标的浮层必须 Teleport 到 body：挂在滚动/裁切容器里时，" +
+        "坐标再对也会被那层 overflow 裁掉（表情名单那次的原缺陷就是这个形状）。",
+    });
+  }
+  if (!/class="[^"]*\bfixed\b/.test(src)) {
+    out.push({
+      line,
+      message:
+        "浮层根节点要用 fixed 定位：absolute 的包含块仍是那个带 overflow 的祖先，" +
+        "Teleport 出去也照样被算错的那层管着。",
+    });
+  }
+  return out;
+}
