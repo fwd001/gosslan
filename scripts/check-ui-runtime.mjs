@@ -1430,6 +1430,11 @@ async function rosterChecks(cdp, url) {
   check("对照：把名单 fixed left 推到视口右缘外 ⇒ 右溢必须重新出现（证明判据不空转）",
     legacy.ok === true && legacy.overRight > 0,
     "overRight > 0", "右溢 " + legacy.overRight + "px");
+  const mutVp = await cdp.eval("window.__probe.floatLayer('[data-reaction-roster]')");
+  check("对照：同一支推坐标出视口的变异下，inViewport 也必须翻假（证明那条视口判据会咬）",
+    mutVp.ok === true && mutVp.inViewport === false,
+    "inViewport === false",
+    "rect=" + JSON.stringify(mutVp.rect) + " 视口=" + mutVp.vw + "x" + mutVp.vh);
   await cdp.eval("window.__probe.forceLegacyRoster(false)");
   const fixed = await cdp.eval("window.__probe.reactionRoster()");
   check("对照可逆：换回新锚点后右溢归零",
