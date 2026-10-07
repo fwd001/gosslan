@@ -35,10 +35,10 @@ PY
 | 4,004 | `src-tauri/src/lib_tests.rs` |  crate 层测试 | ✅ **已拆完**（2026-10-06：壳 205 行 + 11 个 `lib_<concern>_tests.rs`，最大 614） |
 | 3,227 | `src-tauri/src/network/transport/tests.rs` | 传输层测试 | ✅ **已拆完**（2026-10-06：壳 + 15 个 `<concern>_tests.rs`，见 §4 末） |
 
-2,000–3,000 那一档（不在本轮范围，作为下一步候选）：`network/file.rs` 2,495、`network/ble.rs` 2,392、
-`src/stores/useChatStore.ts` 2,351、`i18n/locales.ts` 2,010、`state.rs` 1,962、`protocol.rs` 1,814、
-`components/MessageItem.vue` 1,536。⚠️ `state.rs`（AppState）与 useChatStore 在 2026-09-25 复审里
-被判为「拆了短期只降稳定」且他已定过「动 AppState 选 B 不拆」⇒ **本计划不碰**，除非他改主意。
+2,000–3,000 那一档：**已按"只拆确有内聚边界的"处理完**（2026-10-07），结果与不拆那两本的理由见 §6。
+首量快照里的 `network/file.rs` 2,495、`network/ble.rs` 2,392、`i18n/locales.ts` 2,010 三本已切册；
+`src/stores/useChatStore.ts` 2,351 与 `state.rs`（AppState，他定过「选 B 不拆」）**没动**，
+`protocol.rs` 1,814、`components/MessageItem.vue` 1,536 本来就在阈值内。
 
 ## 2. 「它们在干嘛」——transport.rs 的内部构成（现读）
 
@@ -475,3 +475,46 @@ grep -c 'if relay_denied(' src-tauri/src/network/transport.rs src-tauri/src/netw
 ⇒ 恒等侧一起交过：`cargo test --lib` 789 passed / 0 failed、用例名与基线**差集 0 行**、
 `clippy -D warnings` 与 `fmt --check` 干净、`verify-guards.py --list` 202 条锚点各命中一次
 （**包括分发段那 10 条** —— 删掉的三段内联文本里有一条正是锚点读过的形状）。
+
+
+## 6. tier-2（2,000–3,000 那一档）：只拆确有内聚边界的（2026-10-07 做完三本）
+
+他的口径是"只处理确有内聚边界的"。每本的边界依据都取自**文件自己写的职责说明**，不是我给的分类。
+
+| 原行数 | 文件 | 切完（现算 `wc -l`） | 边界依据 | 恒等判据 |
+|---|---|---|---|---|
+| 2,010 | `src/i18n/locales.ts` | 门面 16 + `locales/zh-cn.ts` 1,024 + `locales/en-us.ts` 1,000 + `locales/dict.ts` 7 | 文件第一句就是"简体中文 / 英文"两本字典，各自 903 键 | **产物恒等**：拆前后 import 一次、`{zh,en}` 两对象 `JSON.stringify`（键序进串）取 sha256 ⇒ 同为 `bf4fee1c6837b3bc` |
+| 2,495 | `src-tauri/src/network/file.rs` | 主 398 + `file/send.rs` 689 + `file/receive.rs` 845 + `file/relay_push.rs` 261 + `file/group_receive.rs` 142 + `file/share_walk.rs` 224 | 模块文档开头列了"发送方 / 接收方 / 中继路径"三条生命周期；群接收多一个受众维度、共享目录那册是纯函数 | 用例名差集 0 行（789）、锚点 202 条各命中一次、clippy/fmt 干净 |
+| 2,392 | `src-tauri/src/network/ble.rs` | 主 745 + `ble/central.rs` 777 + `ble/peripheral.rs` 536 + `ble/io_loops.rs` 275 + `ble/frame_io.rs` 112 | 模块文档："这一层只补两件 BLE 专属的事：**扫描/连接** 与 **分片收发**"；两条角色跑同一对循环 ⇒ 循环单独一册 | 同一套：789 / 差集 0 / 锚点 202 / clippy 干净 |
+
+**判过但不拆的两本**（不是漏了，是拍过）：
+- `src/stores/useChatStore.ts` 2,351 —— 2026-09-25 复审判为"拆了短期只降稳定"，且他的长期口径是**动 AppState 选 B 不拆**；
+- `src-tauri/src/state.rs` 1,962 —— 同一本 AppState（且已过 2,000 那格）。
+
+拆完的分布（复跑：`git ls-files -z` 逐行数、跳过 NUL 与 `target/`、`vendor/`）：
+**>3,000 行的人写代码 = 0 本**；生产码里最大三本是 useChatStore 2,351、state 1,962、protocol 1,814 ——
+全部落在他已拍过"不拆"或本就在阈值内的位置上。
+
+## 7. 一次搬家同批必须改口的尺子（2026-10-07 数齐的十处）
+
+前四行是 10-06/10-07 头几刀就已知的；后六行是 tier-2 这三刀**现抓出来**的，
+其中三处如果漏改不会红，只会让那条守卫对新分册永远失明（本仓最忌讳的假绿形状）。
+
+| # | 尺子 | 漏改的后果 | 复跑 |
+|---|---|---|---|
+| 1 | 读源文本的形状守卫（`include_str!` / `std::fs::read_to_string`） | 读到主册 ⇒ 搬走的判成"改名了"（响亮），搬进的看不见（沉默） | 最宽形状再数：`grep -rnoE 'include_str!\("[^"]*<名>\.rs"\)' src-tauri/src scripts`（`../x.rs` 与 `x.rs` 两种拼法都要算进来） |
+| 2 | 视图那个家（`transport_src_for_guards` / `file_src_for_guards` / `ble_src_for_guards`） | 少一册 = 假绿 | `python3 -c "…数函数体里的 include_str! 次数"` |
+| 3 | `lib_source_view_tests.rs` 登记对账用例（每视图一条 canary） | 1、2 两处任一侧漂移无人说 | `cargo test --features bluetooth --lib -- guard_source_views_register` |
+| 4 | `docs/domains.data.mjs` 的 `paths` | 判据 D 报"无主文件"（响亮） | `node scripts/check-domain-map.mjs` |
+| 5 | `scripts/check-ble-constants.mjs` 的 `BLE_DOMAIN_FILES` | 硬清单对新册**静默失明** ⇒ 已改成"点名 + 目录动态展开" | `node scripts/check-ble-constants.mjs`（打印扫描面大小） |
+| 6 | `scripts/check-invariant-hooks.mjs` 的 `guards:` / `e2e:` 检索面 | 已搬进分册的判据被报成"没有钩子"（假红，会指挥人去补钩子） | `node scripts/check-invariant-hooks.mjs` |
+| 7 | `scripts/check-scripts-parse.mjs` 的 import 闭包与 py 分册名单 | 分册语法错/漏登记 ⇒ 便宜层看不见 | `node scripts/check-scripts-parse.mjs` |
+| 8 | 活文档里的 `file:line` 引用 | 行号随搬家作废（响亮：退 1） | `node scripts/check-doc-citations.mjs --root=.` |
+| 9 | `check-domain-deps.mjs` 的内联耦合可见性 | 按物理文件判 ⇒ include! 让"use 在哪个文件"变任意，会报假增长（10-07 已改成按领域判，**上限一格没动**） | `node scripts/check-domain-deps.mjs`（30 处 / 6 对，搬家前后同一个数） |
+| 10 | `docs/ARCHITECTURE-MAP.html` 的节点 `paths` | 图变成第二份名单 ⇒ 只在 notes 里指回 domains.data.mjs，逐册名单不抄 | 改完 `node --check` 那段内嵌 script |
+
+一把跑完的便宜层（秒级到十几秒，不含护栏整跑与 E2E）：
+```bash
+npm run verify        # 快速层 17 步：上面第 3–10 行除了 cargo 侧那两条都在这里
+cargo test --features bluetooth --lib -- guard_source_views_register   # 第 3 行
+```
