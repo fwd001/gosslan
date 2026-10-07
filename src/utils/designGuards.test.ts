@@ -1486,11 +1486,20 @@ test("查看者视角的 @ 文案只许存在于 i18n 名单里，生产码不�
     return out;
   };
   const LITERALS = ["@你", "[任务@你]"];
+  /**
+   * 字典本体名单（豁免的**全集**，不是一个前缀规则）。
+   *
+   * 2026-10-07 字典按语言拆成两册后，这里从「一个字面路径」改成「点名三本」：
+   * 用 `startsWith("i18n/locales")` 也能过，但那样任何落在该目录下的新文件都会**静默豁免**，
+   * 而这条判据要的恰恰是「只有字典本体能带这些字面量」。新增一门语言的字典册要显式登记，
+   * 忘了登记会当场红 —— 那是想要的形状，不是需要绕过的障碍。
+   */
+  const DICT_FILES = new Set(["i18n/locales.ts", "i18n/locales/zh-cn.ts", "i18n/locales/en-us.ts"]);
   const offenders: string[] = [];
   let scanned = 0;
   for (const f of walk(srcDir)) {
     const rel = f.replace(srcDir + "/", "");
-    if (rel === "i18n/locales.ts" || rel.endsWith(".test.ts")) continue;
+    if (DICT_FILES.has(rel) || rel.endsWith(".test.ts")) continue;
     scanned += 1;
     const code = readFileSync(f, "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")

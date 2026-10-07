@@ -13,6 +13,28 @@
 
 ## [Unreleased]
 
+## [4.33.13] - 2026-10-07
+
+### Changed
+- ★ **`src/i18n/locales.ts` 按语言拆册（大文件拆分第二轮，tier-2 里"确有内聚边界"的第一本）**：
+  2,010 行 ⇒ 门面 `locales.ts` **16 行** + `locales/zh-cn.ts` 1,024 + `locales/en-us.ts` 1,000 +
+  `locales/dict.ts` 7（`MessageDict` 的形状，两册与门面共用，放门面里会形成类型层面的自我 re-export）。
+  行数以 `wc -l src/i18n/locales.ts src/i18n/locales/*.ts` 现算为准。
+  边界依据是文件自己的第一句：那本字典装的是**两门语言**，各自 903 个键 —— 改中文要在英文的行号上面插话。
+- **恒等判据是产物而不是文本**：拆前后各 import 一次 `locales.ts`、把 `{zh, en}` 两个对象
+  `JSON.stringify`（键序也进串）后取 sha256 ⇒ 两边都是 **`bf4fee1c6837b3bc`**、键数 903/903。
+  三条字典护栏（中英 key 一一对应、值非空、所有 `t("…")` 字面量调用点命中真实 key）读的是**对象**
+  而不是文件文本 ⇒ 搬家对它们透明，一字未改；`node --test` 那四本相关测试 148 passed / 0 failed。
+- **同批改一处尺子**：`designGuards.test.ts` 里"查看者视角的 `@你` 只许存在于 i18n 名单里"那条，
+  豁免从 `rel === "i18n/locales.ts"` 改成**点名三本**（门面 + 中英两册）。没有改成
+  `startsWith("i18n/locales")` —— 那样落在该目录下的任何新文件都会**静默豁免**，而这条判据要的
+  恰恰是"只有字典本体能带这些字面量"。反证真跑：临时放一本未登记的 `locales/xx-lie.ts`（内含 `@你`）
+  ⇒ `✖ 这些生产码把查看者视角的文案写死了：i18n/locales/xx-lie.ts（含 @你）`，删掉后 101 passed。
+- **顺手补一条上一轮的漏账**：`check-domain-map.mjs` 判据 D 报 `handle_message` 拆出的五册没登记
+  （前五个族提交各少一行 paths），已在 `1736744` 补齐并让该层认领数从 342 变 347。
+  另注：4.33.12 那条里写的"主文件 ⇒ 1,391"是搬家脚本在 `cargo fmt` **之前**打印的数，`cargo fmt` 后
+  现量 `wc -l src-tauri/src/network/transport.rs` = **1,394** ⇒ 以现算为准（§5.1-bis 已按 1,394 写）。
+
 ## [4.33.12] - 2026-10-07
 ### Changed
 - ★ **`handle_message` 第五族：消息与送达回执 4 个变体搬进 `transport/handle_messaging.rs`**（235 行 → 分册 253），
