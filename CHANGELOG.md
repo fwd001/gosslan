@@ -13,6 +13,8 @@
 
 ## [Unreleased]
 
+## [4.33.18] - 2026-10-07
+
 ### Changed
 - ★ **CI 立刻替我复证了那条新判据的一个副作用，并已修**：推送上去的那 34 条在
   「前端测试 / 清单 / 构建」这一步红 —— `❌ 注入后是红了，但失败输出里**没有**声明的那句判据关键词
@@ -55,6 +57,20 @@
 - 机器事实两条（写进记忆，别再当"只有 MCP 能写"）：① **相同文本重传会被拒**（"重复批次: 正式索引零写入"）
   ⇒ 过期条目不能靠原文重绑，必须真的改内容或走 maintain 签发的候选；② 整行有预算上限
   （`entry_field_budget_exceeded` 实测：本条 S 到 435 字节被拒、422 字节通过 ⇒ 按字节而非字符数收）。
+
+### Documentation（认知层第三轮：全局体检剩下的两格）
+- 全局漂移分类现读（`aoci --json check` + `aoci --json scope preview`）：`code_missing / code_stale /
+  code_unbaselined / orphan` **四格全 0**，条目 587、基线 948 文件、整索引 88,470 tokens（目标档 200,000）。
+  本轮补的最后 3 条：`verify-guards.py`（判据化的代价与 5 条不符的现场）、`guard_cases/frontend_ui.py`
+  （CI 抓到的那条标识符 hint）、`CHANGELOG.md` 本体（**写清它天然一直过期**：每记一次账就改一次本文件，
+  所以它的 code_stale 不算欠账，别为它反复重绑）。
+- ⚠️ 剩两格需要他动作，都不在 agent 权限内：
+  ① `src/utils/designGuards.test.ts` 的 observe 指纹变了而我今天确实改过它（豁免从一条字面路径改成点名三本），
+     但 `observe_change_policy = review_required` ⇒ 要 `aoci scope acknowledge`（字面含义"记录复核"）；
+     我不自跑——那等于替他宣称复核过。
+  ② `docs/notes/changelog-archive.md` 报 unbaselined（它是超 1 MiB 的免条目对象 ⇒ 属报告噪声）；
+     只有他愿意把当前源码整体承认为新起点时才动 `aoci scan --force`，而**那一步会把未复核的 observe 漂移一起洗白**
+     （工具自己写的原话就是"防止一键洗白未处理的漂移"）⇒ 我没跑。
 
 ## [4.33.17] - 2026-10-07
 

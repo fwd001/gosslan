@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-10-07T05:17:21Z",
+  "updated_at": "2026-10-07T06:17:03Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -77,9 +77,9 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "85f7057ae04a57dc74475e945b221796aa9dab92ba2b16fb1bd78a4ae320fe8a",
-      "size": 110638,
-      "normalized_sha256": "85f7057ae04a57dc74475e945b221796aa9dab92ba2b16fb1bd78a4ae320fe8a"
+      "sha256": "884eabd161d90b15e6d0dd5bcad3d5c22d772f6ea0b4daf8a34513ad0c0a084a",
+      "size": 113648,
+      "normalized_sha256": "884eabd161d90b15e6d0dd5bcad3d5c22d772f6ea0b4daf8a34513ad0c0a084a"
     },
     "README.md": {
       "role": "index",
@@ -89,9 +89,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "fd472774e6c0feecdbf66f8402f8ed77de30ea74c0729140d21818c48a985c9c",
-      "size": 262595,
-      "normalized_sha256": "fd472774e6c0feecdbf66f8402f8ed77de30ea74c0729140d21818c48a985c9c"
+      "sha256": "9707ec0d032e2d84a28e204ad93a57b4fa4a3460e86d5ca87fe925b3cc99bf76",
+      "size": 263127,
+      "normalized_sha256": "9707ec0d032e2d84a28e204ad93a57b4fa4a3460e86d5ca87fe925b3cc99bf76"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1001,9 +1001,9 @@
     },
     "scripts/guard_cases/frontend_ui.py": {
       "role": "index",
-      "sha256": "a130d4660910db7c67ea693fa8771dc1439317e23a064aac90230e4084543fdd",
-      "size": 29337,
-      "normalized_sha256": "a130d4660910db7c67ea693fa8771dc1439317e23a064aac90230e4084543fdd"
+      "sha256": "3a176d268d714461ba46fdbba7fe7cd2e569378ddfc989fc49b6b4fdd01a0987",
+      "size": 29362,
+      "normalized_sha256": "3a176d268d714461ba46fdbba7fe7cd2e569378ddfc989fc49b6b4fdd01a0987"
     },
     "scripts/guard_cases/toolchain.py": {
       "role": "index",
@@ -1133,9 +1133,9 @@
     },
     "scripts/verify-guards.py": {
       "role": "index",
-      "sha256": "246c3720c73c1d76c5f78333fb0cd12ef457b15e88af9f772e975d963a4b0cc1",
-      "size": 19307,
-      "normalized_sha256": "246c3720c73c1d76c5f78333fb0cd12ef457b15e88af9f772e975d963a4b0cc1"
+      "sha256": "1b62eae15d59759580a0c72010d8078b7862e11bef7d7c209a52709adf06ce0c",
+      "size": 19308,
+      "normalized_sha256": "1b62eae15d59759580a0c72010d8078b7862e11bef7d7c209a52709adf06ce0c"
     },
     "scripts/verify.mjs": {
       "role": "index",
