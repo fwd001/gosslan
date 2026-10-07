@@ -456,7 +456,9 @@ async fn handle_relay_chunk(
         // 策略 Off/Friends/Allowlist 必须真正拦得下文件分片，而不是只拦 gossip。
         // 2026-10-07：闸收进 transport.rs 的 relay_denied 一个家（这里与定向借道、
         // 外部帧转投那两处原来是同一段判断抄三遍）。
-        if relay_denied(state, requester, || format!("RelayChunk 转投 tid={transfer_id}")) {
+        // 注意 `why` 前面那个空格：合家前原文是「… 的 RelayChunk 转投…」，另外两处的 why 以中文开头
+        // 所以本来就没空格 —— 空格是这条日志的一部分，别当排版清理掉。
+        if relay_denied(state, requester, || format!(" RelayChunk 转投 tid={transfer_id}")) {
             return;
         }
         let fwd = Message::RelayChunk {

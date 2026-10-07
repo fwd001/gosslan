@@ -78,6 +78,42 @@
                 "ble/central.rs",
             ),
         ];
+        // ★ 用例数必须等于**实际存在的视图数**，而视图数从 holder 源码里现找：
+        //   上面那个数组是手写的名单 —— 以后再加一份 `xxx_src_for_guards()` 却忘了配用例，
+        //   那这份视图就从此没人对账，正是本文件点名的"漏登记 = 假绿"形状。
+        //   按行首形状认定义（`fn 名字(`），所以 cases 数组里那些签名字符串不会被误算成视图。
+        fn count_guard_views(holder: &str) -> usize {
+            holder
+                .split('\n')
+                .filter(|l| {
+                    let t = l.trim_start()
+                        .trim_start_matches("pub(crate) ")
+                        .trim_start_matches("pub ")
+                        .trim_start_matches("async ");
+                    match t.strip_prefix("fn ") {
+                        Some(rest) => {
+                            let name: String = rest
+                                .chars()
+                                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                                .collect();
+                            rest[name.len()..].starts_with('(')
+                                && (name.ends_with("_src_for_guards")
+                                    || (name.starts_with("all_") && name.ends_with("_src")))
+                        }
+                        None => false,
+                    }
+                })
+                .count()
+        }
+        let discovered = count_guard_views(this_file) + count_guard_views(mod_file);
+        assert_eq!(
+            discovered,
+            cases.len(),
+            "`lib_tests.rs` 与 `network/mod.rs` 里现数到 {discovered} 份守卫视图，本用例只配了 {} 份 ⇒ \
+             有一份视图从没被对账（守卫读的是没人核对的第二份清单）",
+            cases.len()
+        );
+
         for (entry_name, signature, holder_src, label, canary) in cases {
             let entry = manifest.join("src").join(entry_name);
             let mut closure = Vec::new();

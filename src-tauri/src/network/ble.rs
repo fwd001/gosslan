@@ -518,9 +518,12 @@ mod tests {
             .expect("必须还有 peripheral_accept_loop（本护栏锚点）")
             + 1;
         let body = &src[start..];
-        assert!(
-            body.starts_with("async fn peripheral_accept_loop"),
-            "取到的窗口不是那个函数本体 ⇒ 这条判据正在空转"
+        // ⚠️ 这里**不能**写 starts_with("async fn peripheral_accept_loop")：start 就是从前缀 +1 算出来的，
+        // 那个断言恒真（自查时被自己的注释骗过一次）。真正在防自匹配的是"锚点在视图里恰好出现一次"。
+        assert_eq!(
+            src.matches("\nasync fn peripheral_accept_loop").count(),
+            1,
+            "窗口锚点在视图里不唯一 ⇒ find 取到的第一段可能不是函数本体（自匹配假绿的形状）"
         );
         let end = body.find("\n}\n").unwrap_or(body.len());
         let body = &body[..end];
@@ -742,9 +745,12 @@ mod tests {
             .expect("必须还有 ble_reader_loop（本护栏锚点）")
             + 1;
         let body = &src[start..];
-        assert!(
-            body.starts_with("async fn ble_reader_loop"),
-            "取到的窗口不是那个函数本体 ⇒ 这条判据正在空转（同上一条的理由：自匹配）"
+        // ⚠️ 这里**不能**写 starts_with("async fn ble_reader_loop")：start 就是从前缀 +1 算出来的，
+        // 那个断言恒真（自查时被自己的注释骗过一次）。真正在防自匹配的是"锚点在视图里恰好出现一次"。
+        assert_eq!(
+            src.matches("\nasync fn ble_reader_loop").count(),
+            1,
+            "窗口锚点在视图里不唯一 ⇒ find 取到的第一段可能不是函数本体（自匹配假绿的形状）"
         );
         // 顶层函数的闭合花括号在行首（缩进的都是内部块）
         let end = body.find("\n}\n").unwrap_or(body.len());

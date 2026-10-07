@@ -11,14 +11,21 @@
 python3 - <<'PY'
 import subprocess,re
 fs=[f for f in subprocess.run(['git','ls-files','-z'],capture_output=True).stdout.decode().split('\0') if f]
+# 生成物/工具基线按**文件名**排除（10-07 复审补的那一步）：这三份每发一版都在长，
+# 留在输出里就混在"人写的热区"中间 —— 判据要能只印它真正想印的东西。
+GENERATED={'Cargo.lock','package-lock.json','baseline.json'}
 for f in fs:
     try: b=open(f,'rb').read()
     except Exception: continue
     if b'\x00' in b[:8000]: continue          # 二进制按 AOCI 同一条口径剔除
+    if f.split('/')[-1] in GENERATED: continue
     n=b.count(b'\n')+1
     if n>3000: print(n,f)
 PY
 ```
+
+⚠️ 上面这条 `GENERATED` 名单按**文件名**匹配 ⇒ 谁哪天手写一份叫 `baseline.json` / `Cargo.lock`
+的 3,000+ 行文件，这条命令就永远看不见它（复审点名的那条已知边界）。今天 0 处，不另加判据。
 
 第一次数出 12 个，其中 **3 个是图标（`.icns`/`.png`）被按换行数误算**、3 个是生成物
 （`Cargo.lock`、`package-lock.json`、`.aoci/baseline.json`）⇒ **真正要处理的是 6 个**：
@@ -247,8 +254,10 @@ EOF
 复跑：`wc -l src-tauri/src/network/transport.rs src-tauri/src/network/transport/*.rs src-tauri/src/lib_tests.rs src-tauri/src/lib_*_tests.rs`。
 
 **剩余（2026-10-07 收尾）**：**人写的代码文件一个都不超 3,000 行，台账那一本也已按 A 分卷。**
-§1 那条命令现在印 4 行：`docs/notes/changelog-archive.md` 12,888（历史分卷 —— 不是热区、也不是现状声明）/
-`src-tauri/Cargo.lock` 6,036 与 `package-lock.json` 3,028（生成物）/ `.aoci/baseline.json` 5,051（工具基线）。
+§1 那条命令（补上 `GENERATED` 之后）现在**只印 1 行**：`docs/notes/changelog-archive.md` 12,888 ——
+那正是历史分卷本身，按判定它**不该再被拆**（拆了就把"只搬不改、逐字节可还原"那条恒等判据作废）。
+⚠️ 这个 12,888 也别抄到别处：往归档里补一节它就变，而 `wc -l` 与这条 `count('\n')+1` 还差一行
+（文件以换行结尾时后者多算一行）⇒ 判现状一律原样跑 §1 那条 python。
 ⇒ 本轮范围内的 6 个全部处理完：`transport.rs`、`transport/tests.rs`、`lib_tests.rs`、`verify-guards.py`、
 `e2e-multi-instance.mjs` 已进阈值，`CHANGELOG.md` 13,592 ⇒ 主文件 **743 行**（按 A 分卷，他 2026-10-07 点头后执行）。
 留一句口径出处（护栏 runner 那一刀）：判据 E 原来只在那一个文本里按 Case 构造行现算条数，分册后会得 0，
@@ -485,20 +494,30 @@ grep -c 'if relay_denied(' src-tauri/src/network/transport.rs src-tauri/src/netw
 |---|---|---|---|---|
 | 2,010 | `src/i18n/locales.ts` | 门面 16 + `locales/zh-cn.ts` 1,024 + `locales/en-us.ts` 1,000 + `locales/dict.ts` 7 | 文件第一句就是"简体中文 / 英文"两本字典，各自 903 键 | **产物恒等**：拆前后 import 一次、`{zh,en}` 两对象 `JSON.stringify`（键序进串）取 sha256 ⇒ 同为 `bf4fee1c6837b3bc` |
 | 2,495 | `src-tauri/src/network/file.rs` | 主 398 + `file/send.rs` 689 + `file/receive.rs` 845 + `file/relay_push.rs` 261 + `file/group_receive.rs` 142 + `file/share_walk.rs` 224 | 模块文档开头列了"发送方 / 接收方 / 中继路径"三条生命周期；群接收多一个受众维度、共享目录那册是纯函数 | 用例名差集 0 行（789）、锚点 202 条各命中一次、clippy/fmt 干净 |
-| 2,392 | `src-tauri/src/network/ble.rs` | 主 745 + `ble/central.rs` 777 + `ble/peripheral.rs` 536 + `ble/io_loops.rs` 275 + `ble/frame_io.rs` 112 | 模块文档："这一层只补两件 BLE 专属的事：**扫描/连接** 与 **分片收发**"；两条角色跑同一对循环 ⇒ 循环单独一册 | 同一套：789 / 差集 0 / 锚点 202 / clippy 干净 |
+| 2,392 | `src-tauri/src/network/ble.rs` | 主 764 + `ble/central.rs` 777 + `ble/peripheral.rs` 536 + `ble/io_loops.rs` 275 + `ble/frame_io.rs` 112 | 模块文档："这一层只补两件 BLE 专属的事：**扫描/连接** 与 **分片收发**"；两条角色跑同一对循环 ⇒ 循环单独一册 | 同一套：790 / 差集 0 / 锚点 202 / clippy 干净 |
+
+（主册 745 ⇒ **764** 是本轮复审加的：两条读循环守卫各补一枚"锚点在视图里恰好一次"的 canary，见 §7 第 11 行。）
 
 **判过但不拆的两本**（不是漏了，是拍过）：
-- `src/stores/useChatStore.ts` 2,351 —— 2026-09-25 复审判为"拆了短期只降稳定"，且他的长期口径是**动 AppState 选 B 不拆**；
-- `src-tauri/src/state.rs` 1,962 —— 同一本 AppState（且已过 2,000 那格）。
+- `src/stores/useChatStore.ts` 2,350 —— 2026-09-25 复审判为"拆了短期只降稳定"，且他的长期口径是**动 AppState 选 B 不拆**；
+- `src-tauri/src/state.rs` 1,961 —— 同一本 AppState（且已过 2,000 那格）。
 
 拆完的分布（复跑：`git ls-files -z` 逐行数、跳过 NUL 与 `target/`、`vendor/`）：
-**>3,000 行的人写代码 = 0 本**；生产码里最大三本是 useChatStore 2,351、state 1,962、protocol 1,814 ——
+**>3,000 行的人写代码 = 0 本**；生产码里最大三本是 useChatStore 2,350、state 1,961、protocol 1,813 ——
 全部落在他已拍过"不拆"或本就在阈值内的位置上。
 
-## 7. 一次搬家同批必须改口的尺子（2026-10-07 数齐的十处）
+## 7. 一次搬家同批必须改口的尺子（2026-10-07 数齐的十四处）
 
-前四行是 10-06/10-07 头几刀就已知的；后六行是 tier-2 这三刀**现抓出来**的，
-其中三处如果漏改不会红，只会让那条守卫对新分册永远失明（本仓最忌讳的假绿形状）。
+前四行是 10-06/10-07 头几刀就已知的；5–11 是 tier-2 这三刀**现抓出来**的，
+其中三处如果漏改不会红，只会让那条守卫对新分册永远失明（本仓最忌讳的假绿形状）；
+12–14 是代码复审那一轮补的（复审提的 ⑥⑦ 两条 + 它点出的那个新口子该钉的判据）。
+
+⚠️ 一条已知边界，写在这里而不是藏在注释里：`verify-guards.py` 的 202 条用例里有 **6 条**
+（现算口径：`expect_fail_hint` 恰好等于自己 `cmd` 里那个测试名 token）的 hint 是**测试名**，
+不是断言正文。它们仍然会"改坏即红"（cmd 只跑那一条测试，编译不过时 cargo 不印测试名 ⇒ 也不会误纳），
+弱的地方是**归因**：同一条测试里另一处断言坏了，hint 也认。为什么不改：
+把 6 条 hint 换成中文断言正文要重写并逐条复跑，而这条弱只在"一条测试里有多处断言"时才显形。
+复跑（数这几条）：`python3 -c` 见 `scripts/verify-guards.py --list` 之后按 `hint in cmd` 取交集。
 
 | # | 尺子 | 漏改的后果 | 复跑 |
 |---|---|---|---|
@@ -510,8 +529,11 @@ grep -c 'if relay_denied(' src-tauri/src/network/transport.rs src-tauri/src/netw
 | 6 | `scripts/check-invariant-hooks.mjs` 的 `guards:` / `e2e:` 检索面 | 已搬进分册的判据被报成"没有钩子"（假红，会指挥人去补钩子） | `node scripts/check-invariant-hooks.mjs` |
 | 7 | `scripts/check-scripts-parse.mjs` 的 import 闭包与 py 分册名单 | 分册语法错/漏登记 ⇒ 便宜层看不见 | `node scripts/check-scripts-parse.mjs` |
 | 8 | 活文档里的 `file:line` 引用 | 行号随搬家作废（响亮：退 1） | `node scripts/check-doc-citations.mjs --root=.` |
-| 9 | `check-domain-deps.mjs` 的内联耦合可见性 | 按物理文件判 ⇒ include! 让"use 在哪个文件"变任意，会报假增长（10-07 已改成按领域判，**上限一格没动**） | `node scripts/check-domain-deps.mjs`（30 处 / 6 对，搬家前后同一个数） |
-| 11 | **视图里那段"读源码的形状判据"自己**：`find("async fn x")` 在聚合文本里会先撞上判据自己的字面量 | 静默失明（本仓最危险那一类）——注入后测试照样绿。10-07 护栏整跑实测抓到 **2 条**：`ble_reader_loop_refreshes_read_activity`、`peripheral_handshake_failure_clears_the_handshaking_mark`，因为 `ble.rs` 的**内联测试模块**排在视图第一段，而函数本体被搬进了最后一段的 `ble/io_loops.rs` | 修法照 `transport/gossip_tests.rs` 的先例：检索式带**行首换行**（`"\nasync fn x"`，别加左括号——带泛型的签名加了就找不到），再加一条 `body.starts_with("async fn x")` 断言窗口真的是函数本体。复跑：`python3 scripts/verify-guards.py --only "BLE 读循环必须回灌读活性"` |
+| 9 | `check-domain-deps.mjs` 的内联耦合可见性 | 按物理文件判 ⇒ include! 让"use 在哪个文件"变任意，会报假增长（10-07 已改成按领域判） | `node scripts/check-domain-deps.mjs`（30 处 / 6 对，搬家前后同一个数）。⚠️ 口径换成按领域之后**上限跟着从 13 收到 6**（存量就是 6），所以反证命令也得跟着比 6 小：`GOSSLAN_DOMAIN_INLINE_PAIR_MAX=5 node scripts/check-domain-deps.mjs` ⇒ RC=1（旧那条 `=12` 实测已经跑不红了） |
+| 11 | **视图里那段"读源码的形状判据"自己**：`find("async fn x")` 在聚合文本里会先撞上判据自己的字面量 | 静默失明（本仓最危险那一类）——注入后测试照样绿。10-07 护栏整跑实测抓到 **2 条**：`ble_reader_loop_refreshes_read_activity`、`peripheral_handshake_failure_clears_the_handshaking_mark`，因为 `ble.rs` 的**内联测试模块**排在视图第一段，而函数本体被搬进了最后一段的 `ble/io_loops.rs` | 修法两步（10-07 复审把第二步改过一次）：① 检索式带**行首换行** `"\nasync fn x"`（别加左括号——带泛型的签名加了就找不到）；② **`assert_eq!(src.matches("\nasync fn x").count(), 1)`** 钉"这个锚点在整棵视图里恰好一次"。⚠️ 第二版原先写的是 `body.starts_with("async fn x")`，那是**同义反复**（`body` 就是从那个 `find` 命中点切的，永远以它开头 ⇒ 判据恒真），复审点名后换成计数。复跑：`python3 scripts/verify-guards.py --only "读活性"`（该用例的 `✅ …且红由声明的那条判据报出` 就是这条硬判据在说话） |
+| 12 | `check-domain-deps.mjs` 的 `use crate::` 检索式 | 花括号批量写法 `use crate::{a, b};` **两条扫描都不看**（`scanInlineCrate` 把 use 行整行让给 `scanUseCrate`，而后者只认单条路径）⇒ 新增一条跨域耦合只要用花括号写，就永久绕开棘轮上限 6 | 现算今天 0 处（`grep -rE '^\\s*(pub(\\([a-z]+\\))?\\s+)?use\\s+crate::\\{' src-tauri/src`）⇒ 补上是纯收紧。恒等判据：改前改后 `node scripts/check-domain-deps.mjs` 输出**逐字节相同**；反证：往 `network/discovery.rs` 注入 `use crate::{crypto::random_key};`（带行内注释那版也要能认出——第一版就是漏了去注释，注入实测 RC=0），旧脚本 RC=0 / 新脚本 RC=1 |
+| 13 | `check-ble-constants.mjs` 判据 B 的扫描面 | 第 5 行只把面扩到 `network/ble/`，BLE 字面量落在**兄弟册**（`network/file/receive.rs`、`transport/tcp.rs`）里仍然完全看不见 | 现算把面临时扩到**全部生产 rs**、跑真实判据 ⇒ 匿名重述命中 **0 处**，所以按 `network/` + `transport/` 两个目录扩面今天不改任何结论（不扩到全仓是为了不把 `MAX_CHUNK_* = 3` 这类同名不同义的值拉进误伤面）。反证：往 `network/file/receive.rs` 注入 `const FAKE_ATT_HEADER_LEN: u16 = 3;` ⇒ 旧面 RC=0 / 新面 RC=1 且点名那一行；还原后输出逐字节相同 |
+| 14 | 新增的两条"形状对不对"判据本身 | 分发臂 ↔ 分册臂（`match` 拆成 1 分发器 + 5 册之后两侧不再被同一张表钉住）、视图家 ↔ 对账用例数（少一册是响亮、多一册没人查是沉默） | `cargo test --features bluetooth --lib -- dispatch_arms_and_volume_arms_agree guard_source_views_register_every_include_subfile`。前者的非空转证据：把 `FileDone` 从 file 组的分发臂挪到 share 组（**编译合法、运行时静默丢帧**）⇒ 恰好这一条红，其余 789 条全绿 |
 | 10 | `docs/ARCHITECTURE-MAP.html` 的节点 `paths` | 图变成第二份名单 ⇒ 只在 notes 里指回 domains.data.mjs，逐册名单不抄 | 改完 `node --check` 那段内嵌 script |
 
 ### 6-bis 本轮整层证据里那一条红：是环境坏了，不是代码坏了（现量，别再重查一遍）

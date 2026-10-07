@@ -188,17 +188,37 @@ console.log("\n判据 B：BLE 领域内不许用匿名常量重述受保护的�
 const constDefRe = /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[^=]+=\s*([^;]+);/;
 let bFindings = 0;
 /**
- * 判据 B 的**实际扫描面** = 点名的那几本 + `network/ble/` 目录下的全部文件（动态展开）。
+ * 判据 B 的**实际扫描面** = 点名的那几本 + 传输栈两个目录（`network/`、`transport/`）下的
+ * 全部生产文件（动态展开，排除 `*_tests.rs` / `tests.rs`）。
  *
- * 2026-10-07：`network/ble.rs` 按角色切成 `include!` 分册（central / peripheral / frame_io / io_loops），
- * 硬编码清单对新册是**静默失明**的 —— 漏扫不会红，只会让"匿名常量重述受保护字面量"这类缺陷
- * 在新册里永远通过（本仓最忌讳的假绿形状）。所以那一侧改成按目录取。
- * 点名的几本仍逐条做存在性检查（下面那句 `✗ 清单里的文件不存在`）：改名是响亮的，漏扫是沉默的，
- * 沉默的那一半必须由目录覆盖兜住。
+ * 2026-10-07 两刀：
+ *   ① `network/ble.rs` 按角色切成 `include!` 分册（central / peripheral / frame_io / io_loops），
+ *      硬编码清单对新册是**静默失明**的 —— 漏扫不会红，只会让"匿名常量重述受保护字面量"这类缺陷
+ *      在新册里永远通过（本仓最忌讳的假绿形状）。所以那一侧改成按目录取。
+ *   ② 复审 ⑦：只扩 `network/ble/` 的话，BLE 字面量落在**兄弟册**里仍然看不见
+ *      （实测例：`network/file/receive.rs`、`transport/tcp.rs` 都在面外）。
+ *      为什么不干脆扩到全仓：值清单是 `23 / 3 / 512 / 20`，其中 3 与 20 在文件传输、
+ *      UI 节流这类代码里是**同名不同义**的常见值（`MAX_CHUNK_*  = 3`），扩到全仓会造出误伤，
+ *      而这条守卫一旦被加白名单就形同虚设。按"重述只可能出现在同一传输栈里"扩到这两个目录，
+ *      既覆盖复审点名的那两个例子，又不把无关领域拉进来。
+ *      现算（2026-10-07，把面临时扩到**全部生产 rs** 跑过一次真实判据）：匿名重述命中 **0 处** ⇒
+ *      这次扩面今天不改任何结论，是纯收紧（恒等判据：改前改后的判据 B 命中数都是 0）。
+ *   点名的几本仍逐条做存在性检查（下面那句 `✗ 清单里的文件不存在`）：改名是响亮的，漏扫是沉默的，
+ *      沉默的那一半必须由目录覆盖兜住。
  */
 function bleScanFace() {
-  const inBleDir = files.map((f) => f.rel).filter((r) => r.startsWith("network/ble/")).sort();
-  return [...BLE_DOMAIN_FILES, ...inBleDir];
+  const STACK_DIRS = ["network/", "transport/"];
+  const inStack = files
+    .map((f) => f.rel)
+    .filter(
+      (r) =>
+        STACK_DIRS.some((d) => r.startsWith(d)) &&
+        !r.endsWith("_tests.rs") &&
+        r !== "transport/tests.rs" &&
+        !r.endsWith("/tests.rs"),
+    )
+    .sort();
+  return [...new Set([...BLE_DOMAIN_FILES, ...inStack])];
 }
 
 for (const rel of bleScanFace()) {
@@ -232,7 +252,7 @@ for (const rel of bleScanFace()) {
   });
 }
 if (bFindings === 0) {
-  console.log(`  ✓ BLE 领域的 ${bleScanFace().length} 个文件里没有匿名重述（点名 ${BLE_DOMAIN_FILES.length} + network/ble/ 目录动态展开）`);
+  console.log(`  ✓ BLE 领域的 ${bleScanFace().length} 个文件里没有匿名重述（点名 ${BLE_DOMAIN_FILES.length} + network/ 与 transport/ 目录动态展开）`);
 }
 
 // ---------------- 判据 C：三个外设平台必须委托给规范换算 ----------------

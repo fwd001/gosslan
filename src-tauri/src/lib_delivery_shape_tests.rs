@@ -337,9 +337,12 @@
         );
         // 定义 1 处 + 调用 3 处（gossip 广播分支 / 定向洪泛兜底 / OpaqueExternal）
         let uses = transport.matches("reachable_neighbors(").count();
-        assert!(
-            uses >= 4,
-            "reachable_neighbors 应有定义+3 个转发调用点，实际 {uses} 处 —— 有新转发点没走可达集？"
+        // 收成 ==：`>= 4` 只拦"少了一处"，拦不住"计数被测试文本垫上去"——视图里含内联测试段，
+        // 一处生产调用点被删掉时，测试里那句同名字符串可以把计数补回 4（今天现算就是 4/4 全在生产侧）。
+        assert_eq!(
+            uses, 4,
+            "reachable_neighbors 应为「定义 1 处 + 3 个转发调用点」，实际 {uses} 处\n\
+             （多了=有新转发点没走可达集；少了=有转发点退回旧写法或被测试文本垫数）"
         );
     }
 

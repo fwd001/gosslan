@@ -177,3 +177,195 @@
     }
 
     // ---------- 待发群密钥 pending 表（最小 P0 修复） ----------
+
+    /// 分发臂与各册入口的 match 臂必须**一一对齐**（2026-10-07 函数级拆分留下的唯一新口子）。
+    ///
+    /// 为什么要专门钉：拆之前 `match msg` 是一个整体，编译器保证穷尽；拆成分发器 + 五册之后
+    /// 两侧各有一张臂表，编译器**看不见另一侧** ⇒
+    ///   · 分册加一臂而分发臂没列 ⇒ 那条臂永远不可达（无警告）；
+    ///   · 分发臂列了而分册没有 ⇒ 帧掉进分册的 `_ => {}` 被**静默丢弃**，
+    ///     而文件/中继/群那几条路径上"什么都不说"正是 INV-P05 一类事故的形状。
+    #[test]
+    fn dispatch_arms_and_volume_arms_agree() {
+        let view = crate::network::transport_src_for_guards();
+        // 台账是现读 `network/transport.rs` 的分发臂逐组数出来的（合计 35 个变体）：
+        //   file 6 = FileOffer / FileAccept / FileReject / FileCompleteAck / FileChunk / FileDone
+        let families: [(&str, usize); 5] = [
+            ("handle_file_messages", 6),
+            ("handle_share_and_relay_messages", 6),
+            ("handle_group_messages", 11),
+            ("handle_identity_and_friend_messages", 8),
+            ("handle_messaging_arm", 4),
+        ];
+        let groups = dispatch_groups(&view);
+        assert_eq!(
+            groups.len(),
+            families.len(),
+            "分发器里有 {} 组 `m @ ( … )` 委托臂，台账只有 {} 个入口 ⇒ 有人加/删了一组而这条守卫的名单没跟着改：{:?}",
+            groups.len(),
+            families.len(),
+            groups
+                .iter()
+                .map(|(h, a)| format!("{h}({})", a.len()))
+                .collect::<Vec<_>>()
+        );
+        let mut dispatched: Vec<String> = Vec::new();
+        for (handler, expect) in families {
+            let (_, disp) = groups
+                .iter()
+                .find(|(h, _)| h == handler)
+                .unwrap_or_else(|| panic!("分发器里没有委托给 `{handler}` 的那组臂"));
+            let vol = arm_variants(&volume_body(&view, &format!("async fn {handler}(")));
+            assert_eq!(
+                disp.len(),
+                expect,
+                "{handler}：分发臂列了 {:?}，台账是 {expect} 个（分册侧 {vol:?}）",
+                disp
+            );
+            assert_eq!(
+                vol.len(),
+                expect,
+                "{handler}：分册里有 {:?}，台账是 {expect} 条（分发侧 {disp:?}）",
+                vol
+            );
+            for v in disp {
+                assert!(
+                    vol.contains(v),
+                    "分发把 {v} 交给 {handler}，可 {handler} 里没有那一臂 ⇒ 这一帧会掉进 `_ => {{}}` 被静默丢掉"
+                );
+            }
+            for v in &vol {
+                assert!(
+                    disp.contains(v),
+                    "{handler} 处理 {v}，但分发臂没列出它 ⇒ 那段处理体永远不可达"
+                );
+            }
+            dispatched.extend(disp.iter().cloned());
+        }
+        let total = dispatched.len();
+        dispatched.sort();
+        dispatched.dedup();
+        assert_eq!(dispatched.len(), total, "同一变体出现在两族的臂表里（{total} → {}）⇒ 两份语义", dispatched.len());
+    }
+
+    /// 取一个顶层 `async fn` 的函数体（签名起，到第 0 列的 `}` 为止）。
+    ///
+    /// 两个锚点找不到都 **panic**，不许退化：第一版写的是 `unwrap_or(view.len())`
+    /// （收尾锚点缺失时取到视图末尾）⇒ 会把后面几族的臂一起数进来，
+    /// 那是本项目最忌讳的"护栏还在跑、判的却不是那一段"的形状。
+    fn volume_body(src: &str, signature: &str) -> String {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("视图里找不到 `{signature}` ⇒ 分发器改了名，这条守卫要同步改"));
+        let rest = &src[start..];
+        let end = rest
+            .find("\n}")
+            .unwrap_or_else(|| panic!("`{signature}` 的函数体没有第 0 列的收尾 `}}`（视图拼接错位？）"));
+        rest[..end].to_string()
+    }
+
+    /// 按行扫分发器：从 `m @ (Message::…` 起、顺着 `| Message::` 续行收集变体，直到看到 `=>`；
+    /// 委托目标取 `=>` 之后的第一个 `name(`，`=> {` 那种换行委托再看随后三行。
+    ///
+    /// 为什么按行而不是按字节切片（两处实测教训）：
+    ///   · 第一版用 `view[..d_end].rfind("m @ (")` 定组起点，切出来的是**半行**（8 格缩进被切掉）
+    ///     ⇒ 组里第一个变体永远漏数（实测 FileOffer 消失、6 报成 5）；
+    ///   · 而 `find("=> handler(")` 接不住 identity 族那种 `=> {\n handler(…)` 的形状。
+    fn dispatch_groups(src: &str) -> Vec<(String, Vec<String>)> {
+        let lines: Vec<&str> = src.split('\n').collect();
+        let mut out: Vec<(String, Vec<String>)> = Vec::new();
+        let mut i = 0usize;
+        while i < lines.len() {
+            let Some(first) = lines[i].trim_start().strip_prefix("m @ (Message::") else {
+                i += 1;
+                continue;
+            };
+            let mut arms = vec![arm_name(first)];
+            let mut handler = String::new();
+            let mut j = i;
+            while j < lines.len() {
+                let line = lines[j];
+                if j > i {
+                    let t = line.trim_start();
+                    if let Some(rest) = t.strip_prefix("| Message::") {
+                        arms.push(arm_name(rest));
+                    } else if t.is_empty() || t.starts_with("//") {
+                        // 组内注释/空行不打断臂表
+                    } else {
+                        break;
+                    }
+                }
+                if let Some(pos) = line.find("=>") {
+                    handler = call_name(&line[pos + 2..]).unwrap_or_default();
+                    if handler.is_empty() {
+                        for k in (j + 1)..(j + 4).min(lines.len()) {
+                            if let Some(n) = call_name(lines[k]) {
+                                handler = n;
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
+                j += 1;
+            }
+            out.push((handler, arms));
+            i = j + 1;
+        }
+        out
+    }
+
+    fn arm_name(rest: &str) -> String {
+        rest.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect()
+    }
+
+    /// 文本里第一个 `name(` 的 name（取 `=>` 之后的委托目标用）；关键字不算调用。
+    fn call_name(text: &str) -> Option<String> {
+        let cs: Vec<char> = text.chars().collect();
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let mut i = 0usize;
+        while i < cs.len() {
+            if !ident(cs[i]) {
+                i += 1;
+                continue;
+            }
+            let mut j = i;
+            while j < cs.len() && ident(cs[j]) {
+                j += 1;
+            }
+            if j < cs.len() && cs[j] == '(' {
+                let s: String = cs[i..j].iter().collect();
+                if !["match", "if", "while", "for", "return", "async", "fn"].contains(&s.as_str()) {
+                    return Some(s);
+                }
+            }
+            i = j;
+        }
+        None
+    }
+
+    /// 取一段文本里**第一层**的 `Message::X` 臂名：只认 8 空格起的臂与其 `|` 续行，
+    /// 臂体里（≥12 空格）构造的消息值不算 —— 否则一条臂里再发一帧就会被数成两臂。
+    fn arm_variants(text: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for line in text.split('\n') {
+            let rest = match line
+                .strip_prefix("        m @ (Message::")
+                .or_else(|| line.strip_prefix("        Message::"))
+                .or_else(|| line.strip_prefix("        | Message::"))
+            {
+                Some(r) => r,
+                None => continue,
+            };
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                out.push(name);
+            }
+        }
+        out
+    }

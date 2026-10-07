@@ -344,7 +344,19 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"· 起跑前核对：{len(cases)} 条用例的注入锚点都在各自文件里恰好命中一次\n")
+    # 2026-10-07：`expect_fail_hint` 已经是判据（不匹配就 FAIL），于是"某条 Case 干脆不声明 hint"
+    # 就成了这条判据唯一的绕过口 —— 不声明等于不检查，而成功那行照旧打印"且红由声明的那条判据报出"。
+    # 现算今天 202/202 条都声明了 ⇒ 把它钉成起跑前核对，别让" convention "退化成"可空字段"。
+    no_hint = [c.name for c in cases if not c.expect_fail_hint.strip()]
+    if no_hint:
+        print(
+            f"❌ 起跑前核对：{len(no_hint)} 条用例没声明 expect_fail_hint ⇒ 这条判据对它们根本不存在：",
+            file=sys.stderr,
+        )
+        for n in no_hint:
+            print(f"   - {n}", file=sys.stderr)
+        return 1
+    print(f"· 起跑前核对：{len(cases)} 条用例的注入锚点都在各自文件里恰好命中一次，且每条都声明了 fail-hint\n")
     if args.list:
         for c in cases:
             print(f"  [{','.join(c.tags)}] {c.name}\n      {c.why}")

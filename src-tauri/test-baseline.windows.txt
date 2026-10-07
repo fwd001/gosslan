@@ -503,6 +503,7 @@ network::transport::tests::direct_open_recovers_once_sender_pubkey_cache_refresh
 network::transport::tests::direct_open_rejects_corrupt_and_tampered_payloads
 network::transport::tests::direct_open_succeeds_with_current_keys
 network::transport::tests::directed_relay_target_routes_share_and_offer_frames
+network::transport::tests::dispatch_arms_and_volume_arms_agree
 network::transport::tests::e2e_gossip_encrypt_sign_decrypt
 network::transport::tests::expired_file_does_not_touch_the_group_bubble
 network::transport::tests::expired_file_never_rewrites_a_completed_transfer

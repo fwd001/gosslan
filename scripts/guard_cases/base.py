@@ -27,7 +27,8 @@ class Case:
     injections: list[tuple[str, str]]
     cmd: list[str]
     cwd: Path
-    expect_fail_hint: str = ""  # 期望在失败输出里出现的关键词（可空）
+    expect_fail_hint: str = ""  # 期望在失败输出里出现的关键词。**必填**：runner 起跑前核对会拒空值
+    # （2026-10-07 起它是判据而不是提示 —— 不声明就等于这条用例绕过该判据）
     tags: list[str] = field(default_factory=list)
     #: 需要**同时**改坏的其它文件（路径, 原文, 替换）。例如"事实来源 + 构建时注入的副本"
     #: 两边都要改，否则护栏会先以"两者漂移"失败，证明不了"漏掉方法也会被抓到"。

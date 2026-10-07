@@ -180,6 +180,42 @@ function isInTestRange(idx, ranges) {
 }
 
 /**
+ * 把一行 `use crate::…` 展开成若干 module path。
+ *
+ * 为什么要专门写这个（2026-10-07 复审 ⑥）：本文件的**内联**扫描（`scanInlineCrate`）把
+ * `^\s*(pub\s+)?use\s` 开头的行整行跳过，理由是"use 行由 `scanUseCrate` 负责"；
+ * 而 `scanUseCrate` 原先只认单条路径 `use crate::a::b;` —— 于是
+ * **花括号批量形式 `use crate::{notifications, utils::foo};` 两侧都不看**，
+ * 成了一条能绕过棘轮上限（`GOSSLAN_DOMAIN_INLINE_PAIR_MAX`）的写法：
+ * 新增一条跨域耦合，只要用花括号写 `use`，判据就永久看不见它。
+ * 现算今天这个形式是 **0 处**（`grep -rE '^\s*(pub(\([a-z]+\))?\s+)?use\s+crate::\{' src-tauri/src`），
+ * 所以补上是纯收紧、不动任何现有数字 —— 恒等判据：改前改后本脚本输出逐字节相同。
+ *
+ * 嵌套形式 `use crate::{a::{b, c}}` 削成模块前缀 `a`（域归属只看第一段模块，
+ * 精确到 `b`/`c` 对判据没意义）；`self::` / `super::` 不是 crate 根，不算。
+ *
+ * @returns {string[]} `crate::` 之后的 module path 列表（非 use crate 行返回空）
+ */
+function useCratePaths(line) {
+  const m = line.match(/^\s*(?:pub(?:\([a-z]+\))?\s+)?use\s+crate::\s*/);
+  if (!m) return [];
+  // 先去行内注释再剥分号：`use crate::{a::b}; // 说明` 里注释在 `}` 之后，
+  // 不先去注释就判不出"以 } 结尾"，整行会退化成看不见（第一版就是这么漏的 —— 注入实测 RC=0）
+  const noComment = line.slice(m[0].length).replace(/\/\/.*$/, "");
+  const tail = noComment.trim().replace(/;+\s*$/, "").trim();
+  const stripRename = (seg) => seg.trim().split(/\s+as\s+/)[0].trim();
+  if (tail.startsWith("{") && tail.endsWith("}")) {
+    return tail
+      .slice(1, -1)
+      .split(",")
+      .map((seg) => stripRename(seg).replace(/::\{[\s\S]*$/, "").replace(/::$/, ""))
+      .filter((seg) => /^[a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*$/.test(seg));
+  }
+  const p = tail.match(/^([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)/);
+  return p ? [p[1]] : [];
+}
+
+/**
  * 提取文件中**生产代码**的 `use crate::xxx` 引用的 module path。
  * 返回 `Array<{line, modulePath}>`，modulePath 是 `crate::` 之后的整段，
  * 如 `mesh::router`、`network::transport`。
@@ -191,10 +227,8 @@ function scanUseCrate(content) {
 
   for (let i = 0; i < lines.length; i++) {
     if (isInTestRange(i, testRanges)) continue;
-    const line = lines[i];
-    const m = line.match(/^\s*use\s+crate::([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)/);
-    if (!m) continue;
-    refs.push({ line: i + 1, modulePath: m[1] });
+    // 花括号批量形式与 `pub use` 也走这里（缺口与恒等判据见 useCratePaths 上方注释）
+    for (const modulePath of useCratePaths(lines[i])) refs.push({ line: i + 1, modulePath });
   }
   return refs;
 }
@@ -350,8 +384,9 @@ function domainProdFiles(d) {
  * 所以"这条内联引用是不是已声明依赖的内联写法"也只能按领域问。include! 让
  * "use 落在哪个物理文件"变成任意的 ⇒ 文件粒度在这个模块上根本不是一个可依赖的事实。
  *
- * 恒等判据（复跑见文件末）：搬家前后**同一份耦合必须报同一个数** —— 拆分前 13 对 / 84 处，
- * 拆完五册 + 改准口径后仍应 13 对 / 84 处。真新增一对（往没声明过那条依赖的领域里塞一句
+ * 恒等判据（复跑见文件末）：**同一份新尺子**在拆分前与拆完两棵树上都报 30 处 / 6 对；
+ * 旧口径（按物理文件）在两棵树分别是 13 对 / 84 处与 16 对 / 102 处 —— 差的是归属假象，不是增长。
+ * 真新增一对（往没声明过那条依赖的领域里塞一句
  * 内联 `crate::…`）时必须 +1 并被 13 的上限咬红。
  */
 const declaredTargetsByDomain = new Map();
@@ -462,11 +497,15 @@ if (ok) {
   //   会被注释里的 `crate::` 之类的噪声牵着抖），冻的是**去重后的源域→目标域对数**。
   //   为什么这样收：内联耦合每多一对，就是又有一条形同"已声明的生产依赖"（db→messaging 那种）
   //   走到判据看不见的地方去；存量不判红是要人拍板，**新增**没有这个理由。
-  //   反证入口（不用改文件就能证明它会红）：`GOSSLAN_DOMAIN_INLINE_PAIR_MAX=12 node scripts/check-domain-deps.mjs`
+  //   反证入口（不用改文件就能证明它会红）：`GOSSLAN_DOMAIN_INLINE_PAIR_MAX=5 node scripts/check-domain-deps.mjs`
+  //   ⚠️ 这个数必须**比存量小**才红：上限从 13 收到 6 之后，旧注释里那条 `=12` 就成了空命令
+  //      （实测 RC=0）。写复跑命令要原样跑一遍再说它会红。
   //   ⚠️ 上限必须钉成**存量数字**而不是"当天的条数" —— 取后者等于恒真，棘轮永远不会咬。
-  //      存量 13 对是 2026-09-28 现算（复跑同一条命令看上面那行打印）；**只许调小**，
+  //      存量随口径重钉：**2026-09-28 按物理文件口径是 13 对；2026-10-07 改成按领域口径后现算 6 对**
+  //      （负责人当天点头"只处理确有内聚边界的"那一轮里做的口径修正，不是有人放宽 —— 数字变小是
+  //      同一条已声明依赖不再被重复数成"隐形"；上限跟着**收紧**到 6，比 13 严）。
   //      调大等于把洞重新变沉默 ⇒ 要调必须先在这行注释里写下谁同意、为什么。
-  // ★ 2026-10-07：**上限 13 一格没动**，改的是口径（可见性按领域判，不再按物理文件判）。
+  // ★ 2026-10-07 第一刀：**上限没动**，改的只是口径（可见性按领域判，不再按物理文件判）。
   //   起因是 `network/file.rs` 切成 include! 分册后这里从 13 对跳到 16 并报红。
   //   现量核对：`git worktree add --detach /tmp/x 567694b`，同一份新脚本在两棵树各跑一遍 ⇒
   //   两边都是 **30 处 / 6 对**，而旧口径在两棵树分别是 13 对 / 16 对
@@ -478,7 +517,7 @@ if (ok) {
   //   （如某文件内联摸 db，而 db 的 use 只在该域别处的文件里）现在不会被单独报出来 ——
   //   按领域问就只看领域。取舍理由：`consumes` 与判据 G 本来就是领域粒度的，
   //   而 `include!` 让"use 落在哪个文件"成为任意事实，用任意事实做判据分母比少报一格更危险。
-  const pairMax = Number(process.env.GOSSLAN_DOMAIN_INLINE_PAIR_MAX ?? "13");
+  const pairMax = Number(process.env.GOSSLAN_DOMAIN_INLINE_PAIR_MAX ?? "6");
   if (pairs.length > pairMax) {
     console.error(
       `  ✗ 内联跨域引用对数 ${pairs.length} 超过棘轮上限 ${pairMax}`
