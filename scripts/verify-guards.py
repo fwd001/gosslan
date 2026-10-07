@@ -284,7 +284,7 @@ def verify(case: Case) -> tuple[bool, str]:
                 f"注入后是红了，但失败输出里**没有**声明的那句判据关键词 `{case.expect_fail_hint}`\n"
                 f"  ⇒ 两种可能，都得人来分：① 那条判据的措辞改了（声明过期 ⇒ 换成它真会打印的那句）；"
                 f"② 红的是别的东西（这条注入其实没被那一格守住）。\n"
-                f"  实际失败输出尾部（挑新 hint 用）：\n{out[-600:]}"
+                f"  实际失败输出尾部（挑新 hint 用）：\n{out[-2500:]}"
             )
         return True, "改坏即 FAIL、恢复即 PASS，且红由声明的那条判据报出"
     finally:

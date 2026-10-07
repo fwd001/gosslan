@@ -374,7 +374,7 @@ CASES: list[Case] = [
         ],
         cmd=npm("test"),
         cwd=ROOT,
-        expect_fail_hint="onFocusChanged",
+        expect_fail_hint="设置窗口要监听重新获得焦点",
         tags=["frontend", "window"],
     ),
     Case(
