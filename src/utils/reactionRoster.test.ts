@@ -80,12 +80,20 @@ const bar = () =>
 
 test("揭示方式两端都有出口：hover 只在有指针的设备启用", () => {
   const src = bar();
-  assert.match(src, /@mouseenter="canHover && reveal\(c\.emoji\)"/, "悬停要有 canHover 守卫");
+  assert.match(src, /@mouseenter="canHover && reveal\(c\.emoji, \$event\.currentTarget\)"/, "悬停要有 canHover 守卫");
   assert.match(src, /window\.matchMedia\("\(hover: hover\)"\)/, "守卫的判据是设备能力，不是窗口宽度");
   // 键盘必须走得到同一条路（只给 mouse 的浮层对键盘用户等于没有）
-  assert.match(src, /@focus="canHover && reveal\(c\.emoji\)"/);
+  assert.match(src, /@focus="canHover && reveal\(c\.emoji, \$event\.currentTarget\)"/);
   assert.match(src, /@keydown\.esc="hide\(c\.emoji\)"/, "开着要有关闭出口");
   assert.match(src, /aria-expanded="openEmoji === c\.emoji"/);
+});
+
+test("名单只按追加先后逐行列出，不再单标「最新」（用户 2026-10-07：「最新的那个标签去掉」）", () => {
+  const src = bar();
+  // 顺序本身就是信息：先点的在上、后点的在下（折叠层的追加序已由上面三条钉住），
+  // 所以末位再挂一个"最新"是重复表达 ⇒ 组件里不许再出现那个文案键。
+  assert.doesNotMatch(src, /reactionLatest/, "「最新」这个键已经从名单里去掉");
+  assert.match(src, /v-for="id in activeChip\.actors"/, "按 actors 顺序逐行列，不重排、不截位");
 });
 
 test("名单是读不是写：它自己不许发回应；长按之后那次 click 必须吃掉", () => {
@@ -95,6 +103,6 @@ test("名单是读不是写：它自己不许发回应；长按之后那次 clic
   assert.doesNotMatch(panel, /emit\(/, "点名单不该把回应切掉");
   assert.match(src, /if \(!props\.interactive \|\| canHover\) return;/, "长按只在'能点且无指针'的设备上抢这个手势");
   assert.match(src, /if \(heldEmoji === c\.emoji\) \{/, "长按触发后吞掉随后的 click");
-  assert.match(src, /if \(!props\.interactive\) \{\s*\n?\s*togglePanel\(c\.emoji\);/, "不可点的那一侧（现在只有 1:1）点 = 看名单");
+  assert.match(src, /if \(!props\.interactive\) \{\s*\n?\s*togglePanel\(c\.emoji, chipEl\);/, "不可点的那一侧（现在只有 1:1）点 = 看名单");
   assert.match(src, /onUnmounted\(clearPress\);/, "定时器不能留在卸载后的组件里");
 });

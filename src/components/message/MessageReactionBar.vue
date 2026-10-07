@@ -27,11 +27,12 @@
  * 只有"我自己也点了"那一枚描主色边 + 主色淡底。两态**都带 border**（别人那枚是透明边），
  * 否则我点一下会让胶囊宽窄跳 2px。表情比数字大一档，让表情本身是主角。
  */
-import { onUnmounted, ref } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import { emojiUrl } from "@/utils/emoji";
 import { summarizeActors, ROSTER_VISIBLE, type ReactionChip } from "@/utils/reactions";
 import { useChatStore } from "@/stores/useChatStore";
+import { useHoverCard } from "@/composables/useHoverCard";
 
 const props = defineProps<{
   chips: ReactionChip[];
@@ -63,19 +64,64 @@ function chipTitle(c: ReactionChip): string {
 
 /** 同时只开一份名单：一条消息上三个表情全展开会把气泡区糊住。 */
 const openEmoji = ref<string | null>(null);
+/** 只有真有指针悬停能力的端才走 hover（触屏上 mouseenter 是"点完才来"的假事件）。 */
 const canHover =
   typeof window !== "undefined" && typeof window.matchMedia === "function"
     ? window.matchMedia("(hover: hover)").matches
     : false;
 
-function reveal(emoji: string) {
+/**
+ * 名单浮层：**Teleport 到 body + fixed 坐标**，摆位走通用那一套
+ * （`composables/useHoverCard` → `utils/hoverCard.placeCard`）。
+ *
+ * 为什么要 Teleport（用户 2026-10-07 第二轮：「这个列表还是会被遮挡」）：原来它是
+ * `position: absolute` 挂在胶囊旁边，而胶囊在消息列表的 `overflow: hidden` 容器里
+ * ⇒ 名单被裁。表情选择器和已读成员弹层早就为同一个原因改成 Teleport + fixed
+ * （`MessageItem.positionReactionPicker`，以及 `MessageReceipt` 里同样走 `useHoverCard` 的那一段）。
+ *
+ * 四个方向都按**这颗胶囊离哪条边近**现算，不跟消息朝向绑（一排十几颗会折行，
+ * 同一侧既有贴左缘的也有贴右缘的）。宽度只给 `max-width` ⇒ 按名字长短撑开
+ * （用户 2026-10-07：「框框是固定长度，名字不够长后面有空白」），超出上限交给行内 truncate。
+ */
+const { pos, style, setEl, open, close } = useHoverCard({ maxWidth: 256 });
+
+/** 当前展开名单的那颗胶囊（Teleport 后不在 v-for 内部，按 emoji 回查）。 */
+const activeChip = computed(() =>
+  openEmoji.value
+    ? (props.chips.find((c) => c.emoji === openEmoji.value) ?? null)
+    : null,
+);
+
+/** 模板里传的是 `$event.currentTarget`，它的静态类型是 EventTarget ⇒ 只在这一处收窄。 */
+function asEl(x: EventTarget | null | undefined): HTMLElement | null {
+  return x instanceof HTMLElement ? x : null;
+}
+
+/**
+ * 展开名单。**必须拿到胶囊元素**才摆得出四个方向 ⇒ 模板统一传 `$event.currentTarget`；
+ * 拿不到时只置 `openEmoji` 不摆位，`v-if` 那头的 `pos` 还是 null，宁可不出
+ * 也不要出一个贴在错误位置上的。
+ */
+function reveal(emoji: string, chipEl?: EventTarget | null) {
   openEmoji.value = emoji;
+  const el = asEl(chipEl);
+  if (el) open(el);
+}
+/**
+ * 收起。`openEmoji` 与 `pos` 必须成对清 —— 只清一个就会留下
+ * "胶囊挂着 `aria-expanded="true"` 而名单根本不在屏幕上"。
+ * （`pos` 被滚动清掉时靠上面那条 watch 反向同步 `openEmoji`。）
+ */
+function dismiss() {
+  openEmoji.value = null;
+  close();
 }
 function hide(emoji: string) {
-  if (openEmoji.value === emoji) openEmoji.value = null;
+  if (openEmoji.value === emoji) dismiss();
 }
-function togglePanel(emoji: string) {
-  openEmoji.value = openEmoji.value === emoji ? null : emoji;
+function togglePanel(emoji: string, chipEl?: EventTarget | null) {
+  if (openEmoji.value === emoji) dismiss();
+  else reveal(emoji, chipEl);
 }
 
 /**
@@ -88,13 +134,14 @@ let pressTimer: ReturnType<typeof setTimeout> | null = null;
 /** 长按已触发 ⇒ 紧接着的那次 click 必须吃掉，否则"看个名单"会把回应点掉。 */
 let heldEmoji: string | null = null;
 
-function onPressStart(emoji: string) {
+function onPressStart(emoji: string, chipEl?: EventTarget | null) {
   if (!props.interactive || canHover) return;
   clearPress();
+  const el = asEl(chipEl);
   pressTimer = setTimeout(() => {
     pressTimer = null;
     heldEmoji = emoji;
-    reveal(emoji);
+    reveal(emoji, el);
   }, LONG_PRESS_MS);
 }
 function clearPress() {
@@ -103,34 +150,54 @@ function clearPress() {
     pressTimer = null;
   }
 }
-function onClick(c: ReactionChip) {
+function onClick(c: ReactionChip, chipEl?: EventTarget | null) {
   clearPress();
   if (heldEmoji === c.emoji) {
     heldEmoji = null;
     return;
   }
   if (!props.interactive) {
-    togglePanel(c.emoji);
+    togglePanel(c.emoji, chipEl);
     return;
   }
   emit("toggle", c.emoji);
 }
+
+/**
+ * `openEmoji` 与 `pos` 必须同开同关：`aria-expanded` 与守卫读的 `data-open-emoji`
+ * 都按 `openEmoji` 判，而"看不看得见"按 `pos` 判。滚一下就只清掉后者的话，
+ * 胶囊会挂着 `aria-expanded="true"` 而名单根本不在屏幕上。
+ */
+watch(pos, (p) => {
+  if (!p) openEmoji.value = null;
+});
 
 onUnmounted(clearPress);
 </script>
 
 <template>
   <!-- 没有任何回应且不可交互时整条不渲染，避免给每条消息都留一行空白 -->
-  <!-- 与气泡**左/右对齐**：本组件是消息行的兄弟节点，默认会从「头像」那一列起排，
-       看起来像挂在头像下面而不是气泡下面。左右各让出「头像 40px + 行间距 8px」= 48px。
-       这是纯排版补偿，不改变任何行为。 -->
+  <!-- 与气泡**左/右边缘对齐**（用户 2026-10-07：「左右两条表情回复边缘都与上面气泡对齐」）。
+       本条是消息行的**兄弟节点**，所以要从容器左/右缘让出「消息行的 px-4(16) + 头像 w-9(36)
+       + 行 gap-2(8)」= **60px**，胶囊的那条边才正好落在气泡那条边上。
+       ⚠️ 为什么是一个 60 而不是"px-4 再加头像"：Tailwind 里 `pl-*` 与 `px-*` 同属性、按顺序覆盖
+       （实测证据：旧写法 `pr-1` + `pr-12` 同时挂在这一颗元素上，生效的只有 48px 那一档），
+       拆成两档写就会静默少掉一层 —— 旧值 48 正是这么来的：注释按"头像 40 + 间距 8"算，
+       而头像其实是 36，还整个漏掉了行的 16px 内边距，两边各差 12px。
+       ⚠️ 这个 60 由 `scripts/check-ui-runtime.mjs` 的 roster 段在**真浏览器里**量着（|差| <= 1px），
+       所以头像尺寸或行内边距哪天变了，红的是那条判据，不是这段注释。 -->
   <div
     v-if="chips.length > 0 || interactive"
-    class="mt-1 flex flex-wrap items-center gap-1"
-    :class="mine ? 'justify-end pr-12' : 'pl-12'"
+    data-reaction-bar
+    :data-open-emoji="String(openEmoji)"
+    class="flex flex-wrap items-center gap-1"
+    :class="mine ? 'justify-end pr-[60px]' : 'pl-[60px]'"
   >
     <span v-for="c in chips" :key="c.emoji" class="relative inline-flex">
       <button
+        data-reaction-chip
+        :data-reaction-emoji="c.emoji"
+        :data-hover-capable="String(canHover)"
         class="tap-safe flex h-7 items-center gap-1 rounded-full border px-1.5 text-[12px] leading-none transition"
         :class="c.mine
           ? 'border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] text-[var(--gosslan-primary)]'
@@ -139,14 +206,14 @@ onUnmounted(clearPress);
         :aria-label="t('msg.reactionToggle', { emoji: c.emoji })"
         :aria-expanded="openEmoji === c.emoji"
         :disabled="!interactive"
-        @click="onClick(c)"
-        @pointerdown="onPressStart(c.emoji)"
+        @click="onClick(c, $event.currentTarget)"
+        @pointerdown="onPressStart(c.emoji, $event.currentTarget)"
         @pointerup="clearPress"
         @pointercancel="clearPress"
         @pointerleave="clearPress"
-        @mouseenter="canHover && reveal(c.emoji)"
+        @mouseenter="canHover && reveal(c.emoji, $event.currentTarget)"
         @mouseleave="canHover && hide(c.emoji)"
-        @focus="canHover && reveal(c.emoji)"
+        @focus="canHover && reveal(c.emoji, $event.currentTarget)"
         @blur="canHover && hide(c.emoji)"
         @keydown.esc="hide(c.emoji)"
       >
@@ -159,23 +226,35 @@ onUnmounted(clearPress);
         <span v-else class="text-[14px] leading-none">{{ c.emoji }}</span>
         <span class="tabular-nums font-medium">{{ c.count }}</span>
       </button>
-
-      <!-- 名单：按**追加先后**列，末位标「最新」。点名单本身不切回应（它是读，不是写）。 -->
-      <span
-        v-if="openEmoji === c.emoji && c.actors.length > 0"
-        class="absolute bottom-full left-0 z-30 mb-1 block min-w-[8rem] max-w-[16rem] rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 py-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)] shadow-md"
-        role="tooltip"
-      >
-        <span v-for="(id, i) in c.actors" :key="id" class="block truncate" :title="nameOf(id)">
-          {{ nameOf(id) }}
-          <span v-if="i === c.actors.length - 1" class="text-[var(--gosslan-primary)]">{{
-            t("msg.reactionLatest")
-          }}</span>
-        </span>
-        <span v-if="visible(c).hidden > 0" class="block">{{
-          t("msg.reactionPlus", { n: visible(c).hidden })
-        }}</span>
-      </span>
     </span>
   </div>
+
+  <!-- 名单浮层：Teleport 到 body + fixed 坐标（摆位见 utils/hoverCard）。
+       宽度只给 max-width ⇒ 按名字长短撑开；行内 truncate 负责超过那条上限之后的省略号。
+       顺序就是**追加先后**（先点的在上、后点的在下），不再单独标"最新"
+       （用户 2026-10-07：「最新的那个标签去掉」）。 -->
+  <Teleport to="body">
+    <div
+      v-if="activeChip && activeChip.actors.length > 0 && pos"
+      :ref="setEl"
+      data-reaction-roster
+      class="fixed z-[70] max-h-60 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 py-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)] shadow-md"
+      :style="style"
+      role="tooltip"
+      @click.stop
+    >
+      <span
+        v-for="id in activeChip.actors"
+        :key="id"
+        data-roster-row
+        class="block truncate"
+        :title="nameOf(id)"
+      >
+        {{ nameOf(id) }}
+      </span>
+      <span v-if="visible(activeChip).hidden > 0" class="block">{{
+        t("msg.reactionPlus", { n: visible(activeChip).hidden })
+      }}</span>
+    </div>
+  </Teleport>
 </template>

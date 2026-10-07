@@ -3,8 +3,8 @@ import { t } from "@/i18n";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
+import { useHoverCard } from "@/composables/useHoverCard";
 import { avatarSeedFor } from "@/utils/avatarSeed";
-import { popupPlacement, popupWidth } from "@/utils/popupPosition";
 import type { SendState } from "@/composables/useMessageDisplay";
 import { Check, CheckCheck, Loader2, X } from "lucide-vue-next";
 
@@ -38,40 +38,29 @@ const {
 } = useExclusivePopup(`readers:${props.msgKey ?? ""}`);
 
 /**
- * 弹层摆位：**Teleport 到 body + fixed 坐标**（2026-09-24 真机：长文字消息旁"已读列表
- * 靠右被裁掉一半"）。
+ * 弹层摆位与收起：**Teleport 到 body + fixed 坐标**，走通用那一套
+ * （`composables/useHoverCard` → `utils/hoverCard.placeCard`），与表情名单同一个家。
  *
  * 原来它挂在消息行里（`absolute right-0`），而消息列表是 `overflow-y: auto` 的滚动容器
- * ⇒ 横向一并被裁。表情面板早就为同一个原因改成 Teleport + fixed（见
- * `MessageItem.positionReactionPicker` 与 `utils/popupPosition` 的注释），这一处当时漏了。
+ * ⇒ 横向一并被裁（2026-09-24 真机：长文字消息旁"已读列表靠右被裁掉一半"）。
  *
- * 用 `right` + `top|bottom` 而不是算 `left`：右缘对齐入口右缘、面板向左展开，
- * 结构上就**不可能**顶出屏幕右边；纵向用视口边距定位 ⇒ 不需要估面板高度
- * （列表可滚动，真实高度本来拿不到，拿估算值判方向会在临界值来回翻）。
+ * ⚠️ 共用之后横向**不再写死"永远右对齐"**：入口在视口左半时改成往右长，
+ * 只有真贴右缘才向左长 —— 这正是 placeCard 存在的理由（名单那一处先撞出来的）。
  */
-const readersPos = ref<{ right: number; top: number | null; bottom: number | null; width: number } | null>(
-  null,
-);
-/** 入口按钮：滚动/改窗口时拿它重算坐标，也用来判定"是不是面板自己的滚动"。 */
+const {
+  pos: readersPos,
+  style: readersStyle,
+  setEl: setReadersEl,
+  open: openReadersCard,
+  close: closeReadersCard,
+} = useHoverCard({ maxWidth: 208 });
+/** 入口按钮：摆位要从它的矩形现算。 */
 const readersBtnRef = ref<HTMLElement | null>(null);
-const readersPanelRef = ref<HTMLElement | null>(null);
 
-function positionReaders(btn: HTMLElement) {
-  const r = btn.getBoundingClientRect();
-  const pad = 8;
-  const above = popupPlacement(r.top, window.innerHeight) === "above";
-  const width = popupWidth(208, window.innerWidth, pad);
-  readersPos.value = {
-    right: Math.max(pad, window.innerWidth - r.right),
-    top: above ? null : r.bottom + pad,
-    bottom: above ? window.innerHeight - r.top + pad : null,
-    width,
-  };
-}
-
-/** 打开/关闭时都要清坐标：`v-if` 关掉后 Teleport 的那层要跟着消失。 */
+/** 关闭时坐标与展开权一起还掉：`v-if` 关掉后 Teleport 的那层要跟着消失。 */
 function closeReaders() {
   releaseReaders();
+  closeReadersCard();
 }
 
 function toggleReaders() {
@@ -80,33 +69,25 @@ function toggleReaders() {
     return;
   }
   const btn = readersBtnRef.value;
-  if (btn) positionReaders(btn);
+  if (btn) openReadersCard(btn);
   claimReaders();
 }
 
-/** 滚动 / 改窗口大小 ⇒ 收起（固定坐标的浮层会飘）。忽略面板自己的内部滚动。 */
-function onScrollOrResize(e: Event) {
-  if (!readersOpen.value) return;
-  const panel = readersPanelRef.value;
-  if (e.type === "scroll" && panel && e.target instanceof Node && panel.contains(e.target)) return;
-  closeReaders();
-}
 function onDocClick() {
   closeReaders();
 }
-onMounted(() => {
-  document.addEventListener("click", onDocClick);
-  window.addEventListener("scroll", onScrollOrResize, true);
-  window.addEventListener("resize", onScrollOrResize);
+onMounted(() => document.addEventListener("click", onDocClick));
+onUnmounted(() => document.removeEventListener("click", onDocClick));
+
+// 两条 watch 各管一个方向，合起来才等价于"看不见 ⇔ 不持有展开权"：
+// · 滚动 / 改窗口只清得掉**坐标**（收起住在 useHoverCard 里）⇒ 坐标一空就把展开权还掉；
+// · 别的浮层抢走展开权、或虚拟列表回收这一行，只改得了 **isActive** ⇒ 反过来把坐标清掉。
+// 只留一条就会有一种"两个浮层并存"或"占着展开权却什么都看不见"的形态。
+watch(readersPos, (p) => {
+  if (!p) closeReaders();
 });
-onUnmounted(() => {
-  document.removeEventListener("click", onDocClick);
-  window.removeEventListener("scroll", onScrollOrResize, true);
-  window.removeEventListener("resize", onScrollOrResize);
-});
-// 虚拟列表回收这一行、或别的浮层抢走展开权时，不能让 Teleport 出去的那层留在屏幕上。
-watch(readersOpen, (open) => {
-  if (!open) readersPos.value = null;
+watch(readersOpen, (mine) => {
+  if (!mine) closeReadersCard();
 });
 
 function readerName(id: string) {
@@ -147,18 +128,14 @@ function readerAvatar(id: string): string | null {
       </span>
     </button>
     <!-- Teleport 到 body + fixed 坐标：挂在消息行里会被列表的 `overflow-y: auto`
-         连横向一起裁掉（真机：「已读列表靠右被裁一半」）。坐标见 `positionReaders`。 -->
+         连横向一起裁掉（真机：「已读列表靠右被裁一半」）。坐标由上面的 `useHoverCard`
+         在点开那一刻从入口按钮的矩形现算，摆位规则见 `utils/hoverCard.placeCard`。 -->
     <Teleport to="body">
       <div
         v-if="readersOpen && readerIds.length > 0 && readersPos"
-        ref="readersPanelRef"
+        :ref="setReadersEl"
         class="frost fixed z-[70] max-h-60 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1.5 text-xs shadow-lg"
-        :style="{
-          right: `${readersPos.right}px`,
-          top: readersPos.top != null ? `${readersPos.top}px` : undefined,
-          bottom: readersPos.bottom != null ? `${readersPos.bottom}px` : undefined,
-          width: `${readersPos.width}px`,
-        }"
+        :style="readersStyle"
         @click.stop
       >
       <div class="px-2 py-1 text-[var(--gosslan-text-2)]">{{ t("msg.readMembers", { n: readerIds.length }) }}</div>

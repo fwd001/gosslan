@@ -453,6 +453,247 @@ window.__probe = (() => {
     return true;
   };
 
+  /**
+   * 量**表情回应条**与气泡那一列的几何关系（用户 2026-10-07：「左右两条表情回复边缘都与上面气泡对齐，
+   * 并且间距紧凑点」）。两侧各量一次：左列看左边缘、右列看右边缘，容差 1px。
+   *
+   * ⚠️ 量的是**胶囊自己的边**，不是那条容器的边：回应条是通栏的块级容器，padding 长在盒子**里面**
+   * ⇒ 拿 getBoundingClientRect() 量那条容器去比气泡，两侧都会恒差一个"条的宽度差"（第一版就这么读出
+   * 左右各 60px，差点照着这个假数去改补偿值）。用户那句"边缘对齐"判的是看得到的那两枚胶囊。
+   * 裁切者不写死选择器：从条往上找第一个 overflow 不是 visible 的祖先（消息列表那个滚动容器），
+   * 因为"谁在裁"这件事本身就是这条判据要回答的一半。
+   */
+  H.reactionGeom = () => {
+    const bar = document.querySelector('[data-reaction-bar]');
+    const col = document.querySelector('[data-msg-col]');
+    if (!bar || !col) return { ok: false, why: '缺 data-reaction-bar 或 data-msg-col（钩子被改名了？）' };
+    const chips = Array.from(bar.querySelectorAll('[data-reaction-chip]'));
+    if (chips.length === 0) return { ok: false, why: '条里一颗胶囊都没有 ⇒ 没有可量的边' };
+    const rs = chips.map((b) => b.getBoundingClientRect());
+    const chipLeft = Math.min(...rs.map((r) => r.left));
+    const chipRight = Math.max(...rs.map((r) => r.right));
+    const chipTop = Math.min(...rs.map((r) => r.top));
+    const b = { left: chipLeft, right: chipRight, top: chipTop };
+    const c = col.getBoundingClientRect();
+    let clip = null;
+    for (let n = bar.parentElement; n; n = n.parentElement) {
+      const s = getComputedStyle(n);
+      if (s.overflowX !== 'visible' || s.overflowY !== 'visible') { clip = n; break; }
+    }
+    const cr = clip ? clip.getBoundingClientRect() : null;
+    return {
+      ok: true,
+      deltaLeft: Math.round(b.left - c.left),
+      deltaRight: Math.round(b.right - c.right),
+      gapToBubble: Math.round(b.top - c.bottom),
+      chipLeft: Math.round(b.left), chipRight: Math.round(b.right),
+      colLeft: Math.round(c.left), colRight: Math.round(c.right),
+      padLeft: getComputedStyle(bar).paddingLeft, padRight: getComputedStyle(bar).paddingRight,
+      // 那截竖向间距的构成也要带回来：条自己的 mt 之外，剩下的是**上面那一行**（消息行 = 前一个兄弟节点）
+      // 的下内边距 —— 不知道 6px 从哪来就没法判断"再收紧"该动哪一层（动错层会碰到选中底色）。
+      barMarginTop: getComputedStyle(bar).marginTop,
+      rowPadBottom: bar.previousElementSibling
+        ? getComputedStyle(bar.previousElementSibling).paddingBottom : null,
+      barClass: String(bar.className).slice(0, 120),
+      clipTag: clip ? String(clip.className).slice(0, 36) : 'none',
+      clipLeft: cr ? Math.round(cr.left) : null,
+      clipRight: cr ? Math.round(cr.right) : null,
+      vw: window.innerWidth,
+    };
+  };
+
+  /** 那颗胶囊的中心点（给 CDP 移指针用）；名单要靠真 hover 才出现，直接改状态就判不到 canHover 那一支。 */
+  H.reactionChipPoint = (i) => {
+    const all = document.querySelectorAll('[data-reaction-chip]');
+    const b = all.length ? all[Math.min(all.length - 1, Math.max(0, i | 0))] : null;
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2, n: all.length };
+  };
+
+  H.allChipPoints = () => Array.from(document.querySelectorAll('[data-reaction-chip]')).map((el, i) => {
+    const r = el.getBoundingClientRect();
+    return { i, x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2),
+      left: Math.round(r.left), right: Math.round(r.right) };
+  });
+
+  /**
+   * 直接在胶囊上派发一次真 mouseenter（走组件里同一条 "canHover && reveal(...)" 处理器、
+   * 同一个 currentTarget、同一套 getBoundingClientRect）。
+   * 只在真鼠标投递不过来时兜底，用途与边界写在调用点 hoverInto 上。
+   */
+  H.dispatchEnter = (i) => {
+    const all = document.querySelectorAll('[data-reaction-chip]');
+    const el = all[i] ?? all[0];
+    if (!el) return false;
+    el.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false, cancelable: false }));
+    return true;
+  };
+
+  /** 名单里每一行：长名字必须**真的被省略**（截断 + 有 title 拿到全名），不能撑破面板。 */
+  H.reactionRows = () => {
+    const r = document.querySelector('[data-reaction-roster]');
+    if (!r) return { ok: false };
+    const rows = Array.from(r.querySelectorAll('[data-roster-row]'));
+    return {
+      ok: true,
+      panelW: Math.round(r.getBoundingClientRect().width),
+      rows: rows.map((el) => ({
+        clipped: el.scrollWidth > el.clientWidth + 1,
+        ellipsis: getComputedStyle(el).textOverflow === 'ellipsis',
+        hasTitle: !!el.getAttribute('title'),
+        text: String(el.textContent || '').trim().slice(0, 18),
+      })),
+    };
+  };
+
+  /**
+   * 量 hover 展开的「谁点的」名单浮层（用户 2026-10-07：「右边聊天 hover 表情 人员列表 展开遮挡」）。
+   * 两问分开答：① 有没有被滚动容器/视口**裁掉**（右缘越界）；② 露出来的那部分**是不是它自己**
+   * （elementFromPoint 命中的必须落在名单里 —— 被别的元素盖住时命中的会是别人）。
+   */
+  H.reactionRoster = () => {
+    const r = document.querySelector('[data-reaction-roster]');
+    if (!r) {
+      // 别只回一句"没弹出来"：这一条在门禁里红过而单独跑是绿的，成因有三种形状
+      // （canHover 判假 / 根本没找到胶囊 / 指针没落上去）—— 三种的修法完全不同，一次把三样都带回来。
+      const chip = document.querySelector('[data-reaction-chip]');
+      const cr0 = chip ? chip.getBoundingClientRect() : null;
+      return {
+        ok: false,
+        why: '名单没弹出来',
+        diag: {
+          hoverMedia: window.matchMedia('(hover: hover)').matches,
+          // 组件里那份 canHover 是**模块加载时**算的，与此刻的 matchMedia 可以不同；
+          // 而 hover 通路只绑在它上面 ⇒ 两者不一致就是"事件到了、面板不弹"的那种形状
+          hoverCapable: chip ? chip.getAttribute('data-hover-capable') : null,
+          chipDisabled: chip ? String(chip.disabled) : null,
+          // 组件内部状态标在条上：分清「事件没触发处理器」与「处理器跑了但没渲染」
+          openEmoji: (document.querySelector('[data-reaction-bar]') || { getAttribute: () => null })
+            .getAttribute('data-open-emoji'),
+          chips: document.querySelectorAll('[data-reaction-chip]').length,
+          chipRect: cr0
+            ? { x: Math.round(cr0.x), y: Math.round(cr0.y), w: Math.round(cr0.width), h: Math.round(cr0.height) }
+            : null,
+          inViewport: cr0 ? cr0.y >= 0 && cr0.y < window.innerHeight : null,
+          // 指针该落在胶囊中心 —— 那里此刻压着谁，直接分开"根本没落上去"与"落上了但被别人抢走"。
+          ownerAtChip: (() => {
+            if (!cr0) return 'no-chip';
+            const el = document.elementFromPoint(
+              Math.round(cr0.x + cr0.width / 2), Math.round(cr0.y + cr0.height / 2));
+            return el ? el.tagName + '.' + String(el.className || '').slice(0, 40) : 'null';
+          })(),
+          vw: window.innerWidth, vh: window.innerHeight,
+        },
+      };
+    }
+    const b = r.getBoundingClientRect();
+    let clip = null;
+    for (let n = r.parentElement; n; n = n.parentElement) {
+      const s = getComputedStyle(n);
+      if (s.overflowX !== 'visible' || s.overflowY !== 'visible') { clip = n; break; }
+    }
+    const cr = clip ? clip.getBoundingClientRect() : null;
+    const vw = window.innerWidth;
+    const overRight = cr ? Math.round(b.right - cr.right) : Math.round(b.right - vw);
+    const overLeft = cr ? Math.round(cr.left - b.left) : Math.round(0 - b.left);
+    const probeX = Math.round(b.left + b.width / 2);
+    const probeY = Math.round(b.top + b.height / 2);
+    const hit = document.elementFromPoint(probeX, probeY);
+    return {
+      ok: true,
+      left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width),
+      clipTag: clip ? String(clip.className).slice(0, 36) : 'viewport',
+      clipLeft: cr ? Math.round(cr.left) : 0,
+      clipRight: cr ? Math.round(cr.right) : vw,
+      overRight,
+      overLeft,
+      hitSelf: !!hit && (hit === r || r.contains(hit)),
+      hitTag: hit ? hit.tagName + '.' + String(hit.className).slice(0, 30) : 'null',
+      vw,
+    };
+  };
+
+  /**
+   * 反面对照（对齐）：把回应条朝外侧**平移 8px** —— 8px 正是修之前那个补偿值差出来的量
+   * （旧写法 4 + 48 = 52，而气泡边缘在 16 + 36 + 8 = 60）。用 margin 而不是改 padding：
+   * padding 上有 px-4 与 pl-* 互相覆盖的顺序问题，拿它做对照会把"对照生效了吗"变成另一个未知。
+   */
+  H.forceAlignSkew = (on) => {
+    const bar = document.querySelector('[data-reaction-bar]');
+    const col = document.querySelector('[data-msg-col]');
+    if (!bar || !col) return false;
+    if (on) {
+      if (col.classList.contains('items-end')) bar.style.marginRight = '8px';
+      else bar.style.marginLeft = '-8px';
+    } else {
+      bar.style.marginLeft = '';
+      bar.style.marginRight = '';
+    }
+    return true;
+  };
+
+  /** 反面对照（名单）：把 fixed 锚点强推到视口右缘外 ⇒ 右溢必须重新出现（证明判据不空转）。 */
+  H.forceLegacyRoster = (on) => {
+    const r = document.querySelector('[data-reaction-roster]');
+    if (!r) return false;
+    if (on) {
+      r._origPos = { left: r.style.left, right: r.style.right };
+      // 往左长那一支发的是 CSS right ⇒ 不一起清掉，left/right 双锚会把盒子拉成
+      // "按可用宽度撑开"，测出来的就不是"越界"而是"被压窄"了。
+      r.style.right = 'auto';
+      r.style.left = (window.innerWidth - 20) + 'px';
+    } else {
+      r.style.left = r._origPos?.left ?? '';
+      r.style.right = r._origPos?.right ?? '';
+      delete r._origPos;
+    }
+    return true;
+  };
+
+  /** 事件探针：hover 到底有没有落到那颗胶囊上（"名单没弹"有三种成因，只有监听能分开）。 */
+  H.watchChip = () => {
+    const chip = document.querySelector('[data-reaction-chip]');
+    if (!chip) return false;
+    window.__chipLog = [];
+    window.__docLog = [];
+    ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'mousemove', 'mouseleave'].forEach((t) => {
+      chip.addEventListener(t, () => { window.__chipLog.push('chip:' + t); });
+    });
+    // document 捕获层：分清"事件根本没发"、"发到了别的元素"、"发到了胶囊但我的监听挂在被
+    // Vue 换掉的旧节点上"这三种 —— 三者的修法完全不同，只回一句"没弹出来"就分不开。
+    ['pointerover', 'mouseover', 'mousemove'].forEach((t) => {
+      document.addEventListener(t, (e) => {
+        const el = e.target;
+        window.__docLog.push(t + ':' + el.tagName + '.' + String(el.className || '').slice(0, 18));
+      }, true);
+    });
+    return true;
+  };
+  H.chipLog = () => (window.__chipLog || []).join(' | ') + ' ## doc: ' + (window.__docLog || []).slice(0, 8).join(' | ');
+  /** 指针此刻真正压在谁身上（CDP 说"我移过去了"不等于浏览器认为指针在那儿）。 */
+  H.pointOwner = (x, y) => {
+    const el = document.elementFromPoint(Math.round(x), Math.round(y));
+    if (!el) return 'null';
+    const chip = document.querySelector('[data-reaction-chip]');
+    return (chip && (el === chip || chip.contains(el)) ? 'chip:' : '')
+      + el.tagName + '.' + String(el.className).slice(0, 28);
+  };
+
+  /** 给挂出来的那条消息换一个人：mine 是由 app.device.device_id 现推的，不种身份就永远量不到右列。 */
+  H.seedDevice = async (id) => {
+    const piniaUrl = performance.getEntriesByType('resource')
+      .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
+    if (!piniaUrl || !window.__pinia) return { ok: false, why: '没等到 pinia 资源或 __pinia 不在（先跑 install）' };
+    const P = await import(piniaUrl);
+    const A = await import('/src/stores/useAppStore.ts');
+    P.setActivePinia(window.__pinia);
+    const s = A.useAppStore();
+    s.device = { device_id: id, nickname: '探针我', avatar: null };
+    await new Promise((r) => setTimeout(r, 200));
+    return { ok: true, at: s.device && s.device.device_id };
+  };
+
   /** 替掉一条 api 命令。api 是普通对象 ⇒ 按名字替换，比伪造整个 __TAURI__ 便宜得多。 */
   H.stubApi = async (name, payload) => {
     const m = await import('/src/api/index.ts');
@@ -818,18 +1059,23 @@ async function main() {
     }
     await cdp.eval(PAGE_FIXTURE);
 
-    const emoji = !ONLY || ONLY === "emoji";
-    const search = !ONLY || ONLY === "search";
-    const task = !ONLY || ONLY === "task";
-    const convbadge = !ONLY || ONLY === "convbadge";
-    const caption = !ONLY || ONLY === "caption";
-    const reaction = !ONLY || ONLY === "reaction";
+    // `--only=roster` 跑一段，`--only=reaction,roster` 跑**相邻几段** —— 用来把
+    // "单独跑是绿的、整段顺序跑是红的"这类串味红二分出到底是谁污染了谁。
+    const want = (name) => !ONLY || ONLY.split(",").includes(name);
+    const emoji = want("emoji");
+    const search = want("search");
+    const task = want("task");
+    const convbadge = want("convbadge");
+    const caption = want("caption");
+    const reaction = want("reaction");
+    const roster = want("roster");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (task) await runTaskCard(cdp, url);
     if (convbadge) await runConvBadge(cdp, url);
     if (caption) await runCaption(cdp, url);
     if (reaction) await runReaction(cdp, url);
+    if (roster) await runReactionRoster(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
@@ -912,6 +1158,211 @@ async function runReaction(cdp, url) {
   check("对照可逆：恢复后底边又对齐（不是把页面改坏了一次）",
     c.ok === true && Math.abs(c.bottom - c.colBottom) <= 1, "|差| <= 1",
     "btn=" + c.bottom + " col=" + c.colBottom);
+}
+
+/**
+ * 表情回应条的**边缘对齐 + 名单浮层越界**那一段（用户 2026-10-07 报的两条：
+ * ①「电脑端 右边聊天 hover 表情 人员列表 展开遮挡」；②「表情和气泡对齐：左右两条表情回复边缘
+ * 都与上面气泡对齐，并且间距紧凑点」）。
+ *
+ * 为什么必须走真浏览器量：这两条判的全是**布局几何**，而静态 class 判据只能证明"某个数被写进去了"，
+ * 证不了"那个数等于气泡的真实边缘"。这次的根因正是补偿值算错 —— 册里注释写的是"头像 40px + 行间距 8px"，
+ * 而头像是 `h-9 w-9` = **36px**，还漏了消息行自己的 `px-4` = 16px ⇒ 两侧各差 8px。
+ * 那 8px 只有浏览器知道，注释和 class 都不会告诉我。
+ */
+async function runReactionRoster(cdp, url) {
+  /** 取证帧：`--shot=/tmp/x.png` 时两侧各存一张（左列 / 右列名单展开态）。 */
+  const shot = async (name) => {
+    if (!SHOT_PATH) return;
+    const p = SHOT_PATH.replace(/\.png$/, `-${name}.png`);
+    const s = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(p, Buffer.from(s.data, "base64"));
+    console.log("  📷 回应条取证帧 → " + p);
+  };
+  const LONG = "一个会撑破整块面板的超长昵称-ABCDEFGHIJKLMNOP-QRSTUVWXYZ";
+  const CHIPS = [{
+    emoji: "[赞]", count: 4, mine: true,
+    actors: ["peer-a", "peer-b", "peer-c", "me-1"], latest: "me-1",
+  }];
+  const mount = async (sender, mineSide, chips) => {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    const props = {
+      message: {
+        msg_id: "m-roster-probe-1", sender_id: sender, kind: "text",
+        content: "这条要量回应条与气泡的边缘关系，所以内容写得长一些，让它折成两行以上。",
+        ts: 1700000000000, conv_id: "group:g1", seq: 1,
+      },
+      canReact: true, isGroup: true, senderName: "测试者", reactions: chips ?? CHIPS,
+    };
+    const r = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
+      + JSON.stringify(JSON.stringify(props)) + ")");
+    if (!r || r.ok !== true) return false;
+    // mine 是由 app.device.device_id 现推的：不种身份就永远量不到右列那一支。
+    if (mineSide) await cdp.eval("window.__probe.seedDevice('me-1')");
+    await sleep(400);
+    return true;
+  };
+  /**
+   * 把指针真的移进第 i 颗胶囊，重试到名单出现。
+   * 为什么需要重试（实测）：**整段按顺序跑**时第二跳 mouseMoved 会被 Chrome 当成"位置没变"丢掉
+   * —— document 捕获层只看到第一跳的 target（行 div / 气泡里的 span），胶囊一个 enter 都收不到；
+   * 单独跑这一段又永远复现不了。判据仍然走真实 mouseenter 通路，只是把指针先抖开再送回去。
+   *
+   * ⚠️ 抖开要退到**明确不在胶囊上**的点（退 1px 不算：Chrome 仍可能判成同一次移动）。
+   * ⚠️ 送回去之后要等一帧再判：摆位在 mouseenter 那一拍算完，但 DOM 要等 Vue 冲刷才出现。
+   *
+   * ② 那一档兜底的边界要说清楚：派发 `mouseenter` 仍然经过组件里同一条处理器、
+   * 同一个 `currentTarget`、同一套 `getBoundingClientRect` ⇒ 这一段真正要量的
+   * **摆位 / 裁切 / 省略号**判据照样成立；让掉的只有"浏览器会不会投递 mouseenter"
+   * 这一层，而那三层由上面 3 次真鼠标 + `reactionRoster.test.ts` 的静态接线判据兜着。
+   * 走到兜底会打印 `via=synthetic`，不静默。
+   */
+  async function hoverInto(i) {
+    const pt = await cdp.eval("window.__probe.reactionChipPoint(" + i + ")");
+    if (!pt) return { pt: null, tries: -1, via: "no-chip", log: "" };
+    await cdp.eval("window.__probe.watchChip()");
+    const open = () => cdp.eval("!!document.querySelector('[data-reaction-roster]')");
+    for (let k = 0; k < 3; k += 1) {
+      await cdp.hover(Math.max(2, pt.x - 60), pt.y);
+      await sleep(50);
+      await cdp.hover(pt.x, pt.y);
+      await sleep(150);
+      if (await open()) return { pt, tries: k, via: "mouse", log: await cdp.eval("window.__probe.chipLog()") };
+    }
+    const ok = await cdp.eval("window.__probe.dispatchEnter(" + i + ")");
+    await sleep(150);
+    if (ok && await open()) {
+      return { pt, tries: -1, via: "synthetic", log: await cdp.eval("window.__probe.chipLog()") };
+    }
+    return { pt, tries: -1, via: "none", log: await cdp.eval("window.__probe.chipLog()") };
+  }
+
+  // ================= 左列（别人发的）：看左边缘 =================
+  check("左列：挂出一条带回应的消息", await mount("peer-a", false), "install 成功");
+  const gl = await cdp.eval("window.__probe.reactionGeom()");
+  check("左列：胶囊左边缘与气泡那一列左边缘对齐（|差| <= 1px）",
+    gl.ok === true && Math.abs(gl.deltaLeft) <= 1,
+    "|chip.left - col.left| <= 1",
+    "差 " + gl.deltaLeft + "px；chip.left=" + gl.chipLeft + " col.left=" + gl.colLeft
+      + "，条 padding-left=" + gl.padLeft);
+  check("左列：与气泡的竖向间距收到紧凑档（0 <= 差 <= 6px，改之前是 10px）",
+    gl.ok === true && gl.gapToBubble >= 0 && gl.gapToBubble <= 6,
+    "0 <= 间距 <= 6",
+    "间距 " + gl.gapToBubble + "px = 条 mt " + gl.barMarginTop + " + 消息行 pb " + gl.rowPadBottom);
+
+  const hl = await hoverInto(0);
+  check("左列：拿得到胶囊的落点（hover 的坐标来源）", !!hl.pt, "chipPoint 非空", JSON.stringify(hl.pt));
+  const rl = await cdp.eval("window.__probe.reactionRoster()");
+  check("左列：hover 胶囊真的展开名单（" + hl.via + " 通路，第 " + hl.tries + " 次命中；事件 " + hl.log.slice(0, 170) + "）",
+    rl.ok === true, "名单在布局里", JSON.stringify(rl).slice(0, 900));
+  check("左列：名单不越出滚动容器（左右都不许）",
+    rl.ok === true && rl.overLeft <= 0 && rl.overRight <= 0,
+    "overLeft <= 0 且 overRight <= 0",
+    "左溢 " + rl.overLeft + " / 右溢 " + rl.overRight + "（容器 " + rl.clipLeft + "…" + rl.clipRight + "）");
+  await shot("left");
+
+  // ================= 右列（我自己发的）：看右边缘 + 那条越界 =================
+  check("右列：挂出一条自己发的带回应消息", await mount("me-1", true), "install + seed 成功");
+  const gm = await cdp.eval("window.__probe.reactionGeom()");
+  check("右列：胶囊右边缘与气泡那一列右边缘对齐（|差| <= 1px）",
+    gm.ok === true && Math.abs(gm.deltaRight) <= 1,
+    "|chip.right - col.right| <= 1",
+    "差 " + gm.deltaRight + "px；chip.right=" + gm.chipRight + " col.right=" + gm.colRight
+      + "，条 padding-right=" + gm.padRight);
+  check("右列：与气泡的竖向间距同样是紧凑档（0 <= 差 <= 6px）",
+    gm.ok === true && gm.gapToBubble >= 0 && gm.gapToBubble <= 6,
+    "0 <= 间距 <= 6", "间距 " + gm.gapToBubble + "px = 条 mt " + gm.barMarginTop + " + 消息行 pb " + gm.rowPadBottom);
+
+  const hm = await hoverInto(0);
+  check("右列：拿得到胶囊的落点（hover 的坐标来源）", !!hm.pt, "chipPoint 非空", JSON.stringify(hm.pt));
+  const rm = await cdp.eval("window.__probe.reactionRoster()");
+  check("右列：hover 展开名单（用户报的那一支；" + hm.via + " 通路，第 " + hm.tries + " 次命中；事件 " + hm.log.slice(0, 170) + "）",
+    rm.ok === true, "名单在布局里", JSON.stringify(rm).slice(0, 900));
+  check("右列：名单右缘不越出滚动容器（用户那句「展开遮挡」就是这一格）",
+    rm.ok === true && rm.overRight <= 0 && rm.overLeft <= 0,
+    "右溢 <= 0 且 左溢 <= 0",
+    "右溢 " + rm.overRight + "px / 左溢 " + rm.overLeft + "px，名单宽 " + rm.width
+      + "px，容器 " + rm.clipLeft + "…" + rm.clipRight + "，视口 " + rm.vw);
+  check("右列：名单露出来的那部分确实是它自己（没被别的元素盖住）",
+    rm.ok === true && rm.hitSelf === true,
+    "elementFromPoint 命中名单自身", "命中 " + rm.hitTag);
+  await shot("right");
+
+  // ================= 两把反面对照：证明上面那些数不是恒真 =================
+  await cdp.eval("window.__probe.forceAlignSkew(true)");
+  const skewed = await cdp.eval("window.__probe.reactionGeom()");
+  check("对照：把回应条朝外侧挪 8px（= 修之前那个补偿差的量）⇒ 对齐判据必须不再成立",
+    skewed.ok === true && Math.abs(skewed.deltaRight) >= 4,
+    "|差| >= 4", "差 " + skewed.deltaRight + "px");
+  await cdp.eval("window.__probe.forceAlignSkew(false)");
+  const back = await cdp.eval("window.__probe.reactionGeom()");
+  check("对照可逆：撤掉平移后右缘又对齐",
+    back.ok === true && Math.abs(back.deltaRight) <= 1, "|差| <= 1", "差 " + back.deltaRight + "px");
+
+  await cdp.eval("window.__probe.forceLegacyRoster(true)");
+  const legacy = await cdp.eval("window.__probe.reactionRoster()");
+  check("对照：把名单 fixed left 推到视口右缘外 ⇒ 右溢必须重新出现（证明判据不空转）",
+    legacy.ok === true && legacy.overRight > 0,
+    "overRight > 0", "右溢 " + legacy.overRight + "px");
+  await cdp.eval("window.__probe.forceLegacyRoster(false)");
+  const fixed = await cdp.eval("window.__probe.reactionRoster()");
+  check("对照可逆：换回新锚点后右溢归零",
+    fixed.ok === true && fixed.overRight <= 0, "overRight <= 0", "右溢 " + fixed.overRight + "px");
+  // ============ 一排十几颗（用户第二轮）：方向按**这颗的位置**翻，长名字要真省略 ============
+  // 用户那句："不能特别固定的就往左偏或者往右偏，而是看这个图标的位置靠近哪边就往反方向偏"
+  // ⇒ 判据必须同时钉"贴左那颗"和"贴右那颗"，而且**同一条消息上**（消息朝向相同、该偏的方向相反）。
+  const EMO = ["[赞]", "[捂脸]", "[笑哭]", "[火]", "[心]", "[666]", "[狗头]", "[打脸]", "[皱眉]", "[耶]", "[吃瓜]", "[偷笑]"];
+  const MANY = EMO.map((e, i) => ({
+    emoji: e, count: i + 1, mine: i === 0,
+    actors: [i === 0 ? LONG : "同事甲", "同事乙"], latest: "同事乙",
+  }));
+  check("多颗：挂出一条带 12 颗回应的消息", await mount("peer-a", false, MANY), "install 成功");
+  const pts = await cdp.eval("window.__probe.allChipPoints()");
+  check("多颗：拿得到每一颗胶囊的落点（>= 8 颗才谈得上「贴哪一边」）",
+    Array.isArray(pts) && pts.length >= 8, "至少 8 颗", "现读 " + (pts ? pts.length : 0) + " 颗");
+  const leftmost = pts.reduce((x, y) => (y.left < x.left ? y : x));
+  const rightmost = pts.reduce((x, y) => (y.right > x.right ? y : x));
+
+  await hoverInto(leftmost.i);
+  const r1 = await cdp.eval("window.__probe.reactionRoster()");
+  check("多颗：贴左那颗的名单**往右长**（名单左缘就是胶囊左缘，左缘不越界）",
+    r1.ok === true && Math.abs(r1.left - leftmost.left) <= 2 && r1.overLeft <= 0,
+    "|名单.left - 胶囊.left| <= 2 且 左溢 <= 0",
+    "名单 left=" + r1.left + " 胶囊 left=" + leftmost.left + " 左溢 " + r1.overLeft);
+  const rows1 = await cdp.eval("window.__probe.reactionRows()");
+  // 判"长名字那一行"必须真被省略号截断（短行不该截 —— 第一版我写成"每行都要 clipped"，
+  // 那是判据自己太严：同事乙 那行本来就短，红得没道理）
+  const longRow = rows1.ok === true ? rows1.rows.find((x) => x.text.startsWith("一个会撑破")) : null;
+  check("多颗：超长昵称那一行被省略号真截断（clipped + ellipsis），且 title 里留了全名",
+    !!longRow && longRow.clipped === true && longRow.ellipsis === true && longRow.hasTitle === true,
+    "长名字行 clipped 且 ellipsis 且带 title",
+    JSON.stringify(longRow));
+  check("多颗：面板不被长名字撑破（宽 <= 16rem = 256px，每行都带 title 兜住全名）",
+    rows1.ok === true && rows1.panelW <= 256 && rows1.rows.every((x) => x.hasTitle === true),
+    "面板 <= 256px 且每行有 title",
+    "面板宽 " + rows1.panelW + "px，行数 " + (rows1.rows ? rows1.rows.length : 0));
+  // 长名字那一颗要**顶到上限**：撑开不是"越短越好"，超过上限才交给行内 truncate。
+  check("多颗：长名字那一颗顶到最大档（面板宽 >= 250，说明 max-width 真的是那条上限）",
+    rows1.ok === true && rows1.panelW >= 250,
+    "长名字面板 >= 250", "面板宽 " + (rows1.ok === true ? rows1.panelW : "?") + "px");
+
+  await hoverInto(rightmost.i);
+  const r2 = await cdp.eval("window.__probe.reactionRoster()");
+  check("多颗：贴右那颗的名单**往左长**（名单右缘就是胶囊右缘，右缘不越界）",
+    r2.ok === true && Math.abs(r2.right - rightmost.right) <= 2 && r2.overRight <= 0,
+    "|名单.right - 胶囊.right| <= 2 且 右溢 <= 0",
+    "名单 right=" + r2.right + " 胶囊 right=" + rightmost.right + " 右溢 " + r2.overRight);
+  // 宽度按名字长短**伸缩**（用户 2026-10-07：「框框是固定长度，名字不够长后面有空白」）。
+  // 这一条是**两颗互证**的：同一块面板、短名字那颗必须明显窄于长名字那颗 ——
+  // 只要宽度是写死的，两个读数就相等，这条当场红。所以它不需要额外的反面对照。
+  check("多颗：短名字那一颗按内容撑开（比长名字那颗窄、且没顶到上限 ⇒ 不写死宽度）",
+    r2.ok === true && r2.width < r1.width && r2.width < 200,
+    "短 " + r2.width + " < 长 " + r1.width + " 且 短 < 200",
+    "短名字面板 " + r2.width + "px / 长名字面板 " + r1.width + "px");
+  await shot("many");
+
 }
 
 /**

@@ -507,7 +507,6 @@ export const zhCN: MessageDict = {
   "msg.reactionMore": "更多表情",
   "msg.reactionAddEntry": "添加表情回复",
   "msg.reactionPlus": "等 {n} 人",
-  "msg.reactionLatest": "最新",
   "msg.reactionFail": "发送回应失败",
   "msg.noMessage": "暂无消息",
   "msg.mentioned": "[有人@我]",

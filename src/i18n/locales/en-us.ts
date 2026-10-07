@@ -487,7 +487,6 @@ export const enUS: MessageDict = {
   "msg.reactionMore": "More emoji",
   "msg.reactionAddEntry": "Add reaction",
   "msg.reactionPlus": "and {n} more",
-  "msg.reactionLatest": "latest",
   "msg.reactionFail": "Failed to send the reaction",
   "msg.noMessage": "No messages",
   "msg.mentioned": "[Mentioned you]",

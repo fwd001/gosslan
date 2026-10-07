@@ -1109,7 +1109,11 @@ async function copyFileToClipboard() {
         <Check v-if="selected" class="h-2.5 w-2.5 text-white" :stroke-width="2.5" aria-hidden="true" />
       </span>
 
-      <div class="relative flex min-w-0 max-w-[72%] flex-col" :class="mine ? 'items-end' : 'items-start'">
+      <div
+        data-msg-col
+        class="relative flex min-w-0 max-w-[72%] flex-col"
+        :class="mine ? 'items-end' : 'items-start'"
+      >
         <!-- 表情回应入口（飞书式）：悬停本条消息 ⇒ **气泡外侧**出现笑脸按钮，
              点开 = 完整表情选择器（见下方 EmojiPicker），选中即作为表情回应发送/取消。
              ⚠️ 按钮与选择器都 **absolute 脱离文档流**：悬停/选表情不改变本条消息的高度
@@ -1333,14 +1337,17 @@ async function copyFileToClipboard() {
 
   <!-- 表情回应条：挂在消息行**下方**（飞书/微信同款位置），与气泡同侧对齐。
        放在行内会被 `flex items-end` 摆到气泡右侧，语义不对。
-       ⚠️ 它必须留在上面那层"选中底色"的包裹**之内**：它有 `mt-1`(4px)，群里又恒渲染，
-       漏在外面就会在每条选中块下方留一条 4px 白缝（用户 2026-09-21 报的"消息中间一条白线"）。 -->
+       ⚠️ 它必须留在上面那层"选中底色"的包裹**之内**：它下面还有消息行自己的 pb-1.5(6px)，群里又恒渲染，
+       漏在外面就会在每条选中块下方多留一条缝（用户 2026-09-21 报的"消息中间一条白线"）。
+       ⚠️ 这里**不再叠横向内边距**：让出头像那一列的 60px 由本组件自己写（见
+       MessageReactionBar 的注释）。以前这里挂着 `pl-1`/`pr-1`、册内挂着 `pl-12`/`pr-12`，
+       两档同属性互相覆盖 ⇒ 生效的只有 48px 那一档，实测两侧各差 12px（用户 2026-10-07 报的对不齐）。 -->
   <MessageReactionBar
     v-if="!isTip"
     :chips="reactions ?? []"
     :mine="mine"
     :interactive="canReact"
-    :class="mine ? 'self-end pr-1' : 'self-start pl-1'"
+    :class="mine ? 'self-end' : 'self-start'"
     @toggle="emit('react', $event)"
   />
   </div>
