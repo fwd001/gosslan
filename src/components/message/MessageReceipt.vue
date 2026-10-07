@@ -134,6 +134,7 @@ function readerAvatar(id: string): string | null {
       <div
         v-if="readersOpen && readerIds.length > 0 && readersPos"
         :ref="setReadersEl"
+        data-readers-popover
         class="frost fixed z-[70] max-h-60 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1.5 text-xs shadow-lg"
         :style="readersStyle"
         @click.stop

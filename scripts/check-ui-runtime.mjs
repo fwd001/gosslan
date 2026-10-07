@@ -1573,6 +1573,53 @@ async function rosterChecks(cdp, url) {
   check("对照可逆：壳换回原来的锚点之后，面板又整个回到视口内（对照自己不留残留）",
     ppBack.ok === true && ppBack.inViewport === true,
     "inViewport === true", "rect=" + JSON.stringify(ppBack.rect));
+
+  // ============ 已读成员弹层：这一支就是"真机：已读列表靠右被裁一半"那一支 ============
+  // 挂的是 MessageReceipt 本体（它那一层浮层就是**带 fixed 的面板自己**，不像选择器那样壳/面板要分开量）。
+  // ⚠️ 这一支的量法是**独立挂载**：escape 与在不在视口都判得动（同一份 placeCard、同一个 Teleport），
+  //    但它不在真实消息行的几何里 ⇒ 别把它读成"真机那条列表的位置也被判过了"。
+  const rmount = await cdp.eval("window.__probe.install('/src/components/message/MessageReceipt.vue', '', "
+    + JSON.stringify(JSON.stringify({
+      state: "read", title: "已读", isGroup: true, msgKey: "m-receipt-probe-1",
+      readerIds: ["r-1", "r-2", "r-3", "r-4", "r-5"],
+    })) + ")");
+  check("已读弹层：独立挂出一条带 5 个已读成员的回执", rmount && rmount.ok === true, "install 成功", JSON.stringify(rmount).slice(0, 160));
+  await cdp.eval("window.__probe.seedDevice('me-1')");
+  await new Promise((r) => setTimeout(r, 300));
+  const rb = await cdp.eval("(function(){var b=document.querySelector('button');"
+    + "if(!b)return null;var r=b.getBoundingClientRect();"
+    + "return {x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),"
+    + " label: b.getAttribute('aria-label')};})()");
+  check("已读弹层：拿得到那枚已读入口的落点", !!rb, "button 非空", JSON.stringify(rb));
+  let readersOpen = false;
+  for (let k = 0; k < 5 && !readersOpen; k += 1) {
+    await cdp.hover(Math.max(2, rb.x - 80), rb.y);
+    await cdp.click(rb.x, rb.y);
+    readersOpen = !!(await cdp.eval("!!document.querySelector('[data-readers-popover]')"));
+  }
+  const fr = await cdp.eval("window.__probe.floatLayer('[data-readers-popover]')");
+  check("已读弹层：点开后挂在 body 上、没有任何祖先裁得到它，且整块在视口内",
+    readersOpen === true && fr.ok === true && fr.parentIsBody === true
+      && fr.escapes === true && fr.inViewport === true,
+    "开得出 + 挂 body + escapes + 在视口内",
+    "开=" + readersOpen + " 挂body=" + fr.parentIsBody + " position=" + fr.position
+      + " 切得到它的祖先=" + JSON.stringify(fr.clipped)
+      + " 包含块破坏者=" + JSON.stringify(fr.breakers)
+      + " rect=" + JSON.stringify(fr.rect) + " 视口=" + fr.vw + "x" + fr.vh);
+  await cdp.eval("(function(){var el=document.querySelector('[data-readers-popover]');"
+    + "if(!el)return false;el._o={left: el.style.left, right: el.style.right};"
+    + "el.style.right='auto';el.style.left=(window.innerWidth - 20) + 'px';return true;})()");
+  const frOut = await cdp.eval("window.__probe.floatLayer('[data-readers-popover]')");
+  check("对照：把已读弹层的 fixed 坐标推到视口右缘外 ⇒ 它必须落到视口外（证明那条判据会咬）",
+    frOut.ok === true && frOut.inViewport === false,
+    "inViewport === false", "rect=" + JSON.stringify(frOut.rect) + " 视口=" + frOut.vw);
+  await cdp.eval("(function(){var el=document.querySelector('[data-readers-popover]');"
+    + "if(!el||!el._o)return false;el.style.left=el._o.left;el.style.right=el._o.right;"
+    + "delete el._o;return true;})()");
+  const frBack = await cdp.eval("window.__probe.floatLayer('[data-readers-popover]')");
+  check("对照可逆：换回原锚点后整块又回到视口内",
+    frBack.ok === true && frBack.inViewport === true, "inViewport === true",
+    "rect=" + JSON.stringify(frBack.rect));
 }
 
 /**
