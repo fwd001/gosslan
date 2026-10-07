@@ -93,7 +93,13 @@ test("名单只按追加先后逐行列出，不再单标「最新」（用户 2
   // 顺序本身就是信息：先点的在上、后点的在下（折叠层的追加序已由上面三条钉住），
   // 所以末位再挂一个"最新"是重复表达 ⇒ 组件里不许再出现那个文案键。
   assert.doesNotMatch(src, /reactionLatest/, "「最新」这个键已经从名单里去掉");
-  assert.match(src, /v-for="id in activeChip\.actors"/, "按 actors 顺序逐行列，不重排、不截位");
+  // ⚠️ 这一条我 2026-10-07 先写错过一次：当时钉的是 `v-for="id in activeChip.actors"`
+  // （还写着"不截位"），那正好把**真 bug** 固化成契约 —— 全量列 actor、末行又挂「等 N 人」
+  // ⇒ 4 个名字 + "还有 1 人"自相矛盾。正确口径是"列到上限为止，其余折进 +N"，
+  // 且上限必须与 +N 用同一个数（都来自 ROSTER_VISIBLE）。
+  assert.match(src, /v-for="id in rosterIds\(activeChip\)"/, "名单按 rosterIds 列，不是全量 actor");
+  assert.doesNotMatch(src, /v-for="id in activeChip\.actors"/, "不许全量列 actor 又挂 +N");
+  assert.match(src, /c\.actors\.slice\(0, Math\.max\(1, ROSTER_VISIBLE\)\)/, "列出的上限就是 ROSTER_VISIBLE 那一个数");
 });
 
 test("名单是读不是写：它自己不许发回应；长按之后那次 click 必须吃掉", () => {

@@ -54,6 +54,14 @@ function nameOf(id: string): string {
 /** 一行最多列几人，其余折成 +N（同一份判据也用于悬停 title，两处不能各写一个数）。 */
 const visible = (c: ReactionChip) => summarizeActors(c.actors, nameOf, ROSTER_VISIBLE);
 
+/**
+ * 名单里**列出来**的那几人。上限必须和 `visible()` 是同一个数 ——
+ * `summarizeActors` 内部取 `cap = max(1, limit)`，这里跟着取同一条，
+ * 否则"列几个人"和"说还剩几个人"会各算各的（曾经就是各算各的：
+ * 名单 `v-for` 全量 actor，末行又挂一个「等 N 人」⇒ 4 个名字 + "还有 1 人"）。
+ */
+const rosterIds = (c: ReactionChip) => c.actors.slice(0, Math.max(1, ROSTER_VISIBLE));
+
 /** 胶囊上的原生 tooltip：数量 + 前几人 + 「+N」（PC 悬停的第一层，零成本、不占布局）。 */
 function chipTitle(c: ReactionChip): string {
   const { shown, hidden } = visible(c);
@@ -238,13 +246,13 @@ onUnmounted(clearPress);
       v-if="activeChip && activeChip.actors.length > 0 && pos"
       :ref="setEl"
       data-reaction-roster
-      class="fixed z-[70] max-h-60 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 py-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)] shadow-md"
+      class="fixed z-[70] rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 py-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)] shadow-md"
       :style="style"
       role="tooltip"
       @click.stop
     >
       <span
-        v-for="id in activeChip.actors"
+        v-for="id in rosterIds(activeChip)"
         :key="id"
         data-roster-row
         class="block truncate"

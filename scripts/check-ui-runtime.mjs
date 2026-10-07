@@ -1261,6 +1261,18 @@ async function runReactionRoster(cdp, url) {
     rl.ok === true && rl.overLeft <= 0 && rl.overRight <= 0,
     "overLeft <= 0 且 overRight <= 0",
     "左溢 " + rl.overLeft + " / 右溢 " + rl.overRight + "（容器 " + rl.clipLeft + "…" + rl.clipRight + "）");
+  // ★ 名单的**自带契约**（组件头注释 + chipTitle 都是这一条）：列到 ROSTER_VISIBLE 人为止，
+  //   其余折成「+N」。夹具这里给的是 4 个 actor ⇒ 必须恰好 3 行 + 一条 +1。
+  //   模板曾经 v-for 全部 actors **又**渲染 +N ⇒ 4 行名字 + "还有 1 人"，自己跟自己矛盾
+  //   （用户 2026-10-07：「表情很多的时候 查看这个列表也是有问题的」）。
+  const rowsL = await cdp.eval("window.__probe.reactionRows()");
+  const plusL = await cdp.eval("(function(){var r=document.querySelector('[data-reaction-roster]');"
+    + "if(!r)return null;var t=r.lastElementChild;"
+    + "return t && !t.hasAttribute('data-roster-row') ? t.textContent.trim() : null;})()");
+  check("左列：4 人名单恰好折成 3 行 + 一条 +N（不许把所有人列出来又说还有 N 人）",
+    rowsL.ok === true && rowsL.rows.length === 3 && /^\+|\d|还有/.test(String(plusL)),
+    "行数 === 3 且末条是 +N",
+    "现读 " + (rowsL.ok === true ? rowsL.rows.length : "?") + " 行，末条 = " + JSON.stringify(plusL));
   await shot("left");
 
   // ================= 右列（我自己发的）：看右边缘 + 那条越界 =================
