@@ -262,6 +262,9 @@ pub(crate) fn transport_src_for_guards() -> String {
     // `handle_group.rs`：handle_message 拆出的一族分支（2026-10-07）。**必须登记** ——
     // 漏一册就是以「transport 全集」为判据的那些守卫看不见这段生产码（假绿，比假红危险）。
     src.push_str(include_str!("transport/handle_group.rs"));
+    // `handle_identity.rs`：handle_message 拆出的一族分支（2026-10-07）。**必须登记** ——
+    // 漏一册就是以「transport 全集」为判据的那些守卫看不见这段生产码（假绿，比假红危险）。
+    src.push_str(include_str!("transport/handle_identity.rs"));
     src
 }
 

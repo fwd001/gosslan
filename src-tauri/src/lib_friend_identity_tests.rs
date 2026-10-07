@@ -200,7 +200,9 @@
         // 顺序判据：打标必须在 `upsert_peer` **之后**。`mark_peer_keys_verified` 在
         // `peers` 条目不存在时是空操作，而 `upsert_peer` 新建条目恒标 `keys_verified: false`，
         // 所以"先 upsert 再 mark"是唯一成立的次序 —— 反过来写不会报错，只会静默绑不上。
-        let hello_branch = rust_fn_body(&src, "async fn handle_message(");
+        // 2026-10-07：Hello 臂随身份族搬进 transport/handle_identity.rs ⇒ 开窗锚点跟着搬家。
+        // 不跟着改会怎样：下面两条 .expect 直接红（不是静默变弱），所以这条红是搬家自己报出来的。
+        let hello_branch = rust_fn_body(&src, "async fn handle_identity_and_friend_messages(");
         let upsert_at = hello_branch
             .find("upsert_peer(")
             .expect("handle_message 的 Hello 分支必须经 upsert_peer 登记 peers");
@@ -257,11 +259,16 @@
              内存里的旧公钥会继续当信任根用（症状：删了好友重新加也没用，必须重启）"
         );
         let tr = crate::network::transport_src_for_guards();
-        // 对方解除关系那条路径（Message::FriendRemove）同样要清
-        let start = tr
+        // 对方解除关系那条路径（Message::FriendRemove）同样要清。
+        // ★ 窗口开在**处理体**上（2026-10-07 该臂随身份族搬进 transport/handle_identity.rs）：
+        //   直接在全集视图里 find("Message::FriendRemove {") 会先撞上 handle_message 的那条分发臂
+        //   （`m @ (… | Message::FriendRemove { .. })`），往后 1,500 字符里没有 forget_peer_identity
+        //   ⇒ 判据会红得像是"分支被删了"。注意**不覆盖 tr**：本测试后面还要用全集视图找别的锚点。
+        let fam_body = rust_fn_body(&tr, "async fn handle_identity_and_friend_messages(");
+        let start = fam_body
             .find("Message::FriendRemove {")
             .expect("必须还有 FriendRemove 分支（本护栏锚点）");
-        let tail = &tr[start..];
+        let tail = &fam_body[start..];
         // 取一个足够覆盖该分支的窗口（分支实现变了也不会假绿：下面断言的锚点就在分支里）
         let branch = &tail[..tail.len().min(1500)];
         assert!(
