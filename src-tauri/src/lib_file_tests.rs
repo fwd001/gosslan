@@ -29,7 +29,9 @@
             "cid 必须以空串占位（载荷形状不能变，前端按 sha256 键取值）"
         );
 
-        let file = include_str!("network/file.rs");
+        // 视图读"一个家"`network::file_src_for_guards()`（2026-10-07 file.rs 按角色切成 include! 分册）：
+            // 读单个文件只会看见主册 ⇒ 形状守卫对分册失明（假绿形状）。登记对账由 lib_source_view_tests 第四个用例钉两侧。
+                    let file = &crate::network::file_src_for_guards();
         let body = rust_fn_body(file, "pub async fn send_file_from_path_at(");
         assert!(
             body.contains("spawn_blocking"),
@@ -68,7 +70,7 @@
             !tr.contains("let _=file::fail_receive(state,&transfer_id,peer_id,&e);"),
             "不得退回「abort 了但不告诉发送端」的旧写法"
         );
-        let f = code_flat(include_str!("network/file.rs"));
+        let f = code_flat(&crate::network::file_src_for_guards());
         assert!(
             f.contains("_=&mutack_rx=>"),
             "分片循环必须盯着否定确认，才能当场停手而不是把剩余字节灌完"
@@ -140,7 +142,7 @@
     /// （另一套语义），全文一扫会误伤。
     #[test]
     fn file_send_progress_counts_wire_not_queue() {
-        let file = include_str!("network/file.rs");
+        let file = &crate::network::file_src_for_guards();
         let body = rust_fn_body(file, "async fn stream_file(");
         assert!(
             body.contains("wire_progress_bytes("),
@@ -258,7 +260,7 @@
     /// 因为"少了哪一处"正是这类缺陷的形状；两个调用点各自对应一条成功证据。
     #[test]
     fn already_have_shortcut_shares_the_send_finalization() {
-        let file = include_str!("network/file.rs");
+        let file = &crate::network::file_src_for_guards();
         assert_eq!(
             file.matches("finalize_send_accepted(").count(),
             3,
@@ -290,7 +292,7 @@
     /// （拿不到就不可能把锁再写回来，这比"位置在后面"强：它是结构性的）。
     #[test]
     fn receive_finalize_slow_work_happens_outside_the_receiver_lock() {
-        let file = include_str!("network/file.rs");
+        let file = &crate::network::file_src_for_guards();
         let body = rust_fn_body(file, "pub fn finish_receive(");
         let flat = code_flat(&body);
         assert!(

@@ -313,6 +313,13 @@ export default {
       paths: [
         "src-tauri/src/network/file.rs",
         "src-tauri/src/network/file_tests.rs", // 分册：尾部行为测试（include! 回同一模块，2026-09-28 搬出）
+        // 分册目录：`network/file/{send,relay_push,receive,group_receive,share_walk}.rs`
+        // （2026-10-07 按角色切册，`include!` 回同一模块 ⇒ 同域、非新领域）。
+        // 这里**按目录认领而不是逐册点名**：`check-domain-map.mjs` 判据 D 会把该目录下任何新文件
+        // 算成已归属，而"落在 file/ 里就属于文件传输域"是这条边界真正的说法；
+        // 视图登记（`network/mod.rs::file_src_for_guards()`）才是逐册的，漏一册由
+        // `lib_source_view_tests` 的登记对账判红 —— 两边的严格程度按各自的失效方式定。
+        "src-tauri/src/network/file",
         "src-tauri/src/content", // 内容传输逻辑层
         "src-tauri/src/storage", // 二进制落盘 + 缓存清理
       ],

@@ -271,6 +271,33 @@ pub(crate) fn transport_src_for_guards() -> String {
     src
 }
 
+/// `file` 模块的**生产码全集视图**（与 `transport_src_for_guards()` 同一条规矩）。
+///
+/// 2026-10-07：`network/file.rs` 从 2,495 行按角色切成五册（发送 / 中继推文件 / 接收 /
+/// 群接收 / 共享目录与命名），`include!` 是文本粘贴 ⇒ 模块路径与测试全名一字不变，
+/// 但守卫用的 `include_str!` **看不见展开结果** ⇒ 必须在这里再登记一份清单。
+///
+/// ⚠️ 漏一册的后果不是报错而是**假绿**：以「file 全集」为判据的形状守卫看不见那段生产码。
+/// 这条不由人记着 —— `lib_source_view_tests.rs` 的登记对账守卫（第四个用例）每个视图都钉两侧，
+/// 少登记多登记都会红。
+/// `file_tests.rs` 刻意不进视图：它是测试文本，并进来会让生产模式扫描多看见一堆字符串常量。
+#[cfg(test)]
+pub(crate) fn file_src_for_guards() -> String {
+    let mut src = String::new();
+    src.push_str(include_str!("file.rs"));
+    src.push('\n');
+    src.push_str(include_str!("file/send.rs"));
+    src.push('\n');
+    src.push_str(include_str!("file/relay_push.rs"));
+    src.push('\n');
+    src.push_str(include_str!("file/receive.rs"));
+    src.push('\n');
+    src.push_str(include_str!("file/group_receive.rs"));
+    src.push('\n');
+    src.push_str(include_str!("file/share_walk.rs"));
+    src
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

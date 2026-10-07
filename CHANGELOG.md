@@ -13,6 +13,57 @@
 
 ## [Unreleased]
 
+## [4.33.14] - 2026-10-07
+
+### Changed
+- ★ **`src-tauri/src/network/file.rs` 按角色切成五册（tier-2 第二轮）**：2,495 行 ⇒ 主文件 **398 行** +
+  `file/send.rs` 689（offer→accept→分片流式→收尾，含 `WireLedger` 记账与 `wait_complete_ack`）+
+  `file/receive.rs` 845（offer 决策→`.part` 接收器→逐片解密→校验改名→失败与接管）+
+  `file/relay_push.rs` 261（借道中继：`RelayFileOffer`/`RelayChunk`，收件人不是链路对端）+
+  `file/group_receive.rs` 142（一个群文件对多成员各建一个接收器）+ `file/share_walk.rs` 224
+  （共享目录遍历与落盘命名 —— 纯函数、不碰网络也不碰会话状态）。
+  边界依据是文件自己那段模块文档：它开头就写了"发送方 / 接收方 / 中继路径"三条生命周期。
+  机制与 transport 那五刀同一条：`include!` 是文本粘贴 ⇒ 同一模块、同一 `use`、同一可见性，
+  **测试全名一字不变**。
+- **恒等与自证**：`cargo test --features bluetooth --lib` 789 passed / 0 failed；
+  `-- --list` 的 789 条用例名与 `test-baseline.macos.txt` **差集 0 行**；clippy（门禁那条形态，不带
+  `--all-targets`）`-D warnings` 干净；`verify-guards.py --list` 报"202 条用例的注入锚点都在各自文件里
+  恰好命中一次" ⇒ 锚点由 runner 沿 `include!` 树自动解析，指向 `file.rs` 的那批 Case 的 `file=` **一字未改**（对账就是 `--list` 那一句"202 条…恰好命中一次"）；
+  `check-domain-map.mjs` 认领数 347 ⇒ 352；`check-doc-citations.mjs` 31 处全落真行。
+- **新登记的第五把尺子 + 一处旧尺子改严**：
+  · `network/mod.rs::file_src_for_guards()` —— `file` 模块的"生产码全集"视图（`#[cfg(test)]`，与
+    transport 那份同形）；形状守卫原先 9 处 `include_str!("network/file.rs")` 全部改成读这个家
+    （读单个文件在搬家后只看见主册：搬走会红，但**搬进来的坏形状看不见** = 假绿）。
+  · `lib_source_view_tests.rs` 的登记对账守卫从 3 个用例加到 **4 个**（新用例 canary = `file/send.rs`）
+    ⇒ 以后少登记一册、或多登记一个不在 `include!` 闭包里的文件都会红，两侧都钉。
+  · 同批把 `file_tests.rs` 里那条用 `std::fs::read_to_string("<crate>/src/network/file.rs")` 读源码的
+    判据也接进视图 —— 它是本次唯一"跑起来才知道"的红（`✖ 单聊 peer-wide 收尾改名了`），
+    红是对的方向：它读的是单个文件。
+  · `docs/domains.data.mjs` 的文件传输领域按**目录**认领 `src-tauri/src/network/file`（不是逐册点名），
+    并写明两边严格程度的差异按各自失效方式定：视图漏一册是假绿，所以逐册；领域漏一行是无主文件，
+    判据 D 会当场红，所以按目录。
+- **一条自己踩到的计数错，如实记**：动手前我把"读 `file.rs` 文本的守卫"数成 6 处（只在两个
+  `lib_*_tests.rs` 里 grep），实际是 **9 处 / 5 个文件**（还有 `lib_ble_tests` / `lib_compat_gating_tests`
+  / `lib_relay_data_tests` 各一处）。按文件去 grep 就是把"检索面"当成了"全集"。
+  这次没造成损失是因为批量替换脚本对每个文件写了 `assert count == 预期`，第一个文件就断言失败、
+  一个字都没写下去 ⇒ 分母是错的这件事被工具替我说出来了。
+- 顺带 4 处指路句改口到真位置：`state.rs`（`file/send.rs::wait_complete_ack`）、
+  `commands/files.rs`（`file/send.rs::send_file_from_path_at`）、`file_relay.rs`
+  （`file/share_walk.rs::safe_transfer_id`）、`db/messages.rs`（`file/receive.rs::resume_receive`）。
+
+### Changed（同批的第六把尺子：领域依赖方向守门的口径改准，**上限一格没动**）
+- ★ `scripts/check-domain-deps.mjs` 里"判据看不见的内联跨域引用"从**按物理文件**判改成**按领域**判。
+  起因：`file.rs` 切册后这里 13 对 ⇒ 16 对并报红，而棘轮写明"不许直接调大上限"。
+  现量核对（不是解释）：把同一份新脚本在 `567694b`（拆分前）与现树各跑一遍 ⇒
+  **两边都是 30 处 / 6 对**；旧口径在两棵树分别是 13 / 16 ⇒ 红来自"`use crate::db;` 留在模块根文件、
+  内联的 `crate::db::now_ms` 搬进了分册"这种**归属假象**：include! 让"use 落在哪个物理文件"变成任意事实，
+  而 `consumes` 与判据 G 本来就是**领域粒度**的。
+- 反证（证明口径没被改成瞎）：往 `files` 域塞一句该域任何文件都不曾 `use` 过的内联
+  `crate::notifications::…` ⇒ 6 对变 7 对，且 `GOSSLAN_DOMAIN_INLINE_PAIR_MAX=6 node scripts/check-domain-deps.mjs`
+  当场退 1（`✗ 内联跨域引用对数 7 超过棘轮上限 6`）；撤掉注入后回到 30 处 / 6 对。
+- ⚠️ 这条口径买不到的那一半写在脚本注释里：同一条**已声明**依赖在另一个物理文件里被内联使用，
+  现在不再单独报出来（按领域问就只看领域）。取舍：宁可少报一格，也不拿"文件归属"这种会随搬家漂移的事实当分母。
+
 ## [4.33.13] - 2026-10-07
 
 ### Changed

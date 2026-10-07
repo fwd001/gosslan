@@ -173,7 +173,9 @@
     /// ③ 重复的 offer 必须幂等回 accept。
     #[test]
     fn ble_file_transfer_respects_link_limits() {
-        let file = include_str!("network/file.rs");
+        // 视图读"一个家"`network::file_src_for_guards()`（2026-10-07 file.rs 按角色切成 include! 分册）：
+            // 读单个文件只会看见主册 ⇒ 形状守卫对分册失明（假绿形状）。登记对账由 lib_source_view_tests 第四个用例钉两侧。
+                    let file = &crate::network::file_src_for_guards();
         let stream = rust_fn_body(file, "async fn stream_file(");
         assert!(
             stream.contains("chunk_size_for_path("),

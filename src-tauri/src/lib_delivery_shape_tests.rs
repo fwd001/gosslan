@@ -229,7 +229,9 @@
     /// 加真实背压，本仓没有这种夹具；而接错任何一处的表现都是真机上那份大文件又死了。
     #[test]
     fn file_attempt_epoch_is_wired_on_both_sides() {
-        let file = include_str!("network/file.rs");
+        // 视图读"一个家"`network::file_src_for_guards()`（2026-10-07 file.rs 按角色切成 include! 分册）：
+            // 读单个文件只会看见主册 ⇒ 形状守卫对分册失明（假绿形状）。登记对账由 lib_source_view_tests 第四个用例钉两侧。
+                    let file = &crate::network::file_src_for_guards();
         let tv = crate::network::transport_src_for_guards();
         // ① 三帧都必须带轮次（少一处 = 那一类帧逃过过滤，病根原样保留）
         let stream = code_flat(&rust_fn_body(file, "async fn stream_file("));

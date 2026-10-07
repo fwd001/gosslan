@@ -137,7 +137,7 @@ impl RelayManager {
         dir: &Path,
     ) -> Result<(), String> {
         // transfer_id 会变成文件名的一部分，必须与直连路径**同一份**消毒口径
-        // （见 `network/file.rs::safe_transfer_id`）：放行 `../x` 等于让对端一句话
+        // （见 `network/file/share_walk.rs::safe_transfer_id`）：放行 `../x` 等于让对端一句话
         // 把文件写到下载目录之外。
         let id = crate::network::file::safe_transfer_id(transfer_id).ok_or("传输标识非法")?;
         if chunk_size == 0 {

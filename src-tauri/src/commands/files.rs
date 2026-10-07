@@ -243,7 +243,7 @@ fn build_file_message(
     // cid = 明文 sha256，接收方据此按 cid 拉取（ADR-0019 Phase 3）。
     // ⚠️ **这里不计算**：整文件哈希是 O(体积) 的，放在建记录这一步就等于把气泡挡在哈希之后
     // （真机 Mac 发 600MB：点完要"卡一会儿"才出现发送中气泡）。真正用于校验的那份由投递
-    // 任务算（`network/file.rs::send_file_from_path_at` → FileOffer.file_sha256），
+    // 任务算（`network/file/send.rs::send_file_from_path_at` → FileOffer.file_sha256），
     // 算完再回填本行的 sha256 字段（`db::fill_message_sha256`），所以最终值同源、不丢。
     let content = serde_json::json!({
         "name": name,

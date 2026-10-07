@@ -1160,7 +1160,7 @@ pub struct AppState {
     /// 两个用途，判据都必须落在**写出**而不是"入队"上 —— 队列能装 1024 帧，1MB 文件会在
     /// 1 秒内全部入队，而链路上要跑几分钟：
     ///   ① 把 `FileCompleteAck` 的等待从"固定 30s 墙钟"改成"**安静** 30s 才算失败"
-    ///      （见 `network/file.rs::wait_complete_ack`）；
+    ///      （见 `network/file/send.rs::wait_complete_ack`）；
     ///   ② 发送进度本身（v4.22.37）：进度条按已写出的分块数换算。旧口径直接拿"入队字节"
     ///      当进度，于是 LAN 上最多 262MB 还在队列里时，界面已经显示 100%。
     pub file_wire_progress: Mutex<HashMap<String, FileWireProgress>>,

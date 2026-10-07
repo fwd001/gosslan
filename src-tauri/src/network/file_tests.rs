@@ -2103,11 +2103,11 @@ mod group_receive_atomicity_tests {
     /// 判据与群侧那条同形：摘表一次持锁做完，收尾只吃已经摘出来的接收器。
     #[test]
     fn single_peer_offline_cleanup_also_takes_before_finalizing() {
-        let src = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/network/file.rs"
-        ))
-        .expect("读不到 file.rs ⇒ 这条判据失去落点");
+        // 视图读"一个家"`network::file_src_for_guards()`（2026-10-07 file.rs 按角色切成 include! 分册）。
+        // 原来这里用 `std::fs::read_to_string("<crate>/src/network/file.rs")` 读单个文件 ——
+        // 搬家后那种读法**只看见主册**：函数被搬走时它会红（尚可），但搬进来的坏形状它看不见（假绿，
+        // 本仓最忌讳的那种）。视图 = 主册 + 五册，登记对账由 `lib_source_view_tests` 第四个用例钉两侧。
+        let src = crate::network::file_src_for_guards();
         let at = src
             .find("pub fn fail_receives_for_peer(")
             .expect("单聊 peer-wide 收尾改名了 ⇒ 同步改这条判据");

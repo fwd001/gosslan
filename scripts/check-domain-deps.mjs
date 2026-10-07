@@ -316,14 +316,66 @@ if (ok) console.log("  ✓ consumes 字段全部合法");
 
 // ---------------- G. 跨领域引用受 consumes 约束 ----------------
 console.log("\n判据 G：每个领域的 use crate::xxx 受 consumes 约束");
-for (const d of domainMap.domains) {
-  const allowed = new Set(d.consumes ?? []);
-  const files = [];
+
+/**
+ * 一个领域的生产码文件（`paths` 展开 + 按 `isAppCodePath` 排除独立测试文件）。
+ * 抽成一个家：下面"声明过的目标域"预扫与主循环必须走**同一份文件集合**，
+ * 两边各写一遍展开逻辑就是第二个家（会漂移的那种）。
+ */
+function domainFiles(d) {
+  const out = [];
   for (const entry of d.paths ?? []) {
     const expanded = expandPath(entry);
     if (!expanded) continue; // 路径不存在是 check-domain-map.mjs 的事
-    files.push(...expanded);
+    out.push(...expanded);
   }
+  return out;
+}
+
+/** 生产码那份（`isAppCodePath` 口径），预扫"已声明的目标域"用它。 */
+function domainProdFiles(d) {
+  return domainFiles(d).filter((f) => isAppCodePath(path.relative(ROOT, f).replaceAll("\\", "/")));
+}
+
+/**
+ * ★ 内联耦合" invisibility "的**判定单位必须是领域，不是物理文件**（2026-10-07 改准）。
+ *
+ * 起因：`network/file.rs`（2,495 行）按角色切成 `include!` 分册后，本脚本忽然报
+ * 出三对新对（`files→persistence` / `files→transport` / `files→messaging`）而棘轮上限 13 判红。
+ * 但代码文本逐字没动 —— 差别在：`use crate::db;` 这类**顶层 use 留在模块根文件**，
+ * 而 `crate::db::now_ms` 这种内联写法被搬进了分册。旧口径按"同一个文件里有没有对应的 use"
+ * 判可见 ⇒ 分册里没有 use ⇒ 同一条**领域级已声明的依赖**被算成"判据看不见"。
+ *
+ * 为什么这不是放松：`consumes` 本来就是**按领域**声明的（判据 G 拿 `d.consumes` 判 `use crate::X`），
+ * 所以"这条内联引用是不是已声明依赖的内联写法"也只能按领域问。include! 让
+ * "use 落在哪个物理文件"变成任意的 ⇒ 文件粒度在这个模块上根本不是一个可依赖的事实。
+ *
+ * 恒等判据（复跑见文件末）：搬家前后**同一份耦合必须报同一个数** —— 拆分前 13 对 / 84 处，
+ * 拆完五册 + 改准口径后仍应 13 对 / 84 处。真新增一对（往没声明过那条依赖的领域里塞一句
+ * 内联 `crate::…`）时必须 +1 并被 13 的上限咬红。
+ */
+const declaredTargetsByDomain = new Map();
+for (const d of domainMap.domains) {
+  const set = new Set();
+  for (const f of domainProdFiles(d)) {
+    let content;
+    try {
+      content = readFileSync(f, "utf8");
+    } catch {
+      continue;
+    }
+    for (const ref of scanUseCrate(content)) {
+      const t = resolveDomain(ref.modulePath, index);
+      if (t !== d.id && t !== "assembly" && t !== "unmapped") set.add(t);
+    }
+  }
+  declaredTargetsByDomain.set(d.id, set);
+}
+
+for (const d of domainMap.domains) {
+  const allowed = new Set(d.consumes ?? []);
+  const declared = declaredTargetsByDomain.get(d.id) ?? new Set();
+  const files = domainFiles(d);
   if (files.length === 0) continue; // friendship 没文件
 
   for (const f of files) {
@@ -344,15 +396,12 @@ for (const d of domainMap.domains) {
       continue;
     }
     const refs = scanUseCrate(content);
-    // ★ #133-A：把"只有内联写法、判据完全看不见"的跨域对数出来（只报告，不判红）
-    const seenTargets = new Set();
-    for (const ref of refs) {
-      const t = resolveDomain(ref.modulePath, index);
-      if (t !== d.id && t !== "assembly" && t !== "unmapped") seenTargets.add(t);
-    }
+    // ★ #133-A：把"只有内联写法、判据完全看不见"的跨域对数出来（只报告，不判红）。
+    //   "已声明"看的是**整个领域**的 use（`declared`），不是这一个物理文件的 use ——
+    //   理由与恒等判据见上面 `declaredTargetsByDomain` 那段（include! 分册让 use 的文件归属变成任意）。
     for (const im of scanInlineCrate(content)) {
       const t = resolveDomain(im.modulePath, index);
-      if (t === d.id || t === "assembly" || t === "unmapped" || seenTargets.has(t)) continue;
+      if (t === d.id || t === "assembly" || t === "unmapped" || declared.has(t)) continue;
       const key = `${d.id}→${t}`;
       const cur = inlineOnlyPairs.get(key);
       if (cur) cur.count += 1;
@@ -417,6 +466,18 @@ if (ok) {
   //   ⚠️ 上限必须钉成**存量数字**而不是"当天的条数" —— 取后者等于恒真，棘轮永远不会咬。
   //      存量 13 对是 2026-09-28 现算（复跑同一条命令看上面那行打印）；**只许调小**，
   //      调大等于把洞重新变沉默 ⇒ 要调必须先在这行注释里写下谁同意、为什么。
+  // ★ 2026-10-07：**上限 13 一格没动**，改的是口径（可见性按领域判，不再按物理文件判）。
+  //   起因是 `network/file.rs` 切成 include! 分册后这里从 13 对跳到 16 并报红。
+  //   现量核对：`git worktree add --detach /tmp/x 567694b`，同一份新脚本在两棵树各跑一遍 ⇒
+  //   两边都是 **30 处 / 6 对**，而旧口径在两棵树分别是 13 对 / 16 对
+  //   ⇒ 红是"搬家让 use 与内联引用落在不同物理文件"造成的归属假象，不是新增长。
+  //   反证（口径没被改成瞎）：往 `files` 域塞一句该域任何文件都不曾 `use` 过的
+  //   内联 `crate::notifications::…` ⇒ 6 对变 7 对，且 `GOSSLAN_DOMAIN_INLINE_PAIR_MAX=6` 当场退 1
+  //   （实测打印 `✗ 内联跨域引用对数 7 超过棘轮上限 6`）。
+  //   ⚠️ 这个口径买不到的那一半，写明白：同一条已声明依赖在**另一个物理层**里被内联使用
+  //   （如某文件内联摸 db，而 db 的 use 只在该域别处的文件里）现在不会被单独报出来 ——
+  //   按领域问就只看领域。取舍理由：`consumes` 与判据 G 本来就是领域粒度的，
+  //   而 `include!` 让"use 落在哪个文件"成为任意事实，用任意事实做判据分母比少报一格更危险。
   const pairMax = Number(process.env.GOSSLAN_DOMAIN_INLINE_PAIR_MAX ?? "13");
   if (pairs.length > pairMax) {
     console.error(

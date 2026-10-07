@@ -10,7 +10,7 @@
 // 恒等判据当场降级成"我读过觉得没变"。同目录先例：`protocol_tests.rs`。
 // ⚠️ 册名以 `_tests.rs` 结尾也是被判据选定的：`transport_src_for_guards()` 那份"生产码全集"视图
 // 只许装生产码，而登记对账守卫按 `_tests.rs` 后缀豁免测试分册（并进视图是最顺手却假绿的消红办法）。
-    /// **0-A1：三份"守卫用的源码全集"必须等于编译器实际 `include!` 进来的分册集合。**
+    /// **0-A1：四份"守卫用的源码全集"必须等于编译器实际 `include!` 进来的分册集合。**
     ///
     /// 为什么要这条（架构复审 2026-09-24 P10）：`include!` 只做编译期拼接，`include_str!`
     /// 看不见展开后的结果 ⇒ 守卫用的视图是**手工登记的第二份清单**。它已经漂移过两次：
@@ -35,11 +35,13 @@
         let this_file = include_str!("lib_tests.rs");
         let mod_file = include_str!("network/mod.rs");
         // 第五列是**每个用例自己的 canary**：一个"必须出现在闭包里"的分册。
-        // 为什么不能只写一条"闭包 ≥ N"：三个视图的分册数差一个量级
-        // （commands 24 / db 16 / transport 3），同一个阈值套下去要么松到没有意义、
-        // 要么把 transport 直接判成"解析器失效"（第一版就是这么红的）。
-        // canary 挑的都是历史上真漂移过的那批（4.25.0 接线时 relay 漏登记过两次）。
-        let cases: [(&str, &str, &str, &str, &str); 3] = [
+        // 为什么不能只写一条"闭包 ≥ N"：四个视图的分册数差一个量级（现算：
+        //   `python3 -c` 数 `fn all_commands_src()` / `fn all_db_src()` / `fn transport_src_for_guards()`
+        //   / `fn file_src_for_guards()` 各自函数体里的 `include_str!(` 出现次数），
+        //   同一个阈值套下去要么松到没有意义、要么把最小的那个直接判成"解析器失效"（第一版就是这么红的）。
+        // canary 挑的都是历史上真漂移过的那批（4.25.0 接线时 relay 漏登记过两次），
+        // `file/send.rs` 是 2026-10-07 那一刀的第一册。
+        let cases: [(&str, &str, &str, &str, &str); 4] = [
             (
                 "commands.rs",
                 "fn all_commands_src()",
@@ -60,6 +62,13 @@
                 mod_file,
                 "network::transport_src_for_guards()",
                 "transport/relay.rs",
+            ),
+            (
+                "network/file.rs",
+                "fn file_src_for_guards()",
+                mod_file,
+                "network::file_src_for_guards()",
+                "file/send.rs",
             ),
         ];
         for (entry_name, signature, holder_src, label, canary) in cases {
