@@ -13,6 +13,14 @@
 
 ## [Unreleased]
 
+## [4.33.12] - 2026-10-07
+### Changed
+- ★ **`handle_message` 第五族：消息与送达回执 4 个变体搬进 `transport/handle_messaging.rs`**（235 行 → 分册 253），
+  主文件 1,613 ⇒ 1,391。并一族的理由是这条送达链要一起读才看得见谁点亮谁：落库（ChatMessage）→
+  对端确认（Ack 清 outbox）→ 已读（ReadReceipt 只推游标、不改会话摘要）→ 气泡样式（ChatStyle）。
+- **五族搬完后 `handle_message` 的实际形状**（现量）：见提交正文与 `docs/large-file-split-plan.md` §5.1 的改口。
+  自证同一套：789 passed / 0 failed、用例名差集 0、clippy 与 fmt 干净、202 条锚点各命中一次。
+
 ## [4.33.11] - 2026-10-07
 ### Changed
 - ★ **`handle_message` 第四族：身份握手与好友关系 8 个变体搬进 `transport/handle_identity.rs`**（266 行 → 分册 288），
