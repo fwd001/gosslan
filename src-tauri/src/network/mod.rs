@@ -253,6 +253,12 @@ pub(crate) fn transport_src_for_guards() -> String {
     src.push_str(include_str!("transport/peer_registry.rs"));
     src.push_str(include_str!("transport/handshake.rs"));
     src.push_str(include_str!("transport/dial.rs"));
+    // `handle_file.rs`：handle_message 拆出的一族分支（2026-10-07）。**必须登记** ——
+    // 漏一册就是以「transport 全集」为判据的那些守卫看不见这段生产码（假绿，比假红危险）。
+    src.push_str(include_str!("transport/handle_file.rs"));
+    // `handle_share.rs`：handle_message 拆出的一族分支（2026-10-07）。**必须登记** ——
+    // 漏一册就是以「transport 全集」为判据的那些守卫看不见这段生产码（假绿，比假红危险）。
+    src.push_str(include_str!("transport/handle_share.rs"));
     src
 }
 

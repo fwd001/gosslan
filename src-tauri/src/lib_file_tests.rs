@@ -220,15 +220,18 @@
     ///
     /// 旧代码只有 `if already_done { 回成功 Ack }` 而**没有 else** ⇒ 本机从没收下这份文件时
     /// 一帧都不回，发送端只能干等整个静默窗口（`FILE_ACK_IDLE`）才判失败，然后整套重发。
-    /// 为什么是源码守卫：这一条是 `handle_message` 的一个 match 臂，本仓没有能驱动它并捕获
-    /// 出站帧的异步夹具（与 A3 那条同理）。判据取「锚点注释 → 下一个 `Ok(Some(` 之间」这段
-    /// 区域，避开同函数里其他 FileCompleteAck 的计数干扰。
+    /// 为什么是源码守卫：这一条是文件收发族的一个 match 臂（2026-10-07 起住在
+    /// `transport/handle_file.rs::handle_file_messages`，原来在 `handle_message` 里），本仓没有
+    /// 能驱动它并捕获出站帧的异步夹具（与 A3 那条同理）。判据取「锚点注释 → 下一个 `Ok(Some(`
+    /// 之间」这段区域，避开同函数里其他 FileCompleteAck 的计数干扰。
     #[test]
     fn duplicate_file_done_still_answers_with_an_ack() {
         let src = crate::network::transport_src_for_guards();
-        let body = rust_fn_body(&src, "pub async fn handle_message(");
+        // 开窗锚点跟着臂走：FileDone 那一臂现在在文件族的分册里（漏改这里 = 窗口里根本没有那段文本，
+        // 下面的 expect 会响，不是静默变弱 —— 这条红是本次搬家自己报出来的）。
+        let body = rust_fn_body(&src, "async fn handle_file_messages(");
         let at = body.find("重复 FileDone").expect(
-            "handle_message 里那段「重复 FileDone」判据注释不见了 ⇒ 这条守卫的区域锚点失效",
+            "文件族里那段「重复 FileDone」判据注释不见了 ⇒ 这条守卫的区域锚点失效",
         );
         let arm = &body[at..];
         let region = &arm[..arm

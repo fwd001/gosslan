@@ -13,6 +13,25 @@
 
 ## [Unreleased]
 
+## [4.33.9] - 2026-10-07
+### Changed
+- ★ **`handle_message` 拆出两族，主文件 2,743 ⇒ 2,029 行**（第一、二族并一个提交：两批改动都落在同一个函数的同一张 match 上，
+  事后拆提交只会让每次的恒等判据更难核）。12 个变体的处理体整块搬进两个新分册：
+  `transport/handle_file.rs`（1:1 文件收发 6 臂 / 500 行）与 `transport/handle_share.rs`（共享目录 + 单跳中继 6 臂 / 239 行）。
+  **臂体逐字未改**：分册里那层 match 与原函数同一层（臂仍 8 格缩进）⇒ 不需要重排；分发臂用
+  `m @ (Message::FileOffer { .. } | …) => handle_file_messages(state, peer_id, m).await`，
+  `{ .. }` 不绑字段 ⇒ 绑定全部留在分册里那条同形状的模式上。
+- 为什么这一刀算机械搬家而不是改控制流：AST 现量过 **match 之前没有裸 `let` 绑定、分支之间不共享局部量**，
+  且 `match msg` 是函数最后一条语句 ⇒ 臂里的 `return` 从 helper 返回与原来从 `handle_message` 返回**等价**
+  （若 match 之后还有代码，这个等价就不成立 —— 那是这条搬家能做的判据，写在分册头部）。
+- **搬家自己报出的一处真耦合**：一条按函数名开窗的形状守卫
+  （`duplicate_file_done_still_answers_with_an_ack`）跟着臂搬家后窗口里没有了那段文本 ⇒ 它当场红，
+  已把开窗锚点改指 `handle_file_messages` 并同步那段"为什么是源码守卫"的说明。
+  ★ 而护栏用例那 11 条注入锚点**一条都不用改**：`verify-guards.py` 自己顺着 `include!` 树解析锚点所在文件
+  （`--list` 现算 202 条各恰好命中一次）⇒ 按文件路径硬改 `file=` 反而是错的。
+- 恒等与自证（两族一起）：`cargo test --lib` 789 passed / 0 failed、用例名与 `test-baseline.macos.txt` **差集 0 行**、
+  clippy `-D warnings` 干净、`cargo fmt --check` 干净、`verify-guards --list` 202 条锚点全命中。
+
 ## [4.33.8] - 2026-10-07
 ### Fixed
 - ★ **数据面中继授权闸从"抄三遍"收成"一个家"，同时把替那个缺陷形状把关的判据改严**：
