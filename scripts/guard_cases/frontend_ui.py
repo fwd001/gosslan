@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """护栏非空转用例分册：前端呈现层（components / layouts / entries / 样式与打包配置里的界面判据）。
 
-本册现数 31 条（复跑 `grep -c '    Case(' scripts/guard_cases/frontend_ui.py`）；2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
+本册现数 33 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
+用不带行首锚的写法会多算一条 —— 多出来的正是这一行本身）；2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
 `CASES` 字面量里）按**锚定的被守物**切出来，切过来那 30 条的块文本逐字未搬动过一字 ⇒
 恒等判据＝`verify-guards.py --list` 的输出排序后与拆前**逐字节相同**（条数与用例名都不是"我觉得一样"）。
 
@@ -519,4 +520,32 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="浮层根节点要用 fixed 定位",
         tags=["frontend", "new-guards", "floating-layer"],
+    ),
+    Case(
+        name="本人头像那一处不再渲染 SelfAvatar 必须被抓住（三处同一个组件）",
+        why="2026-10-07 把移动端「我的」页头像换成统一组件（用户：「没有设置头像时它是蓝色的一个图标」"
+        "     「这些组件应该是同一个组件取的同一个数据源」）。`designGuards.test.ts` 那条"
+        "     「三处都走 SelfAvatar」读的是三个真实文件，但从未被证明会红 ⇒ 按本仓库规矩补上："
+        "     注入 = 把 ResponsiveLayout 那一处退回旧的 UserCircle（当年那个蓝色图标），必须被抓住。",
+        file=ROOT / "src" / "layouts" / "ResponsiveLayout.vue",
+        injections=[('<SelfAvatar class="h-14 w-14 shrink-0 rounded-full" />',
+                     '<UserCircle class="h-14 w-14 shrink-0 rounded-full" />')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="必须用 <SelfAvatar> 渲染本人头像",
+        tags=["frontend", "avatar", "new-guards"],
+    ),
+    Case(
+        name="SelfAvatar 的图片改回吃调用点 prop ⇒ 必须被抓住（同一个数据源那条）",
+        why="「三处同步」的真正落点不是三处都挂同一个组件，而是**图片那一支只有一个取值口**："
+        "     从 store 的 device.avatar 现读。历史缺陷正是各点自己传一份未保存的昵称/头像 ⇒ 保存前就分叉。"
+        "     那条判据（`图片必须来自 app.device.avatar`）当时同样只有断言没有变异 ⇒ 这里补上："
+        "     注入 = 把取值口退回「只用调用点传进来的 prop」。",
+        file=ROOT / "src" / "components" / "SelfAvatar.vue",
+        injections=[('props.previewSrc !== undefined ? props.previewSrc : (app.device?.avatar ?? null),',
+                     'props.previewSrc ?? null,')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="图片必须来自 app.device.avatar",
+        tags=["frontend", "avatar", "new-guards"],
     ),]

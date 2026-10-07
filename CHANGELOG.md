@@ -13,6 +13,23 @@
 
 ## [Unreleased]
 
+### Added
+
+- ★ **本人头像那两条静态判据补上正式的非空转用例**（4.33.22 立它们的时候只写了"读真实文件的断言"，
+  按本仓库规矩（v4.22.31 之后：新守卫必须证明「改坏一定 FAIL」）那是半件事，这轮把它结掉）。
+  - 用例一：把 `ResponsiveLayout` 那一处退回旧的 `UserCircle`（当年那个蓝色图标）⇒
+    「三处都走 SelfAvatar」必须红。
+  - 用例二：把 `SelfAvatar` 里图片那一支的取值口改回「只用调用点传进来的 prop」⇒
+    「图片必须来自 `app.device.avatar`」必须红。这条钉的是"三处同步"真正的落点 ——
+    不是三处挂同一个组件，而是那个来源只有一个。
+  - 两条都走完「改坏 → FAIL → 恢复 → PASS」（`python3 scripts/verify-guards.py --only=avatar` 现跑 2/2）。
+  - 护栏总数 203 ⇒ **205**；契约图 `ARCHITECTURE-MAP.html` 那一格同批改（`node scripts/check-doc-numbers.mjs` 对账通过）。
+  - ⚠️ 顺手抓到自己写的一条**会自膨胀的复跑命令**：册头那句"本册现数 N 条"给的命令是不锚行首的
+    `grep -c '    Case('`，而那一行文本里正好含这个字面量 ⇒ 跑出来比真实条数多 1，
+    即"复跑命令"与它要背书的那个数字互相矛盾。已改成行首锚定 `grep -c '^    Case('` 并在原地写清原因。
+  - 只动 `scripts/` 与文档（`isAppCodePath` 两处都是 false）⇒ 不提版本号。
+
+
 ## [4.33.28] - 2026-10-08
 
 ### Added
