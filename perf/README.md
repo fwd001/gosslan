@@ -106,6 +106,30 @@ node perf/run.mjs 20000         # 再采帧间隔与整表重算次数
 
 数字**不进门禁**，只作同机同负载前后对照；真动了 `VirtualList` 或 `bubbleCache`，这三档要在同一台重跑。
 
+### 量具四：`PERF_ONLY=mem` —— 长时间滚动前后的堆、DOM 节点与事件监听（roadmap N26 的第一台量具）
+
+跑法（同一个 `vlist.html` 页面，先起 vite 与 headless Brave，再跑）：`PERF_ONLY=mem node perf/run.mjs 20000`
+它做的事：`HeapProfiler.collectGarbage` → `Performance.getMetrics` 取三个时刻的快照（滚动前 / 600 步的一半 / 全部跑完），
+中间那 600 步就是 `scrollTest(300 上 + 300 下)`。**不给页面加任何钩子** —— 量具一改被量对象，量的就是量具自己。
+
+现读两遍（2026-10-10，同一台 Mac、headless Brave `--disable-gpu`、n=20000），两遍的 before/after 逐字段一致：
+
+| 时刻 | 堆（GC 后） | CDP nodes | `document.querySelectorAll('*')` | JSEventListeners | 累计 TaskDuration |
+| --- | --- | --- | --- | --- | --- |
+| 滚动前 | 7.12 MB | 117 | 60 | 8 | 0.005 s |
+| 300 步后 | 7.43 MB | 227 | 120 | 8 | 3.67 s |
+| 600 步后 | 7.48 MB | 227 | 120 | 8 | 7.27 s |
+
+三件事，分开说，别合并成"没有泄漏"：
+
+1. **第二轮没有再长**：节点 117→227 只发生在第一轮（虚拟窗口铺开），第二轮 `nodes`/`domElements` **一格没动**、
+   堆只 +0.05 MB、监听器三轮都是 8 ⇒ 这条路径上**没有随滚动累积的东西**。这不等于"长跑 8 小时也不长"——
+   我只跑到 600 步；两小时级别的增长要用这台量具换个更长的 churn 再跑（方法已经通了）。
+2. **每步主线程忙碌 ≈12 ms**（TaskDuration 增量 ÷ 步数）：这是**压测夹具**的数（每步跳 800px ⇒ 整窗重挂），
+   不是聊天页的数 —— 聊天页一次滚动跳几十像素、行内容也不同。别把它抄成"Gosslan 滚动花 12 ms"。
+3. `listeners` 走的是 CDP 的 `JSEventListeners` 而不是 `Listeners` —— 后者在这台 Chrome 上根本不存在，
+   写错的那一刻它读到 `null`，两减之下 delta 还是 0，**看起来完全正常**。这是本仓"量具会自己造出假绿"的又一形状。
+
 ## 与真实聊天页的差异
 
 - 行模板用等价结构（头像 + 昵称 + 气泡），未挂 `MessageItem` 的交互/右键/引用逻辑；

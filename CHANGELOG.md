@@ -13,6 +13,20 @@
 
 ## [Unreleased]
 
+### 量具 / 文档（原生体验 N26：内存与长时运行第一次有量具、有数；**应用代码一字未动**）
+
+- **第四台量具落地**：`PERF_ONLY=mem node perf/run.mjs 20000`（`perf/run.mjs` 里新增一支，走 CDP 的
+  `HeapProfiler.collectGarbage` + `Performance.getMetrics`，**不给页面加任何钩子**）。
+  现读（同一台 Mac、headless Brave `--disable-gpu`、n=2 万，两遍逐字段一致）：连滚 600 步，
+  堆 GC 后 **7.12 → 7.48 MB**（第二轮只 +0.05）、DOM 元素 **60 → 120 后第二轮一格没动**、
+  `JSEventListeners` **三轮都是 8** ⇒ 这条路径上没发现随滚动累积的东西；
+  ⚠️ 这只到 600 步，**小时级长跑仍未测**，真图与 Blob/ObjectURL 条目、Detached DOM 这三个数本量具读不到。
+- **量具自己坏过一次，形状是"字段名写错就长得像正常"**：`Listeners` 这台 Chrome 根本没有（真名
+  `JSEventListeners`），读回 `null`、两减之下 delta 还是 0 —— **看起来完全正常**。与 §INV-P31 那条
+  "假绿"家族同形，已写进 `perf/README.md` 量具四那一节。
+- **roadmap N26 那一格**从「未测量（方法也未定）」改成「方法已定 + 第一台量具已跑」，
+  并写明还欠哪两半。性能数字**不进门禁**，只作同机同负载前后对照。
+
 ### 量具 / 文档（原生体验领域 I 补测 + N12 第一次有数；**应用代码一字未动**）
 
 - **第三台量具落地**：`perf/latency.html` + `perf/latency.ts` + `perf/latency.mjs` ——

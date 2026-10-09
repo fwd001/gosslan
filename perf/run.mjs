@@ -58,6 +58,50 @@ for (let i = 0; i < 60; i++) {
 // 为什么要这条出口：n=100000 那一档整条链在 Runtime.evaluate 的 180s 超时里跑不完（历史归因未定），
 // 而"重算成本随条数怎么涨"这件事只需要一遍整表，不需要真滚 660 帧。
 const ONLY = process.env.PERF_ONLY ?? "";
+
+// PERF_ONLY=mem ⇒ 量具四：长时间滚动前后的堆与 DOM 节点数（roadmap N26 那格原先连量具都没有）。
+// 走 CDP 的 Performance.getMetrics + HeapProfiler.collectGarbage，**不给页面加任何钩子**：
+// 量具不改被量对象，否则量的就是量具自己。
+if (ONLY === "mem") {
+  await send("Performance.enable");
+  await send("HeapProfiler.enable");
+  const snap = async () => {
+    await send("HeapProfiler.collectGarbage");
+    const { metrics: m } = await send("Performance.getMetrics");
+    const g = (k) => { const e = m.find((x) => x.name === k); return e ? e.value : null; };
+    const dom = await evalJs("document.querySelectorAll('*').length");
+    return {
+      heapMB: +(g("JSHeapUsedSize") / 1048576).toFixed(2),
+      nodes: g("Nodes"),
+      listeners: g("JSEventListeners"),
+      domElements: dom,
+      layoutS: +g("LayoutDuration").toFixed(3),
+      styleS: +g("RecalcStyleDuration").toFixed(3),
+      scriptS: +g("ScriptDuration").toFixed(3),
+      taskS: +g("TaskDuration").toFixed(3),
+    };
+  };
+  const n = await evalJs("window.__perf.n");
+  const before = await snap();
+  const up = await evalJs("window.__perf.scrollTest(300, 800, true)");
+  const mid = await snap();
+  const down = await evalJs("window.__perf.scrollTest(300, 800, false)");
+  const after = await snap();
+  console.log(JSON.stringify({
+    n,
+    churn: { upFrames: up?.frames ?? null, downFrames: down?.frames ?? null },
+    before, mid, after,
+    delta: {
+      heapMB: +(after.heapMB - before.heapMB).toFixed(2),
+      nodes: after.nodes - before.nodes,
+      listeners: after.listeners - before.listeners,
+      domElements: after.domElements - before.domElements,
+    },
+  }, null, 2));
+  ws.close();
+  process.exit(0);
+}
+
 const result = await evalJs(`(async () => {
   const p = window.__perf;
   if (${JSON.stringify(ONLY)} === "calib") return { n: p.n, calib: p.calibrate ? p.calibrate(5) : null };
