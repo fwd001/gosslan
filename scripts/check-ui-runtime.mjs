@@ -1778,6 +1778,23 @@ async function runOverlay(cdp, url) {
     document.getElementById('opener').addEventListener('click', () => { window.__openerHits += 1; });
     window.__ovOpen = (on) => { window.__probe.state.open = !!on; };
     window.__ovFocusOpener = () => { document.getElementById('opener').focus(); };
+    // 出帧计数器（start / stop 两段，不返回 Promise ⇒ 页面冻住时也绝不把探针挂死）：
+    // Headless UI 的过渡**收尾**靠的是 disposables.nextFrame = 双层 requestAnimationFrame
+    // ⇒ 页面不出帧，leave 就停在第一步（类名停在 leave-from），壳永远挂在 DOM 上。
+    // 所以"关掉之后还剩东西"这类读数必须先自证帧在出：帧在出 ⇒ 读数算在量界面；
+    // 帧没出 ⇒ 读数只算在量量具。（2026-10-10 就是这条把一版假 P1 戳掉的。）
+    window.__ovFrameStart = () => {
+      window.__ovFrameN = 0;
+      window.__ovFrameRun = true;
+      const step = () => {
+        if (!window.__ovFrameRun) return;
+        window.__ovFrameN += 1;
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+      return true;
+    };
+    window.__ovFrameStop = () => { window.__ovFrameRun = false; return window.__ovFrameN; };
     window.__ovParentAuto = () => {
       let seen = window.__probe.events.filter((el) => el[0] === 'close').length;
       const tick = () => {
@@ -1827,7 +1844,13 @@ async function runOverlay(cdp, url) {
         vh: window.innerHeight,
         hitId: name(hit),
         panelOpacity: panel ? getComputedStyle(panel).opacity : '-',
-        panelCls: panel ? String(panel.className).slice(0, 58) : '-',
+        panelCls: panel ? String(panel.className) : '-',
+        // 卡在哪一相位只能看类名，而 leave 那几串类在**尾部**（58 个字符正好把它们截掉）；
+        // 一并读 transition-duration：F() 是按计算后的时长 setTimeout 的，时长与"没清理"同框才有解释力。
+        panelTrans: panel
+          ? getComputedStyle(panel).transitionProperty + " / " + getComputedStyle(panel).transitionDuration
+            + " / " + getComputedStyle(panel).transitionDelay
+          : '-',
         backdropOpacity: (() => {
           const g = dlg ? dlg.querySelector('.glass') : null;
           return g ? getComputedStyle(g).opacity : '(无遮罩节点)';
@@ -1851,6 +1874,32 @@ async function runOverlay(cdp, url) {
   })()`;
 
   /**
+   * 出帧泵：`Page.captureScreenshot` 会强制走一遍"更新渲染"，rAF 回调在那一步里跑。
+   * 为什么这段非用不可（2026-10-10 实测）：headless-new 起的探针页实测 `visibilityState=hidden`
+   * （文件里第 1340 行那条纪律就是为它写的），页面**静止时根本不出帧**；而 Headless UI 的
+   * 过渡收尾要两帧。不泵帧就读"关掉之后"，读到的是停在 leave-from 的壳 ⇒ 那是量具的形状。
+   * ⚠️ 只在本段用：不动全局启动参数（`--disable-renderer-backgrounding` 之类会把
+   *   `hasFocus()`/visibilityState 一起翻掉，而 emoji 那段有一条断言正按"页面没焦点"写）。
+   */
+  const pump = async (times = 6) => {
+    for (let i = 0; i < times; i += 1) {
+      await cdp.send("Page.captureScreenshot", { format: "png" }).catch(() => {});
+      await sleep(50);
+    }
+  };
+  /** 关掉之后的一次读数：先泵帧让过渡收尾，再读 DOM。 */
+  const readAfterClose = async () => {
+    await pump(10);
+    return await cdp.eval("window.__ovRead()");
+  };
+  /** 泵帧这段时间里 rAF 实际跑了几次 —— 量具自证用的就是它。 */
+  const framesDuringPump = async (times = 6) => {
+    await cdp.eval("window.__ovFrameStart()");
+    await pump(times);
+    return await cdp.eval("window.__ovFrameStop()");
+  };
+
+  /**
    * 每段自己起一次页面：一处红不许污染下一处（文件头纪律 3，同一段内串过三轮开关之后
    * DOM 里可能有东西，那时候再判"打开态只有一份"就不是在判它自己了）。
    */
@@ -1870,6 +1919,13 @@ async function runOverlay(cdp, url) {
     check("[" + tag + "] 干净页起起来了（BaseModal + 一颗真按钮同页、pinia 用的是页面那一份、开局没有 dialog）",
       ok, "install ok 且 pinia=true 且 dlgCount=0",
       JSON.stringify({ m: mounted, open: base.openFlag, dlg: base.dlgCount }));
+    // 量具自证：这一段后面每一条"关掉之后还剩什么"都站在"页面能出帧"上。
+    // ⚠️ 这条红**不是**产品红，是量具红（这台机器 / 这个 headless 页此刻不出帧）；
+    // 但它必须报出来 —— 没有它，下一轮又会把停在 leave-from 的壳读成"界面上有残留层"。
+    const frames = await framesDuringPump(6);
+    check("[" + tag + "] 量具在出帧（泵 6 次截图这段时间里 rAF ≥ 2 次）——"
+      + "Headless UI 的过渡收尾要两帧；页面静止不出帧时读到的是停在 leave-from 的壳，那是量具的形状不是界面的形状",
+      typeof frames === "number" && frames >= 2, "rAF 次数 >= 2", "实际 " + JSON.stringify(frames));
     return base;
   }
 
@@ -1877,6 +1933,7 @@ async function runOverlay(cdp, url) {
     await cdp.eval("window.__ovFocusOpener()");
     await cdp.eval("window.__ovOpen(true)");
     await sleep(500); // 进入过渡 200ms + 两帧 ⇒ 量的是动画结束后的稳定几何
+    await pump(4);
   };
 
   // ══ A 组：打开态本身（几何 / 焦点 / 遮罩命中 / 历史条目 / Tab 陷阱 / 点外部 / Esc）══
@@ -1913,7 +1970,7 @@ async function runOverlay(cdp, url) {
   const beforeOutside = await cdp.eval("window.__ovRead()");
   await cdp.click(pt.x, pt.y);
   await sleep(500);
-  const c = await cdp.eval("window.__ovRead()");
+  const c = await readAfterClose();
   check("A 真按下遮罩那一点 ⇒ 背景按钮的 click 监听零次触发（点击不穿透到弹窗背后）",
     c.openerHits === beforeOutside.openerHits, "openerHits 不涨", "hits=" + c.openerHits);
   check("A 同一个动作就把它关掉了（点外部关闭：close 恰好一次，且 DOM 里不剩 dialog）",
@@ -1934,7 +1991,7 @@ async function runOverlay(cdp, url) {
   const beforeEsc = await cdp.eval("window.__ovRead()");
   await cdp.key("Escape", "Escape", "", 27);
   await sleep(500);
-  const e = await cdp.eval("window.__ovRead()");
+  const e = await readAfterClose();
   check("A Esc（真按键）关得掉，且关掉后 DOM 与 body/html 样式都回到基线（§八「无遗留遮罩」）",
     e.closeEvents === beforeEsc.closeEvents + 1 && e.openFlag === false && e.dlgCount === 0
       && e.bodyStyle === base.bodyStyle && e.htmlOv === base.htmlOv,
@@ -1956,15 +2013,18 @@ async function runOverlay(cdp, url) {
   const beforeBack = await cdp.eval("window.__ovRead()");
   await cdp.eval("history.back()");
   await sleep(1_400); // 与 B 组同一口径：close 落地 → 宿主置假 → 离开过渡跑完，三件事排完才叫"关掉之后" 
-  const bk = await cdp.eval("window.__ovRead()");
-  // 这条今天三次跑里唯一稳定的是"按一次后退 ⇒ 恰好一条 close"；open/dlg 那两项在
-  // 0.6s / 1.4s 两种读法下都出现过 false+残留 与 true+残留，所以判据只钉住稳定那一半，
-  // 剩下的归 N13（同一个残留层的第四个现场），别在这里写成"返回键没反应"那种没测到的结论。
+  const bk = await readAfterClose();
+  // 按一次后退 ⇒ 恰好一条 close；紧接着 DOM 撤干净（下面第二条）。
+  // ⚠️ 这里以前钉着"只敢判 close 那一半"，因为另一半年年读到 dlg=1 —— 后来查明那是
+  // **页面不出帧**时停在 leave-from 的壳（量具形状），不是界面的形状。见 boot() 里那条出帧判据。
   check("A 真按一次后退 ⇒ 恰好收到一条 close（Android 系统返回键走的就是这条 popstate）",
     bk.closeEvents === beforeBack.closeEvents + 1, "close 恰好 +1",
     JSON.stringify({ before: beforeBack.closeEvents, after: bk.closeEvents }));
-  console.log("  ⚠️ 同一处还看到 N13 的第四个现场：按过后退之后 open=" + bk.openFlag
-    + "（宿主关没关这件事两次跑读数不一致，所以不判绿红）、dlg=" + bk.dlgCount);
+  check("A 后退那一层关掉之后 DOM 撤干净（open=false 且 portal 里没有 dialog）——"
+    + "先前那版\"留着一层看不见的壳\"是不出帧页面的形状，泵帧后这里必须是 0（§八「无遗留遮罩」）",
+    bk.openFlag === false && bk.dlgCount === 0 && bk.portalDlgCount === 0,
+    "open=false 且 dlg=0 且 portal=0",
+    JSON.stringify({ open: bk.openFlag, dlg: bk.dlgCount, portal: bk.portalDlgCount, hit: bk.hitId }));
 
   // ══ B 组：最常用那条关闭路径单独量（右上角 ✕，真鼠标）——干净页，前面什么都不干 ══
   await boot("B");
@@ -1974,18 +2034,28 @@ async function runOverlay(cdp, url) {
     xb.found === true, "found=true", JSON.stringify(xb));
   await cdp.click(xb.x, xb.y);
   await sleep(1_400); // 关 → 宿主把 open 置假 → 离开过渡 150ms，三件事得排完才叫"关掉之后"
-  const x = await cdp.eval("window.__ovRead()");
-  // 机制级读数（判"卡在哪一层"用，不当判据）：再过 2s 还在不在 + 面板/遮罩/包裹层各自的计算样式
-  await sleep(2_000);
-  const x2 = await cdp.eval("window.__ovRead()");
-  console.log("  · 读数（不判绿红）：B 点 ✕ 后 0.6s 与 2.6s ⇒ dlg " + x.dlgCount + "→" + x2.dlgCount
-    + " close=" + x2.closeEvents + " open=" + x2.openFlag
-    + " 面板opacity=" + x2.panelOpacity + " 遮罩opacity=" + x2.backdropOpacity
-    + " 包裹层pe=" + x2.wrapperPE + " 面板class=" + x2.panelCls + " 命中=" + x2.hitId);
-  console.log("  ⚠️ 实测到缺陷（判据待钉，见 stability-roadmap §12.6.1 N13）：✕ 关闭后 open 已经是 "
-    + x2.openFlag + "，portal 里却仍留 " + x2.dlgCount + " 份 dialog；面板 opacity=" + x2.panelOpacity
-    + "（看不见）而包裹层 pointer-events=" + x2.wrapperPE + "（还挡着）⇒ 同一个坐标真点打不到按钮，hits="
-    + x.openerHits + "、命中 " + x.hitId);
+  const x0 = await cdp.eval("window.__ovRead()"); // 只等、不泵：这一份读的是量具停在哪
+  const x = await readAfterClose();               // 泵帧后读同一次关闭：这一份才叫界面
+  const ptB = await cdp.eval("window.__ovPoint('opener')");
+  console.log("  · 读数（不判绿红）：B 点 ✕ 后【只等不泵】dlg=" + x0.dlgCount
+    + " 面板class 尾部=" + x0.panelCls.slice(-40)
+    + "；【泵帧后】dlg " + x0.dlgCount + "→" + x.dlgCount + " close=" + x.closeEvents
+    + " open=" + x.openFlag + " 遮罩opacity=" + x.backdropOpacity + " 命中=" + x.hitId);
+  check("B 右上角 ✕ 关掉之后 DOM 撤干净（open=false 且 portal 里没有 dialog）——"
+    + "§八「动画结束后不许遗留遮罩 / 不可交互区域」那一格",
+    x.openFlag === false && x.dlgCount === 0 && x.portalDlgCount === 0,
+    "open=false 且 dlg=0 且 portal=0",
+    JSON.stringify({ open: x.openFlag, dlg: x.dlgCount, portal: x.portalDlgCount }));
+  await cdp.click(ptB.x, ptB.y); // 关掉之后同一个坐标再真点一次：那层壳不许吃掉点击
+  await sleep(300);
+  const x4 = await readAfterClose();
+  // 这里只判"点击落没落到按钮上"：A/B/C 的 opener 由探针直接翻 prop 打开、**不接 click**
+  // （只有 D 那种生产形状的宿主才写 onClick ⇒ open）。所以"open=true"在这两组不成立，
+  // 判它就是我编的规矩；命中 = opener 本身才是"那层壳没吃掉点击"的证据。
+  check("B 关掉之后同一个坐标再真点 ⇒ 打得着那颗按钮（hits 恰好 +1、命中的就是 opener）",
+    x4.openerHits === x.openerHits + 1 && x4.hitId === "opener",
+    "hits+1 且 hitId=opener",
+    JSON.stringify({ hits: x4.openerHits, base: x.openerHits, hit: x4.hitId }));
 
   // ══ C 组：快速连开关（每步 120ms，短于两处过渡 ⇒ 动画真被打断）——也是干净页 ══
   const cbase = await boot("C");
@@ -1996,16 +2066,24 @@ async function runOverlay(cdp, url) {
     await sleep(120);
   }
   await sleep(700);
-  const f = await cdp.eval("window.__ovRead()");
-  console.log("  ⚠️ N13 的第二个现场（快速连开关）：open=" + f.openFlag + " 却仍留着 dlg=" + f.dlgCount
-    + " / portal=" + f.portalDlgCount + "；样式与滚动位这两项倒是回到了基线（body[style]=" + f.bodyStyle
-    + "、html overflow=" + f.htmlOv + "、y=" + f.scrollY + "）");
+  const f = await readAfterClose();
+  check("C 连开关 3 轮（每步 120ms，短于两处过渡 ⇒ 动画真被打断）之后不剩壳："
+    + "open=false 且 dlg=0 且 portal=0",
+    f.openFlag === false && f.dlgCount === 0 && f.portalDlgCount === 0,
+    "open=false 且 dlg=0 且 portal=0",
+    JSON.stringify({ open: f.openFlag, dlg: f.dlgCount, portal: f.portalDlgCount }));
+  check("C 动画被打断之后样式与滚动位回到基线（body[style]、html overflow、scrollY 三项都 == 干净页那份）",
+    f.bodyStyle === cbase.bodyStyle && f.htmlOv === cbase.htmlOv && f.scrollY === cbase.scrollY,
+    "三项都等于基线",
+    JSON.stringify({ body: f.bodyStyle, htmlOv: f.htmlOv, y: f.scrollY }));
   const ptC = await cdp.eval("window.__ovPoint('opener')");
   await cdp.click(ptC.x, ptC.y);
   await sleep(300);
-  const f2 = await cdp.eval("window.__ovRead()");
-  console.log("  ⚠️ 同一处的用户可见后果（N13）：那层留着的时候真点触发按钮 ⇒ hits=" + f2.openerHits
-    + "（一次都没打到）、坐标命中的是 " + f2.hitId);
+  const f2 = await readAfterClose();
+  check("C 打断之后同一个坐标真点触发按钮 ⇒ 打得着那颗按钮（hits +1 且命中的就是 opener）",
+    f2.openerHits === cbase.openerHits + 1 && f2.hitId === "opener",
+    "hits+1 且 hitId=opener",
+    JSON.stringify({ hits: f2.openerHits, base: cbase.openerHits, hit: f2.hitId }));
   check("C 连开关 3 轮没往历史里漏条目（漏了的话 Android 返回键要按好几下才有反应）",
     f.histLen <= cbase.histLen + 1, "histLen <= 基线+1(" + (cbase.histLen + 1) + ")",
     "histLen=" + f.histLen);
@@ -2076,16 +2154,20 @@ async function runOverlay(cdp, url) {
   const dxb = await cdp.eval("window.__ovPoint('close')");
   await cdp.click(dxb.x, dxb.y); // 真点右上角 ✕
   await sleep(700);
-  const d2 = await cdp.eval("window.__ovRead()");
-  console.log("  ⚠️ N13 在**生产形状**下同样成立（这条才是定性的关键）：真点触发按钮开、真点 ✕ 关，"
-    + "宿主 open=" + d2.openFlag + " 之后仍留着 dlg=" + d2.dlgCount
-    + "，坐标命中 " + d2.hitId + "、焦点 " + d2.focusId);
+  const d2 = await readAfterClose();
+  check("D 生产形状（真点按钮开、真点 ✕ 关、宿主 open 变假）也撤干净：open=false 且 dlg=0 且 portal=0"
+    + " —— 26 个调用方都是这个形状，这条才是定性依据",
+    d2.openFlag === false && d2.dlgCount === 0 && d2.portalDlgCount === 0,
+    "open=false 且 dlg=0 且 portal=0",
+    JSON.stringify({ open: d2.openFlag, dlg: d2.dlgCount, hit: d2.hitId, focus: d2.focusId }));
 
   await cdp.click(dpt.x, dpt.y); // 关掉之后同一坐标再真点一次
   await sleep(400);
-  const d3 = await cdp.eval("window.__ovRead()");
-  console.log("  ⚠️ N13 的生产形状后果：关掉之后同一个坐标再真点 ⇒ hits=" + d3.openerHits
-    + "（第 2 次没打到）、命中 " + d3.hitId + "，此时 open=" + d3.openFlag + " dlg=" + d3.dlgCount);
+  const d3 = await readAfterClose();
+  check("D 生产形状：关掉之后同一个坐标再真点 ⇒ 打得开（hits 恰好 +1、弹窗又只有一份）",
+    d3.openerHits === d2.openerHits + 1 && d3.openFlag === true && d3.dlgCount === 1,
+    "hits+1 且 open=true 且 dlg=1",
+    JSON.stringify({ hits: d3.openerHits, base: d2.openerHits, open: d3.openFlag, dlg: d3.dlgCount }));
 
   await cdp.eval("window.__ovOpen(false)");
   await sleep(400);

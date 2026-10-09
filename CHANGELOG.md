@@ -13,6 +13,34 @@
 
 ## [Unreleased]
 
+### 测试 / 门禁（原生体验审计第三轮：**上一轮那条 P1 是我量错的**，overlay 段 19 → 30 条判据）
+
+- **撤销一条登记为 P1 的缺陷**：「✕ 关完之后 portal 里留一层看不见但吃掉点击的浮层」（四处现场，
+  含生产形状宿主）**不是应用的行为**。`--headless=new` 的探针页 `visibilityState=hidden`、
+  静止时不出帧，而 Headless UI 的过渡收尾靠 `disposables.nextFrame`（两层 `requestAnimationFrame`）
+  ⇒ leave 停在同步的第一步（类名停在 `leave-from`：`duration-150 ease-in opacity-100 scale-100`），
+  壳一直挂着。**`src/components/BaseModal.vue` 一字未改**（26 个调用方共用的外壳没动）。
+- 决定性的一读是**同一次关闭、同一时刻读两遍**（`runOverlay` 的 B 组那条读数）：
+  【只等不泵】`dlg=1` 且面板类名停在 `leave-from`；【泵帧之后】`dlg 1→0`、`open=false`、`portal=0`。
+  泵帧 = 用 `Page.captureScreenshot` 强制走一遍"更新渲染"，rAF 在那一步里跑。
+- 探针里落下三件常驻东西：`boot()` 那条「量具在出帧」（泵 6 次截图期间 rAF ≥ 2 次；
+  **这条红是量具红，不是产品红**，但必须报出来）、`readAfterClose()`（先泵帧再读）、
+  帧计数器做成 `__ovFrameStart/Stop` 两段式而**不返回 Promise** —— 返回 Promise 那一版
+  在冻住的页面上把整个探针挂死过（那条 await 就是当时的现场）。
+- 原先四处只以 `⚠️` 打印的读数**全部升成红绿判据**：✕ / 连开关 3 轮 / 生产形状 / 真按一次后退
+  四组都判「关掉之后 DOM 撤干净」+「同一个坐标再真点打得着那颗按钮」。
+  中途我自己写过一条"关掉之后再点必须把弹窗打开"的断言，红了两处 ——
+  那是**我编的规矩**（A/B/C 那三组的按钮由探针翻 prop 打开、不接 `click`），已改成判命中本身。
+- 复跑与现算：`node scripts/check-ui-runtime.mjs --only=overlay` ⇒ **30/30 条绿**；
+  八段全量 `node scripts/check-ui-runtime.mjs` ⇒ **155/155 条绿**；`npm test` ⇒ **859 pass / 0 fail**。
+  ⚠️ 上一节里那两个数（19/19、144/144）是同一批命令在上一轮的形状，**以本节这两个为准**。
+- 文档：`design-guidelines.md` §11.9 改写为「先证帧在出，再谈还剩没剩」（命中测试那条规则保留）；
+  `stability-roadmap.md` §12.6.1 的 **N13 判成结案（量具坏）**，N14（关完焦点落 `BODY`）
+  与出帧无关、仍开着 —— 那一刻 `dlg=0`，是没人负责还焦点。
+- **仍未证的一半**：真机（WKWebView / WebView2 / Android）上"关闭那一刻窗口被遮挡 ⇒ rAF 停"
+  会不会留下同样的中间态、以及窗口重新显示时会不会自愈，没测过；人工步骤归 Smoke-11。
+
+
 ### 测试 / 门禁（原生体验审计第二轮：领域 F「弹窗、菜单与覆盖层」换成运行时判据）
 
 - `scripts/check-ui-runtime.mjs` 加第八段 `--only=overlay`（真鼠标 + 真键盘 + 真命中测试），
