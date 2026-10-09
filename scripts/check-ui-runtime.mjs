@@ -1231,6 +1231,7 @@ async function main() {
     const caption = want("caption");
     const reaction = want("reaction");
     const roster = want("roster");
+    const overlay = want("overlay");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (task) await runTaskCard(cdp, url);
@@ -1238,6 +1239,7 @@ async function main() {
     if (caption) await runCaption(cdp, url);
     if (reaction) await runReaction(cdp, url);
     if (roster) await runReactionRoster(cdp, url);
+    if (overlay) await runOverlay(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
@@ -1739,6 +1741,359 @@ async function runCaption(cdp, url) {
   const c = await cdp.eval("window.__probe.stackRead()");
   check("对照可逆：恢复后同一个点又回到标题栏（不是「测一次就把页面弄坏了」）",
     c.ok === true && c.hitInCaption === true, "hitInCaption=true", JSON.stringify(c));
+}
+
+/**
+ * 弹窗 / 浮层那一段（原生体验审计的领域 F：打开与关闭、遮罩与命中、Esc、焦点陷阱与恢复、
+ * 快速重复开关之后留下的残骸）。
+ *
+ * 为什么值得单开一段：领域 F 原先只有**静态**判据 —— designGuards 的「菜单没有遮罩」「浮层没有 Esc
+ * 出口」那一族，加层级阶梯 ㉕。静态那半边能证明"源码里写了 Esc"，证不了这四件行为：
+ *   ① 遮罩真挡得住点击（穿透 = 用户在弹窗背后误触，还看不见自己点着了什么）；
+ *   ② Esc 按下去真关得掉，且关掉之后 DOM 里不剩东西（§八「无遗留遮罩 / 不可交互区域」）；
+ *   ③ 关闭后焦点回到打开它的那颗按钮（§B「交互完成后焦点是否正确恢复」）；
+ *   ④ 连开关几轮之后不往历史里漏条目（Android 返回键"要按好几下"那一族，
+ *      `backStack.test.ts` 用的是**假端口**，真 `history` 上的接得对不对这一格它量不到）。
+ * 四条读的都是真命中测试 / 真按键 / 真鼠标 / 真 history，不是 class 名。
+ *
+ * ⚠️ 口径边界（报结论必须带上）：这里挂的是**弹窗外壳本身**（BaseModal + Headless UI，slot 为空，
+ *   `open` 由夹具代管、收到 close 后代关 —— 与每个调用方的写法一致）。所以量到的是模态外壳的行为，
+ *   不量某个具体业务弹窗（创建群聊 / 转发…）的表单校验与提交；
+ *   且按键走的是**浏览器**输入管线 ⇒ WKWebView / WebView2 那一半仍未证（归 Smoke-11）。
+ */
+async function runOverlay(cdp, url) {
+  // 背景给两样东西：一屏垫高（"滚动锁定"这一格到底有没有作用点，由读数自己说）
+  // + 一颗 fixed 的按钮（坐标固定 ⇒ "这一点命中的是谁"才有唯一答案；它自带 click 计数 ⇒ 判穿透）。
+  const MOUNT_HTML =
+    '<div id="spacer" style="height:300vh"></div>'
+    + '<button id="opener" type="button" style="position:fixed;left:24px;bottom:24px;z-index:10">开弹窗</button>';
+  const PROPS = JSON.stringify(JSON.stringify({ title: "探针弹窗", width: "max-w-sm" }));
+
+  // 页面侧读数器 + "像真宿主一样接 close"的那 25ms 轮询。
+  // ★ 为什么必须有轮询：install 的 onClose 只登记事件（固定写法），而每个真实调用方收到 close
+  //   都会把 open 关掉。手工 settle 只在"我以为的那一步"补这一下 ⇒ 晚到的 close（比如 popstate
+  //   引起的）没人接，量出来的"残留"其实是弹窗**正常开着**。轮询比两处过渡（150/200ms）快一个量级。
+  const READER = `(() => {
+    window.__openerHits = 0;
+    document.getElementById('opener').addEventListener('click', () => { window.__openerHits += 1; });
+    window.__ovOpen = (on) => { window.__probe.state.open = !!on; };
+    window.__ovFocusOpener = () => { document.getElementById('opener').focus(); };
+    window.__ovParentAuto = () => {
+      let seen = window.__probe.events.filter((el) => el[0] === 'close').length;
+      const tick = () => {
+        const n = window.__probe.events.filter((el) => el[0] === 'close').length;
+        if (n > seen) { seen = n; window.__probe.state.open = false; }
+      };
+      window.__ovAutoTimer = setInterval(tick, 25);
+      return true;
+    };
+    window.__ovPoint = (which) => {
+      // ✕ 按 **aria-label** 选：BaseModal 卡片形态里只有它带 aria-label（common.close）。
+      // 原先取"弹窗里最后一个 button"——空 slot 时那正好是 ✕，但 D 组弹窗里有内容，
+      // 于是量到的是内容里那颗（点了个没接任何东西的按钮，close 计数 0，整段结论作废）。
+      let el = null;
+      if (which === 'close') {
+        el = document.querySelector('[role="dialog"] button[aria-label]');
+        if (!el) {
+          const inPanel = document.querySelectorAll('[role="dialog"] .elevated button');
+          el = inPanel.length ? inPanel[inPanel.length - 1] : null;
+        }
+      } else {
+        el = document.getElementById('opener');
+      }
+      if (!el) return { found: false, why: which + ' 没找到' };
+      const r = el.getBoundingClientRect();
+      return { found: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    };
+    window.__ovRead = () => {
+      const dlgs = document.querySelectorAll('[role="dialog"]');
+      const dlg = dlgs[0] || null;
+      const panel = dlg ? dlg.querySelector('.elevated') : null;
+      const portal = document.getElementById('headlessui-portal-root');
+      const op = document.getElementById('opener');
+      const rr = op.getBoundingClientRect();
+      const hit = document.elementFromPoint(Math.round(rr.left + rr.width / 2), Math.round(rr.top + rr.height / 2));
+      const ae = document.activeElement;
+      const pr = panel ? panel.getBoundingClientRect() : null;
+      const name = (m) => (m ? (m.id || m.tagName + '.' + String(m.className).slice(0, 22)) : 'null');
+      return {
+        openFlag: (window.__mstate || window.__probe.state).open === true,
+        dlgCount: dlgs.length,
+        // portal 根是**惰性创建**的（从没开过弹窗时它压根不存在）⇒ 不存在就等于 0 份
+        portalDlgCount: portal ? portal.querySelectorAll('[role="dialog"]').length : 0,
+        panelW: pr ? Math.round(pr.width) : 0,
+        panelTop: pr ? Math.round(pr.top) : -1,
+        panelBottom: pr ? Math.round(pr.bottom) : -1,
+        vh: window.innerHeight,
+        hitId: name(hit),
+        panelOpacity: panel ? getComputedStyle(panel).opacity : '-',
+        panelCls: panel ? String(panel.className).slice(0, 58) : '-',
+        backdropOpacity: (() => {
+          const g = dlg ? dlg.querySelector('.glass') : null;
+          return g ? getComputedStyle(g).opacity : '(无遮罩节点)';
+        })(),
+        wrapperPE: (() => {
+          const w = dlg ? dlg.querySelector('.overflow-y-auto') : null;
+          return w ? getComputedStyle(w).pointerEvents : '-';
+        })(),
+        focusInDlg: !!dlg && !!ae && (dlg === ae || dlg.contains(ae)),
+        focusId: name(ae),
+        openerHits: window.__openerHits,
+        closeEvents: window.__probe.events.filter((e) => e[0] === 'close').length,
+        histLen: history.length,
+        htmlOv: getComputedStyle(document.documentElement).overflow,
+        bodyStyle: document.body.getAttribute('style') || '(无)',
+        scrollY: Math.round(window.scrollY),
+        docScrollable: document.documentElement.scrollHeight > document.documentElement.clientHeight,
+      };
+    };
+    return true;
+  })()`;
+
+  /**
+   * 每段自己起一次页面：一处红不许污染下一处（文件头纪律 3，同一段内串过三轮开关之后
+   * DOM 里可能有东西，那时候再判"打开态只有一份"就不是在判它自己了）。
+   */
+  async function boot(tag) {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    const mounted = await cdp.eval(
+      "window.__probe.install('/src/components/BaseModal.vue', " + JSON.stringify(MOUNT_HTML) + ", " + PROPS + ")",
+    );
+    await cdp.eval(READER);
+    await cdp.eval("window.__ovParentAuto()");
+    await sleep(80);
+    const base = await cdp.eval("window.__ovRead()");
+    const ok = !!mounted && mounted.ok === true && mounted.pinia === true
+      && base.dlgCount === 0 && base.openFlag === false;
+    check("[" + tag + "] 干净页起起来了（BaseModal + 一颗真按钮同页、pinia 用的是页面那一份、开局没有 dialog）",
+      ok, "install ok 且 pinia=true 且 dlgCount=0",
+      JSON.stringify({ m: mounted, open: base.openFlag, dlg: base.dlgCount }));
+    return base;
+  }
+
+  const openModal = async () => {
+    await cdp.eval("window.__ovFocusOpener()");
+    await cdp.eval("window.__ovOpen(true)");
+    await sleep(500); // 进入过渡 200ms + 两帧 ⇒ 量的是动画结束后的稳定几何
+  };
+
+  // ══ A 组：打开态本身（几何 / 焦点 / 遮罩命中 / 历史条目 / Tab 陷阱 / 点外部 / Esc）══
+  const base = await boot("A");
+  await openModal();
+  const o = await cdp.eval("window.__ovRead()");
+  check("A 打开后弹窗挂在**文档根**的 portal 上，且全页只有一份 dialog",
+    o.openFlag === true && o.dlgCount === 1 && o.portalDlgCount === 1, "open 且两处都=1",
+    "open=" + o.openFlag + " dlg=" + o.dlgCount + " portal=" + o.portalDlgCount);
+  check("A 面板矩形落在视口内（桌面端窗口边缘 / 可视区域：上下都不越界）",
+    o.panelW > 0 && o.panelTop >= 0 && o.panelBottom <= o.vh + 1,
+    "panelTop>=0 且 panelBottom<=vh(" + o.vh + ")",
+    "top=" + o.panelTop + " bottom=" + o.panelBottom + " w=" + o.panelW);
+  check("A 焦点落进弹窗内部（不是留在 body 或触发按钮上）",
+    o.focusInDlg === true, "focusInDlg=true", "activeElement=" + o.focusId);
+  check("A 弹窗开着时，那颗背景按钮的坐标命中的**不是它**（遮罩真在前面挡着）",
+    o.hitId !== 'opener', "hitId != opener", "命中 " + o.hitId);
+  check("A 打开确实往真 history 里压了一条条目（分层返回不是只有单测里的假端口成立）",
+    o.histLen > base.histLen, "histLen > " + base.histLen, "histLen=" + o.histLen);
+
+  const trapIds = [];
+  let trapOk = true;
+  for (let i = 0; i < 5; i += 1) {
+    await cdp.key("Tab", "Tab", "", 9);
+    const r = await cdp.eval("window.__ovRead()");
+    trapIds.push(r.focusId);
+    if (r.focusInDlg !== true) trapOk = false;
+  }
+  check("A 连按 5 次 Tab 焦点始终没跑出弹窗（焦点陷阱由 Headless UI 提供，没被我们自己写漏）",
+    trapOk === true, "五次都 focusInDlg=true", JSON.stringify(trapIds));
+
+  // 真鼠标按下背景按钮那一点：一个动作同时判「不穿透」与「点外部关闭」
+  const pt = await cdp.eval("window.__ovPoint('opener')");
+  const beforeOutside = await cdp.eval("window.__ovRead()");
+  await cdp.click(pt.x, pt.y);
+  await sleep(500);
+  const c = await cdp.eval("window.__ovRead()");
+  check("A 真按下遮罩那一点 ⇒ 背景按钮的 click 监听零次触发（点击不穿透到弹窗背后）",
+    c.openerHits === beforeOutside.openerHits, "openerHits 不涨", "hits=" + c.openerHits);
+  check("A 同一个动作就把它关掉了（点外部关闭：close 恰好一次，且 DOM 里不剩 dialog）",
+    c.closeEvents === beforeOutside.closeEvents + 1 && c.openFlag === false && c.dlgCount === 0,
+    "close+1 且 open=false 且 dlgCount=0",
+    JSON.stringify({ cl: c.closeEvents, open: c.openFlag, dlg: c.dlgCount }));
+
+  // 反面对照（少了它上一条"零次"可能只是坐标选错）：关掉之后同一个坐标再按 ⇒ 必须真打到按钮
+  await cdp.click(pt.x, pt.y);
+  await sleep(300);
+  const k = await cdp.eval("window.__ovRead()");
+  check("A 对照：弹窗关了以后同一个坐标再按 ⇒ 按钮收到一次真 click（证明上一条零次不是坐标选错）",
+    k.openerHits === beforeOutside.openerHits + 1, "openerHits +1",
+    "hits=" + k.openerHits + " 命中 " + k.hitId);
+
+  // Esc（真按键）：关得掉、DOM 撤干净、样式回到基线；焦点必须还给打开它的那颗按钮
+  await openModal();
+  const beforeEsc = await cdp.eval("window.__ovRead()");
+  await cdp.key("Escape", "Escape", "", 27);
+  await sleep(500);
+  const e = await cdp.eval("window.__ovRead()");
+  check("A Esc（真按键）关得掉，且关掉后 DOM 与 body/html 样式都回到基线（§八「无遗留遮罩」）",
+    e.closeEvents === beforeEsc.closeEvents + 1 && e.openFlag === false && e.dlgCount === 0
+      && e.bodyStyle === base.bodyStyle && e.htmlOv === base.htmlOv,
+    "close+1 且 open=false 且 dlgCount=0 且样式==基线",
+    JSON.stringify({ cl: e.closeEvents, open: e.openFlag, dlg: e.dlgCount, bodyStyle: e.bodyStyle, htmlOv: e.htmlOv }));
+  console.log("  ⚠️ 实测到缺陷（判据待钉，见 §12.6.1 N14）：Esc 关掉后焦点没还给触发按钮 ⇒ activeElement="
+    + e.focusId + "（期望 opener）。同一时刻 DOM 已经撤干净（dlg=" + e.dlgCount + "、portal="
+    + e.portalDlgCount + "）⇒ 这不是那份残留壳造成的，是关闭时没人把焦点还回去");
+
+  // 反面对照：已经关了再按一次 Esc ⇒ close 计数不许再涨（证明上面两条读的是真事件）
+  await cdp.key("Escape", "Escape", "", 27);
+  await sleep(250);
+  const e2 = await cdp.eval("window.__ovRead()");
+  check("A 对照：弹窗已关时再按 Esc 不多冒一条 close（判据读的是真事件，不是任何按键都记一笔）",
+    e2.closeEvents === e.closeEvents, "close 计数不变(" + e.closeEvents + ")", "实际 " + e2.closeEvents);
+
+  // 系统返回键那一层：真 history.back() ⇒ 弹窗收到 close 并被宿主关干净（按一次就有反应）
+  await openModal();
+  const beforeBack = await cdp.eval("window.__ovRead()");
+  await cdp.eval("history.back()");
+  await sleep(1_400); // 与 B 组同一口径：close 落地 → 宿主置假 → 离开过渡跑完，三件事排完才叫"关掉之后" 
+  const bk = await cdp.eval("window.__ovRead()");
+  // 这条今天三次跑里唯一稳定的是"按一次后退 ⇒ 恰好一条 close"；open/dlg 那两项在
+  // 0.6s / 1.4s 两种读法下都出现过 false+残留 与 true+残留，所以判据只钉住稳定那一半，
+  // 剩下的归 N13（同一个残留层的第四个现场），别在这里写成"返回键没反应"那种没测到的结论。
+  check("A 真按一次后退 ⇒ 恰好收到一条 close（Android 系统返回键走的就是这条 popstate）",
+    bk.closeEvents === beforeBack.closeEvents + 1, "close 恰好 +1",
+    JSON.stringify({ before: beforeBack.closeEvents, after: bk.closeEvents }));
+  console.log("  ⚠️ 同一处还看到 N13 的第四个现场：按过后退之后 open=" + bk.openFlag
+    + "（宿主关没关这件事两次跑读数不一致，所以不判绿红）、dlg=" + bk.dlgCount);
+
+  // ══ B 组：最常用那条关闭路径单独量（右上角 ✕，真鼠标）——干净页，前面什么都不干 ══
+  await boot("B");
+  await openModal();
+  const xb = await cdp.eval("window.__ovPoint('close')");
+  check("B 弹窗里有可点的关闭按钮（✕ 那条路径有作用点）",
+    xb.found === true, "found=true", JSON.stringify(xb));
+  await cdp.click(xb.x, xb.y);
+  await sleep(1_400); // 关 → 宿主把 open 置假 → 离开过渡 150ms，三件事得排完才叫"关掉之后"
+  const x = await cdp.eval("window.__ovRead()");
+  // 机制级读数（判"卡在哪一层"用，不当判据）：再过 2s 还在不在 + 面板/遮罩/包裹层各自的计算样式
+  await sleep(2_000);
+  const x2 = await cdp.eval("window.__ovRead()");
+  console.log("  · 读数（不判绿红）：B 点 ✕ 后 0.6s 与 2.6s ⇒ dlg " + x.dlgCount + "→" + x2.dlgCount
+    + " close=" + x2.closeEvents + " open=" + x2.openFlag
+    + " 面板opacity=" + x2.panelOpacity + " 遮罩opacity=" + x2.backdropOpacity
+    + " 包裹层pe=" + x2.wrapperPE + " 面板class=" + x2.panelCls + " 命中=" + x2.hitId);
+  console.log("  ⚠️ 实测到缺陷（判据待钉，见 stability-roadmap §12.6.1 N13）：✕ 关闭后 open 已经是 "
+    + x2.openFlag + "，portal 里却仍留 " + x2.dlgCount + " 份 dialog；面板 opacity=" + x2.panelOpacity
+    + "（看不见）而包裹层 pointer-events=" + x2.wrapperPE + "（还挡着）⇒ 同一个坐标真点打不到按钮，hits="
+    + x.openerHits + "、命中 " + x.hitId);
+
+  // ══ C 组：快速连开关（每步 120ms，短于两处过渡 ⇒ 动画真被打断）——也是干净页 ══
+  const cbase = await boot("C");
+  for (let i = 0; i < 3; i += 1) {
+    await cdp.eval("window.__ovOpen(true)");
+    await sleep(120);
+    await cdp.eval("window.__ovOpen(false)");
+    await sleep(120);
+  }
+  await sleep(700);
+  const f = await cdp.eval("window.__ovRead()");
+  console.log("  ⚠️ N13 的第二个现场（快速连开关）：open=" + f.openFlag + " 却仍留着 dlg=" + f.dlgCount
+    + " / portal=" + f.portalDlgCount + "；样式与滚动位这两项倒是回到了基线（body[style]=" + f.bodyStyle
+    + "、html overflow=" + f.htmlOv + "、y=" + f.scrollY + "）");
+  const ptC = await cdp.eval("window.__ovPoint('opener')");
+  await cdp.click(ptC.x, ptC.y);
+  await sleep(300);
+  const f2 = await cdp.eval("window.__ovRead()");
+  console.log("  ⚠️ 同一处的用户可见后果（N13）：那层留着的时候真点触发按钮 ⇒ hits=" + f2.openerHits
+    + "（一次都没打到）、坐标命中的是 " + f2.hitId);
+  check("C 连开关 3 轮没往历史里漏条目（漏了的话 Android 返回键要按好几下才有反应）",
+    f.histLen <= cbase.histLen + 1, "histLen <= 基线+1(" + (cbase.histLen + 1) + ")",
+    "histLen=" + f.histLen);
+
+  // ══ D 组：**生产形状**的宿主（真点击开、弹窗里有 slot 内容、关闭走真实的 onClose→open=false）══
+  // A/B/C 三组的 open 都是夹具直接翻 prop（`state.open = true`）、slot 是空的。
+  // 那两处红到底是产品的还是夹具的，只有照 26 个调用方都用的那个形状再量一遍才知道。
+  const MODAL_APP = `(() => {
+    const V = window.__probe.vue;
+    document.body.innerHTML = '<div id="mhost"></div>';
+    const state = V.reactive({ open: false });
+    window.__mstate = state;
+    window.__mhits = 0;
+    import('/src/components/BaseModal.vue').then((m) => {
+      const BaseModal = m.default;
+      const app = V.createApp({
+        setup() {
+          return () => V.h('div', {}, [
+            V.h('div', { style: 'height:300vh' }),
+            V.h('button', {
+              id: 'opener', type: 'button',
+              style: 'position:fixed;left:24px;bottom:24px;z-index:10',
+              onClick: () => { window.__mhits += 1; state.open = true; },
+            }, '开弹窗'),
+            V.h(BaseModal, {
+              open: state.open, title: '探针弹窗', width: 'max-w-sm',
+              onClose: () => { state.open = false; },
+            }, {
+              default: () => V.h('div', {}, [
+                V.h('input', { id: 'field', placeholder: '群名' }),
+                V.h('button', { id: 'ok', type: 'button' }, '确定'),
+              ]),
+            }),
+          ]);
+        },
+      });
+      if (window.__pinia) app.use(window.__pinia);
+      app.mount(document.getElementById('mhost'));
+      window.__mmounted = true;
+    });
+    return true;
+  })()`;
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval("window.__probe.install('/src/components/TitleBar.vue', '', '')");
+  await cdp.eval(MODAL_APP);
+  let ready = false;
+  for (let i = 0; i < 40 && !ready; i += 1) {
+    ready = await cdp.eval("window.__mmounted === true");
+    if (!ready) await sleep(250);
+  }
+  // 挂载完了才装读数器：READER 里那句 `#opener` 的 click 计数就是这么挂上的（挂早了元素还不存在）
+  await cdp.eval(READER);
+  check("D 生产形状的宿主挂起来了（真按钮 + 弹窗里带 input 与确定那颗）",
+    ready === true, "__mmounted=true", JSON.stringify(await cdp.eval("window.__ovRead()")));
+  const d0 = await cdp.eval("window.__ovRead()");
+  const dpt = await cdp.eval("window.__ovPoint('opener')");
+
+  await cdp.click(dpt.x, dpt.y); // 真的点触发按钮（26 个调用方都是这个形状）
+  await sleep(600);
+  const d1 = await cdp.eval("window.__ovRead()");
+  check("D 真点触发按钮 ⇒ 弹窗打开且全页只有一份（slot 里的内容也在）",
+    d1.openFlag === true && d1.dlgCount === 1 && d1.focusInDlg === true,
+    "open=true 且 dlg=1 且焦点在弹窗里",
+    JSON.stringify({ open: d1.openFlag, dlg: d1.dlgCount, focus: d1.focusId, hits: d1.openerHits }));
+
+  const dxb = await cdp.eval("window.__ovPoint('close')");
+  await cdp.click(dxb.x, dxb.y); // 真点右上角 ✕
+  await sleep(700);
+  const d2 = await cdp.eval("window.__ovRead()");
+  console.log("  ⚠️ N13 在**生产形状**下同样成立（这条才是定性的关键）：真点触发按钮开、真点 ✕ 关，"
+    + "宿主 open=" + d2.openFlag + " 之后仍留着 dlg=" + d2.dlgCount
+    + "，坐标命中 " + d2.hitId + "、焦点 " + d2.focusId);
+
+  await cdp.click(dpt.x, dpt.y); // 关掉之后同一坐标再真点一次
+  await sleep(400);
+  const d3 = await cdp.eval("window.__ovRead()");
+  console.log("  ⚠️ N13 的生产形状后果：关掉之后同一个坐标再真点 ⇒ hits=" + d3.openerHits
+    + "（第 2 次没打到）、命中 " + d3.hitId + "，此时 open=" + d3.openFlag + " dlg=" + d3.dlgCount);
+
+  await cdp.eval("window.__ovOpen(false)");
+  await sleep(400);
+
+  // 读数，不判据：这一格在本应用里到底有没有作用点，只有实测说得出（写进文档，别凭猜）
+  console.log("  · 读数（不判绿红）：文档层可滚=" + base.docScrollable
+    + " / 打开时 html overflow=" + o.htmlOv + " body[style]=" + o.bodyStyle
+    + " / 关闭后 html overflow=" + base.htmlOv + " ⇒ 「滚动锁定」判的是「关闭后必须回到基线」那一半");
 }
 
 /** 表情面板那一段：键盘出口（N1）+ 反向对照（不带 text 的 Enter 必须零次激活）。 */
