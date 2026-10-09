@@ -1276,6 +1276,36 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 
 ---
 
+### INV-P31 — 表现层交互：可达性、热区、关闭收尾，和"量具先自证"
+
+**这条为什么单开一节**：INV-P30 已经把"同一份语义多处实现"收进一个家；但**交互层**还散着
+四条各自踩过坑、却没人当不变量写的规则（散在 `docs/design-guidelines.md` §11 与
+`docs/stability-roadmap.md` §12.6.1 的 N 系列行里）。2026-10-10 原生体验领域 F/G/H 补测时，
+`presentation` 域的修补形状提交又一次凑满 Change Budget 判据 3 的窗口（现算：
+`node scripts/check-change-budget.mjs` ⇒ 「presentation 3 次」）⇒ 按判据要求收敛到这里。
+
+| # | 规则 | 今天靠什么成立（不是靠谁记得） |
+|---|---|---|
+| 1 | 靠悬停揭示出来的操作，必须有一条**非悬停**也能用的路径 | 触屏那一半：`.hover-reveal` / `.hover-reveal-op` 定义在 `@media (hover: none)` 内（`style.css:575-582`），`designGuards` ① 扫「用了 `group-hover` / `opacity-0` 却没带兜底类」；键盘那一半**还欠着**（roadmap N19：`hover: hover` 设备上 Tab 到的是隐形元素），当前替代入口是消息右键菜单 `ContextMenu.vue`（自带完整键盘模型） |
+| 2 | 小尺寸可交互元素必须有热区扩展，且**必须知道这把尺子量不到哪一半** | `designGuards` ⑧ `findSmallTapTargets`（量程 2026-10-10 起含 `h-4`/`w-4`）+ 真实树那条「`src` 下所有小尺寸可交互元素都带 `tap-safe`」恒绿。⚠️ `.tap-safe` 是 `inset: -8px 0` —— **只撑垂直方向**，横向热区仍等于可见盒；16px 那颗加完也只有 32px 高，够不着 HIG 的 44pt |
+| 3 | 「关闭之后」有两个必须同时成立的终态：**DOM 撤净** + **焦点还给触发它的那个元素**，而且只有 `BaseModal` 这一个家 | 26 个调用方共用这一个外壳 ⇒ 时机只能是 `@after-leave`（早一步 `Dialog` 还挂着，Headless UI 的 FocusSentinel 会把焦点抢回弹窗内），且只在 `activeElement` 真落到 `body` 时才 `focus({ preventScroll: true })`（不还焦点 = 键盘用户 Tab 序列从头开始；顺手滚页 = 违反约束 7）。判据：`node scripts/check-ui-runtime.mjs --only=overlay` 共 32 条，其中三条钉 Esc / ✕ / 生产形状宿主 |
+| 4 | 判「关掉之后还剩没剩」之前，**量具必须先自证被测的那件事确实在发生** | `scripts/check-ui-runtime.mjs` 的 `boot()` 里那条「量具在出帧」（泵 6 次 `captureScreenshot` 这段时间 rAF ≥ 2 次 ⇒ 这一条红是**量具红不是产品红**）+ 所有"关掉之后"的读数统一走 `readAfterClose()`。根因写死在这：`--headless=new` 的页面 `visibilityState=hidden`、静止不出帧，而 Headless UI 的过渡收尾靠两层 `requestAnimationFrame` ⇒ 不泵帧就永远看见"还剩一层"（roadmap N13 就是这么被证伪的） |
+| 5 | 凡靠 CSS 表达的东西，核对要读**编译产物**，读 `src/style.css` 不足以证明它生效 | 已核过的一例：`prefers-reduced-motion` 在 `dist/assets/boot-*.css` 里就一条全局块（`*,*:before,*:after` 三个时长压到 `.01ms`），且该产物 mtime 晚于最后一次 `src/style.css` 提交 ⇒ 才敢写"生效"。历史代价见 `design-guidelines.md` §11.6（N7 那格"写了没生效"就是只读了源码） |
+| 6 | 表现层改动**不许改业务语义**：不许用动画掩盖失败、不许为动效碰状态机 | 这是总指令约束 5/6/7 在 UI 层的落地口径。可执行的那一半：这一类改动只许落在 UI 层文件（组件 / `style.css` / 探针），且**必须附一次反向对照**（摘掉改动 ⇒ 恰好对应那几条判据红），没有对照就不许写"已修" |
+
+**为什么第 2 条要把"尺子买不到哪一半"写进不变量**：只钉「必须有 `tap-safe`」会让人以为
+44pt 已经达标 —— 实测这把尺子的量程当初只到 `h-5..h-8`（16px 整档看不见），且它撑的是
+垂直方向。**量具的能力边界和被量对象一起写，才不会把"守卫生了绿"读成"体验过了"**。
+
+**这条不管的事**：具体某个组件该不该用悬停揭示（那是产品决定，例：消息行的表情入口在桌面
+靠悬停是用户 2026-09-30 明确要的，见 `MessageItem.vue:971-977`，本条不许反过来改它）；
+安全区 insets 的逐页布局（roadmap N16）、WebView 版本兼容（N18）—— 那些是未完成的格子，
+不是不变量。
+
+- 钩子：`src/utils/designGuards.test.ts`（① 悬停揭示兜底、⑧ 小尺寸热区）`scripts/check-ui-runtime.mjs`（overlay 段 32 条、caption 段层级与命中）`docs/design-guidelines.md` §11.6 / §11.9
+
+---
+
 # 27. Required Test Matrix
 
 核心消息功能至少覆盖：
@@ -1318,3 +1348,5 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 | 前端某个调用点改回自己算 `online`（INV-P30 反向） | `channelState` 那条"必须恰好 2 处调用"计数判据变红 ⇒ 第二个家不许长出来 |
 | 某处 `t()` 引用了中英两侧都不存在的 key（INV-P30 反向） | `i18n/index.test.ts` 点名 `xx 缺 key（文件:行）` ⇒ 裸 key 上屏在合入前就被拦 |
 | 把重发改回「新建一条乐观记录」（INV-P30 反向） | `retrySend.test.ts` 三条判据变红（形状断言 + 调用点计数 + 后端前提对账）⇒ 失败那条永远删不掉，两条一样的文字 |
+| 把某处悬停揭示的兜底类摘掉，或把 16px 的可交互元素写成不带 `tap-safe`（INV-P31 反向） | `designGuards` ① / ⑧ **各红自己那一条**；真实树那条「所有小尺寸可交互元素都带 `tap-safe`」变红 ⇒ 尺子量程放宽之后不再空转（2026-10-10 实测：摘掉 `tap-safe` ⇒ 122 pass / 1 fail，红的恰好是这一条） |
+| 弹窗关完之后不还焦点，或把「关掉之后还剩没剩」的判定挪到不泵帧的读法上（INV-P31 反向） | overlay 段那三条焦点判据变红（摘掉 `@after-leave` 实测 29/32）；而「量具在出帧」那条会先把不泵帧的读法判成**量具红** ⇒ 不会再出现第二次把冻结页面读成产品缺陷 |
