@@ -1330,6 +1330,55 @@ export function findFloatingLayerWithoutEscape(src: string): GuardIssue[] {
   return out;
 }
 
+// ---------------- ㉛ 写了「整页顶部安全区」的文件必须也写底部 ----------------
+
+/**
+ * 判据只认**类名出现的位置**，也就是文件顶部那份共用的 `CLASS_ATTR_RE`（它同时吃 `class="…"`
+ * 与 `:class="…"`，后者里面的多行数组也能读到）。
+ * ⚠️ 不复用它、改成"整份文件当文本搜"的第一版被我自己的注释喂饱了：
+ * 我在 HTML 注释里写了 `.safe-bottom` 这个词 ⇒ 把底部内距真删掉，判据照样绿。
+ * 注释能喂饱的判据不是判据。
+ */
+const TOP_INSET_RE = /pt-\[env\(safe-area-inset-top[^\]]*\)\]/;
+const BOTTOM_INSET_RE = /\bsafe-bottom\b|pb-\[[^\]]*env\(safe-area-inset-bottom/;
+
+/**
+ * 检查"用 `pt-[env(safe-area-inset-top)]` 给自己让开状态栏/挖孔"的全屏形态有没有同时让开底部。
+ *
+ * 为什么这是判据而不是审美（roadmap N16）：iOS 的 Home Indicator 区域是 34px，Android 手势条同理，
+ * 而 `env()` 只有在 `viewport-fit=cover` 下才是真值 —— 现读 5 个 HTML 入口（`index/logs/preview/settings/todos`）
+ * **全都带 cover** ⇒ 顶部被让开了、底部没人读，最后一行就落在指示条底下（改了才发现原来三处都是这个形状）。
+ *
+ * ⚠️ 分母故意只收「类名里这一种写法」：`:style="{top:'calc(env(safe-area-inset-top,…))'}"`（`ToastHud`、
+ * `ImageLightbox`）不触发 —— 前者是顶部飘条本来就不需要底部，后者自己已经写了底部。
+ * ⚠️ 说清它买不到哪一半：本判据只看**类名里有没有人读底部内距**，不判它挂在哪一层、
+ * 也不判真机上到底让开了多少 px —— 挂错层（比如挂在不滚的外壳而不是滚动层里）它照样放行，
+ * 那一半只有带安全区的真机可证（Smoke-11）。
+ * 逃生阀：文件级注释 `safe-area-ok`（整份文件确实不需要底部时才用，例：只画顶部飘条的组件）。
+ */
+export function findTopInsetWithoutBottomInset(src: string): GuardIssue[] {
+  if (src.includes("safe-area-ok")) return [];
+  const hits = [...src.matchAll(CLASS_ATTR_RE)];
+  const classes = hits.map((m) => m[1]);
+  const hit = classes.findIndex((c) => TOP_INSET_RE.test(c));
+  if (hit === -1) return [];
+  if (classes.some((c) => BOTTOM_INSET_RE.test(c))) return [];
+  return [
+    {
+      line: lineAt(src, hits[hit].index),
+      message:
+        "写了 `pt-[env(safe-area-inset-top)]` 却没写底部安全区 —— 这是整屏形态（overlay 页 / fullscreen 弹窗），" +
+        "顶部让开了状态栏，底部那一层内容会落在 iOS Home Indicator（≈34px）或 Android 手势条底下，" +
+        "滚到最后一行正好看不见它。两种改法：① 给**滚动那一层**加现成工具类 `safe-bottom`；" +
+        "② 那一层本来有自己的 `pb`/`p-*` 时写 `pb-[max(env(safe-area-inset-bottom),1rem)]` " +
+        "（`max()` 保住原有的内距，桌面 `env()`=0 时视觉零变化）。" +
+        "⚠️ 判据只看类名里有没有人读底部内距（注释里提一个字不算 ⇒ 别指望写注释过关），" +
+        "也不判挂在哪一层 —— 那一半要真机看（Smoke-11）。" +
+        "确实只画顶部、不需要底部时在代码里加 `safe-area-ok` 注释整文件跳过。",
+    },
+  ];
+}
+
 // ---------------- ㉚ 主题色规则必须在顶层（#35-N7 的真实缺陷） ----------------
 /**
  * 判的是**嵌套深度**，不是"这条规则写没写"。

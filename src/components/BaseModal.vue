@@ -168,7 +168,11 @@ useBackLayer(
                 </button>
                 <DialogTitle v-if="title" as="h2" class="text-[15px] font-medium">{{ title }}</DialogTitle>
               </header>
-              <div class="flex min-h-0 flex-1 flex-col p-4">
+              <!-- 底部内距 = `max(安全区, 原本那 16px)`：面板根上只写了 `pt-[env(safe-area-inset-top)]`，
+                   内容贴着屏幕底边 ⇒ iOS 上最后一行落在 Home Indicator 底下。写成 max() 是为了
+                   **不丢原有的 p-4**（桌面 env()=0 时结果仍是 1rem，视觉零变化）；
+                   同一个写法在 `ActionSheet.vue:53` 已经在用，不另立第三种。 -->
+              <div class="flex min-h-0 flex-1 flex-col p-4 pb-[max(env(safe-area-inset-bottom),1rem)]">
                 <slot />
               </div>
             </DialogPanel>

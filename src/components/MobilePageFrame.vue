@@ -88,8 +88,18 @@ const backAria = () => props.backLabel ?? t("common.back");
     </header>
 
     <!-- 内容区：flex 列，保证子页面自己的 flex-1 + 内部滚动布局不被破坏；
-         scroll=true 时本层也兜底滚动（列表超长）；scroll=false（日志）把滚动交给页面自己。 -->
-    <div :class="scroll ? 'min-h-0 flex-1 flex flex-col overflow-y-auto' : 'min-h-0 flex-1 flex flex-col'">
+         scroll=true 时本层也兜底滚动（列表超长）；scroll=false（日志）把滚动交给页面自己。
+         overlay 形态额外吃**底部**安全区（`.safe-bottom` = `padding-bottom: env(safe-area-inset-bottom)`）：
+         顶部一直有 `pt-[env(safe-area-inset-top)]`，底部原先没人写 ⇒ 整页下钻滚到最后一行时，
+         那一行会落在 iOS Home Indicator / Android 手势条底下（iOS 34px）。放在滚动层而不是根层，
+         是与 iOS `contentInset.bottom` 同一个口径：内容能滚过指示条，但停在底部时最后一行不被压住。
+         inline 形态（桌面内嵌）不写 ⇒ 不占空间，行为与改前一致。 -->
+    <div
+      :class="[
+        scroll ? 'min-h-0 flex-1 flex flex-col overflow-y-auto' : 'min-h-0 flex-1 flex flex-col',
+        mode === 'overlay' ? 'safe-bottom' : '',
+      ]"
+    >
       <slot />
     </div>
   </div>

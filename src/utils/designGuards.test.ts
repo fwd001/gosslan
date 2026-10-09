@@ -22,6 +22,7 @@ import {
   checkSelectionContract,
   findNestedThemeRuleIssues,
   findFloatingLayerWithoutEscape,
+  findTopInsetWithoutBottomInset,
   teleportedRootClasses,
 } from "./designGuards.ts";
 
@@ -2329,3 +2330,54 @@ test("src 下每个自算坐标的浮层都 escape 到 body（分母现算）", 
   bad.sort();
   assert.deepEqual(bad, [], `有浮层被搬回裁切容器里了（消费者：\n${consumers.map((c) => c.replace(srcDir + "/", "")).join("\n")}）\n${bad.join("\n")}`);
 });
+
+// ---------------- ㉛ 整屏形态写了顶部安全区就必须也写底部（roadmap N16） ----------------
+
+test("N16 形状：只写 pt-[env(safe-area-inset-top)] 的整屏形态要报出来", () => {
+  const buggy = `<template>
+  <div class="fixed inset-0 z-[60] flex flex-col bg-x pt-[env(safe-area-inset-top)]">
+    <div class="min-h-0 flex-1 overflow-y-auto p-3"><slot /></div>
+  </div>
+</template>`;
+  const issues = findTopInsetWithoutBottomInset(buggy);
+  assert.equal(issues.length, 1, "只让开顶部的那一种形状必须报 1 条");
+  assert.match(issues[0].message, /Home Indicator/);
+});
+
+test("N16 合规写法两种都不报（分母要含合规形状，否则判据自己空转）", () => {
+  const withUtility = `<template><div class="fixed inset-0 pt-[env(safe-area-inset-top)]">
+  <div class="min-h-0 flex-1 overflow-y-auto safe-bottom"><slot /></div></div></template>`;
+  const withMax = `<template><div class="fixed inset-0 pt-[env(safe-area-inset-top)]">
+  <div class="p-4 pb-[max(env(safe-area-inset-bottom),1rem)]"><slot /></div></div></template>`;
+  assert.deepEqual(findTopInsetWithoutBottomInset(withUtility), [], ".safe-bottom 这条既有写法要算合规");
+  assert.deepEqual(findTopInsetWithoutBottomInset(withMax), [], "max() 这条既有写法要算合规（ActionSheet 早就在用）");
+});
+
+test("N16 的分母不收 :style 写法，也不收带 safe-area-ok 的文件", () => {
+  const styleForm = `<template><div :style="{ top: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }" /></template>`;
+  assert.deepEqual(findTopInsetWithoutBottomInset(styleForm), [], "ToastHud 那种飘条只写顶部是**对的** ⇒ 不许误报");
+  const opted = `<template><div class="fixed inset-0 pt-[env(safe-area-inset-top)]" /></template> <!-- safe-area-ok -->`;
+  assert.deepEqual(findTopInsetWithoutBottomInset(opted), [], "逃生阀要走得通");
+});
+
+test("真实树：每个写了顶部安全区的 .vue 都也写了底部（分母现算并打印）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const sites: string[] = [];
+  const bad: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    const rel = f.replace(srcDir + "/", "");
+    if (!/pt-\[env\(safe-area-inset-top/.test(src)) continue;
+    sites.push(rel);
+    for (const issue of findTopInsetWithoutBottomInset(src)) {
+      bad.push(`${rel}:${issue.line}  ${issue.message.slice(0, 40)}`);
+    }
+  }
+  sites.sort();
+  bad.sort();
+  // 分母自己打印：数到 0 就是尺子坏了（这三处 = MobilePageFrame / FavoritePanel / BaseModal）
+  assert.ok(sites.length >= 3, `现读只有 ${sites.length} 个文件写了整屏顶部安全区，尺子大概失效了：\n${sites.join("\n")}`);
+  assert.deepEqual(bad, [], `有整屏形态没让开底部安全区：\n${bad.join("\n")}\n消费者：${sites.join(", ")}`);
+});
+

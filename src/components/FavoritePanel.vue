@@ -708,7 +708,7 @@ async function confirmDelete() {
             <span class="min-w-0 truncate text-[15px] font-medium text-[var(--gosslan-text)]" :title="favTitle">{{ favTitle }}</span>
           </header>
 
-          <div class="min-h-0 flex-1 overflow-y-auto p-3">
+          <div class="min-h-0 flex-1 overflow-y-auto p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)]">
             <div class="mb-2 flex items-center gap-2 text-[11px] text-[var(--gosslan-text-2)]">
               <span class="truncate" :title="senderName(active)">{{ senderName(active) }}</span>
               <span>·</span>
