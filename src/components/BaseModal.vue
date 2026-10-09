@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Dialog, DialogPanel, DialogTitle, TransitionChild, TransitionRoot } from "@headlessui/vue";
+import { nextTick, watch } from "vue";
 import { X } from "lucide-vue-next";
 import { useBackLayer } from "@/composables/useBackLayer";
 import BackArrow from "@/components/ui/BackArrow.vue";
@@ -36,6 +37,41 @@ const props = withDefaults(
 const emit = defineEmits<{ (e: "close"): void }>();
 
 /**
+ * 关闭之后把焦点**还给打开它的那个元素**。
+ *
+ * 实测（`node scripts/check-ui-runtime.mjs --only=overlay`，2026-10-10）：Esc 或 ✕ 关完之后
+ * 弹窗的 DOM 已经撤干净，但 `document.activeElement` 落在 `body` —— Headless UI 只管把焦点
+ * **收进来**（焦点陷阱），不管**送回去**，而键盘用户关掉一个弹窗后指望落在原处。
+ *
+ * 归还的时机必须是 `@after-leave`，不能是 `open` 一变假就做：那时候 `Dialog` 还挂着，
+ * 它自己的焦点陷阱（FocusSentinel）会把我们刚设的焦点抢回弹窗内部。`afterLeave` 是唯一
+ * "内容真的已经卸载"的那一刻，所以再往后一个 `nextTick` 补这一下。
+ *
+ * 只在焦点确实掉到没人接（`body`）时才还 —— 别抢走用户已经点到别处的焦点。
+ */
+let openerElement: HTMLElement | null = null;
+watch(
+  () => props.open,
+  (on) => {
+    if (!on) return;
+    const active = document.activeElement;
+    openerElement = active instanceof HTMLElement && active !== document.body ? active : null;
+  },
+  { immediate: true },
+);
+
+function restoreFocusToOpener() {
+  const back = openerElement;
+  openerElement = null;
+  if (!back || !document.body.contains(back)) return;
+  nextTick(() => {
+    if (document.activeElement && document.activeElement !== document.body) return;
+    // preventScroll：归还焦点不该顺手把底下那页滚到触发元素那里去（约束 7「滚动位置错误」）。
+    back.focus({ preventScroll: true });
+  });
+}
+
+/**
  * 系统返回键 / 后退导航：先关最上面的弹窗，而不是**直接退出应用**
  * （Android 上没有这层绑定的话，用户在"添加好友"弹窗里按返回会退出整个应用）。
  * 见 `composables/useBackLayer.ts`。
@@ -67,7 +103,7 @@ useBackLayer(
        `font-gosslan` 同理：弹窗挂在 portal root（应用根节点**之外**），拿不到根节点上的字体，
        用户选的字体对弹窗不生效 —— 带上这个类才与界面其余部分一致。
        主题色/暗色不受影响（那是 `:root`/`.dark` 上的 CSS 变量，本来就能继承）。 -->
-  <TransitionRoot :show="open" as="template">
+  <TransitionRoot :show="open" as="template" @after-leave="restoreFocusToOpener">
     <Dialog as="div" class="relative z-[65] font-gosslan" @close="emit('close')">
       <!-- 整页形态不画遮罩：整页面板本身不透明，遮罩只会在滑入的过程里
            给「上一页」糊一层黑（观感成了 modal，而不是页面推进）。卡片形态才需要遮罩。 -->

@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [4.33.34] - 2026-10-10
+### 界面 / 交互（原生体验 N14：弹窗关闭之后把焦点还给打开它的那个元素）
+
+- `BaseModal` 之前只管把焦点**收进**弹窗（Headless UI 的焦点陷阱），关完之后
+  `document.activeElement` 落在 `body` —— 键盘用户关掉一个弹窗，Tab 序列就从头开始。
+- 修法：`open` 变真时记下 `document.activeElement`（`body` 不记 ⇒ 程序化打开是 no-op），
+  在 `@after-leave` 的 `nextTick` 里、且只有焦点确实掉到 `body` 时才 `focus({ preventScroll: true })` 还回去。
+  时机选 `afterLeave` 而非 `open` 变假的那一刻：早一步 `Dialog` 还挂着，
+  它自己的 FocusSentinel 会把刚设的焦点抢回弹窗内部。`preventScroll` 是为了不引入滚动跳跃。
+- 判据（不是静态断言）：`node scripts/check-ui-runtime.mjs --only=overlay` 三条红绿判据
+  分别钉 Esc / ✕ / 生产形状宿主这三条路径关完之后 `activeElement == 那颗触发按钮`。
+  **反向对照跑过**：摘掉 `@after-leave` 绑定再跑 ⇒ 29/32，红的恰好是这三条，其余一条不动。
+- 修后实测：overlay 段 **32/32 条绿**（这一段从上一轮的 19 条长到 32 条）。
+  影响 26 个 `BaseModal` 调用方；**WKWebView / WebView2 / Android 未实测**。
+
+
 ### 测试 / 门禁（原生体验审计第三轮：**上一轮那条 P1 是我量错的**，overlay 段 19 → 30 条判据）
 
 - **撤销一条登记为 P1 的缺陷**：「✕ 关完之后 portal 里留一层看不见但吃掉点击的浮层」（四处现场，

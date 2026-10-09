@@ -766,9 +766,10 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
   读到的是**停在中间的壳**——那是量具的形状，不是界面的形状。探针里的落点：`boot()` 那条
   「量具在出帧」（泵 6 次 `captureScreenshot` 期间 rAF ≥ 2 次；这条红是**量具红**，不是产品红）
   与 `readAfterClose()`（先泵帧再读），见 `scripts/check-ui-runtime.mjs` 的 `runOverlay`。
-- **焦点要还回去**：关完之后 `document.activeElement` 该回到打开它的那个元素上。今天实测是
-  `BODY`，登记为 N14（表情面板那一族早就这么做了，弹窗外壳没有）。这条与出帧无关：
-  那一刻 DOM 已撤干净，是"没人负责还焦点"。
+- **焦点要还回去**（N14，2026-10-10 已修）：关完之后 `document.activeElement` 要回到打开它的那个元素。
+  外壳里唯一的落点是 `BaseModal` 的 `@after-leave` + `nextTick` —— 早一步 `Dialog` 还挂着，
+  它自己的 FocusSentinel 会把刚设的焦点抢回弹窗内部；且只在焦点确实掉到 `body` 时才还，
+  带 `preventScroll: true`（归还焦点不许顺手把底下那页滚走 —— 约束 7）。
 - 关闭有两条实现路径（Headless UI 自己那条 vs 宿主直接翻 `open`），**两条都要量**。
   上一版正是拿"两条路径结果不同"当成了产品结论；实测差别其实不在谁发起关闭，
   在**读的那一瞬间帧出没出**。

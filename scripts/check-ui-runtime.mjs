@@ -1997,9 +1997,10 @@ async function runOverlay(cdp, url) {
       && e.bodyStyle === base.bodyStyle && e.htmlOv === base.htmlOv,
     "close+1 且 open=false 且 dlgCount=0 且样式==基线",
     JSON.stringify({ cl: e.closeEvents, open: e.openFlag, dlg: e.dlgCount, bodyStyle: e.bodyStyle, htmlOv: e.htmlOv }));
-  console.log("  ⚠️ 实测到缺陷（判据待钉，见 §12.6.1 N14）：Esc 关掉后焦点没还给触发按钮 ⇒ activeElement="
-    + e.focusId + "（期望 opener）。同一时刻 DOM 已经撤干净（dlg=" + e.dlgCount + "、portal="
-    + e.portalDlgCount + "）⇒ 这不是那份残留壳造成的，是关闭时没人把焦点还回去");
+  check("A Esc 关掉之后焦点回到打开它的那颗按钮（N14：Headless UI 只管把焦点收进弹窗，"
+    + "还回去这一下得有人做 —— 而那一刻 DOM 已经撤干净，所以这不是残留壳造成的）",
+    e.focusId === "opener" && e.dlgCount === 0, "activeElement==opener",
+    "实际 " + e.focusId + " dlg=" + e.dlgCount);
 
   // 反面对照：已经关了再按一次 Esc ⇒ close 计数不许再涨（证明上面两条读的是真事件）
   await cdp.key("Escape", "Escape", "", 27);
@@ -2046,6 +2047,10 @@ async function runOverlay(cdp, url) {
     x.openFlag === false && x.dlgCount === 0 && x.portalDlgCount === 0,
     "open=false 且 dlg=0 且 portal=0",
     JSON.stringify({ open: x.openFlag, dlg: x.dlgCount, portal: x.portalDlgCount }));
+  check("B 右上角 ✕ 关掉之后焦点也回到那颗按钮（两条关闭路径都要量：Esc 走 Headless UI 自己那条，"
+    + "✕ 走宿主 emit close，发起方不一样）",
+    x.focusId === "opener" && x.openFlag === false, "activeElement==opener",
+    "实际 " + x.focusId + " open=" + x.openFlag);
   await cdp.click(ptB.x, ptB.y); // 关掉之后同一个坐标再真点一次：那层壳不许吃掉点击
   await sleep(300);
   const x4 = await readAfterClose();
@@ -2155,11 +2160,13 @@ async function runOverlay(cdp, url) {
   await cdp.click(dxb.x, dxb.y); // 真点右上角 ✕
   await sleep(700);
   const d2 = await readAfterClose();
-  check("D 生产形状（真点按钮开、真点 ✕ 关、宿主 open 变假）也撤干净：open=false 且 dlg=0 且 portal=0"
-    + " —— 26 个调用方都是这个形状，这条才是定性依据",
-    d2.openFlag === false && d2.dlgCount === 0 && d2.portalDlgCount === 0,
-    "open=false 且 dlg=0 且 portal=0",
+  check("D 生产形状（真点按钮开、真点 ✕ 关、宿主 open 变假）也撤干净且焦点回到那颗按钮："
+    + "open=false 且 dlg=0 且 portal=0 且 activeElement==opener —— 26 个调用方都是这个形状，这条才是定性依据",
+    d2.openFlag === false && d2.dlgCount === 0 && d2.portalDlgCount === 0 && d2.focusId === "opener",
+    "open=false 且 dlg=0 且 portal=0 且焦点==opener",
     JSON.stringify({ open: d2.openFlag, dlg: d2.dlgCount, hit: d2.hitId, focus: d2.focusId }));
+  console.log("  · 读数（不判绿红）：D 生产形状关掉之后焦点=" + d2.focusId + " 命中=" + d2.hitId
+    + "（这一组的按钮真的接 onClick ⇒ 判完焦点，同坐标那一发已经另有一条判据在打）");
 
   await cdp.click(dpt.x, dpt.y); // 关掉之后同一坐标再真点一次
   await sleep(400);
