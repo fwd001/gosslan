@@ -103,6 +103,112 @@ mod tests {
         );
     }
 
+    /// 独立窗口**永远不许有一截掉在屏幕外**，且只有预览按显示器居中（用户 2026-10-09）。
+    ///
+    /// 上面那条不变式管的是**创建那一刻**（子窗口不比主窗口大）。这一条管的是它管不到的
+    /// 那半：预览窗口常驻、复用时刻意**不重算尺寸**（留住用户自己拉过的大小），于是
+    /// "后来把主窗口拉小了 / 把预览拉大了" 之后，按主窗口居中就会顶出屏幕边缘，
+    /// 而这几扇都是无边框窗口 —— 掉出去的那一截没有把手能拖回来。
+    #[cfg(desktop)]
+    #[test]
+    fn aux_windows_are_kept_inside_the_monitor_work_area() {
+        use super::{
+            aux_centers_on_monitor, centered_in_rect, clamp_pos_into_rect, fit_aux_window,
+        };
+        // 主屏工作区 1512×863，顶部让给菜单栏 ⇒ 左上角 y 不是 0 而是 37
+        let screen = (0i32, 37i32, 1512u32, 863u32);
+
+        // ① 预览按屏居中：四边留边相等，且用的是工作区而不是整屏（不许压住菜单栏）
+        let (cx, cy) = centered_in_rect(screen, (1120, 820));
+        assert_eq!(
+            (cx - screen.0, cy - screen.1),
+            ((1512 - 1120) / 2, (863 - 820) / 2),
+            "预览必须在主屏工作区内四边等距居中"
+        );
+        assert!(cy >= screen.1, "居中后仍不许压到菜单栏上面去");
+
+        // ② 复现用户那一屏：主窗口被拖到屏幕顶上（甚至顶出屏幕），预览维持原来的大尺寸。
+        let main_pos = (600i32, -120i32);
+        let g = fit_aux_window((700, 400), main_pos, 1.0, (1120.0, 820.0), (480.0, 360.0));
+        let raw = g.centered_pos((1120, 820)); // 旧摆法：按主窗口居中，尺寸用真实外框
+        assert!(
+            raw.1 < screen.1,
+            "这条用例的前提就是「旧摆法确实顶出了工作区上缘」；前提不成立判据就空转了"
+        );
+        let fixed = clamp_pos_into_rect(raw, (1120, 820), screen);
+        assert!(
+            fixed.0 >= screen.0
+                && fixed.1 >= screen.1
+                && fixed.0 + 1120 <= screen.0 + 1512
+                && fixed.1 + 820 <= screen.1 + 863,
+            "钳完必须整扇落在工作区内，实际 {fixed:?}"
+        );
+        // 只越界一个轴 ⇒ 另一个轴不许跟着动（否则"修一个偏移"会变成窗口横向也跳一下）
+        assert_eq!(fixed.0, raw.0, "水平本来就在屏内，不该被挪");
+
+        // ③ 窗口比那块屏还大 ⇒ 贴左上角，且**不许 panic**（clamp 在 lo > hi 时会 panic）
+        let tiny = (0i32, 0i32, 800u32, 600u32);
+        assert_eq!(clamp_pos_into_rect((5000, 5000), (1120, 820), tiny), (0, 0));
+        assert_eq!(centered_in_rect((100, 100, 500, 500), (600, 600)), (100, 100));
+
+        // ④ 左侧副屏（负坐标）同样成立：边界是那块屏自己的，不是"距原点多远"。
+        // 该屏 x ∈ [-1920, 0] ⇒ 1120 宽的窗最右只能到 0 - 1120 = -1120。
+        let left = (-1920i32, 0i32, 1920u32, 1080u32);
+        assert_eq!(clamp_pos_into_rect((-5000, -5000), (1120, 820), left), (-1920, 0));
+        assert_eq!(clamp_pos_into_rect((9999, 9999), (1120, 820), left), (-1120, 260));
+
+        // ⑤ 已经在工作区里 ⇒ 一字不动（防"钳制成把每扇窗口都硬拽到左上角"）
+        assert_eq!(clamp_pos_into_rect((196, 58), (1120, 820), screen), (196, 58));
+
+        // ⑥ 按屏居中**只给预览**，另外四扇仍以主窗口为参照物（2026-09-16 那条口径不许被顺带改掉）
+        assert!(aux_centers_on_monitor(crate::WINDOW_PREVIEW));
+        for label in [
+            crate::WINDOW_SETTINGS,
+            crate::WINDOW_LOGS,
+            crate::WINDOW_TASKS,
+            crate::WINDOW_LINK,
+            crate::WINDOW_MAIN,
+        ] {
+            assert!(!aux_centers_on_monitor(label), "{label} 不该按显示器居中");
+        }
+    }
+
+    /// 上面那条只证明**算得对**；这一条证明 `recenter_aux_window` 真的去用了它。
+    ///
+    /// 为什么单独钉：注入变异时把 `clamp_pos_into_rect(base, outer, r)` 整段换成 `base`，
+    /// 上面那条判据**全绿** —— 因为它测的是那两个纯函数本身，而坏掉的是"谁调它们"。
+    /// 这正是本仓反复出现的那类缺口：判据读了自己新写的函数，没读被测的那一段。
+    /// 判的是接线而不是观感（同 `lib_window_tests.rs` 里"每个 ensure_* 体必须含
+    /// `apply_aux_geometry(`"那一条的做法）。
+    #[cfg(desktop)]
+    #[test]
+    fn recenter_aux_window_actually_uses_the_placement_rules() {
+        let src = include_str!("logs.rs");
+        let start = src
+            .find("fn recenter_aux_window")
+            .expect("recenter_aux_window 必须还在（改名了就把这条一起改掉）");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("函数收尾") + 3];
+        for call in [
+            "aux_centers_on_monitor(",   // 谁按屏居中、谁按主窗口居中，得由它说了算
+            "centered_in_rect(",         // 预览那一支
+            "clamp_pos_into_rect(",      // 最后一道"不许掉出屏幕"
+            "aux_anchor_rect(",          // 参照物是主窗口那块屏
+            "geo.centered_pos(",         // 另外四扇仍以主窗口为参照（2026-09-16 的口径）
+        ] {
+            assert!(
+                body.contains(call),
+                "`recenter_aux_window` 不再调用 {call} ⇒ 摆位规则被摘掉，而纯计算那条判据不会红"
+            );
+        }
+        // 反空转：切片必须真的只切到这一个函数体，而不是整个文件尾部
+        // （下一个函数是 `open_log_window`，它出现在切片里就说明收尾锚点找错了）
+        assert!(
+            !body.contains("open_log_window"),
+            "切片吃进了后面的函数 ⇒ 上面五条在任何实现下都恒真"
+        );
+        assert!(body.contains("set_position"), "切片没吃到函数体");
+    }
+
     /// 还原"用户上次拉的尺寸"时的钳制（配合 `restore_aux_window_size`）。
     ///
     /// 用户 2026-09-21：「任务新窗口也太大了吧，另外，这个窗口都没记住用户的尺寸吗？」

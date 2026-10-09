@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   MAX_TRACKED,
   TOP_VISIBLE,
+  pickerCells,
   readEmojiUsage,
   topEmojiTokens,
   withEmojiUse,
@@ -105,6 +106,64 @@ test("写失败静默丢掉，不抛（配额满 / 隐私模式）", () => {
 });
 
 /**
+ * 常用那一行与固定矩阵是**同一个序列的前后两段**，而矩阵那一段不随常用变
+ * （用户 2026-10-09：「下面表情不随上面常用变化而变化」）。
+ *
+ * 旧做法把常用的几格从原序里摘走 ⇒ 常用攒得越多、下面洞越多。这一组判据钉的就是
+ * "摘走"这件事不再发生：矩阵段永远等于全表原样，代价是同一表情会出现两格。
+ */
+const TABLE = [
+  { file: "a.webp", displayName: "[A]" },
+  { file: "b.webp", displayName: "[B]" },
+  { file: "c.webp", displayName: "[C]" },
+  { file: "d.webp", displayName: "[D]" },
+];
+
+test("pickerCells：矩阵段永远是全表原样，与常用攒了多少无关", () => {
+  for (const usage of [
+    {},
+    { "[D]": { n: 9, t: 1 } },
+    { "[A]": { n: 5, t: 1 }, "[C]": { n: 4, t: 2 }, "[D]": { n: 3, t: 3 } },
+  ]) {
+    const g = pickerCells(TABLE, usage, 2);
+    assert.deepEqual(
+      g.items.slice(g.frequentCount),
+      TABLE,
+      `常用为 ${JSON.stringify(usage)} 时矩阵段被改动过（出现洞或重排都算）`,
+    );
+  }
+});
+
+test("pickerCells：常用那一行排在最前、按次数取，且同一表情会出现在两格", () => {
+  const g = pickerCells(TABLE, { "[C]": { n: 7, t: 1 }, "[A]": { n: 2, t: 9 } }, 2);
+  assert.equal(g.frequentCount, 2);
+  assert.deepEqual(
+    g.items.slice(0, 2).map((e) => e.displayName),
+    ["[C]", "[A]"],
+    "常用段没按次数排",
+  );
+  // 正面：C 既在常用段、也仍在原序第 3 格（旧做法会把它从原序摘走 ⇒ 这一条就红了）
+  assert.equal(g.items.filter((e) => e.displayName === "[C]").length, 2, "常用那一格没在原序里保留");
+  // :key 必须能分开这两格（只用 file 会撞 key，Vue 报重复键并复用错节点）
+  const keys = g.items.map((e, i) => `${i < g.frequentCount ? "f" : "m"}:${e.file}`);
+  assert.equal(new Set(keys).size, keys.length, "带段号的 key 仍不唯一 ⇒ 两段划分有问题");
+});
+
+test("pickerCells：一次都没用过时没有常用段，序列就是全表", () => {
+  const g = pickerCells(TABLE, {}, 8);
+  assert.equal(g.frequentCount, 0);
+  assert.deepEqual(g.items, TABLE);
+});
+
+/** 账里的 token 指向已被删掉的表情（换过资源）：丢掉它，但**不许**因此扰动矩阵段。 */
+test("pickerCells：账里的死 token 只影响常用段，矩阵段一格不少", () => {
+  const g = pickerCells(TABLE, { "[gone]": { n: 99, t: 1 }, "[B]": { n: 5, t: 1 } }, 8);
+  assert.equal(g.frequentCount, 1, "死 token 不该占掉一个常用格");
+  assert.equal(g.items.length, 1 + TABLE.length);
+  assert.deepEqual(g.items.slice(1), TABLE);
+});
+
+/**
  * 两处入口都必须走同一个 `EmojiPicker`（用户 2026-09-29：「全局表情选择统一组件都做」）。
  *
  * 判源码形状而不是跑 UI：这几条落在组件与调用点的接线，而单测环境没有 WebView。
@@ -121,12 +180,16 @@ test("常用计数挂在面板自己那一次 select 上（不是某个调用点
 });
 
 /**
- * 常用那一格是**重排**，不是第二块网格：组件里 ↑↓ 的步长是写死的 `COLS`，
- * 而它只对"同一个 grid 容器"成立。一旦有人把常用做成第二个网格，键盘跳行的落点就错了
- * —— 界面上只表现为"有点不对"，所以这里按形状数（网格 class 只许出现一次），
- * 并把 `COLS` 与那个 class 绑成同一条判据。
+ * 面板**只有一块网格**：组件里 ↑↓ 的步长是写死的 `COLS`，而它只对"同一个 grid 容器"成立。
+ * 一旦有人把常用做成第二块网格，键盘跳行的落点就错了 —— 界面上只表现为"有点不对"，
+ * 所以这里按形状数（网格 class 只许出现一次），并把 `COLS` 与那个 class 绑成同一条判据。
+ *
+ * ⚠️ 2026-10-09 这一条的**理由**要连着读准：它守的是"不许出现第二块网格"，
+ * 不是"常用必须是从原序里摘出来的几格"。后者是当年那一版的实现细节，已被用户改口
+ * （「下面表情不随上面常用变化」）⇒ 现在常用与矩阵是同一序列的前后两段、同一表情会出现两格，
+ * 那条"摘走"的老写法反而会让上面那四条 `pickerCells` 判据红。
  */
-test("面板只有一个八列网格，常用只是它前面的几格", () => {
+test("面板只有一块八列网格，常用与矩阵是同一个 cells 序列的前后两段", () => {
   // ⚠️ 分母只数**真挂到 class 上**的那个：组件里 `COLS` 那行注释也写着 `grid-cols-8`，
   // 拿裸字符串数会得到 2 —— 那条红量的是我自己的注释，不是布局。
   const grids = [...PICKER.matchAll(/class="[^"]*?grid-cols-(\d+)/g)];
@@ -134,11 +197,47 @@ test("面板只有一个八列网格，常用只是它前面的几格", () => {
   const cols = PICKER.match(/const COLS = (\d+)/);
   assert.ok(cols, "找不到 COLS 常数 ⇒ 上面那条判据的落点没了，判据要跟着改");
   assert.equal(Number(cols[1]), Number(grids[0][1]), "COLS 与模板里的列数不同步 ⇒ 上下键跳错行");
-  assert.match(PICKER, /v-for="e in cells"/, "格子不是从统一的 cells 序列渲染 ⇒ 常用行没并进同一网格");
+  assert.match(PICKER, /v-for="\(e, i\) in cells"/, "格子不是从统一的 cells 序列渲染 ⇒ 两段各画一份");
   assert.equal(
     PICKER.includes(String.raw`v-for="e in EMOJIS"`),
     false,
-    "模板仍在遍历全量表 ⇒ 常用行成了第二份渲染（同一表情会出现两格）",
+    "模板另起一支遍历全量表 ⇒ 常用那一行成了第二份渲染（键盘出口与染色都会分叉）",
+  );
+});
+
+/**
+ * 「常用」那一行的形状（用户 2026-10-09 明确要的）：单独一行、上面带小标题、与下面分得开。
+ *
+ * 三条各守一侧：
+ * - 小标题必须**不是 button** —— `buttons()` 收集的是按钮，标题一旦是按钮，
+ *   键盘的整行步长就会错位一格（↑↓ 落到不该落的地方，而界面上看不出来）。
+ * - 染色与无障碍标签必须按**位置**判（`isFrequent(i)`）。按 file 判的话，
+ *   矩阵里同一表情那一格会被连带染色、连带读成「常用 · [微笑]」。
+ * - `:key` 必须带段号。同一表情现在有两格，只用 `file` 会撞 key。
+ */
+test("常用那一行有小标题、按位置区分两段、key 带段号", () => {
+  assert.match(PICKER, /col-span-\d+/, "小标题没占满一整行 ⇒ 它会挤掉一个格子");
+  assert.match(PICKER, /v-if="grid\.frequentCount"/, "没有常用时不该出现一行空标题");
+  assert.match(PICKER, /\{\{ t\("emoji\.frequent"\) \}\}/, "那一行上面没有「常用」小标题");
+  // ⚠️ 锚必须窄到"真挂在 class 上"的那个元素：组件的注释里也写着 `col-span-8`，
+  // 从裸字符串切会一路切穿下面的按钮，那条 !test 就变成永远抓不到东西的空转。
+  const heading = PICKER.match(/class="col-span-8[\s\S]*?<\/div>/);
+  assert.ok(heading, "找不到「常用」小标题那个元素");
+  assert.ok(!/<button/.test(heading[0]), "小标题成了 button ⇒ 键盘整行步长会错一格");
+  assert.match(PICKER, /:key="cellKey\(e, i\)"/, "渲染键没带段号 ⇒ 同一表情两格会撞 key");
+  assert.match(PICKER, /function cellKey\(e: EmojiDef, i: number\)/, "cellKey 不再是「段号 + file」的形状");
+  assert.match(PICKER, /function isFrequent\(i: number\)/, "两段划分改成按 file 判了");
+  // 染色本身也必须吃位置：只把 `isFrequent` 函数留着、模板里改成按表情判，
+  // 上面那条就抓不到（函数在不在与谁用它，是两件事）。运行时探针再量一次真实背景色。
+  assert.match(
+    PICKER,
+    /:class="isFrequent\(i\)/,
+    "格子的染色不再吃位置 ⇒ 矩阵里同一表情那一格会被连带染色",
+  );
+  assert.equal(
+    PICKER.includes("headFiles"),
+    false,
+    "又回到「按 file 集合判常用」⇒ 矩阵里那一格会被连带染色",
   );
 });
 

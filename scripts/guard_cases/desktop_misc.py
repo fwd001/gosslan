@@ -484,4 +484,21 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="不跟随软链",
         tags=["rust", "storage", "stability", "data-loss", "new-guards"],
+    ),
+    Case(
+        name="预览摆位的钳制被摘掉必须被抓住（接线判据，不是纯计算那条）",
+        why="用户 2026-10-09：主窗口拖到屏幕靠上后「打开预览图片 窗口会有一部分展示在屏幕外面」。\n"
+        "     ⚠️ 这条用例本身就是本轮变异抓出来的：把 `clamp_pos_into_rect(base, outer, r)` 换成 `base`，\n"
+        "     那两条**纯计算**判据全绿 —— 它们测的是新写的那两个函数，坏掉的是「谁调它们」。\n"
+        "     所以补了读源码切片的 recenter_aux_window_actually_uses_the_placement_rules；\n"
+        "     这里证明的正是那一条会红（不是证明数学对）。",
+        file=TAURI / "src" / "commands" / "logs.rs",
+        injections=[(
+            "        Some(r) => clamp_pos_into_rect(base, outer, r),",
+            "        Some(r) => base,",
+        )],
+        cmd=cargo("test", "--lib", "recenter_aux_window_actually_uses"),
+        cwd=TAURI,
+        expect_fail_hint="不再调用 clamp_pos_into_rect(",
+        tags=["rust", "window", "new-guards"],
     ),]

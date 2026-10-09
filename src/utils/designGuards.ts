@@ -353,6 +353,38 @@ export function findTruncationWithoutTitle(src: string): GuardIssue[] {
   return out.sort((a, b) => a.line - b.line);
 }
 
+// ---------------- ⑤b 自绘菜单必须自带底（`.gosslan-menu` 只管形状，底在 `.frost`） ----------------
+
+/**
+ * `.gosslan-menu` 里**没有**背景：它只声明尺寸、内边距、描边、圆角与阴影，
+ * 底与毛玻璃在另一个类 `.frost` 上（见 style.css 那两条规则）。
+ *
+ * 真实缺陷（用户 2026-10-09：「筛选下拉都是透明的」）：搜索面板那两个筛选菜单只挂了
+ * `.gosslan-menu` ⇒ 半透过去，菜单文字和底下的结果行叠在一起。全站另外五处都是
+ * `gosslan-menu frost` 成对写的，唯独这两处漏了一半 —— 而这类缺陷**编译过、类型对、
+ * 功能全正常**，只有肉眼看得出，所以必须机器盯。
+ *
+ * 判据按**词**匹配而不是子串：`.gosslan-menu-item` / `.gosslan-menu-hint` 里也含
+ * "gosslan-menu" 这七个字，子串匹配会把菜单项判成容器（假红一片）。
+ * 确需无底的容器，可在文件内加 `menu-backdrop-ok` 注释整文件跳过。
+ */
+export function findMenuWithoutBackdrop(src: string): GuardIssue[] {
+  if (src.includes("menu-backdrop-ok")) return [];
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(CLASS_ATTR_RE)) {
+    const classes = m[1].split(/\s+/).filter(Boolean);
+    if (!classes.includes("gosslan-menu")) continue;
+    if (classes.includes("frost") || classes.includes("glass")) continue;
+    out.push({
+      line: lineAt(src, m.index ?? 0),
+      message:
+        "自绘菜单只挂了 `.gosslan-menu`（形状）而没有 `.frost`（底）⇒ 弹层是透明的，" +
+        "菜单文字会与底下的内容叠在一起。补一个 `frost`，或改用带底的 `.gosslan-panel`。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
 // ---------------- ⑥ 可点击元素必须能用键盘触发 ----------------
 
 /**

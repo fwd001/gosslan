@@ -979,6 +979,26 @@ window.__probe = (() => {
     return new Set(firstRow.map((g) => g.x)).size;
   };
   H.focusTrigger = () => { document.getElementById('trigger').focus(); };
+  /** 面板里每一格：alt（表情名）、常用标记、**计算后的背景色**、落点。按 DOM 顺序，不按组件内部下标。 */
+  H.emojiCells = () => H.grid().map((b) => {
+    const img = b.querySelector('img');
+    const r = b.getBoundingClientRect();
+    return {
+      alt: img ? img.alt : '',
+      freq: b.getAttribute('data-emoji-freq') === '1',
+      bg: getComputedStyle(b).backgroundColor,
+      x: Math.round(r.left),
+      y: Math.round(r.top),
+    };
+  });
+  /** 网格的**第一个子元素**是什么 —— 「常用」小标题必须是它，而且必须是**非按钮**（按钮会挤进步长）。 */
+  H.gridHead = () => {
+    const first = H.grid()[0];
+    const grid = first ? first.parentElement : null;
+    if (!grid) return { tag: 'none', text: '' };
+    const c = grid.firstElementChild;
+    return { tag: c ? c.tagName : 'none', text: c ? String(c.textContent || '').trim() : '' };
+  };
   /** 命中列表的当前高亮：组件用 data-hit + aria-current 两个钩子表达，读的就是这两个钩子。 */
   H.hits = () => {
     const list = Array.from(document.querySelectorAll('[data-hit]'));
@@ -1681,6 +1701,20 @@ async function runEmoji(cdp, url) {
   await cdp.send("Page.navigate", { url });
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
+  // ★ 先往本机账里种 8 条常用，**再**装组件（`usage` 是在 setup 里读的，装完再写就晚了）。
+  //   不种这一步，`frequentCount` 恒为 0 ⇒ 「常用」那一行连它上面的小标题根本不渲染，
+  //   于是下面那批键盘判据量不到本轮新加的那个占一整行的标题元素 —— 而它正是最可能
+  //   把"整行步长"弄错的东西（标题不是按钮，但它在按钮之前占了一行）。
+  //   token 从组件自己那份全表现读，不在这份脚本里手抄表情名。
+  const table = await cdp.eval(
+    "(async () => { const m = await import('/src/utils/emoji.ts');" +
+      " return { tokens: m.EMOJIS.slice(0, 8).map((e) => e.displayName), total: m.EMOJIS.length }; })()",
+  );
+  const seed = {};
+  table.tokens.forEach((tk, i) => { seed[tk] = { n: 90 - i, t: 1 }; });
+  await cdp.eval(
+    `localStorage.setItem('gosslan.emojiUsage.v1', ${JSON.stringify(JSON.stringify(seed))})`,
+  );
   await cdp.eval(`window.__probe.install('/src/components/EmojiPicker.vue',
     '<button id="trigger" data-probe-panel>触发按钮</button>')`);
   const info = () => cdp.eval("window.__probe.gridInfo()");
@@ -1692,6 +1726,36 @@ async function runEmoji(cdp, url) {
   await cdp.eval("window.__probe.setOpen(true)");
   const cols = await cdp.eval("window.__probe.cols()");
   const first = await info();
+
+  // ---------------- 本轮新增：「常用」那一行的形状（用户 2026-10-09） ----------------
+  const head = await cdp.eval("window.__probe.gridHead()");
+  check("「常用」那一行上面有小标题，且它是网格第一个子元素、且不是 button",
+    head.tag !== 'none' && head.tag !== 'BUTTON' && head.text.length > 0,
+    "第一个子元素有文字且不是按钮（是按钮就会挤进键盘步长）", JSON.stringify(head));
+
+  const cells = await cdp.eval("window.__probe.emojiCells()");
+  const freq = cells.filter((c) => c.freq);
+  const matrix = cells.slice(table.tokens.length);
+  const matrixAlts = matrix.map((c) => c.alt);
+  check("常用那一行渲染出来了（种了几条就该有几格带常用标记）",
+    freq.length === table.tokens.length, `${table.tokens.length} 格`, freq.length);
+  check("格子总数 = 常用那一行 + **完整**一张表（矩阵没被摘走几格）",
+    cells.length === table.tokens.length + table.total,
+    `${table.tokens.length}+${table.total}`, cells.length);
+  check("矩阵段自己零重复（它是原样那张表，不是常用段的复制）",
+    new Set(matrixAlts).size === matrixAlts.length, "无重复",
+    `去重后 ${new Set(matrixAlts).size} / 共 ${matrixAlts.length}`);
+  check("每个常用表情仍留在矩阵段里（「下面不随上面变化」的正面判据）",
+    freq.every((c) => matrixAlts.includes(c.alt)), "常用那几个在原序里都还在",
+    JSON.stringify(freq.map((c) => c.alt).filter((a) => !matrixAlts.includes(a))));
+  check("对照：同一表情两格，只有常用那一格**真的被染色**（读计算后的背景色，不是标记属性）",
+    cells[0].freq === true && matrix[0].freq === false
+      && cells[0].bg !== matrix[0].bg && cells[0].alt === matrix[0].alt,
+    "第 0 格与矩阵同一格：alt 相同、背景色不同", JSON.stringify([cells[0], matrix[0]]));
+  check("对照：小标题那一行没把常用行挤成不满一行（现读列数仍是 8 的整行）",
+    cols > 1 && freq.every((c) => c.y === freq[0].y) && new Set(freq.map((c) => c.x)).size === freq.length,
+    "常用那一行的格子同一 y、x 各不相同", `${cols} 列 / ${freq.length} 格`);
+
   check("打开面板：焦点落在第一格（键盘用户不该从头再 Tab 一遍）",
     first.focusIdx === 0 && first.count > 0, "焦点=第 0 格且格子数 >0",
     `focusIdx=${first.focusIdx} count=${first.count}`);

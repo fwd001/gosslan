@@ -99,3 +99,41 @@ function sortTokens(usage: EmojiUsage): string[] {
 export function topEmojiTokens(usage: EmojiUsage, limit = TOP_VISIBLE): string[] {
   return sortTokens(usage).slice(0, Math.max(0, limit));
 }
+
+export interface PickerCells<T> {
+  /** 面板从上到下真正渲染的格子序列：常用那一行在前，固定矩阵原样跟在后面。 */
+  items: T[];
+  /** 前这么多格属于「常用」那一行；0 ⇒ 还没攒出常用（那一行与它的小标题都不渲染）。 */
+  frequentCount: number;
+}
+
+/**
+ * 组出表情面板那一串格子（用户 2026-10-09：「表情前一行单独列出来上面写个小标题常用，
+ * 和下面固定表情区分开，**并且下面表情不随上面常用变化而变化**」）。
+ *
+ * ## 与 4.31.26 那一版差在哪
+ * 旧做法是把常用的那几格从全量表里**摘出来**挪到前面，于是抖音原序里留下最多 8 个洞，
+ * 常用攒得越多、下面越残缺。现在矩阵那一段是 `all` **一字未动**，代价是同一个表情
+ * 会出现两格（常用一行一次、自己的原序位置一次）。
+ *
+ * ## 仍然只有一个网格
+ * 常用与矩阵是**同一个 `items` 序列**的前后两段，不是两块网格 —— 组件里 ↑↓ 的步长是写死的
+ * `COLS`，它只对"一个 grid 容器"成立；拆成第二块网格会让跳行落点算错，而界面上只表现为
+ * "有点不对"。`emojiUsage.test.ts` 按形状数网格个数钉的就是这一点，运行时探针再量一次真实列数。
+ *
+ * ## 出现两格带来的两个必须跟着改的写法
+ * - 渲染的 `:key` 不能只用 `file`（会撞），要带段号；
+ * - "是不是常用"必须按**位置**判（`index < frequentCount`），不能按 file 集合判 ——
+ *   否则矩阵里那一格会被连带染色、连带读成「常用 · [微笑]」。
+ */
+export function pickerCells<T extends { file: string; displayName: string }>(
+  all: readonly T[],
+  usage: EmojiUsage,
+  limit = TOP_VISIBLE,
+): PickerCells<T> {
+  const byToken = new Map(all.map((e) => [e.displayName, e]));
+  const head = topEmojiTokens(usage, limit)
+    .map((token) => byToken.get(token))
+    .filter((d): d is T => !!d);
+  return { items: [...head, ...all], frequentCount: head.length };
+}

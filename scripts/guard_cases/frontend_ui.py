@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """护栏非空转用例分册：前端呈现层（components / layouts / entries / 样式与打包配置里的界面判据）。
 
-本册现数 34 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
+本册现数 40 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
 用不带行首锚的写法会多算一条 —— 多出来的正是这一行本身）；2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
 `CASES` 字面量里）按**锚定的被守物**切出来，切过来那 30 条的块文本逐字未搬动过一字 ⇒
 恒等判据＝`verify-guards.py --list` 的输出排序后与拆前**逐字节相同**（条数与用例名都不是"我觉得一样"）。
@@ -562,4 +562,84 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="必须 Teleport 到 body",
         tags=["frontend", "new-guards", "floating-layer"],
+    ),
+    Case(
+        name="搜索结果行退回「直接铺载荷」必须被抓住（六种认识的卡片 kind 那一半）",
+        why="887477e 那次只堵了本机**不认识**的 kind，而 image/file/merge/todo/poll/announcement"
+        "     这六种认识的 kind 载荷本来就是 JSON，检索行当时仍然 `? m.content :` 直接交给界面"
+        "     （用户 2026-10-09：「搜索列表显示的都是 json」）。现在它与摘要共用 previewBody，"
+        "     这条注入的就是修复前那一行的真实形状。",
+        file=ROOT / "src" / "components" / "search" / "ChatSearchDialog.vue",
+        injections=[('  return previewBody(m.kind, m.content, 0);',
+                     '  return isKnownKind(m.kind) ? m.content : UNSUPPORTED_KIND_LABEL;')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="检索行不再走 previewBody",
+        tags=["frontend", "new-guards", "search"],
+    ),
+    Case(
+        name="自绘菜单丢掉 frost 必须被抓住（.gosslan-menu 自己不带底）",
+        why="`.gosslan-menu` 只声明尺寸/描边/圆角/阴影，底在**另一个类** `.frost` 上（style.css 两条规则）"
+        "     ⇒ 漏一个类不报错、不影响构建，只有肉眼看得见（用户 2026-10-09：「筛选下拉都是透明的」，"
+        "     全站六处容器里搜索面板那两处漏了）。注入 = 把 sender 菜单的 frost 摘掉。",
+        file=ROOT / "src" / "components" / "search" / "ChatSearchDialog.vue",
+        injections=[('class="gosslan-menu frost absolute right-0 top-9 z-20 max-h-64',
+                     'class="gosslan-menu absolute right-0 top-9 z-20 max-h-64')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="发现透明得能看见底下一层的自绘菜单",
+        tags=["frontend", "new-guards", "search", "floating-layer"],
+    ),
+    Case(
+        name="「kind → 人话」表里 image 那一档被摘掉必须被抓住",
+        why="摘掉之后它掉进 default 分支，而 default 对**认识的** kind 是原样截断载荷 ⇒"
+        "     会话列表/通知/检索行三处同时把 JSON 露出去（同一句用户反馈的第二条链）。"
+        "     这条钉的是那张表本身，不是接线 —— 上一条钉的是「谁调它」，两条各守一侧。",
+        file=ROOT / "src" / "utils" / "messages.ts",
+        injections=[('    case "image":\n      return "[图片]";',
+                     '    case "image_unused":\n      return "[图片]";')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="的预览里出现了载荷原文",
+        tags=["frontend", "new-guards", "search"],
+    ),
+    Case(
+        name="表情矩阵段退回「把常用摘走」必须被抓住（下面不随上面变那条）",
+        why="4.31.26 那一版把常用的几格从抖音原序里摘走 ⇒ 常用攒得越多、下面洞越多。"
+        "     用户 2026-10-09 明确改口：「下面表情不随上面常用变化而变化」。"
+        "     注入 = 退回摘走那一版（矩阵段少几格、且原序出现洞）。",
+        file=ROOT / "src" / "utils" / "emojiUsage.ts",
+        injections=[('  return { items: [...head, ...all], frequentCount: head.length };',
+                     '  const hf = new Set(head.map((e) => e.file));\n'
+                     '  return { items: [...head, ...all.filter((e) => !hf.has(e.file))], '
+                     'frequentCount: head.length };')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="矩阵段被改动过",
+        tags=["frontend", "new-guards", "emoji"],
+    ),
+    Case(
+        name="表情格子的 :key 退回只用 file 必须被抓住（同一表情现在有两格）",
+        why="常用那一行与矩阵里的原序位置会渲染同一个表情 ⇒ 只用 file 当键会撞，"
+        "     Vue 报重复键并复用错节点（表现是点一格、另一格跟着变）。"
+        "     这条钉的是「带段号的键」还在，键的形状是这两段划分唯一的落点。",
+        file=ROOT / "src" / "components" / "EmojiPicker.vue",
+        injections=[('        :key="cellKey(e, i)"', '        :key="e.file"')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="渲染键没带段号",
+        tags=["frontend", "new-guards", "emoji"],
+    ),
+    Case(
+        name="表情染色改成按表情判必须被抓住（按位置判那条）",
+        why="两段划分只能按**位置**判（index < frequentCount）。按 file 或按账里有没有这条判，"
+        "     矩阵里同一表情那一格会被连带染色、连带读成「常用 · [微笑]」——"
+        "     而这两格在界面上挨得不远，看起来就像配色坏了。",
+        file=ROOT / "src" / "components" / "EmojiPicker.vue",
+        injections=[('        :class="isFrequent(i) ? \'bg-[var(--gosslan-primary-light)]\' : \'\'"',
+                     '        :class="usage[e.displayName] ? \'bg-[var(--gosslan-primary-light)]\' : \'\'"')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="格子的染色不再吃位置",
+        tags=["frontend", "new-guards", "emoji"],
     ),]

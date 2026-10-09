@@ -35,7 +35,7 @@ import {
 } from "@/utils/chatSearch";
 import { t } from "@/i18n";
 import type { ChatSearchGroup, ChatSearchMessage } from "@/types";
-import { isKnownKind, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
+import { previewBody } from "@/utils/messages";
 
 const props = defineProps<{ open: boolean; initialKeyword?: string }>();
 const emit = defineEmits<{
@@ -47,12 +47,18 @@ const emit = defineEmits<{
 /**
  * 搜索结果里一行显示的文本（INV-P24 第 2 条）。
  *
- * 本机不认识的 kind（对端 Gosslan 比本机新）载荷往往是 JSON —— 检索页直接铺 `content`
- * 等于把 JSON 摆给用户看。这里换成与气泡/会话列表同一句占位文案。
+ * ⚠️ 这里**绝不能**直接铺 `content`：SQL 检索的是载荷原文，而图片 / 文件 / 合并转发 /
+ * 任务 / 投票 / 公告这六种 kind 的载荷就是 JSON —— 以前只把"本机不认识的 kind"换成了
+ * 占位文案（887477e），认识的那六种照样把 `{"title":"…","sha256":"…"}` 摆给用户看
+ * （用户 2026-10-09：「搜索列表显示的都是 json」）。
+ * 现在与气泡、会话列表、系统通知共用 `previewBody` 那唯一一份「kind → 人话」。
+ *
+ * 第三个参数传 0 = **不截断**：会话列表要截 30 字，而这里要在正文里定位关键词
+ * （`hitSnippet` 与 `highlightText` 都按关键词找），截了就没得定位了。
  */
 function cellText(m?: ChatSearchMessage): string {
   if (!m) return "";
-  return isKnownKind(m.kind) ? m.content : UNSUPPORTED_KIND_LABEL;
+  return previewBody(m.kind, m.content, 0);
 }
 
 const app = useAppStore();
@@ -290,7 +296,7 @@ function showSender(group: ChatSearchGroup): boolean {
         >
           {{ senderName ?? t("search.sender") }}
         </button>
-        <div v-if="senderMenuOpen" class="gosslan-menu absolute right-0 top-9 z-20 max-h-64 overflow-y-auto">
+        <div v-if="senderMenuOpen" class="gosslan-menu frost absolute right-0 top-9 z-20 max-h-64 overflow-y-auto">
           <button role="menuitem" class="gosslan-menu-item" @click="chooseSender(null)">
             {{ t("search.sender.all") }}
           </button>
@@ -318,7 +324,7 @@ function showSender(group: ChatSearchGroup): boolean {
         >
           {{ datePreset === "all" ? t("search.date") : t(`search.date.${datePreset}`) }}
         </button>
-        <div v-if="dateMenuOpen" class="gosslan-menu absolute right-0 top-9 z-20">
+        <div v-if="dateMenuOpen" class="gosslan-menu frost absolute right-0 top-9 z-20">
           <button
             v-for="p in SEARCH_DATE_PRESETS"
             :key="p"

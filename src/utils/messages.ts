@@ -237,9 +237,20 @@ export function syncProfileFromPeers(
   }
 }
 
-/** 消息摘要（会话列表展示）。 */
-export function previewText(rec: MessageRecord): string {
-  switch (rec.kind) {
+/**
+ * `kind` → 一行**人话**正文 —— 会话列表摘要、系统通知、置顶条与搜索结果页共用的唯一一份。
+ *
+ * 存在的理由与 `protocol::preview_text` 同一句：JSON 载荷的 kind 若不给人话，就会把
+ * 「界面上显示了一串 JSON」暴露给用户（用户 2026-09-17）。
+ *
+ * `textLimit` **只管** text / system 这类"载荷本身就是正文"的分支：
+ * 会话列表要截 30 字，而搜索结果页要在正文里定位关键词，截了就没得定位 ⇒ 传 0 不截。
+ * 卡片类分支不受它影响 —— 它们返回的是载荷里那一句（标题 / 问题 / 正文），本来就不是整段 JSON。
+ *
+ * ⚠️ 与 Rust `protocol::preview_text` 逐项同源（那份截断在 `truncate_preview` 里）。
+ */
+export function previewBody(kind: string, content: string, textLimit = 30): string {
+  switch (kind) {
     case "file":
       return "[文件]";
     case "image":
@@ -248,13 +259,13 @@ export function previewText(rec: MessageRecord): string {
       return "[代码]";
     // 合并转发：卡片是 JSON，截前 30 字符会得到 '{"title":"群聊的聊天记录"' 这种东西。
     case "merge":
-      return mergeSummary(rec.content);
+      return mergeSummary(content);
     case "todo":
     case "todo_update": {
       // 待办载荷是 JSON，直接吐出来就是「聊天列表/通知显示了一串 JSON」的毛病（用户 2026-09-17）。
       // 这里只取标题，回落到「[任务]」，让列表与通知都干净。
       try {
-        const p = JSON.parse(rec.content) as { title?: unknown };
+        const p = JSON.parse(content) as { title?: unknown };
         if (typeof p.title === "string" && p.title) return `[任务] ${p.title}`;
       } catch {
         /* 落到回落值 */
@@ -265,7 +276,7 @@ export function previewText(rec: MessageRecord): string {
     case "poll_vote": {
       // 投票载荷是 JSON：取问题，回落「[投票]」。
       try {
-        const p = JSON.parse(rec.content) as { question?: unknown };
+        const p = JSON.parse(content) as { question?: unknown };
         if (typeof p.question === "string" && p.question) return `[投票] ${p.question}`;
       } catch {
         /* 落到回落值 */
@@ -275,7 +286,7 @@ export function previewText(rec: MessageRecord): string {
     case "announcement": {
       // 公告正文本身就是给用户看的 ⇒ 取正文；删公告是墓碑事件，只显示「[公告]」。
       try {
-        const p = JSON.parse(rec.content) as { text?: unknown };
+        const p = JSON.parse(content) as { text?: unknown };
         if (typeof p.text === "string" && p.text) return `[公告] ${p.text}`;
       } catch {
         /* 落到回落值 */
@@ -296,10 +307,15 @@ export function previewText(rec: MessageRecord): string {
     default:
       // ⚠️ 表里**没有**的 kind（对端版本比本机新）绝不能原样截断 —— 那是"界面上出现一串
       // JSON 字符串"的最后一环（INV-P24 第 2 条）。判据与文案都与 Rust `preview_text` 同源，
-      // 由 `messageKinds.test.ts` 机器比对。已知但无专门文案的（text / system）照旧截断。
-      if (!isKnownKind(rec.kind)) return UNSUPPORTED_KIND_LABEL;
-      return rec.content.slice(0, 30);
+      // 由 `messageKinds.test.ts` 机器比对。已知但无专门文案的（text / system）按 `textLimit` 截。
+      if (!isKnownKind(kind)) return UNSUPPORTED_KIND_LABEL;
+      return textLimit > 0 ? content.slice(0, textLimit) : content;
   }
+}
+
+/** 消息摘要（会话列表展示）：正文截 30 字，卡片取载荷里那一句人话。 */
+export function previewText(rec: MessageRecord): string {
+  return previewBody(rec.kind, rec.content);
 }
 
 /**

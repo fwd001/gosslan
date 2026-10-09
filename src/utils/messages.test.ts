@@ -16,6 +16,7 @@ import {
   messageMentionsName,
   pickMediaContent,
   preserveDeliveryStatus,
+  previewBody,
   previewText,
   selectCachedConversations,
   sortConversations,
@@ -126,6 +127,64 @@ test("previewText：本机不认识的 kind 给占位而不是载荷", () => {
   assert.equal(previewText(future), "[不支持的消息]");
   assert.ok(!previewText(future).includes("周五"), "未知 kind 不得外泄载荷内容");
   assert.equal(previewText(msg({ msg_id: "x", kind: "text", content: "hi" })), "hi");
+});
+
+/**
+ * 搜索结果页走的是同一份 `previewBody`，只是**不截断**（要在正文里定位关键词）。
+ *
+ * 用户 2026-10-09：「搜索列表显示的都是 json」。根因不是"未知 kind"那一档（887477e 已经堵了），
+ * 而是**本机认识的六种卡片载荷本来就是 JSON**，而检索页当时直接铺 `content`。
+ * 所以这里把六种一律点名：任何一条又回到原文，这一格就会红。
+ */
+test("previewBody：认识的卡片 kind 一律给人话，不许铺载荷原文", () => {
+  const cases: [string, string][] = [
+    ["image", '{"name":"a.png","path":"/x/a.png","size":1,"sha256":"ab"}'],
+    ["file", '{"name":"合同.pdf","size":2048,"subtype":"application/pdf"}'],
+    ["merge", '{"title":"群聊的聊天记录","messages":[{"content":"x"}]}'],
+    ["todo", '{"title":"情报状态","assignees":["d1"],"description":"周五前交"}'],
+    ["todo_update", '{"title":"情报状态","status":"doing"}'],
+    ["poll", '{"question":"周五团建去哪","options":["山","海"]}'],
+    ["announcement", '{"text":"下周三停网半天","pinned":true}'],
+  ];
+  for (const [kind, payload] of cases) {
+    const out = previewBody(kind, payload, 0);
+    assert.ok(!out.includes("{"), `${kind} 的预览里出现了载荷原文：${out}`);
+    assert.ok(!out.includes('"'), `${kind} 的预览里出现了 JSON 引号：${out}`);
+    assert.ok(out.startsWith("["), `${kind} 的预览应当以「[类型]」开头：${out}`);
+  }
+  // 卡片那一句人话确实被取出来了（不是统统退化成光秃秃的「[任务]」）
+  assert.equal(previewBody("todo", '{"title":"情报状态"}', 0), "[任务] 情报状态");
+  assert.equal(previewBody("poll", '{"question":"去哪"}', 0), "[投票] 去哪");
+});
+
+/**
+ * 截断只管"载荷本身就是正文"那一支，而且是**调用方决定**的：
+ * 会话列表截 30，搜索结果页不截。这条钉的是 `textLimit` 的语义边界 ——
+ * 传 0 还截，检索页就再也定位不到关键词；卡片也跟着被截，那是另一处退化。
+ */
+test("previewBody：textLimit=0 不截正文，卡片分支不受它影响", () => {
+  const long = "开".repeat(50);
+  assert.equal(previewBody("text", long, 0).length, 50, "检索页要的完整正文被截了");
+  assert.equal(previewBody("text", long).length, 30, "会话列表默认仍截 30");
+  const payload = `{"title":"${long}"}`;
+  assert.equal(
+    previewBody("todo", payload, 0),
+    `[任务] ${long}`,
+    "卡片那一句话不该因为调用方要了全长就被改形状",
+  );
+  assert.equal(previewBody("todo", payload), `[任务] ${long}`, "卡片在默认档下同样不截");
+});
+
+/** 摘要与检索行必须同源：`previewText` 只是 `previewBody` 的默认档包装。 */
+test("previewText 就是 previewBody 的默认档（不留第二份 kind→文案表）", () => {
+  for (const kind of ["text", "file", "image", "code", "merge", "todo", "poll", "announcement"]) {
+    const content = kind === "text" ? "hi" : '{"title":"甲","question":"甲","text":"甲"}';
+    assert.equal(
+      previewText(msg({ msg_id: "x", kind: kind as never, content })),
+      previewBody(kind, content),
+      `${kind} 两家的口径分叉了`,
+    );
+  }
 });
 
 // ---------------- 会话更新（applyIncomingToConversations） ----------------

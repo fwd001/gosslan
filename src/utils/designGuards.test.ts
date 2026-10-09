@@ -8,6 +8,7 @@ import {
   checkStyleCascade,
   checkUnreadBadgeComponent,
   findHandWrittenBadges,
+  findMenuWithoutBackdrop,
   findAvatarFaceWithoutAriaHidden,
   findModifierClassWithoutStyle,
   modifierClassesUsed,
@@ -1984,6 +1985,64 @@ test("SelfAvatar 的那个「唯一数据源」确实是 store，不是各自传
   // 反空转：这条判据读的是真文件；若 SelfAvatar 被改名/删掉，上面三条会一起红，
   // 而不是"扫到 0 处所以恒真"。
   assert.match(src, /class="gosslan-avatar-box/, "根节点要带 gosslan-avatar-box（emoji 字号靠它的容器查询）");
+});
+
+// ---------------- ㉗ 搜索结果行只许走那一份「kind → 人话」，不许铺载荷原文 ----------------
+//
+// 用户 2026-10-09：「搜索界面搜索列表显示的都是 json」。887477e 那次只堵了**本机不认识**的
+// kind，而 image / file / merge / todo / poll / announcement 这六种**认识**的 kind 载荷本来就是
+// JSON，检索页当时仍然直接铺 `content` ⇒ 六种里任何一种命中都是一屏花括号。
+// 判据钉的是"这一行有没有过 `previewBody`"，不是"有没有出现 m.content"——
+// 后者是取值口，永远要在（传给 previewBody 的就是它）。
+test("搜索结果行必须过 previewBody，不许直接铺载荷", () => {
+  const root = join(import.meta.dirname, "..");
+  const src = stripShapeComments(
+    readFileSync(join(root, "components", "search", "ChatSearchDialog.vue"), "utf8"),
+  );
+  assert.ok(
+    /previewBody\(\s*m\.kind,\s*m\.content/.test(src),
+    "检索行不再走 previewBody 那份唯一的「kind → 人话」⇒ 卡片 kind 的 JSON 会回到界面上",
+  );
+  // 三种"把载荷原样交出去"的写法一律禁止（返回、三元的一支、直接插值）
+  for (const bad of [/return\s+m\.content\s*[;\n]/, /\?\s*m\.content\s*:/, /\{\{\s*m\.content\s*\}\}/]) {
+    assert.ok(!bad.test(src), `检索行又把载荷原文直接交给了界面：${bad}`);
+  }
+  // 反空转：上面三条必须抓得住修复前那一行的真实形状
+  const before = "return isKnownKind(m.kind) ? m.content : UNSUPPORTED_KIND_LABEL;";
+  assert.ok(/\?\s*m\.content\s*:/.test(before), "判据抓不到修复前那一行 ⇒ 上面那句 !test 是空转");
+  assert.ok(!/previewBody\(/.test(before), "正向那条也一样，改回去要能红");
+});
+
+// ---------------- ㉘ 自绘菜单必须成对写 frost（.gosslan-menu 自己不带底） ----------------
+//
+// 同一句用户反馈的另一半：搜索面板那两个筛选下拉是透明的。全站六处 `.gosslan-menu` 里
+// 五处写了 `frost`、两处漏了 —— 这种"只少一个类"的缺陷没有任何机器信号，
+// 而它坏的方式是**文字叠在文字上**，比不居中严重。
+test("findMenuWithoutBackdrop 认容器、不认菜单项", () => {
+  const bad = findMenuWithoutBackdrop('<div class="gosslan-menu absolute right-0 top-9 z-20"></div>');
+  assert.equal(bad.length, 1, "缺底的容器必须报出来");
+  assert.equal(findMenuWithoutBackdrop('<div class="gosslan-menu frost fixed z-[70]"></div>').length, 0);
+  // 菜单项与提示行里也含 "gosslan-menu" 这七个字，按词匹配才不会把它们判成容器
+  assert.equal(
+    findMenuWithoutBackdrop(
+      '<button class="gosslan-menu-item"></button>\n<div class="gosslan-menu-hint px-2"></div>',
+    ).length,
+    0,
+    "按子串匹配会把菜单项当成容器 ⇒ 全站假红",
+  );
+});
+
+test("src 下所有自绘菜单都带了底", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findMenuWithoutBackdrop(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `发现透明得能看见底下一层的自绘菜单：\n${bad.join("\n")}`);
 });
 
 // ---------------- 浮层必须 escape 出裁切容器（用户 2026-10-07 那句「被内部 DOM overflow 裁掉」） ----------------

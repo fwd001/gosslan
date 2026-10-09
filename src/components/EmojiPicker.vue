@@ -3,7 +3,7 @@ import { computed, nextTick, ref, watch } from "vue";
 import { EMOJIS, type EmojiDef } from "@/utils/emoji";
 import {
   readEmojiUsage,
-  topEmojiTokens,
+  pickerCells,
   withEmojiUse,
   writeEmojiUsage,
   type EmojiUsage,
@@ -40,36 +40,33 @@ const panelRef = ref<HTMLDivElement | null>(null);
 let restoreFocusTo: HTMLElement | null = null;
 
 /**
- * 「最常使用」那一格（用户 2026-09-29：「表情选择加一个最常使用，算法你来定」）。
+ * 面板的格子 = 「常用」那一行 + **完整**的抖音原序矩阵（用户 2026-10-09 定的形状）。
  *
- * 做法是**把最常用的几个挪到同一个网格的最前面**（微信/飞书式），而不是再开第二块网格：
- * 上面那个 `COLS` 是写死的键盘行宽，它只对"一个 grid 容器"成立 —— 常用行单独成网格的话，
- * ↑↓ 的落点就会算错，而这在界面上只表现为"有点不对"，很难被发现。
- * 格子总数因此不变（`emojiUsage.test.ts` 那条按形状数的判据钉的就是这一点）。
+ * 两件事分开看：
+ * - **形状上仍然只有一个网格**。常用与矩阵是同一个 `cells` 序列的前后两段，
+ *   上面那个 `COLS` 是写死的键盘行宽，它只对"一个 grid 容器"成立 —— 常用单独成网格的话
+ *   ↑↓ 的落点就错了，而这在界面上只表现为"有点不对"，很难被发现。
+ *   那一行小标题是网格里一个 `col-span-8` 的子元素、**不是 button**，
+ *   所以它占一整行却不参与 `buttons()` 的下标 ⇒ 步长照旧成立（运行时探针再量一次真实列数）。
+ * - **矩阵那一段不随常用变**。旧做法把常用那几格从原序里摘走 ⇒ 常用越多下面洞越多。
+ *   现在同一个表情会出现两格，于是两处必须按**位置**而不是按 file 判：
+ *   `:key` 要带段号（否则撞 key），染色与无障碍标签也不能连带打到矩阵那一格。
  *
  * 计数记在**面板自己**的选中出口上：两处入口（输入框插入、消息表情回应）用的是同一个组件，
  * 在这一层记一次就够，不用调用点各写一遍（那样必然会漏掉其中一个）。
  */
 const storage = typeof localStorage === "undefined" ? null : localStorage;
 const usage = ref<EmojiUsage>(readEmojiUsage(storage));
-const defByToken = new Map(EMOJIS.map((e) => [e.displayName, e]));
-
-/** 账里的 token 可能指向已被删掉的表情（换过表情资源）：取不到定义就当没这回事。 */
-const headDefs = computed(() =>
-  topEmojiTokens(usage.value)
-    .map((token) => defByToken.get(token))
-    .filter((d): d is EmojiDef => !!d),
-);
-const headFiles = computed(() => new Set(headDefs.value.map((d) => d.file)));
-const cells = computed(() => [
-  ...headDefs.value,
-  ...EMOJIS.filter((e) => !headFiles.value.has(e.file)),
-]);
-function isFrequent(e: EmojiDef): boolean {
-  return headFiles.value.has(e.file);
+const grid = computed(() => pickerCells(EMOJIS, usage.value));
+const cells = computed(() => grid.value.items);
+function isFrequent(i: number): boolean {
+  return i < grid.value.frequentCount;
 }
-function labelOf(e: EmojiDef): string {
-  return isFrequent(e) ? `${t("emoji.frequent")} · ${e.displayName}` : e.displayName;
+function cellKey(e: EmojiDef, i: number): string {
+  return `${isFrequent(i) ? "f" : "m"}:${e.file}`;
+}
+function labelOf(e: EmojiDef, i: number): string {
+  return isFrequent(i) ? `${t("emoji.frequent")} · ${e.displayName}` : e.displayName;
 }
 
 function pick(e: EmojiDef) {
@@ -124,8 +121,10 @@ watch(
          内宽 = 360 - 16(p-2 左右各 8) = 344 ≈ 8 列 × 32(h-8/w-8) + 7 间隙 × 12(gap-3)
        改格子尺寸或间隙时必须同步改面板宽度，否则 8 列 1fr 会把固定 36px 的格子挤到溢出、
        表情互相重叠（列宽由 1fr 决定，格子却是固定 px）。
-       间隙由 4px 提到 8px 的原因：原间隙只有表情宽度的 1/9，整片网格看起来"贴死"很挤；
-       8px 后留白翻倍，而可视高度 300 内仍是 7 行（36 + 44×6 = 300，正好 7 行）不损失行数。 -->
+       间隙由 4px 提到 8px 的原因：原间隙只有表情宽度的 1/9，整片网格看起来"贴死"很挤。
+       ⚠️ 这里以前还写着"300 的可视高度里正好 7 行、不损失行数"，本轮没有逐格量过行数，
+       就不再复述那个精确数。能确定的只有一件：常用那一行的小标题会占掉一整行高度
+       （攒不出常用时整行不渲染 ⇒ 那一档与改前同高）。 -->
   <div
     v-if="open"
     ref="panelRef"
@@ -141,14 +140,23 @@ watch(
       class="grid grid-cols-8 content-start gap-3 overflow-y-auto p-2"
       style="height: 300px"
     >
+      <!-- 「常用」那一行的小标题：占满一整行（col-span-8），且**不是 button** ⇒
+           它不进下面 `buttons()` 的下标，所以键盘的整行步长照旧（运行时探针再量一次真实列数）。
+           一次都没用过时整行不渲染 —— 空标题比没有标题更吵。 -->
+      <div
+        v-if="grid.frequentCount"
+        class="col-span-8 border-b border-[var(--gosslan-divider)] pb-1 text-[11px] leading-none text-[var(--gosslan-text-2)]"
+      >
+        {{ t("emoji.frequent") }}
+      </div>
       <button
-        v-for="e in cells"
-        :key="e.file"
+        v-for="(e, i) in cells"
+        :key="cellKey(e, i)"
         class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
-        :class="isFrequent(e) ? 'bg-[var(--gosslan-primary-light)]' : ''"
-        :data-emoji-freq="isFrequent(e) ? '1' : undefined"
-        :title="labelOf(e)"
-        :aria-label="labelOf(e)"
+        :class="isFrequent(i) ? 'bg-[var(--gosslan-primary-light)]' : ''"
+        :data-emoji-freq="isFrequent(i) ? '1' : undefined"
+        :title="labelOf(e, i)"
+        :aria-label="labelOf(e, i)"
         @click="pick(e)"
       >
         <img

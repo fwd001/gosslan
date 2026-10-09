@@ -401,10 +401,90 @@ fn clamp_aux_size(cur: (u32, u32), min: (u32, u32), max: (u32, u32)) -> (u32, u3
     )
 }
 
-/// 把窗口摆到主窗口正中（**只动位置，不动尺寸**）。
+/// 独立窗口里**只有图片预览**改按显示器居中（用户 2026-10-09：主窗口上移到屏幕靠上的位置后，
+/// 「打开预览图片 窗口会有一部分展示在屏幕外面了」）。
+///
+/// 其余四扇仍以主窗口为参照物，那是 2026-09-16「新窗口没居中、而且比主窗口还大很多」定下来的
+/// 口径（见 [`aux_window_geometry`] 的说明），不跟着改。预览这一扇给不同的摆法是因为它
+/// **1120×820 比多数主窗口还大**：以主窗口为参照居中，等于必然顶出屏幕边缘。
+#[cfg(desktop)]
+fn aux_centers_on_monitor(label: &str) -> bool {
+    label == crate::WINDOW_PREVIEW
+}
+
+/// 一块屏幕区域（物理像素：左上角 + 宽高）。
+#[cfg(desktop)]
+type AuxRect = (i32, i32, u32, u32);
+
+/// 在矩形内**居中**（纯计算，便于单测）。装得下才居中，装不下贴左上角，
+/// 剩下的交给 [`clamp_pos_into_rect`] 收尾。
+#[cfg(desktop)]
+fn centered_in_rect(rect: AuxRect, size: (u32, u32)) -> (i32, i32) {
+    let axis = |origin: i32, span: u32, want: u32| -> i32 {
+        if want as i64 >= span as i64 {
+            return origin;
+        }
+        origin + ((span as i64 - want as i64) / 2) as i32
+    };
+    (axis(rect.0, rect.2, size.0), axis(rect.1, rect.3, size.1))
+}
+
+/// 把整扇窗**平移**进矩形内（纯计算，便于单测；不改尺寸）。
+///
+/// 窗口本身比矩形还大时贴左上角：宁可让用户自己去拉小，也不要开出一扇有一截在屏幕外 ——
+/// 这几扇都是 `decorations(false)`，掉出去的那一截**没有把手可以拖回来**。
+#[cfg(desktop)]
+fn clamp_pos_into_rect(pos: (i32, i32), size: (u32, u32), rect: AuxRect) -> (i32, i32) {
+    let axis = |origin: i32, span: u32, want: u32, at: i32| -> i32 {
+        let (span, want) = (span as i64, want as i64);
+        if want >= span {
+            return origin;
+        }
+        // `hi >= lo` 由上面那条早退保证：`clamp` 在 lo > hi 时会 panic，这里不许走到那一步
+        (at as i64).clamp(origin as i64, origin as i64 + span - want) as i32
+    };
+    (
+        axis(rect.0, rect.2, size.0, pos.0),
+        axis(rect.1, rect.3, size.1, pos.1),
+    )
+}
+
+/// 「该把窗口摆到哪块屏」= **主窗口所在**那块屏的工作区（已扣掉菜单栏 / 任务栏）。
+///
+/// 参照物是主窗口而不是预览窗口自己：常驻窗口可能还留在**上一块屏**上（2026-09-16 多屏
+/// 反馈的另一半），拿它自己的当前屏就等于把那个错误固定下来。
+///
+/// 退路依次是：本窗口当前屏 → 主屏 → `None`。`None` 时调用方保持旧摆法，
+/// 也就是**宁可不钳，也不把窗口摆到一个猜出来的位置**。
+#[cfg(desktop)]
+fn aux_anchor_rect(app: &tauri::AppHandle, win: &tauri::WebviewWindow) -> Option<AuxRect> {
+    let main_center = app
+        .get_webview_window(crate::WINDOW_MAIN)
+        .and_then(|m| Some((m.outer_position().ok()?, m.outer_size().ok()?)))
+        .map(|(p, s)| {
+            (
+                p.x as f64 + s.width as f64 / 2.0,
+                p.y as f64 + s.height as f64 / 2.0,
+            )
+        });
+    let monitor = main_center
+        .and_then(|(x, y)| app.monitor_from_point(x, y).ok().flatten())
+        .or_else(|| win.current_monitor().ok().flatten())
+        .or_else(|| win.primary_monitor().ok().flatten());
+    let area = *monitor?.work_area();
+    Some((area.position.x, area.position.y, area.size.width, area.size.height))
+}
+
+/// 把窗口摆正（**只动位置，不动尺寸**）：预览按显示器工作区居中，其余按主窗口居中，
+/// 最后一律钳进那块屏的工作区。
 ///
 /// 位置按**真实外框**算：外框含标题栏与边框，而这两样在不同缩放的屏上厚度不同，
 /// 事先估算不出来（所以要在尺寸确定之后再问窗口自己）。尺寸不动，是为了留住用户自己拉过的大小。
+///
+/// ⚠️ 钳制这一步是本轮补的：常驻窗口的尺寸**不随主窗口重算**（`show_existing_aux_window`
+/// 故意只重摆位置，留住用户拉过的大小），所以"子窗口永远不比主窗口大"那条不变式只在
+/// **创建那一刻**成立。用户后来把主窗口拉小、或自己把预览拉大，再打开时按主窗口居中就会
+/// 顶出屏幕 —— 这就是 2026-10-09 报的那一屏。
 #[cfg(desktop)]
 fn recenter_aux_window(win: &tauri::WebviewWindow, geo: &AuxWindowGeometry) {
     use tauri::{PhysicalPosition, Position};
@@ -412,8 +492,16 @@ fn recenter_aux_window(win: &tauri::WebviewWindow, geo: &AuxWindowGeometry) {
         Ok(s) => (s.width, s.height),
         Err(_) => geo.size, // 拿不到就按内尺寸居中（差半个标题栏，无伤）
     };
-    let (x, y) = geo.centered_pos(outer);
-    let _ = win.set_position(Position::Physical(PhysicalPosition::new(x, y)));
+    let rect = aux_anchor_rect(win.app_handle(), win);
+    let base = match (aux_centers_on_monitor(win.label()), rect) {
+        (true, Some(r)) => centered_in_rect(r, outer),
+        _ => geo.centered_pos(outer),
+    };
+    let pos = match rect {
+        Some(r) => clamp_pos_into_rect(base, outer, r),
+        None => base,
+    };
+    let _ = win.set_position(Position::Physical(PhysicalPosition::new(pos.0, pos.1)));
 }
 
 /// 桌面端：打开独立的「运行日志」窗口（已存在则聚焦）。
