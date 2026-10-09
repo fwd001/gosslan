@@ -68,6 +68,7 @@ interface PerfApi {
   n: number;
   scrollTest: (steps?: number, stepPx?: number, fromBottom?: boolean) => Promise<unknown>;
   accuracy: (index: number, align?: "top" | "bottom") => Promise<unknown>;
+  calibrate: (reps?: number) => unknown;
   resetCounters: () => void;
 }
 
@@ -156,7 +157,39 @@ const App = defineComponent({
       };
     }
 
-    expose({ scrollTest, accuracy });
+    /**
+     * 「整表前缀和里估算那一段」的直接耗时：热缓存下把 n 条各估一次并计时。
+     *
+     * 为什么要单独量这个（不是把 scrollTest 的帧时间拆开看）：帧时间是**总量**，
+     * 而 N10 要判的是"每帧一次整表重算"里有多少落在估算上 —— 只有直接量才知道
+     * "少重算几次"能省下多少（省不下就不许动 VirtualList，约束 7）。
+     *
+     * ⚠️ 这是**下界**：VirtualList 的重算循环里每条还多一次响应式 ref 读取
+     * （`heightVersion.value`）+ 一次 `heightOverride` Map 查询 + 一次 `keyOf`，
+     * 这些不经过本函数 ⇒ 真实整表成本 ≥ 这里报的数。
+     * ⚠️ 跑完要把 `estimateCalls` 清零：这 n×reps 次调用不属于任何一帧，
+     * 留着会把 `offsetsRebuilds`（= estimateCalls / n）撑成假数。
+     */
+    function calibrate(reps = 5) {
+      const runs: number[] = [];
+      for (let r = 0; r < reps; r++) {
+        const t0 = performance.now();
+        for (let i = 0; i < items.length; i++) estimateHeight(items[i], i);
+        runs.push(performance.now() - t0);
+      }
+      estimateCalls = 0;
+      const sorted = [...runs].sort((a, b) => a - b);
+      const med = sorted[Math.floor(sorted.length / 2)] ?? 0;
+      return {
+        reps,
+        onePassMs: +med.toFixed(2),
+        minMs: +Math.min(...runs).toFixed(2),
+        maxMs: +Math.max(...runs).toFixed(2),
+        perItemUs: +((med * 1000) / items.length).toFixed(2),
+      };
+    }
+
+    expose({ scrollTest, accuracy, calibrate });
     // ⚠️ 必须给滚动容器**确定高度**，否则它的 clientHeight 会等于内容高度 ——
     // 而"可视区高度"正是虚拟化的输入：高度不约束 → 全部行都算"可见" → 5 万/10 万行全进 DOM。
     // 这里直接写在容器元素上（不走 h-full 类），避免依赖 Tailwind 是否扫到本页。
@@ -200,4 +233,5 @@ const exposed = mountEl.__vue_app__?._instance?.exposed;
   },
   scrollTest: exposed?.scrollTest,
   accuracy: exposed?.accuracy,
+  calibrate: exposed?.calibrate,
 } satisfies PerfApi & { n: number };

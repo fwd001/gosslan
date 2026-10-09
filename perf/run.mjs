@@ -54,16 +54,23 @@ for (let i = 0; i < 60; i++) {
   await new Promise((r) => setTimeout(r, 500));
 }
 
+// PERF_ONLY=calib ⇒ 只跑"整表估算一遍"的计时，跳过 660 帧滚动与 accuracy。
+// 为什么要这条出口：n=100000 那一档整条链在 Runtime.evaluate 的 180s 超时里跑不完（历史归因未定），
+// 而"重算成本随条数怎么涨"这件事只需要一遍整表，不需要真滚 660 帧。
+const ONLY = process.env.PERF_ONLY ?? "";
 const result = await evalJs(`(async () => {
   const p = window.__perf;
+  if (${JSON.stringify(ONLY)} === "calib") return { n: p.n, calib: p.calibrate ? p.calibrate(5) : null };
   const idxs = [0, 1, Math.floor(p.n/2), p.n-2, p.n-1].filter((v,i,a)=>a.indexOf(v)===i);
+  // 先量"整表估算一遍"的直接耗时（会把 estimateCalls 归零，所以必须在 scrollTest 之前）
+  const calib = p.calibrate ? p.calibrate(5) : null;
   p.resetCounters();
   const cold = await p.scrollTest(60, 800, false);           // 冷启动：大量首测行 → 触发最多的 offsets 重算
   const warmUp = await p.scrollTest(300, 800, true);         // 向上翻（从底部往历史翻）
   const warmDown = await p.scrollTest(300, 800, false);      // 向下翻
   const acc = [];
   for (const i of idxs) acc.push(await p.accuracy(i));
-  return { n: p.n, cold, warmUp, warmDown, acc };
+  return { n: p.n, calib, cold, warmUp, warmDown, acc };
 })()`);
 
 console.log(JSON.stringify(result, null, 2));
