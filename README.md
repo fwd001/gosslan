@@ -97,6 +97,8 @@ gosslan/
 │   ├── domains.data.mjs          # 领域图数据（check-domain-map.mjs 读的就是这份）
 │   ├── ARCHITECTURE-EXPLAINED.md # 架构图解（新人版）⚠️ 自带 v4.2.7 快照戳，行号早已漂
 │   ├── acceptance/               # 验收标准 1.0-release + 稳定版验证覆盖矩阵（冒烟矩阵）
+│   │                             #   + 原生体验首轮建设报告（native-experience-round-1.md，
+│   │                             #     那份报告里的数字都是定稿时现算的，复跑命令逐条挂在正文）
 │   ├── notes/                    # 历史审计笔记（"当时发现了什么"，不是约束）
 │   ├── adr/                      # 架构决策记录（含 ADR-0020 公网哑管道中继）
 │   └── templates/                # Bug 修复 / ADR 模板

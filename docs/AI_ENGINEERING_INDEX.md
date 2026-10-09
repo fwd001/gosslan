@@ -43,6 +43,10 @@
 - `docs/acceptance/stability-smoke-matrix.md` — **稳定版验证覆盖矩阵**（AUTOMATED / SIMULATED /
   MANUAL-HARDWARE）。它是受硬数字守卫的**活文档**之一（`check-doc-numbers.mjs` 的扫描范围里有它），
   判"某件事到底有没有被测过"以它为准，不许凭印象说 PASS。
+- `docs/acceptance/native-experience-round-1.md` — **原生体验首轮建设报告**（总指令 §十一 那九项的落点）。
+  读法：里面的数字都是定稿时现算的，**每条挂着复跑命令**；它明写"未验证"的四档平台与"未测量"清单，
+  不许被摘出来当验收结论。任务清单在 `docs/stability-roadmap.md` §12.6.1（N1–N29，两种单元格形状，
+  数分母要 `grep -cE "^\|\s*(\*\*)?N[0-9]"`，只按 `**N` 数会少 8 行）。
 - `docs/version-ledger.md` — 分类台账，由 `npm run version:ledger` 生成，**别手改**（改了会被下次生成覆盖）。
 - `docs/ARCHITECTURE-EXPLAINED.md` — 架构图解（新人版，写给不读代码的人）。⚠️ 它自己标了快照基线
   `v4.2.7 · 2026-09-12`，行号与模块清单**早已漂**；当"为什么这样分层"读，别当现状清单读。
