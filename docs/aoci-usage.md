@@ -15,7 +15,7 @@ AOCI 给本仓库维护一层**可版本化的仓库级认知**：`aoci.code.txt
 
 | 位置 | 内容 | 入库 | 换机器 |
 |---|---|---|---|
-| `~/.local/bin/aoci`（本机） | CLI + `aoci mcp` stdio server，v0.1.0-rc17 | — | 必须重装 |
+| `~/.local/bin/aoci`（本机） | CLI + `aoci mcp` stdio server，v0.1.0-rc18 | — | 必须重装 |
 | `aoci.txt` | Root manifest（Volumes v1，登记两个 Volume） | ✅ | 直接可用 |
 | `aoci.meta.txt` | 标签字典 + FRAS 规则（**判据权威**） | ✅ | 直接可用 |
 | `aoci.code.txt` | 全部 Code Entry | ✅ | 直接可用 |
@@ -77,7 +77,7 @@ aoci --repo . ui --detach --json    # 本地只读状态页；aoci ui --repo . -
 
 两个坑：① **没有**顶层 `aoci guide` 命令，Guide 在 `aoci index agent guide` 且 `--agent` 必填；
 ② CLI 的写入通道（`index agent plan/stage`）在 Volumes v1 下直接拒（`error_code=config`），
-**写条目只有 MCP 一条路**。
+**写条目只有 MCP 一条路**。要「重新索引」先看 §8 —— 那组会被拒的命令有一整张对照表。
 
 收尾三件套（每轮维护跑完都要过）：`verify` → `check` → `index agent guide`，
 直到 `guide` 返回 `stage=aligned`、`complete=true`、`next_action=none`。
@@ -121,3 +121,139 @@ aoci --repo . index agent guide --agent qoder --json \
 - ❌ 每次改完一个文件就 maintain 一次；本轮任务内等**最终稳定状态**再收尾一次。
 - ❌ 为满足 `max_entries` 缩减索引覆盖或自己截批次 —— `remaining` 非零就在当前批 Apply 后重新
   `aoci_maintain`，从新 preimage 继续。
+
+## 8. 重新索引：走哪条路、会撞到什么、怎么处理
+
+> 本节每条命令与每句报错原话都在 **v0.1.0-rc18 + 本仓现状**下实跑过（2026-10-08）。数字会漂，跑一遍再说。
+
+「重新索引」其实是三件不同的事。先认清要哪一件，再敲命令——代价和可回退性完全不同。
+
+| 你要的 | 走这条 | 代价 | 能不能回退 |
+|---|---|---|---|
+| 索引跟上这次改动（日常，几乎总是这件） | MCP `aoci_maintain` 签批次 → `aoci_update_entry` 整批提交（见 §2、§3） | 只重写变动的那几条 Entry | ✅ 正式字节全在 Git 里，`git checkout` 就回去 |
+| 收录范围或基线指纹要刷新（改了 exclude、大批增删文件、换了二进制大版本） | 只读用 `aoci scope preview`；真要落盘是 `aoci scope plan` → `aoci scope apply`（一笔事务，配 `scope resume`、`scope rollback`） | 整批收录身份一起动 | ✅ 事务留精确前像 |
+| 全部条目推倒重写 | **本仓现在没有可用的「一键全量重建」入口**——§8.2 那张表就是实测被拒的清单。要么按第一行逐批 maintain，要么在仓库外新建一份走 Fresh Bootstrap | 最贵，且要人工批准 | — |
+
+### 8.1 动手前先跑三条只读检查
+
+```bash
+aoci --repo . status                 # 条目数 / 基线文件数 / 基线更新时间
+aoci --repo . check --json | python3 -c 'import json,sys,collections;f=json.load(sys.stdin)["findings"];c=collections.Counter(x["code"] for x in f);print("  ".join(f"{k}={v}" for k,v in c.most_common()))'
+find .aoci/transactions -mindepth 1 -maxdepth 1 -type d ! -name history -exec sh -c 'test -f "$1/result-applied.json" || echo "PENDING: $1"' _ {} \;
+```
+
+第三条**没有输出**才继续。它报 `PENDING: <目录>` 说明有一笔没走完的事务——先 `aoci scope status`，
+再决定 `scope resume` 还是 `scope rollback`，**别**在上面再叠一笔新事务。
+判据是「目录里有没有 `result-applied.json`」：走完的事务留下这个文件（内含 `status: applied`），没走完的没有。
+那条命令排掉 `history/`，因为那里装的是每道工序的前后像绑定件（`pre_index_sha256`、`post_index_sha256`、
+`baseline_pre_sha256`），不是待决状态。
+
+### 8.2 会被拒的命令——拒的是「这条路不适用于本仓」，不是工具坏了
+
+本仓是 Volumes v1 布局、基线已建成。下面逐条在 rc18 上实跑过：
+
+| 命令 | 你会看到的 | 该怎么办 |
+|---|---|---|
+| `aoci init …` | 退 3、`error_code=config`、「该命令或兼容写入路径不支持修改Volumes v1正式认知」 | 不靠 init 也接得上：`aoci doctor` 直接报「Qoder CLI MCP（`.mcp.json`，与 Claude Code 共用）：已配置」。真判据见 §8.6 |
+| `aoci scan` | 退 3、「基线已存在: 重建将以当前磁盘状态整体覆盖(未处理的漂移会被洗白)。确认请加 --force」 | **别顺手加 `--force`**，那句括号是真话。先用 §8.1 的量具读现状 |
+| `aoci scan --dry-run` | **也退 3**、「已有Managed Scope Baseline不能通过scan --force重建；请使用scope preview/apply」 | 在这个仓 `--dry-run` 不是安全的只读 scan；只读收录权威只有 `aoci scope preview` |
+| `aoci scan --force` | 会整体覆盖基线指纹 | 只有你确实要「承认当前磁盘状态为新起点、放弃未处理漂移」时才用，且先把 `aoci.*` 与 `.aoci/baseline.json` 提交存好 |
+| `aoci index inventory`、`index update`、`index score`、`index agent plan`、`status --deep` | 全是退 3、同一条 `config` 原话 | 这一整组是 Legacy 布局的工序，Volumes v1 上不通。等价物：`scope preview`、`check --json`、`index agent guide --agent <宿主名>` |
+| `aoci baseline scope plan` | 退 2、`error_code=baseline_scope_invalid`、「baseline_scope_managed_scope_unsupported」 | 这条也不是本仓的路（`aoci baseline --help` 底下只有 `scope` 一个子命令）。**别把它当 `scan` 的替身** |
+
+⚠️ `aoci index entries check` 报的是另一句：「未找到Entries草稿；请先运行aoci index build: 草稿区内没有符合条件的 run」
+——那是草稿区空着的正常提示，不属于上面那条 `config` 拒绝。但 `index build` 要调 AI 端点，本仓 `ai.enabled=False`
+（现读 `python3 -c "import json;print(json.load(open('.aoci/config.json'))['ai']['enabled'])"`），
+所以起草分支对本仓不可用，条目必须由宿主里的模型写。
+
+### 8.3 finding 分五类，只有两类是活
+
+`aoci --repo . check --json` 的 `findings[]` 按 `code` 分类（2026-10-08 实跑：`code_skipped=282`、
+`code_stale=19`、`code_missing=3`、`code_unbaselined=3`、`observed_pending=1`，合计 308）：
+
+| code | 是什么 | 谁处理 |
+|---|---|---|
+| `code_skipped` | 合同**免条目**：二进制（前 8000 字节含 NUL）或超 1 MiB。分 cause 现读 `binary` 与 `oversize` | 不用处理，也别给它补条目（判据见 §6） |
+| `code_stale` | 已收录、但源码变了 ⇒ 旧条目过期 | 重写这些文件的 Entry（§8 第一行那条路） |
+| `code_missing` | 磁盘有、索引没有 ⇒ 新文件 | 新建条目 |
+| `code_unbaselined` | 没进基线指纹的新文件 | 与 `code_missing` 落在同一批文件时，随这次维护批次一起解决 |
+| `observed_pending` | **人工复核门**：机器不替你说「我看过并认可了」 | 由**负责人**跑 `aoci scope acknowledge`；Agent 不该自己跑它 |
+
+`next_action=blocked` 时先分类再动手——一堆 `code_skipped` 能把「N 项 finding」撑得很大却没人要干活。
+另注：`aoci scope preview` 的 `drift.*` 与 `check` 的 `findings` 口径不同，同一个文件在两处可能归成不同类
+（实测 `docs/notes/changelog-archive.md` 在 preview 的 `unbaselined` 里、在 check 里是 `code_skipped/oversize`），
+**提交门禁认 `check`**。
+
+### 8.4 写条目被拒时看这张（配额与格式的细节见 §5）
+
+| 你会看到的 | 原因 | 出口 |
+|---|---|---|
+| `entry_field_budget_exceeded` | S 段超了该 C 档的 token 预算（字节/3） | 按证据把 C 提一档，或压缩语义；**别机械截断** |
+| `object_tag_dictionary_violation` | 标签用了字典里没有的位（例如 B=T） | 现读字典：MCP `aoci_header` |
+| `fras_structure_invalid` 且 `canonical_object_line=false` | 走 CLI `aoci update-entry` 时 `--entry` 只给了 `F:` 与 `R:` 那几段，没给完整规范对象行 | CLI 要交整行：以 `basename[TAG]: ` 开头，四段按竖线分隔，另带 `--source-sha256` |
+| `code_candidate_source_sha256_mismatch` | 自己算的哈希与机器签发的绑定不是同一串字节 | 用 `aoci_maintain` 响应里给的那个值，**永远不要自己 hash** |
+| 「重复批次: 正式索引零写入」（退 0 但没写） | 同文本重传会被拒 | 过期条目**不能靠原文重绑**：要么真改内容，要么等机器重新签发候选 |
+| `status=repair_required` 且 `formal_writes_started=false` | 批里任一候选越界 ⇒ 整批零写入 | 改完**整批重提**，不要拆开逐条 |
+| `impact_candidate_fras_invalid`（退 3） | F/R/A 原样、只把 S 整段换掉且改动幅度过大 | 优先在原文上**追加**新事实，而不是整段替换 |
+
+### 8.5 什么才算「重新索引做完了」
+
+```bash
+aoci --repo . verify --json                                # structure_valid 与 governance_aligned 都要 true
+aoci --repo . check                                        # 退 0 = 五净
+aoci --repo . index agent guide --agent qoder --json       # stage=aligned、complete=true、next_action=none
+```
+
+`structure_valid=true` 而 `governance_aligned=false` 的含义是「形状对、但还没收尾」，不是命令坏了
+（2026-10-08 本仓就是这一态：`verify` 退 1、两个布尔一真一假）。
+
+### 8.6 换了二进制大版本以后（例如 rc17 → rc18）
+
+先证明「新二进制读得懂旧索引，且收录范围没变」，再谈维护：
+
+```bash
+aoci --repo . status                       # 能报出条目数与基线文件数 = 读得懂旧资产
+python3 - <<'PY'                           # 收录权威有没有漂
+import json, subprocess
+b = json.load(open('.aoci/baseline.json'))['managed_scope']
+p = json.loads(subprocess.run(['aoci', '--repo', '.', 'scope', 'preview', '--json'],
+                              capture_output=True, text=True).stdout)
+print('policy', b['policy_identity'] == p['desired_policy_identity'],
+      'budget', b['budget_policy_identity'] == p['desired_budget_identity'])
+PY
+```
+
+两个都 `True` ⇒ 升级只换工具、不动认知（rc17→rc18 实测就是这样）。出现 `False` ⇒ 走 §8 第二行的事务，
+**别**直接 `scan --force`。
+
+MCP 那条 server 重启后能不能起，不用赌——照抄 `.mcp.json` 里那条命令做一次握手：
+
+```bash
+( printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}' \
+                  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+                  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+  sleep 8 ) \
+  | ~/.local/bin/aoci --repo "$PWD" mcp 2>/dev/null \
+  | python3 -c 'import json,sys
+for l in sys.stdin:
+    l=l.strip()
+    if not l: continue
+    d=json.loads(l)
+    if d.get("id")==1: print("server:", d["result"]["serverInfo"])
+    if d.get("id")==2: print("tools:", len(d["result"]["tools"]), sorted(t["name"] for t in d["result"]["tools"]))'
+```
+
+期望：`server` 的版本号等于你刚装的二进制、`tools` 数到 9 个 `aoci_*`（§3 那张表）。
+⚠️ **那个 `sleep 8` 是必需的，不是等 CI**：server 起来要先把整仓收录跑一遍，stdin 提前 EOF 会得到
+`error_code=command_failed`、`保留的机器事实：EOF`、零输出——本仓实测 `sleep 2` 会间歇性这样，
+**别把它读成「MCP 配置坏了」**。宿主里没出现 `aoci_*` 就先跑这段，再怀疑工具。
+
+### 8.7 三个「静默没干活」的坑
+
+- ❌ 把 `aoci.txt`、`aoci.meta.txt`、`aoci.code.txt`、`AGENTS.md` 写进 `.gitignore` 或 `.git/info/exclude`。
+  收录按 Git 的忽略权威取文件，**被忽略的会被静默跳过，索引永远建不起来**。现读：
+  `git check-ignore -v aoci.txt aoci.meta.txt aoci.code.txt AGENTS.md`——有输出就是踩了。
+  init 自己写的宿主项（`.mcp.json`、`.codex/config.toml`）保持原样，那些内嵌本机绝对路径，本来就不该入库。
+- ❌ 在 `/tmp` 下 clone 一份来验证可移植性：macOS 的 `/tmp` 是符号链接，AOCI 对这种 Git 边界失败关闭（见 §1）。
+- ❌ 看到 `aoci check` 退 1 就判「索引坏了」：先按 §8.3 数那五类各有多少，再看 `observed_pending`
+  是不是在等**你**复核——那一格机器永远等不出结果。
