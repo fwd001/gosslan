@@ -87,8 +87,19 @@ interface PerfApi {
   resetCounters: () => void;
 }
 
-/** 真 `MessageItem` 的 props，按 `ChatWindow.vue:1254-1269` 那个调用点的形状**每次渲染现构造**。 */
-function msgItemProps(item: Item, index: number) {
+/**
+ * 第四档要回答的问题与第三档不同：第三档（stable）证的是「props 对象恒新」那一半的**上界**，
+ * 而生产里真正恒新的只有**两条数组值 prop**（`ChatWindow.vue:1259` 的 `groupReaderIds()` 每次 `.map()`
+ * 出新数组、`:1264` 的 `reactionMap.get(...) ?? []` 在没有回应时是新空数组）。
+ * 所以这一档**只把那两条换成共享常量**（props 对象仍然每次现构造）⇒ 它量的就是
+ * 「不动 v-memo、只把空数组身份收成一个家」能省下多少 —— 那是一处小得多、风险也低得多的改动
+ * （消费者只读不写：`MessageReactionBar` 用 `find`/`v-for`，`MessageReceipt` 用 `slice`/`length`）。
+ */
+const EMPTY_IDS: string[] = Object.freeze([]) as never[];
+const EMPTY_CHIPS: never[] = Object.freeze([]) as never[];
+
+/** 每档各自的一份 props 构造：只有数组值那条不同，其余逐字相同。 */
+function msgItemPropsWith(item: Item, index: number, freshArrays: boolean) {
   return {
     message: item as never,
     prev: (index > 0 ? items[index - 1] : null) as never,
@@ -97,9 +108,9 @@ function msgItemProps(item: Item, index: number) {
     senderName: `用户${index % 97}`,
     // 这两条故意现构造（与生产同形：`groupReaderIds()` 每次返回新数组、`reactionMap.get() ?? []` 同理）
     // —— N21 判的就是"浅比较恒判变了 ⇒ 整棵子树重新 patch"到底值多少钱。
-    groupReaderIds: [] as string[],
-    reactions: [] as never[],
-    mentionNames: [] as string[],
+    groupReaderIds: freshArrays ? [] as string[] : EMPTY_IDS,
+    reactions: freshArrays ? [] as never[] : EMPTY_CHIPS,
+    mentionNames: freshArrays ? [] as string[] : EMPTY_IDS,
     showUnreadDivider: false,
     highlightId: null,
     selfMention: null,
@@ -124,7 +135,7 @@ const propsCache = new Map<string, unknown>();
 function stableMsgItemProps(item: Item, index: number) {
   let p = propsCache.get(item.msg_id);
   if (!p) {
-    p = msgItemProps(item, index);
+    p = msgItemPropsWith(item, index, true);
     propsCache.set(item.msg_id, p);
   }
   return p;
@@ -327,8 +338,10 @@ const App = defineComponent({
         {
           default: ({ item, index }: { item: Item; index: number }) =>
             ROW === "msgitem"
-              ? h(MessageItemCmp as never, msgItemProps(item, index) as never)
-              : ROW === "msgitem-stable"
+              ? h(MessageItemCmp as never, msgItemPropsWith(item, index, true) as never)
+              : ROW === "msgitem-const"
+                ? h(MessageItemCmp as never, msgItemPropsWith(item, index, false) as never)
+                : ROW === "msgitem-stable"
                 ? h(MessageItemCmp as never, stableMsgItemProps(item, index) as never)
                 : syntheticRow(item, index),
         },

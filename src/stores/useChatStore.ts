@@ -24,6 +24,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { trimOldest } from "@/utils/bounded";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 import { StaleGuard } from "@/utils/staleGuard";
+import { EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { actionableRequests } from "@/utils/friendRequests";
 import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/notifications";
 import { batchIsUrgent } from "@/utils/notifyUrgency";
@@ -738,9 +739,12 @@ export const useChatStore = defineStore("chat", () => {
   function groupReaderIds(groupId: string, messageTs: number): string[] {
     const myId = app.device?.device_id;
     const members = new Set(groups.value.find((group) => group.id === groupId)?.members ?? []);
-    return Object.entries(groupReads.value[groupId] ?? {})
+    const ids = Object.entries(groupReads.value[groupId] ?? {})
       .filter(([readerId, lastReadTs]) => members.has(readerId) && readerId !== myId && lastReadTs >= messageTs)
       .map(([readerId]) => readerId);
+    // 没有已读者时返回**同一个空数组**：调用点在虚拟列表的每行模板里，`[] !== []` 会让
+    // Vue 每次都判「这条 prop 变了」⇒ 整棵子树重新 patch（读数见 utils/emptyList.ts）。
+    return ids.length > 0 ? ids : EMPTY_STRING_LIST;
   }
   /** 并发触发时只让**最新那次**写回结果（迁入 `refreshGuard`，与上面几个共用同一份实现）。 */
   async function refreshTransfers() {

@@ -20,6 +20,7 @@ import {
 } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
 import { isSelfMessage } from "@/utils/selfChat";
+import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { parseQuote, stripQuoteMsgId } from "@/utils/quote";
 import { QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { parseFileMeta } from "@/utils/fileMeta";
@@ -96,9 +97,9 @@ const props = withDefaults(
     canReact: false,
     showUnreadDivider: false,
     senderName: "",
-    groupReaderIds: () => [],
+    groupReaderIds: () => EMPTY_STRING_LIST,
     highlightId: null,
-    mentionNames: () => [],
+    mentionNames: () => EMPTY_STRING_LIST,
     selfMention: null,
     selectMode: false,
     selected: false,
@@ -1344,7 +1345,7 @@ async function copyFileToClipboard() {
        两档同属性互相覆盖 ⇒ 生效的只有 48px 那一档，实测两侧各差 12px（用户 2026-10-07 报的对不齐）。 -->
   <MessageReactionBar
     v-if="!isTip"
-    :chips="reactions ?? []"
+    :chips="reactions ?? EMPTY_REACTION_CHIPS"
     :mine="mine"
     :interactive="canReact"
     :class="mine ? 'self-end' : 'self-start'"

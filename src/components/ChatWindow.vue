@@ -22,6 +22,8 @@ import { launchAuxWindow, isWindowOpening } from "@/composables/useWindowLaunche
 import { useMentionContext } from "@/composables/useMentionContext";
 import { fileToDataUrl } from "@/utils/imageBytes";
 import { MAX_MERGE_ITEMS, buildMergePayload } from "@/utils/mergeCard";
+// 消息行的空列表 prop 必须是共享常量，见 utils/emptyList.ts（量具一 ?row= 三档现量）
+import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
 import { foldPinned, isPinned } from "@/utils/pins";
 import { foldTodos, todoLiveMap, type TodoLive } from "@/utils/todos";
@@ -1256,12 +1258,12 @@ function onLoadMore() {
             :prev="index > 0 ? messages[index - 1] : null"
             :is-group="isGroup"
             :sender-name="isGroup ? chat.nicknameOf(item.sender_id) : ''"
-            :group-reader-ids="isGroup && activeGroupId ? chat.groupReaderIds(activeGroupId, item.ts) : []"
+            :group-reader-ids="isGroup && activeGroupId ? chat.groupReaderIds(activeGroupId, item.ts) : EMPTY_STRING_LIST"
             :show-unread-divider="index === unreadIndex"
             :highlight-id="highlightId"
             :mention-names="mentionNames"
             :self-mention="selfMention"
-            :reactions="reactionMap.get(item.msg_id) ?? []"
+            :reactions="reactionMap.get(item.msg_id) ?? EMPTY_REACTION_CHIPS"
             :pinned="pinnedIds.includes(item.msg_id)"
             :can-react="canReact"
             :select-mode="multiSelect"

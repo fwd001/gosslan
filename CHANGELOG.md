@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [4.33.38] - 2026-10-10
+
+### 原生体验 N21（领域 D/E/I）：消息行那两条「每次都是新空数组」的 prop 收成共享常量 —— 真消息行一帧 27.6 ms 回到 16.6 ms；**动了应用码**
+
+- **为什么不是 `v-memo`**：上一格只量到「真行比合成行贵 9.2~10.9 ms/帧」，没说清贵的**是哪一半**。
+  现在同一台量具有第四档（`?row=msgitem-const`：props 对象仍然每次现构造，只把两条数组值换成共享常量），
+  与旧的三档在**同一个 vite 进程、同一个 headless Brave、同一份构建**里逐档复跑
+  （n=3000、每步 800 px、冷启动 60 步 + 向上 300 步、视口 22 行）：
+  `synthetic` 16.7 → `msgitem` **27.6** → `msgitem-const` **16.6** ms（cold p50）。
+  ⇒ 那 10.9 ms **全部来自数组身份**（`[] !== []` ⇒ Vue 浅比较恒判「这条 prop 变了」⇒ 整棵子树重新 patch），
+  不是组件本身的渲染成本 ⇒ 补 `v-memo` 那张依赖清单**换不到东西**，而它有「漏一条 prop 就内容不刷新」的真实风险
+  （本仓现场：`ConversationList.vue:525` 当年漏 `linkOf()`）⇒ **判为不做**，落这处小一倍的改动。
+- **生产里恒新的就是两条**（逐条数过 `ChatWindow.vue` 那个调用点：其余 props 是 computed 或原始值）：
+  `:group-reader-ids` 的 `.map()` 结果与三元 `: []`、`:reactions` 的 `?? []`；
+  另有 `MessageItem.vue` 里 `:chips="reactions ?? []"` 与两条 props 默认值工厂各造一次。
+- **改法**：新增 `src/utils/emptyList.ts`（一个家，两条**冻住**的空常量）+ 上面 5 处改指它。
+  冻结是这处共享的唯一护栏：消费方全是只读（`MessageReactionBar` 用 `find`/`v-for`、`MessageReceipt` 用 `slice`/`length`），
+  一旦有人原地改它，同一份脏数组会同时挂在所有消息上 ⇒ 宁可当场 `TypeError`。
+- **验证（都在这一份工作树上现跑）**：`npm run verify` 16 绿 / 1 红，唯一那条红是 Change Budget 判据 3（在未推链上早已复现、非本次引入）；
+  新增 `src/utils/emptyList.test.ts` 三条全过（同对象 / 冻住且原地 push 与 `length=1` 各抛一次 / `[] !== []` 那条语言事实）；
+  `vue-tsc --noEmit` 与 `npm run build` 绿。**跨进程那一层（`--group local`）另跑，结论写在下面那条边界里。**
+- **这台量具与这轮验证买不到的**（别从上面那行数字往下推）：① 三档读数来自**夹具页**，
+  不是真聊天页（真页要 Rust 后端 + 真数据，本机没有 ⇒ 生产那一侧的帧数今天没有数）；
+  ② 只有 Chromium 一个引擎，WebView2 / WKWebView / Android WebView 各自记未测；
+  ③ p95 没回到同档（16.6/20.9 vs 合成 16.7/18.4）⇒ 尾帧还留着一条没归因的差；
+  ④ **守卫缺口（诚实登记，本轮没补）**：没有任何判据挡得住「有人把那两处写回 `?? []`」——
+  新测试钉的是常量自己的性质，不是那两行调用点。下一刀的形状＝`src/utils/designGuards.ts` 里一条
+  「消息行调用点不许现构造空数组」的形状判据 + 一条会红的变异用例（照 N22 那条 <img> hint 判据的做法）。
+
 ### 量具 / 文档（原生体验 N21：真 `MessageItem` 那行的成本第一次有数，一帧 +9.2 ms 全部来自「props 每次都是新的」；**应用代码一字未动**）
 
 - **给量具一加了两个档位**（`perf/vlist.ts` 的 `?row=`）：`synthetic` 是历史那套等价结构模板，
