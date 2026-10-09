@@ -226,6 +226,7 @@ onUnmounted(clearPress);
         @keydown.esc="hide(c.emoji)"
       >
         <img
+          loading="lazy" decoding="async"
           v-if="emojiUrl(c.emoji)"
           :src="emojiUrl(c.emoji) ?? undefined"
           alt=""

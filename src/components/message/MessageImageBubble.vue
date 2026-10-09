@@ -114,7 +114,7 @@ onUnmounted(clearTimer);
     <span v-if="state === 'failed'" class="absolute inset-x-0 bottom-1 text-center text-[11px] opacity-70">
       {{ t("msg.imageLoadFailed") }}
     </span>
-    <img :alt="t('msg.imageMessage')"
+    <img loading="lazy" decoding="async" :alt="t('msg.imageMessage')"
       :key="loadKey"
       :src="props.src"
       class="block max-h-72 w-full rounded-[var(--gosslan-bubble-radius)] object-contain"

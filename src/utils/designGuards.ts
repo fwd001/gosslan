@@ -1455,3 +1455,77 @@ export function findNestedThemeRuleIssues(css: string): GuardIssue[] {
   }
   return out;
 }
+
+// ---------------- ㉜ 消息图必须带 fetch hint（roadmap N22：解码不许占那一帧） ----------------
+const IMG_LOADING_RE = /\bloading\s*=\s*["']lazy["']/;
+const IMG_DECODING_RE = /\bdecoding\s*=\s*["']async["']/;
+
+/**
+ * 扫出源文件里**真实存在**的 `<img>` 标签（跳过块注释与 HTML 注释里提到的那种）。
+ *
+ * 为什么不是正则 `<img[^>]*>`：`ImageLightbox` 那支在 `:style` 里写了 `scale > 1`，
+ * 属性值里的 `>` 会把 `[^>]*` 截断 ⇒ 后半边的 `loading`/`decoding` 落在截断之外 ⇒ **把合规的报成缺**。
+ * 这里用引号状态机找闭合，并且先把注释整段替换成**等长空白**（保住下标 ⇒ 行号与 `src` 对齐）。
+ */
+export function findImgTags(src: string): Array<{ start: number; text: string }> {
+  const masked = src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: Array<{ start: number; text: string }> = [];
+  let i = 0;
+  for (;;) {
+    const j = masked.indexOf("<img", i);
+    if (j === -1) break;
+    const nxt = masked[j + 4];
+    if (nxt !== " " && nxt !== "\n" && nxt !== "\t" && nxt !== "\r" && nxt !== ">") {
+      i = j + 4;
+      continue;
+    }
+    let k = j + 4;
+    let q: string | null = null;
+    for (; k < masked.length; k++) {
+      const c = masked[k];
+      if (q) { if (c === q) q = null; }
+      else if (c === '"' || c === "'") q = c;
+      else if (c === ">") break;
+    }
+    out.push({ start: j, text: src.slice(j, k + 1) });
+    i = k < masked.length ? k + 1 : masked.length;
+  }
+  return out;
+}
+
+/**
+ * 判的是「这条 `<img>` 有没有同时写 `loading="lazy"` 与 `decoding="async"`」。
+ *
+ * 为什么这是判据而不是审美（roadmap N22）：消息行是被虚拟列表反复挂载的那一层，
+ * `<img>` 不带 hint 时浏览器**同步解码**，解码就落在滚动那一帧上；而这条退化不报错、
+ * 不影响构建、桌面跑一遍也看不出来。本仓 `src` 下没有任何 IntersectionObserver
+ * ⇒ 没有第二套懒加载机制会与此冲突（这也是为什么它必须由判据钉住，否则下一支 `<img>` 会悄悄漏掉）。
+ *
+ * ⚠️ 这条尺子买不到哪一半：它只看**源码里这两个属性在不在**，
+ * 不判懒加载在某个 WebView 版本上实际省了多少毫秒、也不判图片行的估算高度对不对
+ * —— 那两半都要真机/量具（N22 行的「收益未测量」与 N26 那格）。
+ * 逃生阀：文件级注释 `img-eager-ok`（例：`ImageLightbox` 那张用户主动点开、不在列表里的图）。
+ */
+export function findMessageImageWithoutFetchHint(src: string): GuardIssue[] {
+  if (src.includes("img-eager-ok")) return [];
+  const out: GuardIssue[] = [];
+  for (const t of findImgTags(src)) {
+    const noLoading = !IMG_LOADING_RE.test(t.text);
+    const noDecoding = !IMG_DECODING_RE.test(t.text);
+    if (!noLoading && !noDecoding) continue;
+    const miss = [noLoading ? 'loading="lazy"' : "", noDecoding ? 'decoding="async"' : ""]
+      .filter(Boolean)
+      .join(" 和 ");
+    out.push({
+      line: lineAt(src, t.start),
+      message:
+        `这条 <img> 没写 ${miss} —— 消息行会被虚拟列表反复挂载，缺 hint 时浏览器同步解码，` +
+        `解码成本就压在滚动那一帧上（roadmap N22）。` +
+        `⚠️ 判据只看这两个属性在不在，不判懒加载在真机上省了多少（那要量具与真机）。` +
+        `确实不该懒（用户主动点开、不在列表里的那一张）时在文件里写 img-eager-ok 整份跳过。`,
+    });
+  }
+  return out;
+}

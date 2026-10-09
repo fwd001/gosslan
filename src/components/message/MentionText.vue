@@ -65,6 +65,7 @@ async function openLink(href: string) {
       @open="openLink"
     />
     <img
+      loading="lazy" decoding="async"
       v-else-if="seg.kind === 'emoji'"
       :src="seg.url"
       :alt="seg.value"

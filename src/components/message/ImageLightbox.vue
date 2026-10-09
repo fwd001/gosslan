@@ -389,6 +389,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         </button>
 
         <!-- 图片主体 -->
+        <!-- img-eager-ok：这一支是用户**主动点开**、占满屏幕中央的那一张，不在虚拟列表里 ⇒
+             懒加载只会让它更晚出现。designGuards ㉜ 靠这句标记整份跳过（例外写在该例外的旁边）。 -->
         <template v-if="src">
           <img :alt="current?.name || t('msg.imagePreview')"
             :src="src"

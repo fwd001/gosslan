@@ -214,6 +214,7 @@ onBeforeUnmount(() => {
               @click="openLightbox(i)"
             >
               <img
+                loading="lazy" decoding="async"
                 :src="imageSlots[i]?.url"
                 class="max-h-64 w-full rounded-[var(--gosslan-radius-md)] object-contain"
                 :alt="t('msg.imageMessage')"

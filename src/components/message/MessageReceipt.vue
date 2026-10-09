@@ -117,7 +117,7 @@ function readerAvatar(id: string): string | null {
         class="gosslan-avatar-box flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[11px] text-white"
         :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
       >
-        <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
+        <img loading="lazy" decoding="async" alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
         <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(id)?.emoji }}</span>
       </span>
       <span
@@ -149,7 +149,7 @@ function readerAvatar(id: string): string | null {
           class="gosslan-avatar-box flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
           :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
         >
-          <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
+          <img loading="lazy" decoding="async" alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
           <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(id)?.emoji }}</span>
         </span>
         <span class="max-w-28 truncate" :title="readerName(id)">{{ readerName(id) }}</span>

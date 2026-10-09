@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """护栏非空转用例分册：前端呈现层（components / layouts / entries / 样式与打包配置里的界面判据）。
 
-本册现数 44 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
+本册现数 45 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
 用不带行首锚的写法会多算一条 —— 多出来的正是这一行本身）；2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
 `CASES` 字面量里）按**锚定的被守物**切出来，切过来那 30 条的块文本逐字未搬动过一字 ⇒
 恒等判据＝`verify-guards.py --list` 的输出排序后与拆前**逐字节相同**（条数与用例名都不是"我觉得一样"）。
@@ -244,6 +244,17 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="tap-safe",
         tags=["frontend", "mobile"],
+    ),
+    Case(
+        name="消息图漏了 loading/decoding（同步解码压进滚动那一帧）必须被抓住",
+        why="roadmap N22：`<img>` 不带 fetch hint 时浏览器同步解码，而消息行是被虚拟列表反复挂载的那一层。"
+            "这类退化不报错、不影响构建、桌面跑一遍看不出来，只有扫标签的 findMessageImageWithoutFetchHint 拦得住",
+        file=ROOT / "src" / "components" / "message" / "MessageAvatar.vue",
+        injections=[('loading="lazy" decoding="async" alt="" draggable="false"', 'alt="" draggable="false"')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="都带两个",
+        tags=["frontend", "new-guards"],
     ),
     Case(
         name="整屏浮层只让开顶部安全区、底部没人读（N16）",

@@ -23,6 +23,8 @@ import {
   findNestedThemeRuleIssues,
   findFloatingLayerWithoutEscape,
   findTopInsetWithoutBottomInset,
+  findMessageImageWithoutFetchHint,
+  findImgTags,
   teleportedRootClasses,
 } from "./designGuards.ts";
 
@@ -2381,3 +2383,53 @@ test("真实树：每个写了顶部安全区的 .vue 都也写了底部（分�
   assert.deepEqual(bad, [], `有整屏形态没让开底部安全区：\n${bad.join("\n")}\n消费者：${sites.join(", ")}`);
 });
 
+test("N22 形状：缺哪个报哪个（两个都缺报两个）", () => {
+  const both = findMessageImageWithoutFetchHint('<template>\n  <img alt="" src="a.png" />\n</template>');
+  assert.equal(both.length, 1);
+  assert.match(both[0].message, /loading="lazy"/);
+  assert.match(both[0].message, /decoding="async"/);
+  const half = findMessageImageWithoutFetchHint('<template>\n  <img loading="lazy" alt="" src="a.png" />\n</template>');
+  assert.equal(half.length, 1);
+  assert.match(half[0].message, /decoding="async"/);
+  assert.doesNotMatch(half[0].message, /loading="lazy" 和/);
+});
+
+test("N22 合规写法、注释里的 <img>、逃生阀都不报（分母不能被 prose 撑大）", () => {
+  const ok = '<template>\n  <img loading="lazy" decoding="async" alt="" src="a.png" />\n</template>';
+  assert.deepEqual(findMessageImageWithoutFetchHint(ok), []);
+  const prose = '<script>\n/** 此时 <img src> 直接报 error，所以换 :key */\n</script>\n<template>\n  <img loading="lazy" decoding="async" src="a.png" />\n</template>';
+  assert.deepEqual(findMessageImageWithoutFetchHint(prose), [], "文档注释里提一句 <img> 不该被数进分母");
+  const opted = '<template>\n  <!-- img-eager-ok -->\n  <img src="a.png" />\n</template>';
+  assert.deepEqual(findMessageImageWithoutFetchHint(opted), [], "逃生阀要走得通");
+});
+
+test("N22 属性值里的 > 不许截断标签（截断会把合规的报成缺）", () => {
+  const t = "<template>\n  <img :style='{ cursor: scale > 1 ? 2 : 1 }' loading='lazy' decoding='async' src='a.png' />\n</template>";
+  assert.deepEqual(findMessageImageWithoutFetchHint(t), []);
+  assert.equal(findImgTags(t).length, 1, "扫描器自己也只该数到 1 条");
+});
+
+test("真实树：src/components/message 下每条 <img> 都带两个 hint（分母现算并打印）", () => {
+  const dir = join(import.meta.dirname, "..", "components", "message");
+  const files = collectVueFiles(dir);
+  const sites: string[] = [];
+  const bad: string[] = [];
+  let exempt = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    const n = findImgTags(src).length;
+    if (n === 0) continue;
+    const rel = f.replace(dir + "/", "");
+    sites.push(`${rel}=${n}`);
+    if (src.includes("img-eager-ok")) { exempt += 1; continue; }
+    for (const issue of findMessageImageWithoutFetchHint(src)) {
+      bad.push(`${rel}:${issue.line} ${issue.message.slice(0, 46)}`);
+    }
+  }
+  sites.sort();
+  bad.sort();
+  assert.ok(sites.length >= 9, `message/ 下的 <img> 只数到 ${sites.length} 份，尺子大概失效了：\n${sites.join("\n")}`);
+  assert.deepEqual(bad, [], `有消息图缺 fetch hint：\n${bad.join("\n")}`);
+  assert.equal(exempt, 1, `显式豁免的那份应当只有 ImageLightbox 一支，现数 ${exempt}（${sites.join(", ")}）`);
+  console.log(`· 真实树 <img> 分母：${sites.length} 份文件 / 共 ${sites.reduce((a, s) => a + Number(s.split("=")[1]), 0)} 条标签，豁免 ${exempt} 份`);
+});

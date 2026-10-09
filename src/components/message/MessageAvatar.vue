@@ -22,7 +22,7 @@ const seed = computed(() => avatarSeedFor(props.id || props.name));
     class="gosslan-avatar-box flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)]"
     :style="{ backgroundColor: seed?.bg }"
   >
-    <img alt="" draggable="false" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
+    <img loading="lazy" decoding="async" alt="" draggable="false" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
     <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ seed?.emoji }}</span>
   </div>
 </template>
