@@ -144,9 +144,15 @@ find .aoci/transactions -mindepth 1 -maxdepth 1 -type d ! -name history -exec sh
 
 第三条**没有输出**才继续。它报 `PENDING: <目录>` 说明有一笔没走完的事务——先 `aoci scope status`，
 再决定 `scope resume` 还是 `scope rollback`，**别**在上面再叠一笔新事务。
-判据是「目录里有没有 `result-applied.json`」：走完的事务留下这个文件（内含 `status: applied`），没走完的没有。
-那条命令排掉 `history/`，因为那里装的是每道工序的前后像绑定件（`pre_index_sha256`、`post_index_sha256`、
-`baseline_pre_sha256`），不是待决状态。
+⚠️ **这条 find 是我按目录形状搭的量具，不是工具给的权威**：rc18 的 `aoci scope status --json` 顶层并没有
+"未决事务"这一格（现读它的键能证实；里面那个 `observed_pending_review` 是人工复核计数，另一回事）。
+判据取的是"走完的事务目录里有 `result-applied.json`（内含 `status: applied`）"——这半句是实读；
+"没走完时这个文件不存在"是按文件名与目录里另有 `staging/` 前像**推**的（我没在本仓造出过未走完的事务）。
+真报出 `PENDING` 时以 `aoci scope status` / `scope resume` 的输出为准，别只信这条 find。
+顺带一条实测：`aoci scope status --transaction <那笔已应用事务的 id>` 会退 2 报 `managed_scope_transaction_invalid`
+——那是"已应用的事务不按 id 查"，不是故障。
+那条 find 排掉 `.aoci/transactions/history/`：那里装的是每道工序的前后像绑定件（现读一个文件的键：
+`pre_index_sha256`、`post_index_sha256`、`baseline_pre_sha256`、`assets`、`guards`），不是待决状态。
 
 ### 8.2 会被拒的命令——拒的是「这条路不适用于本仓」，不是工具坏了
 
@@ -162,9 +168,11 @@ find .aoci/transactions -mindepth 1 -maxdepth 1 -type d ! -name history -exec sh
 | `aoci baseline scope plan` | 退 2、`error_code=baseline_scope_invalid`、「baseline_scope_managed_scope_unsupported」 | 这条也不是本仓的路（`aoci baseline --help` 底下只有 `scope` 一个子命令）。**别把它当 `scan` 的替身** |
 
 ⚠️ `aoci index entries check` 报的是另一句：「未找到Entries草稿；请先运行aoci index build: 草稿区内没有符合条件的 run」
-——那是草稿区空着的正常提示，不属于上面那条 `config` 拒绝。但 `index build` 要调 AI 端点，本仓 `ai.enabled=False`
-（现读 `python3 -c "import json;print(json.load(open('.aoci/config.json'))['ai']['enabled'])"`），
-所以起草分支对本仓不可用，条目必须由宿主里的模型写。
+——那是草稿区空着的正常提示，不属于上面那条 `config` 拒绝。但起草这一步要端点：`aoci index build --help`
+原话是"对目标文件调用用户配置端点起草单行Entry"，而本仓 `ai.enabled=False`
+（现读 `python3 -c "import json;print(json.load(open('.aoci/config.json'))['ai']['enabled'])"`，返回 False；
+`aoci ai status` 也能看，`aoci ai setup` 才是开它的口）。**我没有实跑过 `index build`**，所以这句是
+「帮助 + 配置现读」两条拼出来的：真要启用得先配端点，否则条目只能由宿主里的模型写。
 
 ### 8.3 finding 分五类，只有两类是活
 
