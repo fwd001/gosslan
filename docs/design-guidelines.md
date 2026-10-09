@@ -721,7 +721,7 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 | 无障碍 | §10 四条（可见焦点、可访问名、hover 不是唯一入口、系统三开关）各有判据 | 读屏软件真机播报（NVDA/VoiceOver）：未测；`::selection` 那一格见 `docs/stability-roadmap.md` §12.6.1 的 N7 |
 | 资源开销 | `npm run build` 后现量 dist，**两个口径一起报别混**：`du -sk dist`（按文件系统块，2026-10-10 = 2828 KB）与「逐文件字节求和」（同一天 = 2,479,504 B ≈ 2.4 MB），两者差约 15% 是块大小不是体积涨了；chunk 直接引 vite 自己那行打印（十进制 kB + gzip），别自己换算成 KiB（同一个 main chunk 是 `297.66 kB / gzip 90.09 kB`，换算成 KiB 就变成 291 —— 那不是回归，那是单位）。依赖数现读 `package.json`：`node -e "const p=require('./package.json');console.log(Object.keys(p.dependencies).length, Object.keys(p.devDependencies).length)"`（2026-10-10 = **13 9**；⚠️ 这里必须用 `Object.keys(...).length` —— `dependencies` 是对象不是数组，写 `p.dependencies.length` 会印 `undefined undefined`，这条命令本身就被这样抓出来过一次） | Windows / Android 安装包体积（出包机不在本机） |
 
-**当前真数（2026-10-10 现跑，跑法见上面两行）**：`npm test` **861 例 0 失败**；
+**当前真数（2026-10-10 现跑，跑法见上面两行）**：`npm test` **869 例 0 失败**（同日 earlier 861 ⇒ 本轮 N16 与 N22 各加 4 条静态判据，两条改动都动过应用码）；
 生产构建 `dist` 按块 **2828 KB** / 按字节 **2.4 MB**，最大单个 chunk 是入口那份（vite 打印 **297.66 kB，gzip 90.09 kB**，19 个 js 合计 973 KiB）；
 依赖 **13 运行时 + 9 开发 = 22 项**，**动画库 0 项**（现算：那 13 项里没有任何动效库 —— 复跑就是把上面那行列名单的命令改成打印名字）。
 ⚠️ chunk 的**文件名带 hash，别抄文件名**，要引用就引"跑 `npm run build` 后看 vite 打印那几行"。
