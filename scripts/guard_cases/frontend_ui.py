@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """护栏非空转用例分册：前端呈现层（components / layouts / entries / 样式与打包配置里的界面判据）。
 
-本册现数 40 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
+本册现数 41 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
 用不带行首锚的写法会多算一条 —— 多出来的正是这一行本身）；2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
 `CASES` 字面量里）按**锚定的被守物**切出来，切过来那 30 条的块文本逐字未搬动过一字 ⇒
 恒等判据＝`verify-guards.py --list` 的输出排序后与拆前**逐字节相同**（条数与用例名都不是"我觉得一样"）。
@@ -642,4 +642,19 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="格子的染色不再吃位置",
         tags=["frontend", "new-guards", "emoji"],
+    ),
+    Case(
+        name="看板行首的优先级图标退回「只画紧急」必须被抓住",
+        why="用户 2026-10-09 要的是行首一排小图标把优先级与类型一眼分开。"
+        "     最自然的滑回去写法就是给缺省那一档加个 v-if（「常规就不用画了」）——"
+        "     2026-09-30 在类型角标上已经为这件事被纠正过一次（㉔）：不画那一档才是最难认的。"
+        "     注入 = 给优先级那一枚加 v-if。",
+        file=ROOT / "src" / "components" / "GroupTasksBoard.vue",
+        injections=[('              <span :title="t(TODO_PRIORITY_LABEL_KEY[x.priority])">',
+                     '              <span v-if="x.priority !== \'normal\'" '
+                     ':title="t(TODO_PRIORITY_LABEL_KEY[x.priority])">')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="被条件化了",
+        tags=["frontend", "new-guards", "todo"],
     ),]

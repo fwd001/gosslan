@@ -114,6 +114,35 @@ export const TODO_CATEGORY_TEXT_CLASS: Record<TodoCategory, string> = {
 };
 
 /**
+ * 类型 → **图标**颜色（看板行首那一枚，用户 2026-10-09 要的行前小图标）。
+ *
+ * 与 `TODO_CATEGORY_TEXT_CLASS` 刻意差一档：`requirement` 这里用**纯主题色**而不是 `accent-ink`。
+ * 理由与 `style.css` 里导航栏图标那条同源 —— `accent-ink` 是把主题色**朝黑加深**给正文用的，
+ * 压在 14px 的描边图标上偏暗；图标这一族在本仓一直吃纯 `--gosslan-primary`
+ * （看分组头的 `TODO_STATUS_CLASS.doing`、任务卡那枚 `ListTodo`）。
+ * ⚠️ 只用 style.css 里**已存在**的 token；`*-ink` 与纯色的对比度门槛不同（图标 3.0、文字 4.5），
+ * 别把这两张表合并成一张。
+ */
+export const TODO_CATEGORY_ICON_CLASS: Record<TodoCategory, string> = {
+  task: "text-[var(--gosslan-text-2)]",
+  requirement: "text-[var(--gosslan-primary)]",
+  bug: "text-[var(--gosslan-danger-ink)]",
+};
+
+/**
+ * 优先级 → **图标**颜色：只有「紧急」上色，常规/不急压成次级色。
+ *
+ * 与 `TODO_PRIORITY_CLASS` / `TODO_PRIORITY_PILL` 同一条立场（"三档都变红海"那次定的）。
+ * ⚠️ 但**三档一律画**：2026-09-30 已经用「类型角标」证明过一回 —— 刻意不画的那一档
+ * 才是最难认的，扫一眼只能靠猜。区分靠形状（↑ / — / ↓），颜色只负责把「紧急」提出来。
+ */
+export const TODO_PRIORITY_ICON_CLASS: Record<TodoPriority, string> = {
+  high: "text-[var(--gosslan-primary)]",
+  normal: "text-[var(--gosslan-text-2)]",
+  low: "text-[var(--gosslan-text-2)]",
+};
+
+/**
  * 群任务编号的**唯一显示口径**（用户 2026-09-30 那八条规则，全文见
  * `docs/protocol-invariants.md` 的 INV-P29「群任务编号规则」）。
  *

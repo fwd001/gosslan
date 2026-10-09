@@ -2045,6 +2045,81 @@ test("src 下所有自绘菜单都带了底", () => {
   assert.deepEqual(bad, [], `发现透明得能看见底下一层的自绘菜单：\n${bad.join("\n")}`);
 });
 
+// ---------------- ㉙ 看板行首那两枚图标三档一律画（优先级与类型各一枚） ----------------
+//
+// 用户 2026-10-09：「任务列表的前面可以加一些小图标，显示出优先级 类型各种不同的区别」。
+// 落点之前是空的：优先级在看板上**完全不显示**（只有聊天气泡里那一行文字），
+// 类型只藏在编号首字母 T/R/B 里。两档都"缺省那一格不画"是最容易滑回去的写法 ——
+// 2026-09-30 在类型角标上已经为这件事被纠正过一次（㉔），所以这条与它同族、一起钉。
+test("看板行首的优先级与类型图标三档一律画，不许给缺省档留空", () => {
+  const root = join(import.meta.dirname, "..");
+  const board = stripShapeComments(readFileSync(join(root, "components", "GroupTasksBoard.vue"), "utf8"));
+  const todos = readFileSync(join(root, "utils", "todos.ts"), "utf8");
+  assert.ok(board.includes("PRIORITY_ICON[x.priority]"), "行首不再画优先级图标");
+  assert.ok(board.includes("CATEGORY_ICON[x.category]"), "行首不再画类型图标");
+  // ⚠️ 这里**不能**用"文件里不许出现 category === / priority !=="那种宽尺子：
+  //   `canClaim` 里那句 `x.category === "requirement"`（认领只开给需求）是正当条件，
+  //   第一版就是被它判成红的 —— 尺子宽到会咬合规写法，下一个人的处置是把它改松，
+  //   那条判据就没了。所以只圈这两枚图标**自己那一段**，看它有没有被 v-if / v-show 挡起来。
+  const iconRegion = (key: string): string => {
+    const at = board.indexOf(`:title="t(${key}[`);
+    assert.ok(at >= 0, `行首少了 ${key} 那一枚（连悬停词都不在了）`);
+    const start = board.lastIndexOf("<span", at);
+    const end = board.indexOf("</span>", at);
+    assert.ok(start >= 0 && end > start, `${key} 那一枚的元素形状读不出来`);
+    return board.slice(start, end);
+  };
+  for (const key of ["TODO_PRIORITY_LABEL_KEY", "TODO_CATEGORY_LABEL_KEY"]) {
+    assert.ok(
+      !/v-if|v-show/.test(iconRegion(key)),
+      `${key} 那一枚被条件化了 ⇒ 缺省档又变成"扫一眼靠猜"（㉔ 那次已经纠正过一回）`,
+    );
+  }
+  for (const map of ["TODO_PRIORITY_ICON_CLASS", "TODO_CATEGORY_ICON_CLASS"]) {
+    const at = todos.indexOf(`export const ${map}`);
+    assert.ok(at >= 0, `${map} 不在了`);
+    // 只取那张表的**字面量本身**（到第一个顶格 `};` 为止）。按固定长度切会吃进下一张表，
+    // 于是"这张表少一档、下一张表里有那一档"也能通过 —— 分母松了就等于没判。
+    const body = todos.slice(at, at + 1200).split("\n};")[0];
+    for (const k of map.includes("PRIORITY") ? ["high", "normal", "low"] : ["task", "requirement", "bug"]) {
+      assert.ok(
+        new RegExp(`^\\s*(${k}|"${k}")\\s*:`, "m").test(body),
+        `${map} 里少了 ${k} 那一档`,
+      );
+    }
+  }
+  // 反空转，两个方向都要：
+  // ① 坏形状（把某一枚挡起来）必须被抓到；② 别处的正当条件（`canClaim` 那句 category ===）
+  //    不许被抓到 —— 少了这半边，"把尺子改松"就是下一个人的出路。
+  const lie =
+    '<span v-if="x.priority !== \'high\'" :title="t(TODO_PRIORITY_LABEL_KEY[x.priority])"><component/></span>';
+  assert.ok(/v-if|v-show/.test(lie), "抓不到条件化写法 ⇒ 上面那两条 !test 是空转");
+  // `<component :is>` 会**绕过** componentImports 那条判据（它数的是模板里的 PascalCase 标签）。
+  // 于是映射表里写错一个图标名 = 那一格静默不渲染，界面上只是"少个小图标"，没有任何东西报错。
+  // 这里把两张表的取值逐个钉成"确实在 lucide 的 import 行里"。
+  const importLine = board.match(/import \{([^}]*)\} from "lucide-vue-next";/);
+  assert.ok(importLine, "lucide 的 import 行形状变了 ⇒ 下面那段读不到名单");
+  const imported = new Set(importLine[1].split(",").map((s) => s.trim()).filter(Boolean));
+  for (const mapName of ["PRIORITY_ICON", "CATEGORY_ICON"]) {
+    const at = board.indexOf(`const ${mapName}:`);
+    assert.ok(at >= 0, `${mapName} 不在了`);
+    const body = board.slice(at, at + 400).split("\n};")[0];
+    const used = [...body.matchAll(/:\s*([A-Z][A-Za-z0-9]*)\s*,/g)].map((m) => m[1]);
+    assert.ok(used.length === 3, `${mapName} 只数到 ${used.length} 个取值（应当是三档）`);
+    for (const name of used) {
+      assert.ok(imported.has(name), `${mapName} 用了 ${name}，但它不在 lucide 的 import 里 ⇒ 那一格静默不渲染`);
+    }
+  }
+  // 反空转：上面那条必须抓得住"名字没 import"这个坏形状
+  const lieVals = [..."x: NotImportedIcon,".matchAll(/:\s*([A-Z][A-Za-z0-9]*)\s*,/g)].map((m) => m[1]);
+  assert.ok(lieVals[0] === "NotImportedIcon" && !imported.has("NotImportedIcon"), "抓不到没 import 的名字 ⇒ 空转");
+  // 反空转的另一半：`canClaim` 那种正当条件不许被上面的图标判据抓到（它读的是图标那一段）
+  assert.ok(
+    !/v-if|v-show/.test('return x.category === "requirement" && !x.archived;'),
+    "宽尺子（把整个文件当分母）不许回来",
+  );
+});
+
 // ---------------- 浮层必须 escape 出裁切容器（用户 2026-10-07 那句「被内部 DOM overflow 裁掉」） ----------------
 
 test("复现历史缺陷：自己算坐标、根本没 Teleport → 报缺 Teleport 那一条", () => {

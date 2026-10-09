@@ -32,7 +32,10 @@ import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
   TODO_CATEGORY_LABEL_KEY,
+  TODO_CATEGORY_ICON_CLASS,
   TODO_CATEGORY_PILL,
+  TODO_PRIORITY_LABEL_KEY,
+  TODO_PRIORITY_ICON_CLASS,
   TODO_STATUSES,
   TODO_STATUS_BAR,
   TODO_STATUS_CLASS,
@@ -57,7 +60,7 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { popupLeft, popupPlacement, popupWidth } from "@/utils/popupPosition";
 import { MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import { t } from "@/i18n";
-import { Archive, Check, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, ImagePlus, Loader2, Plus, RotateCcw, X } from "lucide-vue-next";
+import { Archive, ArrowDown, ArrowUp, Bug, Check, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Loader2, Minus, Plus, RotateCcw, X } from "lucide-vue-next";
 
 const props = defineProps<{
   groupId: string | null;
@@ -262,6 +265,27 @@ const STATUS_ICON: Record<TodoStatus, typeof Circle> = {
   doing: CircleDot,
   overdue: Clock,
   done: CheckCircle2,
+};
+
+/**
+ * 行首那两枚图标的字形（用户 2026-10-09：「任务列表的前面可以加一些小图标，
+ * 显示出优先级 类型各种不同的区别，形象表达直观理解」）。
+ *
+ * ⚠️ **三档一律画**，不许给"缺省那一档"留空 —— 2026-09-30 在类型角标上已经证明过一次：
+ * 刻意不画的那档才是最难认的。区分度放在**形状**上，颜色只负责把「紧急」与「缺陷」提出来
+ * （两张配色表都在 `utils/todos.ts`，与文字/胶囊那两族同一家风）。
+ *
+ * 状态**不在这里画**：列表本来就按状态分组，加上左缘色条与右侧胶囊已经说了三遍。
+ */
+const PRIORITY_ICON: Record<TodoPriority, typeof Circle> = {
+  high: ArrowUp,
+  normal: Minus,
+  low: ArrowDown,
+};
+const CATEGORY_ICON: Record<TodoCategory, typeof Circle> = {
+  task: ListTodo,
+  requirement: Lightbulb,
+  bug: Bug,
 };
 
 function statusText(s: TodoStatus): string {
@@ -997,6 +1021,33 @@ watch(
               :class="TODO_STATUS_BAR[x.status]"
               aria-hidden="true"
             ></span>
+            <!-- 行首两枚：**优先级 + 类型**（用户 2026-10-09 要的那排小图标）。
+                 两枚各占一个 `<span>` 是为了让原生 tooltip 分别落在自己那枚上 ——
+                 `<svg>` 上的 `title` 属性在部分内核里不出提示，而合并成一句又要新造词条。
+                 图标本身 `aria-hidden`：它说的这件事文字层已经说了（悬停有词、详情里两格都在），
+                 读屏再念一遍"向上箭头"只是噪声。
+                 ⚠️ 类型会在这里出现两次（图标 + 编号首字母 T/R/B）：字母是**口头引用的编号**，
+                 INV-P29 要求它在，不能为了不留重复而拿掉；图标管扫一眼、字母管对账。 -->
+            <span class="flex w-8 shrink-0 items-center gap-1">
+              <span :title="t(TODO_PRIORITY_LABEL_KEY[x.priority])">
+                <component
+                  :is="PRIORITY_ICON[x.priority]"
+                  class="h-3.5 w-3.5 shrink-0"
+                  :class="TODO_PRIORITY_ICON_CLASS[x.priority]"
+                  :stroke-width="2.2"
+                  aria-hidden="true"
+                />
+              </span>
+              <span :title="t(TODO_CATEGORY_LABEL_KEY[x.category])">
+                <component
+                  :is="CATEGORY_ICON[x.category]"
+                  class="h-3.5 w-3.5 shrink-0"
+                  :class="TODO_CATEGORY_ICON_CLASS[x.category]"
+                  :stroke-width="2.2"
+                  aria-hidden="true"
+                />
+              </span>
+            </span>
             <span
               class="w-9 shrink-0 font-mono text-[11px] tabular-nums text-[var(--gosslan-text-2)]"
               :title="codeTip(x)"

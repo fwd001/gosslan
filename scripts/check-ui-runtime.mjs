@@ -1008,6 +1008,31 @@ window.__probe = (() => {
       ids: list.map((el) => el.getAttribute('data-msg') || el.getAttribute('data-hit')),
     };
   };
+  /** 「发送人」那枚筛选入口的中心坐标（给真点击用）。 */
+  H.filterChip = () => {
+    const b = document.querySelector("button[aria-haspopup='menu']");
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  };
+  /** 菜单自己**计算后**的背景 —— 透明就是用户那句「筛选下拉都是透明的」。 */
+  H.menuStyle = () => {
+    const m = document.querySelector('.gosslan-menu');
+    if (!m) return { present: false, bg: '', blur: '' };
+    const cs = getComputedStyle(m);
+    return {
+      present: true,
+      bg: cs.backgroundColor,
+      blur: cs.backdropFilter || cs.webkitBackdropFilter || '',
+    };
+  };
+  /** 方向键与回车都挂在搜索框上 ⇒ 点过菜单之后必须把焦点还回去，不然下面的键盘判据红在夹具。 */
+  H.focusInput = () => {
+    const i = document.querySelector('input');
+    if (!i) return false;
+    i.focus();
+    return document.activeElement === i;
+  };
   return H;
 })();
 true;
@@ -1833,10 +1858,17 @@ async function runSearch(cdp, url) {
   const GROUP = {
     conv_id: "conv-probe", name: "探针会话", kind: "private", avatar: null,
     total: 3, latest_ts: 1,
-    messages: [0, 1, 2].map((i) => ({
-      msg_id: `m${i}`, sender_id: "p1", sender_name: "小布",
-      kind: "text", content: `命中 ${i}`, ts: 1 + i,
-    })),
+    // ⚠️ 三条**不能都是 text**：这一段的夹具以前全是 `kind: "text"`，于是它和
+    //   `chatSearch.test.ts` 犯的是同一个盲点 —— 载荷型 kind 渲染成人话这件事从没被真渲染过
+    //   （用户 2026-10-09：「搜索列表显示的都是 json」）。这里刻意混进两种卡片 kind：
+    //   任务与图片的载荷都是 JSON，漏回旧写法就会在页面上出现花括号。
+    messages: [
+      { msg_id: "m0", sender_id: "p1", sender_name: "小布", kind: "text", content: "命中 0", ts: 1 },
+      { msg_id: "m1", sender_id: "p1", sender_name: "小布", kind: "todo",
+        content: '{"title":"命中 待办","assignees":["p1"],"status":"todo","priority":"high"}', ts: 2 },
+      { msg_id: "m2", sender_id: "p1", sender_name: "小布", kind: "image",
+        content: '{"name":"命中.png","path":"/x/命中.png","size":2048,"sha256":"ab12"}', ts: 3 },
+    ],
   };
   await cdp.eval(`window.__probe.install('/src/components/search/ChatSearchDialog.vue', '')`);
   await cdp.eval(`window.__probe.stubApi('searchChatHistory', ${JSON.stringify([GROUP])})`);
@@ -1849,6 +1881,38 @@ async function runSearch(cdp, url) {
     h0.n === 3, "3 行", `${h0.n} 行 / 输入框聚焦=${typed.focused}`);
   check("默认高亮落在第一条（不是没有高亮，也不是越界）",
     h0.at === 0, "at=0", h0.at);
+
+  // ---------------- 本轮补：两条搜索缺陷在**真渲染**层各判一次 ----------------
+  // 静态判据与单测判的是"cellText 有没有过 previewBody"，判不到"页面上到底长什么样"。
+  // 这里读的是渲染完的整页文字：漏回旧写法就会露出 `{"title":` / `"sha256":` 这种东西。
+  const pageText = await cdp.eval("window.__probe.text()");
+  const leaked = ['{"', '"title":', '"sha256":', '"assignees":'].filter((s) => pageText.includes(s));
+  check("命中行与左栏摘要里不许出现载荷原文（六种认识的卡片 kind 那一半）",
+    h0.n === 3 && leaked.length === 0, "整页文字里没有 JSON 片段",
+    `泄漏片段 ${JSON.stringify(leaked)} / 行数=${h0.n}`);
+  check("对照：卡片 kind 确实渲染成了人话（不是整行空掉，也不是退化成未知 kind 占位）",
+    pageText.includes("[任务] 命中 待办") && pageText.includes("[图片]")
+      && !pageText.includes("不支持的消息"),
+    "出现「[任务] 命中 待办」与「[图片]」", JSON.stringify(pageText.slice(0, 260)));
+
+  // 筛选菜单的底：`.gosslan-menu` 自己不带背景，底在 `.frost` 上 —— 少挂一个类零报错，
+  // 而坏法是"文字叠在底下的结果行上"。这里读计算后的 background-color，不读 class 列表
+  // （读 class 就又回到"标着不等于有"那一类错）。
+  const chip = await cdp.eval("window.__probe.filterChip()");
+  check("对照：拿得到「发送人」筛选入口的落点（拿不到下面那条就是空跑）",
+    !!chip && chip.x > 0 && chip.y > 0, "坐标 >0", JSON.stringify(chip));
+  if (chip) {
+    await cdp.click(chip.x, chip.y);
+    const st = await cdp.eval("window.__probe.menuStyle()");
+    check("点开筛选菜单：它自己必须真有底（透明 = 用户那句「筛选下拉都是透明的」）",
+      st.present === true && st.bg !== "rgba(0, 0, 0, 0)" && st.bg !== "transparent",
+      "计算后的背景色不是透明", JSON.stringify(st));
+    // 菜单与键盘判据共用这个弹窗，而方向键挂在**输入框**上：点过菜单必须把焦点还回去，
+    // 否则下面那批 ↑↓ 会红在夹具上而不是产品上。
+    const refocus = await cdp.eval("window.__probe.focusInput()");
+    check("对照可逆：关掉菜单、焦点回到输入框（下面那批键盘判据的前提）",
+      refocus === true, "activeElement 又是输入框", refocus);
+  }
 
   await cdp.key("ArrowDown", "ArrowDown", "", 40);
   const h1 = await hits();
