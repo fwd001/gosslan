@@ -10,6 +10,10 @@
 import { createApp, defineComponent, h, onMounted, ref } from "vue";
 import VirtualList from "@/components/VirtualList.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
+// ⚠️ 必须显式加载应用样式（与 `src/boot/boot.ts` 同一份）。漏掉它的后果不是"不好看"，而是**量具失效**：
+// VirtualList 的滚动容器靠 `overflow-y-auto` 才成为滚动容器，而 Tailwind 的工具类只存在于这份 CSS 里。
+// 没有它 ⇒ `scrollTop` 写入被浏览器整体忽略 ⇒ 压测跑的是"从未滚动过的空闲帧"。
+import "@/style.css";
 
 const params = new URLSearchParams(location.search);
 const N = Math.max(1, Number(params.get("n") ?? 100000));

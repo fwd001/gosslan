@@ -24,11 +24,24 @@ for (let i = 0; i < 40; i++) {
   if (await evalJs("!!window.__perf")) break;
   await new Promise((r) => setTimeout(r, 500));
 }
-const probe = await evalJs(`(() => {
+const out = await evalJs(`(async () => {
   const el = document.querySelector("#perf-root .overflow-y-auto");
-  const rows = el ? el.querySelectorAll("[data-vlist-key]").length : -1;
-  return { n: window.__perf?.n, renderedRows: rows, clientHeight: el?.clientHeight, scrollHeight: el?.scrollHeight,
-           virtualizationOK: rows > 0 && rows < 200 };
+  if (!el) return { error: "找不到滚动容器" };
+  const rows = () => el.querySelectorAll("[data-vlist-key]").length;
+  // 量具自检：容器必须真的是「能滚的」。写一次 scrollTop 读不回同样的值 ⇒ 这个元素没有
+  // overflow-y:auto（应用样式没加载），后面的所有帧间隔都会是「从未滚动过的空闲帧」——
+  // 2026-09-10 那份报告里的“满帧”就是这么来的，所以这一条必须在采数据之前判掉。
+  el.scrollTop = 1234;
+  const scrollerReal = Math.round(el.scrollTop) === 1234;
+  el.scrollTop = 0;
+  return {
+    n: window.__perf?.n,
+    renderedRows: rows(),
+    clientHeight: el.clientHeight,
+    scrollHeight: el.scrollHeight,
+    scrollerReal,
+    virtualizationOK: rows() > 0 && rows() < 200,
+  };
 })()`);
-console.log(JSON.stringify(probe, null, 2));
+console.log(JSON.stringify(out, null, 2));
 ws.close();

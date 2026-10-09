@@ -278,6 +278,29 @@ function onResize() {
   computeScrollState();
 }
 
+/**
+ * 容器自身尺寸的唯一可靠来源（虚拟化最容易坏在这里）。
+ *
+ * `viewport` 是"可视区高度"，而 `window` 的 resize 只覆盖**窗口变了**这一条路。
+ * 还有三类真实路径会改容器高度却不触发 window resize：
+ * 移动端软键盘弹出 / 断点切换成整页形态、常驻辅助窗口重新显示、面板开合挤压布局。
+ * 这时 `viewport` 停在旧值 —— 旧值偏大就整表都算"可见"（全量渲染，实测 2 万行全进 DOM），
+ * 偏小则滚到下方出现空白。两种方向都是缺陷，所以尺寸必须**现读**而不是只读一次。
+ */
+let containerResizeObserver: ResizeObserver | null = null;
+function observeContainerSize() {
+  const el = container.value;
+  if (!el) return;
+  containerResizeObserver?.disconnect();
+  containerResizeObserver = new ResizeObserver(() => {
+    // 隐藏时（常驻窗口关闭即隐藏 / display:none）clientHeight 为 0，写进去会让可见区间塌成空。
+    // 与 commitHeight 拒绝 0 高度同一个失败方向：保留上一个可用值，等重新显示时再更新。
+    const h = el.clientHeight;
+    if (h > 0 && h !== viewport.value) onResize();
+  });
+  containerResizeObserver.observe(el);
+}
+
 // ---------------- 定位 ----------------
 function scrollToBottom() {
   const el = container.value;
@@ -399,11 +422,13 @@ watch(
 onMounted(() => {
   prevFirstKey = props.items.length > 0 ? itemKey(props.items[0]) : null;
   onResize();
+  observeContainerSize();
   window.addEventListener("resize", onResize);
   scheduleRemeasure();
 });
 onBeforeUnmount(() => {
   rowResizeObserver?.disconnect();
+  containerResizeObserver?.disconnect();
   window.removeEventListener("resize", onResize);
   if (raf) cancelAnimationFrame(raf);
   if (remeasureRaf) cancelAnimationFrame(remeasureRaf);
