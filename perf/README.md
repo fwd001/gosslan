@@ -144,12 +144,16 @@ node perf/latency.mjs          # LAT_N=12 LAT_BUSY=100 可用环境变量覆盖
 并且这只覆盖 headless Chrome/Brave 一个引擎：**WKWebView / WebView2 / Android WebView 有没有把系统级"减弱动态效果"
 传进 WebView，本仓一条证据都没有** ⇒ 那两半仍在 roadmap N27 与 Smoke-11。
 
-原先那条"证据面是空的"仍然成立、只是范围缩了：`grep -c reduced scripts/check-ui-runtime.mjs` = `0`、
-`grep -rl "prefers-reduced-motion" src tests scripts` 仍只有 `src/style.css`、`src/boot/skeleton.css`、
-`src/utils/haptics.ts` 三个源文件 —— 补上的判据在 **perf 台**（手动、不进门禁），
-所以 §七 第 8 项在**门禁层**仍然是空的，这一点没变、别读成已经入门禁了。
+原先那句"§七 第 8 项在自动化层是空的"**已于 2026-10-10 收掉一半**：`scripts/check-ui-runtime.mjs`
+的 `runOverlay` 补了 **E 组**（`--only=overlay` 现算 41/41 绿、整支全段 166/166 绿），判的是
+"reduce 档下一处浮层仍能开、仍能关（✕ 与 Esc 两条路径）、不留中间态、焦点还得还回去"，
+带两轮单点变异（只断仿真⇒恰好红 1 条自证；只摘 `BaseModal` 的 `@after-leave`⇒红 5 条焦点判据）。
+`grep -c reduced scripts/check-ui-runtime.mjs` 现在是 **5**（改前 0）—— 这条命令就是那一句的现算依据。
+仍然要说清的边界：那一组在 `verify.mjs` 的 **local 层**（`:519` 明写 CI 不跑这层），
+所以它是**本地可重跑的永久锁**，不是"推上去就会红"的阻断项；而 **WKWebView / WebView2 / Android
+有没有把系统级"减弱动态效果"传进 WebView，本仓仍一条证据都没有** ⇒ 那一半在 roadmap N27 与 Smoke-11。
 
-## 这台量具自己坏过的八种形状（都记下来，防止下一个人把"量具红"读成"产品红"）
+## 这台量具自己坏过的九种形状（都记下来，防止下一个人把"量具红"读成"产品红"）
 
 1. api 挂在 `app.mount()` **之后** ⇒ 组件一抛错 `window.__lat` 就是 undefined，驱动只会报"页面没起来"，把一次渲染异常说成加载问题。
 2. 宿主没 `app.use(createPinia())` ⇒ `BaseModal` 的 setup 里 `useAppStore()` 当场抛，表现同样是"#opener 没渲染出来"。
@@ -159,3 +163,4 @@ node perf/latency.mjs          # LAT_N=12 LAT_BUSY=100 可用环境变量覆盖
 6. 上一轮测量结束时弹窗**还开着** ⇒ 下一次点击落在遮罩上把弹窗关掉，于是"打开态读数"读回 `-`。凡是"进某个状态再读"的探针，必须先把状态压回已知起点（先 `close()` 再泵帧），并且读到 `-` 要直接抛、不许带着空读数往下判。
 7. 读过渡时长**等太久** ⇒ 过渡类名只在过渡期间挂着，落定之后元素自己读回来是 `0s`。于是把"生效的仿真"判成"仿真是空转"：**这条红了两轮才承认是我读晚了，不是产品没降级**。
 8. 解析 CSS 时长用 `([0-9.]+)(ms|s)` 去抠 ⇒ 浏览器把 `.01ms !important` 回成 `1e-05s`，那个正则把它读成 `05s` = **5000 毫秒**。先判单位后缀再 `parseFloat`（`parseFloat` 自己认指数记法）。
+9. **把"仿真有没有生效"的期望值凭想象写死**（2026-10-10，`check-ui-runtime.mjs` 的 E 组第一版）：那条自证写的是"打开态面板的时长 <1ms **且普通档 ≥1ms**"⇒ 报红。真相是面板那 150ms 只挂在 Headless UI 过渡期间临时加的类上、落定就撤，**普通档落定态本来就是 `0s`** ⇒ 我那条 ≥1ms 是我编的规矩，不是界面的行为。修法不是把阈值放宽，而是**换一个恒被作用到的节点当仿真落点**（`body`：那条 `*{transition-duration:.01ms !important}` 对它同样成立 ⇒ 普通档 `0s`、reduce `1e-05s`，两次都能现读到差）。同一条纪律的另一半：面板那两份读数改成**只打印不判绿红**，因为落定态它测的是"有没有那条 !important"，不是"那 150ms 被缩短了"——**别把量具的形状升级成产品判据**。

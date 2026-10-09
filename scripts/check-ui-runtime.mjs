@@ -2183,6 +2183,129 @@ async function runOverlay(cdp, url) {
   console.log("  · 读数（不判绿红）：文档层可滚=" + base.docScrollable
     + " / 打开时 html overflow=" + o.htmlOv + " body[style]=" + o.bodyStyle
     + " / 关闭后 html overflow=" + base.htmlOv + " ⇒ 「滚动锁定」判的是「关闭后必须回到基线」那一半");
+
+  // ══ E 组：减少动效档（prefers-reduced-motion: reduce）下这层浮层还能不能用（§七 第 8 项）══
+  // 为什么这一档要单独量（不是"少了段动画"那么轻）：应用侧对 reduce 的反应只有 CSS 那一处 ——
+  // `src/style.css:558` 把**所有**元素的 transition-duration 打成 `0.01ms !important`
+  // （现算：`grep -rn "prefers-reduced-motion" src` ⇒ style.css / boot/skeleton.css / utils/haptics.ts 三处，
+  // BaseModal 与 Headless UI 都没有 JS 版的开关）。而 Headless UI 的收尾排的是"计算后的时长"
+  // （见上面 panelTrans 那条注释）⇒ 这一档换掉的是**时序**，不是"少了段动画"那么轻，
+  // 关不掉的壳、还不回去的焦点都可能只在这档出现。
+  // ⚠️ 顺序要紧：先证仿真档位真落到了这一页，再判"能不能开 / 关 / 留不留中间态"。反过来做的话，
+  // 若仿真根本没生效，下面每一条"reduce 下没事"都只是在把普通档再判一遍（INV-P31 第 4 条）。
+  // ⚠️ 仿真的落点必须用 body，不能用面板（2026-10-10 现量，第一版就是我把它写成"面板 ≥1ms"而报红）：
+  // 面板那 150ms 只挂在 Headless UI **过渡期间临时加**的那串类上，过渡落定就撤 ⇒
+  // 落定后普通档读回 `0s`、reduce 档反而读回 `1e-05s`（那条 `*` 的 !important 恒作用）。
+  // 换句话说：想证"仿真生效"，量一个本来就没有过渡的节点；面板能证的只有"过渡进行中的时长"，
+  // 而那一段在 reduce 下只有 0.01ms，泵帧之间早就走完了 ⇒ 这台量具读不到"150ms 被缩短"那一半（照旧未证）。
+  const durMs = (s) => {
+    // "property / duration / delay"，duration 段可能是逗号列表 ⇒ 取最大那个。
+    // 浏览器会把它印成 `1e-05s` ⇒ 先认单位后缀再换算，别 parseFloat 完就当毫秒（这条坑踩过）。
+    const seg = String(s).split(" / ")[1] || "";
+    let best = null;
+    for (const raw of seg.split(",")) {
+      const t = raw.trim();
+      const v = parseFloat(t);
+      if (!Number.isFinite(v)) continue;
+      const ms = /ms$/.test(t) ? v : v * 1000;
+      if (best === null || ms > best) best = ms;
+    }
+    return best;
+  };
+  const bodyTrans = async () => await cdp.eval("(() => {"
+    + "const cs = getComputedStyle(document.body);"
+    + "return cs.transitionProperty + ' / ' + cs.transitionDuration + ' / ' + cs.transitionDelay;"
+    + "})()");
+  const emulateReduce = (on) => cdp.send("Emulation.setEmulatedMedia", {
+    features: on ? [{ name: "prefers-reduced-motion", value: "reduce" }] : [],
+  });
+
+  const ebase = await boot("E");
+  const bodyPlain = durMs(await bodyTrans());
+  // 普通档那份面板时长（同一页、同一形状）：没有它，"这一档换了时序"就只是一句口头话
+  await openModal();
+  const plainRead = await cdp.eval("window.__ovRead()");
+  const plainPanelDur = durMs(plainRead.panelTrans);
+  await cdp.eval("window.__ovOpen(false)");
+  await readAfterClose();
+
+  await emulateReduce(true);
+  const mmReduce = await cdp.eval('matchMedia("(prefers-reduced-motion: reduce)").matches === true');
+  const bodyReduce = durMs(await bodyTrans());
+  await openModal();
+  const e1 = await cdp.eval("window.__ovRead()");
+  const reducePanelDur = durMs(e1.panelTrans);
+  check("E 仿真档位真的落到了这一页（matchMedia 为真 **且** body 的计算时长从 " + bodyPlain
+    + "ms 变成 " + bodyReduce + "ms —— 那就是 style.css:562 那条 `!important` 落下来的值）"
+    + "；面板那两份（普通=" + plainPanelDur + "ms / reduce=" + reducePanelDur + "ms）一起打印当形状，不参与判绿红"
+    + "——下面每一条都站在这条上，这条红＝量具红不是产品红",
+    mmReduce === true && bodyReduce !== null && bodyReduce > 0 && bodyReduce < 1
+      && bodyReduce !== bodyPlain,
+    "matches=true 且 body 时长落在 (0,1)ms 且 != 普通档那份",
+    JSON.stringify({ mm: mmReduce, bodyReduce, bodyPlain, reducePanelDur, plainPanelDur, panelTrans: e1.panelTrans }));
+  check("E 减少动效下照样打得开：全页一份 dialog、焦点落进弹窗、面板计算样式是可见的（opacity=1）"
+    + "（约束五：关掉动画不许顺手把界面也关掉）",
+    e1.openFlag === true && e1.dlgCount === 1 && e1.portalDlgCount === 1
+      && e1.focusInDlg === true && e1.panelOpacity === "1"
+      && e1.panelW > 0 && e1.panelTop >= 0 && e1.panelBottom <= e1.vh + 1,
+    "open 且 dlg=1 且 portal=1 且焦点在内 且 opacity=1 且几何在视口内",
+    JSON.stringify({ open: e1.openFlag, dlg: e1.dlgCount, portal: e1.portalDlgCount, focus: e1.focusId, opacity: e1.panelOpacity, top: e1.panelTop, bottom: e1.panelBottom, vh: e1.vh }));
+
+  const eClose = await cdp.eval("window.__ovPoint('close')");
+  await cdp.click(eClose.x, eClose.y); // 真点 ✕（B 组那条最常用的路径），reduce 下重走一遍
+  await sleep(700);
+  const rdClose = await readAfterClose();
+  check("E reduce 下真点 ✕ 关得掉且撤干净：close 恰好 +1 且 open=false 且 dlg=0 且 portal=0"
+    + " 且 body/html 样式回到基线（§八「动画结束后不许遗留遮罩」——这档没动画可等，最容易露出「收尾靠动画」的那一半）",
+    rdClose.closeEvents === e1.closeEvents + 1 && rdClose.openFlag === false && rdClose.dlgCount === 0
+      && rdClose.portalDlgCount === 0 && rdClose.bodyStyle === ebase.bodyStyle && rdClose.htmlOv === ebase.htmlOv,
+    "close+1 且 open=false 且 dlg=0 且 portal=0 且样式==基线",
+    JSON.stringify({ cl: rdClose.closeEvents, base: e1.closeEvents, open: rdClose.openFlag, dlg: rdClose.dlgCount, portal: rdClose.portalDlgCount, body: rdClose.bodyStyle, htmlOv: rdClose.htmlOv }));
+  check("E reduce 下 ✕ 那条也焦点归还（activeElement==opener）——N14 那个 @after-leave 是挂在离开过渡的"
+    + "**结束事件**上的，时长被掐成 0.01ms 之后它到底还响不响，只有这一条说得出",
+    rdClose.focusId === "opener" && rdClose.dlgCount === 0, "activeElement==opener",
+    "实际 " + rdClose.focusId + " dlg=" + rdClose.dlgCount);
+
+  const eOpener = await cdp.eval("window.__ovPoint('opener')");
+  await cdp.click(eOpener.x, eOpener.y); // 关掉之后同一坐标再真点：那层壳不许吃掉点击
+  await sleep(300);
+  const e3 = await cdp.eval("window.__ovRead()");
+  check("E reduce 关掉后同一坐标再真点 ⇒ 打得着那颗按钮（hits 恰好 +1 且命中的就是 opener）"
+    + " ⇒ 掐掉时长没留下「看不见但接得住点击」的一层",
+    e3.openerHits === rdClose.openerHits + 1 && e3.hitId === "opener" && e3.dlgCount === 0,
+    "hits+1 且 hitId=opener 且 dlg=0",
+    JSON.stringify({ hits: e3.openerHits, base: rdClose.openerHits, hit: e3.hitId, dlg: e3.dlgCount }));
+
+  await openModal();
+  await cdp.key("Escape", "Escape", "", 27); // 真按键：Headless UI 自己那条路径
+  await sleep(700);
+  const e4 = await readAfterClose();
+  check("E reduce 下 Esc（真按键）也关得掉、DOM 撤净、焦点回到那颗按钮（两条关闭路径的发起方不一样，都得在这档量一遍）",
+    e4.closeEvents === e3.closeEvents + 1 && e4.openFlag === false && e4.dlgCount === 0
+      && e4.portalDlgCount === 0 && e4.focusId === "opener",
+    "close+1 且 open=false 且 dlg=0 且 portal=0 且焦点==opener",
+    JSON.stringify({ cl: e4.closeEvents, base: e3.closeEvents, open: e4.openFlag, dlg: e4.dlgCount, focus: e4.focusId }));
+
+  // 反面对照 + 收尾必须做的一件事：这一段用的是**会话级**仿真，而 emoji / search / taskCard 那几段
+  // 共用同一个 CDP 页面会话 ⇒ 不撤掉 reduce，后面每一段都是在被判"动画已关"的那一页。
+  // 撤完还要现读一次时长：它回到普通档那一发，才证明上面那组读的是仿真档位、不是巧合。
+  await emulateReduce(false);
+  const mmBack = await cdp.eval('matchMedia("(prefers-reduced-motion: reduce)").matches === true');
+  const bodyBack = durMs(await bodyTrans());
+  await openModal();
+  const e5 = await cdp.eval("window.__ovRead()");
+  await cdp.eval("window.__ovOpen(false)");
+  await readAfterClose();
+  check("E 反面对照：把仿真撤掉 ⇒ matches=false 且 body 那份时长从 " + bodyReduce
+    + "ms 退回 " + bodyBack + "ms（==普通档那一发 " + bodyPlain + "ms）"
+    + " —— 上面那组判的确实是 reduce 档（不是恒真判据），且这次会话级开关没漏进后面的段（emoji / search / taskCard 共用同一个页面会话）",
+    mmBack === false && bodyBack === bodyPlain,
+    "matches=false 且 body 时长==普通档那份",
+    JSON.stringify({ mm: mmBack, bodyBack, bodyPlain, bodyReduce, panelTrans: e5.panelTrans }));
+  console.log("  · 读数（不判绿红）：E 面板时长 普通=" + plainPanelDur + "ms / reduce=" + reducePanelDur
+    + "ms / 撤掉后=" + durMs(e5.panelTrans) + "ms（落定态读的是 0s 与那条 !important 的差，不是那 150ms —— "
+    + "过渡进行中的时长这台量具读不到，那一半仍未证）；关闭后 focus=" + rdClose.focusId
+    + " hit=" + e3.hitId + "（这一组的 ✕ 与 Esc 两条路径都真的走过）");
 }
 
 /** 表情面板那一段：键盘出口（N1）+ 反向对照（不带 text 的 Enter 必须零次激活）。 */
