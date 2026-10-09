@@ -626,3 +626,118 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 - **`index.html` 的骨架判定必须与 store 完全一致**（骨架先于 bundle 执行，不一致就会看到
   "骨架浅色 → 界面深色"闪一下）。改外观逻辑时两处一起改。
 - 强制模式下系统外观变化**不得**影响界面；跟随模式下系统变化要**即时**生效（监听 `prefers-color-scheme`）。
+
+---
+
+## 11. 原生体验：目标 / 结构性账 / 验收口径（2026-10-09 并入本文件）
+
+> **为什么不新开 `docs/native-experience-standard.md`**：本文件 §1–§10 已经是原生体验的"公共层"
+> （token、交互态、动效令牌、无障碍、窗口边界）。另起一份只会造出**第二个真源**——
+> 本仓在"同一个关注点有两个家"上付过真实代价（`docs/AI_ENGINEERING_INDEX.md` 第 4、5 条前面那段）。
+> **任务清单也不另建**：原生体验的格子在 `docs/stability-roadmap.md` §12.6.1（N1–N8，已拆出 #127–#130）；
+> **性能基线在 `perf/README.md`**（那一节开头是"量具自检"，先读它再读任何数字）。
+
+### 11.1 目标与非目标
+
+| 目标（做对了才算） | 非目标（明确不做） |
+|---|---|
+| 反馈即时：按下同帧变色（§2.3 两条铁律） | 换 UI 框架 / 引第二套动画系统 |
+| 滚动与列表不抖、不闪、不空（§11.2） | 复刻 iOS 外观（胶囊按钮、大圆角、玻璃拟态铺满） |
+| 触摸、鼠标、键盘三条输入路径都能走完（§2.4、§10.2、§10.3） | 为"原生感"加没有信息量的动效、粒子、视差 |
+| 平台习惯走系统开关（§10.1、§10.4），不要求用户改 App 设置 | 为视觉效果碰协议 / 加密 / DB / IPC / 消息状态机 |
+| 长会话在低端设备仍可用（`perf/README.md`） | 宣称没跑过的平台已通过（一律记 UNVERIFIED） |
+
+### 11.2 列表与滚动：**虚拟化的输入必须现读，不许只在挂载时读一次**
+
+这是原生体验里唯一"结构性"的一条：流畅度不是靠加过渡买来的，是靠不渲染不该渲染的东西、
+不重算不该重算的东西。**输入坏一次，整页的流畅度判断全部失真。**
+
+- 规则：`viewport`（可视区高度）这类输入**必须由 `ResizeObserver` 跟着容器真实尺寸更新**。
+  只有 `onMounted` + `window` resize 是两个不够的读取点 —— 移动端软键盘弹出、断点切成整页形态、
+  常驻辅助窗口重新显示、面板开合挤压布局，这四类路径**都不发 `window:resize`**。
+  旧值偏大 ⇒ 整表被算成"可见"（全量渲染）；旧值偏小 ⇒ 滚到下方出现空白。**两个方向都是缺陷。**
+- 尺寸读不到 0 时**不写入**（常驻窗口关闭即隐藏 / `display:none`），保留上一个可用值 ——
+  与 `VirtualList.commitHeight` 拒绝 0 高度是同一个失败方向（写 0 会让整列塌到顶部）。
+- **量具必须自证它真的动过**：`perf/probe.mjs` 现在在采数前打印 `scrollerReal`
+  （写一次 `scrollTop` 读不回同样的值就是容器根本不是滚动容器）。这条不是抽象洁癖：
+  它坏过整整一次，症状是"帧间隔 p50 = 16.7ms 满帧"，而 16.7ms 正是**一个什么都不做的空闲帧**；
+  同期那句"估算调用数 0 ⇒ 稳态滚动不重算 ✓"也是假的 —— **调用数为 0 是因为没滚过**。
+  复跑：`node perf/probe.mjs 9223`（三步启动法见 `perf/README.md`）。
+
+### 11.3 动效：本应用的档位就是两个，不要为凑齐"标准档位"造没人用的 token
+
+| token | 值 | 用在哪 |
+|---|---|---|
+| `--gosslan-ease` | 强 ease-out | 所有过渡的曲线（Tailwind `.transition` 由 `style.css` 统一覆盖） |
+| `--gosslan-duration-fast` | 150ms | 轻反馈（hover/press/小元素） |
+| `--gosslan-duration` | 240ms | 结构性变化（浮层、面板、尺寸） |
+
+- **没有"页面切换 200–320ms"这一档，是有意的**：本应用是多窗口架构（§5），没有路由级过场，
+  造一个没人消费的 token 只会变成下一个"定义了但 0 处引用"（§10.3 那个真实事故）。
+- **动画系统零新增依赖**：Motion / GSAP / @vueuse/motion 都不在 `package.json` 里（现算：
+  `node -e "const d=require('./package.json');console.log(Object.keys({...d.dependencies,...d.devDependencies}).filter(k=>/motion|gsap|anime|framer/i.test(k)))"` ⇒ 应为空数组）。
+  要引入必须先给出"哪个具体交互靠 CSS transition 做不到"的证据，并且一次只引一套。
+- 动画完成 ≠ 业务完成：反馈可以立刻画，状态必须等真实回执（§9.3 乐观更新 + 失败回滚），
+  不许用动效掩盖失败（§9.5 错误统一出口）。
+
+### 11.4 平台分层：**这一条目前是"待收口"，不是"已生效的规矩"**
+
+现状（先记账，别写成已经做完了）：`src/utils/platform.ts` 是平台判定的**命名出口**
+（`isMac` / `isAndroid` / `isIOS` / `resolveMobileLayout`），但**组件里散写这三个标识符的文件不止一个**
+⇒ "所有平台分支都走这一个家"**今天不成立**。
+
+- 计数**不在这里写数字**（写了就会漂，而且本文件 §8.2 已经记过一次"判据覆盖面要靠现算核对"的教训）。
+  现算口径固定为：`grep -rlE '\b(isMac|isIOS|isAndroid|isWindows|isMobile)\b' src/components --include="*.vue" | wc -l`
+  （**`--include` 必须加引号**，不加引号在 zsh 下会被 glob 吞掉、报 `no matches found`，那条空结果不是"搜过没有"）。
+- 收口方向（属可维护性 + 原生体验，按优先级排在稳定/流畅之后，**不在本轮顺手做**）：
+  新增交互一律不自己判断平台，先问 CSS 能不能表达（`@media (hover: none)`、`env(safe-area-inset-*)`、
+  `prefers-*`），不能表达才走 `utils/platform.ts`；已散写的那几处等一次专门的收口改动
+  （散写点搬家会动到 §11.2 那条量具和窗口生命周期，必须单独一次可回滚的改动 + 单独一次门禁）。
+- 公共层（不随平台变）：§1 圆角、§2 交互态、§3 配色、§8 排版、§9 UI 优先、§10 无障碍与系统跟随。
+- 适配层（只在真实需要时存在，且必须是**有名字的一处**）：`utils/platform.ts`（判定）、
+  `utils/haptics.ts`（触觉，§2.3 含三端能力差异）、`env(safe-area-inset-*)`（安全区）、
+  `components/TitleBar.vue` + `components/window/AuxWindowShell.vue`（窗口 chrome，§5）、
+  `composables/useBackLayer.ts`（Android 返回层；iOS 侧滑 wry 未开 ⇒ 页内返回按钮，那条注释是准的）。
+
+### 11.5 验收口径：每一项要么挂得上复跑命令，要么明写未测量
+
+| 维度 | 今天的判据（**可复跑**） | 今天测不到的（不许从这里读出结论） |
+|---|---|---|
+| 流畅度 | `perf/probe.mjs` 的 `scrollerReal` + `virtualizationOK` 双真，再 `perf/run.mjs` 的 `longFramesOver50ms` 与 p95 | **真机 60Hz/高刷设备上的实际帧表现**；低端 Android |
+| 结构性成本 | 同上的 `offsetsRebuilds`（整表前缀和重算次数）——**它现在是"每帧一次"这一格开着** | 10 万档（`run.mjs` 180s 超时没跑完，归因未定，见 `perf/README.md`） |
+| 响应性 | §2.3 按下瞬时 + `:active` 里 `transition-duration: 0s`（由 `designGuards` 守着）；§9.1 点击同帧改 UI | **输入到反馈的毫秒数**：没有量具，记未测量。别用"感觉很快"顶替 |
+| 稳定性 | `npm test`（含 `tokenContrast` / `a11yLabels` / `popupRegistry` / `VirtualList` 卸载出口那条护栏）+ `verify-guards.py` | 长时间运行后的内存曲线：未测量 |
+| 无障碍 | §10 四条（可见焦点、可访问名、hover 不是唯一入口、系统三开关）各有判据 | 读屏软件真机播报（NVDA/VoiceOver）：未测；`::selection` 那一格见 `docs/stability-roadmap.md` §12.6.1 的 N7 |
+| 资源开销 | `npm run build` 后现量 dist；依赖数现读 `package.json` | Windows / Android 安装包体积（出包机不在本机） |
+
+**当前真数（2026-10-09 现跑，跑法见上一行）**：`npm test` 855 例 0 失败；
+生产构建 `dist` 2.8 MB，最大单个 chunk ≈292 KB（入口）；依赖 22 项，动画库 0 项。
+⚠️ chunk 的**文件名带 hash，别抄文件名**，要引用就引"跑 `npm run build` 后 `ls -S dist/assets | head`"。
+
+### 11.6 禁止事项（汇总本文件已有的红线，不新立规矩）
+
+1. 不为视觉碰协议 / 加密 / DB 结构 / IPC 契约 / 消息状态机 / 传输 / 群同步（`AI_RULES.md`、`docs/protocol-invariants.md`）。
+2. 不删、不跳、不降、不伪造判据；**静态源码断言不等于真实界面通过**（§11.5 那一列"测不到的"就是这么来的）。
+3. 不给窗口根容器或标题栏按钮画圆角（§5）；不让浮层盖住 caption（§5 的 z 阶梯，超过 85 会被判红）。
+4. 不把操作藏在 hover 后面（§10.3 真实事故：Android 上永远不显示）。
+5. 不在辅助功能媒体查询里改文字色（§10.1：那会绕过 `tokenContrast` 的契约表）。
+6. 改字号/行高必须同步行高配对与高度估算常量（§1.4、§8）——**否则虚拟列表错位**，这一条与 §11.2 是同一件事的两面。
+7. 动画不许成为操作的前置条件，也不许在 `prefers-reduced-motion` 下留下没有反馈的死角。
+
+### 11.7 例外怎么记（沿用本文件既有格式）
+
+例外必须写全三样：**这是哪一条的例外 / 为什么它是例外 / 什么时候这条例外失效**。
+现存的三例：`sendFileTo` 不加手工乐观气泡（§9.3，后端会先 emit 完整元数据）、
+骨架屏允许字面值（§4，跑在 bundle 之前读不到 CSS 变量）、`--gosslan-msg-size` 允许偏离五档标尺
+（§8，用户阅读偏好优先于标尺）。**新增例外照这个格式，不许只写"这里特殊"**。
+
+### 11.8 回归要求（改动半径决定要跑哪一层）
+
+| 动了什么 | 至少要跑 |
+|---|---|
+| token / 配色 | `npm test`（`tokenContrast` 读真实 `style.css`）+ `index.html` 骨架同步（§4） |
+| 列表 / 滚动 / 虚拟列表 | `node perf/probe.mjs`（两个自检都必须 true）；动了估高还要 `messageHeight` 那组用例 |
+| 浮层 / 弹窗 / 键盘 | `npm run test:ui-runtime`（仓内 CDP 探针，真键盘事件 + 真 DOM，见 `docs/stability-roadmap.md` §12.6.1 那条改写） |
+| 窗口 / 辅助窗口几何 | `npm test` + `verify-guards.py`（`aux_window_*` 那几条锚点） |
+| 源文件搬家 / 大改 | `python3 scripts/verify-guards.py --list`（秒级、不注入）——**锚点会被搬家静默弄死** |
+
