@@ -116,6 +116,19 @@ window.addEventListener("error", (e) => {
 // ⚠️ 顺序要紧：api 必须**先挂到 window 再挂载组件**。反过来写的话，一旦真实组件在
 // 挂载时抛错，window.__lat 就是 undefined，驱动只会报"页面没起来"，把真因（一次渲染异常）
 // 说成加载问题 —— 这一版就是这么被骗过一次。
+/**
+ * 仿真对照要一起报的媒体特性：只报这一条会看不出"仿真有没有顺手改到别的档"。
+ * ⚠️ 存的是**查询串**，`matches` 必须在读数那一刻现取 —— 在这里把布尔值存成常量，
+ * 模块加载时就冻结了，之后 `Emulation.setEmulatedMedia` 改成什么它都照原样报回去
+ * （那正是"探针看起来在工作、其实一条也没变"的形状）。
+ */
+const MEDIA_PROBES = [
+  "(prefers-reduced-motion: reduce)",
+  "(prefers-reduced-transparency: reduce)",
+  "(hover: hover)",
+  "(pointer: coarse)",
+];
+
 const api = {
   mounted: () => !!document.getElementById("opener"),
   error: () => loadError,
@@ -172,6 +185,28 @@ const api = {
   frameStop: () => {
     frameRun = false;
     return rafFrames;
+  },
+  /**
+   * 仿真对照用的读数：**页面自己**报它现在活在哪一档。
+   * 只有 `matchMedia` 那一路不够 —— 它说"我匹配上了"并不等于样式真的变了，
+   * 所以同时报面板此刻计算出来的过渡时长：reduce 档应该明显变小，否则仿真是空转。
+   */
+  /**
+   * 仿真对照用的读数：**页面自己**报它现在活在哪一档。
+   * 只有 `matchMedia` 那一路不够 —— 它说"我匹配上了"并不等于样式真的变了，
+   * 所以同时报面板此刻计算出来的过渡时长：reduce 档应该明显变小，否则仿真是空转。
+   * ⚠️ 面板只在开着的时候存在 ⇒ 要在**打开状态**下读（驱动里先点一下再读）。
+   */
+  media: () => {
+    const el = document.querySelector('[role="dialog"]') as HTMLElement | null;
+    const cs = el ? getComputedStyle(el) : null;
+    return {
+      probes: MEDIA_PROBES.map((m) => `${m} = ${matchMedia(m).matches}`).join(" ; "),
+      transition: cs ? cs.transitionDuration : "-",
+      animation: cs ? cs.animationDuration : "-",
+      panel: panelStyle(),
+      open: state.open,
+    };
   },
   visibility: () => document.visibilityState,
 };

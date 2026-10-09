@@ -158,6 +158,67 @@ await evalJs(`window.__lat.setBusy(${BUSY_MS})`);
 const busy = await measure(Math.max(5, Math.ceil(N / 2)), "同上，但处理里先空转 100ms（灵敏度对照）");
 await evalJs("window.__lat.setBusy(0)");
 
+/**
+ * 打开一次读页面自己那几档，再关掉 —— 证明仿真真的落到了计算样式上，不是只改了 matchMedia。
+ * ⚠️ 必须先关再点：上一轮测量结束时弹窗是**开着**的，此时那一点会落在遮罩上把弹窗关掉，
+ * 于是读到 "-"（第一版就是这么被骗的：默认那一档报 "-"，reduce 那档反而有数）。
+ * ⚠️ 必须在**过渡进行中**读（泵 1 次 ≈ 40ms，还在那 150ms 里）：过渡类名只在做过渡时挂着，
+ * 落定之后面板自己的 `transition-duration` 是 `0s`（第一版就是等太久才读，于是把 reduce 判成了空转）。
+ */
+async function openProbe(label) {
+  await evalJs("window.__lat.close()");
+  await pump(5);
+  const pt = await evalJs("window.__lat.point()");
+  await click(pt.x, pt.y);
+  await pump(1);
+  const j = JSON.parse(await evalJs("JSON.stringify(window.__lat.media())"));
+  await evalJs("window.__lat.close()");
+  await pump(4);
+  if (j.panel === "-") throw new Error(`仿真对照｜${label}：打开状态下没找到面板 ⇒ 探针坏，不拿这个数去判`);
+  console.log(`仿真对照｜${label}：${j.probes}`);
+  console.log(`           过渡期内的面板：transition=${j.transition} animation=${j.animation} panel=${j.panel}`);
+  return j;
+}
+
+/**
+ * 把 "0.15s, 0.01ms" 这种串解析成最大毫秒数 —— 仿真生效判据要比的是数，不是字符串没变。
+ * ⚠️ 单位要先判再 parseFloat：浏览器会给 `.01ms !important` 回 "1e-05s" 这种指数写法，
+ * 用 `([0-9.]+)(ms|s)` 去抠会把它读成 "05s" = 5000ms（第一版就这么把 0.01ms 量成了 5 秒）。
+ */
+function maxMs(str) {
+  if (!str || str === "-") return null;
+  const parts = String(str)
+    .split(",")
+    .map((raw) => {
+      const s = raw.trim();
+      const v = parseFloat(s);
+      if (Number.isNaN(v)) return 0;
+      return s.endsWith("ms") ? v : v * 1000;
+    });
+  return parts.length ? Math.max(...parts) : null;
+}
+
+const mediaPlain = await openProbe("默认（no-preference）");
+await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+const mediaReduce = await openProbe("reduce 仿真");
+const reduceRun = await measure(Math.max(6, Math.ceil(N / 2)), "同上，但 prefers-reduced-motion=reduce");
+await send("Emulation.setEmulatedMedia", { features: [] });
+const mediaBack = await openProbe("撤掉仿真");
+
+const tPlain = maxMs(mediaPlain.transition);
+const tReduce = maxMs(mediaReduce.transition);
+const emulated = mediaReduce.probes.includes("(prefers-reduced-motion: reduce) = true");
+const backToPlain =
+  mediaBack.probes.includes("(prefers-reduced-motion: reduce) = false") &&
+  maxMs(mediaBack.transition) === tPlain;
+// 仿真有没有落到样式上：同一个元素在 reduce 下的计算时长必须与默认**不同**，且撤掉仿真要退回原值。
+// ⚠️ 这条**只证到**「引擎按 prefers-reduced-motion 改了这台的计算样式」。
+// 它证不到「那 150ms 的进入过渡被缩短」—— 因为 `duration-150` 这类时长只挂在过渡类名上，
+// 落定之后元素自己读回来是 `0s`（默认 0s、reduce 0.01ms 就是这么来的）。
+// 要证那一半，得在**离开过渡进行中**读（N13 那套泵帧时机），这台量具现在还没买那一条。
+const styleBited = tPlain !== null && tReduce !== null && tReduce !== tPlain;
+const reduceWithinTwoFrames = reduceRun.p95 !== null && reduceRun.p95 <= 33.4;
+
 const shift = Math.round((busy.p50 - plain.p50) * 100) / 100;
 console.log(
   JSON.stringify(
@@ -168,10 +229,24 @@ console.log(
       对照_处理里压一个长任务: busy,
       长任务带来的位移ms: shift,
       量具有没有灵敏度: shift >= BUSY_MS * 0.5 ? "✅ 跟得上（摘掉对照它会红）" : "❌ 不敏感 ⇒ 这条数不能用",
+      减少动效: {
+        reduce档p50: reduceRun.p50,
+        reduce档p95: reduceRun.p95,
+        reduce档每窗帧数: reduceRun.framesObserved,
+        仿真有没有点亮: emulated ? "✅ matchMedia 报 true" : "❌ 仿真没生效",
+        撤掉仿真有没有退回: backToPlain ? "✅ 退回 false" : "❌ 撤不掉 ⇒ 这条判据恒真，不能用",
+        仿真落到样式上了吗: `同一元素 transition ${mediaPlain.transition} → ${mediaReduce.transition}（撤掉退回 ${mediaBack.transition}）${
+          styleBited ? " ✅ 引擎按偏好改了计算样式" : " ❌ 仿真是空转"
+        }`,
+        这条买不到的一半:
+          "「那 150ms 进入过渡被缩短」没证到 —— duration 只挂在过渡类名上，落定后元素读回来是 0s；要证那一半得在离开过渡进行中读",
+        反馈还在两帧内: reduceWithinTwoFrames ? "✅" : `❌ p95=${reduceRun.p95}ms 超两帧`,
+      },
     },
     null,
     2,
   ),
 );
+const ok = shift >= BUSY_MS * 0.5 && emulated && backToPlain && styleBited && reduceWithinTwoFrames;
 ws.close();
-process.exit(shift >= BUSY_MS * 0.5 ? 0 : 1);
+process.exit(ok ? 0 : 1);
