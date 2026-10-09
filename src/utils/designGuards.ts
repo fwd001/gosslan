@@ -1529,3 +1529,45 @@ export function findMessageImageWithoutFetchHint(src: string): GuardIssue[] {
   }
   return out;
 }
+
+/**
+ * ㉝ 消息行那几条**列表型 prop** 的绑定里不许出现**空数组字面量**（roadmap N21）。
+ *
+ * 为什么这条值得钉住：`[] !== []` ⇒ Vue 对组件 props 的浅比较恒判「这条变了」⇒ 整棵子树重新 patch。
+ * 2026-10-10 现量（perf/README.md 量具一 `?row=`，n=3000、视口 22 行、headless Brave）：
+ * 真 MessageItem 行每帧 27.6 ms，把这两条数组换成 utils/emptyList.ts 的共享常量后 16.6 ms，
+ * 与不含真组件的合成行（16.7 ms）同档 ⇒ **一整帧的开销就是那两个字面量**。
+ * 这条判据没有它，那处收益可以被一次「顺手写回 `?? []`」静默退回，而构建与界面都不报错。
+ *
+ * 只看这四个**列表型**绑定名（消息行调用点上真实存在的那几条）：判的是字面量在不在，
+ * 不判别的优化 —— 名字不在名单里就不管，避免误伤别处合法的 `[]`。
+ */
+const LIST_PROP_BINDING_RE = /:(group-reader-ids|reactions|chips|mention-names)="([^"]*)"/g;
+
+export function findFreshEmptyArrayProp(raw: string): GuardIssue[] {
+  // 注释里的不算分母（同 ㉜ 那条 <img> 判据的教训）；用空格替掉注释正文而不是删掉，行号才不漂。
+  const src = raw.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  LIST_PROP_BINDING_RE.lastIndex = 0;
+  for (let m = LIST_PROP_BINDING_RE.exec(src); m; m = LIST_PROP_BINDING_RE.exec(src)) {
+    if (m[2].includes("[]")) {
+      out.push({
+        line: lineAt(src, m.index),
+        message:
+          `:${m[1]} 的绑定里写了空数组字面量 —— 每次渲染都是新对象 ⇒ 浅比较恒判「变了」⇒ 整棵子树重新 patch；` +
+          `空列表请引 utils/emptyList.ts 的共享常量（读数与代价见 roadmap N21）。`,
+      });
+    }
+  }
+  return out;
+}
+
+/** 这条判据**看得见**多少个绑定？真实树那半用它做阳性对照，名字被改掉时判据会瞎。 */
+export function countListPropBindings(raw: string): number {
+  const src = raw.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  LIST_PROP_BINDING_RE.lastIndex = 0;
+  let n = 0;
+  for (let m = LIST_PROP_BINDING_RE.exec(src); m; m = LIST_PROP_BINDING_RE.exec(src)) n += 1;
+  return n;
+}
+

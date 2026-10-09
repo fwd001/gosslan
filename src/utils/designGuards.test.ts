@@ -24,6 +24,8 @@ import {
   findFloatingLayerWithoutEscape,
   findTopInsetWithoutBottomInset,
   findMessageImageWithoutFetchHint,
+  findFreshEmptyArrayProp,
+  countListPropBindings,
   findImgTags,
   teleportedRootClasses,
 } from "./designGuards.ts";
@@ -2432,4 +2434,36 @@ test("真实树：src/components/message 下每条 <img> 都带两个 hint（分
   assert.deepEqual(bad, [], `有消息图缺 fetch hint：\n${bad.join("\n")}`);
   assert.equal(exempt, 1, `显式豁免的那份应当只有 ImageLightbox 一支，现数 ${exempt}（${sites.join(", ")}）`);
   console.log(`· 真实树 <img> 分母：${sites.length} 份文件 / 共 ${sites.reduce((a, s) => a + Number(s.split("=")[1]), 0)} 条标签，豁免 ${exempt} 份`);
+});
+
+test("N21 判据：列表型 prop 的绑定里出现空数组字面量必须报（正向）", () => {
+  const bad = [
+    '<template><MessageItem :reactions="map.get(id) ?? []" /></template>',
+    '<template><MessageItem :group-reader-ids="isGroup ? ids(g, ts) : []" /></template>',
+    '<template><MessageReactionBar :chips="reactions ?? []" /></template>',
+  ].join("\n");
+  const issues = findFreshEmptyArrayProp(bad);
+  assert.equal(issues.length, 3, `三处字面量该报三条，现数 ${issues.length}`);
+  assert.ok(issues.every((i) => i.line > 0), '每条都要带行号');
+});
+
+test("N21 判据：引共享常量 / 非名单 prop / 注释里的字面量都不报（反面三例）", () => {
+  assert.deepEqual(findFreshEmptyArrayProp('<template><MessageItem :reactions="map.get(id) ?? EMPTY_REACTION_CHIPS" /></template>'), []);
+  assert.deepEqual(findFreshEmptyArrayProp('<template><Foo :rows="[]"/></template>'), [], "rows 不在名单里 ⇒ 不误伤别处");
+  assert.deepEqual(findFreshEmptyArrayProp("<template>\n<!-- :reactions=\"x ?? []\" 说明文字 -->\n</template>"), []);
+});
+
+test("N21 真实树：消息行调用点上这些绑定一个都不许带空数组字面量（分母与阳性对照现数）", () => {
+  const rel = ["components/ChatWindow.vue", "components/MessageItem.vue"];
+  let bindings = 0;
+  const bad: string[] = [];
+  for (const r of rel) {
+    const src = readFileSync(join(import.meta.dirname, "..", r), "utf8");
+    const n = countListPropBindings(src);
+    bindings += n;
+    for (const issue of findFreshEmptyArrayProp(src)) bad.push(`${r}:${issue.line}`);
+  }
+  assert.ok(bindings >= 4, `两个文件里只数到 ${bindings} 个列表型 prop 绑定 ⇒ 属性大概被改名了，这条判据现在是瞎的`);
+  assert.deepEqual(bad, [], `消息行调用点又出现空数组字面量：\n${bad.join("\n")}`);
+  console.log(`· N21 真实树分母：${rel.length} 份文件 / ${bindings} 个列表型 prop 绑定，全部引共享常量`);
 });
