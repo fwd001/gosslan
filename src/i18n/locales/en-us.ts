@@ -425,6 +425,7 @@ export const enUS: MessageDict = {
   "chat.composer.inputAria": "Message input",
   "chat.composer.emoji": "Emoji",
   "emoji.frequent": "Frequent",
+  "emoji.all": "All emoji",
   "chat.composer.code": "Code message",
   "chat.composer.sendFile": "Send file (auto route)",
   "chat.composer.remind": "Choose people to notify",

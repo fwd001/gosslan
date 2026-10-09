@@ -123,8 +123,11 @@ watch(
        表情互相重叠（列宽由 1fr 决定，格子却是固定 px）。
        间隙由 4px 提到 8px 的原因：原间隙只有表情宽度的 1/9，整片网格看起来"贴死"很挤。
        ⚠️ 这里以前还写着"300 的可视高度里正好 7 行、不损失行数"，本轮没有逐格量过行数，
-       就不再复述那个精确数。能确定的只有一件：常用那一行的小标题会占掉一整行高度
-       （攒不出常用时整行不渲染 ⇒ 那一档与改前同高）。 -->
+       就不再复述那个精确数。能确定的只有一件：两段各有一行小标题，各占掉一整行高度
+       （没有常用数据时上面那一节整个消失 ⇒ 只剩「全部表情」一个标题）。
+       面板高度本轮**没有**跟着加高（300 不动）—— 加高会改"输入框上方要留多少空间"那个
+       已知边界（验收矩阵 §19 缺口④：那一支从来没有挂载态的运行时测量），
+       所以行数少了多少留给真人与肉眼判，不在这里猜。 -->
   <div
     v-if="open"
     ref="panelRef"
@@ -140,32 +143,42 @@ watch(
       class="grid grid-cols-8 content-start gap-3 overflow-y-auto p-2"
       style="height: 300px"
     >
-      <!-- 「常用」那一行的小标题：占满一整行（col-span-8），且**不是 button** ⇒
-           它不进下面 `buttons()` 的下标，所以键盘的整行步长照旧（运行时探针再量一次真实列数）。
-           一次都没用过时整行不渲染 —— 空标题比没有标题更吵。 -->
+      <!-- 两段各自的小标题（用户 2026-10-09 拿参照图定的样式：「最常使用 / 全部表情」那种分块）。
+           ⚠️ 两个标题都是网格里 `col-span-8` 的子元素且**都不是 button** ⇒ 它们各占一整行，
+           却不进下面 `buttons()` 的下标，所以键盘的整行步长照旧（运行时探针量真实列数与 y 对齐）。
+           - 「常用」只在真攒出常用时出现（空标题比没有标题更吵）；
+           - 「全部表情」**永远出现** —— 没有常用数据时上面那块整个消失，面板就只剩这一节。
+           标题插在 `i === frequentCount` 那一格之前，因此矩阵仍是同一个 `cells` 序列的后半段，
+           没有为它另起一支遍历。 -->
       <div
         v-if="grid.frequentCount"
         class="col-span-8 border-b border-[var(--gosslan-divider)] pb-1 text-[11px] leading-none text-[var(--gosslan-text-2)]"
       >
         {{ t("emoji.frequent") }}
       </div>
-      <button
-        v-for="(e, i) in cells"
-        :key="cellKey(e, i)"
-        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
-        :class="isFrequent(i) ? 'bg-[var(--gosslan-primary-light)]' : ''"
-        :data-emoji-freq="isFrequent(i) ? '1' : undefined"
-        :title="labelOf(e, i)"
-        :aria-label="labelOf(e, i)"
-        @click="pick(e)"
-      >
-        <img
-          :src="e.url"
-          :alt="e.name"
-          class="h-full w-full object-contain"
-          draggable="false"
-        />
-      </button>
+      <template v-for="(e, i) in cells" :key="cellKey(e, i)">
+        <div
+          v-if="i === grid.frequentCount"
+          class="col-span-8 text-[11px] leading-none text-[var(--gosslan-text-2)]"
+        >
+          {{ t("emoji.all") }}
+        </div>
+        <button
+          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
+          :class="isFrequent(i) ? 'bg-[var(--gosslan-primary-light)]' : ''"
+          :data-emoji-freq="isFrequent(i) ? '1' : undefined"
+          :title="labelOf(e, i)"
+          :aria-label="labelOf(e, i)"
+          @click="pick(e)"
+        >
+          <img
+            :src="e.url"
+            :alt="e.name"
+            class="h-full w-full object-contain"
+            draggable="false"
+          />
+        </button>
+      </template>
     </div>
   </div>
 </template>

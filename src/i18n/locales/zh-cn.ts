@@ -436,6 +436,7 @@ export const zhCN: MessageDict = {
   "chat.composer.inputAria": "消息输入框",
   "chat.composer.emoji": "表情",
   "emoji.frequent": "常用",
+  "emoji.all": "全部表情",
   "chat.composer.code": "代码消息",
   "chat.composer.sendFile": "发送文件（自动选择最优路线）",
   "chat.composer.remind": "选择提醒的人",

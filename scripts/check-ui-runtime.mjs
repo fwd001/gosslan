@@ -978,6 +978,26 @@ window.__probe = (() => {
     const firstRow = geo.filter((g) => Math.abs(g.y - top) <= 2);
     return new Set(firstRow.map((g) => g.x)).size;
   };
+  /** 网格里**非按钮**的那些子元素（= 两段的小标题），按 DOM 顺序。 */
+  H.gridLabels = () => {
+    const first = H.grid()[0];
+    const grid = first ? first.parentElement : null;
+    if (!grid) return [];
+    return Array.from(grid.children)
+      .filter((c) => c.tagName !== 'BUTTON')
+      .map((c) => ({
+        tag: c.tagName,
+        text: String(c.textContent || '').trim(),
+        y: Math.round(c.getBoundingClientRect().top),
+      }));
+  };
+  /** 网格第一个子元素的标签名（判"常用那一节消失后剩的是谁"）。 */
+  H.gridFirstChildTag = () => {
+    const first = H.grid()[0];
+    const grid = first ? first.parentElement : null;
+    const c = grid ? grid.firstElementChild : null;
+    return c ? c.tagName : 'none';
+  };
   H.focusTrigger = () => { document.getElementById('trigger').focus(); };
   /** 面板里每一格：alt（表情名）、常用标记、**计算后的背景色**、落点。按 DOM 顺序，不按组件内部下标。 */
   H.emojiCells = () => H.grid().map((b) => {
@@ -1762,6 +1782,23 @@ async function runEmoji(cdp, url) {
   const freq = cells.filter((c) => c.freq);
   const matrix = cells.slice(table.tokens.length);
   const matrixAlts = matrix.map((c) => c.alt);
+
+  const labels = await cdp.eval("window.__probe.gridLabels()");
+  const labelTexts = labels.map((l) => l.text);
+  check("两段各有一行小标题，顺序是「常用」在前、「全部表情」在后（用户 2026-10-09 参照图）",
+    labelTexts.length === 2 && labelTexts[0].length > 0 && labelTexts[1].length > 0,
+    "两个非按钮子元素、都有文字", JSON.stringify(labels));
+  check("对照：两行标题都不是 button（是按钮就会挤进键盘整行步长）",
+    labels.every((l) => l.tag !== 'BUTTON'), "全是 div", JSON.stringify(labels.map((l) => l.tag)));
+  check("「全部表情」那一行确实落在两段交界处（在最后一格常用之后、第一格矩阵之前）",
+    labels.length === 2 && freq.length > 0
+      && labels[1].y > freq[freq.length - 1].y && labels[1].y < matrix[0].y,
+    "标题 y 夹在两段之间", JSON.stringify({
+      标题y: labels[1] && labels[1].y,
+      末格常用y: freq[freq.length - 1] && freq[freq.length - 1].y,
+      首格矩阵y: matrix[0] && matrix[0].y,
+    }));
+
   check("常用那一行渲染出来了（种了几条就该有几格带常用标记）",
     freq.length === table.tokens.length, `${table.tokens.length} 格`, freq.length);
   check("格子总数 = 常用那一行 + **完整**一张表（矩阵没被摘走几格）",
@@ -1844,6 +1881,35 @@ async function runEmoji(cdp, url) {
   const after = await info();
   check("关掉之后焦点**还给触发按钮**（不还就等于键盘用户要从页头重走一遍）",
     after.triggerActive === true, "activeElement 是那个按钮", JSON.stringify(after));
+
+  // ---------------- 第二趟：**账是空的**（新设备）那一档长什么样 ----------------
+  // 用户 2026-10-09 明确要的那半句："在没有常用数据的时候，常用表情模块消失只有全部表情"。
+  // 必须重新 navigate 再装：`usage` 是在组件 setup 里一次性读 localStorage 的，
+  // 装完再清账不会让已经挂起来的那块面板变回去；而在同一页里再装一次会留下第二个面板，
+  // `buttons()` 会把两块的格子混着数（探针纪律 3：段与段之间不共享浮层状态）。
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval("localStorage.removeItem('gosslan.emojiUsage.v1')");
+  await cdp.eval(`window.__probe.install('/src/components/EmojiPicker.vue',
+    '<button id="trigger" data-probe-panel>触发按钮</button>')`);
+  await cdp.eval("window.__probe.focusTrigger()");
+  await cdp.eval("window.__probe.setOpen(true)");
+  const emptyLabels = await cdp.eval("window.__probe.gridLabels()");
+  const emptyCells = await cdp.eval("window.__probe.emojiCells()");
+  check("没有常用数据时：只剩「全部表情」一个标题，「常用」那一节整个消失",
+    emptyLabels.length === 1 && emptyLabels[0].text.length > 0
+      && emptyLabels[0].tag !== 'BUTTON',
+    "恰好一个非按钮标题", JSON.stringify(emptyLabels));
+  check("没有常用数据时：格子就是完整那张表，一格不多（常用段没留空位）",
+    emptyCells.length === table.total && emptyCells.every((c) => c.freq === false),
+    `${table.total} 格且无常用标记`, `${emptyCells.length} 格`);
+  check("没有常用数据时：网格第一个子元素就是「全部表情」标题（不是某格按钮）",
+    (await cdp.eval("window.__probe.gridFirstChildTag()")) === 'DIV',
+    "DIV", await cdp.eval("window.__probe.gridFirstChildTag()"));
+  const emptyCols = await cdp.eval("window.__probe.cols()");
+  check("没有常用数据时列数仍是 8（少一节标题不该把布局换成另一档）",
+    emptyCols > 1 && emptyCols === cols, `与有账那一趟同为 ${cols}`, `${emptyCols}`);
 }
 
 /**

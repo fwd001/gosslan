@@ -206,29 +206,67 @@ test("面板只有一块八列网格，常用与矩阵是同一个 cells 序列�
 });
 
 /**
- * 「常用」那一行的形状（用户 2026-10-09 明确要的）：单独一行、上面带小标题、与下面分得开。
+ * 两段各有一行小标题（用户 2026-10-09 拿参照图定的：「最常使用 / 全部表情」那种分块，
+ * 并明确「在没有常用数据的时候，常用表情模块消失只有全部表情」）。
  *
  * 三条各守一侧：
- * - 小标题必须**不是 button** —— `buttons()` 收集的是按钮，标题一旦是按钮，
- *   键盘的整行步长就会错位一格（↑↓ 落到不该落的地方，而界面上看不出来）。
- * - 染色与无障碍标签必须按**位置**判（`isFrequent(i)`）。按 file 判的话，
- *   矩阵里同一表情那一格会被连带染色、连带读成「常用 · [微笑]」。
- * - `:key` 必须带段号。同一表情现在有两格，只用 `file` 会撞 key。
+ * - 「常用」的标题必须**有门槛**（一次都没用过时整节消失，不留空标题）；
+ * - 「全部表情」的标题必须**没门槛**（它是恒在的那一节，被一起藏掉就是另一件事）；
+ * - 两个标题都必须**不是 button** —— `buttons()` 收集的是按钮，标题一旦算进下标，
+ *   键盘的整行步长就错一格（↑↓ 落到不该落的地方，界面上只表现为"有点不对"）。
  */
-test("常用那一行有小标题、按位置区分两段、key 带段号", () => {
-  assert.match(PICKER, /col-span-\d+/, "小标题没占满一整行 ⇒ 它会挤掉一个格子");
-  assert.match(PICKER, /v-if="grid\.frequentCount"/, "没有常用时不该出现一行空标题");
-  assert.match(PICKER, /\{\{ t\("emoji\.frequent"\) \}\}/, "那一行上面没有「常用」小标题");
-  // ⚠️ 锚必须窄到"真挂在 class 上"的那个元素：组件的注释里也写着 `col-span-8`，
-  // 从裸字符串切会一路切穿下面的按钮，那条 !test 就变成永远抓不到东西的空转。
-  const heading = PICKER.match(/class="col-span-8[\s\S]*?<\/div>/);
-  assert.ok(heading, "找不到「常用」小标题那个元素");
-  assert.ok(!/<button/.test(heading[0]), "小标题成了 button ⇒ 键盘整行步长会错一格");
-  assert.match(PICKER, /:key="cellKey\(e, i\)"/, "渲染键没带段号 ⇒ 同一表情两格会撞 key");
-  assert.match(PICKER, /function cellKey\(e: EmojiDef, i: number\)/, "cellKey 不再是「段号 + file」的形状");
+test("两段都有小标题：常用那一节可消失、全部表情那一节恒在", () => {
+  assert.match(PICKER, /col-span-8/, "小标题没占满一整行 ⇒ 它会挤掉一个格子");
+  assert.match(PICKER, /\{\{ t\("emoji\.frequent"\) \}\}/, "常用那一节上面没有小标题");
+  assert.match(PICKER, /\{\{ t\("emoji\.all"\) \}\}/, "矩阵那一节上面没有「全部表情」小标题");
+  assert.match(PICKER, /v-if="grid\.frequentCount"/, "没有常用数据时不该出现空的「常用」标题");
+  // 「全部表情」插在两段交界处：条件只许是"到没到下标边界"，不许顺带挂上 frequentCount 的真假
+  assert.match(
+    PICKER,
+    /v-if="i === grid\.frequentCount"/,
+    "「全部表情」标题没插在交界处 ⇒ 常用为空时那一节会跟着消失",
+  );
+  assert.ok(
+    !/v-if="grid\.frequentCount"[\s\S]{0,160}t\("emoji\.all"\)/.test(PICKER),
+    "「全部表情」标题被 frequentCount 挡了 ⇒ 没有常用数据时面板一句标题都不剩",
+  );
+  // 两个标题元素都必须不是 button。⚠️ 锚必须是**模板插值**那种写法：
+  // `t("emoji.frequent")` 在脚本里也出现一次（读屏标签「常用 · [微笑]」），
+  // 拿裸串去 indexOf 会先撞上那一处，切出来的"元素"根本不是标题。
+  for (const key of ["emoji.frequent", "emoji.all"]) {
+    const at = PICKER.indexOf(`{{ t("${key}") }}`);
+    assert.ok(at >= 0, `${key} 没有作为标题插值出现`);
+    const start = PICKER.lastIndexOf("<", at);
+    const tag = PICKER.slice(start, at);
+    assert.ok(/^<div\b/.test(tag), `${key} 的标题元素不是 div ⇒ 它可能算进 buttons() 的下标`);
+    assert.ok(/col-span-8/.test(tag), `${key} 的标题没占满一整行`);
+  }
+  // 反空转：坏形状必须被抓到
+  assert.ok(
+    /^<button\b/.test("<button class=\"col-span-8\">x"),
+    "上面那条 !button 判据若抓不到 button 就是空转",
+  );
+  assert.ok(
+    !/v-if="i === grid\.frequentCount"/.test('<div v-if="grid.frequentCount">全部表情</div>'),
+    "把恒在的标题改成有条件渲染，必须被那条 v-if 判据抓到",
+  );
+});
+
+/**
+ * 同一表情会出现两格 ⇒ 划分与键只能按**位置**判。这三条是上一轮立的，
+ * 而且已经登记成永久非空转用例（`verify-guards --only=emoji` 里两条的 expect_fail_hint
+ * 就指在下面那两句报错文案上）⇒ **改样式时不许顺手删掉它们**。
+ */
+test("两段划分按位置判、渲染键带段号（同一表情两格带来的两条）", () => {
   assert.match(PICKER, /function isFrequent\(i: number\)/, "两段划分改成按 file 判了");
-  // 染色本身也必须吃位置：只把 `isFrequent` 函数留着、模板里改成按表情判，
-  // 上面那条就抓不到（函数在不在与谁用它，是两件事）。运行时探针再量一次真实背景色。
+  assert.match(
+    PICKER,
+    /function cellKey\(e: EmojiDef, i: number\)/,
+    "cellKey 不再是「段号 + file」的形状",
+  );
+  assert.match(PICKER, /:key="cellKey\(e, i\)"/, "渲染键没带段号 ⇒ 同一表情两格会撞 key");
+  // 染色本身也必须吃位置：只留着 `isFrequent` 函数、模板里改成按表情判，第一条抓不到
+  //（函数在不在与谁用它，是两件事）。运行时探针再量一次真实背景色。
   assert.match(
     PICKER,
     /:class="isFrequent\(i\)/,

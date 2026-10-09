@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """护栏非空转用例分册：前端呈现层（components / layouts / entries / 样式与打包配置里的界面判据）。
 
-本册现数 41 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
+本册现数 43 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
 用不带行首锚的写法会多算一条 —— 多出来的正是这一行本身）；2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
 `CASES` 字面量里）按**锚定的被守物**切出来，切过来那 30 条的块文本逐字未搬动过一字 ⇒
 恒等判据＝`verify-guards.py --list` 的输出排序后与拆前**逐字节相同**（条数与用例名都不是"我觉得一样"）。
@@ -624,7 +624,11 @@ CASES: list[Case] = [
         "     Vue 报重复键并复用错节点（表现是点一格、另一格跟着变）。"
         "     这条钉的是「带段号的键」还在，键的形状是这两段划分唯一的落点。",
         file=ROOT / "src" / "components" / "EmojiPicker.vue",
-        injections=[('        :key="cellKey(e, i)"', '        :key="e.file"')],
+        # ⚠️ 2026-10-09 这一条的锚跟着搬过一次家：键从 `<button>` 挪到了 `<template v-for>` 那一行
+        # （两段之间要插一行「全部表情」标题，键只能挂在片段上）。
+        # 起跑前核对当场把它报出来了 —— 凭猜留着旧锚的后果是"注入注不上去、这条守卫静默空转"。
+        injections=[('      <template v-for="(e, i) in cells" :key="cellKey(e, i)">',
+                     '      <template v-for="(e, i) in cells" :key="e.file">')],
         cmd=npm("test"),
         cwd=ROOT,
         expect_fail_hint="渲染键没带段号",
@@ -636,8 +640,8 @@ CASES: list[Case] = [
         "     矩阵里同一表情那一格会被连带染色、连带读成「常用 · [微笑]」——"
         "     而这两格在界面上挨得不远，看起来就像配色坏了。",
         file=ROOT / "src" / "components" / "EmojiPicker.vue",
-        injections=[('        :class="isFrequent(i) ? \'bg-[var(--gosslan-primary-light)]\' : \'\'"',
-                     '        :class="usage[e.displayName] ? \'bg-[var(--gosslan-primary-light)]\' : \'\'"')],
+        injections=[('          :class="isFrequent(i) ? \'bg-[var(--gosslan-primary-light)]\' : \'\'"',
+                     '          :class="usage[e.displayName] ? \'bg-[var(--gosslan-primary-light)]\' : \'\'"')],
         cmd=npm("test"),
         cwd=ROOT,
         expect_fail_hint="格子的染色不再吃位置",
@@ -657,4 +661,32 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="被条件化了",
         tags=["frontend", "new-guards", "todo"],
+    ),
+    Case(
+        name="「全部表情」那一节被常用条件挡了必须被抓住（恒在那一条）",
+        why="用户 2026-10-09 拿参照图定的两节里，「全部表情」是**恒在**的那一节，"
+        "     只有「常用」在没数据时消失。最容易被顺手写成「两节一起挂上 frequentCount」——"
+        "     那样新设备上整个面板一句标题都不剩。注入 = 给交界那一行也加上 frequentCount 条件。",
+        file=ROOT / "src" / "components" / "EmojiPicker.vue",
+        injections=[('          v-if="i === grid.frequentCount"',
+                     '          v-if="grid.frequentCount && i === grid.frequentCount"')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="标题没插在交界处",
+        tags=["frontend", "new-guards", "emoji"],
+    ),
+    Case(
+        name="「全部表情」标题元素换成 button 必须被抓住（键盘整行步长那条）",
+        why="面板里 ↑↓ 的步长是写死的 COLS，而 `buttons()` 收集的是**按钮**。"
+        "     标题一旦是按钮，它就占进下标、整行落点错一格，而界面上只表现为「有点不对」。"
+        "     两行标题都必须是网格里一个非按钮的 col-span-8 元素。",
+        file=ROOT / "src" / "components" / "EmojiPicker.vue",
+        injections=[('        <div\n          v-if="i === grid.frequentCount"',
+                     '        <button type="button"\n          v-if="i === grid.frequentCount"'),
+                    ('          {{ t("emoji.all") }}\n        </div>',
+                     '          {{ t("emoji.all") }}\n        </button>')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="的标题元素不是 div",
+        tags=["frontend", "new-guards", "emoji"],
     ),]
