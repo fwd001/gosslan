@@ -82,14 +82,40 @@ if (ONLY === "mem") {
     };
   };
   const n = await evalJs("window.__perf.n");
+  // 默认 300 步/方向、一个方向采一次 ⇒ 与 2026-10-10 那批数同条件（端点形状不变）。
+  // 要中间曲线就设 PERF_MEM_BLOCK：长跑不是"把两端拉长"就完事 —— 只有逐块读数才看得出
+  // 堆/节点/监听是随步数累积、还是走完一段就回落。
+  const MEM_STEPS = Number(process.env.PERF_MEM_STEPS ?? 300);
+  const MEM_BLOCK = Math.max(1, Number(process.env.PERF_MEM_BLOCK ?? MEM_STEPS));
+  const series = [];
+  // ⚠️ 别读 r.frames —— scrollTest 的返回里**没有这个键**（原先那个 `upFrames` 永远是 null，
+  // 一条死读数）。真有的字段是 steps / wallMs / longFramesOver50ms / offsetsRebuilds。
+  async function churn(dir) {
+    let steps = 0;
+    let wallMs = 0;
+    let longFrames = 0;
+    let rebuilds = 0;
+    for (let done = 0; done < MEM_STEPS; done += MEM_BLOCK) {
+      const block = Math.min(MEM_BLOCK, MEM_STEPS - done);
+      const r = await evalJs(`window.__perf.scrollTest(${block}, 800, ${dir ? "true" : "false"})`);
+      steps += r?.steps ?? 0;
+      wallMs += r?.wallMs ?? 0;
+      longFrames += r?.longFramesOver50ms ?? 0;
+      rebuilds += r?.offsetsRebuilds ?? 0;
+      series.push({ at: `${dir ? "up" : "down"}#${done + block}`, ...(await snap()) });
+    }
+    return { steps, wallMs, longFrames, offsetsRebuilds: +rebuilds.toFixed(2) };
+  }
   const before = await snap();
-  const up = await evalJs("window.__perf.scrollTest(300, 800, true)");
+  const up = await churn(true);
   const mid = await snap();
-  const down = await evalJs("window.__perf.scrollTest(300, 800, false)");
+  const down = await churn(false);
   const after = await snap();
   console.log(JSON.stringify({
     n,
-    churn: { upFrames: up?.frames ?? null, downFrames: down?.frames ?? null },
+    churn: { up, down },
+    config: { memStepsEachDir: MEM_STEPS, block: MEM_BLOCK },
+    series,
     before, mid, after,
     delta: {
       heapMB: +(after.heapMB - before.heapMB).toFixed(2),
