@@ -1328,3 +1328,80 @@ export function findFloatingLayerWithoutEscape(src: string): GuardIssue[] {
   }
   return out;
 }
+
+// ---------------- ㉚ 主题色规则必须在顶层（#35-N7 的真实缺陷） ----------------
+/**
+ * 判的是**嵌套深度**，不是"这条规则写没写"。
+ *
+ * 为什么形状要这样：2026-10-09 实测发现 `::selection` 与 `accent-color` 两条被写在
+ * `input,textarea,select,[contenteditable]{…}` 的**括号里面**。原生 CSS 嵌套把 `::selection`
+ * 编译成 `input ::selection, textarea ::selection, …` 这种后代选择器 —— 输入框没有元素子节点
+ * ⇒ 整条**匹配不到任何东西**；`accent-color` 同样编译成 `[contenteditable=""] progress{}`
+ * 之类的后代形式 ⇒ 复选框 / radio / 进度条根本没吃到主题色。
+ * 那时源码里两条规则都在、扫源码的正则也照过 —— **「在源码里」不等于「在产物里生效」**。
+ *
+ * 顶层判据：`@media` / `@supports` / `@layer` 这类 at-rule 的括号**不计入深度**
+ * （把 `::selection` 写进媒体查询是合法写法，不该被这条误伤）。
+ */
+export function findNestedThemeRuleIssues(css: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  // 注释里可能出现花括号：整段替换成等长空白，保持下标与行号不漂
+  const body = css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+  const lineAt = (i: number) => body.slice(0, i).split("\n").length;
+
+  // 栈里只记"这是不是一条样式规则"（true = 计入深度；false = at-rule 容器）
+  const stack: boolean[] = [];
+  let selStart = 0;
+  let selectionHeads = 0;
+  let accentDecls = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === "{") {
+      const sel = body.slice(selStart, i).trim();
+      stack.push(!sel.startsWith("@"));
+      selStart = i + 1;
+      if (sel.endsWith("::selection")) {
+        selectionHeads++;
+        const depth = stack.filter(Boolean).length - 1; // 选择器本身所在深度
+        if (depth !== 0) {
+          out.push({
+            line: lineAt(selStart),
+            message:
+              "㉚ `::selection` 必须在顶层规则里（现在嵌在第 " + depth + " 层）—— 嵌套会让它被编译成" +
+              "后代选择器（`input ::selection`），输入框没有元素子节点 ⇒ 整条匹配不到任何东西，" +
+              "选中色静默回到浏览器默认蓝。",
+          });
+        }
+      }
+      continue;
+    }
+    if (c === "}") {
+      stack.pop();
+      selStart = i + 1;
+      continue;
+    }
+    if (c === ";" || c === "\n") selStart = c === ";" ? i + 1 : selStart;
+    if (body.startsWith("accent-color:", i)) {
+      accentDecls++;
+      const depth = stack.filter(Boolean).length;
+      if (depth !== 1) {
+        out.push({
+          line: lineAt(i),
+          message:
+            "㉚ `accent-color` 必须直接写在一个顶层规则里（现在所在深度 " + depth + "）—— " +
+            "写在别的规则括号里会被编译成后代选择器（如 `[contenteditable=" + "\u0022\u0022] progress`），" +
+            "复选框 / radio / 进度条根本吃不到主题色。",
+        });
+      }
+      i += "accent-color".length;
+    }
+  }
+
+  if (selectionHeads === 0) {
+    out.push({ line: 0, message: "㉚ style.css 里找不到顶层 `::selection` 规则（选中态没跟主题色）。" });
+  }
+  if (accentDecls === 0) {
+    out.push({ line: 0, message: "㉚ style.css 里找不到顶层 `accent-color` 声明（原生控件没跟主题色）。" });
+  }
+  return out;
+}

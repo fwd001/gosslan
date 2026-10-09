@@ -674,6 +674,11 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 
 - **没有"页面切换 200–320ms"这一档，是有意的**：本应用是多窗口架构（§5），没有路由级过场，
   造一个没人消费的 token 只会变成下一个"定义了但 0 处引用"（§10.3 那个真实事故）。
+- **主题色相关的规则必须写在顶层**（判据 ㉚ `findNestedThemeRuleIssues`）：`::selection` 与 `accent-color`
+  一旦被写进别的规则的括号里（例如 `input,textarea,…{ … }`），原生 CSS 嵌套会把它们编译成**后代**选择器
+  （`input ::selection` / `[contenteditable=""] progress`）⇒ 整条匹配不到任何东西。
+  这种写法**源码里看得见、判据扫得到、界面上没有** ⇒ 这一族只能判**嵌套深度**，
+  而且核对要读 `dist/assets/*.css`（读 `src/style.css` 不足以证明它生效）。
 - **动画系统零新增依赖**：Motion / GSAP / @vueuse/motion 都不在 `package.json` 里（现算：
   `node -e "const d=require('./package.json');console.log(Object.keys({...d.dependencies,...d.devDependencies}).filter(k=>/motion|gsap|anime|framer/i.test(k)))"` ⇒ 应为空数组）。
   要引入必须先给出"哪个具体交互靠 CSS transition 做不到"的证据，并且一次只引一套。

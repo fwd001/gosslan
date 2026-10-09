@@ -13,6 +13,37 @@
 
 ## [Unreleased]
 
+## [4.33.33] - 2026-10-09
+
+### Fixed
+
+- ★ **选中色与原生控件强调色此前"写了但没生效"**（#35-N7 那一格，`src/style.css`）。
+  根因不是没写，是**放错了地方**：`::selection` 与 `accent-color` 两条被写在
+  `input,textarea,select,[contenteditable]{…}` 的**括号里面**。原生 CSS 嵌套会把它们编译成
+  **后代**选择器 —— `input ::selection, textarea ::selection, …`（输入框没有元素子节点）
+  和 `[contenteditable=""] progress{…}` 这类形式 ⇒ **整条匹配不到任何东西**。
+  实际后果：选中消息文字永远是浏览器默认蓝（深色面板里既不跟手又刺眼），
+  复选框 / radio / 进度条也没吃到主题强调色。修法是把两条各自放回顶层，**值一个字节没改**
+  （"半透明叠加 + `color: inherit` ⇒ 不改文字颜色、不绕过 `tokenContrast`"那个设计照旧）。
+- **同批把那条判据换了形状**：旧的只正则扫源码"有没有写 `::selection`"，而本次缺陷恰恰是
+  "写了、扫到了、判据绿了、界面上没有" ⇒ 那道判据对本次故障是**空转的**。
+  新增 `designGuards::findNestedThemeRuleIssues` 改判**嵌套深度**（`::selection` 选择器必须在深度 0、
+  `accent-color` 必须待在一个顶层规则里），`@media` / `@supports` 的括号不计深度
+  ⇒ 媒体查询里合法写 `::selection` 不被误伤。四组用例一正一反：真实 `style.css` 必须 0 条、
+  当时那个嵌套形状必须恰好报 2 条（反向用例就是当时的真实代码）、两条都缺也报红、媒体查询写法不误伤。
+
+### 验证（这一格读源码看不出来，必须看产物）
+
+`npm run build` 后现读 `dist/assets/boot-*.css`：`::selection{background:color-mix(…)}` 与
+`input,select,textarea,progress{accent-color:var(--gosslan-primary)}` 都是**顶层**规则；
+后代残留检索为 False。复跑：`npm run build && grep -c "input ::selection" dist/assets/*.css` ⇒ 应为 0。
+门禁：`npm test` **859/859**（比上一版多的 4 条就是上面那四组）、`vue-tsc` 0 错误、
+`node scripts/check-doc-numbers.mjs` 通过。
+
+⚠️ **仍未实测的一格**：选中色在真机 WKWebView / WebView2 上的实际观感，以及半透明选中底色压在
+自定义气泡底色上够不够醒目 —— 产物层证明了"规则会生效"，"好不好看"要人眼看（本机锁屏取不到帧）。
+
+
 ## [4.33.32] - 2026-10-09
 
 ### Changed
@@ -23,9 +54,6 @@
   真正会漂的是"要不要抬高度"这个决定，所以决定记在这里（`docs/` 与 `*.md` 不计入改动预算，
   而改 `EmojiPicker.vue` 里那行注释要按判据 4 再花一个补丁号 —— 为一个结论花一次发版不值）。
   要推翻它只需要看这一条 + `--only=emoji` 那 27 条运行时判据（列数、标题落点、可视行数都在里面）。
-
-## [4.33.32] - 2026-10-09
-
 ### Fixed
 
 - ★ **虚拟列表的「可视区高度」现在跟着容器真实高度走**（原生体验审计第一项，`src/components/VirtualList.vue`）。

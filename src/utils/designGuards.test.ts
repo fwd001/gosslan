@@ -20,6 +20,7 @@ import {
   findTruncationWithoutTitle,
   checkTextFieldFocusRing,
   checkSelectionContract,
+  findNestedThemeRuleIssues,
   findFloatingLayerWithoutEscape,
   teleportedRootClasses,
 } from "./designGuards.ts";
@@ -36,6 +37,47 @@ test("⓪ ::selection 与 accent-color 必须吃主题变量（#35-N7）", () =>
     /accent-color:\s*var\(--gosslan-primary\)/,
     "input/select/textarea/progress 的 accent-color 必须吃主题变量",
   );
+});
+
+// ---------------- ㉚ 主题色规则必须在顶层（#35-N7 的真实缺陷） ----------------
+// 判"有没有写"挡不住这次这种"写了但匹配不到"：两条规则被写在 input{…} 的括号里，
+// 原生嵌套把它们编译成后代选择器（`input ::selection` / `[contenteditable=""] progress`），
+// 源码正则照过、产物里整条不生效。所以这里判的是**嵌套深度**，并且反向用例就是当时的真实写法。
+test("㉚ 真实 style.css：两条主题色规则都在顶层（0 条报红）", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(findNestedThemeRuleIssues(css), []);
+});
+
+test("㉚ 反向用例：写在 input{} 括号里 → 两条都报红（这就是 2026-10-09 之前的实际形状）", () => {
+  const nested = `input,textarea,select,[contenteditable="true"] {
+  caret-color: var(--gosslan-primary);
+  ::selection {
+    background: color-mix(in srgb, var(--gosslan-primary) 30%, transparent);
+    color: inherit;
+  }
+  input, select, textarea, progress {
+    accent-color: var(--gosslan-primary);
+  }
+}
+`;
+  const msgs = findNestedThemeRuleIssues(nested).map((i) => i.message);
+  assert.equal(msgs.length, 2, msgs.join("\n"));
+  assert.ok(msgs.some((m) => m.includes("::selection")), msgs.join("\n"));
+  assert.ok(msgs.some((m) => m.includes("accent-color")), msgs.join("\n"));
+});
+
+test("㉚ 两条都缺 → 也报红（判据不许因为「没写」而静默绿）", () => {
+  const msgs = findNestedThemeRuleIssues("a { color: red }").map((i) => i.message);
+  assert.equal(msgs.length, 2, msgs.join("\n"));
+});
+
+test("㉚ 媒体查询里写 ::selection 是合法形状，不许误伤", () => {
+  const ok = `@media (prefers-reduced-transparency: reduce) {
+  ::selection { background: color-mix(in srgb, var(--gosslan-primary) 30%, transparent); }
+}
+progress { accent-color: var(--gosslan-primary) }
+`;
+  assert.deepEqual(findNestedThemeRuleIssues(ok), []);
 });
 
 // ---------------- ① 悬停揭示必须有触屏兜底 ----------------
