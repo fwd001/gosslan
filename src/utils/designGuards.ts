@@ -515,7 +515,7 @@ export function findOutlineNoneWithoutFocusRing(src: string): GuardIssue[] {
  * 小尺寸工具类：Tailwind 里 `h-8` = 32px、`h-7` = 28px、`h-6` = 24px、`h-5` = 20px，
  * 全部**小于 HIG 的 44pt 最小点按目标**。（`h-11` = 44px 才是达标尺寸。）
  */
-const SMALL_SIZE_RE = /\b(?:h-5|h-6|h-7|h-8|w-5|w-6|w-7|w-8)\b/;
+const SMALL_SIZE_RE = /\b(?:h-4|w-4|h-5|h-6|h-7|h-8)\b/;
 
 /** 参与点按判定的标签（`button`/`a`/`label`/`select`/`input` 天生可交互；其余看 `@click`）。 */
 const TAPPABLE_TAG_RE = /<(button|a|div|span|li|label|select|input)\b[^>]*>/gs;
@@ -548,7 +548,8 @@ export function findSmallTapTargets(src: string): GuardIssue[] {
         "小尺寸可交互元素没有 `tap-safe` —— iOS HIG 的最小点按目标是 44×44pt，" +
         "而 `h-8`=32px / `h-7`=28px / `h-6`=24px，手指容易点不中或误触相邻项。" +
         "加 `tap-safe`（`:pointer: coarse` 下热区垂直 +16px：h-6→40、h-7→44、h-8→48）；" +
-        "`h-5`（20px）即便加了也只有 36px，请改用 `h-7` 以上。" +
+        "`h-5`（20px）即便加了也只有 36px，请改用 `h-7` 以上；`h-4`（16px）加了也只有 32px，" +
+        "而 tap-safe 只撑垂直方向，横向热区仍等于可见盒 —— 行内挨着别的按钮时先想清楚会不会误触。" +
         "确属不需要触屏撑大的场合可加 `tap-target-ok` 注释整文件跳过。",
     });
   }

@@ -1146,7 +1146,7 @@ function onLoadMore() {
           <span class="min-w-0 flex-1 truncate" :title="p.text">{{ p.text }}</span>
           <!-- 就地取消置顶：不必先跳到原消息再右键（用户明确要求） -->
           <span
-            class="hover-reveal-op flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 transition group-hover/pin:opacity-100"
+            class="tap-safe hover-reveal-op flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 transition group-hover/pin:opacity-100"
             role="button"
             :title="t('msg.unpin')"
             :aria-label="t('msg.unpin')"

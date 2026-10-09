@@ -570,6 +570,23 @@ test("不可交互的小元素不报（纯装饰）", () => {
   assert.deepEqual(findSmallTapTargets(decorative), []);
 });
 
+test("复现真实缺陷：h-4 w-4 的 span[role=button] 没有 tap-safe → 报出（2026-10-09 之前这档根本扫不到）", () => {
+  const buggy = `<template>
+  <span class="flex h-4 w-4 items-center justify-center" role="button" @click.stop="unpin()">x</span>
+</template>`;
+  const issues = findSmallTapTargets(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 2);
+  assert.match(issues[0].message, /44×44pt/);
+});
+
+test("h-4 加了 tap-safe 就通过（口径放宽不等于把已有写法全判死）", () => {
+  const ok = `<template>
+  <span class="tap-safe flex h-4 w-4" role="button" @click.stop="unpin()">x</span>
+</template>`;
+  assert.deepEqual(findSmallTapTargets(ok), []);
+});
+
 test("带 @click 的非按钮小元素同样要 tap-safe", () => {
   const buggy = `<template>
   <div class="h-6 w-6 cursor-pointer" role="button" tabindex="0" @click="go()">x</div>
