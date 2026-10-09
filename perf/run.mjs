@@ -166,6 +166,72 @@ if (ONLY === "resize") {
   process.exit(0);
 }
 
+// PERF_ONLY=throttle ⇒ 量具六：§七 必测行为第 9 项「低性能设备上的关键交互」与 §八「长帧/连续掉帧」
+// 在慢 CPU 下的第一份数。走 CDP 的 Emulation.setCPUThrottlingRate，**不给页面加任何钩子**。
+// ⚠️ 这是**同一台机器上的模拟降速**，不是低端 Android 实机 —— 读出来的数只能写"模拟 4×/6× 下怎样"，
+//    不许写成"低端机可用"（约束 12：没跑过的平台不算通过）。
+// 阳性对照用**已有的定长工作** calibrate(3)：同一段整表估算在降频后必须真的变慢（倍数 > 1.5 才采信），
+// 否则说明那条 CDP 调用没落地 —— "没有长帧"就可能来自"降频根本没生效"，那是最省事的一种假绿。
+if (ONLY === "throttle") {
+  const rates = (process.env.PERF_RATES ?? "4,6").split(",").map((x) => Number.parseInt(x, 10)).filter((x) => x >= 1);
+  const steps = Number.parseInt(process.env.PERF_STEPS ?? "150", 10);
+  const setRate = (r) => send("Emulation.setCPUThrottlingRate", { rate: r });
+  await send("Page.enable");
+  /**
+   * 每个条件都从**冷启动**跑同一段：先重载、等页面回来，**再**设速率。
+   * 顺序不能反：导航会把 emulation 一起冲掉（设早了等于没设），而反过来若不重载，
+   * 降频档就白拿上一遍暖好的高度缓存 ⇒ offsetsRebuilds 偏低、帧时间偏乐观（§八 要同条件比较）。
+   */
+  const coldStart = async (rate) => {
+    await send("Page.reload", { ignoreCache: true });
+    for (let i = 0; i < 120; i++) {
+      const ok = await evalJs("!!(window.__perf && window.__perf.scrollTest && window.__perf.calibrate)");
+      if (ok) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    await setRate(rate);
+    await new Promise((r) => setTimeout(r, 300));
+  };
+  const n = await evalJs("window.__perf.n");
+  await coldStart(1);
+  const baseCalib = await evalJs("window.__perf.calibrate(3)");
+  // ⚠️ 基线必须**两个方向各跑一遍**，而且顺序与降频档里完全一致（up→down）。第一版只跑了 up，于是
+  // 降频 4× 那一档的 up 吃到了基线 up 刚暖好的高度缓存（offsetsRebuilds 21 vs 137），
+  // 而它的 down 又拿去和"只跑过 up 的基线"比 ⇒ 两个方向不是同一条件，§八 明令不许那样比。
+  const baseUp = await evalJs(`window.__perf.scrollTest(${steps}, 800, true)`);
+  const baseDown = await evalJs(`window.__perf.scrollTest(${steps}, 800, false)`);
+  const runs = [];
+  for (const rate of rates) {
+    await coldStart(rate);
+    const calib = await evalJs("window.__perf.calibrate(3)");
+    const up = await evalJs(`window.__perf.scrollTest(${steps}, 800, true)`);
+    const down = await evalJs(`window.__perf.scrollTest(${steps}, 800, false)`);
+    runs.push({
+      rate,
+      // 对照倍数：降频后同一段定长工作慢了多少倍（理想 ≈ rate，但只看"有没有显著变慢"）
+      calibRatio: +(calib.onePassMs / baseCalib.onePassMs).toFixed(2),
+      scroll: { up, down },
+    });
+  }
+  await setRate(1);
+  const backToNormal = await evalJs("window.__perf.calibrate(3)");
+  const confirmed = runs.every((r) => r.calibRatio > 1.5);
+  console.log(JSON.stringify({
+    n,
+    steps,
+    rates,
+    throttleConfirmed: confirmed,
+    baseline: { calibrate: baseCalib, scrollUp: baseUp, scrollDown: baseDown, calibAfterReset: backToNormal },
+    runs,
+  }, null, 2));
+  ws.close();
+  if (!confirmed) {
+    console.error("❌ 降频后同一段定长工作没显著变慢 ⇒ CDP 降频没落地，上面所有读数作废");
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 const result = await evalJs(`(async () => {
   const p = window.__perf;
   if (${JSON.stringify(ONLY)} === "calib") return { n: p.n, calib: p.calibrate ? p.calibrate(5) : null };
