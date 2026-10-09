@@ -102,6 +102,70 @@ if (ONLY === "mem") {
   process.exit(0);
 }
 
+// PERF_ONLY=resize ⇒ 量具五：窗口缩放那一瞬间，"我正在读的那一条"还在不在原位
+// （§七 必测行为 7「窗口缩放」+ 领域 E「列表高度变化是否引起页面跳动」；roadmap N9 只量到"虚拟化跟不跟尺寸"，
+//  这一格量的是"跟上了之后位置跳不跳"，两件事不是一件事）。
+// ⚠️ 目标页必须带 `&fit=1` 打开，否则容器写死 700px ⇒ 视口再怎么变，组件那条 ResizeObserver 都不会被点到
+//   ⇒ 这一格在旧形状下是**结构性测不到**的，而不是"测过没问题"。
+if (ONLY === "resize") {
+  const setVp = (h) => send("Emulation.setDeviceMetricsOverride", { width: 1280, height: h, deviceScaleFactor: 1, mobile: false });
+  const clearVp = () => send("Emulation.setDeviceMetricsOverride", { width: 0, height: 0, deviceScaleFactor: 0, mobile: false });
+  const settle = () => new Promise((r) => setTimeout(r, 500));
+  const snap = () => evalJs("window.__perf.snapshot()");
+
+  await setVp(900);
+  await settle();
+  // 阅读态：从底部往历史上翻一段，停在中间某一条上（贴底那一态单独量）
+  await evalJs("window.__perf.scrollTest(20, 600, true)");
+  await settle();
+  const read0 = await snap();
+  await setVp(560); await settle(); const readShrink = await snap();
+  await setVp(900); await settle(); const readBack = await snap();
+  await setVp(1200); await settle(); const readGrow = await snap();
+  await setVp(900); await settle();
+  await evalJs("window.__perf.pinBottom()"); await settle();
+  const bot0 = await snap();
+  await setVp(420); await settle(); const botShrink = await snap();
+  await setVp(1200); await settle(); const botGrow = await snap();
+  // 撤掉覆写后必须**等它真的落回窗口原尺寸**再读：实测 clearVp 之后 500ms 内 innerHeight 仍停在 1200
+  // ⇒ 那一格读数不是"恢复原窗口"，把它写成 back900 就是在造一条会漂的假账。
+  await clearVp();
+  let afterClear = null;
+  let clearLanded = false;
+  for (let i = 0; i < 12; i++) {
+    await settle();
+    const s = await snap();
+    if (s.innerHeight !== 1200) { afterClear = s; clearLanded = true; break; }
+  }
+
+  // 「同一行、同一亚像素位置」才算没跳；锚点取不到（null）一律算没判成，否则两个 null 相等会造出假绿
+  const kept = (a, b) => !!a.anchorKey && a.anchorKey === b.anchorKey && Math.abs((a.anchorOffset ?? 0) - (b.anchorOffset ?? 0)) <= 1;
+  const linkage = readShrink.clientHeight !== read0.clientHeight;
+  console.log(JSON.stringify({
+    n: await evalJs("window.__perf.n"),
+    // 阳性对照：容器高度必须真的跟着视口变过，否则下面所有读数都是"从没缩放过"的读数
+    linkageOK: linkage,
+    read: { h900: read0, h560: readShrink, back900: readBack, h1200: readGrow },
+    bottom: { h900: bot0, h420: botShrink, h1200: botGrow },
+    afterClearVp: { landed: clearLanded, snap: afterClear },
+    verdicts: {
+      anchorKeptOnShrink: kept(read0, readShrink),
+      anchorKeptOnRestore: kept(read0, readBack),
+      anchorKeptOnGrow: kept(read0, readGrow),
+      scrollTopRestored: readBack.scrollTop === read0.scrollTop,
+      bottomPinnedAfterShrink: botShrink.bottomGap <= 1,
+      bottomPinnedAfterGrow: botGrow.bottomGap <= 1,
+      rowsRenderedEverywhere: [read0, readShrink, readGrow, botShrink, botGrow].every((s) => s.renderedRows > 0),
+    },
+  }, null, 2));
+  ws.close();
+  if (!linkage) {
+    console.error("❌ 容器 clientHeight 没随视口变 ⇒ 量具没连上（忘了 &fit=1？），上面所有读数作废");
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 const result = await evalJs(`(async () => {
   const p = window.__perf;
   if (${JSON.stringify(ONLY)} === "calib") return { n: p.n, calib: p.calibrate ? p.calibrate(5) : null };

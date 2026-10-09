@@ -13,6 +13,38 @@
 
 ## [Unreleased]
 
+### 量具 / 文档（原生体验 N28：窗口缩放不跳位第一次有运行时读数；**应用代码一字未动**）
+
+- **第五台量具落地**：`PERF_ONLY=resize node perf/run.mjs`（`perf/run.mjs` 新增一支 + `perf/vlist.ts`
+  多一个 `?fit=1` 档位）。它量的是 §七 必测行为第 7 项「窗口缩放」里 **N9 那两条自检看不见的那一半**：
+  容器跟上视口之后，用户正在读的那一条会不会被跳走。
+  现读（同一台 Mac、headless Brave `--disable-gpu`、n=2 万，两跑）：视口 900→560→900→1200 四档，
+  阅读态锚点行与它的亚像素偏移 **四档全同**、`scrollTop` 一字未变；贴底态 900→420→1200 三档 `bottomGap` 恒 0
+  ⇒ 这一态本来就是对的，**没动一行组件码**，量具的职责是把它钉住。
+- **阳性对照 `linkageOK`**：缩放后容器 `clientHeight` 必须真的变过，否则整轮读数作废并退码非 0。
+  没有这一条，「锚点没跳」完全可能来自「根本没缩放过」——`fit=1` 之前那个形状（容器写死 700px）
+  是**结构性测不到**，不是"测过没问题"。
+- **一处我自己写错的名字已改**：第一版把"撤掉 CDP 视口覆写之后"那一格命名成 `back900`，实测撤覆写后轮询
+  12×500ms `innerHeight` 仍停在 1200（`afterClearVp.landed=false`）⇒ 改名并如实打印 `landed`，
+  把「回到真实窗口尺寸那一态仍未测」写进 `perf/README.md` 与 roadmap N28，不留一个错名字当判据。
+- **`design-guidelines.md` §11.5 两处过期声明在同一提交里改口**：流畅度那格补上「无布局跳跃」现在有现算判据；
+  稳定性那格原写「长时间运行后的内存曲线：未测量」，已被 2026-10-10 的量具四推翻 ⇒ 改成
+  「600 步已有数 + 小时级长跑 / 真图 / Detached DOM 三格仍未测」。
+- **顺带抓到一条一直在待推链上的红（不是本次改动引入）**：`npm run verify` 第 3 步「不变量钩子守卫」
+  报 `INV-P31:1305 钩子解析失败：不认识的钩子形态「docs/design-guidelines.md」`。
+  现算归属：`git show 1fc30e9^:docs/protocol-invariants.md` 里那一行**已经带着**那个反引号 token ⇒ 红早于本次；
+  只在整跑快速层时才露出来（之前跑的是 `--only` 子集）。
+  修的是**文档不是判据**：钩子行只留两个真会跑的名字，§11.6/§11.9 那两处散文口径挪回正文并注明
+  「不是可跑钩子」。修后 `node scripts/check-invariant-hooks.mjs` 退 0、打印「31 条全部绑定」。
+- 性能数字**不进门禁**（随机器负载漂，钉成红只会造出假红），只作同机同构建改前/改后对照。
+- **另一条红如实记在这里（不是本次引入，也没被本次洗白）**：`npm run verify` 第 14 步 Change Budget 判据 3
+  在**当前 HEAD** 上就报 `presentation：最近 5 个修补形状提交里出现 5 次`（现跑 `node scripts/check-change-budget.mjs`
+  退 1，范围 `origin/main..HEAD`）。逐条对过那 5 条改的产品文件：`src/components/message/*.vue`（N22）、
+  `MobilePageFrame/FavoritePanel/BaseModal`（N16）、`ChatWindow.vue`（置顶行热区）、`BaseModal.vue`（焦点归还）、
+  `style.css`（选中色）—— 是同一个「原生体验」工程里 5 格互不相干的格子，不是互相修；但其中 `BaseModal.vue`
+  确实被两条各自改过一次（安全区 / 焦点归还，两个行为）。**门禁令没被改动、提交没被改写**，
+  要不要按它建议③「拆独立分支」由负责人定；本轮之后剩下的格子要么阻塞在真机要么等拍板，不再往里加 presentation 补丁。
+
 ### 量具 / 文档（原生体验 N26：内存与长时运行第一次有量具、有数；**应用代码一字未动**）
 
 - **第四台量具落地**：`PERF_ONLY=mem node perf/run.mjs 20000`（`perf/run.mjs` 里新增一支，走 CDP 的

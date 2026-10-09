@@ -1300,9 +1300,11 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 **这条不管的事**：具体某个组件该不该用悬停揭示（那是产品决定，例：消息行的表情入口在桌面
 靠悬停是用户 2026-09-30 明确要的，见 `MessageItem.vue:971-977`，本条不许反过来改它）；
 安全区底部内距的逐页布局（roadmap N16，静态守面已落地、真机避让仍未测）、WebView 版本兼容（N18）—— 那些格子还没走完，
-不是不变量。
+不是不变量。本条的文字口径（悬停不是唯一入口、减少动效那几节）在 design-guidelines §11.6 / §11.9，
+那是**给人读的散文，不是可跑钩子** ⇒ 不写进下面那一行（`check-invariant-hooks.mjs` 只认
+::/test.ts/scripts/guards:/e2e:/smoke:/NONE 六种形态，文档路径会被判成"绑了个不会跑的东西"）。
 
-- 钩子：`src/utils/designGuards.test.ts`（① 悬停揭示兜底、⑧ 小尺寸热区）`scripts/check-ui-runtime.mjs`（overlay 段 32 条、caption 段层级与命中）`docs/design-guidelines.md` §11.6 / §11.9
+- 钩子：`src/utils/designGuards.test.ts`（① 悬停揭示兜底、⑧ 小尺寸热区）`scripts/check-ui-runtime.mjs`（overlay 段 32 条、caption 段层级与命中）
 
 ---
 

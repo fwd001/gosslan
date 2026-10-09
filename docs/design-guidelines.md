@@ -714,14 +714,15 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 
 | 维度 | 今天的判据（**可复跑**） | 今天测不到的（不许从这里读出结论） |
 |---|---|---|
-| 流畅度 | `perf/probe.mjs` 的 `scrollerReal` + `virtualizationOK` 双真，再 `perf/run.mjs` 的 `longFramesOver50ms` 与 p95 | **真机 60Hz/高刷设备上的实际帧表现**；低端 Android |
+| 流畅度 | `perf/probe.mjs` 的 `scrollerReal` + `virtualizationOK` 双真，再 `perf/run.mjs` 的 `longFramesOver50ms` 与 p95；**§八 那句「无布局跳跃」现在也有现算判据了** —— `PERF_ONLY=resize node perf/run.mjs`（量具五，目标页要带 `&fit=1`）：2026-10-10 现读 900→560→900→1200 四档里阅读态锚点行与它的亚像素偏移全同、`scrollTop` 一字未变，贴底态三档 `bottomGap` 恒 0 | **真机 60Hz/高刷设备上的实际帧表现**；低端 Android；**撤掉 CDP 视口覆写（回到真实窗口尺寸）那一态没读到**（`afterClearVp.landed=false`）；WKWebView / WebView2 / Android 的缩放锚定行为未测 |
 | 结构性成本 | 同上的 `offsetsRebuilds`（整表前缀和重算次数）——**它现在是"每帧一次"这一格开着** | 10 万档（`run.mjs` 180s 超时没跑完，归因未定，见 `perf/README.md`） |
 | 响应性 | §2.3 按下瞬时 + `:active` 里 `transition-duration: 0s`（由 `designGuards` 守着）；§9.1 点击同帧改 UI；**输入到首帧的毫秒数现在有量具了** —— `perf/latency.mjs`（CDP 真鼠标 → 真实 `BaseModal` 面板第一次带上计算样式那一帧），2026-10-10 基线 p50 15.5 / p95 17.4 ms、reduce 档 p50 14.5 / p95 15.6 ms | **真机 WebView**（WKWebView / WebView2 / Android）的输入到首帧：未测；且这台量具**分辨率就是一个采样帧**（≈16.7 ms）⇒ 不许拿它论证一帧之内的快慢，也不含网络与数据库 |
-| 稳定性 | `npm test`（含 `tokenContrast` / `a11yLabels` / `popupRegistry` / `VirtualList` 卸载出口那条护栏）+ `verify-guards.py` | 长时间运行后的内存曲线：未测量 |
+| 稳定性 | `npm test`（含 `tokenContrast` / `a11yLabels` / `popupRegistry` / `VirtualList` 卸载出口那条护栏）+ `verify-guards.py` | 长时间运行：**600 步滚动已有数**（`PERF_ONLY=mem node perf/run.mjs 20000` ⇒ 堆 7.12 → 7.48 MB、DOM 元素第二轮不再长、`JSEventListeners` 恒 8），**小时级长跑、真图 / Blob-ObjectURL、Detached DOM 三格仍未测** |
 | 无障碍 | §10 四条（可见焦点、可访问名、hover 不是唯一入口、系统三开关）各有判据 | 读屏软件真机播报（NVDA/VoiceOver）：未测；`::selection` 那一格见 `docs/stability-roadmap.md` §12.6.1 的 N7 |
 | 资源开销 | `npm run build` 后现量 dist，**两个口径一起报别混**：`du -sk dist`（按文件系统块，2026-10-10 = 2828 KB）与「逐文件字节求和」（同一天 = 2,479,504 B ≈ 2.4 MB），两者差约 15% 是块大小不是体积涨了；chunk 直接引 vite 自己那行打印（十进制 kB + gzip），别自己换算成 KiB（同一个 main chunk 是 `297.66 kB / gzip 90.09 kB`，换算成 KiB 就变成 291 —— 那不是回归，那是单位）。依赖数现读 `package.json`：`node -e "const p=require('./package.json');console.log(Object.keys(p.dependencies).length, Object.keys(p.devDependencies).length)"`（2026-10-10 = **13 9**；⚠️ 这里必须用 `Object.keys(...).length` —— `dependencies` 是对象不是数组，写 `p.dependencies.length` 会印 `undefined undefined`，这条命令本身就被这样抓出来过一次） | Windows / Android 安装包体积（出包机不在本机） |
 
 **当前真数（2026-10-10 现跑，跑法见上面两行）**：`npm test` **869 例 0 失败**（同日 earlier 861 ⇒ 本轮 N16 与 N22 各加 4 条静态判据，两条改动都动过应用码）；内存与长时运行那一格也不再是空的：`PERF_ONLY=mem node perf/run.mjs 20000` 现读 **600 步滚动堆 7.12 → 7.48 MB、DOM 元素 60 → 120 后第二轮没再长、`JSEventListeners` 恒为 8**（只到 600 步，小时级长跑与真图/ObjectURL 那一半仍未测；复跑命令与口径在 `perf/README.md` 量具四那一节）；
+缩放不跳位那一格也不再是空的：`PERF_ONLY=resize node perf/run.mjs 20000`（量具五，2026-10-10 两跑）阅读态四档锚点 `m-19898 @ -154px` 全同、`scrollTop` 恒 2532531，贴底态 `bottomGap` 恒 0 —— 复跑命令与两处未测的边界在 `perf/README.md` 量具五那一节，工单是 roadmap N28；
 生产构建 `dist` 按块 **2828 KB** / 按字节 **2.4 MB**，最大单个 chunk 是入口那份（vite 打印 **297.66 kB，gzip 90.09 kB**，19 个 js 合计 973 KiB）；
 依赖 **13 运行时 + 9 开发 = 22 项**，**动画库 0 项**（现算：那 13 项里没有任何动效库 —— 复跑就是把上面那行列名单的命令改成打印名字）。
 ⚠️ chunk 的**文件名带 hash，别抄文件名**，要引用就引"跑 `npm run build` 后看 vite 打印那几行"。

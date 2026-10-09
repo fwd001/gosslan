@@ -17,6 +17,8 @@ import "@/style.css";
 
 const params = new URLSearchParams(location.search);
 const N = Math.max(1, Number(params.get("n") ?? 100000));
+/** `?fit=1` ⇒ 容器高度跟着视口走（默认写死 700px：历史帧数要能同条件横向比）。 */
+const FIT = params.get("fit") === "1";
 
 /** 合成消息：文本/代码/图片/文件混合——高度估算对不同 kind 的成本差别很大。 */
 function makeItems(n: number) {
@@ -69,6 +71,8 @@ interface PerfApi {
   scrollTest: (steps?: number, stepPx?: number, fromBottom?: boolean) => Promise<unknown>;
   accuracy: (index: number, align?: "top" | "bottom") => Promise<unknown>;
   calibrate: (reps?: number) => unknown;
+  snapshot: () => unknown;
+  pinBottom: () => void;
   resetCounters: () => void;
 }
 
@@ -189,13 +193,58 @@ const App = defineComponent({
       };
     }
 
-    expose({ scrollTest, accuracy, calibrate });
+    /**
+     * 「我正在读的那一条还在不在原位」的几何读数（只读，不改任何东西）。
+     *
+     * 为什么要 rect 而不是 `style.top`：这一格要判的就是**屏幕上那一行有没有跳**，
+     * 而 `style.top` 是组件自己写的偏移量——它和 rect 一起坏的时候，只读 style.top 会跟着一起骗人。
+     * 锚点取「跨过视口上沿的那一条」+ 它上沿相对视口上沿的偏移，两者都稳住才算没跳。
+     */
+    function snapshot() {
+      const el = scroller();
+      const cr = el.getBoundingClientRect();
+      const rows = Array.from(el.querySelectorAll<HTMLElement>("[data-vlist-key]"));
+      let anchorKey: string | null = null;
+      let anchorOffset: number | null = null;
+      for (const r of rows) {
+        const b = r.getBoundingClientRect();
+        if (b.top <= cr.top + 0.5 && b.bottom > cr.top + 0.5) {
+          anchorKey = r.getAttribute("data-vlist-key");
+          anchorOffset = Math.round(b.top - cr.top);
+          break;
+        }
+      }
+      return {
+        innerHeight: window.innerHeight,
+        clientHeight: el.clientHeight,
+        scrollTop: Math.round(el.scrollTop),
+        scrollHeight: el.scrollHeight,
+        renderedRows: rows.length,
+        anchorKey,
+        anchorOffset,
+        bottomGap: Math.round(el.scrollHeight - el.scrollTop - el.clientHeight),
+      };
+    }
+
+    /** 贴底态（聊天页最常见的那一态）：走组件自己的 scrollToBottom，好让 pinned 被点亮。 */
+    function pinBottom() {
+      listRef.value?.scrollToBottom();
+    }
+
+    expose({ scrollTest, accuracy, calibrate, snapshot, pinBottom });
     // ⚠️ 必须给滚动容器**确定高度**，否则它的 clientHeight 会等于内容高度 ——
     // 而"可视区高度"正是虚拟化的输入：高度不约束 → 全部行都算"可见" → 5 万/10 万行全进 DOM。
     // 这里直接写在容器元素上（不走 h-full 类），避免依赖 Tailwind 是否扫到本页。
     onMounted(() => {
       const el = scroller();
-      el.style.height = "700px";
+      el.style.height = FIT ? `${Math.max(240, window.innerHeight - 24)}px` : "700px";
+      // fit 模式下由 harness 把"窗口变了"翻译成"容器高了/矮了"——真实聊天页那一层的容器高度
+      // 本来就是窗口尺寸的 flex 结果；这里只借这一段布局效应，被测的仍是组件自己的 ResizeObserver。
+      if (FIT) {
+        window.addEventListener("resize", () => {
+          scroller().style.height = `${Math.max(240, window.innerHeight - 24)}px`;
+        });
+      }
     });
     return () =>
       h(
@@ -234,4 +283,6 @@ const exposed = mountEl.__vue_app__?._instance?.exposed;
   scrollTest: exposed?.scrollTest,
   accuracy: exposed?.accuracy,
   calibrate: exposed?.calibrate,
+  snapshot: exposed?.snapshot,
+  pinBottom: exposed?.pinBottom,
 } satisfies PerfApi & { n: number };
