@@ -15,27 +15,7 @@
 
 ## [4.33.30] - 2026-10-09
 
-## [4.33.29] - 2026-10-09
-
 ### Added
-
-- ★ **AOCI 手册新增 §8「重新索引：走哪条路、会撞到什么、怎么处理」**（`docs/aoci-usage.md`）。
-  起因是今天把本机二进制从 v0.1.0-rc17 升到 rc18、照官方说明跑 `init` 与 `scan`，两条**都被拒**，
-  而拒的那句读起来像工具坏了。这一节把「重新索引」拆成三件不同的事（日常补条目 / 刷新收录与基线指纹 /
-  整份推倒重写），再列出本仓（Volumes v1、基线已建成）**实测会被拒的六条命令与它们的报错原话**：
-  `init`、`scan`、`scan --dry-run`、`index inventory|update|score|agent plan`、`status --deep`
-  是同一条 `error_code=config`；`baseline scope plan` 是另一条退 2 的
-  `baseline_scope_managed_scope_unsupported`。⇒ **`--dry-run` 在这个仓不是安全的只读 scan**，
-  只读收录权威只有 `aoci scope preview`；`scan --force` 那句「未处理的漂移会被洗白」是真话，别顺手加。
-  - 另附三张对照表：finding 五类里**只有 `code_stale` 与 `code_missing` 是活**（今天实跑合计 308 项里
-    `code_skipped` 占 282，全是二进制/超 1 MiB 的合同免条目；`observed_pending` 那一格在等**人**复核，
-    机器永远等不出结果）；写条目被拒的七个错误码与出口；以及「什么才算做完」（`verify` 双 true →
-    `check` 退 0 → `guide` 的 `stage=aligned`）。
-  - 升级那一节还钉了一条今天踩到的环境形状：**MCP 握手探针必须 `sleep 8`** —— server 起来要先把整仓
-    收录跑一遍，`sleep 2` 会得到 `保留的机器事实：EOF` 与零输出，读成「配置没生效」就跑偏了。
-  - 这一节里 4 条命令块都**从仓根原样跑过、退码全 0**（跑法：按「## 8. 重新索引」切段，正则取出所有
-    三反引号 bash 围栏逐个丢给 `bash` 执行并打印退码与首行）。另按本仓改 markdown 台账的老规矩复查了
-    加粗星号逐行配平与表格列数：全文 0 行星号不配平、9 个表格块无列数劈裂。
 
 - ★ **群任务看板每一行前面加了两枚小图标：优先级 + 类型**（用户 2026-10-09：
   「任务列表的前面可以加一些小图标，显示出优先级 类型各种不同的区别，形象表达直观理解」）。
@@ -80,6 +60,29 @@
   下面那批键盘判据会红在夹具上而不是产品上。
   两条都配了单点变异证明会咬：注回直接铺载荷 ⇒ 探针红；注回没底 ⇒ 恰好那一条红。
   整条链 `node scripts/check-ui-runtime.mjs` ⇒ **118/118**（search 段 9 ⇒ 13）。
+
+## [4.33.29] - 2026-10-09
+
+### Added
+
+- ★ **AOCI 手册新增 §8「重新索引：走哪条路、会撞到什么、怎么处理」**（`docs/aoci-usage.md`）。
+  起因是今天把本机二进制从 v0.1.0-rc17 升到 rc18、照官方说明跑 `init` 与 `scan`，两条**都被拒**，
+  而拒的那句读起来像工具坏了。这一节把「重新索引」拆成三件不同的事（日常补条目 / 刷新收录与基线指纹 /
+  整份推倒重写），再列出本仓（Volumes v1、基线已建成）**实测会被拒的六条命令与它们的报错原话**：
+  `init`、`scan`、`scan --dry-run`、`index inventory|update|score|agent plan`、`status --deep`
+  是同一条 `error_code=config`；`baseline scope plan` 是另一条退 2 的
+  `baseline_scope_managed_scope_unsupported`。⇒ **`--dry-run` 在这个仓不是安全的只读 scan**，
+  只读收录权威只有 `aoci scope preview`；`scan --force` 那句「未处理的漂移会被洗白」是真话，别顺手加。
+  - 另附三张对照表：finding 五类里**只有 `code_stale` 与 `code_missing` 是活**（今天实跑合计 308 项里
+    `code_skipped` 占 282，全是二进制/超 1 MiB 的合同免条目；`observed_pending` 那一格在等**人**复核，
+    机器永远等不出结果）；写条目被拒的七个错误码与出口；以及「什么才算做完」（`verify` 双 true →
+    `check` 退 0 → `guide` 的 `stage=aligned`）。
+  - 升级那一节还钉了一条今天踩到的环境形状：**MCP 握手探针必须 `sleep 8`** —— server 起来要先把整仓
+    收录跑一遍，`sleep 2` 会得到 `保留的机器事实：EOF` 与零输出，读成「配置没生效」就跑偏了。
+  - 这一节里 4 条命令块都**从仓根原样跑过、退码全 0**（跑法：按「## 8. 重新索引」切段，正则取出所有
+    三反引号 bash 围栏逐个丢给 `bash` 执行并打印退码与首行）。另按本仓改 markdown 台账的老规矩复查了
+    加粗星号逐行配平与表格列数：全文 0 行星号不配平、9 个表格块无列数劈裂。
+
 
 ### Fixed
 
