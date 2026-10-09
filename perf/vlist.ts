@@ -8,6 +8,7 @@
 //   - 没有 ChatHeader/输入框，视口略大。这两点只会让数据偏乐观，不影响结论方向。
 
 import { createApp, defineComponent, h, onMounted, ref } from "vue";
+import { createPinia } from "pinia";
 import VirtualList from "@/components/VirtualList.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
 // ⚠️ 必须显式加载应用样式（与 `src/boot/boot.ts` 同一份）。漏掉它的后果不是"不好看"，而是**量具失效**：
@@ -17,6 +18,16 @@ import "@/style.css";
 
 const params = new URLSearchParams(location.search);
 const N = Math.max(1, Number(params.get("n") ?? 100000));
+/**
+ * 行模板选哪一套（roadmap N21 那一格的前置：消息行的真实成本从来没量过，
+ * 因为 vlist 台的行模板是「等价结构」而不是真 `MessageItem`）。
+ *   synthetic      —— 原来的等价结构（头像 + 昵称 + 气泡），历史帧数都在这条上量的
+ *   msgitem        —— **真的 `MessageItem.vue`**，props 按 ChatWindow 那个调用点的形状**每次渲染现构造**
+ *                     （`groupReaderIds` / `reactions` 都是新数组 ⇒ 浅比较恒判「变了」，正是 N21 说的形状）
+ *   msgitem-stable —— 同上，但每个 msg_id **复用同一个 props 对象**（= 补 v-memo 的收益上界）
+ *                     ⇒ 这一档量的是「补 v-memo 最多能省下多少」的**上界**（不动应用码）
+ */
+const ROW = params.get("row") ?? "synthetic";
 /** `?fit=1` ⇒ 容器高度跟着视口走（默认写死 700px：历史帧数要能同条件横向比）。 */
 const FIT = params.get("fit") === "1";
 
@@ -74,6 +85,69 @@ interface PerfApi {
   snapshot: () => unknown;
   pinBottom: () => void;
   resetCounters: () => void;
+}
+
+/** 真 `MessageItem` 的 props，按 `ChatWindow.vue:1254-1269` 那个调用点的形状**每次渲染现构造**。 */
+function msgItemProps(item: Item, index: number) {
+  return {
+    message: item as never,
+    prev: (index > 0 ? items[index - 1] : null) as never,
+    isGroup: true,
+    canReact: true,
+    senderName: `用户${index % 97}`,
+    // 这两条故意现构造（与生产同形：`groupReaderIds()` 每次返回新数组、`reactionMap.get() ?? []` 同理）
+    // —— N21 判的就是"浅比较恒判变了 ⇒ 整棵子树重新 patch"到底值多少钱。
+    groupReaderIds: [] as string[],
+    reactions: [] as never[],
+    mentionNames: [] as string[],
+    showUnreadDivider: false,
+    highlightId: null,
+    selfMention: null,
+    pinned: false,
+    selectMode: false,
+    selected: false,
+  };
+}
+
+/**
+ * 第三档原本是 `memo()`，但这个 Vue 版本**没有这个导出**（2026-10-10 现跑：页面
+ * `SyntaxError: The requested module ...vue.js does not provide an export named memo`）。
+ * 那次报错还顺带解释了为什么前面**三档一起挂**：静态 import 一个不存在的导出会杀掉整个模块，
+ * 连 `window.__perf` 都赋值不上 —— 三档一样的失败不等于"三档结果相同"，是**探针没生效**。
+ *
+ * 而 `v-memo` 真正买到的东西就是「依赖不变 ⇒ 同一份 props/subtree 不再 patch」，
+ * 所以这一档直接**按 msg_id 复用同一个 props 对象**：那是那处改动的收益上界，且不动应用码。
+ */
+let MessageItemCmp: unknown = null;
+const propsCache = new Map<string, unknown>();
+
+function stableMsgItemProps(item: Item, index: number) {
+  let p = propsCache.get(item.msg_id);
+  if (!p) {
+    p = msgItemProps(item, index);
+    propsCache.set(item.msg_id, p);
+  }
+  return p;
+}
+
+if (ROW !== "synthetic") {
+  MessageItemCmp = (await import("@/components/MessageItem.vue")).default;
+}
+
+function syntheticRow(item: Item, index: number) {
+  return h("div", { class: "pl-row" }, [
+    h("div", { class: "pl-ava" }, item.sender_id === "me" ? "我" : "A"),
+    h("div", { class: "pl-col" }, [
+      h("div", { class: "pl-name" }, `用户${index % 97}`),
+      // 行形态与「高度估算」的假设对齐（图片 288 / 文件 92），否则实测与估算严重不符，
+      // 测出来的"重叠/空隙"只是 harness 自己的 artifact。
+      h(
+        "div",
+        { class: "pl-bubble", style: item.kind === "image" ? "height:272px" : item.kind === "file" ? "height:76px" : "" },
+        item.kind === "image" ? "［图片］" : item.kind === "file" ? "［文件］" : item.content.slice(0, 120),
+      ),
+    ]),
+  ]);
 }
 
 const App = defineComponent({
@@ -252,25 +326,19 @@ const App = defineComponent({
         { ref: listRef, items: items as never, estimateHeight: estimateHeight as never, "auto-scroll-on-swap": false } as never,
         {
           default: ({ item, index }: { item: Item; index: number }) =>
-            h("div", { class: "pl-row" }, [
-              h("div", { class: "pl-ava" }, item.sender_id === "me" ? "我" : "A"),
-              h("div", { class: "pl-col" }, [
-                h("div", { class: "pl-name" }, `用户${index % 97}`),
-                // 行形态与「高度估算」的假设对齐（图片 288 / 文件 92），否则实测与估算严重不符，
-                // 测出来的"重叠/空隙"只是 harness 自己的 artifact。
-                h(
-                  "div",
-                  { class: "pl-bubble", style: item.kind === "image" ? "height:272px" : item.kind === "file" ? "height:76px" : "" },
-                  item.kind === "image" ? "［图片］" : item.kind === "file" ? "［文件］" : item.content.slice(0, 120),
-                ),
-              ]),
-            ]),
+            ROW === "msgitem"
+              ? h(MessageItemCmp as never, msgItemProps(item, index) as never)
+              : ROW === "msgitem-stable"
+                ? h(MessageItemCmp as never, stableMsgItemProps(item, index) as never)
+                : syntheticRow(item, index),
         },
       );
   },
 });
 
-createApp(App).mount("#perf-root");
+// 真 MessageItem 会读 useAppStore()/useChatStore() ⇒ 没有 pinia 实例就直接抛；
+// 合成行那一档不需要，但装上无害（与 src/boot/boot.ts:127 同一句写法）。
+createApp(App).use(createPinia()).mount("#perf-root");
 
 // app 实例上的 expose 挂在根组件实例上：通过 __vue_app__ 取回
 const mountEl = document.querySelector("#perf-root") as HTMLElement & { __vue_app__?: { _instance?: { exposed?: PerfApi } } };
