@@ -28,6 +28,27 @@
  * 组件逻辑是同一份代码，但按键走的是**浏览器**输入管线 ⇒ 这不等于 WKWebView / WebView2 里验过。
  * 那一半仍是人工（见验收矩阵 Smoke-11 的边界行）。
  *
+ * ## 环境起不来必须响亮失败，而且三种病要长得不一样（2026-10-10 加）
+ * 这一层的红有两种来源：产品真的坏了，和**这一格根本没跑**。后者绝不许打成绿，也不许静等。
+ * 本机实测到过三种形状，各自有各自的读数：
+ * 1. **残留实例占着端口** ⇒ 新 spawn 绑不上，`/json/list` 答的是**上次那台被 Ctrl-C 留下的浏览器**
+ *    （它挂着 `type=page` 指向旧 vite ⇒ 读的是几小时前那份构建，判据照样打绿 —— 这是**假绿通道**）。
+ *    现在起跑前先探两个端口，占用即具名红（实测 0.09 s 报出，而不是接着跑）。
+ * 2. **spawn 并入了已存在的浏览器实例**（那个实例不带调试端口）⇒ 进程当场退掉、端口无人监听。
+ *    读数：`我起的那个进程：已退出 code=…` + `端口：无人监听` 同时成立 ⇒ 直接给出修法提示。
+ * 3. **进程活着但 target 迟迟不来**（机器负载 / 装坏的框架二进制）⇒ 等满预算再具名红，
+ *    读数里明确写"到预算点仍在跑"，与第 2 种区分开。预算用 `GOSSLAN_PROBE_CDP_WAIT_MS` 调（默认 20 s）。
+ * 无论哪种，红都会把「浏览器路径 / 来源 / 版本 / 进程结局 / 端口是否监听 / 最后一次尝试」一次打全，
+ * 并把引擎版本打在正常路径的日志里（`· 引擎：…`）—— 换浏览器造成的读数变化要能在日志里自证用的是哪一台。
+ *
+ * ⚠️ 还有一型**没修**，但它会咬所有"按 Enter"的断言（2026-10-10 实测，任务 #20）：
+ * 焦点模拟开着时对那颗 `<button data-reaction-entry>` 按一次 Enter，页面里会出现**自持的 click 风暴**
+ * （capture 计数空等 1 s 还在涨 ≈900 次/秒，补发单独 keyUp 也没终止）⇒ 任何"开/关切换"型读数
+ * 在这台引擎上变成掷硬币。同一次跑里 `picker=true` 出现过 ⇒ 面板渲染得出来，**这不是产品缺陷**。
+ * 只有"恰好一次"型断言能暴露它（emoji 那条今天仍绿 ⇒ 触发条件还没定）。
+ * ⇒ 在 `cdp.key()` 修好之前：新加 Enter 断言要自带"重复不敏感"的形状（像 pinkb 那样按完之后作用对象消失），
+ *   并且**不许**把"回车只触发了一次"当成已被证明。
+ *
  * ## 用法
  *     node scripts/check-ui-runtime.mjs              # 跑全部段
  *     node scripts/check-ui-runtime.mjs --only=emoji # 只跑某段
@@ -42,8 +63,9 @@
  * - `Page.navigate` 之后 vite 还在现编译依赖，拿 deps/vue.js 之前必须**轮询等**，
  *   等短了会把"还没编译完"读成"构建产物变了"。
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +78,14 @@ const SELF_CHECK = argv.includes("--self-check");
 const SHOT_PATH = argv.find((a) => a.startsWith("--shot="))?.slice("--shot=".length) ?? "";
 const VITE_PORT = Number(process.env.GOSSLAN_PROBE_PORT || 5199);
 const CDP_PORT = Number(process.env.GOSSLAN_PROBE_CDP || 9444);
+/**
+ * 单次 CDP 调用的回包预算。默认给到 45 s 是因为**冷编译**那一档真实存在（vite 现编译依赖时
+ * 第一次 eval 会慢），而这条守卫要挡的是"永远不回包"而不是"有点慢"。
+ * 2026-10-10 本机实测：`--only=pinkb` 变异对照那一段的一次 eval 十几分钟没回，只能靠人 kill
+ * （现读 `PINKB_RC=143`＝SIGTERM）。这一支在 `verify.mjs` 里是一步 ⇒ 这一步不回，整条链就停在那儿。
+ * —— 旧代码这里没有任何预算，进程只能靠人 kill（现读 `PINKB_RC=143`＝SIGTERM）。
+ */
+const CDP_CALL_MS = Number(process.env.GOSSLAN_CDP_CALL_MS || 45_000);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nowMs = () => Date.now();
 
@@ -156,6 +186,44 @@ function findChrome() {
   return null;
 }
 
+/** 端口上有没有人监听（200 ms 内握不上手就算没有）。 */
+function portListening(port, timeoutMs = 200) {
+  return new Promise((resolve) => {
+    const sock = net.connect({ host: "127.0.0.1", port });
+    const done = (v) => { sock.destroy(); resolve(v); };
+    sock.setTimeout(timeoutMs);
+    sock.once("connect", () => done(true));
+    sock.once("timeout", () => done(false));
+    sock.once("error", () => done(false));
+  });
+}
+
+/**
+ * 起不到 CDP 时把这台机器问得出的读数一次打全。
+ *
+ * 为什么要这么多行：以前这里只有一句「CDP /json/list 里一直没有 page target」，
+ * 于是两种完全不同的病长得一模一样 —— ① spawn 并入了用户自己已开着的浏览器实例（那个实例不带
+ * 调试端口，进程当场退掉、端口无人监听）；② 浏览器起来了但页面 target 慢或没了。
+ * ①「进程已退出 + 端口无人监听」两条同时成立才是并入，修法是把在跑的实例关掉或换一台干净的；
+ * ②要查的是 target 侧。归因靠读数，不靠猜。
+ */
+async function cdpDiagnostics(chrome, port, procState, lastErr, budgetMs) {
+  const out = [`浏览器：${chrome}`, `来源：${BROWSER_SOURCE}`];
+  const v = spawnSync(chrome, ["--version"], { timeout: 5000, encoding: "utf8" });
+  out.push(`版本：${v.status === 0 ? String(v.stdout || "").trim() : `问不出（--version 退码 ${v.status}${v.error ? `/${v.error.code}` : ""}）`}`);
+  out.push(`我起的那个进程：${procState.exited
+    ? `已退出 code=${String(procState.exited.code)} signal=${String(procState.exited.signal)}`
+    : `到预算点仍在跑（pid ${procState.pid ?? "?"}）`}`);
+  const listening = await portListening(port);
+  out.push(`端口 ${port}：${listening ? "有人在监听 ⇒ 浏览器起来了，问题在 target 那侧" : "无人监听"}`);
+  if (!listening && procState.exited) {
+    out.push("两条同时成立 ⇒ 最可能是这次 spawn 并入了同类的**已存在实例**（它不带 --remote-debugging-port）。"
+      + "修法：关掉正在跑的浏览器实例，或用 GOSSLAN_CHROME 指一台干净的。");
+  }
+  out.push(`最后一次尝试（预算 ${budgetMs} ms，env GOSSLAN_PROBE_CDP_WAIT_MS 可调）：${lastErr}`);
+  return out;
+}
+
 /** 极简 CDP 客户端：id 配对、一次 eval 一个往返。 */
 class Cdp {
   constructor(ws) {
@@ -182,11 +250,22 @@ class Cdp {
   }
   send(method, params = {}, awaitReply = true) {
     const id = ++this.seq;
-    const p = awaitReply
-      ? new Promise((res, rej) => this.waiters.set(id, { resolve: res, reject: rej }))
-      : Promise.resolve(null);
     this.ws.send(JSON.stringify({ id, method, params }));
-    return p;
+    if (!awaitReply) return Promise.resolve(null);
+    let rejectCall = null;
+    const p = new Promise((res, rej) => {
+      rejectCall = rej;
+      this.waiters.set(id, { resolve: res, reject: rej });
+    });
+    // 有界等待：一次调用**永不到账**时不能静等（旧代码就是这样，整段卡在那里十几分钟，
+    // 只能靠人 kill）。报出去的是"哪条 CDP 调用没回包"，不是产品缺陷。
+    const guard = setTimeout(() => {
+      if (!this.waiters.delete(id)) return; // 回包已经到了 ⇒ 这条守卫作废
+      rejectCall(new Error(`CDP 调用「${method}」在 ${CDP_CALL_MS} ms 内没回包`
+        + "（renderer 主线程很可能已经不响应）⇒ 响亮失败，这一格记没跑，不是产品红"
+        + "；预算见 GOSSLAN_CDP_CALL_MS"));
+    }, CDP_CALL_MS);
+    return p.finally(() => clearTimeout(guard));
   }
   async eval(expression) {
     const r = await this.send("Runtime.evaluate", {
@@ -1241,6 +1320,19 @@ async function main() {
     check("环境：仓里有 vite 可执行（node_modules/vite/bin/vite.js）", false, "存在", "不存在");
     process.exit(1);
   }
+  // 前置拒收（2026-10-10 加）：端口被**上次中断留下的那台**占着时，这一层会连到几小时前起的实例上
+  // —— 它带着旧构建、旧 profile，判据照样打绿。那是假绿通道，必须起跑前挡掉而不是"换个端口接着跑"。
+  // 本机实测过一次：9444 上那台 CfT（09:56 起、被中断）仍挂着 type=page 指向 5199 上那个旧 vite。
+  for (const [label, port] of [["dev server", VITE_PORT], ["CDP", CDP_PORT]]) {
+    if (await portListening(port)) {
+      check(`环境：${label} 端口 ${port} 起跑前空闲`, false, "无人监听", "已被占用");
+      console.log(`· 谁在占：lsof -nP -iTCP:${port} -sTCP:LISTEN`);
+      console.log("· 为什么是红而不是接着跑：那台是上次被 Ctrl-C/杀掉留下的（profile 在 /tmp/gosslan-probe-*），");
+      console.log("  连上去读的是**旧构建**；要么把它清掉，要么换 GOSSLAN_PROBE_PORT / GOSSLAN_PROBE_CDP 另开一台。");
+      console.log("\n✗ UI 运行时探针：端口被残留实例占用，判红（不是跳过）");
+      process.exit(1);
+    }
+  }
   const vite = spawn(process.execPath, [viteBin, "dev", "--port", String(VITE_PORT), "--strictPort"],
     { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "gosslan-probe-"));
@@ -1251,20 +1343,42 @@ async function main() {
     ], { stdio: "ignore" });
     return p;
   })();
+  /** 进程结局要留痕：「并入已存在实例」那种起不来，唯一现场证据就是它当场退掉。 */
+  const procState = { exited: null, pid: chromeProc.pid };
+  chromeProc.on("exit", (code, signal) => { procState.exited = { code, signal }; });
   let exitCode = 0;
   try {
     const url = await waitForVite(vite);
     console.log(`· dev server：${url}`);
+    const cdpBudgetMs = Number(process.env.GOSSLAN_PROBE_CDP_WAIT_MS || 20_000);
     let wsUrl = null;
-    for (let i = 0; i < 60 && !wsUrl; i += 1) {
-      await sleep(500);
+    let lastErr = "还没试过";
+    const deadline = Date.now() + cdpBudgetMs;
+    while (Date.now() < deadline && !wsUrl) {
+      if (procState.exited) { lastErr = "我起的那个浏览器进程已经退出，继续等只是静默卡住"; break; }
+      await sleep(250);
       try {
         const r = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`);
         const list = await r.json();
         wsUrl = (list.find((t) => t.type === "page") || {}).webSocketDebuggerUrl ?? null;
-      } catch { /* 浏览器还在起 */ }
+        if (!wsUrl) lastErr = "/json/list 有响应，但里面没有 type=page 的 target";
+      } catch (e) {
+        lastErr = `取 /json/list 失败：${e && e.message || e}`;
+      }
     }
-    if (!wsUrl) throw new Error("CDP /json/list 里一直没有 page target");
+    if (!wsUrl) {
+      const diag = await cdpDiagnostics(chrome, CDP_PORT, procState, lastErr, cdpBudgetMs);
+      console.log("\n· CDP 起不来，这台机器问得出的读数如下：");
+      for (const l of diag) console.log(`    · ${l}`);
+      check("环境：CDP 在预算内给出 page target", false, `${CDP_PORT} 上有 type=page 的 target`,
+        diag.join("；").slice(0, 300));
+      throw new Error("CDP 起不来 ⇒ 这一格**没跑**，不是产品红（归因读数已打在上面那几行）");
+    }
+    // 引擎版本进门禁日志：换浏览器导致的读数变化要能在日志里自证用的是哪一台
+    const ver = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)
+      .then((r) => r.json()).catch(() => null);
+    console.log(`· 引擎：${ver?.Browser ?? "问不出（/json/version 没答）"}`
+      + `｜协议：${ver?.["Protocol-Version"] ?? "?"}｜来源：${BROWSER_SOURCE}`);
     const cdp = await Cdp.connect(wsUrl);
     await cdp.send("Runtime.enable");
     await cdp.send("Page.enable");
