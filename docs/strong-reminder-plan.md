@@ -161,12 +161,66 @@
    被挡下时复用现成那句"被门控挡下时给用户的那句话"，**不新造文案家**，也**不许**报成"对方版本旧"
    （INV-P24 已把"未知"与"版本旧"拆成两句话）。
 2. **群侧**：受众预告机制（谁该收到）已有；`actors` 名单必须在**成员权限变化**后重新校验 ——
-   被移出的人不该再收到提醒、也不该还能确认（对应 `transport/group_membership.rs` 那四类治理事件）。
-3. **不加数据库列**：这是路线 A 的目标状态。真要加，必须给兼容 + 迁移 + 回滚三件套，
-   并且记住这条链在本仓出过 P0（#60/#61），不是便宜改动。
-4. **不引入中心服务器 / 远程推送 / 新依赖**（用户明写）。⇒ 离线恢复只借现有 outbox / 重连补发 / 可选盲中继。
+   被移出的人不该再收到提醒、也不该还能确认。现读的家：四类治理帧都在
+   `network/transport/group_membership.rs`（`handle_group_rename:6` / `handle_group_member_removed:34` /
+   `handle_group_creator_changed:96` / `handle_group_member_left:128`），且**都要求 `from == 本地记录的 creator`**；
+   成员表本身是 `INSERT OR IGNORE`（**只增不减**，`db/groups.rs:63`），移除只有 `remove_group_member` 一条 DELETE。
+   ⚠️ 已登记的既存边界：**"离线被移除的人不知道自己被移除"** ⇒ 提醒的受众校验不能假设对方已经知道。
+3. **数据库**：`DB_VERSION = 11`，迁移是一张 `Migration{from,to,description,run}` **结构体数组**（不是 SQL 字符串），
+   按 `PRAGMA user_version` 驱动；**加列**必须新编号一步，而**建表 / 建索引不需要 step**
+   （`init()` 在版本分支之前跑 `execute_batch(SCHEMA)`）。失败处理是硬 `Err` ⇒ 应用拒绝启动，
+   而**全仓没有 down-migration / 回滚**，唯一的"反向"是 `InitError::Downgrade` 直接拒开。
+   ⇒ 所以"给兼容 + 迁移 + 回滚三件套"这句话在**本仓今天只有前两件能做**，回滚那一半只能靠"不改结构"来保证
+   —— 这也是路线 A 刻意**不加列、不加表**的根本理由（不是省事，是"回滚"这件事在这套迁移机制里没有实现路径）。
+4. **不引入中心服务器 / 远程推送 / 新依赖**（用户明写）。
+   ★ 现读更正一处常见误解：**盲中继不是"只搬文件分片"** —— 它**永不解析 Gosslan 帧**（ADR-0020:60），
+   链路一旦建立就跑既有 `connect_to_peer` 全流程（`relay.rs:3-4`），上面**什么帧都能走**（消息 / gossip / Ack 都行），
+   且 ADR-0020:18 写的是"**无新帧、无新 kind、无 capability 位**"。
+   ⇒ 强提醒的离线投递因此**不需要为中继做任何新工作**：它只要变成一条普通消息帧，就能搭上现有链路。
+   也顺此说明：中继**不做 store-and-forward**（ADR-0020:67 明确否掉）⇒
+   "对方离线时提醒先到哪儿"这个问题的答案只有本机的 outbox / group_outbox，**没有第三方代存**。
 5. **架构地图**：本文**不改** `docs/ARCHITECTURE-MAP.html`（Phase 0 没有新 IPC 命令）。
    ⚠️ Phase 1 一旦新增命令或事件名，必须同批改图 + `mapContract.test.ts`（该图在 LIVE_DOCS 名单里）。
+
+---
+
+## 六之二、"旧状态不许覆盖新状态"已经有四个家，不许新开第五个
+
+| 现成的家 | 规则 | 复跑 |
+|---|---|---|
+| 会话 Lamport 序号 | `next_clock = cur+1`、`observe_clock = MAX(local, observed)`；排序与清空边界**都以它为准，不用墙上时钟** | `grep -n "fn observe_clock" -A6 src-tauri/src/db/clocks.rs` |
+| 清空边界 | `group_message_blocked_by_boundary`：逻辑序号 ≤ 清除边界 ⇒ 判成旧历史，**不得重新写入本机** | `grep -n "group_message_blocked_by_boundary" -A10 src-tauri/src/db/group_delete_boundary.rs` |
+| 已读水位 | `upsert_group_read` / `pending_reads` / `pending_group_reads` 三处一律 `SET = MAX(...)` | `grep -n "MAX" src-tauri/src/db/read_receipts.rs` |
+| 消息级 LWW | 折叠版本号必须是 **`(seq, msg_id)` 元组**（`reactions.ts:44-49`）；前端投递态 `furthestStatus` + `DELIVERY_ORDER` **只进不退** | `grep -n "DELIVERY_ORDER\|furthestStatus" src/utils/messages.ts` |
+
+⇒ 强提醒的"已确认不被旧提醒/旧回执覆盖"应当**复用 `(seq, msg_id)` 那一套**，
+而不是再发明一个"比较时间戳"的规则（墙上时钟在本仓已被明确判为不可信来源）。
+
+## 六之三、重连补发是有固定顺序的（这决定提醒什么时候能出去）
+
+现读：链路建好之后依次是
+`flush_outbox → requeue_group_keys_for_peer → flush_pending_group_keys → flush_group_outbox →
+flush_pending_reads → flush_pending_group_reads → flush_pending_files → flush_pending_group_files`
+（触发点：建链 `dial.rs:613-622`、验过的 Hello `handle_identity.rs:86-96`、心跳 `:118-130`、BLE 两处），
+而这个**顺序本身是被判据钉着的**（`lib_delivery_shape_tests.rs:190 group_keys_always_precede_group_messages`）。
+超时回收每 30s 一次：单聊 120s 死线、群与文件 30min、离线保留窗 7 天（`db/offline_queue.rs:14-32`）。
+⇒ 强提醒只要成为一条普通消息帧就自动进这条队列；**不许**为它另起一条"重连时发提醒"的定时器
+（那正是"同一件事长第二个家"的形状，且会绕开那条顺序判据）。
+⚠️ 另有一条既存且已登记的不对称：`pending_group_keys` **只在内存、不跨重启**
+（`pending_keys.rs:5`）⇒ 别把"提醒能跨重启续投"当成理所当然：能跨重启的是 `outbox` / `group_outbox` /
+`file_outbox` / `pending_reads` 这些**表里的行**。
+
+## 六之四、E2EE 那一侧的准确说法（关系到提醒帧携带 `msg_id`）
+
+- 群 = **一把共享对称密钥**（`settings['gk:<id>']` + `state.group_keys`），载荷 `crypto::seal_symmetric`；
+  谁能解只取决于谁持有那把 key。新成员读不到历史**不是靠轮换**：`group_add_member` 明确**不轮换**
+  （注释原话"新成员本来就没有旧密钥，转不转旧消息他都解不开"），轮换只在**移除成员**时发生。
+- ⚠️ 一条会把结论掀翻的现读例外：进程内的**重放缓存**会在 10 分钟窗口内把最近 16 条群帧交给刚进来的人
+  （`mesh/gossip_replay.rs:9-13,41-43`）。⇒ "晚进群的人拿不到旧内容"这句话**不绝对成立**；
+  提醒帧只携带 `msg_id` 与受众、**不携带正文**，正是为了让这条边界不重要 —— 这一点要写进第 1 阶段的设计约束。
+- 解密失败 ⇒ **既不落库也不 Ack**（`handle_messaging.rs:92-98`）⇒ 提醒帧的 S2「已送达」不会被一次解密失败点亮，
+  这条既有行为正好是需求要的方向，直接依赖它。
+
 
 ---
 
