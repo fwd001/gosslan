@@ -98,7 +98,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -151,6 +151,44 @@ const listOnly = argv.includes("--list");
  * 那是"没守却当作守到了"，比慢得多严重。
  */
 const fullGate = argv.includes("--full-gate") || full;
+
+/**
+ * 起跑前先自扫自家脚本：模板字符串链**少一个 `+`** 会被解析成"标签模板"——
+ * 语法完全合法（`node --check` 量不到），只在运行到那一行时抛 `TypeError: "…" is not a function`。
+ * 真实代价 2026-10-10：那一步 `why` 的散文连着六行少 `+`，于是**本地层从加载期就崩**，
+ * 而快速层与 CI 都不构造那一段 ⇒ 一整天没人知道，红只在真正要跑本地层那一刻才露。
+ * 所以这条扫描放在**任何一步之前**，让每一层（含 CI 跑的那层）都先过它。
+ *
+ * 刻意排除的合法写法：行尾是 `,` / `;` / `)` / `]` 的相邻字面量（数组元素、多参数调用），
+ * 显式以 `+` 收尾的正常链式拼接，以及注释行（`*` / `//` / `/*` 开头）。
+ */
+const BAD_CHAIN_DIRS = ["scripts", "perf"];
+const badChains = [];
+for (const dir of BAD_CHAIN_DIRS) {
+  const absDir = path.join(ROOT, dir);
+  let names = [];
+  try {
+    names = readdirSync(absDir);
+  } catch {
+    continue; // 目录不在（比如某些平台上没有 perf/）⇒ 没什么可扫
+  }
+  for (const f of names.filter((n) => n.endsWith(".mjs"))) {
+    const lines = readFileSync(path.join(absDir, f), "utf8").split("\n");
+    for (let i = 0; i < lines.length - 1; i += 1) {
+      const a = lines[i].trimEnd();
+      const bStart = lines[i + 1].trimStart();
+      if (!a.endsWith("`") || a.endsWith("+")) continue;
+      if (/^\s*(\*|\/\/|\/\*)/.test(lines[i]) || bStart.startsWith("*")) continue;
+      if (bStart.startsWith("`")) badChains.push(`${dir}/${f}:${i + 1}`);
+    }
+  }
+}
+if (badChains.length > 0) {
+  console.error("✗ 模板字符串链少了一个 +（相邻字面量会被当成标签模板 ⇒ 运行期 TypeError，"
+    + "而 node --check 看不见）：");
+  for (const w of badChains) console.error(`   · ${w}`);
+  process.exit(1);
+}
 
 // ⚠️ 快速层不跑护栏 ⇒ 连"找 python"都不做：否则没装 python 的机器上，一个与护栏无关的
 // 快速检查会因为找不到解释器直接红（分层时很容易顺手漏掉这一条）。
@@ -502,13 +540,13 @@ if (groupFlag === "local") {
         `★ 2026-09-30 又补了两段真渲染：` +
         `一段是「caption × 遮罩」：TitleBar 与图片遮罩真挂在同一页，量 elementFromPoint 命中的是谁 ——` +
         `「✕/− 与整窗唯一拖拽区点得着」这件事静态层级比大小判不出来；` +
-        `另一段是「那颗表情入口」：真发一次 Input.dispatchMouseEvent 把指针移进气泡那一列 —— `
-        `它原先写的是 hidden group-hover/msg:flex（不悬停就根本不在布局里，尺寸与底边都量不到），`
-        `2026-10-10 N19 换成 .kb-reveal（opacity 藏、常驻布局）之后同一段还要**真按 Tab 与回车**：`
-        `焦点必须落得进那颗入口、聚焦后必须自己显形、回车必须真打开选择器，`
+        `另一段是「那颗表情入口」：真发一次 Input.dispatchMouseEvent 把指针移进气泡那一列 —— ` +
+        `它原先写的是 hidden group-hover/msg:flex（不悬停就根本不在布局里，尺寸与底边都量不到），` +
+        `2026-10-10 N19 换成 .kb-reveal（opacity 藏、常驻布局）之后同一段还要**真按 Tab 与回车**：` +
+        `焦点必须落得进那颗入口、聚焦后必须自己显形、回车必须真打开选择器，` +
         `并带一次「按回 display:none ⇒ Tab 再也落不进去」的可逆单点变异（证明这条键盘判据会咬）。` +
-        `★ 同日再加一段 --only=pinkb：真挂 ChatWindow + 走 store 自己的 enqueueMessage 种一条置顶，`
-        `连按 Tab 焦点必须落得进那颗「取消置顶」、聚焦后显形、**真按回车那条真的从置顶条上消失**；`
+        `★ 同日再加一段 --only=pinkb：真挂 ChatWindow + 走 store 自己的 enqueueMessage 种一条置顶，` +
+        `连按 Tab 焦点必须落得进那颗「取消置顶」、聚焦后显形、**真按回车那条真的从置顶条上消失**；` +
         `transport 那一条（api.pinGroupMessage）换成替身，替身之后全是生产码——真投递另由 --round=group 判。` +
         `两段各自都带可逆反面对照：把 caption 的层级按回修之前 ⇒ 同一个点被遮罩吃掉；` +
         `把入口按回旧的中线居中 ⇒ 多行气泡上底边飘起来。` +
