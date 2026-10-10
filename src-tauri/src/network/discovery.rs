@@ -966,7 +966,7 @@ mod tests {
     /// 探测必须与「被测代码的绑定选择」**解耦**，否则它区分不了"环境不支持广播"与
     /// "我们把绑定写错了"。拿 `0.0.0.0` 这个**已知正确**的绑定去问环境，答案才可信；
     /// 于是它失败只可能是环境问题，绝不会掩盖真正的回归。
-    fn loopback_broadcast_works(lan_ip: Ipv4Addr) -> bool {
+    fn loopback_broadcast_attempt(lan_ip: Ipv4Addr) -> bool {
         use std::net::UdpSocket as StdUdpSocket;
 
         let Ok(recv) = StdUdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
@@ -997,6 +997,18 @@ mod tests {
         matches!(recv.recv_from(&mut buf), Ok((n, _)) if &buf[..n] == b"gosslan-discovery-probe")
     }
 
+    /// 最多 3 次独立探测：每次都新建 socket 对。单次探测在系统高负载 / Wi‑Fi
+    /// 抖动时可能超时假阴性（2026-10-10 全量护栏据此误报过一次「空转」），
+    /// 而真正不支持广播的环境（CI 容器）3 次都会失败 —— 重试只滤瞬断、不掩盖真阴性。
+    fn loopback_broadcast_works(lan_ip: Ipv4Addr) -> bool {
+        for _ in 0..3 {
+            if loopback_broadcast_attempt(lan_ip) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// **真机根因的回归护栏**：接收 socket 必须真的收得到 `255.255.255.255` 广播。
     ///
     /// 2026-09-12 用户真机：「Mac 和手机同一个 Wi‑Fi、都开了局域网，却互相搜不到；
@@ -1018,13 +1030,18 @@ mod tests {
         use std::net::UdpSocket as StdUdpSocket;
 
         let Some((lan_ip, _)) = find_lan_interface() else {
+            eprintln!(
+                "GUARD_ENV_SKIP discovery_recv_socket_actually_receives_broadcast：\
+                 本环境没有可用 LAN 接口（纯容器/未联网常见），\
+                 无法验证接收绑定。这条护栏的有效场景是真机与本地开发。"
+            );
             return;
         };
 
         if !loopback_broadcast_works(lan_ip) {
             eprintln!(
-                "跳过 discovery_recv_socket_actually_receives_broadcast：\
-                 本环境有 LAN 接口但收不到本机 255.255.255.255 广播（CI 容器常见），\
+                "GUARD_ENV_SKIP discovery_recv_socket_actually_receives_broadcast：\
+                 本环境有 LAN 接口但 3 次探测均收不到本机 255.255.255.255 广播（CI 容器常见），\
                  无法验证接收绑定。这条护栏的有效场景是真机与本地开发。"
             );
             return;

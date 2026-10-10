@@ -265,6 +265,19 @@ def verify(case: Case) -> tuple[bool, str]:
 
         code, out = run(case.cmd, case.cwd, extra_env=case.env)
         if code == 0:
+            # 环境不支持该用例时测试会打印 GUARD_ENV_SKIP 并以 0 退出。这与
+            # 「注入没被守住」是两回事：前者要换支持环境重跑，后者才是护栏空转。
+            # 两种情况都不能判通过，但诊断必须分开（2026-10-10 曾因此误报过一次）。
+            if "GUARD_ENV_SKIP" in out:
+                env_line = next(
+                    (ln.strip() for ln in out.splitlines() if "GUARD_ENV_SKIP" in ln),
+                    "",
+                )
+                return False, (
+                    "改坏之后测试因**环境不支持而跳过**（GUARD_ENV_SKIP），\
+非空转在此环境无法证明（不等于护栏空转），请换真机/支持环境重跑：\n"
+                    f"  {env_line}"
+                )
             return False, "改坏之后测试**仍然通过** ⇒ 这条护栏是空转的（没在守东西）"
         # ★ 2026-10-07：`expect_fail_hint` 从"只附一句提示"改成**判据**（不匹配就 FAIL）。
         # 为什么：注入后红了不代表红的是我声明的那一格。真实形状：local 层那条 hint 永远匹配不上
