@@ -17,8 +17,11 @@
  * 或者用 `GOSSLAN_CHROME` 指定。
  *
  * ## 三条把自己坑过的探针纪律（都写进判据了，别改回去）
- * 1. 一次按键的 `rawKeyDown / char / keyUp` 必须**同帧发出**（不逐条 await）。
+ * 1. 一次按键的 `keyDown / keyUp` 必须**同帧发出**（不逐条 await），且**不要**用带 `text` 的 `rawKeyDown`。
  *    逐条 await 会被浏览器读成"按住不放"⇒ 自动重复：实测一次 Enter 打出 10194 次 keydown / 5074 次 click。
+ *    2026-10-10 又量到第二种复发形状：`rawKeyDown` 自己带 `text` 时，CfT 153 会进入**自持重复**
+ *    （按完 28 次、之后每秒再涨 ~550 次 click，补发 keyUp 也不终止）⇒ 发法固定为 `keyDown`(带 text)+`keyUp`，
+ *    并且"只激活一次 + 空等不增长"已经是机器判据（`keyOnce`），不许只靠这段注释。
  * 2. Enter / 空格的 keyDown **必须带 `text`**。不带就没有"激活被聚焦的 button"这条默认动作，
  *    于是读到"回车不选中"——那是**假红**。本文件把"不带 text ⇒ 零次激活"固定成一条反向对照判据。
  * 3. 同一个页面里别叠两个开着的浮层（曾经把 renderer 主线程搞死，连 reload 的 eval 都发不进去）。
@@ -283,20 +286,16 @@ class Cdp {
    */
   async key(key, code, text, keyCode) {
     const base = { key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode };
-    this.ws.send(JSON.stringify({
-      id: ++this.seq, method: "Input.dispatchKeyEvent",
-      params: { type: "rawKeyDown", ...base, ...(text ? { text } : {}) },
-    }));
-    if (text) {
-      this.ws.send(JSON.stringify({
-        id: ++this.seq, method: "Input.dispatchKeyEvent",
-        params: { type: "char", ...base, text, unmodifiedText: text },
-      }));
-    }
-    this.ws.send(JSON.stringify({
-      id: ++this.seq, method: "Input.dispatchKeyEvent",
-      params: { type: "keyUp", ...base },
-    }));
+    const send = (params) => this.ws.send(JSON.stringify({ id: ++this.seq,
+      method: "Input.dispatchKeyEvent", params }));
+    // ★ 发法是 `keyDown`(带 text) + `keyUp`，**不是** `rawKeyDown`+`char`+`keyUp`。
+    // 2026-10-10 四档对照实测（CfT 153，同一段 --only=reaction）：
+    //   rawKeyDown **带 text** ⇒ 按完 28 次激活、空等 1 秒再涨 558（自持重复风暴，补发 keyUp 也不终止）
+    //   rawKeyDown 不带 text + char + keyUp ⇒ 1 次、无增长
+    //   keyDown 带 text + keyUp ⇒ 1 次、无增长 ← 本档（两台引擎整跑各 192/192：CfT 153 与 Brave 155）
+    // 三条消息仍**同帧发出**（纪律 1：逐条 await = 按住不放）。
+    send({ type: "keyDown", ...base, ...(text ? { text } : {}) });
+    send({ type: "keyUp", ...base });
     await sleep(90);
   }
   /**
@@ -1304,6 +1303,40 @@ async function runConvBadge(cdp, url) {
     JSON.stringify(e.label));
 }
 
+/**
+ * 一次按键的「只激活一次」守卫：capture 阶段计数 + 空等 1 秒再数一次。
+ *
+ * 为什么值得当判据（2026-10-10 实测，不是预防性设计）：`rawKeyDown` 带 `text` 时 CfT 153 会进入
+ * **自持重复** —— 按完读到 28 次激活、之后每秒再涨 ~550 次，补发单独 keyUp 也不终止。那种状态下
+ * 任何"开/关切换"型读数都是掷硬币。而**光看界面还会看不出来**：`pinkb` 那句"回车后那条从置顶条上
+ * 消失"对重复完全不敏感（作用对象按完就消失了，后续重复没有靶子）⇒ 这条计数是它唯一的证据。
+ *
+ * 计数器必须挂在 **capture** 阶段：被测元素普遍带 `@click.stop`，冒泡阶段的计数器会什么都读不到。
+ *
+ * ⚠️ 这对判据的敏感度**分场景**，实测过别再外推：reaction 那一对能咬住风暴（把发法改回
+ * `rawKeyDown`+text ⇒ 立刻红两条），pinkb 那一对在同一个变异下**仍绿** —— 因为那颗 ✕ 按完就离开 DOM，
+ * 重复没有作用对象 ⇒ 计数自然不再涨。所以"回车只触发一次"这句话在 pinkb 那格仍然只能靠
+ * reaction 那一对与 emoji 的「恰好一次 select」来背书，别引用 pinkb 的计数。
+ */
+async function keyOnce(cdp, name, press) {
+  await cdp.eval(`(() => {
+    if (window.__onceHandler) window.removeEventListener("click", window.__onceHandler, true);
+    window.__onceHandler = () => { window.__once = (window.__once || 0) + 1; };
+    window.__once = 0;
+    window.addEventListener("click", window.__onceHandler, true);
+    return 1;
+  })()`);
+  await press();
+  const at = await cdp.eval("window.__once");
+  await sleep(1_000);
+  const after = await cdp.eval("window.__once");
+  check(`${name}：一次按键只激活一次（capture 计数，不是"看起来生效了"）`,
+    Number(at) === 1, "恰好 1 次 click", `按完读到 ${JSON.stringify(at)}`);
+  check(`${name}：空等 1 秒不再增长（自持重复风暴的闸门）`,
+    Number(after) - Number(at) === 0, "1 秒内增量 0", `又涨了 ${Number(after) - Number(at)}`);
+  return { at, after };
+}
+
 async function main() {
   const chrome = findChrome();
   if (!chrome) {
@@ -1430,6 +1463,20 @@ async function main() {
     vite.kill("SIGTERM");
     chromeProc.kill("SIGTERM");
     await sleep(500);
+    // 收尾要把端口**真的**让出来：饱和的 renderer 拆除很慢，端口还占着会把下一趟顶成上面那条前置红
+    // —— 2026-10-10 实测到连着三趟被自己上一趟留下的 CfT 挡住（那时页面正以 ~550 次/秒跑 click）。
+    // 有界等，最多 10 s；等不到就打印读数，让下一个人知道这是谁的残留。
+    let settleMs = 500;
+    for (let i = 0; i < 19; i += 1) {
+      const busy = (await portListening(VITE_PORT)) || (await portListening(CDP_PORT));
+      if (!busy) break;
+      await sleep(500);
+      settleMs += 500;
+    }
+    if (settleMs > 500) {
+      const stillBusy = (await portListening(VITE_PORT)) || (await portListening(CDP_PORT));
+      console.log(`· 端口让位耗时 ${settleMs} ms${stillBusy ? " —— 到点仍被占着，下一趟会红（这是本趟的残留）" : ""}`);
+    }
     try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* 交给系统 */ }
     process.exit(exitCode);
   }
@@ -1537,8 +1584,9 @@ async function runReaction(cdp, url) {
     // ★ Enter 必须带 text "\r"：本仓的 cdp.key 只有给了 text 才补发 char 那条，
     // 而 button 的「回车激活」走的是 char —— 只发 rawKeyDown+keyUp 时焦点在按钮上也不会有 click
     //（第一次跑就是这么红的，红的是按键夹具不是产品）。
-    await cdp.key("Enter", "Enter", "\r", 13);
-    await sleep(400);
+    // ★ 这一发回车由 keyOnce 背书：只许激活一次，且空等 1 秒不许继续增长
+    //（表情选择器是 toggle ⇒ 自持重复会把读数变成掷硬币，见 keyOnce 上面那段）。
+    await keyOnce(cdp, "N19 回车（表情入口）", () => cdp.key("Enter", "Enter", "\r", 13));
     const opened = await cdp.eval("!!document.querySelector('[data-reaction-picker]')");
     check("N19 键盘入口：聚焦后按回车真打开了表情选择器",
       opened === true, "data-reaction-picker 出现", "opened=" + JSON.stringify(opened));
@@ -1646,8 +1694,9 @@ async function runPinKeyboard(cdp, url) {
       !!reached && Number(reached.opacity) >= 0.99 && reached.pointerEvents === "auto",
       "opacity>=0.99 且 pointer-events=auto", JSON.stringify(reached));
 
-    await cdp.key("Enter", "Enter", "\r", 13);
-    await sleep(600);
+    // 这一发也由 keyOnce 背书：以前只判"那条从置顶条上消失了"，而那**对重复不敏感**
+    //（撤完置顶那颗 ✕ 就没了，后续重复没有作用对象）⇒ 现在把"只激活一次"本身量出来。
+    await keyOnce(cdp, "N19 回车（取消置顶）", () => cdp.key("Enter", "Enter", "\r", 13));
     const after = await cdp.eval(`document.querySelectorAll('[data-pin-unpin]').length`);
     check("N19：回车真的走到了处理器并回到界面（那条从置顶条上消失，剩 0 颗 ✕）",
       after === 0, "✕ 数从 1 变 0", "现读 " + after);
