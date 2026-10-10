@@ -382,3 +382,34 @@
             "emit 不能落在 `s.db.lock()` 的作用域内（持锁 emit 是既有不变量）—— 它必须在锁作用域闭合之后"
         );
     }
+
+    /// #22（负责人 2026-10-10 拍板要的两半）：**群主改名的新群名已经到离线成员机器上了，
+    /// 必须落到那一行已存在的会话；而这条同步永远不许凭空造出一行会话。**
+    ///
+    /// 为什么钉源码而不是只写 db 层测试：`db/groups.rs` 那三条正/反例判的是
+    /// `rename_group` 这个函数自己**会不会**做对，而 #22 的缺陷恰好是"**没人调它**"——
+    /// 群关系同步那条路（`handle_group_key`）当时只写 `groups`，会话标题留在旧名。
+    /// 表现是两个用户都直接看得见的地方名字不一样，而任何一条"函数自身正确"的测试都发现不了。
+    /// 同 `group_keys_always_precede_group_messages` 的理由：**这条判据本身是接线，不是纯函数**。
+    ///
+    /// 两半都要，缺一半就回到某个已知缺陷：
+    /// · 少了 `db::rename_group` ⇒ #22 复发（离线成员上线仍是旧标题）；
+    /// · 冒出 `ensure_conversation` ⇒ 用户清库重装后，仅凭群关系同步群聊就自己冒回聊天列表
+    ///   （那条不变量原先**只有一句注释**守着，这一格把它提成了判据）。
+    #[test]
+    fn group_relation_sync_updates_existing_conversation_title_but_never_creates_one() {
+        let body = code_flat(&rust_fn_body(
+            include_str!("network/transport.rs"),
+            "async fn handle_group_key",
+        ));
+        assert!(
+            body.contains("db::rename_group(&dbc,&group_id,&display_name)"),
+            "群关系同步里没有把当前群名落到会话行 ⇒ 离线成员上线后聊天列表仍是旧群名（#22）。\
+             要修的是调用点，不许在别处再写一份 UPDATE conversations 的 SQL（那会长出第二个家）。"
+        );
+        assert!(
+            !body.contains("ensure_conversation("),
+            "群关系同步里出现了 ensure_conversation ⇒ 清库重装后群聊会凭空回到聊天列表\
+             （关系同步 ≠ 聊天同步；conversation 只能由聊天活动驱动）。"
+        );
+    }

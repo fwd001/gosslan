@@ -13,6 +13,53 @@
 
 ## [Unreleased]
 
+## [4.33.43] - 2026-10-10
+
+### 修复 #22：群主改名后的新群名现在会落到离线成员那行**已存在**的会话
+
+负责人 2026-10-10 拍板"修复"，并把边界钉死：复用现有群资料更新机制、**只更新已经存在的会话行**、
+不新增会话行、不改群关系同步语义、**不改协议也不改库结构**。落地就是这一条约束下的最小形状。
+
+- 根因（现读，不是推测）：新群名**其实早就到了离线成员那台机器** ——
+  `transport/pending_keys.rs` 重递群密钥时带的是**当前名**，`handle_group_key` 也已经校验过
+  "只有群主能推"并把它写进 `groups.name`。**唯一没跟上的就是聊天列表那一行**（那是另一份去规范化出来的名字）。
+  所以这不是"要不要新造一条同步机制"，而是"要不要把已经收到、已经认证过的那个名字落到会话行上"。
+- 改法：`handle_group_key` 在 `upsert_group` 之后**复用 `db::rename_group`**（群主本机改名、改名帧到达、
+  关系同步三条路共用这一个家，不在这里写第二份 `UPDATE conversations`）。
+  它更新会话行用的是 `UPDATE` ⇒ **没有会话行时一个字都不写**，
+  那条"关系同步 ≠ 聊天同步"的既有不变量原样成立。
+  另加一道闸：只在帧里**真的带了群名**时才同步 —— 空名会走 `resolve_group_name` 的兜底，
+  把「群聊 g-xxxx」这种占位名写进会话标题就是在制造新故障。
+  （这一格还顺手暴露一个编译期事实：`group_name` 在构造 `display_name` 时已被搬走，判空必须搬到前面取 ——
+  第一次编译就是 E0382 报的，不是后加的顾虑。）
+- ★ **负责人点名要的反向判据，其实早就存在**（差点按旧记录重做一遍）：
+  `db::group_rename_tests::group_relation_sync_does_not_create_conversation`（清库重装语义）与
+  `existing_conversation_survives_group_relation_sync`（不删不重复创建），加上跨进程那一条
+  `scripts/e2e/rounds/gcrash.mjs:140`「B 不许因为这个群凭空多出一行会话」。
+  本轮**没有新造这一格**，只补了缺的那一半 —— **正向**：会话行存在时群资料与会话必须是同一个名字。
+- 新增两条用例（`cd src-tauri && cargo test --lib` 现读 **778 passed / 0 failed**，裸退码 0）：
+  ① `db::group_rename_tests::group_relation_sync_refreshes_title_but_never_creates_a_conversation`
+  （一正一反同册：重装现场 conversations 必须还是 0 行；有会话时两处同名且仍只有 1 行）；
+  ② `tests::group_relation_sync_updates_existing_conversation_title_but_never_creates_one` ——
+  **接线判据**，读 `handle_group_key` 那个函数体自己：必须有 `db::rename_group(...)`，
+  且函数体里不许出现 `ensure_conversation(`（那条不变量原先**只有一句注释**守着，现在它是判据）。
+  为什么必须有第二条：①判的是 `rename_group` **会不会**做对，而 #22 的缺陷恰好是"**没人调它**"——
+  任何"函数自身正确"的测试都发现不了。同 `group_keys_always_precede_group_messages` 那条的理由。
+- 两次单点变异各红对应那一条（脚本跑完自己把现场还原并打印 `现场还原 = True`）：
+  **M1 摘掉那次调用** ⇒ 接线那条 rc 101 红、行为那条**仍绿**
+  （⇒ 两条判据不是彼此的别名，这正是接线判据存在的理由）；
+  **M2 在函数体里塞进 `ensure_conversation(`** ⇒ 接线那条红。
+- **不新增用户设置**：这条修复没有任何开关，行为变更本身就是用户要的（列表标题不再停在旧名）。
+- ⚠️ 仍然没被判到的一半：**跨进程"改名帧到底有没有离开本机"**依旧没有判据
+  （`final-architecture-review` §七 取数纪律第 6 条那句仍然成立）。
+  本轮挣到的是"新名到达之后会落到已存在的会话行"这一格，不是整条跨进程旅程。
+- 清单基线 `--update` + `--sync-baselines`：macos **790 → 794**、windows **778 → 782**。
+  ★ 差额是 **4 不是 2**：其中 2 条是本轮新增，另外 2 条
+  （`commands::tests::aux_windows_are_kept_inside_the_monitor_work_area`、
+  `commands::tests::recenter_aux_window_actually_uses_the_placement_rules`）**早就在跑、只是从没登记过** ——
+  这条清单对"跑了但没登记"只警告不判红（既有口径），所以它不会被任何一次红提示过。
+  逐行 diff 已核：**只增不删**（`git diff -U0 -- src-tauri/test-baseline.macos.txt | grep -E "^[+-][a-z]"`）。
+
 ### 稳定性：五项决策落定 + 8 条 `[plan]` 提交已推 + 222 条全量护栏在同一最终提交上重新挣得（2026-10-10）
 
 负责人一次答完五项（预览缓存按累计字节封顶初始 60 MiB / #22 群主改名要修且只更新已存在的会话行 /

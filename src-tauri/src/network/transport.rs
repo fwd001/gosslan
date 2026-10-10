@@ -1305,6 +1305,9 @@ async fn handle_group_key(
         all.push(state.device_id.clone());
     }
     let conv_id = format!("group:{group_id}");
+    // 收到过群名才同步到会话行：空名会走下面的兜底，把「群聊 g-xxxx」这种占位名写进会话标题
+    // 就是在制造新故障。判空要在 `group_name` 被搬进 `display_name` **之前**取（否则这里就动了搬走后的值）。
+    let got_group_name = !group_name.is_empty();
     let display_name = if group_name.is_empty() {
         resolve_group_name(state, &group_id)
     } else {
@@ -1313,8 +1316,18 @@ async fn handle_group_key(
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_group(&dbc, &group_id, &display_name, &from, &all).ok();
-        // 群关系同步（GroupKey / 群成员 / 群密钥 / 群名）只更新 groups / group_members，
-        // **不得创建 conversation**：conversation 是「聊天会话索引」，只能由聊天活动驱动
+        // ★ 会话标题跟着群资料走（负责人 2026-10-10 拍板的 #22）：群主改名时**离线**的成员
+        // 此前要等群主下次在群里说话才看得到新名 —— 而新名其实**早就到了他机器上**
+        // （`pending_keys` 重递带的是当前名，本函数也已把它写进 `groups`），缺的只有这一格。
+        //
+        // 用 `rename_group` 而不是自己写 SQL：它是"群名同步"唯一的那个家（群主本机改名、
+        // 改名帧到达、这里的关系同步三条路共用一份），而它更新会话行用的是 `UPDATE` ——
+        // **没有会话行时一个字都不写**，所以下面那条"关系同步不得创建会话"的不变量原样成立。
+        if got_group_name {
+            db::rename_group(&dbc, &group_id, &display_name).ok();
+        }
+        // 群关系同步（GroupKey / 群成员 / 群密钥 / 群名）只更新 groups / group_members（+ 上面
+        // 已存在会话行的标题），**不得创建 conversation**：conversation 是「聊天会话索引」，只能由聊天活动驱动
         // （收到新群消息 → insert_message → touch_conversation）。否则用户清库重装后仅凭
         // 群关系同步，群聊就会凭空重新出现在聊天列表（关系同步 ≠ 聊天同步）。
         db::observe_clock(&dbc, &conv_id, clock).ok();

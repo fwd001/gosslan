@@ -313,6 +313,50 @@ mod group_rename_tests {
             "群不存在时会话标题必须一字不动"
         );
     }
+
+    /// #22（负责人 2026-10-10 拍板）：**离线成员上线后群名要一致，且不许凭空多出会话行。**
+    ///
+    /// 这里判的是 `handle_group_key` 收到 GroupKey 时那一串写（`upsert_group` + `rename_group`）
+    /// 在两种现场下的结果，一正一反：
+    /// · **反**：清库重装后只有群关系、没有会话 ⇒ 同一次同步**一个字都不许写进 conversations**
+    ///   （"关系同步 ≠ 聊天同步"那条既有不变量在这里最容易被人顺手破坏 —— 一旦改成
+    ///   `ensure_conversation`，用户重装后群聊会自己冒回聊天列表）；
+    /// · **正**：已经因聊天活动建过会话 ⇒ 群资料与会话行**必须是同一个名字**，
+    ///   否则就是 #22 那个缺陷本身（群详情新名、列表旧名，两处用户都直接看得见）。
+    #[test]
+    fn group_relation_sync_refreshes_title_but_never_creates_a_conversation() {
+        let conn = mem();
+        let me = "me".to_string();
+        let members = vec!["me".to_string(), "b".to_string()];
+
+        // ① 反：重新安装现场 —— 只有群关系同步，conversations 必须还是空的
+        upsert_group(&conn, "g1", "群主改过的名", &me, &members).unwrap();
+        rename_group(&conn, "g1", "群主改过的名").unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "仅凭群关系同步凭空造出一行会话 ⇒ 清库重装后群聊会自己冒回来");
+
+        // ② 正：真实聊天过（会话行由聊天活动建立），再吃一次群关系同步
+        ensure_conversation(&conn, "group:g1", "group", "旧名", None).unwrap();
+        upsert_group(&conn, "g1", "第二次改名", &me, &members).unwrap();
+        rename_group(&conn, "g1", "第二次改名").unwrap();
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM conversations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "会话行不许被群关系同步重复创建");
+        assert_eq!(
+            name_of(&conn, "SELECT name FROM groups WHERE id=?1", "g1").as_deref(),
+            Some("第二次改名"),
+            "群资料那一份要跟着改"
+        );
+        assert_eq!(
+            name_of(&conn, "SELECT name FROM conversations WHERE id=?1", "group:g1").as_deref(),
+            Some("第二次改名"),
+            "会话标题必须与群资料同一个名 —— 少了这一格就是 #22 本身"
+        );
+    }
 }
 
 /// 群任务编号的**高水位**键（不另建表：`settings` 就是现成的 kv）。
