@@ -100,7 +100,9 @@
 | 撤回 | `RecallPayload{target}` + 权威 G-Set 表 `group_recalled_messages`（`db.rs:510`） | 并把被撤回那一行**原地物化**成 `kind="recalled"` | 同上 |
 
 ⇒ **强提醒照这个形状做就是"复用现有消息 ID / Outbox / Ack / 去重 / 加密 / 可靠传输"**（技术约束 1）：
-一条 `kind="remind"`（发起）+ 一条 `kind="remind_ack"`（确认）的**静默消息**，载荷带 `{target, actors}`。
+一条 `kind="remind"`（发起，载荷 `{target, actors}`）+ 一条 `kind="remind_ack"`（回执，
+载荷 `{target, stage}`，stage∈alerted/confirmed：S3 自动回执与 S4 用户确认**共用一种帧**，
+第 1 阶段细化——发起方要能分别看到"已提醒"与"已确认"，而 transport Ack 带不出这个信息）的**静默消息**。
 "有限重试 + 去重"由 `flush_outbox` + `INSERT OR IGNORE` + `msg_id = SHA-256(sender+nonce+payload)` 天然给；
 "乱序 / 旧态覆盖"由 LWW 版本号元组 `(seq, msg_id)` 给（`reactions.ts:44-49` 那条"版本号必须是元组"的既有规矩）。
 

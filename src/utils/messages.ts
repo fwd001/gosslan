@@ -304,6 +304,10 @@ export function previewBody(kind: string, content: string, textLimit = 30): stri
       return "[撤回]";
     case "pin":
       return "[置顶]";
+    case "remind":
+      return "[强提醒]";
+    case "remind_ack":
+      return "[强提醒确认]";
     default:
       // ⚠️ 表里**没有**的 kind（对端版本比本机新）绝不能原样截断 —— 那是"界面上出现一串
       // JSON 字符串"的最后一环（INV-P24 第 2 条）。判据与文案都与 Rust `preview_text` 同源，

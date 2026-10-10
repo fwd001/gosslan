@@ -485,6 +485,8 @@ export const zhCN: MessageDict = {
   "msg.system": "系统",
   "msg.message": "消息",
   "msg.pin": "置顶",
+  "msg.remind": "强提醒",
+  "msg.remindAck": "强提醒确认",
   "msg.unpin": "取消置顶",
   "msg.pinFail": "置顶失败",
   "msg.pinCollapse": "收起",

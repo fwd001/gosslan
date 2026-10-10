@@ -474,6 +474,8 @@ export const enUS: MessageDict = {
   "msg.system": "System",
   "msg.message": "Message",
   "msg.pin": "Pin",
+  "msg.remind": "Strong reminder",
+  "msg.remindAck": "Strong reminder ack",
   "msg.unpin": "Unpin",
   "msg.pinFail": "Failed to pin",
   "msg.pinCollapse": "Collapse",

@@ -38,6 +38,15 @@ pub async fn send_message(
             crate::protocol::parse_reaction_payload(&content)?;
             MsgKind::Reaction
         }
+        // 强提醒发起 / 回执：载荷先过校验；1:1 门控在下面统一处理。
+        "remind" => {
+            crate::protocol::parse_remind_payload(&content)?;
+            MsgKind::Remind
+        }
+        "remind_ack" => {
+            crate::protocol::parse_remind_ack_payload(&content)?;
+            MsgKind::RemindAck
+        }
         _ => return Err("不支持的消息类型".to_string()),
     };
 

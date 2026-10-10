@@ -39,6 +39,9 @@ export const SILENT_KINDS: readonly string[] = [
   // 任务的**创建**（`todo`）反过来是 Card —— 被指派的人得知道自己被派了活。
   "todo_update",
   "poll_vote",
+  // 强提醒发起 / 回执：强提醒的高优先级通知单独走通道（第 3 阶段），不进普通通知。
+  "remind",
+  "remind_ack",
 ];
 
 /**

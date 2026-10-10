@@ -71,7 +71,10 @@ export type MsgKind =
   | "poll"
   | "poll_vote"
   /** 合并转发的聊天记录（微信式卡片）。Bubble 类：进时间线、计未读、可搜索。 */
-  | "merge";
+  | "merge"
+  /** 强提醒发起 / 回执（Silent 类：不进时间线、不计未读、不弹普通通知）。 */
+  | "remind"
+  | "remind_ack";
 
 /** 表情回应的事件载荷（kind = "reaction" 时 content 的 JSON 形态）。 */
 export interface ReactionPayload {
@@ -81,6 +84,24 @@ export interface ReactionPayload {
   emoji: string;
   /** true = 添加，false = 取消 */
   add: boolean;
+}
+
+/** 强提醒发起载荷（kind = "remind" 时 content 的 JSON 形态，对应 Rust RemindPayload）。 */
+export interface RemindPayload {
+  /** 被提醒的原消息 msg_id */
+  target: string;
+  /** 群聊：显式提醒对象（device_id）；私聊为空、目标恒为对方。第一版不默认全群。 */
+  actors: string[];
+}
+
+/** 强提醒回执阶段：alerted=接收端自动（S3），confirmed=用户主动确认（S4）。 */
+export type RemindAckStage = "alerted" | "confirmed";
+
+/** 强提醒回执载荷（kind = "remind_ack"，对应 Rust RemindAckPayload）。 */
+export interface RemindAckPayload {
+  /** 对应 remind 事件的 msg_id */
+  target: string;
+  stage: RemindAckStage;
 }
 
 export interface MessageRecord {

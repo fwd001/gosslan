@@ -1381,4 +1381,78 @@ mod tests {
             );
         }
     }
+
+    // ──────────────────────── 强提醒（第 1 阶段：身份 / 载荷 / 门控 / 受众）────────────────────────
+
+    /// 发起载荷：缺 actors 时默认空名单（私聊语义）；target 空必须当场挡。
+    #[test]
+    fn remind_payload_parse_and_defaults() {
+        let p = parse_remind_payload(r#"{"target":"m1"}"#).unwrap();
+        assert_eq!(p.target, "m1");
+        assert!(p.actors.is_empty(), "缺 actors 必须按空名单，不是缺字段报错");
+
+        let p = parse_remind_payload(r#"{"target":"m1","actors":["d2","d3"]}"#).unwrap();
+        assert_eq!(p.actors, vec!["d2".to_string(), "d3".to_string()]);
+
+        for bad in [r#"{}"#, r#"{"target":"  "}"#, r#"not json"#, r#"{"target":7}"#] {
+            assert!(parse_remind_payload(bad).is_err(), "必须拒：{bad}");
+        }
+    }
+
+    /// 确认载荷：stage 只收 alerted / confirmed 两档；target 空挡。
+    #[test]
+    fn remind_ack_payload_stage_is_validated() {
+        let p = parse_remind_ack_payload(
+            r#"{"target":"r1","stage":"confirmed"}"#,
+        )
+        .unwrap();
+        assert_eq!(p.target, "r1");
+        assert_eq!(p.stage, REMIND_STAGE_CONFIRMED);
+        assert!(parse_remind_ack_payload(r#"{"target":"r1","stage":"alerted"}"#).is_ok());
+
+        for bad in [
+            r#"{"target":"r1"}"#,
+            r#"{"target":"r1","stage":"done"}"#,
+            r#"{"target":"","stage":"confirmed"}"#,
+            r#"{"target":"r1","stage":3}"#,
+        ] {
+            assert!(parse_remind_ack_payload(bad).is_err(), "必须拒：{bad}");
+        }
+    }
+
+    /// 发送词表：新变体的 as_str / from_wire_str 必须与线串一致。
+    #[test]
+    fn remind_msg_kind_mapping() {
+        assert_eq!(MsgKind::Remind.as_str(), "remind");
+        assert_eq!(MsgKind::RemindAck.as_str(), "remind_ack");
+        assert_eq!(MsgKind::from_wire_str("remind"), MsgKind::Remind);
+        assert_eq!(MsgKind::from_wire_str("remind_ack"), MsgKind::RemindAck);
+    }
+
+    /// 接收侧分类：两者都是 Silent —— 不进时间线、不计未读、不弹普通通知。
+    #[test]
+    fn remind_kinds_are_silent() {
+        assert_eq!(kind_class_of("remind"), Some(KindClass::Silent));
+        assert_eq!(kind_class_of("remind_ack"), Some(KindClass::Silent));
+    }
+
+    /// 1:1 门控：对端不声明能力位 ⇒ 不允许；声明 FLEX_DM_KIND ⇒ 放行。
+    #[test]
+    fn dm_gate_for_remind_kinds() {
+        for k in ["remind", "remind_ack"] {
+            assert_ne!(dm_required_features(k), 0, "{k} 必须受门控");
+            assert!(!dm_allowed_by_features(k, 0), "零位图必须挡下 {k}");
+            assert!(dm_allowed_by_features(k, CONTENT_FEATURE_FLEX_DM_KIND));
+        }
+    }
+
+    /// 群受众校验：名单按"当前在册成员"劈成有效/无效两半，保持原顺序。
+    #[test]
+    fn remind_actor_partition_against_membership() {
+        let actors = vec!["d1".to_string(), "ghost".to_string(), "d2".to_string()];
+        let known: HashSet<String> = ["d1", "d2", "d3"].iter().map(|s| s.to_string()).collect();
+        let (good, bad) = partition_remind_actors(&actors, &known);
+        assert_eq!(good, vec!["d1", "d2"]);
+        assert_eq!(bad, vec!["ghost"]);
+    }
 }

@@ -84,6 +84,9 @@ const KIND_LABELS: Record<MsgKind, string> = {
   poll: t("poll.title"),
   poll_vote: t("poll.title"),
   merge: t("merge.title"),
+  // 静默事件：不进时间线、没有转发入口，中性文案兜底。
+  remind: t("msg.remind"),
+  remind_ack: t("msg.remindAck"),
 };
 const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
 </script>
