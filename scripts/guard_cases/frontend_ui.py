@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """护栏非空转用例分册：前端呈现层（components / layouts / entries / 样式与打包配置里的界面判据）。
 
-本册现数 47 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
+本册现数 48 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
 用不带行首锚的写法会多算一条 —— 多出来的正是这一行本身）；2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
 `CASES` 字面量里）按**锚定的被守物**切出来，切过来那 30 条的块文本逐字未搬动过一字 ⇒
 恒等判据＝`verify-guards.py --list` 的输出排序后与拆前**逐字节相同**（条数与用例名都不是"我觉得一样"）。
@@ -255,6 +255,40 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="都带两个",
         tags=["frontend", "new-guards"],
+    ),
+    Case(
+        name="可点的元素只写 role=\"button\"、没有 tabindex（键盘 Tab 到不了）必须被抓住",
+        why="护栏 ⑥ 原先判的是「role、tabindex、键盘事件任一命中就放行」（OR）⇒ role 单独存在照样过，"
+            "而 role 只让读屏念出「这是按钮」，**不给可聚焦性**。2026-10-10 做 roadmap N19 时量到真实一处："
+            "置顶行那颗取消置顶是嵌在 <button> 里的 span role=button、无 tabindex。这一条注入的就是"
+            "**N19 改掉之前那一段原样代码**（从 git 里取，不是编的坏形状），证明补上的那半边真会咬。",
+        file=ROOT / "src" / "components" / "ChatWindow.vue",
+        injections=[(
+            """<button
+            type="button"
+            data-pin-unpin
+            class="tap-safe kb-reveal flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)]"
+            :title="t('msg.unpin')"
+            :aria-label="t('msg.unpin')"
+            @click.stop="togglePin(p.id)"
+          >
+            <X class="h-3 w-3" aria-hidden="true" />
+          </button>""",
+            """<span
+            class="tap-safe hover-reveal-op flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 transition group-hover/pin:opacity-100"
+            role="button"
+            :title="t('msg.unpin')"
+            :aria-label="t('msg.unpin')"
+            @click.stop="togglePin(p.id)"
+          >
+            <X class="h-3 w-3" />
+          </span>""",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/designGuards.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="但没有 `tabindex`",
+        tags=["frontend", "a11y", "new-guards"],
     ),
     Case(
         name="视图层自己算 hover 能力（平台判定又长出第二个家）必须被抓住",
