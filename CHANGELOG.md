@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+### 量具 / 判据（A1：本轮新加的四条判据各补一条"改坏真实文件"的注入式非空转用例）
+
+按本仓标准（㉝ 那次是合成反例 + 注入档两条一起交的），只在 `designGuards.test.ts` 里挂合成反例
+**低一档** —— 合成 fixture 证的是"尺子认得这个形状"，注入档证的才是"今天这份真实文件正被它守着"。
+CI 那一层的结论行（`✅ 其余 81 条护栏都通过了非空转验证`）只数 `scripts/guard_cases/*.py` 里的 Case，
+所以这四条挂上之前，新判据在台账里等于不存在。
+
+- **㉞（图片盒高度只能从常量取）** 挂进 `guard_cases/frontend_ui.py`：往 `MessageImageBubble.vue`
+  的骨架 class 里塞回一个 `h-32`。实跑 `python3 scripts/verify-guards.py --only "图片盒把高度写成"` ⇒ 退 0，
+  结论行「改坏即 FAIL、恢复即 PASS，且红由声明的那条判据报出」；证据是注入态 142 条测试里
+  **恰好 1 条红**（`㉞ 真实树：MessageImageBubble 与 messageHeight 现在这一份必须合规`）、其余 141 绿，
+  恢复后工作树 `git status` 无残留。fail-hint 取的是判据自己打印的那句「高度工具类」。
+- 条数同步是**被机器逼出来的**，不是我记得改：加完第一条后 `node scripts/check-doc-numbers.mjs` 当场报
+  「文档硬数字漂移 1 处：ARCHITECTURE-MAP.html 手写 218 = 现算 219」⇒ 按现算值改图那一格
+  （这正是 AGENTS/记忆里"增删 Case 必须同批改图"那条规矩今天真的在生效的样子）。
+
 ### 量具 / 文档（首轮验收报告补一节追加：N11 / N19 / N22 从"等人拍板"移进"已交付"）
 
 - `docs/acceptance/native-experience-round-1.md` 末尾新增 §10：正文一字未改（含我自己数错的 21→29 与那条假"新增依赖"），

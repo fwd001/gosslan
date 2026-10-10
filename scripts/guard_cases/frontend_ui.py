@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """护栏非空转用例分册：前端呈现层（components / layouts / entries / 样式与打包配置里的界面判据）。
 
-本册现数 45 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
+本册现数 46 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
 用不带行首锚的写法会多算一条 —— 多出来的正是这一行本身）；2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
 `CASES` 字面量里）按**锚定的被守物**切出来，切过来那 30 条的块文本逐字未搬动过一字 ⇒
 恒等判据＝`verify-guards.py --list` 的输出排序后与拆前**逐字节相同**（条数与用例名都不是"我觉得一样"）。
@@ -254,6 +254,23 @@ CASES: list[Case] = [
         cmd=npm("test"),
         cwd=ROOT,
         expect_fail_hint="都带两个",
+        tags=["frontend", "new-guards"],
+    ),
+    Case(
+        name="图片盒把高度写成 Tailwind 字面量（估算/预留/上限又分成三个数）必须被抓住",
+        why="roadmap N22：图片行的估算、加载预留与 <img> 上限必须是同一个常量"
+            "（previewMetrics.IMAGE_BUBBLE_HEIGHT）——骨架写回 `h-*`/`max-h-*` 那一刻起，"
+            "图片行又回到「挂载被实测纠正一次、加载完成再变一次」，而这条退化不报错、不影响构建、"
+            "桌面跑一遍看不出来，只有扫 class 列表的 checkImageBubbleHeightSources 拦得住",
+        file=ROOT / "src" / "components" / "message" / "MessageImageBubble.vue",
+        injections=[(
+            'class="flex w-full items-center justify-center bg-[var(--gosslan-hover)]"',
+            'class="flex h-32 w-full items-center justify-center bg-[var(--gosslan-hover)]"',
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/designGuards.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="高度工具类",
         tags=["frontend", "new-guards"],
     ),
     Case(
