@@ -32,6 +32,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 const ARGV = process.argv.slice(2);
 const OPT = (name, dflt) => {
@@ -240,9 +241,15 @@ async function selfCheck() {
 
 // ---------------- 入口 ----------------
 
-if (ARGV.includes("--selfcheck")) {
+// 只有"被当命令跑"时才走 CLI —— 这个文件同时是 perf/previewHeap.mjs 的库，
+// 被 import 就 process.exit(2) 会把调用方一起带走。
+const IS_MAIN = process.argv[1]
+  ? import.meta.url === pathToFileURL(process.argv[1]).href
+  : false;
+
+if (IS_MAIN && ARGV.includes("--selfcheck")) {
   await selfCheck();
-} else {
+} else if (IS_MAIN) {
   if (POS.length === 0) {
     console.error("用法：node perf/heapDelta.mjs <a.heapsnapshot> [b.heapsnapshot] [--top=15] [--group=type|name|type+name]\n     node perf/heapDelta.mjs --selfcheck");
     process.exit(2);
