@@ -1293,6 +1293,7 @@ async function main() {
     const roster = want("roster");
     const overlay = want("overlay");
     const imgskel = want("imgskel");
+    const pinkb = want("pinkb");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (task) await runTaskCard(cdp, url);
@@ -1302,6 +1303,7 @@ async function main() {
     if (roster) await runReactionRoster(cdp, url);
     if (overlay) await runOverlay(cdp, url);
     if (imgskel) await runImageSkeleton(cdp, url);
+    if (pinkb) await runPinKeyboard(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
@@ -1450,6 +1452,135 @@ async function runReaction(cdp, url) {
     check("N19 变异可逆：撤掉那条内联 display 后它又回到布局里（没把页面改坏一次）",
       restored.ok === true && restored.display !== "none" && restored.h > 0,
       "display!=none 且 h>0", JSON.stringify(restored));
+  } finally {
+    await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false }).catch(() => {});
+  }
+}
+
+
+/**
+ * 置顶条那颗「取消置顶」的键盘入口（roadmap N19 没量到的那一半）。
+ *
+ * 为什么单独一段：表情入口那颗已经证过 `.kb-reveal` 在真浏览器里可 Tab 到达、可回车激活，
+ * 但那证的是**机制**；ChatWindow 这一段是**生产里另一个使用者**（它还是从"嵌在 button 里的
+ * span role=button"改过来的），机制对不代表这段接对了 ⇒ 必须真挂 ChatWindow 量。
+ *
+ * ⚠️ 唯一的替身是 transport 边界那一条：`api.pinGroupMessage` 被换成"立刻回一份 pin 记录"。
+ * 换它不等于让判据变绿——真投递本来就不在这格的判据里（那是双实例 E2E 的 `--round=group`）。
+ * 替身之后的每一步（store 的 enqueueMessage → foldPinned 折叠 → 置顶条重渲染）都是生产码，
+ * 所以"回车之后那一条真的从置顶条上消失了"是界面链路走通的证据。
+ */
+async function runPinKeyboard(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const mounted = await cdp.eval("window.__probe.install('/src/components/ChatWindow.vue', '', '{}')");
+  check("ChatWindow 挂得起来（置顶条才有得量；挂不起来这一整段就只能记未量）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+
+  const seeded = await cdp.eval(`(async () => {
+    const { api } = await import('/src/api/index.ts');
+    const { useChatStore } = await import('/src/stores/useChatStore.ts');
+    const chat = useChatStore();
+    chat.activeConv = 'group:kb1';
+    const base = { conv_id: 'group:kb1', sender_id: 'p1', sender_name: '小布', ts: 1700000000000 };
+    chat.enqueueMessage(Object.assign({}, base, { msg_id: 'm-kb-1', kind: 'text', content: '这条被置顶了', seq: 1 }));
+    chat.enqueueMessage(Object.assign({}, base, { msg_id: 'pin-kb-1', kind: 'pin',
+      content: JSON.stringify({ target: 'm-kb-1', pinned: true }), seq: 2 }));
+    // 替身：只换这一条命令，返回一份形状正确的"取消置顶"记录（字段口径同 pins.ts 的 parsePin）
+    api.pinGroupMessage = (groupId, target, pinned) => Promise.resolve({
+      msg_id: 'pin-kb-2', conv_id: 'group:kb1', sender_id: 'dev-me', sender_name: '我',
+      kind: 'pin', content: JSON.stringify({ target, pinned }), seq: 3, ts: 1700000001000,
+    });
+    await new Promise((r) => setTimeout(r, 250));
+    // 读数前把那颗 ✕ 的过渡冻掉：.kb-reveal 的显形带 transition，headless 的动画时钟不推帧时
+    // getComputedStyle 会读到中间值（这一段第一次跑就读到 0.967863 ⇒ 红的是读数时机不是产品）。
+    // 这里判的是"聚焦那条级联规则落到没落到元素上"，动画本身另有判据（overlay 段 E 组）。
+    for (const b of document.querySelectorAll('[data-pin-unpin]')) b.style.transition = "none";
+    const bar = document.querySelectorAll('[data-pin-unpin]').length;
+    const frozen = Array.from(document.querySelectorAll('[data-pin-unpin]'))
+      .filter((b) => b.style.transition === "none").length;
+    return { rows: (chat.messages['group:kb1'] || []).length, unpinButtons: bar, frozen };
+  })()`);
+  check("置顶条挂出了一颗「取消置顶」（现读 DOM 里有几个 ✕，且它的过渡已被冻住）",
+    !!seeded && seeded.rows === 2 && seeded.unpinButtons === 1 && seeded.frozen === 1,
+    "2 行消息 / 1 颗 ✕ / 1 颗已冻过渡", JSON.stringify(seeded));
+
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+  await cdp.send("Page.bringToFront").catch(() => {});
+  try {
+    let reached = null;
+    const stops = [];
+    for (let i = 0; i < 25 && !reached; i += 1) {
+      await cdp.key("Tab", "Tab", "", 9);
+      const r = await cdp.eval(`(() => {
+        const b = document.querySelector('[data-pin-unpin]');
+        if (!b) return { ok: false };
+        const cs = getComputedStyle(b);
+        return { ok: true, focused: document.activeElement === b,
+                 opacity: cs.opacity, pointerEvents: cs.pointerEvents,
+                 tag: b.tagName, aria: b.getAttribute('aria-label') };
+      })()`);
+      stops.push(r && r.ok ? r.focused : null);
+      if (r && r.ok && r.focused === true) reached = r;
+    }
+    check("N19：连按 Tab 焦点落得进那颗「取消置顶」（旧写法是无 tabindex 的 span，落不进去）",
+      !!reached && reached.tag === "BUTTON" && !!reached.aria,
+      "activeElement 是那颗带 aria-label 的 BUTTON", JSON.stringify([stops.length, reached]));
+    check("N19：聚焦后它自己显形（过渡已冻 ⇒ opacity 是目标值 1，且 pointer-events 开了）",
+      !!reached && Number(reached.opacity) >= 0.99 && reached.pointerEvents === "auto",
+      "opacity>=0.99 且 pointer-events=auto", JSON.stringify(reached));
+
+    await cdp.key("Enter", "Enter", "\r", 13);
+    await sleep(600);
+    const after = await cdp.eval(`document.querySelectorAll('[data-pin-unpin]').length`);
+    check("N19：回车真的走到了处理器并回到界面（那条从置顶条上消失，剩 0 颗 ✕）",
+      after === 0, "✕ 数从 1 变 0", "现读 " + after);
+
+    // ★ 单点变异（可逆）：再挂一次置顶条，把那颗 ✕ 按回**旧那一族的藏法**（display:none，
+    // 也就是 N19 之前 `hidden` / 无 tabindex 的 span 达到的效果）⇒ 焦点必须再也落不进去。
+    // 没有这一条，上面那两条 Tab 判据可能是恒真的（这一段判的是"键盘到得到"，不是"DOM 里有几个按钮"）。
+    const reseed = await cdp.eval(`(async () => {
+      const { useChatStore } = await import('/src/stores/useChatStore.ts');
+      const chat = useChatStore();
+      chat.enqueueMessage({
+        msg_id: 'pin-kb-3', conv_id: 'group:kb1', sender_id: 'p1', sender_name: '小布',
+        kind: 'pin', content: JSON.stringify({ target: 'm-kb-1', pinned: true }),
+        seq: 4, ts: 1700000002000,
+      });
+      await new Promise((r) => setTimeout(r, 250));
+      const b = document.querySelector('[data-pin-unpin]');
+      if (!b) return { ok: false };
+      b.style.display = 'none';
+      return { ok: true, back: document.querySelectorAll('[data-pin-unpin]').length };
+    })()`);
+    check("变异前置：重新置顶回来、那颗 ✕ 又被按回 display:none（旧那一族的藏法）",
+      reseed && reseed.ok === true && reseed.back === 1, "1 颗 ✕ 且 display 已置 none",
+      JSON.stringify(reseed));
+    let legacyHit = false;
+    for (let i = 0; i < 25 && !legacyHit; i += 1) {
+      await cdp.key("Tab", "Tab", "", 9);
+      legacyHit = await cdp.eval(`(() => {
+        const b = document.querySelector('[data-pin-unpin]');
+        return !!b && document.activeElement === b;
+      })()`);
+    }
+    check("N19 变异对照：藏法改回 display:none ⇒ Tab 再也落不进去（证明那条键盘判据会咬）",
+      legacyHit === false, "二十五次 Tab 都没聚焦到它", "legacyHit=" + legacyHit);
+    await cdp.eval(`(() => {
+      const b = document.querySelector('[data-pin-unpin]');
+      if (b) b.style.display = '';
+    })()`);
+    const undone = await cdp.eval(`(() => {
+      const b = document.querySelector('[data-pin-unpin]');
+      if (!b) return { ok: false };
+      const r = b.getBoundingClientRect();
+      return { ok: true, display: getComputedStyle(b).display, h: Math.round(r.height) };
+    })()`);
+    check("N19 变异可逆：撤掉那条内联 display 后它又回到布局里（没把页面改坏一次）",
+      undone.ok === true && undone.display !== "none" && undone.h > 0,
+      "display!=none 且 h>0", JSON.stringify(undone));
   } finally {
     await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false }).catch(() => {});
   }

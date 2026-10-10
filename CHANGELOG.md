@@ -46,6 +46,31 @@ CI 那一层的结论行（`✅ 其余 81 条护栏都通过了非空转验证`�
   「文档硬数字漂移 1 处：ARCHITECTURE-MAP.html 手写 218 = 现算 219」⇒ 按现算值改图那一格
   （这正是 AGENTS/记忆里"增删 Case 必须同批改图"那条规矩今天真的在生效的样子）。
 
+### 量具 / 探针（A2：N19 当时记成"浏览器内没量过"的那一半，现在量到了）
+
+- 新增一段 `node scripts/check-ui-runtime.mjs --only=pinkb`（8 条判据）：**真挂 `ChatWindow.vue`**，
+  用 store 自己的 `enqueueMessage` 走生产那条路种一条置顶（不是手写 DOM），然后
+  **真按 Tab** 直到焦点落进那颗「取消置顶」（读 `document.activeElement` 与 tagName=BUTTON）、
+  聚焦后 `opacity` 为 1 且 `pointer-events: auto`、**真按回车**之后那一条真的从置顶条上消失（✕ 数 1 → 0）。
+  最后带一次可逆单点变异：把那颗 ✕ 按回 `display:none`（= 旧那一族的藏法）⇒ 二十五次 Tab 都落不进去，
+  撤掉内联样式又回到布局里 —— 没有这一格，上面那两条 Tab 判据可能是恒真的。
+- ⚠️ 唯一的替身是 transport 边界那一条：`api.pinGroupMessage` 换成"立刻回一份形状正确的 pin 记录"。
+  这不放松任何东西——真投递本来就不在这格的判据里（那是双实例 `--round=group` 的活），
+  而替身之后 `enqueueMessage → foldPinned 折叠 → 置顶条重渲染` 每一步都是生产码。
+  仍未证的只剩真机：键盘在 WKWebView / WebView2 上到不到得到（Smoke-11 那一档）。
+- 同批改口三处，不留悬空指路句：`scripts/verify.mjs` 那一步的自描述与名字登记了 pinkb 段、
+  roadmap N19 那一格把"浏览器内没量过"改成"已补上、只剩真机"、
+  验收报告 §10 的 N19 那一条同样改口（那份报告正文其余部分一字未动）。
+- ★ 本轮在这段探针上又踩了两次自己写过的坑，都写进代码注释：
+  ① **模板字符串里的注释不许有反引号**（我为了"统一"把整段反引号一刀切掉，连定界符也删了 ⇒ 整份文件
+  变成 Node 去 import `/src/api/index.ts`）⇒ 只准删**内容里**的，定界符要留；
+  ② `cdp.eval` 的表达式少一个右括号会让**页面里**抛 SyntaxError，长得像"产品挂了"；
+  ③ headless 动画时钟不推帧这条第二次照面（读到 opacity 0.967863）⇒ 这一段的过渡在读数前冻掉，
+  并把"冻掉了"写进判据（`frozen === 1`），不然它哪天不生效也没人知道。
+- 顺带一条环境事实：这一段第一次跑红在 `Port 5199 is already in use` —— 是本人前面被中止的探针留下的
+  孤儿 vite（`lsof` 现读 ppid=1、命令行是本仓 `vite dev --port 5199 --strictPort`），
+  确认身份后 kill 掉才继续；探针自己"vite 提前退出 1"这条报得对，红的是脚手架不是产品。
+
 ### 量具 / 文档（首轮验收报告补一节追加：N11 / N19 / N22 从"等人拍板"移进"已交付"）
 
 - `docs/acceptance/native-experience-round-1.md` 末尾新增 §10：正文一字未改（含我自己数错的 21→29 与那条假"新增依赖"），

@@ -175,7 +175,10 @@ Motion for Vue / GSAP / @vueuse/motion **一个都没装**（§五 第 2 条"不
   跟着开合），表情入口与置顶那颗 ✕ 从此键盘可达；**TitleBar 那三颗不动应用码** ——
   它们的键盘入口本来就在原生菜单里（⌘W / ⌘M），这一条同时撤回我原先登记的前提。
   顺带补上 designGuards ⑥ 缺的那一半（`role="button"` 无 tabindex 以前静默放行）。
-  ⚠️ 未量：置顶 ✕ 只在结构层与 CSS 家上守住，浏览器内没量过；WKWebView / WebView2 一律 UNVERIFIED。
+  ⚠️ 浏览器内那一半**同日已补上**（`--only=pinkb`，8/8：真挂 ChatWindow、真按 Tab 焦点落得进那颗 ✕、
+  真按回车把那条从置顶条上撤下，外带一次「按回 display:none ⇒ Tab 再也落不进去」的可逆变异；
+  transport 那一条换成替身，替身之后每一步都是生产码，真投递另由 `--round=group` 判）。
+  仍未证的只剩真机：WKWebView / WebView2 一律 UNVERIFIED。
 - **N11（`baebd18`，4.33.42）**：视图层裸写能力探测只剩的那 1 处收进 `utils/platform.ts`（`canHover`），
   新判据 ㉟ 拦住再长出来；并把一处**拿字面量当判据**的旧断言（`reactionRoster.test.ts`）改成钉"走正门"。
   ⚠️ 没做的那一半如实记着：`app.isMobile` 那批三元 class 绑定整族下沉成 CSS 属重写样式层，本轮不动。
