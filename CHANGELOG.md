@@ -13,6 +13,72 @@
 
 ## [Unreleased]
 
+### 稳定性：五项决策落定 + 8 条 `[plan]` 提交已推 + 222 条全量护栏在同一最终提交上重新挣得（2026-10-10）
+
+负责人一次答完五项（预览缓存按累计字节封顶初始 60 MiB / #22 群主改名要修且只更新已存在的会话行 /
+代码消息暂不加列 / Persistence 暂不加只读连接 / 中继暂保留严格拒收但必须给可识别的兼容性失败原因），
+并把稳定性任务逐条点名。**这一节只记账，不动任何应用码。**
+
+- **推送**：8 条 `[plan]` 提交（`c8fe9ee…1cdb42b`）已推上去。推送前逐条核过分支、远端与提交关系：
+  `git branch --show-current`＝`main`、`git remote -v`＝`git@github.com:wenzo001/gosslan.git`、
+  `origin/main` 由 `339fea4` 前进到 `1cdb42b`、`git rev-list --count refs/remotes/origin/main..HEAD`＝**0**。
+- **★ 全量护栏非空转整跑（分母现读，不抄文档）**：命令 `python3 scripts/verify-guards.py`（不带参数＝全量层），
+  跑在最终提交 `1cdb42b`（跑前 `git status --short` 为空、跑后仍为空，树 `6bc148e`）。
+  起跑前那行自己打印的分母：**222 条用例的注入锚点都在各自文件里恰好命中一次，且每条都声明了 fail-hint**；
+  结论行原文：**「✅ 其余 222 条护栏都通过了非空转验证（改坏即 FAIL、恢复即 PASS）」**；
+  **裸退码 `RC=0`**（在 `python3 …` 之后同一 shell 里 `$?` 裸取，不经过任何管道）；
+  失败详情：**无**（整份日志里 `❌` 计数 0，日志 129,722 B 落 `/tmp/guards222.log`）。
+  耗时 ≈58 分钟：起跑 07:41:53Z → 日志最后一写 08:39:44Z
+  （复跑读数 `stat -f '%Sm' -t '%Y-%m-%dT%TZ' /tmp/guards222.log`；那两个时刻来自同一台机器同一个进程，
+  不是"起跑时刻"配"我读到它的时刻"）。
+  ⚠️ 那句后台通知报的 "exit code 0" 属于**启动器**，不属于这一轮 —— 判这轮只认上面那个裸取到的 `RC`。
+- **发布清单那一格按现读重核**（候选 SHA＝`1cdb42b`，与 `origin/main` 同点）：
+  五处版本号逐处现读全为 **4.33.42**；`npm run version:check` 裸退码 **0**
+  （它自己打印"自 `baebd18` 共 17 个提交（真欠的档位 无 —— 范围内全是零影响提交）"），
+  `npm run version:classify` 裸退码 **0** ⇒ **任务第 6 条（纯计划提交不升版本号）由这两条命令现证，不靠口头**。
+  远端 CI 匿名端点现读：`x-ratelimit-remaining: 3`（**所以这不是"限额耗尽返回空名单"那副形状**）、
+  `total_count=12` ⇒ 9 条 `completed/success` + 3 条 `skipped`（那三条是"挂到 GitHub Release"，非 tag 事件本就不跑）；
+  此前一直抖的 `build-windows (aarch64-pc-windows-msvc, arm64)` 这一趟是 success。
+- **不做的三件按点名执行**：**没打新 tag**（本地与远端最高仍 `v4.33.31`，现读 `git tag --sort=-v:refname` /
+  `git ls-remote --tags origin`）、**没重出安装包**（盘上那份现读是 `Gosslan_4.31.27_aarch64.dmg`、
+  `Info.plist` 同为 4.31.27 ⇒ 比代码旧 15 个版本号，这是**已知且刻意不动**的状态，不是新发现的缺陷）、
+  **没动签名决策**（`security find-identity -v -p codesigning` 现读 **0 valid identities** ⇒ 这些包仍不是可分发件）。
+- **`GroupTasksBoard.vue:71-72` 那句过期注释本轮一字未改**（按点名），并把"未来改它之前先重核判据 3"落成两条现读：
+  当前推送窗口 `refs/remotes/origin/main..HEAD` 空 ⇒ Change Budget 自己打印**「零覆盖：跑了，但没有任何 commit 可判
+  （退出码 2 ≠ 通过 0）」**、判据 3 那行是「本次窗口 0 个 ⇒ 无可判定的重复」；
+  而 CI 真正判过的那一段（`GOSSLAN_BUDGET_STRICT=1 GITHUB_EVENT_NAME=push … --range 339fea4..1cdb42b`）
+  逐条打印 **8 条全为豁免或 L2 ✓**、无一条红 ⇒ **main 上今天没有挂着的 Change Budget 红灯**。
+  ⚠️ 读数口径写死在这里：**"窗口空"不是"判据过了"**，两者不能互换。
+
+### 需求登记：聊天强提醒 —— 第 0 阶段只做审计与设计（新增 `docs/strong-reminder-plan.md`，**零实现代码**）
+
+负责人新增一条完整需求（高于普通通知优先级的"强提醒"：发起 → 送达 → 提醒 → 显式确认 → 失败六态，
+参考飞书触达 / 钉钉重要提醒 / QQ 即时交互），并明写**第 0 阶段只审计和设计、暂不写代码**、
+且**不与上面那 8 个 `[plan]` 提交混提**。这一节就是那条登记的落地点。
+
+- 新增 `docs/strong-reminder-plan.md`，README 的 AI 约束入口表与 `docs/AI_ENGINEERING_INDEX.md` 各挂一行
+  （断链＝约束失效，这条本仓定过规矩）。文档内容按点名交付：**架构图 / 最小变更方案 / 兼容策略 / 风险清单 /
+  测试矩阵**，另加一张**六态 ↔ 唯一写入点**表（把"传输 Ack ≠ 用户确认 ≠ 事情已完成"写成可判的归属）。
+- ⚠️ 取证方式：护栏整跑正在注入并还原源文件，所以这份审计**全程不读工作树**，
+  一切现状句子取自 `git show 1cdb42b:<path>` 并逐条挂复跑命令。
+- 三条会改变设计形状的现读事实（都是"已经存在"或"确实不存在"，不是推测）：
+  ① **「紧急程度」这件事已经有一个家** —— `src/utils/notifyUrgency.ts`（34 行，注释原话「刻意不收第三个」）
+  是判"这批通知值不值得让 Dock 弹跳/任务栏闪烁"的唯一判定点 ⇒ 强提醒应当成为它**第三个被点名允许的来源**，
+  而不是新写一套打断规则；
+  ② **引用一条消息、带自己状态的小控制消息已有三个现成家**（`reaction` / `pin` 是静默消息 + 前端折叠，
+  `recall` 另有一张权威 G-Set 表），三者都走**与普通群消息完全相同**的 outbox + gossip 可靠管道 ⇒
+  "复用现有消息 ID / Outbox / Ack / 去重 / 加密"这条路是**存在**的，最小变更方案据此立成"2 个 kind、不加表不迁移"；
+  ③ ★ **验收项「多设备确认状态能够正确合并」落在一条结构性缺口上**：全仓身份是 `device_id`
+  （`group_members(group_id, device_id)`、Ack/ReadReceipt 都判 `to != state.device_id`），
+  而 `userId` / `same_user` **零命中**、代码里唯一出现"多设备"字样的地方是日志前缀（`logging.rs:167`）
+  ⇒ **没有任何"同一个人的多台设备"之间的状态同步机制**。这条我没有自行决定，已写成待拍板项。
+- 另外两处"确实不满足"也照实登记：**声音**全仓零实现（`notify-rust` 的 `.sound()` 从未被调用、
+  无 `new Audio`/`rodio`，设置键只有 `notify_enabled` 与 `notify_show_content`）；
+  **通知点击只带 `conv_id`**（而带翻页的消息级定位链 `locateMessageInConv → locateMessage` 早就通），
+  且**点击回调只在 Windows 实现**，macOS/Linux 把 `on_click` 丢掉 ⇒ 那半是缺口不是能力。
+- 未结论的两格明写在文档里：**未知 kind 的降级形状**要跨实例实测（自制帧投给按旧词表解析的对端、
+  读它自己的日志与 DB），**多设备口径**待负责人拍板 ⇒ 第 1 阶段之前先把这两格填掉。
+
 ### 探针 / 判据（#23 收口：输入框那两张「往上长」的面板第一次被真布局量到，20 条两台引擎各 212/212）
 
 C 批第 4 件「要不要补真布局 harness」我按现读确认它是**真缺口**之后做掉了（工单 #23）。

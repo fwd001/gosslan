@@ -37,6 +37,7 @@
 | **★ 按需** | [docs/templates/ADR.md](docs/templates/ADR.md) | 新增架构决策记录模板 |
 | **★ 按需** | [docs/aoci-usage.md](docs/aoci-usage.md) | **AOCI 仓库认知层使用手册**：哪些文件入库、换机器怎么接宿主、谁在什么时候必须调它、9 个 MCP 工具与 CLI 只读命令速查、一条 Entry 的格式与 `S` 的两层配额、收尾三件套（verify→check→guide）、**§8 重新索引该走哪条路**（日常补条目 / 刷新基线 / 推倒重来的代价与回退性，外加本仓实测会被拒的六条命令与报错原话）。文中的配额上限与实况数字**都挂着现算命令**，别抄数字 |
 | **★ 按需** | [docs/large-file-split-plan.md](docs/large-file-split-plan.md) | **大文件拆分计划（>3000 行）**：现算出真正超阈值的 6 个文件、transport.rs 的 15 节构成、**26/202 条护栏锚点指着它**这一静默风险、行为不变的恒等判据与下刀顺序。动大文件前先读它 |
+| **★★ 参考** | [docs/strong-reminder-plan.md](docs/strong-reminder-plan.md) | **聊天强提醒：需求登记 + 第 0 阶段设计（尚未实现，别读成已交付）**：六态与各自唯一写入点（传输 Ack ≠ 用户确认 ≠ 事情已完成）、可复用的三个现成"引用一条消息带自己状态"的家（reaction / pin / recall）、最小变更方案（2 个 kind，不加表不迁移）与它的真实登记面、兼容策略（`DM_LEGACY_KINDS` 冻结 + 1:1 门控方向）、风险清单、每平台「自动化 / 真机 / 未验证」三档矩阵。★ 里面有一条**结构性缺口**（全仓以 `device_id` 为身份 ⇒ 没有"同一人多台设备"的状态同步机制）和一条**必做实测**（未知 kind 的降级形状），两者都还没结论 |
 
 **阅读顺序**：`AI_RULES.md`（约束）→ `docs/acceptance/1.0-release.md`（目标与验收）→ `AI_PROJECT_HANDOFF.md`（项目全貌）→ 涉及网络/协议时读 `docs/protocol-invariants.md` 与相关 ADR → 代码。
 
