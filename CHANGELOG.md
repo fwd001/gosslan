@@ -35,8 +35,12 @@
   `node --check` 仍退 **0**（这把新尺子要挡的就是它），`node scripts/verify.mjs --list` 退 **1**
   并点名 `scripts/verify.mjs:543`；恢复档 ⇒ `--list` 退 0、扫描零命中。
 - 回归（都现跑、裸取退码）：`npm run verify` 快速层 17 步退 **0**（新扫描在链上跑过）；
-  `node scripts/check-doc-numbers.mjs` 退 0。⚠️ **本地层整跑仍欠**：这一格修完之后要照 `npm run verify:e2e`
-  重新拿一次结论，本条提交不给本地层背书。
+  `node scripts/check-doc-numbers.mjs` 退 0。
+  ✅ **本地层整跑随后已挣得**（同日晚些，`npm run verify:e2e` 裸退码 **0**，结论行原样
+  「✅ --group local 那一组通过（21 步，共 876.3s）」、日志里 `❌` 计数 0）—— 这一跑本身就是那条缺陷的
+  收尾证据：修之前它连加载都过不去。⚠️ 那个秒数只当本机当场读数（这一层的用时随负载大幅漂，
+  记录上有过 872 / 1527 / 2349 s 几档，各自属于自己那次跑）；步数以
+  `node scripts/verify.mjs --group local --list` 现算为准，别抄这一行。
 - 顺带一条会漂的口径：`why` 那些散文**没有机器守卫**（这条扫描只判拼接形状，不判内容），
   加/减判据、换夹具形状都要同批改口 —— 今天这条缺陷正是这么藏了一整天。
 
