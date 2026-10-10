@@ -413,3 +413,132 @@
              （关系同步 ≠ 聊天同步；conversation 只能由聊天活动驱动）。"
         );
     }
+
+    /// 强提醒第 2 阶段①：群 remind 帧**必须搭群消息内核**（⇒ 离线恢复），
+    /// 且受众在出帧前按现读成员校验过 —— 空受众 / 目标消息不存在的帧不许出。
+    ///
+    /// 为什么这条只能钉接线：离线恢复没有任何"缺了就红"的纯函数测试 ——
+    /// `send_group_payload` 内核把「messages 落库 + 每成员 group_outbox 行」放在
+    /// 同一事务里，建链/Hello/心跳时 `flush_group_outbox` 补发、收到 GroupAck 删行。
+    /// `send_group_remind` 只要绕过内核（比如自己 broadcast_gossip），
+    /// 离线成员就永远收不到且没有任何测试会红。受众那两半同理：
+    /// `partition_remind_actors` 的劈分自身有单测（protocol_tests），
+    /// 但"出帧前调它 / good 为空必须拒"是这里独有的接线判据。
+    #[test]
+    fn group_remind_rides_delivery_kernel_with_validated_audience() {
+        // 群 remind 复用已注册的 send_group_message（kind 臂），不新增命令：
+        // 与 1:1 send_message 同形，也过「注册命令必须有门面调用」那条零容忍门禁。
+        let cmds = all_commands_src();
+        let body = code_flat(&rust_fn_body(cmds, "pub async fn send_group_message("));
+        let partition = body
+            .find("crate::protocol::partition_remind_actors(&p.actors,&known)")
+            .expect("出帧前必须按现读成员快照劈分受众（已离群者不许进 actors）");
+        let kernel = body
+            .find("send_group_payload(s,&group_id,\"remind\",content,None)")
+            .expect(
+                "群 remind 必须走 send_group_payload：那是离线恢复的唯一来源\
+                 （同事务写 group_outbox，GroupAck 才删行）；绕过它 = 离线成员永远收不到",
+            );
+        assert!(
+            partition < kernel,
+            "受众劈分必须在出帧之前：先入队再校验会给已离群的人留下投递行"
+        );
+        assert!(
+            body.contains("ifgood.is_empty()"),
+            "没有有效受众时必须拒发，不许静默出一条没人该提醒的帧"
+        );
+        assert!(
+            body.contains("db::get_message_record(&dbc,&p.target)")
+                && body.contains("m.conv_id==format!(\"group:{group_id}\")"),
+            "被提醒的原消息必须是本群时间线上真实存在的一行（防凭空/跨群提醒）"
+        );
+        assert!(
+            body.contains("group.members.iter().any(|m|m==&s.device_id)"),
+            "发送者必须仍在群中：成员身份在出帧前现读校验"
+        );
+    }
+
+    /// 强提醒第 2 阶段②：用户层证据（`remind_ack`）与传输层证据（`GroupAck`）
+    /// 必须严格分层。
+    ///
+    /// 传输层 GroupAck 臂（handle_group.rs）只删 group_outbox 行、emit
+    /// group-message-acked —— 它不允许出现任何 remind 语义；用户「我知道了」
+    /// 只能由 send_group_message 的 remind_ack 臂出 kind="remind_ack" 帧承载，
+    /// 且该帧必须先过 parse（stage 白名单）、现读成员身份、target 确实是
+    /// 本群一行 kind=="remind" 的记录。少任何一格都是"把传输成功当用户确认"
+    /// （需求明写的禁令 / S3·S4 的分界）。
+    #[test]
+    fn group_remind_ack_is_user_layer_separate_from_transport_group_ack() {
+        let cmds = all_commands_src();
+        let body = code_flat(&rust_fn_body(cmds, "pub async fn send_group_message("));
+        // stage 校验由 parse_remind_ack_payload 承载（alerted/confirmed 白名单，
+        // 纯函数侧有单测）；接线层必须真的调它。
+        let ack_parse = body
+            .find("crate::protocol::parse_remind_ack_payload(&content)")
+            .expect(
+                "remind_ack 出帧前必须 parse：stage 只允许 alerted（接收端已触发提醒处理）\
+                 / confirmed（用户点了我知道了）",
+            );
+        assert!(
+            body.contains("if!group.members.iter().any(|m|m==&s.device_id)"),
+            "出回执前必须现读成员身份：已离群者不能确认（R6）"
+        );
+        assert!(
+            body.contains("m.conv_id==format!(\"group:{group_id}\")&&m.kind==\"remind\""),
+            "回执必须指向本群一行真实的 remind 帧，防止凭空确认"
+        );
+        let kernel = body
+            .find("send_group_payload(s,&group_id,\"remind_ack\",content,None)")
+            .expect("remind_ack 也必须走群内核（可靠投递 + 离线补发）");
+        // 校验必须在出帧之前
+        assert!(ack_parse < kernel, "必须先验回执再出帧");
+
+        // 传输层 GroupAck 臂：只清 outbox，不碰 remind 状态。
+        let group = code_flat(include_str!("network/transport/handle_group.rs"));
+        assert!(
+            group.contains("Message::GroupAck{group_id,msg_id,from,}")
+                && group.contains("db::delete_group_outbox(&dbc,&msg_id,&from)")
+                && group.contains("\"group-message-acked\""),
+            "GroupAck 臂的既有形状（删 outbox + emit acked）找不到了"
+        );
+        assert!(
+            !group.contains("remind"),
+            "传输层 GroupAck 臂出现 remind 语义 ⇒ 把传输成功当作用户确认（S2 与 S4 被合并）"
+        );
+    }
+
+    /// 强提醒第 2 阶段③：受众必须跟着群成员变化走（R6）。
+    ///
+    /// 现读的三处家，缺一处 R6 就开着：
+    /// 1. 别人被移 / 主动退群：本地先 `delete_group_outbox_for_peer_in_group`
+    ///    再 `remove_group_member` ⇒ 提醒**发出前**就排队的待补发行不会继续投给离群者；
+    /// 2. 我本人被移出：删 group + 删 gk ⇒ 迟到的旧帧解不开（内核取不到 key），
+    ///    出回执也会被"群不存在"挡下；
+    /// 3. 回执出口的成员现读（见上一条）。
+    #[test]
+    fn remind_audience_follows_group_membership_removal() {
+        let transport = code_flat(&crate::network::transport_src_for_guards());
+        // 移人：先删该 peer 的待发群消息，再改成员表。
+        let outbox_del = transport
+            .find("db::delete_group_outbox_for_peer_in_group(&dbc,&group_id,&to)")
+            .expect("移人处理必须清掉指向离群者的待补发 group_outbox（含在途的 remind 帧）");
+        let member_del = transport
+            .find("db::remove_group_member(&dbc,&group_id,&to)")
+            .expect("成员表删除点");
+        assert!(
+            outbox_del < member_del,
+            "必须先删 outbox 再改成员表，否则竞态里那一帧仍会被投出去"
+        );
+        // 主动退群：同一条规则。
+        assert!(
+            transport.contains("db::delete_group_outbox_for_peer_in_group(&dbc,&group_id,&from)")
+                && transport.contains("db::remove_group_member(&dbc,&group_id,&from)"),
+            "退群路径也必须停投待补发消息"
+        );
+        // 我本人被移出：群与群密钥都要清 —— 迟到帧不可解密 ⇒ 不会被提醒也不能确认。
+        assert!(
+            transport.contains("db::delete_group(&dbc,&group_id)")
+                && transport.contains("DELETEFROMsettingsWHEREkey=?1"),
+            "自我移除必须同时删 group 行与 gk 设置（缺密钥，迟到的 remind 帧才打不开）"
+        );
+    }

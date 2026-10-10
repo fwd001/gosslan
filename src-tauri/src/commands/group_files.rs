@@ -35,6 +35,72 @@ pub async fn send_group_message(
             crate::protocol::parse_merge_payload(&content)?;
             "merge"
         }
+        // 群强提醒发起（第 2 阶段）：**只提醒 actors 点名的成员，绝不默认全群**。
+        // 「仅提醒指定成员」是载荷层语义：群帧共享群密钥 + gossip 广播，
+        // 物理上人人收到同一帧，只有 actors 设备允许触发提醒与回执。
+        // 出帧前的受众校验是承重件：目标消息必须是本群真实一行，actors
+        // 按现读成员劈分，没有有效受众一律拒发。复用 send_group_message
+        // 而不是新增命令（与 1:1 send_message 同形），校验后直接走内核返回。
+        "remind" => {
+            let p = crate::protocol::parse_remind_payload(&content)?;
+            let s = state.inner();
+            let members = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                let group = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
+                let exists = db::get_message_record(&dbc, &p.target)
+                    .map(|m| m.conv_id == format!("group:{group_id}"))
+                    .unwrap_or(false);
+                if !exists {
+                    return Err("要提醒的消息不存在".to_string());
+                }
+                if !group.members.iter().any(|m| m == &s.device_id) {
+                    return Err("你已不在该群中".to_string());
+                }
+                group.members
+            };
+            let known: std::collections::HashSet<String> =
+                members.iter().cloned().collect();
+            let (good_refs, _bad) = crate::protocol::partition_remind_actors(&p.actors, &known);
+            let good: Vec<String> = good_refs.iter().map(|a| (*a).to_string()).collect();
+            if good.is_empty() {
+                return Err(if p.actors.is_empty() {
+                    "请先选择提醒对象".to_string()
+                } else {
+                    "提醒对象都已不在群中".to_string()
+                });
+            }
+            let out = crate::protocol::RemindPayload {
+                target: p.target,
+                actors: good,
+            };
+            let content = serde_json::to_string(&out).map_err(|e| e.to_string())?;
+            return send_group_payload(s, &group_id, "remind", content, None).await;
+        }
+        // 群强提醒回执（第 2 阶段）：stage 已在 parse 里校验
+        // （alerted＝接收端已触发提醒处理；confirmed＝用户点「我知道了」）。
+        // 出帧前现读成员身份，并要求 target 是本群一行真实的 remind。
+        // 传输层 GroupAck 不是确认 —— 那只删 outbox 行（见
+        // handle_group.rs 的 GroupAck 臂）。
+        "remind_ack" => {
+            crate::protocol::parse_remind_ack_payload(&content)?;
+            let s = state.inner();
+            {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                let group = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
+                if !group.members.iter().any(|m| m == &s.device_id) {
+                    return Err("你已不在该群中".to_string());
+                }
+                // content 里 target 的真实性现读后才出帧。
+                let target = crate::protocol::parse_remind_ack_payload(&content)?.target;
+                let valid = db::get_message_record(&dbc, &target)
+                    .map(|m| m.conv_id == format!("group:{group_id}") && m.kind == "remind")
+                    .unwrap_or(false);
+                if !valid {
+                    return Err("对应的强提醒不存在".to_string());
+                }
+            }
+            return send_group_payload(s, &group_id, "remind_ack", content, None).await;
+        }
         _ => return Err("群聊不支持该消息类型".to_string()),
     };
     let content = check_message_content(content)?;
