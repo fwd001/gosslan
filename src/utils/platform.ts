@@ -84,3 +84,28 @@ export const isIOS =
 export function resolveMobileLayout(o: { android: boolean; ios: boolean; narrow: boolean }): boolean {
   return o.android || o.ios || o.narrow;
 }
+
+/**
+ * 输入能力：这台设备**有没有真指针悬停**（纯函数，便于单测）。
+ *
+ * 用途：只在真有 hover 的设备上走 mouseenter —— 触屏上 mouseenter 是"点完才来"的假事件，
+ * 拿它弹名单会在手指抬起之后又糊出一层浮层。
+ *
+ * 它与 isMac / isIOS 同一层，但**判据不同**：那几个看平台（UA），这个看输入方式，
+ * 所以必须走媒体查询而不是 UA —— 窄窗口的桌面仍是 hover 设备，宽屏的手机不是。
+ *
+ * ⚠️ roadmap N11 的口径：新写的先问 CSS 能不能表达（`@media (hover: none)` /
+ * `env(safe-area-inset-*)` / `prefers-*`）；**只有 JS 逻辑必须知道这件事**时才引这里，
+ * 组件里裸写 `matchMedia(` 或 UA 由 designGuards ㉟ 拦（那道尺子的作用点就是本函数取代的那一处）。
+ */
+export function canHoverByMedia(
+  mm: (query: string) => { matches: boolean },
+): boolean {
+  return mm("(hover: hover)").matches;
+}
+
+/** 运行时输入能力。没有 matchMedia 的环境（Node 单测）按"无 hover"处理，与 isMac 同一套守卫口径。 */
+export const canHover =
+  typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? canHoverByMedia((q) => window.matchMedia(q))
+    : false;

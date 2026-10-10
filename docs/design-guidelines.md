@@ -335,6 +335,7 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 - [ ] **每个 `<img>` 都有 `alt`**：装饰性写 `alt=""`，内容图写真描述（§10.2）
 - [ ] **没有把操作藏在 hover 后面**：触屏与键盘是两个独立缺口 —— 凡用 `group-hover:*` / `opacity-0` 揭示的元素都加了 `.hover-reveal` / `.hover-reveal-op`（触屏常显），而**新的**"悬停才现的操作"应走 `.kb-reveal`（常驻布局 + 聚焦显形，别用 `hidden` 把可聚焦性一起删掉）（§10.3）
 - [ ] 新增毛玻璃（`backdrop-filter`）时确认在 `prefers-reduced-transparency` 下有回退（§10.1）
+- [ ] **新写的平台/输入能力判定没落在视图层**：纯样式差异用 CSS 媒体查询，UA 与"能不能悬停"引 `utils/platform.ts`，移动布局用 `useAppStore.isMobile`（§10.3.1，㉟ 守着）
 - [ ] 错误提示走 `app.toastError(e, "…")`，没有自己拼 `：${e}`（§9.5）
 
 ---
@@ -633,6 +634,24 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 配套：触屏上小于 44px 的独立小按钮加 `tap-safe`（见 §2.3）。注意该规则 2026-09-10 之前
 **定义了但全库 0 处引用**，属"护栏写了没人用"的典型，code review 时一并核对。
 
+### 10.3.1 平台与输入方式只有一个家（roadmap N11）
+
+本仓的原生体验做法是**通用层 + 各端薄壳**，所以"这台是什么 / 能不能悬停"这类判断**不许在视图层各算一遍**
+——散写的 `isMac` / UA 分支会一处一处长成没法维护的分支网（约束里明写的那条）。三个家，按顺序问：
+
+1. **纯样式差异 ⇒ 让 CSS 自己表达**：`@media (hover: none)`、`@media (pointer: coarse)`、
+   `env(safe-area-inset-*)`、`prefers-reduced-motion` / `reduced-transparency` / `contrast`。
+   这一族已经在 `style.css` 里，**不要往组件里搬**。
+2. **平台与输入能力（UA、有没有真悬停）⇒ `utils/platform.ts`**：每个判定都是"纯函数 + 运行时常量"成对
+   （`isMacUA`/`isMac`、`isIOSUA`/`isIOS`、`isAndroidUA`/`isAndroid`、`canHoverByMedia`/`canHover`），
+   纯函数那一半是为了能在 Node 里单测。判悬停必须走媒体查询**而不是 UA**：窄窗口的桌面仍是 hover 设备，
+   宽屏的手机不是。
+3. **布局模式（要不要走移动那一套）⇒ `useAppStore` 的 `isMobile`**：那份是"平台优先、宽度兜底"，
+   顺序是 Android 首启事故换来的（见 `platform.ts` 的 `resolveMobileLayout` 注释），别在组件里另算一份宽度。
+
+由 `designGuards` ㉟ 守着：视图层出现 `matchMedia(`、`navigator.userAgent|platform|appVersion|maxTouchPoints`、
+`@tauri-apps/plugin-os` 即报（注释里的提及不算；`navigator.clipboard` 这类**不是平台判定**的 API 不在名单里）。
+
 ### 10.4 外观三态：跟随系统是默认
 
 - 用户意图存 `settings.appearance_mode`（`system` | `light` | `dark`），
@@ -666,7 +685,7 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 | 反馈即时：按下同帧变色（§2.3 两条铁律） | 换 UI 框架 / 引第二套动画系统 |
 | 滚动与列表不抖、不闪、不空（§11.2） | 复刻 iOS 外观（胶囊按钮、大圆角、玻璃拟态铺满） |
 | 触摸、鼠标、键盘三条输入路径都能走完（§2.4、§10.2、§10.3） | 为"原生感"加没有信息量的动效、粒子、视差 |
-| 平台习惯走系统开关（§10.1、§10.4），不要求用户改 App 设置 | 为视觉效果碰协议 / 加密 / DB / IPC / 消息状态机 |
+| 平台习惯走系统开关（§10.1、§10.4），且这类判定只有一个家（§10.3.1），不要求用户改 App 设置 | 为视觉效果碰协议 / 加密 / DB / IPC / 消息状态机 |
 | 长会话在低端设备仍可用（`perf/README.md`） | 宣称没跑过的平台已通过（一律记 UNVERIFIED） |
 
 ### 11.2 列表与滚动：**虚拟化的输入必须现读，不许只在挂载时读一次**

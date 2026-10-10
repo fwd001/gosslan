@@ -13,6 +13,36 @@
 
 ## [Unreleased]
 
+## [4.33.42] - 2026-10-10
+
+### 原生体验 / 应用代码（N11：平台与输入能力的判定收进唯一一个家，并加一条"视图层不许自己算"的判据）
+
+- 逐类读完 `src/components` 里那批 `isMac|isIOS|isAndroid|isWindows|isMobile` 命中后归的家（**这条结论不是靠 grep 数量猜的**）：
+  绝大多数走的是两个**既有正门** —— `app.isMobile`（useAppStore 那份"平台优先、宽度兜底"，Android 首启事故换来的顺序）
+  与 `utils/platform.ts`；组件里**裸写**能力探测的只剩 1 处：`MessageReactionBar.vue` 自己调
+  `window.matchMedia("(hover: hover)")`。而 CSS 该表达的那一族本来就在 CSS 里
+  （`@media (hover: none)` / `(pointer: coarse)` / `prefers-*` / `env(safe-area-inset-*)`）。
+- ① 那一处收进 common layer：`utils/platform.ts` 新增 `canHoverByMedia(mm)`（纯函数，可单测）与运行时 `canHover`
+  （无 matchMedia 的环境按"无 hover"，与 isMac 同一套守卫口径）。判据走**媒体查询**而不是 UA：
+  窄窗口的桌面仍是 hover 设备，宽屏的手机不是。
+- ② 新判据 **designGuards ㉟** `findRawPlatformCheckInViewLayer`：视图层出现 `matchMedia(`、`navigator.userAgent`、
+  `navigator.platform`、`navigator.appVersion`、`navigator.maxTouchPoints`、`@tauri-apps/plugin-os` 任一即报。
+  三类注释（HTML / 块 / 行）各逐字符遮成空格后再扫 ⇒ "注释里提到这个 API"不再被当成作用点（㉝㉜ 同一课，行号不漂）。
+  `navigator.clipboard` / `navigator.share` **不在名单**里：它们不是平台判定，扫它们就是造假红。逃生阀 `platform-check-ok`。
+  真实树分母由用例自己打印（2026-10-10 现数：视图层 **80 份 .vue / 43 份走 common layer / 裸写 0 处**），
+  变异对照把旧写法塞回组件当场报一条，反面三例（clipboard、行注释、逃生阀）都不报。
+- ③ 顺带修掉一处**拿字面量当判据**的旧断言：`reactionRoster.test.ts` 原本钉的是组件源码里那串
+  `window.matchMedia("(hover: hover)")` —— 那是"存在性断言"当守卫的半个守卫：**搬家搬得对它反而红**。
+  现在钉的是"从 common layer 引 canHover"，而"不许自己算"那一半交给 ㉟（它有分母与变异对照）。
+- 口径写进 `docs/design-guidelines.md` **§10.3.1「平台与输入方式只有一个家」**与 `platform.ts` 注释：新写的**先问 CSS 能不能表达**，
+  只有 JS 逻辑必须知道这件事时才走 `utils/platform.ts`；布局模式一律 `useAppStore.isMobile`。
+- ⚠️ 没做的那一半（如实记着，不是遗漏）：走正门的组件里仍有若干 `app.isMobile` 的三元 class 绑定
+  （例如 `pb-[calc(4rem+env(safe-area-inset-bottom))]`）理论上可整族下沉成 CSS 变量 + 媒体查询，
+  但那属于重写样式层、与"不进行大规模架构重构"冲突，且**没有一条测量**说明现在这样在真端上更贵 ⇒ 本轮不动。
+- 门禁（2026-10-10 现跑）：`npm test` **884 例 0 失败**；UI 运行时探针 `--only=roster,reaction` **59/59**
+  （这一处改动影响 hover 弹名单那条通道，所以跑的是那两段，而不是只跑新写的那一段）；
+  `npm run verify` 唯一红仍是 Change Budget 判据 3（本轮开工前就红着，无自动出口）。
+
 ## [4.33.41] - 2026-10-10
 
 ### 原生体验 / 应用代码（N19：悬停才现出来的操作，键盘必须走得通）

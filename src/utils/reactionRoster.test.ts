@@ -81,7 +81,13 @@ const bar = () =>
 test("揭示方式两端都有出口：hover 只在有指针的设备启用", () => {
   const src = bar();
   assert.match(src, /@mouseenter="canHover && reveal\(c\.emoji, \$event\.currentTarget\)"/, "悬停要有 canHover 守卫");
-  assert.match(src, /window\.matchMedia\("\(hover: hover\)"\)/, "守卫的判据是设备能力，不是窗口宽度");
+  // 守卫的判据是**设备能力**而不是窗口宽度 —— 但这条能力自 2026-10-10 起有唯一一个家：
+  // utils/platform.ts 的 canHover（roadmap N11；组件里裸写 matchMedia 由 designGuards ㉟ 拦）。
+  // ⚠️ 这里原先钉的是组件源码里那串 `window.matchMedia("(hover: hover)")` **字面量** ——
+  // 那是"存在性断言"当判据的半个守卫：搬家搬得对，它反而红。现在钉的是"走的是正门"，
+  // 而"不许自己算"那一半交给 ㉟（它有真实树分母与变异对照）。
+  assert.match(src, /import \{ canHover \} from "@\/utils\/platform"/, "hover 能力要从 common layer 引");
+  assert.doesNotMatch(src, /matchMedia\s*\(/, "组件里不许再自己算 hover 能力（㉟ 同一条口径）");
   // 键盘必须走得到同一条路（只给 mouse 的浮层对键盘用户等于没有）
   assert.match(src, /@focus="canHover && reveal\(c\.emoji, \$event\.currentTarget\)"/);
   assert.match(src, /@keydown\.esc="hide\(c\.emoji\)"/, "开着要有关闭出口");

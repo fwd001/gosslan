@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isAndroidUA, isMacUA, resolveMobileLayout } from "./platform.ts";
+import { canHoverByMedia, isAndroidUA, isMacUA, resolveMobileLayout } from "./platform.ts";
 
 test("isMacUA：桌面 macOS UA 判为 Mac", () => {
   const uas = [
@@ -81,4 +81,17 @@ test("resolveMobileLayout：桌面端按宽度切（窄窗口用移动布局，�
     false,
     "桌面宽窗口要保留三栏布局",
   );
+});
+
+test("canHoverByMedia：问的是 (hover: hover) 这条媒体查询本身", () => {
+  const asked: string[] = [];
+  assert.equal(
+    canHoverByMedia((q) => {
+      asked.push(q);
+      return { matches: true };
+    }),
+    true,
+  );
+  assert.deepEqual(asked, ["(hover: hover)"], "只该问这一条，不能顺手去判宽度");
+  assert.equal(canHoverByMedia(() => ({ matches: false })), false, "触屏/无悬停设备判 false");
 });

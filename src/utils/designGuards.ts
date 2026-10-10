@@ -1712,3 +1712,66 @@ export function countClassAttrs(raw: string): number {
   for (let m = CLASS_ATTR_RE.exec(src); m; m = CLASS_ATTR_RE.exec(src)) n += 1;
   return n;
 }
+
+/**
+ * ㉟ 视图层（组件）里不许**裸写**平台或输入方式探测 —— 这些判定只有一个家（roadmap N11）。
+ *
+ * 为什么这条值得由机器盯：本仓的原生体验口径是"通用层 + 各端薄壳"，散写的 `isMac` / UA
+ * 判断会一处一处地长成分支网（约束里明写"不要通过大量 isMac、isIOS 条件堆积难以维护的分支"）。
+ * 而"该走 common layer"这句话过去只写在注释与 roadmap 里，读代码看不出来谁越了界。
+ *
+ * 三个家（这条只管"视图层不许自己算"，不管"算得对不对"）：
+ *   —— 纯样式差异 ⇒ **CSS 自己表达**：`@media (hover: none)` / `env(safe-area-inset-*)` / `prefers-*`
+ *      （2026-10-10 现数 `src/style.css`：hover 1 处、pointer:coarse 4 处、reduced-motion /
+ *      reduced-transparency / contrast 各 1 处 —— 这一族本来就在 CSS 里，不许往组件里搬）；
+ *   —— 平台与输入能力（UA、有没有真 hover）⇒ `utils/platform.ts`；
+ *   —— 布局模式（要不要走移动那一套）⇒ `useAppStore` 的 `isMobile`
+ *      （那份是"平台优先、宽度兜底"，Android 首启事故换来的顺序，见 platform.ts:resolveMobileLayout）。
+ *
+ * 判的是**形状**：视图层里出现下列任一即报 ——
+ *   `matchMedia(` / `navigator.userAgent` / `navigator.platform` / `navigator.appVersion` /
+ *   `navigator.maxTouchPoints` / `@tauri-apps/plugin-os`。
+ * `navigator.clipboard`、`navigator.share` 这类**不是平台判定**的 API 不在名单里（扫它们就是造假红）。
+ * 作用点（不是预防性的）：本仓真实只有 1 处裸写 —— `MessageReactionBar` 里的
+ * `window.matchMedia("(hover: hover)")`，本轮把它收进 `platform.ts` 的 `canHover`（同一处
+ * 顺带是 `reactionRoster.test.ts` 那条**字面量**存在断言的家，已同步改成引 common layer）。
+ * 逃生阀：文件里写 `platform-check-ok`（例：某份组件确实要在渲染前自己问一次设备能力）。
+ */
+const RAW_PLATFORM_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bmatchMedia\s*\(/, "window.matchMedia("],
+  [/\bnavigator\.userAgent\b/, "navigator.userAgent"],
+  [/\bnavigator\.platform\b/, "navigator.platform"],
+  [/\bnavigator\.appVersion\b/, "navigator.appVersion"],
+  [/\bnavigator\.maxTouchPoints\b/, "navigator.maxTouchPoints"],
+  [/@tauri-apps\/plugin-os/, "@tauri-apps/plugin-os"],
+];
+
+export function findRawPlatformCheckInViewLayer(raw: string): GuardIssue[] {
+  if (raw.includes("platform-check-ok")) return [];
+  // 注释里的不算（同 ㉝/㉜ 那条教训：prose 里提到 API 名字不能被当成"这里在用"）。
+  const src = raw
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    // 行注释也遮掉：这一族最容易在"解释为什么不走这条路"时被提到
+    .replace(/^[ \t]*\/\/.*$/gm, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  for (const [re, name] of RAW_PLATFORM_PATTERNS) {
+    for (const m of src.matchAll(new RegExp(re.source, "g"))) {
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message:
+          `视图层里裸写了 ${name} —— 平台与输入方式只有一个家：` +
+          `纯样式差异走 CSS（@media (hover: none) / env(safe-area-inset-*) / prefers-*），` +
+          `UA 与"有没有真 hover"走 utils/platform.ts，移动布局模式走 useAppStore 的 isMobile（roadmap N11）。`,
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/** 这条尺子在一份组件里看得见多少个"走正门"的引用（真实树那半用它证明正门确实在被用）。 */
+export function countCommonLayerPlatformImports(raw: string): number {
+  const fromPlatform = (raw.match(/from "@\/utils\/platform"/g) ?? []).length;
+  const fromStore = (raw.match(/\buseAppStore\b/g) ?? []).length > 0 ? 1 : 0;
+  return fromPlatform + fromStore;
+}

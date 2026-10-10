@@ -31,6 +31,7 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import { emojiUrl } from "@/utils/emoji";
 import { summarizeActors, ROSTER_VISIBLE, type ReactionChip } from "@/utils/reactions";
+import { canHover } from "@/utils/platform";
 import { useChatStore } from "@/stores/useChatStore";
 import { useHoverCard } from "@/composables/useHoverCard";
 
@@ -72,11 +73,8 @@ function chipTitle(c: ReactionChip): string {
 
 /** 同时只开一份名单：一条消息上三个表情全展开会把气泡区糊住。 */
 const openEmoji = ref<string | null>(null);
-/** 只有真有指针悬停能力的端才走 hover（触屏上 mouseenter 是"点完才来"的假事件）。 */
-const canHover =
-  typeof window !== "undefined" && typeof window.matchMedia === "function"
-    ? window.matchMedia("(hover: hover)").matches
-    : false;
+/** 悬停能力走 common layer 的 `canHover`（触屏上 mouseenter 是"点完才来"的假事件）。
+ *  ⚠️ 组件里不裸写 matchMedia —— roadmap N11 的口径，由 designGuards ㉟ 守着（本处原先就是那份唯一的裸写）。 */
 
 /**
  * 名单浮层：**Teleport 到 body + fixed 坐标**，摆位走通用那一套

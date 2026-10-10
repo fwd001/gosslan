@@ -29,6 +29,8 @@ import {
   countListPropBindings,
   checkImageBubbleHeightSources,
   countClassAttrs,
+  findRawPlatformCheckInViewLayer,
+  countCommonLayerPlatformImports,
   findImgTags,
   teleportedRootClasses,
 } from "./designGuards.ts";
@@ -2573,4 +2575,50 @@ test("㉞ 真实树：MessageImageBubble 与 messageHeight 现在这一份必须
   assert.match(metrics, /export const IMAGE_PLACEHOLDER_HEIGHT = 128;/);
   assert.match(est, /import\s*\{[^}]*IMAGE_BUBBLE_HEIGHT[^}]*\}\s*from "@\/utils\/previewMetrics"/);
   console.log(`· N22 真实树分母：图片盒 ${attrs} 个 class 属性 / 0 处高度工具类；估算端无本地副本`);
+});
+
+// ---------------- ㉟ 视图层不许裸写平台/输入方式探测（roadmap N11） ----------------
+
+test("㉟ 正向：组件里裸写 matchMedia / UA 类 API 必须逐条报", () => {
+  const bad = `<script setup lang="ts">
+const a = window.matchMedia("(hover: hover)").matches;
+const b = navigator.userAgent.includes("Macintosh");
+const c = navigator.maxTouchPoints > 0;
+</script>
+<template><div /></template>`;
+  const issues = findRawPlatformCheckInViewLayer(bad);
+  assert.equal(issues.length, 3, `三处各报一条，现数 ${issues.length}`);
+  assert.ok(issues.every((i) => i.line > 0), "每条都要带行号");
+  assert.match(issues.map((i) => i.message).join("\n"), /utils\/platform/);
+});
+
+test("㉟ 反面：不是平台判定的 API、注释里的提及、逃生阀都不报", () => {
+  // clipboard / share 是能力 API，不是"这台是什么平台"—— 扫它们就是造假红
+  assert.deepEqual(findRawPlatformCheckInViewLayer(
+    '<script>await navigator.clipboard.write(items); await navigator.share(d)</script>'), []);
+  // 注释里解释"为什么不用 matchMedia("不能算作用点（㉝/㉜ 同一课）
+  assert.deepEqual(findRawPlatformCheckInViewLayer(
+    "<script setup>\n// 这里刻意不写 window.matchMedia( —— 走 utils/platform.ts\n</script>"), []);
+  assert.deepEqual(findRawPlatformCheckInViewLayer(
+    "<!-- platform-check-ok：这份组件确实要在渲染前自己问一次 -->\n<script>const q = window.matchMedia(s)</script>"), []);
+});
+
+test("㉟ 真实树：视图层一个裸写都没有，而正门确实在被用（分母现数）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  // 只管**视图层**那两棵树：utils/stores 里做能力判定正是它该待的地方（那就是 common layer）。
+  const files = collectVueFiles(srcDir).filter(
+    (f) => f.includes("/components/") || f.includes("/views/"),
+  );
+  assert.ok(files.length >= 60, `视图层只数到 ${files.length} 份 .vue ⇒ 扫描目录大概错了`);
+  const bad: string[] = [];
+  let throughTheDoor = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    if (countCommonLayerPlatformImports(src) > 0) throughTheDoor += 1;
+    for (const i of findRawPlatformCheckInViewLayer(src)) bad.push(`${f.replace(srcDir + "/", "")}:${i.line}`);
+  }
+  assert.deepEqual(bad, [], `视图层又出现裸写的平台/能力探测：\n${bad.join("\n")}`);
+  // 阳性对照：正门没人走 ⇒ 这条判据的"请走 common layer"就是空话
+  assert.ok(throughTheDoor >= 5, `只有 ${throughTheDoor} 份组件走 common layer ⇒ 判据指向的那个家大概没人用，口径要重看`);
+  console.log(`· N11 真实树分母：视图层 ${files.length} 份 .vue，${throughTheDoor} 份走 common layer，裸写平台判定 0 处`);
 });
