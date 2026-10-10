@@ -2615,7 +2615,11 @@ test("㉟ 真实树：视图层一个裸写都没有，而正门确实在被用�
   for (const f of files) {
     const src = readFileSync(f, "utf8");
     if (countCommonLayerPlatformImports(src) > 0) throughTheDoor += 1;
-    for (const i of findRawPlatformCheckInViewLayer(src)) bad.push(`${f.replace(srcDir + "/", "")}:${i.line}`);
+    // 消息一起带上：注入档（guard_cases）的 fail-hint 要能在失败输出里匹配到判据自己那句话，
+    // 只推 "文件:行号" 会让红变成"定位到了但说不出守的是哪一格"。
+    for (const i of findRawPlatformCheckInViewLayer(src)) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${i.line} ${i.message.slice(0, 52)}`);
+    }
   }
   assert.deepEqual(bad, [], `视图层又出现裸写的平台/能力探测：\n${bad.join("\n")}`);
   // 阳性对照：正门没人走 ⇒ 这条判据的"请走 common layer"就是空话

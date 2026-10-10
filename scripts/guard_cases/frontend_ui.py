@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """护栏非空转用例分册：前端呈现层（components / layouts / entries / 样式与打包配置里的界面判据）。
 
-本册现数 46 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
+本册现数 47 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
 用不带行首锚的写法会多算一条 —— 多出来的正是这一行本身）；2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
 `CASES` 字面量里）按**锚定的被守物**切出来，切过来那 30 条的块文本逐字未搬动过一字 ⇒
 恒等判据＝`verify-guards.py --list` 的输出排序后与拆前**逐字节相同**（条数与用例名都不是"我觉得一样"）。
@@ -254,6 +254,26 @@ CASES: list[Case] = [
         cmd=npm("test"),
         cwd=ROOT,
         expect_fail_hint="都带两个",
+        tags=["frontend", "new-guards"],
+    ),
+    Case(
+        name="视图层自己算 hover 能力（平台判定又长出第二个家）必须被抓住",
+        why="roadmap N11：平台与输入方式只有一个家（纯样式差异走 CSS 媒体查询、UA 与能不能悬停走 "
+            "utils/platform.ts、移动布局走 useAppStore.isMobile）。本轮刚从 MessageReactionBar 收进去一处，"
+            "这条退化不报错、不影响构建，读代码也只有逐文件扫才看得见，由 findRawPlatformCheckInViewLayer 守着。"
+            "注入用的就是它搬家之前那份原样写法（不是编的形状）",
+        file=ROOT / "src" / "components" / "message" / "MessageReactionBar.vue",
+        injections=[(
+            'import { canHover } from "@/utils/platform";',
+            'const canHover =\n'
+            '  typeof window !== "undefined" && typeof window.matchMedia === "function"\n'
+            '    ? window.matchMedia("(hover: hover)").matches\n'
+            '    : false;',
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/designGuards.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="视图层里裸写了",
         tags=["frontend", "new-guards"],
     ),
     Case(

@@ -25,6 +25,12 @@ CI 那一层的结论行（`✅ 其余 81 条护栏都通过了非空转验证`�
   结论行「改坏即 FAIL、恢复即 PASS，且红由声明的那条判据报出」；证据是注入态 142 条测试里
   **恰好 1 条红**（`㉞ 真实树：MessageImageBubble 与 messageHeight 现在这一份必须合规`）、其余 141 绿，
   恢复后工作树 `git status` 无残留。fail-hint 取的是判据自己打印的那句「高度工具类」。
+- **㉟（视图层不许自己算平台/悬停能力）** 同册再挂一条：注入用的就是 `MessageReactionBar.vue`
+  搬家**之前**那份原样写法（`typeof window !== "undefined" && window.matchMedia("(hover: hover)")`），
+  不是我编的形状。实跑 `--only "视图层自己算 hover"` ⇒ 退 0，结论行「改坏即 FAIL、恢复即 PASS，
+  且红由声明的那条判据报出」，hint 取判据原文那句「视图层里裸写了」。
+  配套把 `designGuards.test.ts` 里 ㉟ 那条真实树用例的失败输出改成**带判据原文**（原来只推
+  `文件:行号` ⇒ 红能定位但说不出守的是哪一格，注入档的 hint 也匹配不上）。
 - 条数同步是**被机器逼出来的**，不是我记得改：加完第一条后 `node scripts/check-doc-numbers.mjs` 当场报
   「文档硬数字漂移 1 处：ARCHITECTURE-MAP.html 手写 218 = 现算 219」⇒ 按现算值改图那一格
   （这正是 AGENTS/记忆里"增删 Case 必须同批改图"那条规矩今天真的在生效的样子）。
