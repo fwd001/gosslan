@@ -418,9 +418,19 @@ function clickAction(tag: string): boolean {
  * 判据（能确定的才报）：
  *   —— 非交互标签 + 有真实动作的 `@click`；
  *   —— 同一开标签里既没有 `role`（含 `:role`），也没有 `tabindex`（含 `:tabindex`），
- *      也没有 `@keydown` / `@keyup`（含 `v-on:` 与 `:keydown` 简写）。
+ *      也没有 `@keydown` / `@keyup`（含 `v-on:` 与 `:keydown` 简写）→ 报「三样都没有」。
+ *   —— ★ 2026-10-10 补上另一半（roadmap N19，原本这里是**洞**）：上面那条用的是 OR，
+ *      于是 `role="button"` 单独存在就放行 —— 而 role 只给"读屏念得出按钮"，**不给可聚焦性**，
+ *      键盘照样 Tab 不到（真实形状：置顶行那颗 `<span role="button" @click.stop>`，
+ *      嵌在 `<button>` 里、没有 tabindex）。所以现在再加一条：
+ *      **静态 button 类 role + 有 @click，但既没有 tabindex、也没有键盘事件、也不是 contenteditable ⇒ 报**。
+ *      只认**静态** `role="…"`：动态 `:role="…"` 推断不出值，报了就是假红。
+ *      `contenteditable` 自己就可聚焦；`dialog` / `textbox` 这类**容器角色**不该被塞进 Tab 序
+ *      （`ImageLightbox` 的遮罩与输入框正是这两类，收紧时实测它们都不该报 —— 收进名单就是造两条假红）。
  * 逃生阀：文件里带 `tap-keyboard-ok` 注释则整文件跳过。
  */
+const BUTTONISH_ROLE_RE = /\b(button|link|menuitem|checkbox|radio|tab|switch)\b/;
+
 export function findTappableWithoutKeyboard(src: string): GuardIssue[] {
   if (src.includes("tap-keyboard-ok")) return [];
   const out: GuardIssue[] = [];
@@ -430,20 +440,44 @@ export function findTappableWithoutKeyboard(src: string): GuardIssue[] {
     const hasRole = /(?:^|\s)(?::|v-bind:)?role\s*=/.test(tag);
     const hasTabindex = /(?:^|\s)(?::|v-bind:)?tabindex\s*=/.test(tag);
     const hasKey = /(?:@|v-on:|:)key(?:down|up)/.test(tag);
-    if (hasRole || hasTabindex || hasKey) continue;
-    out.push({
-      line: lineAt(src, m.index ?? 0),
-      message:
-        "`" +
-        m[1] +
-        "` 上有 @click，但它没有原生按钮语义 —— 键盘用户 Tab 不到、按回车也没反应" +
-        "（读屏只会念成普通文本）。请改用 <button type=\"button\">，或补上 " +
-        "`role=\"button\"` + `tabindex=\"0\"` + `@keydown.enter`（空格键用 `@keydown.space.prevent`）。" +
-        "确实不该聚焦的元素（遮罩层等），加 `aria-hidden=\"true\"` 或用 `@click.stop` 表明它只是拦事件；" +
-        "整文件例外可加 `tap-keyboard-ok` 注释。",
-    });
+    const editable = /contenteditable\s*=/.test(tag);
+    const staticRole = tag.match(/(?:^|\s)role\s*=\s*"([^"]*)"/)?.[1] ?? null;
+    if (!hasRole && !hasTabindex && !hasKey) {
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message:
+          "`" +
+          m[1] +
+          "` 上有 @click，但它没有原生按钮语义 —— 键盘用户 Tab 不到、按回车也没反应" +
+          "（读屏只会念成普通文本）。请改用 <button type=\"button\">，或补上 " +
+          "`role=\"button\"` + `tabindex=\"0\"` + `@keydown.enter`（空格键用 `@keydown.space.prevent`）。" +
+          "确实不该聚焦的元素（遮罩层等），加 `aria-hidden=\"true\"` 或用 `@click.stop` 表明它只是拦事件；" +
+          "整文件例外可加 `tap-keyboard-ok` 注释。",
+      });
+      continue;
+    }
+    if (staticRole !== null && BUTTONISH_ROLE_RE.test(staticRole) && !hasTabindex && !hasKey && !editable) {
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message:
+          "`" +
+          m[1] +
+          "` 写了 `role=\"button\"` 但没有 `tabindex` —— role 只让读屏念出「这是按钮」，" +
+          "**不给可聚焦性** ⇒ 键盘用户仍然 Tab 不到（roadmap N19 那个洞）。" +
+          "请改用 <button type=\"button\">（自带语义、自带聚焦与回车），" +
+          "或补 `tabindex=\"0\"` + `@keydown.enter` / `@keydown.space.prevent`；" +
+          "它若嵌在另一个可聚焦元素里，那是结构问题 —— 拆成同级兄弟，别靠 role 伪装。",
+      });
+    }
   }
   return out.sort((a, b) => a.line - b.line);
+}
+
+/** ⑥ 这条尺子看得见多少个"非交互标签 + 真实动作 @click"？真实树那半用它做阳性对照。 */
+export function countClickActionTags(raw: string): number {
+  let n = 0;
+  for (const m of raw.matchAll(OPEN_TAG_RE)) if (clickAction(m[0])) n += 1;
+  return n;
 }
 
 // ---------------- ⑦ `outline-none` 必须自带焦点指示 ----------------
@@ -798,7 +832,10 @@ export function checkStyleCascade(css: string): GuardIssue[] {
   }
 
   // ②-2 .hover-reveal / .hover-reveal-op 必须定义在 @media (hover: none) 里
-  const hoverNoneAt = css.indexOf("@media (hover: none)");
+  // ⚠️ 定位那个**块**要按形状（选择器 + `{`），不能用 indexOf 找字面量：
+  // 2026-10-10 加 .kb-reveal 时踩到 —— style.css 里多了一句**注释**写到 `@media (hover: none)`，
+  // indexOf 便落在注释上，于是"块外的基础规则"被读成"块内的" ⇒ 真实文件当场假红。
+  const hoverNoneAt = css.search(/@media\s*\(\s*hover\s*:\s*none\s*\)\s*\{/);
   if (hoverNoneAt < 0) {
     out.push({ line: 0, message: "style.css 缺少 @media (hover: none) 触屏兜底块" });
   } else {
@@ -813,6 +850,33 @@ export function checkStyleCascade(css: string): GuardIssue[] {
         });
       }
     }
+  }
+
+  // ②-2b `.kb-reveal` 那一家（roadmap N19，键盘必须能到达悬停才现的操作）有两份，缺一不可：
+  //   基础那份在 (hover:none) **之外** —— 它管"有 hover 的设备上按悬停/聚焦才显形"；
+  //   兜底那份在 (hover:none) **之内** —— 触屏既没有 hover、也常常没有键盘，少了它那颗操作就是不存在。
+  // 只查其中一半都会漏：只看"在块内有一份"会把"基础那份也写进块里"放过去
+  //（那样桌面上既不藏也不随聚焦显形，等于把这条改动整体作废，而界面看起来"没问题"）。
+  const kbBase = css.indexOf(".kb-reveal {");
+  if (kbBase < 0) {
+    out.push({
+      line: 0,
+      message: "style.css 缺少 .kb-reveal 的定义（roadmap N19：hover 揭示的操作必须有键盘入口）",
+    });
+  } else if (kbBase > hoverNoneAt) {
+    out.push({
+      line: lineAt(css, kbBase),
+      message:
+        ".kb-reveal 的**基础**规则写在 @media (hover: none) 之内 ⇒ 有 hover 的设备上它既不藏起操作、" +
+        "也不随键盘聚焦显形（这一家的前提没了）。基础那份要在块外。",
+    });
+  } else if (css.indexOf(".kb-reveal {", hoverNoneAt) < 0) {
+    out.push({
+      line: lineAt(css, kbBase),
+      message:
+        ".kb-reveal 在 @media (hover: none) 里**没有**兜底那份 ⇒ 触屏上悬停与键盘聚焦都不会发生，" +
+        "那颗操作在手机上看不见也点不着（pointer-events 也要一起放开，光 opacity:1 只是看得见）。",
+    });
   }
 
   // ②-3 触屏命中扩展块里**不得直接声明 `position`**

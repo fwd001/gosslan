@@ -224,7 +224,9 @@ class Cdp {
    * 把指针真的移到某个坐标上（`Input.dispatchMouseEvent`）。
    * 为什么要两条：CSS 的 `:hover` 只在浏览器真的移动过指针时才成立，
    * 用 `elementFromPoint` 或加 class 都替代不了 —— 而那颗表情入口恰恰是 `hidden group-hover/msg:flex`
-   * （不悬停就根本不存在于布局里，量不到任何几何）。先移到别处再移到目标点，逼一次重新命中。
+   * （N19 之前它写的是 `hidden group-hover/msg:flex` ⇒ 不悬停根本不在布局里，任何几何都量不到；
+   * 现在改成 opacity 藏，几何随时量得到，但"看得见"这件事仍然只有真移动过一次指针才成立）。
+   * 先移到别处再移到目标点，逼一次重新命中。
    */
   async hover(x, y) {
     const send = (cx, cy) => this.ws.send(JSON.stringify({
@@ -437,6 +439,10 @@ window.__probe = (() => {
     return {
       ok: true,
       display: cs.display,
+      // N19：揭示改走 opacity 之后，"看得见"与"Tab 得到"是两件事，必须都读
+      opacity: cs.opacity,
+      pointerEvents: cs.pointerEvents,
+      focused: document.activeElement === btn,
       w: Math.round(b.width), h: Math.round(b.height), bottom: Math.round(b.bottom),
       colBottom: cr ? Math.round(cr.bottom) : null,
       colClass: col ? String(col.className).slice(0, 46) : null,
@@ -447,7 +453,24 @@ window.__probe = (() => {
       tapSafe: btn.classList.contains('tap-safe'),
     };
   };
-  /** 悬停目标：那颗入口没悬停时是 display:none（量不到矩形），所以指针要移到它**那一列**上。 */
+  /**
+   * 把那颗入口的 transition 关掉（本段读数期间）。
+   *
+   * ⚠️ 为什么必须有这一步：.kb-reveal 的显形是**带 transition 的**，而 headless 那台在没有
+   * 合成帧时动画时钟不推进 ⇒ getComputedStyle 读到的 opacity 会**停在动画起点 0**
+   * （实测：--only=reaction 单独跑读到 0.9987，全量跑读到 0，而 pointer-events 已经是 auto
+   * —— 因为 pointer-events 不参与过渡，它是瞬时的）。这个差不是产品差异，是"动画没走完"。
+   * 这一格要判的是**级联规则有没有落到这个元素上**（悬停 ⇒ opacity 1），不是动画本身
+   *（动画与 reduced-motion 那一档由 overlay 段的 E 组判据守）。所以读数前冻掉动画。
+   */
+  H.freezeReactionTransition = () => {
+    const btn = document.querySelector('[data-reaction-entry]');
+    if (!btn) return false;
+    btn.style.transition = "none";
+    return true;
+  };
+
+  /** 悬停目标：指针要移到入口**那一列**上（N19 之前它不悬停就 display:none、量不到矩形；   * 现在它常驻布局，但"揭示"这件事仍只由那一列的 hover 决定，所以移指针的目标没变）。 */
   H.colRect = () => {
     const btn = document.querySelector('[data-reaction-entry]');
     const col = btn ? btn.parentElement : null;
@@ -1318,20 +1341,28 @@ async function runReaction(cdp, url) {
     + JSON.stringify(JSON.stringify({ message: MSG, canReact: true, isGroup: true, senderName: "测试者" })) + ")");
   check("消息行挂出来了（表情入口那颗才有得量）", !!mounted && mounted.ok === true,
     "install ok", JSON.stringify(mounted));
+  // 读数期间冻掉那颗入口的 transition（headless 的动画时钟不推帧 ⇒ opacity 会停在起点，见 helper 注释）
+  const frozen = await cdp.eval("window.__probe.freezeReactionTransition()");
+  check("冻掉了那颗入口的过渡（否则整段跑时读到的 opacity 是动画起点）",
+    frozen === true, "freezeReactionTransition 返回 true", JSON.stringify(frozen));
 
   const hidden = await cdp.eval("window.__probe.reactionBtn()");
-  check("不悬停时那颗入口确实不在布局里（后面的读数才不是量了个隐形的东西）",
-    hidden.ok === true && hidden.display === "none" && hidden.h === 0,
-    "display=none 且高 0", JSON.stringify(hidden));
+  check("不悬停时那颗入口**看不见、点不着，但仍在布局里**（N19 换法后的形状：opacity 藏而非 display 藏）",
+    hidden.ok === true && hidden.display !== "none" && Number(hidden.opacity) === 0
+      && hidden.pointerEvents === "none" && hidden.h > 0,
+    "display!=none 且 opacity=0 且 pointer-events=none 且 h>0", JSON.stringify(hidden));
 
   const col = await cdp.eval("window.__probe.colRect()");
   check("那一列有可悬停的面积（拿不到矩形就没法移指针）", !!col && col.bottom > 0, "colRect 非空", JSON.stringify(col));
   await cdp.hover(col.x, col.y);
+  // 等一次样式重算落定（:hover 只在浏览器真的移动过指针后才成立）；
+  // 动画已在段首冻掉，所以这里读到的一定是级联规则的目标值，容差只留浮点误差。
+  await sleep(350);
 
   const a = await cdp.eval("window.__probe.reactionBtn()");
-  check("悬停后入口出现，且是紧凑的正方形小按钮（高=宽，且不大于 28px）",
-    a.ok === true && a.display !== "none" && a.h > 0 && a.h === a.w && a.h <= 28,
-    "h===w 且 h<=28", JSON.stringify(a));
+  check("悬停后入口显形并可点（opacity 1 + pointer-events auto），且是紧凑的正方形小按钮（高=宽，且不大于 28px）",
+    a.ok === true && Number(a.opacity) >= 0.99 && a.pointerEvents === "auto" && a.h > 0 && a.h === a.w && a.h <= 28,
+    "opacity=1 且 pointer-events=auto 且 h===w 且 h<=28", JSON.stringify(a));
   check("入口底边与气泡那一列的底边对齐（用户那句「与聊天内容最下边对齐」）",
     a.ok === true && a.colBottom !== null && Math.abs(a.bottom - a.colBottom) <= 1,
     "|btn.bottom - col.bottom| <= 1", "btn=" + a.bottom + " col=" + a.colBottom);
@@ -1361,6 +1392,67 @@ async function runReaction(cdp, url) {
   check("对照可逆：恢复后底边又对齐（不是把页面改坏了一次）",
     c.ok === true && Math.abs(c.bottom - c.colBottom) <= 1, "|差| <= 1",
     "btn=" + c.bottom + " col=" + c.colBottom);
+
+  // ---------- N19：键盘必须能到达、也能激活那颗"悬停才现"的入口 ----------
+  // 为什么这一段非量不可：换法的**全部意义**就是"看不见但 Tab 得到"，
+  // 而静态判据（designGuards ①/⑥）只能证明写法，证不了浏览器真把焦点给了它、
+  // 也证不了 `.kb-reveal:focus-visible` 那条 CSS 真的落到了这个元素上。
+  // 焦点模拟只在这一块开、出去就关（同 roster 那一段的规矩：emoji 段的 Enter 断言要靠"页面没焦点"）。
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+  await cdp.send("Page.bringToFront").catch(() => {});
+  try {
+    await cdp.eval("(() => { const b = document.querySelector('[data-reaction-entry]');"
+      + " if (b) b.blur(); document.body.focus && document.body.blur(); })()");
+    let reached = null;
+    const stops = [];
+    for (let i = 0; i < 12 && !reached; i += 1) {
+      await cdp.key("Tab", "Tab", "", 9);
+      const r = await cdp.eval("window.__probe.reactionBtn()");
+      stops.push(r && r.ok === true ? r.focused : null);
+      if (r && r.ok === true && r.focused === true) reached = r;
+    }
+    check("N19 键盘入口：连按 Tab 焦点落得进那颗「添加表情回复」（旧写法 display:none 时这一步必然失败）",
+      !!reached, "某次 Tab 后 activeElement === 那颗入口", JSON.stringify(stops));
+    check("N19 键盘入口：聚焦后它自己显形（opacity 1）—— 键盘用户看得见自己正站在哪",
+      !!reached && Number(reached.opacity) >= 0.99 && reached.pointerEvents === "auto",
+      "opacity=1 且 pointer-events=auto", JSON.stringify(reached));
+
+    // 真按键回车 = 真的把选择器打开（这才是"能用键盘完成这件事"，而不是"能聚焦"）
+    // ★ Enter 必须带 text "\r"：本仓的 cdp.key 只有给了 text 才补发 char 那条，
+    // 而 button 的「回车激活」走的是 char —— 只发 rawKeyDown+keyUp 时焦点在按钮上也不会有 click
+    //（第一次跑就是这么红的，红的是按键夹具不是产品）。
+    await cdp.key("Enter", "Enter", "\r", 13);
+    await sleep(400);
+    const opened = await cdp.eval("!!document.querySelector('[data-reaction-picker]')");
+    check("N19 键盘入口：聚焦后按回车真打开了表情选择器",
+      opened === true, "data-reaction-picker 出现", "opened=" + JSON.stringify(opened));
+    // 面板是 teleport 到 body 的 ⇒ 焦点不在入口上了，靠 kb-reveal-on 保持显形（否则浮层开着入口却消失）
+    const still = await cdp.eval("window.__probe.reactionBtn()");
+    check("N19 对照：选择器开着时入口仍显形（kb-reveal-on 那条真的接上了，不是只写了 CSS）",
+      opened === true && still.ok === true && Number(still.opacity) >= 0.99,
+      "选择器真开着 且 入口 opacity 仍为 1", "opened=" + opened + " " + JSON.stringify(still));
+
+    // ★ 单点变异（证明上面那两条 Tab 判据不是恒真）：把元素按回**旧那一族**的 display:none。
+    // 旧的写法就是这样把可聚焦性一起删掉的 ⇒ 焦点必须再也落不进那颗入口。改完立刻复原（可逆）。
+    await cdp.eval("(() => { const b = document.querySelector('[data-reaction-entry]');"
+      + " if (b) { b.blur(); b.style.display = 'none'; } })()");
+    let legacyReached = false;
+    for (let i = 0; i < 12 && !legacyReached; i += 1) {
+      await cdp.key("Tab", "Tab", "", 9);
+      const r = await cdp.eval("window.__probe.reactionBtn()");
+      if (r && r.ok === true && r.focused === true) legacyReached = true;
+    }
+    check("N19 变异对照：把入口按回 display:none ⇒ Tab 就再也落不进去（证明那条键盘判据会咬）",
+      legacyReached === false, "十二次 Tab 都没聚焦到它", "legacyReached=" + legacyReached);
+    await cdp.eval("(() => { const b = document.querySelector('[data-reaction-entry]');"
+      + " if (b) b.style.display = ''; })()");
+    const restored = await cdp.eval("window.__probe.reactionBtn()");
+    check("N19 变异可逆：撤掉那条内联 display 后它又回到布局里（没把页面改坏一次）",
+      restored.ok === true && restored.display !== "none" && restored.h > 0,
+      "display!=none 且 h>0", JSON.stringify(restored));
+  } finally {
+    await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false }).catch(() => {});
+  }
 }
 
 /**

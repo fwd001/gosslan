@@ -565,6 +565,33 @@ progress {
   }
 }
 
+/* ---------------- 悬停揭示的操作，键盘也必须能到达（roadmap N19） ----------------
+   下面那一家（`.hover-reveal`）解决的是"触屏没有 hover"，这一家解决的是"键盘没有 hover"。
+   旧写法用 `hidden`（display:none）藏起按钮，而 display:none **连可聚焦性一起去掉** ⇒
+   键盘用户 Tab 跳不到那颗「添加表情回复」；取消置顶那颗 ✕ 更是一个嵌在 `<button>` 里的
+   `span role="button"`（既没 tabindex，这种嵌套本身也不合法）。
+   这一家的做法：元素**常驻 DOM 与布局**、按 opacity 藏，键盘聚焦时自己显形。
+   ⚠️ 三条隐含前提，漏掉任何一条都不报错：
+   ① 带这个类的元素必须本就脱开文档流（`absolute`）或在自适应宽的行里 —— 否则"常驻"会改排版；
+   ② `pointer-events` 必须跟着开合：常驻之后不关掉，那颗看不见的按钮会吃掉它位置上原本的点击；
+   ③ 揭示靠**父级的 hover 组名**（`.group\/msg`、`.group\/pin`）—— 以后新增一个 hover 组
+      就得在这里补一行，漏了只会让键盘用户又看不见（正是本条要修的那类"写对了但不生效"）。
+   `.kb-reveal-on` 给"面板已打开"那一档用：表情选择器/浮层是 teleport 到 body 的，
+   那时焦点不在本元素里 ⇒ `:focus-within` 不成立，不显式点亮就会在浮层开着时把入口藏掉。
+   触屏兜底在下面那条 `@media (hover: none)` 里（同优先级、写在它之后才能压过这里的 opacity:0）。 */
+.kb-reveal {
+  opacity: 0;
+  pointer-events: none;
+}
+.group\/msg:hover .kb-reveal,
+.group\/pin:hover .kb-reveal,
+.kb-reveal:focus-visible,
+.kb-reveal:focus-within,
+.kb-reveal-on {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* ---------------- 悬停揭示的触屏兜底（Apple HIG：不要靠悬停暴露操作） ----------------
    触屏没有 hover：用 `group-hover:*` 揭示的操作在手机上**永远出不来**，等于功能缺失
    （会话行的删除键就踩过这个坑 —— 桌面能删、手机删不掉，见 2026-09-10 审计 P0-1）。
@@ -578,6 +605,12 @@ progress {
   }
   .hover-reveal-op {
     opacity: 1 !important;
+  }
+  /* 上面那一家的触屏档：没有 hover 就常显，且 pointer-events 必须一起放开，
+     否则手机上那颗按钮"看得见却点不中"（会话行删除键那个坑的另一半）。 */
+  .kb-reveal {
+    opacity: 1;
+    pointer-events: auto;
   }
 }
 

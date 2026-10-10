@@ -1138,25 +1138,35 @@ function onLoadMore() {
     >
       <div class="flex items-center gap-2 px-4 py-1.5">
         <Pin class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
-        <button
+        <div
           v-for="p in visiblePinned"
           :key="p.id"
-          class="tap-safe group/pin flex min-w-0 flex-1 items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-left text-[12px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
-          :title="p.text"
-          @click="gotoPinned(p.id)"
+          class="group/pin flex min-w-0 flex-1 items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 text-left text-[12px] transition hover:bg-[var(--gosslan-hover)]"
         >
-          <span class="min-w-0 flex-1 truncate" :title="p.text">{{ p.text }}</span>
-          <!-- 就地取消置顶：不必先跳到原消息再右键（用户明确要求） -->
-          <span
-            class="tap-safe hover-reveal-op flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 transition group-hover/pin:opacity-100"
-            role="button"
+          <button
+            type="button"
+            class="tap-safe flex min-w-0 flex-1 items-center py-0.5 text-[var(--gosslan-text-2)] transition group-hover/pin:text-[var(--gosslan-text)]"
+            :title="p.text"
+            @click="gotoPinned(p.id)"
+          >
+            <span class="min-w-0 flex-1 truncate" :title="p.text">{{ p.text }}</span>
+          </button>
+          <!-- 就地取消置顶：不必先跳到原消息再右键（用户明确要求）。
+               ⚠️ 它是那颗跳转按钮的**同级兄弟**，不再嵌在里面（roadmap N19）：button 里再放一个
+               可聚焦的交互元素在 HTML 里不合法，而此前它是个 `span role="button"` 且**没有 tabindex** ⇒
+               键盘既 Tab 不到也回车不了。揭示改走 `.kb-reveal`（常驻布局、按 opacity 藏、
+               聚焦即显形），触屏热区仍由 tap-safe 撑开（N15 那条）。 -->
+          <button
+            type="button"
+            data-pin-unpin
+            class="tap-safe kb-reveal flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)]"
             :title="t('msg.unpin')"
             :aria-label="t('msg.unpin')"
             @click.stop="togglePin(p.id)"
           >
-            <X class="h-3 w-3" />
-          </span>
-        </button>
+            <X class="h-3 w-3" aria-hidden="true" />
+          </button>
+        </div>
         <button
           v-if="pinnedItems.length > visiblePinned.length"
           class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
@@ -1167,21 +1177,32 @@ function onLoadMore() {
       </div>
       <!-- 展开态：纵向列出全部置顶，带高度上限（置顶再多也不会吃掉消息区） -->
       <div v-if="pinsExpanded" class="max-h-32 overflow-y-auto px-4 pb-1.5">
-        <button
+        <div
           v-for="p in pinnedItems"
           :key="`all-${p.id}`"
-          class="tap-safe flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-1.5 py-1 text-left text-[12px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
-          :title="p.text"
-          @click="gotoPinned(p.id)"
+          class="flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-1.5 text-left text-[12px] transition hover:bg-[var(--gosslan-hover)]"
         >
-          <span class="min-w-0 flex-1 truncate" :title="p.text">{{ p.text }}</span>
-          <X
-            class="h-3 w-3 shrink-0"
-            role="button"
+          <button
+            type="button"
+            class="tap-safe flex min-w-0 flex-1 items-center py-1 text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
+            :title="p.text"
+            @click="gotoPinned(p.id)"
+          >
+            <span class="min-w-0 flex-1 truncate" :title="p.text">{{ p.text }}</span>
+          </button>
+          <!-- 展开态这一份与上面折叠态那颗是**同一个动作**，所以形状必须一致（roadmap N19）：
+               原先这里也是一枚 `<X role="button">` 塞在按钮里 —— 它在展开态是**常显**的，
+               比折叠态更容易被误认为"能用键盘点"，但同样没有 tabindex，键盘够不着。 -->
+          <button
+            type="button"
+            class="tap-safe flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)]"
+            :title="t('msg.unpin')"
             :aria-label="t('msg.unpin')"
             @click.stop="togglePin(p.id)"
-          />
-        </button>
+          >
+            <X class="h-3 w-3" aria-hidden="true" />
+          </button>
+        </div>
       </div>
     </div>
 

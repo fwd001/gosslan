@@ -975,7 +975,8 @@ async function copyFileToClipboard() {
        `group-hover/msg:` ⇒ **这层必须带 `group/msg`**，否则揭示永远不匹配
        （用户 2026-09-21 上一轮报「表情回应桌面端没有」、这一轮报「表情回应在哪儿？没看见」，
        都是因为这层少了个组名）。入口做成**飞书式**：气泡外侧单个表情按钮 → 点开完整选择器。
-       （触屏仍可用：那排按钮自带 `hover-reveal` 兜底；已有的表情胶囊照常显示与点击。）
+       （触屏仍可用：那颗入口的 `.kb-reveal` 在 `@media (hover: none)` 里退化成常显；
+       已有的表情胶囊照常显示与点击。）
 
        ⚠️ 不要给它加 `background-clip`/`-inset-*`/`w-fit`/`ring-*`，也不要把底色挪回 `.group/msg`
        或消息行上：挪回 `.group/msg` 就露出那 4px 白缝；挪到消息行则连"头像上面 / 气泡下面"
@@ -1121,16 +1122,16 @@ async function copyFileToClipboard() {
              竖向**与气泡底边对齐**（`bottom-0`）—— 用户 2026-09-30：「按钮位置在视觉观感上应该与
              聊天内容最下边对齐」。以前是 `top-1/2 -translate-y-1/2` 居中线，单行消息上看着像
              浮在半空、多行消息上又和回应条错开。锚在**本列**（列宽=气泡宽）所以按钮紧贴气泡，不贴面板边。
-             `hidden group-hover/msg:flex`：悬停本条才出现（组名在 `.group/msg` 上，本列在其内 ✓）。 -->
+             ⚠️ 揭示走 `.kb-reveal`（style.css，roadmap N19）而不是旧的 `hidden group-hover/msg:flex`：
+             `display:none` 会**连可聚焦性一起去掉** ⇒ 键盘用户 Tab 跳不到这颗入口。现在它常驻布局
+             （本来就 absolute ⇒ 不影响本条高度），悬停本条（组名在 `.group/msg` 上，本列在其内 ✓）、
+             键盘聚焦到自己、或选择器开着（`kb-reveal-on`）时才显形。桌面端"悬停才现"那句要求没变。 -->
         <button
           ref="reactionBtnRef"
           data-reaction-entry
           v-if="canReact && !selectMode"
-          class="tap-safe hover-reveal pointer-events-auto absolute -right-11 bottom-0 z-20 h-6 w-6 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition"
-          :class="[
-            mine ? '-left-11' : '-right-11',
-            reactionPickerOpen ? 'flex' : 'hidden group-hover/msg:flex',
-          ]"
+          class="tap-safe kb-reveal absolute -right-11 bottom-0 z-20 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition"
+          :class="[mine ? '-left-11' : '-right-11', reactionPickerOpen ? 'kb-reveal-on' : '']"
           :title="t('msg.reactionAddEntry')"
           :aria-label="t('msg.reactionAddEntry')"
           @click.stop="toggleReactionPicker"

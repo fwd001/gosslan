@@ -13,6 +13,45 @@
 
 ## [Unreleased]
 
+## [4.33.41] - 2026-10-10
+
+### 原生体验 / 应用代码（N19：悬停才现出来的操作，键盘必须走得通）
+
+- 原先四处"靠悬停暴露操作"逐处读过一遍，结论分两半：
+  **TitleBar 那三颗不需要动应用码** —— `src-tauri/src/menu.rs:170-196` 的窗口子菜单本来就有 ⌘W / ⌘M /
+  maximize / fullscreen，而 `lib_window_tests.rs` 的 `cmd_w_is_handled_by_our_own_menu_item` 钉着
+  "⌘W 必须是我们自己的项"；把它登记成键盘缺口是我原先**没去查原生菜单那一层**留下的错。
+  真缺口两处：表情回应入口写的是 `hidden group-hover/msg:flex`，而 `display:none` **连可聚焦性一起去掉** ⇒
+  Tab 永远跳不到；取消置顶那颗是嵌在 `<button>` 里的 `span role="button"` 且没有 tabindex
+  （折叠态与 `+N` 展开态**各一份** —— 展开态那份连 roadmap 都没数到）。
+- 新开一家 CSS：`style.css` 的 `.kb-reveal`（常驻布局 + opacity 藏，悬停 / `:focus-visible` / `:focus-within`
+  / `.kb-reveal-on` 显形，`pointer-events` 跟着开合）与 `.kb-reveal-on`（面板 teleport 到 body 时焦点不在
+  入口自己身上，靠它保持显形）。触屏兜底同写在 `@media (hover: none)` 里，**opacity 与 pointer-events 两条都放开**
+  （只放 opacity 就是"看得见却点不着"）。桌面"悬停才现"那句要求没变。
+- 置顶那颗 ✕ 从"button 里套 role=button 的 span"拆成**同级真 `<button>`**（两份形状一致，折叠态带 `.kb-reveal`）。
+- 护栏补的是**它自己缺的那一半**，没另开新号：designGuards ⑥ 原先判据是"role、tabindex、键盘事件任一命中就放行"，
+  于是 `role="button"` 单独存在照样过 —— 而 role **不给可聚焦性**。现在静态 button 类 role 无 tabindex 且无键盘事件即报；
+  动态 `:role` 不报（推断不出值），`contenteditable` 与 `role="dialog"` / `role="textbox"` 这类容器角色也不报
+  （按 82 份 .vue 现数：收紧后只命中那颗 ✕；去管那两处就是造两条假红）。真实树分母现数 **10 个"非交互标签 + 动作 @click"**，全绿。
+- `checkStyleCascade` 新增 ②-2b：`.kb-reveal` 必须有**两份**（块外的基础那份 + `@media (hover: none)` 内的兜底那份），
+  少任一份都报；两份都拿真实 `style.css` 做单点删改实测会红。顺带把那条定位媒体查询的写法从
+  `indexOf("@media (hover: none)")` 改成按形状匹配 —— **我新写的注释里就含这个字面量**，
+  indexOf 落在注释上 ⇒ 真实文件当场假红（红的是判据自己）。
+- 运行时探针 `--only=reaction` 加到 15 条（全段 180/180 绿）：**真按 Tab** 焦点落得进那颗入口、聚焦后自己显形、
+  **真按回车**真打开表情选择器、面板开着时靠 `kb-reveal-on` 保持显形，
+  并带「把入口按回 `display:none` ⇒ Tab 再也落不进去」的**可逆单点变异**（证明那条键盘判据会咬，不是恒真）。
+- ★ 三条本轮现学的夹具事实（都写进了代码注释，别再重探）：① Enter 必须带 `text:"\r"` —— 本仓 `cdp.key`
+  只有给 text 才补发 char，而 `<button>` 的回车激活走 char（只发 rawKeyDown+keyUp 时焦点在按钮上也不会有 click）；
+  ② **headless 的动画时钟不推帧**：`.kb-reveal` 的显形带 transition，全量跑时 `getComputedStyle` 读到的是动画起点
+  （单独跑 0.9987、整段跑 0，而 pointer-events 已是 auto —— 它不参与过渡），所以读数前把 transition 冻掉，
+  这一格判的是级联规则落没落到元素上，不是动画本身；③ 模板字符串里的注释**一个反引号都不能有**
+  （本轮踩了两次，两次都是整份文件语法错）。
+- ⚠️ 没量到的那一半：置顶 ✕ 只在结构层（真 `<button>` + ⑥ 的真实树）与 CSS 家上守住，浏览器内没量过 ——
+  它要 ChatWindow 配真置顶消息；键盘真机能到达 WKWebView / WebView2 一律未证（Smoke-11 那一档）。
+  已知并接受的成本：桌面每条可回应消息多一个 Tab 停靠点。
+- 文档：`docs/design-guidelines.md` §10.3 从"触屏那一半"扩成"触屏与键盘是两个缺口"，检查清单同批改口；
+  roadmap N19 那一格换成落地态含复跑口径。
+
 ## [4.33.40] - 2026-10-10
 
 ### 原生体验 / 应用代码（原生体验 N22 剩下那半落地：图片行的"估算 288 / 骨架 128"两个数并成一个）

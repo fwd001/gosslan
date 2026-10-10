@@ -333,7 +333,7 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 - [ ] 布局尺寸变了的话，同步 `utils/previewMetrics.ts` / `messageHeight.ts`（虚拟列表估算）
 - [ ] **图标按钮补了 `aria-label`**（只有 `title` 不算——那是工具提示；§10.2）
 - [ ] **每个 `<img>` 都有 `alt`**：装饰性写 `alt=""`，内容图写真描述（§10.2）
-- [ ] **没有把操作藏在 hover 后面**：凡用 `group-hover:*` / `opacity-0` 揭示的元素都加了 `.hover-reveal` / `.hover-reveal-op`（§10.3）
+- [ ] **没有把操作藏在 hover 后面**：触屏与键盘是两个独立缺口 —— 凡用 `group-hover:*` / `opacity-0` 揭示的元素都加了 `.hover-reveal` / `.hover-reveal-op`（触屏常显），而**新的**"悬停才现的操作"应走 `.kb-reveal`（常驻布局 + 聚焦显形，别用 `hidden` 把可聚焦性一起删掉）（§10.3）
 - [ ] 新增毛玻璃（`backdrop-filter`）时确认在 `prefers-reduced-transparency` 下有回退（§10.1）
 - [ ] 错误提示走 `app.toastError(e, "…")`，没有自己拼 `：${e}`（§9.5）
 
@@ -606,13 +606,29 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 任何一端拿到同一个 id 就复算出同一张脸，换设备、重装、清缓存都不变。
 字母那条路已由 `designGuards::findRetiredLetterAvatarUsage` 判成「不许复活」。
 
-### 10.3 悬停不能是唯一入口
+### 10.3 悬停不能是唯一入口（触屏与键盘是**两个**缺口）
 
-任何用 `group-hover:*` 或 `opacity-0` 揭示的元素，都必须同时加 `.hover-reveal`（显示）
+**触屏那一半**：任何用 `group-hover:*` 或 `opacity-0` 揭示的元素，都必须同时加 `.hover-reveal`（显示）
 或 `.hover-reveal-op`（不透明）——这两个类在 `@media (hover: none)` 下退化为常显。
 
 真实事故：会话行的删除键写成 `hidden` + `group-hover:flex`，**Android 上永远不显示**
 ——桌面能删、手机删不掉（见 §7.4 / CHANGELOG）。同层的"删除好友"因为有长按兜底才幸免。
+
+**键盘那一半（2026-10-10 补，roadmap N19）**：`display:none` 是**连可聚焦性一起去掉**的，
+所以"悬停才现"若用 `hidden` 来藏，键盘用户既 Tab 不到、也回车不了 —— 这与触屏无关，
+`.hover-reveal` 那一家也救不了它（它只在无 hover 的设备上把 display 改回 flex）。
+新写的"悬停才现的操作"请走 **`.kb-reveal`**（`style.css`）：
+
+- 元素**常驻布局**、按 `opacity` 藏，`悬停 / :focus-visible / :focus-within / .kb-reveal-on` 任一条成立就显形；
+- `pointer-events` 必须跟着开合 —— 常驻之后不关掉，那颗看不见的按钮会吃掉它位置上原本的点击；
+- 带它的元素必须本就脱开文档流（`absolute`）或处在自适应宽的行里，否则"常驻"会改排版；
+- 触屏兜底同写在 `@media (hover: none)` 里，且 **opacity 与 pointer-events 两条都要放开**
+  （只放 opacity = 看得见却点不着）；
+- 揭示靠父级的 hover 组名（`.group/msg`、`.group/pin`）——**新增一个 hover 组就要在那里补一行**，
+  漏了不报错，只是键盘与悬停都看不见（正是本条要防的"写对了但不起作用"）。
+- 操作本身请用真 `<button type="button">`。**不要**用 `span role="button"`：role 只让读屏念出"这是按钮"，
+  **不给可聚焦性**；它嵌在另一个 `<button>` 里还属不合法的交互嵌套（`designGuards` ⑥ 2026-10-10 起会报这一型）。
+  做成同级兄弟，别靠 role 伪装。
 
 配套：触屏上小于 44px 的独立小按钮加 `tap-safe`（见 §2.3）。注意该规则 2026-09-10 之前
 **定义了但全库 0 处引用**，属"护栏写了没人用"的典型，code review 时一并核对。

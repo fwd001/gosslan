@@ -17,6 +17,7 @@ import {
   findOutlineNoneWithoutFocusRing,
   findSmallTapTargets,
   findTappableWithoutKeyboard,
+  countClickActionTags,
   findTruncationWithoutTitle,
   checkTextFieldFocusRing,
   checkSelectionContract,
@@ -156,9 +157,14 @@ const OK_CSS = `
 .glass { backdrop-filter: blur(6px); }
 .frost { backdrop-filter: blur(6px); }
 
+.kb-reveal { opacity: 0; pointer-events: none; }
+.kb-reveal:focus-visible,
+.kb-reveal-on { opacity: 1; pointer-events: auto; }
+
 @media (hover: none) {
   .hover-reveal { display: flex !important; }
   .hover-reveal-op { opacity: 1 !important; }
+  .kb-reveal { opacity: 1; pointer-events: auto; }
 }
 
 @media (prefers-reduced-transparency: reduce) {
@@ -405,18 +411,39 @@ test("role + tabindex + 回车/空格键处理之后通过", () => {
   assert.deepEqual(findTappableWithoutKeyboard(fixed), []);
 });
 
-test("三种补充写法任意一种即可（含 :role / :tabindex 绑定形式）", () => {
+test("补上焦点或键盘事件即可放行（含 :tabindex 绑定形式）", () => {
   for (const extra of [
-    'role="button"',
-    ':role="ready ? \'button\' : undefined"',
+    ':role="ready ? \'button\' : undefined"', // 动态 role 推断不出值 ⇒ 不报（报了就是假红）
     'tabindex="0"',
     ':tabindex="ready ? 0 : undefined"',
     '@keydown.enter="open()"',
     'v-on:keyup.enter="open()"',
+    'role="dialog" tabindex="-1"', // 容器角色：本就不该进 Tab 序
+    'role="textbox" contenteditable="true"', // contenteditable 自己就可聚焦
   ]) {
     const ok = `<template>\n  <div @click="open()" ${extra}>x</div>\n</template>`;
     assert.deepEqual(findTappableWithoutKeyboard(ok), [], `补 ${extra} 后不该再报`);
   }
+});
+
+test("⑥ 的洞（2026-10-10 补，roadmap N19）：静态 button 类 role 但没有 tabindex ⇒ 仍然要报", () => {
+  // 这条原来用 OR 判定，于是 role="button" 单独存在就放行 —— 而 role 只给"读屏念得出按钮"，
+  // **不给可聚焦性**，键盘照样 Tab 不到。真实形状就是置顶行那颗 `span role="button"`。
+  const hole = `<template>\n  <span role="button" @click.stop="togglePin(p.id)">✕</span>\n</template>`;
+  const issues = findTappableWithoutKeyboard(hole);
+  assert.equal(issues.length, 1, `该报一条，现数 ${issues.length}`);
+  assert.match(issues[0].message, /没有 `tabindex`/);
+  assert.equal(issues[0].line, 2);
+  // 同一条改成真按钮就不再报（这就是建议的修法）
+  assert.deepEqual(
+    findTappableWithoutKeyboard('<template>\n  <button type="button" @click.stop="f()">✕</button>\n</template>'),
+    [],
+  );
+  // 动态 role 不报（推断不出值）；容器角色不报
+  assert.deepEqual(
+    findTappableWithoutKeyboard('<template>\n  <span :role="k" @click="f()">x</span>\n</template>'),
+    [],
+  );
 });
 
 test("遮罩层（aria-hidden）不是按钮，不报", () => {
@@ -783,17 +810,36 @@ test("src 下所有 outline-none 都自带焦点指示", () => {
   assert.deepEqual(bad, [], `以下元素关掉了焦点指示却没有替代：\n${bad.join("\n")}`);
 });
 
-test("src 下所有可点击元素都能用键盘触发", () => {
+test("src 下所有可点击元素都能用键盘触发（含 ⑥ 补上的那一半：role 不给可聚焦性）", () => {
   const srcDir = join(import.meta.dirname, "..");
   const files = collectVueFiles(srcDir);
   assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
   const bad: string[] = [];
+  let seen = 0;
   for (const f of files) {
-    for (const issue of findTappableWithoutKeyboard(readFileSync(f, "utf8"))) {
+    const src = readFileSync(f, "utf8");
+    seen += countClickActionTags(src);
+    for (const issue of findTappableWithoutKeyboard(src)) {
       bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
     }
   }
+  // 分母必须自己说话：一个"非交互标签 + 动作 @click"都看不见时，这条判据（尤其新加的那一半）就是空转。
+  assert.ok(seen >= 6, `全 src 只数到 ${seen} 个"非交互标签 + 动作 @click" ⇒ 判据大概已经看不见东西了`);
   assert.deepEqual(bad, [], `以下元素能点但键盘够不着：\n${bad.join("\n")}`);
+  console.log(`· N19 真实树分母：${files.length} 份 .vue / ${seen} 个可点击的非交互标签，键盘入口全都齐（含 role 无 tabindex 那一型）`);
+});
+
+test("N19：.kb-reveal 那一家缺任一份都要报（拿真实 style.css 做两处单点删改）", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8");
+  assert.deepEqual(checkStyleCascade(css), [], "现树那份 style.css 必须两条都满足");
+  // ① 删掉触屏兜底那份 ⇒ 报（手机上那颗操作看不见也点不着）
+  const noTouch = css.replace(/\n\s*\/\* 上面那一家的触屏档[^]*?\*\/\n\s*\.kb-reveal \{\n\s*opacity: 1;\n\s*pointer-events: auto;\n\s*\}/, "");
+  assert.notEqual(noTouch, css, "反面用例的锚点没找到 ⇒ 这条用例本身是空转");
+  assert.match(checkStyleCascade(noTouch).map((i) => i.message).join("\n"), /没有\*\*兜底那份/);
+  // ② 只留块内那一份（把块外基础那条删掉）⇒ 基础那份落到块内 ⇒ 报"基础规则写在 (hover:none) 之内"
+  const baseAt = css.indexOf(".kb-reveal {");
+  const onlyInside = css.slice(0, baseAt) + css.slice(css.indexOf("}", baseAt) + 1);
+  assert.match(checkStyleCascade(onlyInside).map((i) => i.message).join("\n"), /基础\*\*规则写在 @media \(hover: none\) 之内/);
 });
 
 test("src 下所有 .vue 的悬停揭示都带了触屏兜底", () => {
