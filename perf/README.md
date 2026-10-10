@@ -12,6 +12,8 @@
 5. **窗口缩放时正在读的那一条跳不跳**（`PERF_ONLY=resize`）。
 6. **低性能设备那一档**（`PERF_ONLY=throttle`，CDP 模拟降速）。
 7. **页面隐藏期间那条 5 秒定时器实际跑了几次**（`background.mjs`，读真实应用页）。
+8. **堆快照里到底谁变多了**（`heapDelta.mjs`）：把 `.heapsnapshot` 聚合成"按 type+name 的 self_size 表"
+   并算两份之间的差 —— 这一台**现在还不依赖浏览器**（自带对账用手写最小快照），量具四读不出的那一半归它。
 
 **这里的数字一律不进门禁**：它们随机器负载漂，钉成红只会造出假红。它们的用途是"改之前/改之后同机同构建比一比"。
 
@@ -563,3 +565,76 @@ props 对象本身每次现构造**不要钱**（第三档就是证据）⇒ 补
 ② 视口只有 22 行，行数多的设备绝对值更大；③ p95 只回到 20.9（合成档 18.4）⇒ 尾帧那条差没归因；
 ④ 生产里恒新的只有那两条数组（其余 props 是 computed 或原始值，逐条数过调用点），
 所以第三档 `msgitem-stable` 那种「整份 props 缓存」比真实需要**多做了一步**，只做参考不做法。
+
+---
+
+# 量具八：堆快照归并器（`heapDelta.mjs`，roadmap N23 的前置）
+
+## 这台补的是哪一半 —— 量具四买不到的那一格
+
+量具四（`PERF_ONLY=mem`）读的是**标量曲线**：GC 后堆、DOM 元素数、`JSEventListeners`。
+它能判"有没有随步数累积的上行台阶"（2026-10-10 的 6000 步曲线判的是**没有**），
+但**判不出长出来的那一截是什么东西**。N23 卡的正是后一半：预览缓存（`src/utils/filePreview.ts`）
+没有条数上限、失效路径上也不 `revokeObjectURL`，而"每条约占多少"这格在有了这台之前**连解析工具都不存在** ——
+一份 V8 堆快照是 20~80 MB 的 JSON + 定长整型数组，DevTools 手点既不可复现、也没法逐格对账。
+
+`heapDelta.mjs` 只做两件可复跑的事：把一份快照按 `type+name` 聚合 `self_size`，
+以及把两份聚合表**按 key 对齐相减**（新增格、消失格都单独标出来）。
+它刻意**不建整图**，所以内存 ≈ 文件本身，而不是建图那种 3~5×。
+
+## 命令
+
+```bash
+node perf/heapDelta.mjs --selfcheck                              # 自带对账：不需要浏览器、网络、真机
+node perf/heapDelta.mjs before.heapsnapshot                      # 单份：谁最占
+node perf/heapDelta.mjs before.heapsnapshot after.heapsnapshot   # 两份：谁变多、变多少、几个节点
+# 选项：--top=15（打印几行）、--group=type|name|type+name（归并口径，默认 type+name）
+```
+
+`--selfcheck` 打几条**只认它自己打印的那行结论**（别抄这里的数字，跑一遍它就在屏幕上）。
+形状是三正三反：正例＝聚合不跨类型合并、`detachedness` 单独统计（**没那一列也不能报错**）、
+两份相减按 key 对齐且"没变那格差必须正好 0"；反例＝`nodes` 长度不是字段数整数倍 ⇒ 当场抛、
+字段名换了（V8 格式变）⇒ 抛「先修这把尺子」、根本不是 `.heapsnapshot` ⇒ 抛缺字段。
+**那三条反例才是这台量具的全部价值**：一把静默算出错数的尺子比一把报错的尺子坏得多。
+
+## 快照怎么来（这一半要 CDP，本文件不碰浏览器）
+
+```bash
+# 前两个进程与量具一/二共用（端口必须是 9223，理由见上面那节）
+npx vite --port 5199 --strictPort
+"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
+  --headless=new --disable-gpu --no-sandbox --user-data-dir=/tmp/brave-heap \
+  --remote-debugging-port=9223 --window-size=1280,900 \
+  "http://127.0.0.1:5199/perf/vlist.html?n=20000"
+# 第三趟：连 CDP 发 `HeapProfiler.enable` → `HeapProfiler.takeHeapSnapshot`（reportProgress:false），
+# 把 `HeapProfiler.addHeapSnapshotChunk` 的分片按序拼成一个 .heapsnapshot 文件；拍两次之间把要归因的动作跑完。
+```
+
+也可以 DevTools → Memory → Take heap snapshot 手动存盘，但**要在文档里写清是哪一种**：
+手点的那份没有"两份之间跑了什么"的可复现契约，只能定位、不能对账。
+
+⚠️ **今天（2026-10-10）这台只自证到"解析器正确"这一层，一份真快照都还没采过。**
+两个环境成因（都记在任务 #19，属探针脚手架而不是解析器的毛病）：
+① 用户自己的浏览器实例在跑时，探针那次 spawn 会**并入已存在实例**、不暴露 `--remote-debugging-port`
+（现读 9223 无人监听）⇒ 要等满探针自己的预算才报错，而不是几秒内响亮失败并打印"用的哪台浏览器 + 版本 + 端口读数"；
+② 换到 playwright 缓存里那台 Chrome for Testing 之后，`HeapProfiler` 这条域还一次没跑过
+（而且它上面 emoji 那段先出现了键重复风暴，得先解决那一格才谈得上采快照）。
+⇒ **不许把"selfcheck 绿"读成"N23 有数了"**，N23 那一格现在写的是"量具就位、快照未采"。
+
+## 它读不到什么（四条诚实边界，别拿它当结论）
+
+1. V8 的 `self_size` **不含**字符串 / `ArrayBuffer` 的外部内存（`externalCommands` 那部分要另读）
+   ⇒ 图片 Blob 那一截很可能**正好在不含的那一半**，这一条要在读数旁边一起写。
+2. 归并到 `name` 时闭包/匿名函数是空串 ⇒ 那一格只能按类型看（这台把空串收成 `(无名)`，不会静默丢）。
+3. "从 GC root 到它"的完整路径要跑一次全图 BFS（几百万节点、内存 3~5× 文件）⇒ 这里刻意不做，
+   **现在只出"谁变多了"，不出"谁拽着它不放"**；后者是下一步，且要先定标再做，否则归因会说谎。
+4. `detachedness` 只统计 V8 自己标了的那一档 ⇒ 不等于"界面还在但内存里 detached"。
+
+## 这台自己坏过的两种形状（都是我的期望值错，不是解析器错）
+
+- 手写最小快照时把 `node_types[0]` 当成了"每个字段的种类数组" ⇒ selfcheck 当场红。
+  V8 的惯例是 `node_types[0]` **就是 `type` 字段的枚举名**，解析器按惯例读是对的，样本写错了。
+- 排"谁变最多"时期望写成按**带符号**大小排 ⇒ 又红。`-80` 那格（消失）确实该排在 `+64` 前面：
+  **排序键是差的绝对值**，因为"变小最多"同样是归因要看的信号。
+
+⇒ 两条都写在代码注释里而不是只写在这里，因为下一个改这台的人会先看到代码。

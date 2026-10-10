@@ -188,3 +188,19 @@ Motion for Vue / GSAP / @vueuse/motion **一个都没装**（§五 第 2 条"不
 这一层 CI 不跑，属本地手工背书）；`npm run verify` 唯一红仍是 **Change Budget 判据 3**
 （未推区间里 presentation 反复打补丁 —— 本轮三条含应用码的提交各自 `Version-Bump: patch`，
 这条红**没有自动出口**，处置方式仍等负责人定：拆分支、或明确接受它挂着）。
+
+## 11. 追加（2026-10-10 同一天再一轮：N23 的"只差实现成本"那一半实现完了）
+
+§9 第 3 条把 N23 写成"堆快照解析那一条（有明确方法，只差实现成本）"。这一轮把**实现成本那一半付掉了**：
+`perf/heapDelta.mjs`（量具八）现在能把 `.heapsnapshot` 按 `type+name` 聚合 `self_size`，并把两份相减按
+key 对齐（新增格/消失格都单独标出）。它自带对账走 `node perf/heapDelta.mjs --selfcheck`
+（三正三反；**条数只认它自己打印的那行结论**）——三条反例是这台量具的全部价值：文件截断、字段改名、
+根本不是快照，都必须当场抛而不是静默算出一份错数。
+
+⚠️ **这一格仍在"开着且有明确阻塞"那个桶里，桶的算术不变**：改变的是阻塞的位置 ——
+原先缺的是工具，现在缺的是**快照本身**（采一份要 CDP `HeapProfiler.takeHeapSnapshot`，
+两个环境成因记在任务 #19：探针并入用户已开着的浏览器实例时不响亮失败；换到 Chrome for Testing 后
+`HeapProfiler` 一条没跑过）。⇒ **不许把"selfcheck 绿"读成"N23 有数了"**，也不许据此写"每条约占多少"。
+另外这把尺子读不到的那一半已经写在 roadmap N23 行与 `perf/README.md` 量具八那节：V8 的 `self_size`
+**不含**字符串/`ArrayBuffer` 的外部内存（图片 Blob 很可能正好在不含的那一半），
+而"谁拽着它不放"要全图 BFS，这台刻意不做。方法、命令与边界见 roadmap §12.6.1 的 N23 行。
