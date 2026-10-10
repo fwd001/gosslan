@@ -13,6 +13,37 @@
 
 ## [Unreleased]
 
+## [4.33.40] - 2026-10-10
+
+### 原生体验 / 应用代码（原生体验 N22 剩下那半落地：图片行的"估算 288 / 骨架 128"两个数并成一个）
+
+- 改的是一处**结构性不一致**：图片容器定宽 208px（`w-52`），载荷里**没有原图尺寸**
+  （2026-10-10 现读三处：`useMessageFile.ts:41-52` 的兜底字段、`types.ts:220-228` 的 `FileMeta`、
+  `src-tauri/src/commands/group_announcements.rs:318` 那份 `json!` ⇒ 只有 name/path/size/sha256/subtype），
+  所以真实高 = `min(288, 208 × 原图高/原图宽)` 只能解码后知道；而骨架此前写死 `h-32` = 128，估算端写死 288
+  ⇒ **每条图片行挂载即被实测纠正（点亮 `heightVersion` ⇒ 整表前缀和重算，N10 那笔账），加载完成再变一次**。
+- 落法＝三个数收成一个：`utils/previewMetrics.ts` 新增 `IMAGE_BUBBLE_HEIGHT = 288`（估算 / 加载预留 / `<img>` 上限共用）
+  与 `IMAGE_PLACEHOLDER_HEIGHT = 128`（终态紧凑占位）；`utils/messageHeight.ts` 删掉本地那份 `IMAGE_BUBBLE = 288` 改引常量
+  （与 `MessageCodeBubble.vue:45` 用 `CODE_CLAMP_HEIGHT` 同一手法，本仓既有规矩）；
+  `MessageImageBubble.vue` 的 `h-32` 与 `max-h-72` 两处字面量改成 `:style` 绑常量，图标 `h-6 w-6` 改 `size-6`；
+  `MessageItem.vue` 那条「已被清理」占位同样改引 `IMAGE_PLACEHOLDER_HEIGHT`（并把那句"与骨架一致 h-32"的旧注释改对）。
+- 得到的 / 付出的：顶到上限那一档（竖图 / 手机截图）**加载完成零跳变**，且挂载那一次不再需要实测纠正；
+  代价换到横幅图那一侧（16:9 真高 ≈117px ⇒ 完成时收缩约 171px，原来是先空 160 再长 189）。
+  这一取舍原记为"观感取舍 ⇒ 人工验收，不自决"，2026-10-10 由用户指名 N22 拍板 ⇒ 方向选"预留取上界"。
+- 守面两条各挡对方挡不到的一半：`designGuards.ts` ㉞ `checkImageBubbleHeightSources`
+  （图片盒里出现 `h-*` / `max-h-*` 高度工具类即报、估算端自留副本即报、没引常量即报；注释里的字面量不算，
+  逃生阀 `image-height-ok`；真实树分母现数 图片盒 7 个 class 属性 / 0 处违规 —— **CI 跑这层**）
+  + 运行时探针 `scripts/check-ui-runtime.mjs --only=imgskel` 7 条（挂**真组件**量**真矩形**：h=288 / w=208 /
+  `<img>` max-height=288 / 落 failed 后 h=128，外加一次单点变异"把骨架按回 128 ⇒ 立刻判红"与它的可逆恢复 ——
+  **CI 不跑这层**，两条合起来才覆盖完整）。
+- ⚠️ 两条本轮现学的夹具事实写死在 `perf/README.md` 与本节，免得下一个人再试：
+  ① "内容永不完成的 blob" 让 `<img>` 停在加载中是**错的** —— `URL.createObjectURL` 当场抛 overload，
+  本探针第一次跑就是这条红的（红的是夹具不是产品）；② 隐藏态那张 `loading="lazy"` 的 `<img>`
+  在这台账具的资源计时里出现 **0 次请求**，所以 failed 态由代投 `error` 事件走满组件自己的 5 档退避得到 ——
+  **不许**据此推产品侧的懒加载行为。
+- ⚠️ 仍未量：那一跳在真机上的毫秒代价（`perf/README.md` 已注明本台数字偏乐观）。固有尺寸那条杠杆仍按
+  不可违反约束第 5 条排除（要动消息协议）。
+
 ### 量具 / 文档（原生体验 N10：把"50k 与 100k 之间那条折线"量到底，顺带发现**我公布的占比用错了尺寸**；**应用代码一字未动**）
 
 - **补的是第八轮欠的那格**（"50k / 100k 两档的直接量"）。`PERF_ONLY=calib node perf/run.mjs <n>` 同机现跑：

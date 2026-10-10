@@ -26,6 +26,8 @@ import {
   findMessageImageWithoutFetchHint,
   findFreshEmptyArrayProp,
   countListPropBindings,
+  checkImageBubbleHeightSources,
+  countClassAttrs,
   findImgTags,
   teleportedRootClasses,
 } from "./designGuards.ts";
@@ -2466,4 +2468,63 @@ test("N21 真实树：消息行调用点上这些绑定一个都不许带空数�
   assert.ok(bindings >= 4, `两个文件里只数到 ${bindings} 个列表型 prop 绑定 ⇒ 属性大概被改名了，这条判据现在是瞎的`);
   assert.deepEqual(bad, [], `消息行调用点又出现空数组字面量：\n${bad.join("\n")}`);
   console.log(`· N21 真实树分母：${rel.length} 份文件 / ${bindings} 个列表型 prop 绑定，全部引共享常量`);
+});
+
+// ---------------- ㉞ 图片盒高度只从 previewMetrics 取（roadmap N22） ----------------
+
+test("㉞ 正向：图片盒写了高度工具类必须报，估算端自留一份也要报", () => {
+  const bubble = `<script setup lang="ts">
+import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT } from "@/utils/previewMetrics";
+</script>
+<template>
+  <div class="relative w-52 max-w-full overflow-hidden">
+    <div v-if="state !== 'loaded'" class="flex h-32 w-full items-center bg-[var(--gosslan-hover)]" />
+    <img loading="lazy" decoding="async" class="block max-h-72 w-full object-contain" />
+  </div>
+</template>`;
+  const issues = checkImageBubbleHeightSources(bubble, "export const x = 1;");
+  assert.equal(issues.length, 2, `骨架与 <img> 各一条，现数 ${issues.length}`);
+  assert.ok(issues.every((i) => i.line > 0), "每条都要带行号");
+  assert.match(issues[0].message, /h-32/);
+  assert.match(issues[1].message, /max-h-72/);
+
+  const est = "const IMAGE_BUBBLE = 288;\nexport function f() { return IMAGE_BUBBLE; }";
+  const clean = '<template><div class="flex w-full items-center" /></template>\nimport { IMAGE_BUBBLE_HEIGHT } from "@/utils/previewMetrics";';
+  const withEst = checkImageBubbleHeightSources(clean, est);
+  assert.equal(withEst.length, 1, `估算端那份副本该报一条，现数 ${withEst.length}`);
+  assert.match(withEst[0].message, /估算端又定义了一份本地图片高度常量/);
+});
+
+test("㉞ 反面：从常量取高度 / 图标用 size-* / 注释里的写法 / 逃生阀 —— 都不许报", () => {
+  const ok = `<script setup lang="ts">
+import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT } from "@/utils/previewMetrics";
+</script>
+<template>
+  <div class="relative w-52 max-w-full overflow-hidden">
+    <!-- 旧写法：class="h-32"，已改走常量 -->
+    <div v-if="state !== 'loaded'" class="flex w-full items-center" :style="{ height: '288px' }">
+      <ImageIcon class="size-6 animate-pulse opacity-40" />
+    </div>
+    <img loading="lazy" decoding="async" class="block w-full object-contain" />
+  </div>
+</template>`;
+  assert.deepEqual(checkImageBubbleHeightSources(ok, "export const a = 1;"), []);
+  const opted = "<!-- image-height-ok -->\n" + ok.replace('class="flex w-full items-center"', 'class="flex h-32 w-full items-center"');
+  assert.deepEqual(checkImageBubbleHeightSources(opted, "export const a = 1;").filter((i) => /高度工具类/.test(i.message)), [],
+    "注释里的字面量与逃生阀那条都不该算");
+});
+
+test("㉞ 真实树：MessageImageBubble 与 messageHeight 现在这一份必须合规（分母现数）", () => {
+  const root = join(import.meta.dirname, "..");
+  const bubble = readFileSync(join(root, "components/message/MessageImageBubble.vue"), "utf8");
+  const est = readFileSync(join(root, "utils/messageHeight.ts"), "utf8");
+  const metrics = readFileSync(join(root, "utils/previewMetrics.ts"), "utf8");
+  const attrs = countClassAttrs(bubble);
+  assert.ok(attrs >= 5, `图片盒那份组件只数到 ${attrs} 个 class 属性 ⇒ 模板大概被改名了，这条判据现在是瞎的`);
+  assert.deepEqual(checkImageBubbleHeightSources(bubble, est), []);
+  // 常量本身必须是"三者同一个数"：估算端与渲染端引的是同一个名字，值只有一个家。
+  assert.match(metrics, /export const IMAGE_BUBBLE_HEIGHT = 288;/);
+  assert.match(metrics, /export const IMAGE_PLACEHOLDER_HEIGHT = 128;/);
+  assert.match(est, /import\s*\{[^}]*IMAGE_BUBBLE_HEIGHT[^}]*\}\s*from "@\/utils\/previewMetrics"/);
+  console.log(`· N22 真实树分母：图片盒 ${attrs} 个 class 属性 / 0 处高度工具类；估算端无本地副本`);
 });

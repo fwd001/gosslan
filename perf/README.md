@@ -167,35 +167,48 @@ N22 那一格等的是一条「估算与实测一致」的读数，而这台账�
 ⇒ 拿这里的 `accuracy()` 去证明"尺寸提示（width/height / aspect-ratio）补得对"是**循环论证**：
 真解码的图在哪一页都没有，而那页需要 Rust 后端与真数据。N22 剩下那半的阻塞因此从"方法未定"升级为
 "**本台结构上给不出这个读数**"，要靠真聊天页 + 真图片（或一条给占位块注入真实固有尺寸的独立夹具）才动得了。
+（**2026-10-10 后续**：那一格最后是靠 `scripts/check-ui-runtime.mjs --only=imgskel` 那 7 条合上的 —— 它挂的是**真组件**
+`MessageImageBubble.vue` 并量真矩形，与本条说的这台合成量具无关。**本台那条结论本身不变**：它仍给不出"估算 vs 实测"的独立读数。）
 
 ### 顺着这条线把生产那一侧的几何读完了（同一次探针的第二半，静态可判、不需要跑起来）
 
-读的是 `src/components/message/MessageImageBubble.vue` 与 `src/utils/messageHeight.ts`：
+读的是 `src/components/message/MessageImageBubble.vue` 与 `src/utils/previewMetrics.ts`。
+**2026-10-10 这一格已按下面的账落地**（roadmap N22 ⇒ 骨架占位策略），所以这一节从"待定的账"改成"改了之后的账 + 改之前的对照"：
 
-- 容器**定宽**：`MessageImageBubble.vue:97` 的 `w-52 max-w-full` ⇒ 13rem = **208px**；
-  `<img>` 是 `:120` 的 `block max-h-72 w-full object-contain` ⇒ 18rem = **288px 上限**。
+- 容器**定宽**：`MessageImageBubble.vue:98` 的 `w-52 max-w-full` ⇒ 13rem = **208px**；
+  `<img>` 的上限现在写在 `:135` 的 `:style="{ maxHeight: IMAGE_BUBBLE_HEIGHT + 'px' }"` ⇒ **288px**。
   字号走 `useAppStore.ts:329` 那条 `--gosslan-msg-size`（px 变量），**不动 root font-size**
   （`src` 下那两份 `.css` 里挂在 `html` 或 `:root` 选择器上的 `font-size` 声明现数为 0，
   `tailwind.config.js` 未覆写 spacing 刻度）
   ⇒ 这三个 px 值与用户字号无关。
-- ⇒ **加载完成后的真实高度 = min(288, 208 × 原图高/原图宽)**，而估算那侧是常量 288
-  （`messageHeight.ts:24-25`「图片气泡：max-h-72」+ `:99-100`）。
+  ⇒ 这三个 px 值与用户字号无关。
+- ⇒ **加载完成后的真实高度 = min(288, 208 × 原图高/原图宽)**，而估算那侧是同一个常量 288
+  （`previewMetrics.ts:157 IMAGE_BUBBLE_HEIGHT = 288`，`messageHeight.ts:6` 引它、`:99` 与 `:111` 用它）。
   ⇒ 288 不是"猜错了多少"，它是**这个框的上界**：只有 高/宽 ≥ 288/208 ≈ 1.385 的竖图才真落到 288，
-  横图与方图必然低于它 ⇒ 不一致是常态而不是例外。
-- 加载前那一格由**另一个节点**占位：`:107-109` 的骨架 `v-if="state !== 'loaded'"` 配 `h-32`（= 128px），
-  此时 `<img>` 不在 DOM 里 ⇒ 一条图片行从挂载到稳定**至少两次高度变化**（128 → 真实高度，而估算一直是 288）。
+  横图与方图必然低于它 ⇒ 与估算不一致是常态而不是例外。
+- 加载前那一格由**另一个节点**占位（`:118-126` 的骨架，`v-if="state !== 'loaded'"`）。
+  **2026-10-10 之前**它写死 `h-32` = 128px ⇒ 一条图片行从挂载到稳定**至少两次高度变化**（128 → 真实高，
+  而估算恒为 288 ⇒ 挂载那一次就要被实测纠正一遍）。**现在**它绑 `IMAGE_BUBBLE_HEIGHT` ⇒
+  预留 == 估算 == 上限三者同一个数，挂载那次纠正消失，顶到上限那一档（竖图 / 手机截图）**零跳变**；
+  代价换到横幅图那一侧（16:9 真高 ≈117px ⇒ 完成时收缩约 171px，原来是先空 160 再长 189）。
+  真浏览器读数（不是算术）来自 `scripts/check-ui-runtime.mjs` 的 `--only=imgskel` 那 7 条：
+  骨架矩形 h=288 / w=208、`<img>` max-height=288、把骨架按回 128 的单点变异立刻判红、
+  落进 failed 后矩形 h=128（终态占位仍紧凑，见 `IMAGE_PLACEHOLDER_HEIGHT`）。
 - ★ **撤掉我上一条里自己给的一句理由**：我说"尺寸提示补错方向会把图片拉伸，属正确性问题"——
-  这套 CSS 下拉伸不会发生（`w-52` 定宽 + `max-h-72` + `object-contain`：CSS 覆盖了由属性推导的宽高比，
+  这套 CSS 下拉伸不会发生（`w-52` 定宽 + `object-contain`：CSS 覆盖了由属性推导的宽高比，
   装不下的部分按 contain 留白），那句是错的。但结论反而更强：**给 `<img>` 补 `width`/`height` 对这一格的跳变毫无作用**——
   加载前那个节点不在 DOM 里，属性推出来的 aspect-ratio 无东西可预留；加载后的高度已由 CSS 决定。
-  ⇒ 这条"最小改动"在这里是**惰性的（inert）**，不是"有风险"。
-- 那把估算常量从 288 改成 128（对齐骨架）行不行？**不行**：`messageHeight.ts:1-2` 那份契约写明估算与渲染共用同一套常量
+  ⇒ 这条"最小改动"在这里是**惰性的（inert）**，不是"有风险"。落地上因此走的是"骨架预留取上界"而不是"补属性"。
+- 那把估算常量从 288 改成 128（对齐旧的骨架）行不行？**不行**：`messageHeight.ts:1-2` 那份契约写明估算与渲染共用同一套常量
   是**为了相邻消息不互相遮挡**，而低估 ⇒ 遮挡、高估 ⇒ 留白；竖图真实 288 > 128，改小是把"空洞"换成"重叠"，那是更坏的方向。
-- ⇒ 这一格剩下的杠杆只有两种，都不在本轮范围内：① 让每条图片消息**自带固有尺寸**（估得准的唯一前提），
-  那是协议/存储字段，按项目约束"不许为视觉效果动协议与数据库"排除；② 换骨架的占位策略（让骨架按上界长高），
-  纯渲染改动，但"少一次跳变"与"每行多 160px 灰块"是观感取舍 ⇒ 属人工验收，不自决。
-  复跑：`grep -n "w-52\|h-32\|max-h-72\|object-contain" src/components/message/MessageImageBubble.vue`、
-  `grep -n "IMAGE_BUBBLE" src/utils/messageHeight.ts`。
+  ⇒ 所以这一格只有一条正确的方向：**把骨架抬到估算那一边**，让两个数并成一个。
+- ⇒ 这一格原有的两条杠杆，现在的状态是：① 让每条图片消息**自带固有尺寸**（估得准的唯一前提）——
+  那是协议/存储字段，按项目约束"不许为视觉效果动协议与数据库"**仍排除**；② 换骨架的占位策略 ——
+  **2026-10-10 已落地**（用户指名 N22 ⇒ 那句"观感取舍待人工验收"就此收口）。
+  仍未量的只剩"那一跳在真机上值多少毫秒"（本台数字偏乐观那条不变）。
+  复跑：`grep -n "w-52\|data-img-skeleton\|IMAGE_BUBBLE_HEIGHT\|IMAGE_PLACEHOLDER_HEIGHT" src/components/message/MessageImageBubble.vue`、
+  `grep -n "IMAGE_BUBBLE_HEIGHT" src/utils/previewMetrics.ts src/utils/messageHeight.ts`、
+  `node scripts/check-ui-runtime.mjs --only=imgskel`。
 
 ## 还开着的一格（下一刀的位置）
 

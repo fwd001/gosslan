@@ -3,6 +3,7 @@
 
 import {
   CLAMPED_CODE_BLOCK_HEIGHT,
+  IMAGE_BUBBLE_HEIGHT,
   codeBlockHeight,
   textBubbleHeight,
 } from "@/utils/previewMetrics";
@@ -21,8 +22,6 @@ const ROW_PADDING = 12;
 const NICKNAME_ROW = 18;
 /** 时间分割线（含 py-2） */
 const TIME_DIVIDER = 32;
-/** 图片气泡：max-h-72 */
-const IMAGE_BUBBLE = 288;
 /** 普通文件卡片 */
 const FILE_CARD = 92;
 /** 提示行（系统消息 / 已撤回）：text-xs 行盒 16 + ROW_PADDING 12。 */
@@ -97,7 +96,7 @@ function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
     case "code":
       return codeBlockHeight(m.content);
     case "image":
-      return IMAGE_BUBBLE;
+      return IMAGE_BUBBLE_HEIGHT;
     case "file": {
       // 普通文件卡片 92；附件图片 ≤288；附件代码按截断态占位（读文件前预知不了行数）。
       let sub = "file";
@@ -109,7 +108,7 @@ function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
       } catch {
         /* 历史 / 异常内容按普通 file 卡片估 */
       }
-      if (hasPath && sub === "image") return IMAGE_BUBBLE;
+      if (hasPath && sub === "image") return IMAGE_BUBBLE_HEIGHT;
       if (hasPath && sub === "code") return CLAMPED_CODE_BLOCK_HEIGHT;
       return FILE_CARD;
     }

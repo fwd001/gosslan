@@ -1571,3 +1571,80 @@ export function countListPropBindings(raw: string): number {
   return n;
 }
 
+
+/**
+ * ㉞ 图片盒的高度只能从 `previewMetrics` 的常量取，组件里不许再写高度工具类；
+ * 估算端也不许留一份自己的副本（roadmap N22）。
+ *
+ * 为什么这条值得钉住：图片消息的载荷里**没有原图尺寸**（`content` 的 JSON 只有
+ * name/path/size/sha256/subtype；补 w/h 要动消息协议，为视觉效果排除），而容器**定宽** 208px
+ * ⇒ 真实高度只能在解码后知道：`min(IMAGE_BUBBLE_HEIGHT, 208 × 原图高/原图宽)`。
+ * 既然只能猜，就必须把"猜的那个数"收成一份：估算端、加载骨架、`<img>` 的上限三者同一个常量
+ * （2026-10-10 已收成 `previewMetrics.IMAGE_BUBBLE_HEIGHT`）。这一格此前是估算 288 / 骨架 128
+ * 两个数各写一处 ⇒ 图片行挂载那一次先空出 160px、再被实测纠正，N10 那笔"整表前缀和重算"的账
+ * 每张图片都要付一遍。
+ *
+ * 写回字面量的后果不报错、构建也过：界面只是又开始跳。运行时探针 `--only=imgskel` 量的是
+ * **真渲染出来的矩形**（那一半能抓到"改了写法但 CSS 没生效"），这条抓的是"在 CI 里也要当场变红"
+ * 的那一半（探针不在 CI 跑）。两半各覆盖对方覆盖不到的一半。
+ *
+ * ⚠️ 这条尺子的工作范围 = 图片盒的那一份实现（`MessageImageBubble.vue`，与 ③ 未读徽标
+ * "唯一实现"同一家规矩）；别的组件里 `h-*` 是合法写法，不扫。
+ * 逃生阀：文件里写 `image-height-ok`（若哪天图片盒真的换实现）。
+ */
+export function checkImageBubbleHeightSources(
+  bubbleSrc: string,
+  estimatorSrc: string,
+): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  // 注释里的写法不算（同 ㉝）：遮成空格而不是删掉，行号才不漂。
+  const src = bubbleSrc
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+
+  if (!bubbleSrc.includes("image-height-ok")) {
+    for (const m of src.matchAll(CLASS_ATTR_RE)) {
+      // 逐条扫这份 class 列表里的高度工具类（`size-6` 那种同时给宽高的不算高度工具类）。
+      for (const tok of m[1].split(/\s+/)) {
+        if (!/^(?:max-)?h-[\d.]+$/.test(tok)) continue;
+        out.push({
+          line: lineAt(src, m.index ?? 0),
+          message:
+            `图片盒里写了高度工具类 \`${tok}\` —— 高度只能从 previewMetrics 取` +
+            `（骨架用 IMAGE_BUBBLE_HEIGHT / 终态占位用 IMAGE_PLACEHOLDER_HEIGHT），` +
+            `否则虚拟列表的估算、加载预留与 <img> 上限会各留一份数，图片行又开始跳（N22）。` +
+            `图标这类与图片盒无关的尺寸请写 size-*。`,
+        });
+      }
+    }
+    if (!/IMAGE_BUBBLE_HEIGHT/.test(bubbleSrc) || !/from "@\/utils\/previewMetrics"/.test(bubbleSrc)) {
+      out.push({
+        line: 0,
+        message:
+          "图片盒没从 previewMetrics 引 IMAGE_BUBBLE_HEIGHT ⇒ 估算端与渲染端断了同一份常量（N22）。",
+      });
+    }
+  }
+
+  // 估算端那一侧：不许再留一份自己的图片高度常量（那份就是当年漂开的那个家）。
+  if (/const\s+IMAGE_BUBBLE\s*=\s*\d+/.test(estimatorSrc)) {
+    out.push({
+      line: lineAt(estimatorSrc, estimatorSrc.search(/const\s+IMAGE_BUBBLE\s*=\s*\d+/)),
+      message:
+        "估算端又定义了一份本地图片高度常量 ⇒ 请改成 import previewMetrics.IMAGE_BUBBLE_HEIGHT，" +
+        "否则改一处只会改到一边（N22）。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/** 这条尺子在这份组件里看得见多少个 class 属性（真实树那半的阳性对照：一个都看不见就是尺子瞎了）。 */
+export function countClassAttrs(raw: string): number {
+  const src = raw
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+  let n = 0;
+  CLASS_ATTR_RE.lastIndex = 0;
+  for (let m = CLASS_ATTR_RE.exec(src); m; m = CLASS_ATTR_RE.exec(src)) n += 1;
+  return n;
+}

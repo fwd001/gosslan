@@ -456,6 +456,43 @@ window.__probe = (() => {
     return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), bottom: Math.round(r.bottom) };
   };
 
+  /**
+   * 图片盒的几何（roadmap N22 骨架占位策略）。
+   *
+   * ⚠️ 两个常量都是**现读模块**（页面里 import previewMetrics 取）而不是探针里写死 288/128：
+   * 写死就变成"探针自己钉了一个数"，而这一格要判的是「渲染出来的矩形 == 估算端用的那个数」。
+   * import 到的与组件用的是同一个模块实例（install 那段已验证这条通道）。
+   */
+  H.imgBox = async () => {
+    const root = document.querySelector('[data-img-state]');
+    const sk = document.querySelector('[data-img-skeleton]');
+    const el = document.querySelector('[data-img-el]');
+    if (!root || !el) return { ok: false, why: '缺 data-img-state 或 data-img-el（钩子被改名了？）' };
+    const M = await import('/src/utils/previewMetrics.ts');
+    const cs = getComputedStyle(el);
+    const r = sk ? sk.getBoundingClientRect() : null;
+    return {
+      ok: true,
+      state: root.getAttribute('data-img-state'),
+      hasSkeleton: !!sk,
+      h: r ? Math.round(r.height) : null,
+      w: r ? Math.round(r.width) : null,
+      imgDisplay: cs.display,
+      // max-height 是内联样式绑上去的常量；<img> 隐藏时矩形量不到，只能读计算值
+      imgMax: Math.round(parseFloat(cs.maxHeight) || 0),
+      cap: M.IMAGE_BUBBLE_HEIGHT,
+      placeholder: M.IMAGE_PLACEHOLDER_HEIGHT,
+    };
+  };
+  /** 单点变异：把骨架高度按回旧的字面量写法（128）⇒ 那条"预留 == 估算"的判据必须当场不成立。 */
+  H.forceSkeletonLegacyHeight = async (on) => {
+    const sk = document.querySelector('[data-img-skeleton]');
+    if (!sk) return false;
+    const M = await import('/src/utils/previewMetrics.ts');
+    sk.style.height = String((on ? 128 : M.IMAGE_BUBBLE_HEIGHT)) + 'px';
+    return true;
+  };
+
   /** 对照：把入口按回"旧的中线居中"（top-1/2 + translateY(-50%)）⇒ 底边对齐差必须变大。 */
   H.forceLegacyReaction = (on) => {
     const btn = document.querySelector('[data-reaction-entry]');
@@ -1232,6 +1269,7 @@ async function main() {
     const reaction = want("reaction");
     const roster = want("roster");
     const overlay = want("overlay");
+    const imgskel = want("imgskel");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (task) await runTaskCard(cdp, url);
@@ -1240,6 +1278,7 @@ async function main() {
     if (reaction) await runReaction(cdp, url);
     if (roster) await runReactionRoster(cdp, url);
     if (overlay) await runOverlay(cdp, url);
+    if (imgskel) await runImageSkeleton(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
@@ -1322,6 +1361,82 @@ async function runReaction(cdp, url) {
   check("对照可逆：恢复后底边又对齐（不是把页面改坏了一次）",
     c.ok === true && Math.abs(c.bottom - c.colBottom) <= 1, "|差| <= 1",
     "btn=" + c.bottom + " col=" + c.colBottom);
+}
+
+/**
+ * 图片骨架的占位高度（roadmap N22 那一格的落点：骨架预留 == 估算端那个常量）。
+ *
+ * 为什么必须真浏览器量：这一格判的是**渲染出来的矩形高度**，静态 class 判据只能证明
+ * "组件引了常量"，证不了那个数最后落到盒子上（内联样式被别的规则盖掉、或者组件根本没挂起来）。
+ *
+ * 夹具：src 给一条 dev server 上不存在的路径，然后由探针按组件自己的退避节奏代投 error。
+ * ⚠️ 两个"试过但不对"的写法都留在这里，免得下一个人再试一次：
+ *   ① "内容永不完成的 blob"——URL.createObjectURL 直接抛 overload 错（本仓探针第一次跑就是这么红的，
+ *      红的是夹具不是产品）；② 等它**自己**报错——这张 <img> 在 loading="lazy" 且尚未显示时
+ *      根本没发起请求（下面那条网络读数 0 次），退避链第一步就迈不出去。
+ * 于是 loading 态读的是挂载即得的那个预留（state 初值就是 loading），failed 态由代投 error 走满
+ * 5 档退避得到 —— 打的仍是组件自己那个 @error 处理器，顺带把"全部重试失败才落 failed"
+ * （用户 2026-09-12：『加载失败应该是不可逆的最终结果』）在真浏览器里走了一遍。
+ */
+async function runImageSkeleton(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const mounted = await cdp.eval("window.__probe.install('/src/components/message/MessageImageBubble.vue', '', "
+    + JSON.stringify(JSON.stringify({ src: "/gosslan-probe-missing-image.png" })) + ")");
+  check("图片盒挂出来了（骨架才有得量）", !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+
+  const loading = await cdp.eval("window.__probe.imgBox()");
+  check("加载中：骨架预留 == 估算端那个常量（现读 previewMetrics，不写死数字）",
+    loading.ok === true && loading.state === "loading" && loading.h === loading.cap,
+    "state=loading 且 rect.h == IMAGE_BUBBLE_HEIGHT", JSON.stringify(loading));
+  check("加载中：容器定宽 208（w-52）⇒ 图片尺寸与兄弟节点（已读回执）无关",
+    loading.ok === true && loading.w === 208, "rect.w == 208", JSON.stringify(loading));
+  check("加载中：<img> 的上限也从同一个常量取（预留 == 上限 == 估算，三者一个数）",
+    loading.ok === true && loading.imgMax === loading.cap && loading.imgDisplay === "none",
+    "max-height == IMAGE_BUBBLE_HEIGHT 且图未显示", JSON.stringify(loading));
+
+  // 单点变异：把预留按回旧的字面量（128）⇒ 上面那条必须当场不成立（证明它会咬，不是恒真）
+  const mutated = await cdp.eval("window.__probe.forceSkeletonLegacyHeight(true)");
+  const after = await cdp.eval("window.__probe.imgBox()");
+  check("对照：把骨架按回旧的 128 ⇒ 判据立刻不成立（mutation 生效了）",
+    mutated === true && after.ok === true && after.h === 128 && after.h !== after.cap,
+    "rect.h 变成 128 且 != cap", JSON.stringify(after));
+  const restored = await cdp.eval("window.__probe.forceSkeletonLegacyHeight(false)");
+  const back = await cdp.eval("window.__probe.imgBox()");
+  check("对照可逆：恢复后又等于常量（没有把页面改坏一次）",
+    restored === true && back.ok === true && back.h === back.cap,
+    "rect.h == IMAGE_BUBBLE_HEIGHT", JSON.stringify(back));
+
+  // 等退避全部用完（8.4s）⇒ 落进 failed，那时占位必须换成紧凑那一档
+  // 终态那一档由探针**代浏览器投一次 error**（打的就是组件自己那个 @error 处理器）。
+  // 为什么不靠它自己报错：实测这张 <img> 在 loading="lazy" + 尚未显示（hidden）时
+  // **根本没发起请求**（下面那条网络读数是这件事的证据，0 次 = 没请求），于是退避链第一步就迈不出去。
+  // 为了凑一个态去改产品码不值得 ⇒ 按处理器真实的退避节奏（最短那档 400ms）把这 5 次投满，
+  // 顺带也把"重试全部失败才会落 failed"这条语义在真浏览器里走了一遍。
+  const netSeen = await cdp.eval(`(() => performance.getEntriesByType('resource')
+    .map((e) => e.name).filter((n) => n.includes('gosslan-probe-missing-image')).length)()`);
+  console.log("· imgskel 网络读数：这条 src 在页面资源计时里出现 " + netSeen
+    + " 次（0 = 隐藏 + lazy 的那张 <img> 在这台账具里根本没发起请求）");
+
+  // 有界：退避 5 档 + 每档之间要等 img 换代，14s 上限给真机/CI 抖动留余量。
+  let failed = null;
+  const timeline = [];
+  for (let i = 0; i < 20; i += 1) {
+    await cdp.eval(`(() => {
+      const el = document.querySelector('[data-img-el]');
+      if (el) el.dispatchEvent(new Event('error'));
+    })()`);
+    await sleep(700);
+    failed = await cdp.eval("window.__probe.imgBox()");
+    timeline.push(String(failed && failed.ok === true ? (failed.state === "failed" ? "F" : "l") : "?"));
+    if (failed && failed.ok === true && failed.state === "failed") break;
+  }
+  console.log("· imgskel 退避时间线（每投一次 error 读一态，l=加载中 F=失败态）：" + timeline.join(""));
+  check("失败态：退避用完后落到紧凑占位（不为一张永远等不来的图撑 288px 灰块）",
+    !!failed && failed.ok === true && failed.h === failed.placeholder,
+    "state=failed 且 rect.h == IMAGE_PLACEHOLDER_HEIGHT", JSON.stringify(failed));
 }
 
 /**

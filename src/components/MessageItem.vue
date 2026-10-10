@@ -8,7 +8,7 @@ import { useHoverCard } from "@/composables/useHoverCard";
 import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
-import { textNeedsClamp } from "@/utils/previewMetrics";
+import { IMAGE_PLACEHOLDER_HEIGHT, textNeedsClamp } from "@/utils/previewMetrics";
 import {
   isFavoritableKind,
   isForwardableKind,
@@ -1239,7 +1239,10 @@ async function copyFileToClipboard() {
           />
 
           <!-- 图片：已被存储清理时给出明确占位，而不是一个永远转圈/裂开的图片框。
-               尺寸与 MessageImageBubble 的骨架一致（h-32 w-52），避免清理前后高度跳变。
+               高度取 previewMetrics.IMAGE_PLACEHOLDER_HEIGHT —— 与 MessageImageBubble 的**终态**
+               占位同一份常量（那条是"加载失败"，这条是"已被清理"，都不会再有图进来）。
+               ⚠️ 刻意不等于 IMAGE_BUBBLE_HEIGHT：加载中要预留到估算那个数才不跳，
+               终态不必，为一张不会再来的图撑 288px 灰块是最差的选项（见 N22）。
                ⚠️ 必须是 v-else-if：这里若写成 v-if 会**切断上面的 v-if/v-else-if 链**，
                使这条新链末尾的 <div v-else> 变成"对所有 text / code 消息都成立的兜底"——
                于是每条文本消息都被渲染两遍（MessageTextBubble 一遍 + 原始文字一遍，
@@ -1247,7 +1250,8 @@ async function copyFileToClipboard() {
           <button
             v-else-if="message.kind === 'image' && attachmentMissing"
             type="button"
-            class="flex h-32 w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary "
+            class="flex w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary "
+            :style="{ height: `${IMAGE_PLACEHOLDER_HEIGHT}px` }"
             @click="refetchContent"
           >
             <ImageOff class="h-6 w-6 opacity-50" />
