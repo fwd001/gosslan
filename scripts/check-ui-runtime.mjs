@@ -417,6 +417,10 @@ window.__probe = (() => {
       // 任务卡底部那个入口 emit 的是 "open"（载荷是 todo_id）。tag 刻意叫 open-id：
       // 与上面那条 'open'（搜索弹窗的 open-conversation）区分开，免得两段互相污染判据。
       onOpen: (v) => events.push(['open-id', String(v)]),
+      // 输入框那一族（--only=inputpanel）要读得到"这条到底带不带 @ 的名单"：
+      // 编辑器上只有 token 的 DOM，载荷才有 mentionIds ⇒ 没有 onSend 就只能看 DOM 猜。
+      onSend: (p) => events.push(['send', JSON.stringify(p)]),
+      onAttach: () => events.push(['attach']),
     });
     const app = Vue.createApp({
       setup() {
@@ -1441,6 +1445,7 @@ async function main() {
     const overlay = want("overlay");
     const imgskel = want("imgskel");
     const pinkb = want("pinkb");
+  const inputpanel = want("inputpanel");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (task) await runTaskCard(cdp, url);
@@ -1451,6 +1456,7 @@ async function main() {
     if (overlay) await runOverlay(cdp, url);
     if (imgskel) await runImageSkeleton(cdp, url);
     if (pinkb) await runPinKeyboard(cdp, url);
+    if (inputpanel) await runInputPanels(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
@@ -3279,5 +3285,215 @@ async function runTaskCard(cdp, url) {
     clicked === true && opened.length === 1 && opened[0] === TODO_ID,
     "1 次 open 且带 " + TODO_ID, JSON.stringify(ev));
 }
+
+/**
+ * 输入框那两个浮层的**真布局**判据（`--only=inputpanel`）。
+ *
+ * 为什么这一格非用真布局不可（评审登记过、此前故意没补）：`MessageComposer` 里的表情面板与
+ * @ 候选列表都是 CSS `absolute bottom-full` **往上长**、留在输入框卡片里面。
+ * 单独把 `EmojiPicker` 挂起来量，"往上长"这个方向没有参照物 ⇒ 量不到那一型真实缺陷
+ *（面板顶部被视口上边缘切掉 / 被某个祖先的 overflow 裁掉）。
+ *
+ * ⚠️ 宿主壳只做一件事：把输入卡片压到视口底部（真实聊天窗里它就是 flex 的最后一项）。
+ *    不给组件加新属性、不改样式、不改产品码 —— 为可测性加 `data-*` 也算动应用码（这条本仓付过一次版本号）。
+ *    几何读数全部走现成的 `window.__probe.floatLayer(sel)`（它同时给 inViewport、被谁裁、
+ *    有没有打断层链的祖先），不在这里另开第二份几何家。
+ */
+async function runInputPanels(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const props = JSON.stringify({
+    convId: "group:input-panel",
+    mentionMembers: [{ id: "p1", name: "小布" }, { id: "p2", name: "阿蓝" }],
+  });
+  const mounted = await cdp.eval("window.__probe.install('/src/components/chat/MessageComposer.vue', '', "
+    + JSON.stringify(props) + ")");
+  check("输入框挂得起来（两个浮层才有得量；挂不起来这一整段只能记未量）",
+    !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+
+  await cdp.eval(`(() => {
+    document.body.style.cssText = "margin:0;height:100vh;display:flex;flex-direction:column;justify-content:flex-end";
+    const host = document.body.lastElementChild;
+    if (host) host.style.flex = "none";
+    return !!document.querySelector('.gosslan-composer');
+  })()`);
+  await sleep(400);
+  const card = await cdp.eval(`(() => {
+    const c = document.querySelector('.gosslan-composer');
+    if (!c) return { ok: false };
+    const r = c.getBoundingClientRect();
+    return { ok: true, top: Math.round(r.top), bottom: Math.round(r.bottom), vh: window.innerHeight };
+  })()`);
+  check("宿主壳成立：输入卡片真的贴在视口底部（不贴底就没有「往上长」这回事，下面全部不作数）",
+    !!card && card.ok === true && card.bottom <= card.vh + 2 && card.vh - card.bottom < 40,
+    "bottom ≈ innerHeight", JSON.stringify(card));
+
+  const pointOf = (key) => cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const label = t(${JSON.stringify(key)});
+    const b = Array.from(document.querySelectorAll('.gosslan-composer button'))
+      .find((x) => x.getAttribute('aria-label') === label);
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2, top: Math.round(r.top) };
+  })()`);
+  const realClick = async (p) => {
+    await cdp.send("Input.dispatchMouseEvent",
+      { type: "mousePressed", x: p.x, y: p.y, button: "left", clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent",
+      { type: "mouseReleased", x: p.x, y: p.y, button: "left", clickCount: 1 });
+    await sleep(400);
+  };
+
+  // ── ① 表情面板 ──────────────────────────────────────────────
+  const emojiBtn = await pointOf("chat.composer.emoji");
+  check("那颗表情按钮找得到（按 i18n 的 aria-label 认，不写死中文串）",
+    !!emojiBtn, "找得到一颗 button", JSON.stringify(emojiBtn));
+  if (!emojiBtn) return;
+  await realClick(emojiBtn);
+  const SEL_DLG = '.gosslan-composer [role="dialog"]';
+  const dlg = await cdp.eval("window.__probe.floatLayer(" + JSON.stringify(SEL_DLG) + ")");
+  check("真点之后表情面板挂在**输入框卡片里面**（不是单独挂的那一份 ⇒ 锚定路径被走全）",
+    !!dlg && dlg.ok === true, "卡片内有 role=dialog", JSON.stringify(dlg && dlg.why));
+  check("表情面板整个在视口内（往上长 ⇒ 上边缘才是真实风险，这条量的就是它）",
+    !!dlg && dlg.ok === true && dlg.inViewport === true,
+    "inViewport=true", JSON.stringify([dlg && dlg.rect, dlg && dlg.vh]));
+  // ⚠️ 裁切这一条不能直接拿 floatLayer 的 clipped 原样判：这个应用是桌面壳，`body` 本来就写死
+  // `overflow:hidden`，而输入框那两张面板是 **absolute**（不是那几族 Teleport 到 body 的 fixed），
+  // 于是 body 一定会被算进裁切祖先 —— 那不是缺陷，是壳的形状。真正要判的是**中间那层卡片**
+  // （输入框自己那张 `.gosslan-composer` 或它的包裹层）会不会把往上长的面板切掉。
+  const shellRoot = (x) => x === "body" || x === "html" || String(x).startsWith("body:") || String(x).startsWith("html:");
+  const dlgCutters = ((dlg && dlg.clipped) || []).filter((x) => !shellRoot(x));
+  check("面板底边落在按钮顶边之上（bottom-full 那句真的生效），且没有**中间层**卡片裁得到它",
+    !!dlg && dlg.ok === true && Number(dlg.rect.bo) <= emojiBtn.top + 2 && dlgCutters.length === 0,
+    "panel.bottom ≤ 按钮 top 且非壳层裁切祖先为空",
+    JSON.stringify([dlg && dlg.rect, emojiBtn.top, (dlg && dlg.clipped) || []])
+    + "（壳层 body/html 已按上面的理由排除，排除前原样是这一串）");
+  const hitDlg = await cdp.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(SEL_DLG)});
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return !!(top && el.contains(top));
+  })()`);
+  check("面板中心那一点归面板自己接（既不『看不见却接得住』，也不反过来被别层盖住）",
+    hitDlg === true, "elementFromPoint 落在面板内部", "hit=" + hitDlg);
+
+  // ★ 这条变异专门证「中间层裁切」这一型缺陷**只有这条判据看得见**：把输入框卡片自己改成
+  // `overflow:hidden`（真实缺陷的形状：外壳加了圆角 + 裁切，面板往上长就被齐根切掉）。
+  // 注意此时面板的矩形与 inViewport **都不变**（它照样画在视口里、只是被祖先剪掉一块）⇒
+  // 只判视口那条会放它过去。没有这一格，上面那条裁切判据等于没被证明会咬。
+  await cdp.eval(`(() => { const c = document.querySelector('.gosslan-composer'); if (c) c.style.overflow = "hidden"; })()`);
+  const cut = await cdp.eval("window.__probe.floatLayer(" + JSON.stringify(SEL_DLG) + ")");
+  const cutters = ((cut && cut.clipped) || []).filter((x) => !shellRoot(x));
+  check("变异：输入框卡片改成 overflow:hidden ⇒ 中间层裁切必须被报出来（且 inViewport 仍为真 ⇒ 证明这条不是视口那条的别名）",
+    !!cut && cut.ok === true && cutters.length > 0 && cut.inViewport === true,
+    "非壳层裁切祖先 ≥ 1 且 inViewport 仍 true",
+    JSON.stringify([cut && cut.clipped, cut && cut.inViewport, cut && cut.rect]));
+  await cdp.eval(`(() => { const c = document.querySelector('.gosslan-composer'); if (c) c.style.removeProperty("overflow"); })()`);
+  const cutBack = await cdp.eval("window.__probe.floatLayer(" + JSON.stringify(SEL_DLG) + ")");
+  check("变异可逆：撤掉那行 overflow 后裁切祖先回到只剩壳层（对照自己不留残留）",
+    !!cutBack && ((cutBack.clipped) || []).filter((x) => !shellRoot(x)).length === 0,
+    "非壳层裁切祖先为空", JSON.stringify(cutBack && cutBack.clipped));
+
+  await cdp.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(SEL_DLG)});
+    if (el) { el.style.bottom = "auto"; el.style.top = "180vh"; }
+  })()`);
+  const pushed = await cdp.eval("window.__probe.floatLayer(" + JSON.stringify(SEL_DLG) + ")");
+  check("变异：把面板整块推到视口下方外 ⇒ inViewport 必须翻假（证明那条不是恒真）",
+    !!pushed && pushed.ok === true && pushed.inViewport === false,
+    "inViewport=false", JSON.stringify(pushed && pushed.rect));
+  await cdp.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(SEL_DLG)});
+    if (el) { el.style.removeProperty("bottom"); el.style.removeProperty("top"); }
+  })()`);
+  const back = await cdp.eval("window.__probe.floatLayer(" + JSON.stringify(SEL_DLG) + ")");
+  check("变异可逆：撤掉那两行内联样式后它又整个回到视口内（没把页面改坏一次）",
+    !!back && back.ok === true && back.inViewport === true, "inViewport=true", JSON.stringify(back && back.rect));
+
+  // 关掉表情面板，再走 @ 那一条（两层浮层不叠着：全局互斥那一族已经判过，这里只要干净起点）
+  await realClick(emojiBtn);
+  const closed = await cdp.eval(`!!document.querySelector(${JSON.stringify(SEL_DLG)})`);
+  check("再点一次那颗按钮面板就收起（DOM 撤净，不留看不见的一层）",
+    closed === false, "role=dialog 为 0 个", "还在=" + closed);
+
+  // ── ② @ 候选列表 ────────────────────────────────────────────
+  const edPoint = await cdp.eval(`(() => {
+    const e = document.querySelector('.gosslan-composer [contenteditable="true"]')
+      || document.querySelector('.gosslan-composer [data-focus-ring-ok]');
+    if (!e) return null;
+    const r = e.getBoundingClientRect();
+    return { x: r.x + Math.min(24, r.width / 2), y: r.y + r.height / 2 };
+  })()`);
+  check("编辑器找得到（真点击才能把 caret 放进去，eval 里 focus() 不算真焦点）",
+    !!edPoint, "找得到可编辑区", JSON.stringify(edPoint));
+  if (!edPoint) return;
+  await realClick(edPoint);
+  await cdp.eval("window.__probe.reset()");
+  await cdp.send("Input.insertText", { text: "@" });
+  await sleep(500);
+  const SEL_LIST = '.gosslan-composer .frost:not([role="dialog"])';
+  const lst = await cdp.eval("window.__probe.floatLayer(" + JSON.stringify(SEL_LIST) + ")");
+  check("真输入一个 @ 就浮出候选列表（走的是组件自己的 input 事件，不是我们把状态摆好）",
+    !!lst && lst.ok === true, "列表挂载", JSON.stringify(lst && lst.why));
+  const rows = await cdp.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(SEL_LIST)});
+    return el ? el.querySelectorAll("button").length : -1;
+  })()`);
+  check("列表里真的列出了成员（>0；名单来自 props，不是夹具自己塞的 DOM）",
+    Number(rows) > 0, ">0 行", "rows=" + rows);
+  check("候选列表整个在视口内，且长在卡片上方（和表情面板同一个往上长的方向）",
+    !!lst && lst.ok === true && lst.inViewport === true && Number(lst.rect.bo) <= card.top + 2,
+    "inViewport 且 list.bottom ≤ 卡片 top", JSON.stringify([lst && lst.rect, card.top]));
+
+  // 对照：换一个普通字符 ⇒ 列表必须不出现（没有这一格，上面三条可以由"列表一直在"冒充）
+  await cdp.eval(`(() => {
+    const e = document.querySelector('.gosslan-composer [contenteditable="true"]')
+      || document.querySelector('.gosslan-composer [data-focus-ring-ok]');
+    if (e) { e.innerHTML = ""; e.dispatchEvent(new InputEvent("input", { bubbles: true })); }
+  })()`);
+  await cdp.send("Input.insertText", { text: "x" });
+  await sleep(450);
+  const noList = await cdp.eval(`!!document.querySelector(${JSON.stringify(SEL_LIST)})`);
+  check("对照：把 @ 换成普通字符 ⇒ 候选列表必须不出现（证明那三条不是恒真）",
+    noList === false, "列表为 0 个", "还在=" + noList);
+
+  // 键盘出口 + 载荷：重新输入 @ → ArrowDown → Enter 选中 → 回车发送 ⇒ 读 send 的 mentionIds
+  await cdp.eval(`(() => {
+    const e = document.querySelector('.gosslan-composer [contenteditable="true"]')
+      || document.querySelector('.gosslan-composer [data-focus-ring-ok]');
+    if (e) { e.innerHTML = ""; e.dispatchEvent(new InputEvent("input", { bubbles: true })); }
+  })()`);
+  await realClick(edPoint);
+  await cdp.send("Input.insertText", { text: "@小" });
+  await sleep(450);
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  await cdp.key("Enter", "Enter", "\r", 13);
+  await sleep(500);
+  const token = await cdp.eval(`(() => {
+    const tk = document.querySelector('.gosslan-composer .mention-token[data-mention-id]');
+    return tk ? tk.getAttribute("data-mention-id") : null;
+  })()`);
+  check("方向键 + 回车真的选中了那一条：编辑器里落下带 data-mention-id 的 token",
+    typeof token === "string" && token.length > 0, "一个带 id 的 token", "token=" + JSON.stringify(token));
+  await cdp.key("Enter", "Enter", "\r", 13);
+  await sleep(500);
+  const sent = await cdp.eval(`(() => {
+    const s = (window.__probe.events || []).filter((e) => e[0] === "send");
+    return s.length ? JSON.parse(s[s.length - 1][1]) : null;
+  })()`);
+  check("再按一次回车把这条发出去，载荷里的 mentionIds 认得那个 id（DOM 上只有 token，名单在载荷里）",
+    !!sent && Array.isArray(sent.mentionIds) && sent.mentionIds.length > 0,
+    "send 载荷带 mentionIds", JSON.stringify(sent));
+  check("发出去之后输入框清空、候选列表不残留（同一次动作的两半，不许只做成一半）",
+    await cdp.eval(`(() => {
+      const e = document.querySelector('.gosslan-composer [contenteditable="true"]')
+        || document.querySelector('.gosslan-composer [data-focus-ring-ok]');
+      return !!(e && !e.textContent.trim()) && !document.querySelector(${JSON.stringify(SEL_LIST)});
+    })()`) === true, "编辑器空、列表不在", "读到的仍是残留");
+}
+
 
 await main();
