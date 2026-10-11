@@ -159,6 +159,34 @@ test("失败后到达的更高证据必须翻案（帧其实送到了）", () =>
   assert.equal(foldReminders(rows).get("m1")?.phase, "reminded");
 });
 
+test("没有对应发起行的回执挂不住（不凭空造状态）", () => {
+  const fold = foldReminders([ackRow("a1", "ghost", "confirmed")]);
+  assert.equal(fold.get("ghost"), undefined);
+});
+
+test("群聊：全部设备失败，总览才是 failed；一台翻案即翻案", () => {
+  const allFailed = foldReminders([
+    remindRow("r1", "m1", { status: "failed", actors: ["dev-b", "dev-c"] }),
+  ]);
+  assert.equal(allFailed.get("m1")?.phase, "failed");
+  // dev-b 后来其实收到并回了 alerted：最慢原则 ⇒ 总览抬到 reminded
+  const oneRecovered = foldReminders([
+    remindRow("r1", "m1", { status: "failed", actors: ["dev-b", "dev-c"] }),
+    ackRow("a1", "r1", "alerted", { seq: 5, sender: "dev-b" }),
+  ]);
+  assert.equal(oneRecovered.get("m1")?.phase, "reminded");
+});
+
+test("1:1：名单外的回执发送方自动补格子", () => {
+  const rows = [
+    remindRow("r1", "m1", { status: "delivered" }),
+    ackRow("a1", "r1", "confirmed", { seq: 5, sender: "dev-b" }),
+  ];
+  const s = foldReminders(rows).get("m1");
+  assert.equal(s?.perActor["dev-b"], "confirmed");
+  assert.equal(s?.phase, "confirmed");
+});
+
 test("payload builder 与 Rust 字段名逐字一致", () => {
   assert.equal(buildRemindPayload("m1", ["d2"]), JSON.stringify({ target: "m1", actors: ["d2"] }));
   assert.equal(buildRemindAckPayload("r1", "confirmed"), JSON.stringify({ target: "r1", stage: "confirmed" }));

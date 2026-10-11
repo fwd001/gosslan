@@ -28,6 +28,12 @@ import { EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { actionableRequests } from "@/utils/friendRequests";
 import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/notifications";
 import { batchIsUrgent } from "@/utils/notifyUrgency";
+import {
+  buildRemindAckPayload,
+  buildRemindPayload,
+  foldReminders,
+  parseRemind,
+} from "@/utils/reminders";
 import { buildReactionPayload } from "@/utils/reactions";
 import { isRenderedInTimeline, countsTowardUnread } from "@/utils/messageKinds";
 import {
@@ -47,9 +53,13 @@ import { shouldRunThrottled } from "@/utils/defer";
 import { mergePeerList } from "@/utils/peerMerge";
 import { markFriendsOnlineFrom } from "@/utils/friendOnline";
 import {
+  createChannel,
+  Importance,
   onAction,
   registerActionTypes,
+  removeChannel,
   sendNotification,
+  Visibility,
 } from "@tauri-apps/plugin-notification";
 import type {
   Conversation,
@@ -230,9 +240,7 @@ export const useChatStore = defineStore("chat", () => {
         // 每个会话取其最后一条），不是按整个未读列表 —— 否则一条三天前的紧急任务
         // 会让每次新消息都弹跳 Dock。
         const urgent = batchIsUrgent(entries.map((e) => e.last));
-        void api.requestAttention(urgent).catch(() => {
-          /* 个别 Linux 桌面环境不支持闪烁，忽略即可（通知本身已经发出） */
-        });
+        requestAttentionOnce(urgent);
       }
     }).catch((e) => {
       // ⚠️ 本批修的正是这里：`flushNotifications` **先 `clear()` 再 await 权限**，
@@ -241,6 +249,19 @@ export const useChatStore = defineStore("chat", () => {
       // 放回队列是安全的：失败点在**任何一条通知发出之前**，不会重复提醒。
       console.warn("[notify] 权限查询失败，这批通知退回队列", e);
       mergeNoticesInto(notifyQueue, entries);
+    });
+  }
+
+  /**
+   * 提请注意（Windows 闪任务栏 / macOS 弹跳 Dock）的**唯一字面调用点** ——
+   * 守卫钉"只此一处"：打断必须与"通知确实已发出"同进同出。普通消息批在
+   * `flushNotifications`（去抖合并后）调；强提醒在 `handleIncomingRemind`
+   * （通知命令返回 sent=true 后）调。两处都不许直接写 api.requestAttention。
+   */
+  function requestAttentionOnce(urgent: boolean) {
+    if (app.isMobile) return; // 移动端没有任务栏/Dock 可闪（命令本身也是空实现）
+    void api.requestAttention(urgent).catch(() => {
+      /* 个别 Linux 桌面环境不支持闪烁，忽略即可（通知本身已经发出） */
     });
   }
 
@@ -345,7 +366,139 @@ export const useChatStore = defineStore("chat", () => {
     queueNotification(rec);
   }
 
-  async function handleNotificationClick(convId: string) {
+  // ---------------- 强提醒：接收处理（与普通消息通知分开） ----------------
+  // 已在本机处理过的 remind msg_id：多投递路径 / 重复帧只生效一次（不再回执、不再响）。
+  const remindedIds = new Set<string>();
+  const REMINDED_IDS_MAX = 512;
+
+  /**
+   * Android 强提醒通知通道：High 重要级 = 横幅弹出 + 锁屏可见，声音/振动跟随通道设置。
+   * 插件约定「通道不存在时带 channelId 的通知不会发出」⇒ init 必须先建；
+   * 声音/振动开关变化时 remove+create 重建（Android 不允许直接改已建通道的声/振）。
+   * 用户在系统设置里对通道的手动修改不被覆盖（只有我们自己的开关变化才重建）。
+   */
+  const REMIND_CHANNEL_ID = "gosslan_remind";
+  let remindChannelReady = false;
+  async function ensureRemindChannel(recreate: boolean) {
+    if (!app.isMobile) return;
+    try {
+      if (recreate) await removeChannel(REMIND_CHANNEL_ID).catch(() => {});
+      await createChannel({
+        id: REMIND_CHANNEL_ID,
+        name: t("msg.remind"),
+        description: t("remind.channelDesc"),
+        importance: Importance.High,
+        visibility: Visibility.Public,
+        lights: true,
+        vibration: app.remindVibrate,
+        // undefined = 系统默认声；空串 = 静音（插件 Android 侧按空串设无声通道）。
+        ...(app.remindSound ? {} : { sound: "" }),
+      });
+      remindChannelReady = true;
+    } catch {
+      // 建不上就不带 channelId 发（走系统默认通道），不能让通知整条丢掉。
+      remindChannelReady = false;
+    }
+  }
+
+  /**
+   * 接收一条 kind=remind：
+   * 1. 判「是不是发给我」：群聊看 actors 名单（受众是名单层语义），私聊恒为对端→我；
+   * 2. 按 remind msg_id 去重（R8：同帧重复到达不能反复响 / 反复回执）；
+   * 3. 立刻回 stage=alerted 自动回执 —— 只在「帧已确认归属本机」时发，
+   *    不挂在本地通知 API 成功上（R1：通知调用成功 ≠ 对方收到 ≠ 用户确认）；
+   * 4. 振动（支持的平台）+ 高优先级通知：绕过 1.5s 去抖合并（R2），
+   *    但仍尊重总开关 / 权限 / 「前台正查看该会话」的抑制；
+   * 5. 声音由后端的系统通知通道处理（系统静音 / 勿扰时由系统决定）。
+   */
+  function handleIncomingRemind(rec: MessageRecord) {
+    const myId = app.device?.device_id;
+    if (!myId || rec.sender_id === myId) return;
+    const payload = parseRemind(rec);
+    if (!payload) return;
+    if (rec.conv_id.startsWith("group:")) {
+      if (!payload.actors.includes(myId)) return;
+      // actors 是发起时刻拍的名单；帧到达时本机可能已被移出群（密钥轮换后本解不开
+      // 新帧，但轮换前加密的帧仍可能送达）⇒ 以**当前**成员表再校验一次（风险 R6）。
+      const gid = rec.conv_id.slice(6);
+      const stillMember = groups.value.some(
+        (g) => g.id === gid && g.members.includes(myId),
+      );
+      if (!stillMember) return;
+    }
+    if (remindedIds.has(rec.msg_id)) return;
+    remindedIds.add(rec.msg_id);
+    trimOldest(remindedIds, REMINDED_IDS_MAX); // Set 迭代保序 ⇒ FIFO
+
+    // S3 自动回执：此刻帧已通过签名/解密/归属校验（后端落库前已做），与本地通知是否弹出无关。
+    void send(rec.conv_id, buildRemindAckPayload(rec.msg_id, "alerted"), "remind_ack").catch(
+      () => {
+        /* 回执发送失败不影响提醒本身；重连后 outbox 会补发同类帧 */
+      },
+    );
+
+    // 应用在前台且正查看该会话 → 不做任何强提醒（时间线上的强提醒标识本身可见）。
+    const viewing =
+      !document.hidden && document.hasFocus() && activeConv.value === rec.conv_id;
+    // 总开关关着：不响不振不弹（声音/振动是通知的子集，用户预期一致）。
+    if (!app.notifyEnabled || viewing) return;
+
+    const title = `${t("remind.notifyTitle")} · ${nicknameOf(rec.sender_id)}`;
+    const body = app.notifyShowContent
+      ? t("remind.notifyBody")
+      : t("remind.notifyBodyHidden");
+    // 振动：WebView 支持才调（Android WebView 支持；iOS WKWebView 无 vibrate ⇒ 天然 no-op）。
+    const vibrate = () => {
+      if (app.remindVibrate && typeof navigator.vibrate === "function") {
+        try {
+          navigator.vibrate([200, 100, 200]);
+        } catch {
+          /* 个别 WebView 可能抛异常，忽略即可 */
+        }
+      }
+    };
+
+    if (app.isMobile) {
+      // Android 13+ 的 POST_NOTIFICATIONS 是运行时权限：被拒就不振不弹
+      //（S3 回执不依赖权限，已在上面发出）。首次收到强提醒时这也是一次合理的申请时机。
+      void app.ensureNotifyPermission().then((granted) => {
+        if (!granted) return;
+        vibrate();
+        const id = notifSeq++;
+        notifMap.set(id, rec.conv_id);
+        trimOldest(notifMap, NOTIF_MAP_MAX);
+        void sendNotification({
+          id,
+          title,
+          body,
+          autoCancel: true,
+          actionTypeId: "chat",
+          // 通道就绪才挂 channelId（插件约定通道不存在时通知不发出）：
+          // 高重要级通道给强提醒横幅 + 系统声/振动；没建上就退回系统默认通道。
+          ...(remindChannelReady ? { channelId: REMIND_CHANNEL_ID } : {}),
+          extra: { type: "chat", conv_id: rec.conv_id, msg_id: payload.target },
+        });
+      });
+    } else {
+      vibrate();
+      void api
+        .notifyDesktop(title, body, rec.conv_id, {
+          msgId: payload.target,
+          sound: app.remindSound,
+          actionLabel: t("notification.view"),
+        })
+        .then((sent) => {
+          // 强提醒恒按紧急处理（Windows 闪任务栏 / macOS 弹跳 Dock）。
+          // ⚠️ 这一路径不经过通知中心、不受勿扰开关影响 —— 设置页需如实说明。
+          if (sent) requestAttentionOnce(true);
+        })
+        .catch(() => {
+          /* 后端已记日志 */
+        });
+    }
+  }
+
+  async function handleNotificationClick(convId: string, msgId?: string) {
     await api.focusWindow();
     // 翻页排在加载之前（用户 2026-09-24 #29）：`focusWindow` 必须先行（窗口还在托盘里时
     // 切，用户会在浮出瞬间看到一次跳变），但 `openConversation` 不能等 —— 它内部是
@@ -353,14 +506,25 @@ export const useChatStore = defineStore("chat", () => {
     // 「点通知」白等一次读库才翻页。
     if (app.isMobile) app.mobileView = "chat";
     await openConversation(convId);
+    // 强提醒：打开会话后继续翻页定位到**被提醒的原消息**；失败提示而不是静默。
+    if (msgId) {
+      const r = await locateMessageInConv(convId, msgId);
+      if (r === "not-found" || r === "error") {
+        app.toast(t("remind.locateFail"), "info");
+      }
+    }
   }
 
   /**
    * 通知点击的**统一路由**：桌面端（后端 `notification-clicked` 事件）与移动端
-   * （插件的 `actionPerformed`）共用一份 —— 两条路径的载荷同形（`type` / `conv_id`），
-   * 各写一份就一定会漂移（"桌面点得动、手机点不动"这类只在某一个平台现形的缺陷）。
+   * （插件的 `actionPerformed`）共用一份 —— 两条路径的载荷同形（`type` / `conv_id` /
+   * `msg_id`），各写一份就一定会漂移（"桌面点得动、手机点不动"这类只在某一个平台现形的缺陷）。
    */
-  function routeNotificationClick(type: string | undefined, convId: string | undefined) {
+  function routeNotificationClick(
+    type: string | undefined,
+    convId: string | undefined,
+    msgId?: string,
+  ) {
     if (type === "friend_request") {
       // 唤起窗口后再切视图：窗口还在托盘里时切，用户会在浮出瞬间看到一次跳变。
       void api.focusWindow().then(() => {
@@ -368,7 +532,7 @@ export const useChatStore = defineStore("chat", () => {
       });
       return;
     }
-    if (convId) void handleNotificationClick(convId);
+    if (convId) void handleNotificationClick(convId, msgId);
   }
 
   // ---------------- 消息合并（同步） ----------------
@@ -1274,6 +1438,26 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
+   * 发起强提醒：对 `targetMsgId` 发一条 kind=remind。
+   * 群聊必须带显式 actors 名单（第一版不默认全群）；私聊名单为空（默认对方）。
+   * 复用普通 send 链路（乐观气泡/outbox/Ack），不另造传输。
+   */
+  async function sendReminder(convId: string, targetMsgId: string, actors: string[] = []) {
+    await send(convId, buildRemindPayload(targetMsgId, actors), "remind");
+  }
+
+  /**
+   * 「我知道了」：找到以 targetMsgId 为目标的那条 remind，回 stage=confirmed。
+   * 没折叠出对应 remind（消息已被清/还没加载）时如实抛错，不静默。
+   */
+  async function confirmReminder(convId: string, targetMsgId: string) {
+    const list = messages.value[convId] ?? [];
+    const state2 = foldReminders(list).get(targetMsgId);
+    if (!state2) throw new Error("reminder-not-found");
+    await send(convId, buildRemindAckPayload(state2.remindId, "confirmed"), "remind_ack");
+  }
+
+  /**
    * 替换会话内指定 msg_id 的消息（乐观记录 → 真实记录 / 状态变更）。
    *
    * ⚠️ 必须走 `replaceOptimistic`（按 `msg_id` 认，不按位置换）：群发送的真实记录有**两条**
@@ -2013,7 +2197,8 @@ export const useChatStore = defineStore("chat", () => {
       },
       onMessage: (rec) => {
         enqueueMessage(rec);
-        maybeNotify(rec);
+        if (rec.kind === "remind") handleIncomingRemind(rec);
+        else maybeNotify(rec);
         // 公告发布/删除：刷新「会话列表 📢 标记」的数据源（一条 SQL 全量折叠，代价低）。
         if (rec.kind === "announcement" || rec.kind === "announcement_delete") {
           void refreshAnnouncements();
@@ -2122,7 +2307,7 @@ export const useChatStore = defineStore("chat", () => {
       },
       // 桌面端「点了系统通知」：后端已经唤起主窗口，这里只切界面（见 routeNotificationClick）。
       onNotificationClicked: (p) => {
-        routeNotificationClick(p.type, p.conv_id);
+        routeNotificationClick(p.type, p.conv_id, p.msg_id);
       },
     }).then((fns) => {
       for (const f of fns) scope.onDispose(f);
@@ -2183,6 +2368,15 @@ export const useChatStore = defineStore("chat", () => {
       ]).catch(() => {
         /* 注册失败不影响通知主体（只是没有动作按钮） */
       });
+      // 强提醒专属通道（High 重要级）：必须在首条强提醒之前建好。
+      void ensureRemindChannel(false);
+      // 声音/振动设置变化 ⇒ remove+create 重建通道（Android 不允许原地改声/振）。
+      watch(
+        () => [app.remindSound, app.remindVibrate],
+        () => {
+          void ensureRemindChannel(true);
+        },
+      );
     }
     // 注册系统通知点击回调：点击通知 → 唤起窗口 + 定位到发送者会话
     onAction((n) => {
@@ -2214,8 +2408,10 @@ export const useChatStore = defineStore("chat", () => {
 
       let convId = id != null ? notifMap.get(id) : undefined;
       if (!convId && raw.extra?.conv_id) convId = String(raw.extra.conv_id);
+      // 强提醒通知：点击后还要定位到原消息（extra 由后端组通知时带上）
+      const msgId = raw.extra?.msg_id != null ? String(raw.extra.msg_id) : undefined;
       if (id != null) notifMap.delete(id);
-      routeNotificationClick(extraType, convId);
+      routeNotificationClick(extraType, convId, msgId);
     }).then((listener) => {
       // `onAction` 返回的是 PluginListener 对象（要显式 `unregister()`），
       // 之前那句 `void onAction(...)` 把返回值直接丢了 —— 回调永久挂在插件上。
@@ -2313,6 +2509,8 @@ export const useChatStore = defineStore("chat", () => {
     todosLoadedOnce,
     watchGroupTodos,
     send,
+    sendReminder,
+    confirmReminder,
     sendFriendRequest,
     respondRequest,
     removeFriend,

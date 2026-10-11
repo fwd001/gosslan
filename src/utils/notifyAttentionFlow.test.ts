@@ -53,10 +53,27 @@ test("分端规则只在后端一处：macOS 看 urgent，Windows / 其它维持
   assert.match(networkRs, /AttentionPlatform::MacOS => urgent\.then_some/);
   assert.match(networkRs, /AttentionPlatform::Windows \| AttentionPlatform::Other => \{/);
   // 只有一处决定"要不要打断"：前端不许自己判平台（isMac 分支会漂成第二份规则）。
+  // 强提醒（handleIncomingRemind）加入后，唯一字面调用点收进 requestAttentionOnce，
+  // 普通消息批与强提醒两条路径都经它 —— 直接写第二处字面调用就是第二个家。
   assert.equal(
     (store.match(/api\.requestAttention\(/g) ?? []).length,
     1,
-    "调用点只许一处（两处就会有两种分端判断）",
+    "字面调用点只许一处（收在 requestAttentionOnce 里）",
+  );
+  assert.match(
+    store,
+    /function requestAttentionOnce\(urgent: boolean\)/,
+    "必须有 requestAttentionOnce 这个唯一收口",
+  );
+  assert.match(
+    store,
+    /if \(anyReminded && !app\.isMobile\) \{[\s\S]*?requestAttentionOnce\(urgent\);/,
+    "普通消息批：去抖合并后经收口请求注意",
+  );
+  assert.match(
+    store,
+    /if \(sent\) requestAttentionOnce\(true\);/,
+    "强提醒：通知确实发出后经收口请求紧急注意",
   );
   assert.equal(
     (networkRs.match(/fn request_attention\(/g) ?? []).length,

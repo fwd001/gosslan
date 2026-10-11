@@ -162,9 +162,16 @@ export function foldReminders(records: MessageRecord[]): Map<string, ReminderSta
       for (const p of actorPhases) phase = maxPhase(phase, p);
     } else if (actorPhases.length === 0) {
       phase = root.base;
+    } else if (actorPhases.every((p) => p === "failed")) {
+      // 群：**全部**设备失败才是失败 —— 只要有一台给出了更高证据，就不该对发起方
+      // 报「发送失败」（提醒确实送到了一部分人；逐台状态仍可在 roster title 里看到）。
+      phase = "failed";
     } else {
-      // 群：总览＝最慢的一台；全部 failed 才是 failed
-      phase = actorPhases.reduce((a, b) => (RANK[a] <= RANK[b] ? a : b));
+      // 群：总览＝最慢的一台，但 failed 格在"并非全败"时不参与最慢比较
+      // （它代表"这台尚无任何证据"，不是一个可向用户展示的进展相）。
+      phase = actorPhases
+        .filter((p) => p !== "failed")
+        .reduce((a, b) => (RANK[a] <= RANK[b] ? a : b));
     }
 
     out.set(root.target, { remindId, target: root.target, phase, perActor });

@@ -522,6 +522,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         );
                         let mut extra = std::collections::HashMap::new();
                         extra.insert("type".to_string(), "friend_request".to_string());
+                        // macOS 点击捕获必须带 action 按钮（见 crate::notifications）。
+                        extra.insert("action_label".to_string(), "查看".to_string());
                         // 与直连那条路径同口径：点击唤起窗口 + 跳到「新的朋友」。
                         let click_app = state.app.clone();
                         let _ = crate::notifications::show_click_if_enabled(
@@ -529,10 +531,12 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             "好友申请",
                             &format!("{} 请求添加你为好友", req.from_nickname),
                             extra,
+                            false,
                             move || {
                                 crate::notifications::on_notification_clicked(
                                     &click_app,
                                     "friend_request",
+                                    None,
                                     None,
                                 )
                             },

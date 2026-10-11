@@ -14,6 +14,7 @@ import {
   isForwardableKind,
   isKnownKind,
   isMultiSelectable,
+  isRemindableKind,
   isTipKind,
   kindClass,
   UNSUPPORTED_KIND_LABEL,
@@ -44,9 +45,11 @@ import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import TodoCardBubble from "@/components/TodoCardBubble.vue";
 import UnsupportedKindBubble from "@/components/message/UnsupportedKindBubble.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
+import RemindAudienceDialog from "@/components/RemindAudienceDialog.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { Check, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Smile, Star, TextSelect, Undo2 } from "lucide-vue-next";
+import { BellRing, Check, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Smile, Star, TextSelect, Undo2 } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
+import type { ReminderPhase, ReminderState } from "@/utils/reminders";
 import { urlToBase64 } from "@/utils/imageBytes";
 import { StaleGuard } from "@/utils/staleGuard";
 import { api } from "@/api";
@@ -90,6 +93,8 @@ const props = withDefaults(
      * 类型改成缺陷了也还会写着旧的字母。
      */
     todoLive?: Map<string, TodoLive>;
+    /** 本条消息作为强提醒目标时的折叠状态（会话层算好传入；null = 没有强提醒）。 */
+    reminder?: ReminderState | null;
   }>(),
   {
     prev: null,
@@ -104,6 +109,7 @@ const props = withDefaults(
     selectMode: false,
     selected: false,
     todoLive: () => new Map(),
+    reminder: null,
   },
 );
 
@@ -912,6 +918,109 @@ function doMultiSelect() {
   emit("multi-select");
 }
 
+// ---------------- 强提醒：发起 / 接收标识 / 确认 ----------------
+
+/**
+ * 能否从本条发起强提醒：自己发 + kind 可提醒 + **消息本身已成功发出** + 不是自聊。
+ * sending/failed/cancelled 的消息对方还没收到（或永远收不到），此时提醒会让对方收到
+ * 一条指向"幽灵消息"的强提醒（点开还定位不到）⇒ 只允许 sent/delivered/read。
+ * 自聊没有接收方（只支持文本/代码本地留存），没有可提醒对象。
+ */
+const REMINDABLE_STATUS = new Set(["sent", "delivered", "read"]);
+const canRemindEntry = computed(
+  () =>
+    mine.value &&
+    !isSelfMsg.value &&
+    isRemindableKind(props.message.kind) &&
+    REMINDABLE_STATUS.has(props.message.status),
+);
+
+/**
+ * 从「我」的视角看这台设备对应的提醒相：
+ * - 发起方：看总览相（群聊＝最慢的一台）；
+ * - 接收方：看 perActor 里自己那格（群聊在回执前已由发起名单 base 预填）。
+ */
+const myReminderPhase = computed<ReminderPhase | null>(() => {
+  const r = props.reminder;
+  if (!r) return null;
+  if (mine.value) return r.phase;
+  const myId = app.device?.device_id ?? "";
+  return r.perActor[myId] ?? null;
+});
+
+/** 强提醒标识是否出现：我发起的，或这台设备在受众/回执名单里。 */
+const showReminderBadge = computed(
+  () => props.reminder != null && (mine.value || myReminderPhase.value != null),
+);
+
+/** 标识文案：六态各自独立命名。 */
+const reminderPhaseLabel = computed(() => {
+  const p = myReminderPhase.value;
+  if (!p) return "";
+  return t(`remind.stage${p[0].toUpperCase()}${p.slice(1)}`);
+});
+
+/** 标识底色：失败红、确认绿、其余主色（相名本身已足够区分）。 */
+const reminderBadgeClass = computed(() => {
+  const p = myReminderPhase.value;
+  if (p === "failed") return "bg-[var(--gosslan-danger-soft)] text-[var(--gosslan-danger-ink)]";
+  if (p === "confirmed") return "bg-[var(--gosslan-success-soft)] text-[var(--gosslan-success-ink)]";
+  return "bg-[var(--gosslan-primary-soft)] text-[var(--gosslan-accent-ink)]";
+});
+
+/** 群聊发起方：成员各自状态（给标识做 title，不另开面板）。 */
+const reminderRosterTitle = computed(() => {
+  const r = props.reminder;
+  if (!r || !mine.value || !props.isGroup) return "";
+  const parts: string[] = [];
+  for (const [id, phase] of Object.entries(r.perActor)) {
+    if (!phase) continue;
+    const name = memberProfile(id).name;
+    parts.push(`${name}: ${t(`remind.stage${phase[0].toUpperCase()}${phase.slice(1)}`)}`);
+  }
+  return parts.join("\n");
+});
+
+/** 「我知道了」按钮出现条件：接收方 + 当前相为已送达/已提醒（未确认、未失败）。 */
+const canConfirm = computed(
+  () =>
+    !mine.value &&
+    (myReminderPhase.value === "delivered" || myReminderPhase.value === "reminded"),
+);
+
+/** 群聊受众选择弹窗（第一版不默认全群）。 */
+const remindAudienceOpen = ref(false);
+
+function doRemind() {
+  closeActionSheet();
+  closeContextMenu();
+  if (props.isGroup) {
+    remindAudienceOpen.value = true;
+    return;
+  }
+  // 私聊：默认目标＝聊天对方，受众名单为空
+  void chat
+    .sendReminder(props.message.conv_id, props.message.msg_id)
+    .catch((e) => app.toastError(e, t("remind.sendFail")));
+}
+
+async function onAudiencePicked(actors: string[]) {
+  remindAudienceOpen.value = false;
+  try {
+    await chat.sendReminder(props.message.conv_id, props.message.msg_id, actors);
+  } catch (e) {
+    app.toastError(e, t("remind.sendFail"));
+  }
+}
+
+async function doConfirmReminder() {
+  try {
+    await chat.confirmReminder(props.message.conv_id, props.message.msg_id);
+  } catch (e) {
+    app.toastError(e, t("remind.confirmFail"));
+  }
+}
+
 async function retrySend() {
   const msg = props.message;
   if (msg.status !== "failed" || msg.kind === "file") return;
@@ -1348,6 +1457,32 @@ async function copyFileToClipboard() {
        ⚠️ 这里**不再叠横向内边距**：让出头像那一列的 60px 由本组件自己写（见
        MessageReactionBar 的注释）。以前这里挂着 `pl-1`/`pr-1`、册内挂着 `pl-12`/`pr-12`，
        两档同属性互相覆盖 ⇒ 生效的只有 48px 那一档，实测两侧各差 12px（用户 2026-10-07 报的对不齐）。 -->
+  <!-- 强提醒标识：气泡下方一条（发起方看总览/接收方看本机相），接收方未确认时带「我知道了」。
+       对齐与 MessageReactionBar 同一套 60px 让出（父容器是块级 div，self-* 不生效）：
+       右发让出右侧头像列，左收让出左侧头像列，胶囊边与气泡边对齐。 -->
+  <div
+    v-if="showReminderBadge && !isTip"
+    class="flex max-w-full flex-wrap items-center gap-2 pb-0.5"
+    :class="mine ? 'justify-end pr-[60px]' : 'pl-[60px]'"
+  >
+    <span
+      :class="[
+        'inline-flex items-center gap-1 rounded-full px-2 py-[1px] text-[12px] font-medium',
+        reminderBadgeClass,
+      ]"
+      :title="reminderRosterTitle || undefined"
+    >
+      <BellRing class="h-3 w-3" />
+      {{ reminderPhaseLabel }}
+    </span>
+    <button
+      v-if="canConfirm"
+      class="tap-safe rounded-full bg-[var(--gosslan-primary)] px-2.5 py-[1px] text-[12px] font-medium text-white transition hover:opacity-90"
+      @click="doConfirmReminder"
+    >
+      {{ t("remind.gotIt") }}
+    </button>
+  </div>
   <MessageReactionBar
     v-if="!isTip"
     :chips="reactions ?? EMPTY_REACTION_CHIPS"
@@ -1392,6 +1527,14 @@ async function copyFileToClipboard() {
     @copy="copyContent('full', copyOut($event))"
   />
 
+  <!-- 群聊强提醒：受众选择（不默认全群） -->
+  <RemindAudienceDialog
+    :open="remindAudienceOpen"
+    :group-id="(message.conv_id || '').slice(6)"
+    @close="remindAudienceOpen = false"
+    @picked="onAudiencePicked"
+  />
+
   <!-- 消息右键菜单 -->
   <MessageContextMenu
     v-if="ctxMenu"
@@ -1411,11 +1554,13 @@ async function copyFileToClipboard() {
     :can-pin="isGroup && message.kind !== 'recalled'"
     :pinned="!!pinned"
     :can-cancel-send="canCancelSend"
+    :can-remind="canRemindEntry"
     @pin="emit('pin')"
     @recall="doRecall"
     @cancel-send="doCancelSend"
     @forward="doForward"
     @favorite="doFavorite"
+    @remind="doRemind"
     @multi-select="doMultiSelect"
   />
 
@@ -1522,6 +1667,15 @@ async function copyFileToClipboard() {
       >
         <Star class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("favorite.add") }}
+      </button>
+      <!-- 强提醒：与桌面菜单同源（canRemindEntry）；两套独立模板都必须有 -->
+      <button
+        v-if="canRemindEntry"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="doRemind"
+      >
+        <BellRing class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ t("remind.menuEntry") }}
       </button>
       <!-- 定位到引用消息：本条引用了谁就从菜单跳过去（与微信一致，用户 2026-09-21）。
            与引用块上的点击同一条 emit（`locate`）。 -->

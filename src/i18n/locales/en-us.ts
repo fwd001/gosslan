@@ -110,7 +110,7 @@ export const enUS: MessageDict = {
   "settings.group.about.footer": "Gosslan v{version} · Serverless P2P · End-to-End Encrypted · Data Stays on Device",
   "settings.group.notifications": "Notifications",
   "settings.group.notifications.footer":
-    "Notify you of new messages when the app is in the background or you're viewing another conversation",
+    "Notify you of new messages when the app is in the background or you're viewing another conversation. Urgent alerts bounce the Dock / flash the taskbar even in Do Not Disturb",
   "settings.group.files.footer": "Where received files are stored, and the folder you share with friends",
   "settings.group.reset": "Reset & Data",
 
@@ -126,6 +126,10 @@ export const enUS: MessageDict = {
   "settings.notify.test.sending": "Sending…",
   "settings.notify.test.sent": "Sent: {hint}",
   "settings.notify.test.failed": "Test notification failed",
+  "settings.notify.remindSound": "Strong reminder sound",
+  "settings.notify.remindSound.desc": "Play the system notification sound for strong reminders; silent when muted or in Do Not Disturb",
+  "settings.notify.remindVibrate": "Strong reminder vibration",
+  "settings.notify.remindVibrate.desc": "Only on devices that support vibration; in-app vibration is not supported on iPhone",
 
   "settings.share.folder": "Shared Folder",
 
@@ -169,6 +173,8 @@ export const enUS: MessageDict = {
 
   // ---- Notification actions ----
   "notification.markRead": "Mark as Read",
+  // "Open" button on macOS system notifications (required for click capture; keep short)
+  "notification.view": "View",
 
   // ---- Appearance ----
   "settings.appearance.mode": "Appearance",
@@ -476,6 +482,31 @@ export const enUS: MessageDict = {
   "msg.pin": "Pin",
   "msg.remind": "Strong reminder",
   "msg.remindAck": "Strong reminder ack",
+
+  // ---- Strong reminder ----
+  // Context menu / long-press entry
+  "remind.menuEntry": "Strong reminder",
+  // System notification (the sender name is appended to the title)
+  "remind.notifyTitle": "Strong reminder",
+  "remind.notifyBody": "Please take a look at this message",
+  "remind.notifyBodyHidden": "You received a strong reminder",
+  // Android notification channel description (visible in system notification settings)
+  "remind.channelDesc": "Strong reminders: heads-up, sound and vibration",
+  // Five phase labels under the bubble (S0 belongs to normal messages)
+  "remind.stageFailed": "Failed to send",
+  "remind.stagePending": "Pending",
+  "remind.stageDelivered": "Delivered",
+  "remind.stageReminded": "Reminded",
+  "remind.stageConfirmed": "Confirmed",
+  "remind.gotIt": "Got it",
+  "remind.locateFail": "Couldn't locate the original message — it may not be synced yet",
+  "remind.sendFail": "Failed to send the strong reminder",
+  "remind.confirmFail": "Failed to confirm",
+  // Group audience picker
+  "remind.audienceTitle": "Choose people to remind",
+  "remind.audienceHint": "Select at least one member. They'll receive a strong-reminder notification.",
+  "remind.audienceCount": "{n} selected",
+  "remind.audienceConfirm": "Send reminder",
   "msg.unpin": "Unpin",
   "msg.pinFail": "Failed to pin",
   "msg.pinCollapse": "Collapse",

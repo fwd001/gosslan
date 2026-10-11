@@ -111,6 +111,10 @@ export const useAppStore = defineStore("app", () => {
   const notifyEnabled = ref<boolean>(true);
   /** 通知是否显示消息正文（隐私开关；默认显示）。 */
   const notifyShowContent = ref<boolean>(true);
+  /** 强提醒声音（默认开；系统静音/勿扰时由系统通知通道决定不响）。 */
+  const remindSound = ref<boolean>(true);
+  /** 强提醒振动（默认开；仅支持振动的平台生效）。 */
+  const remindVibrate = ref<boolean>(true);
   /**
    * 权限缓存三态：`null` 从没问过 / `false` 问过且**被拒** / `true` 已授权。
    *
@@ -153,6 +157,16 @@ export const useAppStore = defineStore("app", () => {
 
   function setNotifyShowContent(v: boolean) {
     notifyShowContent.value = v;
+    void persistSettings();
+  }
+
+  function setRemindSound(v: boolean) {
+    remindSound.value = v;
+    void persistSettings();
+  }
+
+  function setRemindVibrate(v: boolean) {
+    remindVibrate.value = v;
     void persistSettings();
   }
 
@@ -488,6 +502,8 @@ export const useAppStore = defineStore("app", () => {
         appearanceMode: appearance.value,
         notifyEnabled: notifyEnabled.value,
         notifyShowContent: notifyShowContent.value,
+        remindSound: remindSound.value,
+        remindVibrate: remindVibrate.value,
         language: language.value,
         relayPolicy: relayPolicy.value,
         relayAllowlist: JSON.stringify(relayAllowlist.value),
@@ -640,6 +656,8 @@ export const useAppStore = defineStore("app", () => {
       // 通知偏好（null = 未设置，按默认 true 处理）
       if (s.notifyEnabled != null) notifyEnabled.value = s.notifyEnabled;
       if (s.notifyShowContent != null) notifyShowContent.value = s.notifyShowContent;
+      if (s.remindSound != null) remindSound.value = s.remindSound;
+      if (s.remindVibrate != null) remindVibrate.value = s.remindVibrate;
       // 语言（null/脏值 = 默认跟随系统）
       if (has("language") && isLanguagePreference(s.language)) applyPreference(s.language);
       // 中继授权（脏值一律回落默认 all —— 与后端 RelayConfig::parse 同口径）
@@ -828,6 +846,8 @@ export const useAppStore = defineStore("app", () => {
     appearance.value = "system";
     notifyEnabled.value = true;
     notifyShowContent.value = true;
+    remindSound.value = true;
+    remindVibrate.value = true;
     applyPreference("system");
     language.value = "system";
     pushUiLanguage();
@@ -990,8 +1010,12 @@ export const useAppStore = defineStore("app", () => {
     setAppearance,
     notifyEnabled,
     notifyShowContent,
+    remindSound,
+    remindVibrate,
     setNotifyEnabled,
     setNotifyShowContent,
+    setRemindSound,
+    setRemindVibrate,
     ensureNotifyPermission,
     language,
     setLanguage,

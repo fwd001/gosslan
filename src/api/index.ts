@@ -80,9 +80,17 @@ export const api = {
    *
    * `convId` 必须传：**点通知要定位到会话**就得让后端知道这条通知属于谁 ——
    * 点击是后端（notify-rust 的 handle）捕获的，前端拿不到那个时机。
+   * `opts.msgId`（仅强提醒）：被提醒的原消息，点击后继续定位到它。
+   * `opts.sound`（仅强提醒）：让系统通知通道发声。
+   * `opts.actionLabel`（仅 macOS 用）：通知上「打开」按钮的本地化文案 —— macOS 的
+   * 点击捕获必须挂一个 action 按钮（见 src-tauri/src/notifications.rs）。
    */
-  notifyDesktop: (title: string, body: string, convId: string) =>
-    invoke<boolean>("notify_desktop", { title, body, convId }),
+  notifyDesktop: (
+    title: string,
+    body: string,
+    convId: string,
+    opts?: { msgId?: string; sound?: boolean; actionLabel?: string },
+  ) => invoke<boolean>("notify_desktop", { title, body, convId, opts }),
   /** 设置页「发送测试通知」：成功返回平台说明，失败返回真实原因（供排障）。 */
   sendTestNotification: () => invoke<string>("send_test_notification"),
   getFriends: () => invoke<Friend[]>("get_friends"),
@@ -534,6 +542,8 @@ export interface NotificationClick {
   type: "chat" | "friend_request";
   /** 聊天消息才有：点开要定位到哪个会话。 */
   conv_id?: string;
+  /** 强提醒才有：被提醒的原消息（点开后继续定位到它，不只是打开会话）。 */
+  msg_id?: string;
 }
 
 export type EventHandlers = {

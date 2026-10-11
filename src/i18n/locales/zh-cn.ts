@@ -106,7 +106,7 @@ export const zhCN: MessageDict = {
   "settings.group.storage.footer": "本页只管「本机落盘的图片与文件」（聊天里收到的附件）和聊天数据库占用；聊天文字不会被自动清理。改动即时保存。保持「永久保存 + 无限制」即不做任何自动删除。",
   "settings.group.about.footer": "Gosslan v{version} · 无服务器 P2P · 端到端加密 · 数据仅存本机",
   "settings.group.notifications": "通知",
-  "settings.group.notifications.footer": "应用在后台、或正在看别的会话时，用系统通知提醒新消息",
+  "settings.group.notifications.footer": "应用在后台、或正在看别的会话时，用系统通知提醒新消息。紧急通知会弹跳 Dock / 闪烁任务栏，系统勿扰不会阻止这一动作",
   "settings.group.files.footer": "接收好友发来的文件放这里；共享目录是你开放给好友浏览的文件夹",
   "settings.group.reset": "重置与数据",
 
@@ -121,6 +121,10 @@ export const zhCN: MessageDict = {
   "settings.notify.test.sending": "发送中…",
   "settings.notify.test.sent": "已发送：{hint}",
   "settings.notify.test.failed": "测试通知发送失败",
+  "settings.notify.remindSound": "强提醒声音",
+  "settings.notify.remindSound.desc": "强提醒到达时播放系统通知声；系统静音或勿扰时不会响",
+  "settings.notify.remindVibrate": "强提醒振动",
+  "settings.notify.remindVibrate.desc": "仅在支持振动的设备上生效；iPhone 不支持应用内振动",
 
   "settings.share.folder": "共享文件夹",
 
@@ -164,6 +168,8 @@ export const zhCN: MessageDict = {
 
   // ---- 通知动作 ----
   "notification.markRead": "标记已读",
+  // macOS 系统通知上的「打开」按钮（点击捕获的承重件，固定短词）
+  "notification.view": "查看",
 
   // ---- 外观 ----
   "settings.appearance.mode": "外观",
@@ -487,6 +493,31 @@ export const zhCN: MessageDict = {
   "msg.pin": "置顶",
   "msg.remind": "强提醒",
   "msg.remindAck": "强提醒确认",
+
+  // ---- 强提醒 ----
+  // 右键 / 长按菜单入口
+  "remind.menuEntry": "强提醒",
+  // 系统通知（title 后会拼上发送者昵称）
+  "remind.notifyTitle": "强提醒",
+  "remind.notifyBody": "请尽快查看这条消息",
+  "remind.notifyBodyHidden": "你收到一条强提醒",
+  // Android 通知通道描述（系统通知设置里可见）
+  "remind.channelDesc": "强提醒：横幅通知、声音与振动",
+  // 气泡下方五态标识（六态中的 S0 与普通消息无关）
+  "remind.stageFailed": "发送失败",
+  "remind.stagePending": "待送达",
+  "remind.stageDelivered": "已送达",
+  "remind.stageReminded": "已提醒",
+  "remind.stageConfirmed": "已确认",
+  "remind.gotIt": "我知道了",
+  "remind.locateFail": "原消息暂时找不到，可能还未同步到本机",
+  "remind.sendFail": "强提醒发送失败",
+  "remind.confirmFail": "确认失败",
+  // 群聊受众选择
+  "remind.audienceTitle": "选择提醒的人",
+  "remind.audienceHint": "至少选择 1 位成员；被选中的人会收到强提醒通知。",
+  "remind.audienceCount": "已选 {n} 人",
+  "remind.audienceConfirm": "发送提醒",
   "msg.unpin": "取消置顶",
   "msg.pinFail": "置顶失败",
   "msg.pinCollapse": "收起",

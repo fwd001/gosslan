@@ -404,6 +404,10 @@ export interface AppSettings {
   notifyEnabled: boolean | null;
   /** 通知是否显示消息正文（null 视为显示；关掉后只提示"收到新消息"，保护锁屏隐私）。 */
   notifyShowContent: boolean | null;
+  /** 强提醒是否播放系统通知声音（null 视为开；系统静音/勿扰时由系统决定不响）。 */
+  remindSound: boolean | null;
+  /** 强提醒是否振动（null 视为开；仅支持振动的平台生效）。 */
+  remindVibrate: boolean | null;
   /** 语言偏好："system"（跟随系统，默认）| "zh-CN" | "en-US"（null 视为跟随系统）。 */
   language: string | null;
   bindIp: string | null;

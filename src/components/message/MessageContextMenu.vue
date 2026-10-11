@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { t } from "@/i18n";
-import { Pin, PinOff, StopCircle, Undo2 } from "lucide-vue-next";
+import { BellRing, Pin, PinOff, StopCircle, Undo2 } from "lucide-vue-next";
 import { Copy, CornerUpLeft, ListChecks, Save, Share2, Star } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 import {
@@ -21,6 +21,8 @@ const props = defineProps<{
   pinned?: boolean;
   /** 文件消息正在发送中 —— 显示"取消发送"菜单项 */
   canCancelSend?: boolean;
+  /** 自己发的、可提醒的消息 —— 显示「强提醒」入口 */
+  canRemind?: boolean;
   x: number;
   y: number;
   kind: MsgKind;
@@ -42,6 +44,8 @@ const emit = defineEmits<{
   (e: "forward"): void;
   (e: "favorite"): void;
   (e: "cancel-send"): void;
+  /** 对本条消息发起强提醒（群聊由 MessageItem 再弹受众选择）。 */
+  (e: "remind"): void;
   /** 进入多选模式（微信式批量操作：转发/收藏/删除） */
   (e: "multi-select"): void;
 }>();
@@ -69,9 +73,9 @@ const hasCopyOps = computed(
 <template>
   <!-- 聊天气泡右键菜单（用户 2026-09-12 晚 #11：「聊天气泡的右键菜单也参考微信样式」）。
        外观与分组统一走 `.gosslan-menu*`：先「内容操作」（复制 / 保存），
-       再分隔线，后「转发 / 引用 / 收藏」—— 与微信把"内容操作"和"消息流转"分组的习惯一致。
-       本应用没有 翻译 / 搜一搜 / 提醒 这些能力，就不放空条目。 -->
-  <ContextMenu :x="x" :y="y" :estimated-height="330" @close="emit('close')">
+       再分隔线，后「转发 / 引用 / 收藏 / 强提醒」—— 与微信把"内容操作"和"消息流转"分组的习惯一致。
+       本应用没有 翻译 / 搜一搜 这些能力，就不放空条目。 -->
+  <ContextMenu :x="x" :y="y" :estimated-height="375" @close="emit('close')">
     <template v-if="kind === 'text' || kind === 'code'">
       <button role="menuitem" class="gosslan-menu-item" @click="emit('copy-text')">
         <Copy />
@@ -160,6 +164,11 @@ const hasCopyOps = computed(
     <button v-if="favoritable(kind)" class="gosslan-menu-item" @click="emit('favorite')">
       <Star />
       {{ t("favorite.add") }}
+    </button>
+    <!-- 强提醒：对自己发的消息点名提醒对方（私聊默认对方；群聊由外层再选受众） -->
+    <button v-if="canRemind" role="menuitem" class="gosslan-menu-item" @click="emit('remind')">
+      <BellRing />
+      {{ t("remind.menuEntry") }}
     </button>
     <!-- 分隔线同上面那条：只有真的会出现「多选」时才画 -->
     <div v-if="isMultiSelectable(kind)" class="gosslan-menu-sep" role="separator"></div>

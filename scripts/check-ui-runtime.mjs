@@ -1204,11 +1204,17 @@ async function waitForVite(child, timeoutMs = 90_000) {
   const t0 = nowMs();
   let buf = "";
   const p = new Promise((res, rej) => {
-    child.stdout.on("data", (d) => {
-      buf += d.toString();
-      if (/Local:/.test(buf)) res(true);
-    });
-    child.stderr.on("data", (d) => { buf += d.toString(); });
+    // vite 6 把启动横幅（含 "Local:"）打到 **stderr**：只听 stdout 会在 90s 后假超时。
+    // 两个流都认。
+    const onData = (d) => {
+      // vite 6 的横幅带 ANSI 码："Local\x1b[22m:"，直接匹配 /Local:/ 永远不成立。
+      // 累积原文（exit 排障要看），判定前剥掉 ANSI。
+      const text = d.toString();
+      buf += text;
+      if (/Local:/.test(buf.replace(/\x1b\[[0-9;]*m/g, ""))) res(true);
+    };
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
     child.on("exit", (c) => rej(new Error(`vite 提前退出 ${c}：\n${buf.slice(-800)}`)));
   });
   await Promise.race([p, sleep(timeoutMs).then(() => { throw new Error(`vite ${timeoutMs}ms 没起来：\n${buf.slice(-800)}`); })]);

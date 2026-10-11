@@ -21,12 +21,15 @@ function rec(kind: MsgKind, content = ""): MessageRecord {
 const todo = (priority?: string) =>
   rec("todo" as MsgKind, JSON.stringify({ todo_id: "t1", title: "x", ...(priority ? { priority } : {}) }));
 
-test("紧急只有两个来源：群公告、紧急群任务", () => {
+test("紧急有三个来源：群公告、紧急群任务、强提醒", () => {
   assert.equal(isUrgentNotice(rec("announcement" as MsgKind)), true);
   assert.equal(isUrgentNotice(todo("high")), true);
+  assert.equal(isUrgentNotice(rec("remind" as MsgKind, JSON.stringify({ target: "m1" }))), true);
   assert.equal(isUrgentNotice(rec("text" as MsgKind)), false);
   assert.equal(isUrgentNotice(rec("file" as MsgKind)), false);
   assert.equal(isUrgentNotice(rec("poll" as MsgKind)), false);
+  // 强提醒的**回执**不是紧急事项：它是静默确认，不该触发任何跳动
+  assert.equal(isUrgentNotice(rec("remind_ack" as MsgKind)), false);
   // 「紧急」这一档必须与另两档不同，否则那个档位没有意义；反过来常规/不急不许点亮跳动
   assert.equal(isUrgentNotice(todo("normal")), false);
   assert.equal(isUrgentNotice(todo("low")), false);

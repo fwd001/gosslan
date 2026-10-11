@@ -345,14 +345,25 @@ pub fn set_unread_badge(_app: tauri::AppHandle, count: u32) -> Result<(), String
     Ok(())
 }
 
+/// `notify_desktop` 的可选项（前端以一个 camelCase 对象传入，避免命令参数表无限增长）。
+#[derive(serde::Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DesktopNotificationOpts {
+    /// 仅强提醒：被提醒的原消息 msg_id（点击后继续定位到它）。
+    pub msg_id: Option<String>,
+    /// 仅强提醒为 true：让系统通知通道发声。
+    pub sound: bool,
+    /// macOS 通知「打开」按钮文案（点击捕获的承重件）；不给时按语言设置补默认。
+    pub action_label: Option<String>,
+}
+
 /// 桌面消息通知：前端在"应用在后台 / 正在看别的会话"时调用。
 ///
 /// 走 crate::notifications（能返回真实错误），并**再判一次总开关**（前端已判，这里是
 /// 第二道闸门：后端也能独立触发通知，不能只依赖前端状态）。返回 false 表示用户关了通知。
 ///
-/// `conv_id` = 这条通知属于哪个会话：用户**点通知**时（Windows 上由 notify-rust 的
+/// `conv_id` = 这条通知属于哪个会话：用户**点通知**时（由 notify-rust 的
 /// handle 捕获）后端唤起主窗口并把这个 id 发给前端，前端据此直接定位过去。
-/// 没有它就只能"唤起窗口但停在原来的会话上"——用户报的正是这个。
 #[tauri::command(async)]
 pub fn notify_desktop(
     app: tauri::AppHandle,
@@ -360,15 +371,42 @@ pub fn notify_desktop(
     title: String,
     body: String,
     conv_id: String,
+    opts: Option<DesktopNotificationOpts>,
 ) -> Result<bool, String> {
+    let DesktopNotificationOpts {
+        msg_id,
+        sound,
+        action_label,
+    } = opts.unwrap_or_default();
     let s = state.inner().clone();
     let click_app = app.clone();
+    let click_msg_id = msg_id.clone();
+    let mut extra = std::collections::HashMap::new();
+    // 前端没显式给按钮文案（普通消息路径）时，按本机语言设置补：macOS 的 action 按钮
+    // 是点击捕获的承重件，文案不能空。"跟随系统/未设置"一律回落中文（应用缺省语言）。
+    let label = action_label.unwrap_or_else(|| {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        if crate::db::get_setting(&dbc, "language").as_deref() == Some("en-US") {
+            "View".to_string()
+        } else {
+            "查看".to_string()
+        }
+    });
+    extra.insert("action_label".to_string(), label);
     crate::notifications::show_click_if_enabled(
         &s,
         &title,
         &body,
-        std::collections::HashMap::new(),
-        move || crate::notifications::on_notification_clicked(&click_app, "chat", Some(conv_id)),
+        extra,
+        sound,
+        move || {
+            crate::notifications::on_notification_clicked(
+                &click_app,
+                "chat",
+                Some(conv_id),
+                click_msg_id,
+            )
+        },
     )
 }
 

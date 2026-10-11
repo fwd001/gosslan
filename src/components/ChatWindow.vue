@@ -25,6 +25,7 @@ import { MAX_MERGE_ITEMS, buildMergePayload } from "@/utils/mergeCard";
 // 消息行的空列表 prop 必须是共享常量，见 utils/emptyList.ts（量具一 ?row= 三档现量）
 import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
+import { foldReminders, type ReminderState } from "@/utils/reminders";
 import { foldPinned, isPinned } from "@/utils/pins";
 import { foldTodos, todoLiveMap, type TodoLive } from "@/utils/todos";
 import { isRenderedInTimeline } from "@/utils/messageKinds";
@@ -333,6 +334,16 @@ const reactionMap = computed(() => {
   const convId = chat.activeConv;
   if (!convId) return new Map<string, ReactionChip[]>();
   return foldReactions(chat.messages[convId] ?? [], app.device?.device_id ?? "");
+});
+
+/**
+ * 强提醒状态折叠：与 reactionMap 同构，**会话层算一次**，按原消息 msg_id 分发给 MessageItem。
+ * 输入必须是未过滤时间线的全量列表（remind / remind_ack 是静默 kind，不在 messages 里渲染）。
+ */
+const reminderMap = computed(() => {
+  const convId = chat.activeConv;
+  if (!convId) return new Map<string, ReminderState>();
+  return foldReminders(chat.messages[convId] ?? []);
 });
 
 /**
@@ -1285,6 +1296,7 @@ function onLoadMore() {
             :mention-names="mentionNames"
             :self-mention="selfMention"
             :reactions="reactionMap.get(item.msg_id) ?? EMPTY_REACTION_CHIPS"
+            :reminder="reminderMap.get(item.msg_id) ?? null"
             :pinned="pinnedIds.includes(item.msg_id)"
             :can-react="canReact"
             :select-mode="multiSelect"

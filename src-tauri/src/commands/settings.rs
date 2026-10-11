@@ -18,6 +18,11 @@ pub struct Settings {
     pub notify_enabled: Option<bool>,
     /// 通知是否显示消息正文（隐私：关掉后只显示"收到新消息"，锁屏/通知中心不泄内容）。
     pub notify_show_content: Option<bool>,
+    /// 强提醒到达时是否播放系统通知声音（缺省开）。声音由**操作系统通知通道**播放，
+    /// 因此系统静音 / 勿扰 / 通知关闭时天然不响，应用不另造播放器。
+    pub remind_sound: Option<bool>,
+    /// 强提醒到达时是否振动（缺省开；仅支持振动的设备/平台生效）。
+    pub remind_vibrate: Option<bool>,
     /// 界面语言："zh-CN" | "en-US"。缺省视为 "zh-CN"。
     pub language: Option<String>,
     pub bind_ip: Option<String>,
@@ -39,13 +44,15 @@ pub struct Settings {
 
 /// e2ee_enabled 键保留在 reset 链中仅为清理 v0.10.0 及更早版本的残留值；
 /// v0.11.0 起 E2EE 恒开、不可关闭，该键不再被读写。
-const SETTINGS_KEYS: [&str; 13] = [
+const SETTINGS_KEYS: [&str; 15] = [
     "theme_color",
     "font_family",
     "dark_mode",
     "appearance_mode",
     "notify_enabled",
     "notify_show_content",
+    "remind_sound",
+    "remind_vibrate",
     "language",
     "bind_ip",
     "chat_style",
@@ -101,6 +108,19 @@ pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> ser
                 map.insert(
                     key.to_string(),
                     json!(db::get_config_bool(db, "notify_show_content", true)),
+                );
+            }
+            // 强提醒声音/振动缺省也是**开**（与 get_settings 同口径）
+            "remindSound" => {
+                map.insert(
+                    key.to_string(),
+                    json!(db::get_config_bool(db, "remind_sound", true)),
+                );
+            }
+            "remindVibrate" => {
+                map.insert(
+                    key.to_string(),
+                    json!(db::get_config_bool(db, "remind_vibrate", true)),
                 );
             }
             "language" => {
@@ -234,6 +254,8 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
         // 通知默认开启、默认显示正文：缺省时按 `Some(true)`，旧记录与未设置都能有合理行为。
         notify_enabled: db::get_config_bool_opt(&dbc, "notify_enabled").or(Some(true)),
         notify_show_content: db::get_config_bool_opt(&dbc, "notify_show_content").or(Some(true)),
+        remind_sound: db::get_config_bool_opt(&dbc, "remind_sound").or(Some(true)),
+        remind_vibrate: db::get_config_bool_opt(&dbc, "remind_vibrate").or(Some(true)),
         language: db::get_setting(&dbc, "language"),
         relay_policy: db::get_setting(&dbc, "relay_policy"),
         relay_allowlist: db::get_setting(&dbc, "relay_allowlist"),
@@ -281,6 +303,16 @@ pub fn save_settings(
         db::set_setting(&dbc, "notify_show_content", if v { "1" } else { "0" })
             .map_err(|e| e.to_string())?;
         changed.push("notifyShowContent");
+    }
+    if let Some(v) = settings.remind_sound {
+        db::set_setting(&dbc, "remind_sound", if v { "1" } else { "0" })
+            .map_err(|e| e.to_string())?;
+        changed.push("remindSound");
+    }
+    if let Some(v) = settings.remind_vibrate {
+        db::set_setting(&dbc, "remind_vibrate", if v { "1" } else { "0" })
+            .map_err(|e| e.to_string())?;
+        changed.push("remindVibrate");
     }
     if let Some(v) = settings.language {
         if LANGUAGES.contains(&v.as_str()) {

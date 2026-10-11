@@ -174,3 +174,21 @@ export function isForwardableKind(kind: string): boolean {
 export function isFavoritableKind(kind: string): boolean {
   return isForwardableKind(kind) || kindClass(kind) === "card";
 }
+
+/**
+ * 能否对这条消息发起「强提醒」—— 只对**有实质内容**的消息：
+ * text/code/image/file/merge（bubble 内容）+ poll/todo/announcement（card）。
+ * system/recalled 是提示行、静默事件不可提醒。调用方还必须同时判「这条是自己发的」。
+ */
+export function isRemindableKind(kind: string): boolean {
+  return (
+    kind === "text" ||
+    kind === "code" ||
+    kind === "image" ||
+    kind === "file" ||
+    kind === "merge" ||
+    kind === "poll" ||
+    kind === "todo" ||
+    kind === "announcement"
+  );
+}

@@ -7,10 +7,12 @@
  * 而**只有前端看得见消息内容**（后端那条命令只收到 title/body）。所以"紧不紧急"在前端算，
  * 算完只把一个 bool 传下去 —— 而这段算法本身必须能脱离界面被判，否则它就是一条没人验过的规则。
  *
- * ## 紧急只有两个来源（刻意不收第三个）
+ * ## 紧急只有三个来源（刻意不收更多）
  * ① **群公告**（`kind === "announcement"`）：它是"必须让全员看到"的那一类，本来就是弹出来用的；
  * ② **紧急群任务**（`todo` / `todo_update` 且载荷 `priority === "high"`）：用户在 4.31.15
  *   要的就是"紧急"这一档，那一档如果和"常规"共用同一种提醒强度，这个档就没有意义。
+ * ③ **强提醒**（`kind === "remind"`）：它的定义就是"高于普通消息优先级的提醒"，
+ *   但调用方只应在帧确实点名本机时把它送入这批（群聊看 actors），不在此处放宽。
  * 普通聊天、文件、投票、表情回应一律**不**算紧急 —— 判据写宽了就等于没写（Dock 还是会一直跳）。
  */
 import type { MessageRecord } from "../types.ts";
@@ -19,6 +21,7 @@ import { parseTodo } from "./todos.ts";
 /** 单条消息是否构成"值得打断"的紧急事项。 */
 export function isUrgentNotice(rec: MessageRecord): boolean {
   if (rec.kind === "announcement") return true;
+  if (rec.kind === "remind") return true;
   if (rec.kind !== "todo" && rec.kind !== "todo_update") return false;
   // 载荷解不开就按"不紧急"处理：这条判据的失败方向必须是**少打扰**，
   // 而不是"脏数据把 Dock 跳动点亮"（那样用户会以为真来了紧急任务）。

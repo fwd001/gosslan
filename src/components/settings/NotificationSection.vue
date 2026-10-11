@@ -53,7 +53,34 @@ async function sendTestNotification() {
         @update:model-value="app.setNotifyEnabled"
       />
     </SettingsRow>
-    <SettingsRow :label="t('settings.notify.test')" :description="t('settings.notify.test.desc')">
+    <SettingsRow :label="t('settings.notify.showContent')" :description="t('settings.notify.showContent.desc')">
+      <SettingsToggle
+        :label="t('settings.notify.showContent')"
+        :model-value="app.notifyShowContent"
+        :disabled="!app.notifyEnabled"
+        @update:model-value="app.setNotifyShowContent"
+      />
+    </SettingsRow>
+    <SettingsRow :label="t('settings.notify.remindSound')" :description="t('settings.notify.remindSound.desc')">
+      <SettingsToggle
+        :label="t('settings.notify.remindSound')"
+        :model-value="app.remindSound"
+        :disabled="!app.notifyEnabled"
+        @update:model-value="app.setRemindSound"
+      />
+    </SettingsRow>
+    <SettingsRow
+      :label="t('settings.notify.remindVibrate')"
+      :description="t('settings.notify.remindVibrate.desc')"
+    >
+      <SettingsToggle
+        :label="t('settings.notify.remindVibrate')"
+        :model-value="app.remindVibrate"
+        :disabled="!app.notifyEnabled"
+        @update:model-value="app.setRemindVibrate"
+      />
+    </SettingsRow>
+    <SettingsRow :label="t('settings.notify.test')" :description="t('settings.notify.test.desc')" last>
       <button
         class="flex shrink-0 items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
         :disabled="testing"
@@ -63,18 +90,6 @@ async function sendTestNotification() {
         <BellRing class="h-3.5 w-3.5" />
         {{ testing ? t("settings.notify.test.sending") : t("settings.notify.test.btn") }}
       </button>
-    </SettingsRow>
-    <SettingsRow
-      :label="t('settings.notify.showContent')"
-      :description="t('settings.notify.showContent.desc')"
-      last
-    >
-      <SettingsToggle
-        :label="t('settings.notify.showContent')"
-        :model-value="app.notifyShowContent"
-        :disabled="!app.notifyEnabled"
-        @update:model-value="app.setNotifyShowContent"
-      />
     </SettingsRow>
   </SettingsGroup>
 </template>

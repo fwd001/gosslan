@@ -24,13 +24,17 @@
 //!
 //! 移动端没有 notify-rust，继续走插件（通知上带 extra，供点击回调识别类型）。
 //!
-//! ## 点击路由（2026-09-16）
+//! ## 点击路由（2026-09-16；2026-10 扩展到 macOS/Linux）
 //!
 //! 「点系统通知 → 唤起窗口并定位到会话」此前在桌面端**完全没接通**：`show()` 把
 //! `notify-rust` 的 `NotificationHandle` 立刻丢掉，而那个 handle 正是点击响应的唯一通道。
-//! 现在聊天消息与好友申请都走 [`show_click_if_enabled`]：Windows 上把 handle 留在独立线程里
-//! 等 `wait_for_response`，命中"点正文"就调 [`on_notification_clicked`]（唤起主窗口 +
-//! 广播 `EVENT_NOTIFICATION_CLICKED`，前端据此切会话）。移动端不变（插件自带 actionPerformed）。
+//! 现在聊天消息与好友申请都走 [`show_click_if_enabled`]：把 handle 留在独立线程里等
+//! `wait_for_response`，命中"点正文"就调 [`on_notification_clicked`]（唤起主窗口 +
+//! 广播 `EVENT_NOTIFICATION_CLICKED`，前端据此切会话、强提醒还会继续定位到原消息）。
+//! macOS 上通知的实际投递发生在 `wait_for_response` 内，且必须带一个 action 按钮
+//! 等待机制才会真正挂住（见该平台实现的说明）；按钮文案由调用方经 `extra["action_label"]`
+//! 给（前端按界面语言本地化；后端自发的好友申请用固定中文，与其标题同口径）。
+//! 移动端不变（插件自带 actionPerformed）。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -64,10 +68,13 @@ pub fn platform_hint() -> &'static str {
 
 /// 桌面（macOS / Windows / Linux）：组装一条通知。
 ///
-/// 平台差异只在这里：Windows 的 AppUserModelID 与 macOS 的 application 标识。
+/// 平台差异只在这里：Windows 的 AppUserModelID、macOS 的 application 标识与 action 按钮。
 /// 抽出来的理由：`show` 与 `show_with_click` 必须发出**完全一样**的通知，
 /// 两个入口各写一份平台分支就一定会漂移（而这里的每条分支都只在某一个平台上编译，
 /// 漂移了在本地根本看不出来）。
+///
+/// `extra` 在 Windows/Linux 上不用（点击只有一个"点正文"信号）；macOS 用其中的
+/// `action_label` 作通知按钮文案。
 #[cfg(any(
     target_os = "macos",
     windows,
@@ -77,7 +84,13 @@ pub fn platform_hint() -> &'static str {
     target_os = "openbsd",
     target_os = "netbsd"
 ))]
-fn build(app: &tauri::AppHandle, title: &str, body: &str) -> notify_rust::Notification {
+fn build(
+    app: &tauri::AppHandle,
+    title: &str,
+    body: &str,
+    sound: bool,
+    extra: &HashMap<String, String>,
+) -> notify_rust::Notification {
     let identifier = app.config().identifier.clone();
     let mut notification = notify_rust::Notification::new();
     notification.summary(title).body(body).auto_icon();
@@ -108,6 +121,39 @@ fn build(app: &tauri::AppHandle, title: &str, body: &str) -> notify_rust::Notifi
         } else {
             identifier.as_str()
         });
+        // ⚠️ macOS（NSUserNotificationCenter 后端）上，没有 action 按钮 / wait_for_click
+        // 的通知在 mac-notification-sys 里按 shouldWait=false 投递：**点正文的回调会被
+        // 直接丢弃**（PENDING 条目投递完即移除）。挂一个按钮才会走"同步投递 + 等交互"
+        // 路径；点正文仍然映射成 Default（见 show_click_impl 的双判定），
+        // 点这个按钮则映射成 Action("open")。文案由调用方本地化后经 extra 给。
+        let label = extra
+            .get("action_label")
+            .map(String::as_str)
+            .unwrap_or("Show");
+        notification.action("open", label);
+    }
+
+    // 声音只在强提醒路径显式开启（sound=true）：走**系统通知通道**的声音，
+    // 系统静音/勿扰时由系统自己决定放不放，应用不另接播放器。
+    if sound {
+        #[cfg(target_os = "macos")]
+        {
+            // 必须用完整常量：mac-notification-sys 只对这个字面值映射 Sound::Default，
+            // 传 "default" 会被当成一个叫 default 的声音文件，找不到 ⇒ 静默不响。
+            notification.sound_name("NSUserNotificationDefaultSoundName");
+        }
+        #[cfg(windows)]
+        {
+            // winrt-notification 的 Sound::from_str 接受 "Default"（省略 <audio> 时
+            // 系统本来也会放默认声，这里显式写清）。
+            notification.sound_name("Default");
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            notification.hint(notify_rust::Hint::SoundName(
+                "message-new-instant".to_string(),
+            ));
+        }
     }
 
     notification
@@ -115,10 +161,11 @@ fn build(app: &tauri::AppHandle, title: &str, body: &str) -> notify_rust::Notifi
 
 /// 桌面（macOS / Windows / Linux）：直接用 notify-rust，错误返回给调用方。
 ///
-/// `.show()` 返回的 handle 在这里**立刻被丢掉**，语义随平台而不同（这是刻意的，
-/// 要点击回调请走 [`show_click_if_enabled`]）：
+/// handle 在这里**立刻丢掉**，语义随平台而不同（这是刻意的，要点击回调请走
+/// [`show_click_if_enabled`]）：
 /// - Windows：toast 已交给系统，但**点击响应从此收不到**；
-/// - macOS：`notify-rust` 的 `Drop` 才是真正的发送（异步发出）。
+/// - macOS：`notify-rust` 的 `.show()` 只克隆出 handle，handle 的 `Drop` 以
+///   **异步、无点击捕获**的方式投递（见 macos/nsusernotifications.rs 的 Drop 实现）。
 #[cfg(any(
     target_os = "macos",
     windows,
@@ -129,7 +176,7 @@ fn build(app: &tauri::AppHandle, title: &str, body: &str) -> notify_rust::Notifi
     target_os = "netbsd"
 ))]
 pub fn show(app: &tauri::AppHandle, title: &str, body: &str) -> Result<(), String> {
-    build(app, title, body)
+    build(app, title, body, false, &HashMap::new())
         .show()
         .map(|_| ())
         .map_err(|e| e.to_string())
@@ -146,14 +193,16 @@ pub fn show(app: &tauri::AppHandle, title: &str, body: &str) -> Result<(), Strin
 /// `Dismissed`，所以线程不会长期滞留。）
 #[cfg(windows)]
 fn show_click_impl(
-    app: &tauri::AppHandle,
+    app: tauri::AppHandle,
     title: &str,
     body: &str,
     extra: HashMap<String, String>,
+    sound: bool,
     on_click: impl FnOnce() + Send + 'static,
 ) -> Result<(), String> {
-    let _ = extra; // Windows 的点击回调只有一个"点了正文"信号，没有按键/类型可带
-    let handle = build(app, title, body).show().map_err(|e| e.to_string())?;
+    let handle = build(&app, title, body, sound, &extra)
+        .show()
+        .map_err(|e| e.to_string())?;
     std::thread::spawn(move || {
         // 闭包参数必须写全类型：`wait_for_response` 收的是 `impl ResponseHandler`，
         // 编译器无法从 trait 约束反推出闭包的参数类型（E0282）。
@@ -167,13 +216,54 @@ fn show_click_impl(
     Ok(())
 }
 
-/// 非 Windows 桌面（macOS / Linux）：退化成普通通知。
+/// 通知 + 点击回调（macOS 实现）。
 ///
-/// 这两个平台上"点击"不由后端的 handle 送出（`notify-rust` 的 macOS 实现只有在
-/// `wait_for_response` 里才同步发送通知，改成阻塞式发送会影响"通知能不能弹出"这件更基本的事，
-/// 而本机无法验证），所以 `on_click` 被丢弃 —— 行为与从前**完全一致**，不引入未验证的时序。
+/// notify-rust 的 macOS 后端（NSUserNotificationCenter 路径）里，`.show()` 只是把通知
+/// 克隆进 handle（未投递），handle 被 `Drop` 时才异步投递（无点击捕获）；真正的
+/// "投递 + 等交互"发生在 `wait_for_response` 内的一次同步投递，delegate 回调在主线程
+/// RunLoop 上送达（Tauri 主窗口的 NSApplication RunLoop 一直在跑）。
+///
+/// 两个只有读了 mac-notification-sys 源码才能确定的坑（2026-10 取证）：
+/// 1. 通知必须带一个 action 按钮（见 [`build`] 里的 `.action("open", …)`）。
+///    `needs_response()` 只在有按钮 / wait_for_click 时为真；无按钮时按
+///    shouldWait=false 投递，PENDING 条目投递完即删，**之后点正文没有任何回调**。
+/// 2. 点正文 → delegate activationType=contentsClicked → notify-rust 映射成
+///    `Default`；点那个按钮 → `Action("open")`（label→id 再兜底首个 id）。
+///    两个都是"用户要打开"，都必须触发 on_click。
+///
+/// 代价（如实记录）：该线程会存活到通知被点击/自动消失；若通知长期留在通知中心，
+/// 线程也会长期挂住 —— 强提醒低频且按 remind id 去重，普通消息走 1.5s 去抖合并，
+/// 量级可接受，但不宣称已最优。
+#[cfg(target_os = "macos")]
+fn show_click_impl(
+    app: tauri::AppHandle,
+    title: &str,
+    body: &str,
+    extra: HashMap<String, String>,
+    sound: bool,
+    on_click: impl FnOnce() + Send + 'static,
+) -> Result<(), String> {
+    let handle = build(&app, title, body, sound, &extra)
+        .show()
+        .map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _ = handle.wait_for_response(move |response: &notify_rust::NotificationResponse| {
+            let opened = response.is_default_action()
+                || matches!(response, notify_rust::NotificationResponse::Action(k) if k == "open");
+            if opened {
+                on_click();
+            }
+        });
+    });
+    Ok(())
+}
+
+/// 通知 + 点击回调（Linux/BSD 实现）。
+///
+/// XDG 后端里 `.show()` 已经把通知经 D-Bus 发出，`wait_for_response` 只是注册信号监听，
+/// 所以与 Windows 同构：先 show 拿 handle，再丢给独立线程等待。很多通知守护进程不支持
+/// actions，等待会以 Closed 结束 —— 不影响通知本身。
 #[cfg(any(
-    target_os = "macos",
     target_os = "linux",
     target_os = "dragonfly",
     target_os = "freebsd",
@@ -181,14 +271,24 @@ fn show_click_impl(
     target_os = "netbsd"
 ))]
 fn show_click_impl(
-    app: &tauri::AppHandle,
+    app: tauri::AppHandle,
     title: &str,
     body: &str,
     extra: HashMap<String, String>,
+    sound: bool,
     on_click: impl FnOnce() + Send + 'static,
 ) -> Result<(), String> {
-    let _ = (extra, on_click);
-    show(app, title, body)
+    let handle = build(&app, title, body, sound, &extra)
+        .show()
+        .map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _ = handle.wait_for_response(move |response: &notify_rust::NotificationResponse| {
+            if response.is_default_action() {
+                on_click();
+            }
+        });
+    });
+    Ok(())
 }
 
 /// 移动端：点击由插件自己的 `actionPerformed` 送进前端，后端不需要回调；
@@ -207,10 +307,11 @@ fn show_click_impl(
     title: &str,
     body: &str,
     extra: HashMap<String, String>,
+    sound: bool,
     on_click: impl FnOnce() + Send + 'static,
 ) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
-    let _ = on_click;
+    let _ = (on_click, sound);
     let mut builder = app.notification().builder().title(title).body(body);
     for (k, v) in &extra {
         builder = builder.extra(k, v);
@@ -274,8 +375,10 @@ pub fn show_if_enabled(state: &Arc<AppState>, title: &str, body: &str) -> Result
 
 /// 尊重总开关 + **可点击**的通知：聊天消息与好友申请都走这里。
 ///
-/// `extra` 只有移动端用得上（插件把它带进通知，Android 的 `actionPerformed` 靠它识别类型）；
-/// Windows 的点击回调只有一个"点了正文"的信号，不需要它。
+/// `extra` 在移动端由插件带进通知（Android 的 `actionPerformed` 靠它识别类型）；
+/// macOS 桌面端读其中的 `action_label` 作通知按钮文案（点击捕获的承重件，见
+/// [`show_click_impl`]）；Windows/Linux 不读它。
+/// `sound` 仅强提醒传 true（系统通知声音），普通消息与好友申请传 false。
 ///
 /// 返回 Ok(false) 表示“用户关了通知，跳过”；Ok(true) 表示已提交给系统。
 pub fn show_click_if_enabled(
@@ -283,6 +386,7 @@ pub fn show_click_if_enabled(
     title: &str,
     body: &str,
     extra: HashMap<String, String>,
+    sound: bool,
     on_click: impl FnOnce() + Send + 'static,
 ) -> Result<bool, String> {
     if !enabled(state) {
@@ -291,14 +395,14 @@ pub fn show_click_if_enabled(
     log_result(
         state,
         title,
-        show_click_impl(&state.app, title, body, extra, on_click),
+        show_click_impl(state.app.clone(), title, body, extra, sound, on_click),
     )
 }
 
 /// 「用户点了系统通知」的事件名：主窗口收到后把对应会话（或「新的朋友」）拉到前台。
 pub const EVENT_NOTIFICATION_CLICKED: &str = "notification-clicked";
 
-/// 事件载荷 —— **与移动端插件通知的 `extra` 同形**（`type` / `conv_id`），
+/// 事件载荷 —— **与移动端插件通知的 `extra` 同形**（`type` / `conv_id` / `msg_id`），
 /// 于是前端两条路径（桌面事件 / 移动端 `actionPerformed`）能共用同一个路由函数。
 #[derive(Clone, serde::Serialize)]
 pub struct NotificationClick {
@@ -307,6 +411,9 @@ pub struct NotificationClick {
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conv_id: Option<String>,
+    /// 强提醒通知：被提醒的**原消息** msg_id（点击后定位到它，不只是打开会话）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub msg_id: Option<String>,
 }
 
 /// 通知被点击之后要做的事：**唤起主窗口** + 告诉前端"点的是哪一条"。
@@ -317,6 +424,7 @@ pub fn on_notification_clicked(
     app: &tauri::AppHandle,
     kind: &'static str,
     conv_id: Option<String>,
+    msg_id: Option<String>,
 ) {
     // 托盘是桌面概念（`mod tray` 本身是 `#[cfg(desktop)]`）；移动端的系统通知自带
     // "点开就回到前台"的行为，不需要也无法从后端唤起窗口。
@@ -324,7 +432,11 @@ pub fn on_notification_clicked(
     crate::tray::show_main_window(app);
     let _ = app.emit(
         EVENT_NOTIFICATION_CLICKED,
-        NotificationClick { kind, conv_id },
+        NotificationClick {
+            kind,
+            conv_id,
+            msg_id,
+        },
     );
 }
 
